@@ -44,6 +44,10 @@
 - WS frame rows use `.ws-frame-row` CSS class (28px height, indented, lighter bg); parent WS rows show expand toggle + frame count badge
 - Stream message list card in WS detail view renders all frames chronologically with clickable rows that call `selectRequest(frameId)`
 - WS frame detail view: text frames render payload in Monaco (auto-detects JSON), binary frames render hex dump, close frames show code + reason
+- HTTP/2 upstream: `_getH2Session(hostname, port)` returns cached h2 session or null (blacklisted/unsupported); `_makeH2Request()` sends request via h2 stream; sessions cached in `_h2Sessions` Map per `host:port`, evicted after 60s idle or on error/close/goaway
+- H2 upstream is skipped when `this.upstreamProxy` is configured (upstream proxy uses CONNECT tunneling which is always h1.1)
+- `_h2Blacklist` Set remembers origins that failed h2 connect to avoid repeated 5s connect timeouts
+- All three HTTPS forwarding paths (_handleTlsConnection, _handleHttp2Connection stream, _handleHttp2Connection h1 fallback) try h2 upstream first with h1.1 fallback
 
 ---
 
@@ -196,4 +200,20 @@
   - Text frame payloads attempt JSON.parse to auto-detect JSON language for Monaco — a common pattern in WebSocket APIs
   - Light and high-contrast theme overrides are needed for `.ws-frame-row` because the base theme rules set explicit backgrounds on `.traffic-table tbody tr`
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-011
+- What was implemented: HTTP/2 upstream with session caching — proxy now attempts h2 upstream connections first, caches sessions per origin, falls back to HTTPS/1.1
+- Files changed:
+  - src/proxy/proxy-server.js — Added `_h2Sessions` Map and `_h2Blacklist` Set to constructor; added `_getH2Session()` for session-per-origin caching with 60s idle eviction; added `_evictH2Session()` and `_closeAllH2Sessions()` for cleanup; added `_makeH2Request()` for sending requests via h2 streams with pseudo-header conversion; updated all three HTTPS forwarding paths (`_handleTlsConnection`, `_handleHttp2Connection` stream handler, `_handleHttp2Connection` h1 fallback) to try h2 upstream first with transparent fallback to h1.1; added h2 session cleanup in `stop()`; updated protocol field in emitted events to reflect actual upstream protocol used
+  - prd.json — Set US-011 passes to true
+- **Learnings for future iterations:**
+  - Node.js `http2.connect()` requires `rejectUnauthorized: false` for MITM proxy scenarios (we don't trust upstream certs)
+  - H2 sessions are multiplexed — one TCP connection handles many concurrent streams, unlike h1.1 which needs connection-per-request
+  - `session.on('goaway')` fires when the server wants to stop accepting new streams; must evict the session so a new one is created
+  - The h2 blacklist prevents repeated 5-second connect timeouts for origins that only support h1.1 — critical for performance
+  - When upstream proxy is configured, h2 upstream is skipped because the CONNECT tunnel approach doesn't negotiate ALPN directly (the tunneled TLS connection still uses h1.1)
+  - H2 pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`) must be added for outgoing h2 requests and stripped from response headers
+  - The `host` header must be excluded when sending h2 requests — h2 uses `:authority` instead
+  - Connection-level h1 headers (`connection`, `keep-alive`, `transfer-encoding`, `upgrade`) must be stripped from h2 requests/responses
 ---

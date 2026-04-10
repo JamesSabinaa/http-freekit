@@ -29,6 +29,10 @@ export class ProxyServer {
     this.trustedCAs = []; // [certPath]
     this.httpsWhitelist = []; // [hostname]
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
+    // HTTP/2 upstream session cache: Map<"host:port", {session, timer, pending?}>
+    this._h2Sessions = new Map();
+    // Set of origins known not to support h2: Set<"host:port">
+    this._h2Blacklist = new Set();
   }
 
   setUpstreamProxy(config) {
@@ -107,6 +111,7 @@ export class ProxyServer {
 
   stop() {
     return new Promise((resolve) => {
+      this._closeAllH2Sessions();
       if (!this.server) return resolve();
       for (const socket of this.activeConnections) {
         socket.destroy();
@@ -917,43 +922,26 @@ export class ProxyServer {
           headers: { ...req.headers }, rejectUnauthorized: false
         };
 
-        const handleResponse = (proxyRes) => {
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
-          proxyRes.on('end', () => {
-            const resBody = Buffer.concat(responseBody);
-            const duration = Date.now() - startTime;
-            const trailers = proxyRes.trailers;
+        let upstreamProtocol = 'https';
 
-            try {
-              res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              res.end(resBody);
-            } catch (e) { /* client gone */ }
-
-            this._emitRequest({
-              id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-              host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
-              statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-              responseHeaders: proxyRes.headers,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding']),
-              responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
-              tls: tlsDetails,
-              remote: { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort },
-              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
-            });
+        const emitSuccess = (statusCode, statusMessage, responseHeaders, resBody, remote, trailers) => {
+          const duration = Date.now() - startTime;
+          this._emitRequest({
+            id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
+            host: hostname, path: req.url, requestHeaders: req.headers,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            statusCode, statusMessage, responseHeaders,
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
+            tls: tlsDetails, remote,
+            trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
           });
         };
 
-        const handleError = (err) => {
+        const emitError = (err) => {
           const duration = Date.now() - startTime;
-          try {
-            res.writeHead(502, { 'Content-Type': 'text/plain' });
-            res.end(`Proxy Error: ${err.message}`);
-          } catch (e) { /* client gone */ }
-
           this._emitRequest({
-            id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+            id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
@@ -961,6 +949,53 @@ export class ProxyServer {
             duration, timestamp: startTime, error: err.message, source: 'proxy',
             tls: tlsDetails, remote: null
           });
+        };
+
+        // Try HTTP/2 upstream first (skip if upstream proxy is configured)
+        if (!this.upstreamProxy) {
+          try {
+            const h2Session = await this._getH2Session(hostname, targetPort);
+            if (h2Session) {
+              upstreamProtocol = 'h2';
+              const h2Res = await this._makeH2Request(
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body
+              );
+              try {
+                res.writeHead(h2Res.statusCode, h2Res.headers);
+                res.end(h2Res.body);
+              } catch (e) { /* client gone */ }
+              emitSuccess(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
+                { address: h2Res.remoteAddress, port: h2Res.remotePort }, null);
+              return;
+            }
+          } catch (err) {
+            // H2 request failed — fall back to h1.1
+            upstreamProtocol = 'https';
+          }
+        }
+
+        // Fallback: HTTPS/1.1
+        const handleResponse = (proxyRes) => {
+          const responseBody = [];
+          proxyRes.on('data', chunk => responseBody.push(chunk));
+          proxyRes.on('end', () => {
+            const resBody = Buffer.concat(responseBody);
+            const trailers = proxyRes.trailers;
+            try {
+              res.writeHead(proxyRes.statusCode, proxyRes.headers);
+              res.end(resBody);
+            } catch (e) { /* client gone */ }
+            emitSuccess(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
+              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }, trailers);
+          });
+        };
+
+        const handleError = (err) => {
+          try {
+            res.writeHead(502, { 'Content-Type': 'text/plain' });
+            res.end(`Proxy Error: ${err.message}`);
+          } catch (e) { /* client gone */ }
+          emitError(err);
         };
 
         let proxyReq;
@@ -1098,20 +1133,74 @@ export class ProxyServer {
           if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
         }
 
-        // Forward to upstream server via HTTPS
-        // Ensure host header is set (h2 clients send :authority instead of host)
+        // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
         const upstreamHeaders = { ...reqHeaders };
         if (!upstreamHeaders.host) {
           upstreamHeaders.host = targetPort === 443 ? hostname : `${hostname}:${targetPort}`;
         }
 
+        const source = this._detectSource(reqHeaders);
+
+        const emitH2Success = (statusCode, statusMessage, responseHeaders, resBody, remote) => {
+          const duration = Date.now() - startTime;
+          this._emitRequest({
+            id: requestId, protocol: 'h2', method, url: fullUrl,
+            host: authority, path, requestHeaders: reqHeaders,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            statusCode, statusMessage, responseHeaders,
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBodySize: resBody.length, duration, timestamp: startTime,
+            source, tls: tlsDetails, remote
+          });
+        };
+
+        const emitH2Error = (err) => {
+          const duration = Date.now() - startTime;
+          this._emitRequest({
+            id: requestId, protocol: 'h2', method, url: fullUrl,
+            host: authority, path, requestHeaders: reqHeaders,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
+            responseBody: 'Proxy Error: ' + err.message, responseBodySize: 0,
+            duration, timestamp: startTime, error: err.message,
+            source, tls: tlsDetails, remote: null
+          });
+        };
+
+        // Try HTTP/2 upstream (skip if upstream proxy is configured)
+        if (!this.upstreamProxy) {
+          try {
+            const h2Session = await this._getH2Session(hostname, targetPort);
+            if (h2Session) {
+              const h2Res = await this._makeH2Request(
+                h2Session, method, hostname, targetPort, path, upstreamHeaders, body
+              );
+              // Build h2 response headers for the client stream
+              const h2ResponseHeaders = { ':status': h2Res.statusCode };
+              for (const [k, v] of Object.entries(h2Res.headers)) {
+                const lower = k.toLowerCase();
+                if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'http2-settings'].includes(lower)) continue;
+                h2ResponseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+              }
+              try {
+                if (!stream.destroyed && !stream.closed) {
+                  stream.respond(h2ResponseHeaders);
+                  stream.end(h2Res.body);
+                }
+              } catch (e) { /* stream already closed */ }
+              emitH2Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
+                { address: h2Res.remoteAddress, port: h2Res.remotePort });
+              return;
+            }
+          } catch (err) {
+            // H2 request failed — fall back to h1.1
+          }
+        }
+
+        // Fallback: HTTPS/1.1 upstream
         const proxyOpts = {
-          hostname,
-          port: targetPort,
-          path,
-          method,
-          headers: upstreamHeaders,
-          rejectUnauthorized: false
+          hostname, port: targetPort, path, method,
+          headers: upstreamHeaders, rejectUnauthorized: false
         };
 
         const handleResponse = (proxyRes) => {
@@ -1119,7 +1208,6 @@ export class ProxyServer {
           proxyRes.on('data', chunk => responseBody.push(chunk));
           proxyRes.on('end', () => {
             const resBody = Buffer.concat(responseBody);
-            const duration = Date.now() - startTime;
 
             // Build h2 response headers, filtering out h1-specific ones
             const responseHeaders = { ':status': proxyRes.statusCode };
@@ -1136,40 +1224,19 @@ export class ProxyServer {
               }
             } catch (e) { /* stream already closed */ }
 
-            this._emitRequest({
-              id: requestId, protocol: 'h2', method, url: fullUrl,
-              host: authority, path, requestHeaders: reqHeaders,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
-              statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-              responseHeaders: proxyRes.headers,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding']),
-              responseBodySize: resBody.length, duration, timestamp: startTime,
-              source: this._detectSource(reqHeaders),
-              tls: tlsDetails,
-              remote: { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }
-            });
+            emitH2Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
+              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort });
           });
         };
 
         const handleError = (err) => {
-          const duration = Date.now() - startTime;
           try {
             if (!stream.destroyed && !stream.closed) {
               stream.respond({ ':status': 502 });
               stream.end('Proxy Error: ' + err.message);
             }
           } catch (e) { /* stream already closed */ }
-
-          this._emitRequest({
-            id: requestId, protocol: 'h2', method, url: fullUrl,
-            host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: 'Proxy Error: ' + err.message, responseBodySize: 0,
-            duration, timestamp: startTime, error: err.message,
-            source: this._detectSource(reqHeaders),
-            tls: tlsDetails, remote: null
-          });
+          emitH2Error(err);
         };
 
         let proxyReq;
@@ -1262,7 +1329,59 @@ export class ProxyServer {
           if (modifications.headers) Object.assign(req.headers, modifications.headers);
         }
 
-        // Forward to real server
+        // Forward to real server — try HTTP/2 upstream first
+        let upstreamProtocol = 'https';
+
+        const emitH1Success = (statusCode, statusMessage, responseHeaders, resBody, remote) => {
+          const duration = Date.now() - startTime;
+          this._emitRequest({
+            id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
+            host: hostname, path: req.url, requestHeaders: req.headers,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            statusCode, statusMessage, responseHeaders,
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
+            tls: tlsDetails, remote
+          });
+        };
+
+        const emitH1Error = (err) => {
+          const duration = Date.now() - startTime;
+          this._emitRequest({
+            id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
+            host: hostname, path: req.url, requestHeaders: req.headers,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
+            responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
+            duration, timestamp: startTime, error: err.message, source: 'proxy',
+            tls: tlsDetails, remote: null
+          });
+        };
+
+        // Try HTTP/2 upstream (skip if upstream proxy is configured)
+        if (!this.upstreamProxy) {
+          try {
+            const h2Session = await this._getH2Session(hostname, targetPort);
+            if (h2Session) {
+              upstreamProtocol = 'h2';
+              const h2Res = await this._makeH2Request(
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body
+              );
+              try {
+                res.writeHead(h2Res.statusCode, h2Res.headers);
+                res.end(h2Res.body);
+              } catch (e) { /* client gone */ }
+              emitH1Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
+                { address: h2Res.remoteAddress, port: h2Res.remotePort });
+              return;
+            }
+          } catch (err) {
+            // H2 request failed — fall back to h1.1
+            upstreamProtocol = 'https';
+          }
+        }
+
+        // Fallback: HTTPS/1.1
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: { ...req.headers }, rejectUnauthorized: false
@@ -1273,40 +1392,21 @@ export class ProxyServer {
           proxyRes.on('data', chunk => responseBody.push(chunk));
           proxyRes.on('end', () => {
             const resBody = Buffer.concat(responseBody);
-            const duration = Date.now() - startTime;
             try {
               res.writeHead(proxyRes.statusCode, proxyRes.headers);
               res.end(resBody);
             } catch (e) { /* client gone */ }
-            this._emitRequest({
-              id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-              host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
-              statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-              responseHeaders: proxyRes.headers,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding']),
-              responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
-              tls: tlsDetails,
-              remote: { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }
-            });
+            emitH1Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
+              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort });
           });
         };
 
         const handleError = (err) => {
-          const duration = Date.now() - startTime;
           try {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
             res.end(`Proxy Error: ${err.message}`);
           } catch (e) { /* client gone */ }
-          this._emitRequest({
-            id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-            host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
-            duration, timestamp: startTime, error: err.message, source: 'proxy',
-            tls: tlsDetails, remote: null
-          });
+          emitH1Error(err);
         };
 
         let proxyReq;
@@ -1680,6 +1780,181 @@ export class ProxyServer {
       responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
       duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
       tls: tlsDetails, remote: null
+    });
+  }
+
+  // Get or create an HTTP/2 session to the given origin, with caching.
+  // Returns the h2 session or null if the origin doesn't support h2.
+  _getH2Session(hostname, port) {
+    const origin = `${hostname}:${port}`;
+
+    // Known not to support h2
+    if (this._h2Blacklist.has(origin)) return Promise.resolve(null);
+
+    // Existing live session
+    const cached = this._h2Sessions.get(origin);
+    if (cached && !cached.session.destroyed && !cached.session.closed) {
+      // Reset idle timer
+      clearTimeout(cached.timer);
+      cached.timer = setTimeout(() => this._evictH2Session(origin), 60000);
+      return Promise.resolve(cached.session);
+    }
+
+    // Already connecting — wait for it
+    if (cached && cached.pending) return cached.pending;
+
+    // Create new session
+    const pending = new Promise((resolve) => {
+      const url = `https://${hostname}:${port}`;
+      let settled = false;
+
+      const session = http2.connect(url, {
+        rejectUnauthorized: false,
+        ALPNProtocols: ['h2']
+      });
+
+      const timer = setTimeout(() => this._evictH2Session(origin), 60000);
+
+      session.on('connect', () => {
+        if (settled) return;
+        settled = true;
+        this._h2Sessions.set(origin, { session, timer });
+        resolve(session);
+      });
+
+      session.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          this._h2Blacklist.add(origin);
+          this._h2Sessions.delete(origin);
+          clearTimeout(timer);
+          resolve(null);
+        } else {
+          // Session died after initial connect — evict
+          this._evictH2Session(origin);
+        }
+      });
+
+      session.on('close', () => {
+        this._evictH2Session(origin);
+      });
+
+      session.on('goaway', () => {
+        this._evictH2Session(origin);
+      });
+
+      // Timeout for initial connect
+      const connectTimeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          this._h2Blacklist.add(origin);
+          this._h2Sessions.delete(origin);
+          clearTimeout(timer);
+          session.destroy();
+          resolve(null);
+        }
+      }, 5000);
+
+      session.on('connect', () => clearTimeout(connectTimeout));
+      session.on('error', () => clearTimeout(connectTimeout));
+
+      // Store pending promise so concurrent requests share it
+      this._h2Sessions.set(origin, { session, timer, pending });
+    });
+
+    // Update cache entry with the pending promise
+    const entry = this._h2Sessions.get(origin);
+    if (entry) entry.pending = pending;
+
+    return pending;
+  }
+
+  _evictH2Session(origin) {
+    const cached = this._h2Sessions.get(origin);
+    if (cached) {
+      clearTimeout(cached.timer);
+      if (cached.session && !cached.session.destroyed) {
+        cached.session.close();
+      }
+      this._h2Sessions.delete(origin);
+    }
+  }
+
+  _closeAllH2Sessions() {
+    for (const [origin, cached] of this._h2Sessions) {
+      clearTimeout(cached.timer);
+      if (cached.session && !cached.session.destroyed) {
+        cached.session.close();
+      }
+    }
+    this._h2Sessions.clear();
+    this._h2Blacklist.clear();
+  }
+
+  // Make an HTTP/2 request via a cached session. Returns a promise that resolves to
+  // { statusCode, headers, body: Buffer } or null if the request can't be made via h2.
+  _makeH2Request(session, method, hostname, port, path, headers, body) {
+    return new Promise((resolve, reject) => {
+      // Build h2 pseudo-headers + regular headers
+      const h2Headers = {
+        ':method': method,
+        ':path': path,
+        ':scheme': 'https',
+        ':authority': port === 443 ? hostname : `${hostname}:${port}`
+      };
+
+      // Copy regular headers, filtering out h1-specific ones
+      for (const [k, v] of Object.entries(headers)) {
+        const lower = k.toLowerCase();
+        if (lower.startsWith(':')) continue; // skip existing pseudo-headers
+        if (['connection', 'keep-alive', 'transfer-encoding', 'upgrade',
+             'http2-settings', 'proxy-connection', 'host'].includes(lower)) continue;
+        h2Headers[lower] = v;
+      }
+
+      const stream = session.request(h2Headers);
+
+      let statusCode;
+      const responseHeaders = {};
+      const responseBody = [];
+
+      stream.on('response', (hdrs) => {
+        statusCode = hdrs[':status'];
+        for (const [k, v] of Object.entries(hdrs)) {
+          if (!k.startsWith(':')) {
+            responseHeaders[k] = v;
+          }
+        }
+      });
+
+      stream.on('data', chunk => responseBody.push(chunk));
+
+      stream.on('end', () => {
+        resolve({
+          statusCode,
+          statusMessage: '',
+          headers: responseHeaders,
+          body: Buffer.concat(responseBody),
+          remoteAddress: session.socket?.remoteAddress,
+          remotePort: session.socket?.remotePort
+        });
+      });
+
+      stream.on('error', (err) => {
+        reject(err);
+      });
+
+      stream.setTimeout(30000, () => {
+        stream.close(http2.constants.NGHTTP2_CANCEL);
+        reject(new Error('H2 stream timeout after 30s'));
+      });
+
+      // Send request body
+      if (body && body.length > 0) {
+        stream.end(body);
+      } else {
+        stream.end();
+      }
     });
   }
 

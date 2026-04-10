@@ -200,7 +200,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-server/src/rules/http-agents.ts. Currently our proxy speaks h1.1 to all upstreams."
     },
     {
