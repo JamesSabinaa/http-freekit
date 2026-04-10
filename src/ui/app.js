@@ -10,10 +10,16 @@
     let mockRules = [];
     let autoScroll = true;
     let requestCounter = 0;
-    let renderedRequestIds = new Set(); // Track which rows have been rendered before
     let filterDebounceTimer = null;
-    let lastRenderedCount = 0;
-    let lastRenderedFirst = null;
+
+    // ============ VIRTUAL SCROLL STATE ============
+    const VS_ROW_HEIGHT = 32;
+    const VS_BUFFER = 15;
+    const VS_HEADER_HEIGHT = 38;
+    let vsRenderStart = -1;
+    let vsRenderEnd = -1;
+    let vsForceRender = false;
+    let vsRafId = null;
 
     // ============ SEND TABS STATE ============
     let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null }];
@@ -101,10 +107,8 @@
           requests = requests.filter(r => r.pinned);
           filteredRequests = [];
           requestCounter = requests.length;
-          renderedRequestIds.clear();
-          lastRenderedCount = 0;
-          lastRenderedFirst = null;
-          requests.forEach(r => renderedRequestIds.add(r.id));
+          vsRenderStart = -1;
+          vsRenderEnd = -1;
           renderTraffic();
           if (!requests.find(r => r.id === selectedRequestId)) closeDetail();
           break;
@@ -313,6 +317,79 @@
       'tls-error': '<i class="ph ph-lock-simple-open" style="font-size:16px;line-height:1;color:#ce3939;"></i>'
     };
 
+    function buildRowHtml(req, index) {
+      const methodClass = req.protocol === 'ws' ? 'method-WS' : req.protocol === 'tls-error' ? 'method-CONNECT' : `method-${req.method}`;
+      let statusClass = req.error ? 'status-err' :
+        req.statusCode < 200 ? 'status-1xx' :
+        req.statusCode < 300 ? 'status-2xx' :
+        req.statusCode < 400 ? 'status-3xx' :
+        req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
+      if (req.protocol === 'ws') {
+        statusClass = 'status-2xx';
+      }
+      if (req.protocol === 'tls-error' || req.source === 'tls-error') {
+        statusClass = 'status-5xx';
+      }
+      const source = req.source || 'proxy';
+      const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
+      const selected = req.id === selectedRequestId ? 'selected' : '';
+      const markerColor = req.source === 'breakpoint' ? '#f1971f' :
+        ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
+        source === 'mock' ? '#6e40aa' : '#888';
+      const statusHtml = req.source === 'breakpoint' && req.statusCode === 0
+        ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
+        : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
+      const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
+
+      return `<tr class="${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+        <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
+        <td>${pinIcon}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
+        <td>${statusHtml}</td>
+        <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
+        <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
+        <td title="${esc(req.path)}">${esc(req.path || '/')}</td>
+      </tr>`;
+    }
+
+    // Render the visible virtual-scroll rows into the tbody
+    function renderVirtualRows() {
+      const tbody = document.getElementById('trafficBody');
+      const wrapper = document.getElementById('trafficTableWrapper');
+      const totalRows = filteredRequests.length;
+      if (totalRows === 0) { tbody.innerHTML = ''; return; }
+
+      const scrollTop = wrapper.scrollTop;
+      const clientHeight = wrapper.clientHeight;
+
+      const firstVisible = Math.floor(scrollTop / VS_ROW_HEIGHT);
+      const lastVisible = Math.min(totalRows, Math.ceil((scrollTop + clientHeight - VS_HEADER_HEIGHT) / VS_ROW_HEIGHT));
+
+      const renderStart = Math.max(0, firstVisible - VS_BUFFER);
+      const renderEnd = Math.min(totalRows, lastVisible + VS_BUFFER);
+
+      // Skip re-render if range and selection haven't changed
+      if (!vsForceRender && renderStart === vsRenderStart && renderEnd === vsRenderEnd) return;
+
+      let html = '';
+      // Top spacer
+      if (renderStart > 0) {
+        html += `<tr class="vs-spacer"><td colspan="6" style="height:${renderStart * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+      }
+      // Visible rows
+      for (let i = renderStart; i < renderEnd; i++) {
+        html += buildRowHtml(filteredRequests[i], i);
+      }
+      // Bottom spacer
+      if (renderEnd < totalRows) {
+        html += `<tr class="vs-spacer"><td colspan="6" style="height:${(totalRows - renderEnd) * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+      }
+
+      tbody.innerHTML = html;
+      vsRenderStart = renderStart;
+      vsRenderEnd = renderEnd;
+      vsForceRender = false;
+    }
+
     function renderTraffic() {
       const tbody = document.getElementById('trafficBody');
       const empty = document.getElementById('emptyState');
@@ -336,15 +413,14 @@
 
       if (filteredRequests.length === 0) {
         tbody.innerHTML = '';
+        vsRenderStart = -1;
+        vsRenderEnd = -1;
         const query = document.getElementById('searchInput')?.value?.trim();
         if (query && requests.length > 0) {
-          // Filter matches nothing
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">?</div><h3>No requests match this search filter</h3>';
         } else if (isPaused) {
-          // Paused
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">&#9208;</div><h3>Interception is paused, resume it to collect intercepted requests</h3>';
         } else {
-          // No traffic
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">&#9783;</div><h3>Connect a client and intercept some requests, and they\'ll appear here</h3>';
         }
         empty.style.display = 'flex';
@@ -353,101 +429,39 @@
 
       empty.style.display = 'none';
 
-      const MAX_VISIBLE = 2000;
-      const visible = filteredRequests.slice(-MAX_VISIBLE);
+      // Force re-render since data changed (filter, sort, new data)
+      vsForceRender = true;
+      vsRenderStart = -1;
+      vsRenderEnd = -1;
 
-      function buildRowHtml(req) {
-        const methodClass = req.protocol === 'ws' ? 'method-WS' : req.protocol === 'tls-error' ? 'method-CONNECT' : `method-${req.method}`;
-        let statusClass = req.error ? 'status-err' :
-          req.statusCode < 200 ? 'status-1xx' :
-          req.statusCode < 300 ? 'status-2xx' :
-          req.statusCode < 400 ? 'status-3xx' :
-          req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
-        // Special status for WebSocket and TLS errors
-        if (req.protocol === 'ws') {
-          statusClass = 'status-2xx'; // green for active WS
-        }
-        if (req.protocol === 'tls-error' || req.source === 'tls-error') {
-          statusClass = 'status-5xx'; // red for TLS failures
-        }
-        const source = req.source || 'proxy';
-        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
-        const selected = req.id === selectedRequestId ? 'selected' : '';
-        const isNew = !renderedRequestIds.has(req.id);
-        const newRowClass = isNew ? ' new-row' : '';
-        // Row marker color based on category: breakpoint = orange, mutative = red, mock = purple, default = grey
-        const markerColor = req.source === 'breakpoint' ? '#f1971f' :
-          ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
-          source === 'mock' ? '#6e40aa' : '#888';
-
-        // If this is a breakpoint-paused request, show pause icon instead of status
-        const statusHtml = req.source === 'breakpoint' && req.statusCode === 0
-          ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
-          : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
-
-        const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
-
-        return `<tr class="${selected}${newRowClass}" role="row" aria-rowindex="${req._index}" aria-selected="${req.id === selectedRequestId}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
-          <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-          <td>${pinIcon}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
-          <td>${statusHtml}</td>
-          <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
-          <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
-          <td title="${esc(req.path)}">${esc(req.path || '/')}</td>
-        </tr>`;
-      }
-
-      // Check if this is an append-only update (new rows added to the end)
-      const currentRows = tbody.children.length;
-      const isAppendOnly = currentRows > 0 &&
-        visible.length > currentRows &&
-        visible.length - currentRows < 50 && // small batch
-        !sortField; // not sorted
-
-      if (isAppendOnly) {
-        // Only add new rows
-        const newItems = visible.slice(currentRows);
-        let newHtml = '';
-        for (const req of newItems) {
-          newHtml += buildRowHtml(req);
-          renderedRequestIds.add(req.id);
-        }
-        tbody.insertAdjacentHTML('beforeend', newHtml);
-      } else {
-        // Full rebuild (filter changed, sorted, etc.)
-        tbody.innerHTML = visible.map(req => buildRowHtml(req)).join('');
-        visible.forEach(req => renderedRequestIds.add(req.id));
-        lastRenderedCount = visible.length;
-        lastRenderedFirst = visible[0]?.id;
-      }
-
-      // Auto-scroll to bottom
+      // Auto-scroll to bottom before rendering so renderVirtualRows uses final scrollTop
       if (autoScroll) {
         const wrapper = document.getElementById('trafficTableWrapper');
+        // Set scroll height based on total rows to position scrollbar correctly
+        // We need to render first so the spacers create the correct content height
+        // Temporarily set a large enough height so scrollTop can be set
+        tbody.innerHTML = `<tr class="vs-spacer"><td colspan="6" style="height:${filteredRequests.length * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
         wrapper.scrollTop = wrapper.scrollHeight;
       }
+
+      renderVirtualRows();
     }
 
     function selectRequest(id) {
       if (selectedRequestId === id) {
-        // Deselect on re-click
         closeDetail();
         return;
       }
       selectedRequestId = id;
-      // Update URL hash for deep linking
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', '#/view/' + id);
       }
       const req = requests.find(r => r.id === id);
       if (!req) return;
 
-      // Highlight row
-      document.querySelectorAll('.traffic-table tbody tr').forEach(tr => tr.classList.remove('selected'));
-      const rows = document.querySelectorAll('.traffic-table tbody tr');
-      rows.forEach(tr => {
-        if (tr.onclick?.toString().includes(id)) tr.classList.add('selected');
-      });
+      // Re-render virtual rows to update selection highlight
+      vsForceRender = true;
+      renderVirtualRows();
 
       showDetail(req);
     }
@@ -467,14 +481,14 @@
     }
 
     function closeDetail() {
-      // Show empty state, hide active detail
       const emptyEl = document.getElementById('detailEmptyState');
       const activeEl = document.getElementById('detailActive');
       if (emptyEl) emptyEl.style.display = 'flex';
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
-      document.querySelectorAll('.traffic-table tbody tr').forEach(tr => tr.classList.remove('selected'));
-      // Remove request ID from hash when deselecting
+      // Re-render to remove selection highlight
+      vsForceRender = true;
+      renderVirtualRows();
       if (window.location.hash.startsWith('#/view/')) {
         history.replaceState(null, '', '#/view');
       }
@@ -483,12 +497,26 @@
     // ============ DETAIL FOOTER ACTIONS ============
     function scrollToSelectedRequest() {
       if (!selectedRequestId) return;
-      const rows = document.querySelectorAll('.traffic-table tbody tr');
-      for (const row of rows) {
-        if (row.onclick?.toString().includes(selectedRequestId)) {
-          row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          break;
-        }
+      const idx = filteredRequests.findIndex(r => r.id === selectedRequestId);
+      if (idx === -1) return;
+      scrollRowIntoView(idx, 'center');
+    }
+
+    // Scroll so that a given row index is visible in the traffic list
+    function scrollRowIntoView(index, alignment) {
+      const wrapper = document.getElementById('trafficTableWrapper');
+      const rowTop = index * VS_ROW_HEIGHT;
+      const rowBottom = rowTop + VS_ROW_HEIGHT;
+      const viewTop = wrapper.scrollTop;
+      const viewBottom = wrapper.scrollTop + wrapper.clientHeight - VS_HEADER_HEIGHT;
+
+      if (alignment === 'center') {
+        const viewHeight = wrapper.clientHeight - VS_HEADER_HEIGHT;
+        wrapper.scrollTop = Math.max(0, rowTop - viewHeight / 2 + VS_ROW_HEIGHT / 2);
+      } else if (rowTop < viewTop) {
+        wrapper.scrollTop = rowTop;
+      } else if (rowBottom > viewBottom) {
+        wrapper.scrollTop = rowBottom - (wrapper.clientHeight - VS_HEADER_HEIGHT);
       }
     }
 
@@ -4392,7 +4420,18 @@
       if (delta === 'first') newIdx = 0;
       else if (delta === 'last') newIdx = filteredRequests.length - 1;
       else newIdx = Math.max(0, Math.min(filteredRequests.length - 1, currentIdx + delta));
-      selectRequest(filteredRequests[newIdx].id);
+
+      const req = filteredRequests[newIdx];
+      selectedRequestId = req.id;
+      if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
+        history.replaceState(null, '', '#/view/' + req.id);
+      }
+      // Scroll the selected row into view
+      scrollRowIntoView(newIdx);
+      // Re-render to update selection
+      vsForceRender = true;
+      renderVirtualRows();
+      showDetail(req);
     }
 
     // ============ SCROLL TO END ============
@@ -5301,10 +5340,16 @@
       }
     })();
 
-    // Auto-scroll detection
+    // Virtual scroll: re-render visible rows on scroll + auto-scroll detection
     document.getElementById('trafficTableWrapper').addEventListener('scroll', function() {
       const el = this;
       autoScroll = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      // Debounce virtual scroll rendering with requestAnimationFrame
+      if (vsRafId) cancelAnimationFrame(vsRafId);
+      vsRafId = requestAnimationFrame(() => {
+        vsRafId = null;
+        renderVirtualRows();
+      });
     });
 
     // Search input

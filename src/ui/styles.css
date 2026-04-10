@@ -676,6 +676,16 @@
       background: var(--bg-main);
     }
 
+    .traffic-table tbody tr.vs-spacer {
+      height: auto;
+      cursor: default;
+      border: none;
+      background: none;
+    }
+    .traffic-table tbody tr.vs-spacer:hover {
+      background: none;
+    }
+
     .traffic-table tbody tr.new-row {
       animation: fadeIn 0.15s ease;
     }
