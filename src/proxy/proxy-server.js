@@ -1135,18 +1135,35 @@ export class ProxyServer {
             const upstreamConn = this._isSocksProxy()
               ? await this._connectViaSocksTls(hostname, targetPort)
               : await this._connectViaUpstream(hostname, targetPort);
-            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, making HTTPS request: ${req.method} ${req.url}`);
-            upstreamConn.on('error', (err) => {
-              console.log(`[Proxy Debug] Tunnel socket error for ${hostname}: ${err.message}`);
-            });
-            proxyReq = https.request({
-              ...proxyOpts,
-              createConnection: () => upstreamConn,
-              socket: upstreamConn,
+            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, making HTTPS request via agent: ${req.method} ${req.url}`);
+            // Use a one-shot agent that provides the pre-connected tunnel socket
+            const tunnelAgent = new https.Agent({ keepAlive: false });
+            const origCreateConn = tunnelAgent.createConnection;
+            tunnelAgent.createConnection = function(opts, cb) {
+              console.log(`[Proxy Debug] Agent createConnection called for ${opts.host}`);
+              // Wrap the raw tunnel socket in TLS
+              const tlsSocket = tls.connect({
+                socket: upstreamConn,
+                servername: hostname,
+                rejectUnauthorized: false
+              }, () => {
+                console.log(`[Proxy Debug] TLS handshake complete for ${hostname}`);
+                cb(null, tlsSocket);
+              });
+              tlsSocket.on('error', (err) => {
+                console.log(`[Proxy Debug] TLS error for ${hostname}: ${err.message}`);
+                cb(err);
+              });
+              return tlsSocket;
+            };
+            proxyReq = http.request({
+              hostname, port: targetPort, path: req.url, method: req.method,
+              headers: { ...req.headers },
+              agent: tunnelAgent,
               insecureHTTPParser: true
             }, handleResponse);
             proxyReq.on('error', (err) => {
-              console.log(`[Proxy Debug] HTTPS request error through tunnel for ${hostname}: ${err.message}`);
+              console.log(`[Proxy Debug] Request error through tunnel for ${hostname}: ${err.message}`);
             });
           } catch (err) {
             console.log(`[Proxy Debug] Upstream tunnel failed for ${hostname}: ${err.message}`);
