@@ -1,5 +1,7 @@
 ## Codebase Patterns
 - Electron main process is `electron/main.cjs` (must be `.cjs` because `"type": "module"` in package.json); `"main"` in package.json points to it; server scripts still use explicit `src/index.js` path
+- Electron spawns server via `spawn(process.execPath, [serverScript], { env: { ELECTRON_RUN_AS_NODE: '1', ... } })` — this makes the Electron binary behave as Node.js for child processes
+- Server port is auto-detected via `net.createServer()` on port 0; auth token generated with `crypto.randomBytes(32).toString('hex')` and passed via `AUTH_TOKEN` env var
 - Design tokens are CSS custom properties in src/ui/styles.css, organized by theme (:root = dark, [data-theme="light"], [data-theme="high-contrast"])
 - Reference source of truth for all design tokens: httptoolkit-ui/src/styles.ts
 - Box shadows use `rgb(0 0 0 / var(--box-shadow-alpha))` so they auto-adapt to themes (dark=0.4, light=0.3, high-contrast=0.1)
@@ -385,4 +387,22 @@
   - Server must be running before launching Electron (US-021 will handle auto-start); for now: `npm start` in one terminal, `npm run electron` in another
   - Window `show: false` + `ready-to-show` event prevents white flash on startup
   - `contextIsolation: true` and `nodeIntegration: false` are security best practices for Electron
+---
+
+## 2026-04-10 - US-021
+- What was implemented: Electron bundled server auto-start and shutdown — the Electron main process now spawns the HTTP FreeKit server as a child process on launch with auto-detected port, random auth token, and log file output; graceful shutdown via POST /api/shutdown with 3-second force-kill timeout
+- Files changed:
+  - electron/main.cjs — Rewrote to add: `findFreePort()` (binds to port 0 for auto-detection), `waitForServer()` (polls /api/config until server responds), `startServer()` (spawns src/index.js via ELECTRON_RUN_AS_NODE=1, pipes stdout/stderr to log file, passes API_PORT/AUTH_TOKEN/ELECTRON env vars), `shutdownServer()` (POST /api/shutdown + 3s SIGKILL timeout), error handling for unexpected server exit
+  - prd.json — Marked US-021 as passes: true
+- **Learnings for future iterations:**
+  - `ELECTRON_RUN_AS_NODE=1` env var makes the Electron binary behave as regular Node.js — required for spawning ESM server scripts as child processes
+  - `process.execPath` in Electron points to the Electron binary, not Node.js — combined with `ELECTRON_RUN_AS_NODE=1` it works as a Node.js runtime
+  - `app.getPath('logs')` provides the platform-appropriate log directory (e.g. %APPDATA%\http-freekit\logs on Windows)
+  - Port auto-detection via `net.createServer()` on port 0 + `srv.address().port` — avoids port conflicts without hardcoding
+  - Server readiness detection uses HTTP polling (`/api/config` endpoint) rather than stdout parsing — more reliable across platforms
+  - `window-all-closed` handler must NOT call `app.quit()` synchronously — instead calls `shutdownServer().then(() => app.quit())` to allow graceful server shutdown
+  - The 3-second force-kill timeout uses `proc.kill('SIGKILL')` which maps to `TerminateProcess` on Windows
+  - Auth token passed to UI via URL query param (`?authToken=...`) — UI can read from `window.location.search`
+  - `isShuttingDown` flag prevents the unexpected-exit error dialog from showing during intentional shutdown
+  - Manual browser verification is recommended for this story
 ---

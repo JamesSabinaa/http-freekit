@@ -381,7 +381,7 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/index.ts"
     },
     {
