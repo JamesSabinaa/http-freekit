@@ -1914,6 +1914,125 @@
 
     // Format body in a specific view mode
     // Wrap formatted HTML string in line-numbered spans
+    // Simple JS beautifier — adds newlines and indentation to minified code
+    function beautifyJs(code) {
+      if (!code || code.includes('\n')) return code; // already formatted
+
+      let result = '';
+      let indent = 0;
+      let inString = false;
+      let stringChar = '';
+      let inComment = false;
+      let inLineComment = false;
+      let escaped = false;
+      let inRegex = false;
+      let lastNonSpace = '';
+
+      for (let i = 0; i < code.length; i++) {
+        const ch = code[i];
+        const next = code[i + 1] || '';
+
+        // Handle escape sequences inside strings
+        if (escaped) { result += ch; escaped = false; continue; }
+        if (ch === '\\' && (inString || inRegex)) { result += ch; escaped = true; continue; }
+
+        // Handle strings
+        if (inString) {
+          result += ch;
+          if (ch === stringChar) inString = false;
+          continue;
+        }
+
+        // Handle comments
+        if (inLineComment) {
+          result += ch;
+          if (ch === '\n') inLineComment = false;
+          continue;
+        }
+        if (inComment) {
+          result += ch;
+          if (ch === '*' && next === '/') { result += '/'; i++; inComment = false; }
+          continue;
+        }
+
+        // Handle regex
+        if (inRegex) {
+          result += ch;
+          if (ch === '/') inRegex = false;
+          continue;
+        }
+
+        // Start string
+        if (ch === '"' || ch === "'" || ch === '`') {
+          inString = true; stringChar = ch; result += ch; continue;
+        }
+
+        // Start comment
+        if (ch === '/' && next === '/') { inLineComment = true; result += ch; continue; }
+        if (ch === '/' && next === '*') { inComment = true; result += ch; continue; }
+
+        // Start regex (heuristic: / after operator or start of statement)
+        if (ch === '/' && '=(:;,([!&|?{}'.includes(lastNonSpace)) {
+          inRegex = true; result += ch; continue;
+        }
+
+        // Formatting logic
+        if (ch === '{') {
+          result += ' {\n' + '  '.repeat(++indent);
+          lastNonSpace = ch;
+          continue;
+        }
+        if (ch === '}') {
+          indent = Math.max(0, indent - 1);
+          result = result.replace(/\s+$/, '');
+          result += '\n' + '  '.repeat(indent) + '}';
+          // Add newline after } unless followed by else, catch, finally, comma, semicolon, or closing paren
+          const afterClose = code.slice(i + 1).match(/^\s*(\S)/);
+          if (afterClose && !',;)].'.includes(afterClose[1]) && afterClose[1] !== 'e' && afterClose[1] !== 'c' && afterClose[1] !== 'f') {
+            result += '\n' + '  '.repeat(indent);
+          }
+          lastNonSpace = ch;
+          continue;
+        }
+        if (ch === ';') {
+          result += ';\n' + '  '.repeat(indent);
+          lastNonSpace = ch;
+          continue;
+        }
+
+        if (ch !== ' ' && ch !== '\t') lastNonSpace = ch;
+        result += ch;
+      }
+
+      // Clean up excessive blank lines
+      return result.replace(/\n{3,}/g, '\n\n').replace(/\n\s+\n/g, '\n\n').trim();
+    }
+
+    // Simple CSS beautifier
+    function beautifyCss(code) {
+      if (!code || code.includes('\n')) return code;
+
+      let result = '';
+      let indent = 0;
+
+      for (let i = 0; i < code.length; i++) {
+        const ch = code[i];
+        if (ch === '{') {
+          result += ' {\n' + '  '.repeat(++indent);
+        } else if (ch === '}') {
+          indent = Math.max(0, indent - 1);
+          result = result.replace(/\s+$/, '');
+          result += '\n' + '  '.repeat(indent) + '}\n' + '  '.repeat(indent);
+        } else if (ch === ';') {
+          result += ';\n' + '  '.repeat(indent);
+        } else {
+          result += ch;
+        }
+      }
+
+      return result.replace(/\n{3,}/g, '\n\n').trim();
+    }
+
     function wrapWithLineNumbers(html) {
       const lines = html.split('\n');
       if (lines.length < 2) return html;
@@ -1987,10 +2106,10 @@
           return wrapWithLineNumbers(syntaxHighlightXml(body));
         }
         case 'javascript': {
-          return wrapWithLineNumbers(syntaxHighlightJs(esc(body)));
+          return wrapWithLineNumbers(syntaxHighlightJs(esc(beautifyJs(body))));
         }
         case 'css': {
-          return wrapWithLineNumbers(syntaxHighlightCss(esc(body)));
+          return wrapWithLineNumbers(syntaxHighlightCss(esc(beautifyCss(body))));
         }
         case 'hex': {
           // Hex already has its own offset column — no extra line numbers
