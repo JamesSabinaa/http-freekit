@@ -2966,6 +2966,7 @@
     let mockEditingRule = null;
     let mockEditDraft = null;
     let mockDragId = null;
+    let mockRenamingRuleId = null;
 
     // Helper: find a mock rule by ID, searching inside groups too
     function _findMockRuleDeep(ruleId) {
@@ -3088,19 +3089,53 @@
     }
 
     function renameMockRule(ruleId) {
+      startInlineRename(ruleId);
+    }
+
+    function startInlineRename(ruleId) {
+      if (mockRenamingRuleId === ruleId) return;
+      mockRenamingRuleId = ruleId;
+      renderMockRules();
+      setTimeout(() => {
+        const input = document.getElementById('mock-rename-input');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      }, 0);
+    }
+
+    function confirmInlineRename(ruleId) {
+      if (mockRenamingRuleId !== ruleId) return;
+      const input = document.getElementById('mock-rename-input');
+      if (!input) { mockRenamingRuleId = null; return; }
       const rule = _findMockRuleDeep(ruleId);
-      if (!rule) return;
-      const name = prompt('Rule name:', rule.title || '');
-      if (name === null) return;
+      if (!rule) { mockRenamingRuleId = null; return; }
+      const name = input.value.trim();
       rule.title = name || undefined;
-      // Save as draft change
       const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
       draft.title = rule.title;
       draft.id = ruleId;
       mockDraftRules.set(ruleId, draft);
+      mockRenamingRuleId = null;
       updateMockSaveButtons();
       renderMockRules();
-      toast(name ? 'Rule renamed (unsaved)' : 'Rule name cleared (unsaved)', 'success');
+    }
+
+    function cancelInlineRename() {
+      if (!mockRenamingRuleId) return;
+      mockRenamingRuleId = null;
+      renderMockRules();
+    }
+
+    function handleRenameKeydown(event, ruleId) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        confirmInlineRename(ruleId);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelInlineRename();
+      }
     }
 
     async function loadMockRules() {
@@ -3314,8 +3349,14 @@
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
       html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + summary.methodStr + '</span>';
-      if (summary.title) {
-        html += '<span class="mock-rule-desc"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
+      const isRenaming = mockRenamingRuleId === rule.id;
+      if (isRenaming) {
+        const inputVal = esc(rule.title || '').replace(/"/g, '&quot;');
+        const placeholderVal = esc(summary.matchStr).replace(/"/g, '&quot;');
+        html += '<span class="mock-rule-desc" onclick="event.stopPropagation()">';
+        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, \'' + rule.id + '\')" onblur="confirmInlineRename(\'' + rule.id + '\')" onclick="event.stopPropagation()" />';
+      } else if (summary.title) {
+        html += '<span class="mock-rule-desc" onclick="event.stopPropagation(); startInlineRename(\'' + rule.id + '\')" title="Click to rename"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
       } else {
         html += '<span class="mock-rule-desc">' + summary.matchStr;
       }

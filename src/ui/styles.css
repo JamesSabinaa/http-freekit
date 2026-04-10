@@ -2649,6 +2649,34 @@
       font-weight: 600;
       color: var(--text-main);
       font-size: 13px;
+      cursor: text;
+    }
+    .mock-rule-title:hover {
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 3px;
+    }
+
+    .mock-rename-input {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      background: var(--card-bg);
+      border: 1px solid var(--highlight-color);
+      border-radius: 3px;
+      padding: 2px 6px;
+      outline: none;
+      min-width: 120px;
+      max-width: 100%;
+      flex: 1;
+    }
+    .mock-rename-input:focus {
+      box-shadow: 0 0 0 1px var(--highlight-color);
+    }
+    .mock-rename-input::placeholder {
+      color: var(--text-watermark);
+      font-weight: 400;
     }
 
     .mock-rule-summary .mock-rule-icon {

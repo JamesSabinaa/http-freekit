@@ -67,6 +67,7 @@
 - Draft rules have orange left border (`.mock-rule-draft`) and glow; `updateMockSaveButtons()` shows/hides Save All + Revert buttons and unsaved badge
 - `_applyDraftToLocal(ruleId, draft)` overlays draft data onto the local `mockRules` array — called from `loadMockRules()` to preserve drafts after server reload
 - Navigation away from Mock page with unsaved drafts triggers a `confirm()` dialog in `switchPanel()`
+- Inline editing pattern: `mockRenamingRuleId` state + `startInlineRename()`/`confirmInlineRename()`/`cancelInlineRename()`; input rendered in `renderMockRuleRow()` with Enter/Escape/blur handlers; use `setTimeout(focus, 0)` after re-render
 
 ---
 
@@ -335,5 +336,19 @@
   - `cloneMockRule` and `addNewMockRule` now create draft entries instead of POSTing — this keeps the entire flow consistent
   - Toggle enabled, rename, and group operations all save as drafts — they no longer send immediate API calls
   - The `clearAllMockRules()` and `importMockRules()` (replace mode) must clear drafts to avoid stale state
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-018
+- What was implemented: Inline rule title editing — replaced prompt() dialog with in-place text input for renaming mock rules
+- Files changed:
+  - src/ui/app.js — Added `mockRenamingRuleId` state variable; replaced `renameMockRule()` with `startInlineRename()`, `confirmInlineRename()`, `cancelInlineRename()`, `handleRenameKeydown()`; modified `renderMockRuleRow()` to render `<input>` when renaming is active; made title text clickable to start inline rename with `event.stopPropagation()` to prevent expand toggle
+  - src/ui/styles.css — Added `.mock-rename-input` styles (mono font, themed border/bg, highlight color focus ring), `.mock-rule-title:hover` dashed underline hint, `cursor:text` on title
+  - prd.json — Marked US-018 as passes: true
+- **Learnings for future iterations:**
+  - Inline editing in string-template HTML requires careful event handling: `onblur` fires when input is removed from DOM (e.g. after Enter/Escape triggers re-render), so `confirmInlineRename` guards with `mockRenamingRuleId !== ruleId` to prevent double-execution
+  - `esc()` (textContent→innerHTML) does NOT escape double quotes — for HTML attribute values (`value="..."`), additionally call `.replace(/"/g, '&quot;')` on the escaped string
+  - The `setTimeout(() => input.focus(), 0)` pattern is needed after `renderMockRules()` because the input DOM element doesn't exist until the render completes
+  - Title-only rules (with `summary.title`) get click-to-rename on the title text; auto-generated summary rules get renamed only via the tag icon button to avoid confusion with the expand toggle
   - Manual browser verification is recommended for this story
 ---
