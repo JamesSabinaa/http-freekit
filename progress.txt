@@ -9,6 +9,12 @@
 - Phosphor Icons loaded via `<link rel="stylesheet" href="/vendor/phosphor/regular/style.css">` — served from node_modules via Express static at `/vendor/phosphor`
 - Phosphor icon class format: `<i class="ph ph-icon-name"></i>` (regular weight), size controlled via `font-size` CSS
 - Sidebar icons: Intercept=ph-plug, View=ph-magnifying-glass, Mock=ph-pencil-simple, Send=ph-paper-plane-tilt, Settings=ph-gear
+- All action/button icons use Phosphor `<i class="ph ph-icon-name">` elements (not inline SVGs). Only interceptor card brand icons (Chrome, Firefox, etc.) and decorative empty-state illustrations remain as SVGs.
+- Traffic source icons: Globe, Terminal, Cube (Docker), GearSix (mock), FolderOpen (import), LockSimpleOpen (tls-error)
+- CSS `.source-proxy i.ph`, `.source-mock i.ph`, `.source-import i.ph` set per-source icon colors
+- Mock rule action Phosphor icons: FloppyDisk (save), PencilSimple (edit), ToggleRight/ToggleLeft (enable/disable), Tag (rename), CopySimple (clone), TrashSimple (delete)
+- Pin icon uses PushPin with `transform:rotate(45deg)` when unpinned, `transform:none` when pinned
+- For dynamic icon switching (e.g. togglePause), update `btn.innerHTML` with Phosphor `<i>` elements
 
 ---
 
@@ -39,4 +45,20 @@
   - The `ph` base class + weight-specific class (e.g. `ph-bold`) controls weight; omitting weight class defaults to regular
   - Sidebar logo is still an inline SVG (globe icon) — not replaced since it's a custom brand mark
   - Responsive breakpoints for sidebar: ≤1200px shrinks to 50px wide, ≤768px shrinks to 44px wide — icon sizes must scale accordingly
+---
+
+## 2026-04-10 - US-003
+- What was implemented: Replaced all button and action SVG icons across the entire UI with Phosphor Icons
+- Files changed:
+  - src/ui/app.js — Replaced traffic source SVG constants with Phosphor `<i>` elements (Globe, Terminal, Cube, GearSix, FolderOpen, LockSimpleOpen); replaced mock rule action SVGs (FloppyDisk, PencilSimple, ToggleRight/Left, Tag, CopySimple, TrashSimple); replaced all X/close SVGs with ph-x; replaced mock group icons (Folder, ToggleRight/Left, Tag, TrashSimple); updated togglePause to use ph-play/ph-pause; added updatePinIcon() for push-pin rotation
+  - src/ui/index.html — Replaced detail footer icons (Eye, PushPin with rotation, TrashSimple, PaperPlaneTilt, Pause); replaced traffic footer controls (Pause, ArrowDown, DownloadSimple, FolderOpen, TrashSimple); replaced detail close X; replaced mock header icons (FolderPlus, CaretUp, FolderOpen, DownloadSimple, TrashSimple); replaced send page icons (CaretDown, ArrowRight, CircleNotch spinner, X); replaced add-rule plus icon; replaced detail empty state arrow
+  - src/ui/styles.css — Added `.btn i.ph` flex centering; added `.source-icon i.ph` sizing; added `.source-proxy i.ph`, `.source-mock i.ph`, `.source-import i.ph` color rules; added flex alignment to `.mock-toggle-btn`
+- **Learnings for future iterations:**
+  - Phosphor icon names can be verified via `selection.json` in the package — comma-separated aliases exist (e.g. "folder, folder-notch")
+  - Both alias names work as CSS classes (e.g. both `ph-folder` and `ph-folder-notch` are valid)
+  - When replacing SVGs with Phosphor `<i>` elements in JS template strings, use `font-size` instead of `width`/`height` for sizing
+  - CSS rules targeting `.source-icon svg` don't apply to `<i>` elements — must add parallel `.source-icon i.ph` rules
+  - For dynamic icons (pause/play toggle), set `btn.innerHTML` with the new Phosphor `<i>` element
+  - The pin icon uses `transform:rotate(45deg)` for unpinned state (tilted) and `transform:none` for pinned (upright)
+  - Interceptor card brand icons (Chrome, Firefox, etc. at 36x36) are kept as custom SVGs since they use brand-specific colors/shapes — not suitable for generic Phosphor replacement
 ---
