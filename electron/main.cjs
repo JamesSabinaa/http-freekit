@@ -33,21 +33,33 @@ function findFreePort() {
 /**
  * Poll the server until it responds to HTTP requests.
  */
-function waitForServer(port, timeoutMs = 30000) {
+function waitForServer(port, proc, timeoutMs = 30000) {
   const start = Date.now();
   return new Promise((resolve, reject) => {
+    let done = false;
+
+    // If the server process exits before responding, fail immediately
+    proc.on('exit', (code) => {
+      if (!done) {
+        done = true;
+        reject(new Error(`Server process exited with code ${code} before becoming ready`));
+      }
+    });
+
     function poll() {
+      if (done) return;
       if (Date.now() - start > timeoutMs) {
+        done = true;
         return reject(new Error(`Server did not start within ${timeoutMs}ms`));
       }
       const req = http.get(`http://127.0.0.1:${port}/api/config`, (res) => {
         res.resume();
-        resolve();
+        if (!done) { done = true; resolve(); }
       });
-      req.on('error', () => setTimeout(poll, 200));
+      req.on('error', () => { if (!done) setTimeout(poll, 200); });
       req.setTimeout(2000, () => {
         req.destroy();
-        setTimeout(poll, 200);
+        if (!done) setTimeout(poll, 200);
       });
     }
     poll();
@@ -107,7 +119,7 @@ async function startServer() {
     }
   });
 
-  await waitForServer(apiPort);
+  await waitForServer(apiPort, serverProcess);
 }
 
 /**
