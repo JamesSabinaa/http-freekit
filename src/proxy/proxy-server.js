@@ -1135,13 +1135,21 @@ export class ProxyServer {
             const upstreamConn = this._isSocksProxy()
               ? await this._connectViaSocksTls(hostname, targetPort)
               : await this._connectViaUpstream(hostname, targetPort);
+            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, making HTTPS request: ${req.method} ${req.url}`);
+            upstreamConn.on('error', (err) => {
+              console.log(`[Proxy Debug] Tunnel socket error for ${hostname}: ${err.message}`);
+            });
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
               socket: upstreamConn,
               insecureHTTPParser: true
             }, handleResponse);
+            proxyReq.on('error', (err) => {
+              console.log(`[Proxy Debug] HTTPS request error through tunnel for ${hostname}: ${err.message}`);
+            });
           } catch (err) {
+            console.log(`[Proxy Debug] Upstream tunnel failed for ${hostname}: ${err.message}`);
             handleError(err);
             return;
           }
