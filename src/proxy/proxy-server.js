@@ -948,6 +948,10 @@ export class ProxyServer {
           const mockHeaders = action.headers || { 'Content-Type': 'application/json' };
           const mockBody = action.body || '';
           const mockStatus = action.status || 200;
+          // Prevent browser caching of mocked responses
+          if (!mockHeaders['cache-control'] && !mockHeaders['Cache-Control']) {
+            mockHeaders['cache-control'] = 'no-store, no-cache, must-revalidate';
+          }
           if (action.addResponseHeaders) {
             for (const [k, v] of Object.entries(action.addResponseHeaders)) {
               mockHeaders[k.toLowerCase()] = v;
@@ -1910,6 +1914,11 @@ export class ProxyServer {
     const mockHeaders = action.headers || { 'Content-Type': 'application/json' };
     const mockBody = action.body || '';
     const mockStatus = action.status || 200;
+
+    // Prevent browser caching of mocked responses
+    if (!mockHeaders['cache-control'] && !mockHeaders['Cache-Control']) {
+      mockHeaders['cache-control'] = 'no-store, no-cache, must-revalidate';
+    }
 
     if (action.addResponseHeaders) {
       for (const [k, v] of Object.entries(action.addResponseHeaders)) {
