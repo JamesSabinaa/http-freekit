@@ -2220,6 +2220,9 @@ export class ProxyServer {
     return sorted.find(rule => {
       if (!rule.enabled) return false;
 
+      // Passthrough rules mean "don't mock" — skip them so the request proceeds normally
+      if (rule.action?.type === 'passthrough') return false;
+
       // New format: matchers + action
       if (rule.matchers && rule.action) {
         return rule.matchers.every(m => this._evaluateMatcher(m, method, url, headers, body));
