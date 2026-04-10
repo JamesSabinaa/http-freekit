@@ -8,6 +8,8 @@ import zlib from 'zlib';
 import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 
 export class ProxyServer {
@@ -421,11 +423,6 @@ export class ProxyServer {
 
           // Strip proxy hop-by-hop headers from responses forwarded to the browser.
           const resHeaders = { ...proxyRes.headers };
-          // Debug: log if upstream sent proxy headers
-          if (resHeaders['proxy-authenticate'] || resHeaders['proxy-authorization'] || resHeaders['proxy-connection']) {
-            console.log(`[Proxy Debug] Upstream response ${proxyRes.statusCode} has proxy headers:`,
-              Object.keys(resHeaders).filter(k => k.startsWith('proxy-')).join(', '));
-          }
           if (proxyRes.statusCode !== 407) {
             delete resHeaders['proxy-authenticate'];
           }
@@ -564,7 +561,7 @@ export class ProxyServer {
 
     clientSocket.on('error', () => {}); // Suppress connection reset errors
 
-    console.log(`[Proxy Debug] CONNECT ${hostname}:${targetPort} upstream=${!!this.upstreamProxy}`);
+    // CONNECT handler for HTTPS tunneling
 
     // Tell client the tunnel is established
     clientSocket.write(
@@ -1131,60 +1128,12 @@ export class ProxyServer {
 
         let proxyReq;
         if (this.upstreamProxy) {
-          try {
-            const upstreamConn = this._isSocksProxy()
-              ? await this._connectViaSocksTls(hostname, targetPort)
-              : await this._connectViaUpstream(hostname, targetPort);
-            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, peeking at tunnel data...`);
-            // Debug: read first chunk to see what the tunnel is giving us
-            const firstChunk = await new Promise((r) => {
-              upstreamConn.once('readable', () => {
-                const chunk = upstreamConn.read();
-                if (chunk) r(chunk);
-                else upstreamConn.once('data', r);
-              });
-              // Timeout after 5s
-              setTimeout(() => r(null), 5000);
-            });
-            if (firstChunk) {
-              const hex = firstChunk.slice(0, 20).toString('hex');
-              const ascii = firstChunk.slice(0, 60).toString('ascii').replace(/[^\x20-\x7e]/g, '.');
-              console.log(`[Proxy Debug] Tunnel peek for ${hostname}: hex=${hex} ascii="${ascii}" len=${firstChunk.length}`);
-              upstreamConn.unshift(firstChunk); // put it back
-            } else {
-              console.log(`[Proxy Debug] Tunnel peek for ${hostname}: no data within 5s`);
-            }
-            // Manually TLS-wrap the tunnel socket, then make a plain HTTP request over it
-            const tlsConn = tls.connect({
-              socket: upstreamConn,
-              servername: hostname,
-              rejectUnauthorized: false
-            });
-            await new Promise((tlsResolve, tlsReject) => {
-              tlsConn.once('secureConnect', () => {
-                console.log(`[Proxy Debug] TLS connected to ${hostname} via tunnel`);
-                tlsResolve();
-              });
-              tlsConn.once('error', (err) => {
-                console.log(`[Proxy Debug] TLS error for ${hostname}: ${err.message}`);
-                tlsReject(err);
-              });
-            });
-            // Now make a plain HTTP request over the TLS socket
-            proxyReq = http.request({
-              hostname, port: targetPort, path: req.url, method: req.method,
-              headers: { ...req.headers },
-              createConnection: () => tlsConn,
-              insecureHTTPParser: true
-            }, handleResponse);
-            proxyReq.on('error', (err) => {
-              console.log(`[Proxy Debug] Request error through tunnel for ${hostname}: ${err.message}`);
-            });
-          } catch (err) {
-            console.log(`[Proxy Debug] Upstream tunnel failed for ${hostname}: ${err.message}`);
-            handleError(err);
-            return;
-          }
+          const agent = this._getUpstreamAgent();
+          proxyReq = https.request({
+            ...proxyOpts,
+            agent,
+            insecureHTTPParser: true
+          }, handleResponse);
         } else {
           proxyReq = https.request(proxyOpts, handleResponse);
         }
@@ -1443,13 +1392,10 @@ export class ProxyServer {
         let proxyReq;
         if (this.upstreamProxy) {
           try {
-            const upstreamConn = this._isSocksProxy()
-              ? await this._connectViaSocksTls(hostname, targetPort)
-              : await this._connectViaUpstream(hostname, targetPort);
+            const agent = this._getUpstreamAgent();
             proxyReq = https.request({
               ...proxyOpts,
-              createConnection: () => upstreamConn,
-              socket: upstreamConn,
+              agent,
               insecureHTTPParser: true
             }, handleResponse);
           } catch (err) {
@@ -1618,20 +1564,12 @@ export class ProxyServer {
 
         let proxyReq;
         if (this.upstreamProxy) {
-          try {
-            const upstreamConn = this._isSocksProxy()
-              ? await this._connectViaSocksTls(hostname, targetPort)
-              : await this._connectViaUpstream(hostname, targetPort);
-            proxyReq = https.request({
-              ...proxyOpts,
-              createConnection: () => upstreamConn,
-              socket: upstreamConn,
-              insecureHTTPParser: true
-            }, handleResponse);
-          } catch (err) {
-            handleError(err);
-            return;
-          }
+          const agent = this._getUpstreamAgent();
+          proxyReq = https.request({
+            ...proxyOpts,
+            agent,
+            insecureHTTPParser: true
+          }, handleResponse);
         } else {
           proxyReq = https.request(proxyOpts, handleResponse);
         }
@@ -2194,52 +2132,22 @@ export class ProxyServer {
     });
   }
 
-  // Create a TLS connection through the upstream proxy's CONNECT tunnel
-  // Opens a CONNECT tunnel through the upstream HTTP proxy.
-  // Returns the raw TCP socket — the caller is responsible for TLS if needed.
-  _connectViaUpstream(hostname, targetPort) {
-    return new Promise((resolve, reject) => {
-      console.log(`[Proxy Debug] CONNECT via upstream ${this.upstreamProxy.host}:${this.upstreamProxy.port} -> ${hostname}:${targetPort} auth=${this.upstreamProxy.auth ? 'yes(' + this.upstreamProxy.auth.length + 'chars)' : 'no'}`);
-      const connectReq = http.request({
-        hostname: this.upstreamProxy.host,
-        port: this.upstreamProxy.port,
-        method: 'CONNECT',
-        path: `${hostname}:${targetPort}`,
-        // Tolerate non-compliant proxies that use \n instead of \r\n
-        insecureHTTPParser: true,
-        headers: this.upstreamProxy.auth
-          ? { 'proxy-authorization': 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64') }
-          : {}
-      });
-      // Handle non-2xx responses (e.g. 407 Proxy Authentication Required)
-      // Forward the response to the client so the browser can handle auth challenges
-      connectReq.on('response', (proxyRes) => {
-        let body = '';
-        proxyRes.on('data', c => body += c);
-        proxyRes.on('end', () => {
-          console.log(`[Proxy Debug] Upstream CONNECT rejected: ${proxyRes.statusCode} headers=${JSON.stringify(proxyRes.headers)} body=${body.substring(0, 200)}`);
-          reject(new Error(`Upstream proxy rejected CONNECT: ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}`));
-        });
-      });
-      connectReq.on('connect', (res, socket) => {
-        console.log(`[Proxy Debug] Upstream CONNECT success: ${res.statusCode} headers=${JSON.stringify(res.headers)}`);
-        if (res.statusCode !== 200) {
-          socket.destroy();
-          return reject(new Error(`Upstream CONNECT failed: ${res.statusCode}`));
-        }
-        // Return the raw socket — https.request() will handle TLS on top of it
-        resolve(socket);
-      });
-      connectReq.on('error', reject);
-      connectReq.end();
-    });
+  // Build a proxy URL from the upstream proxy config
+  _getUpstreamProxyUrl() {
+    const p = this.upstreamProxy;
+    const scheme = p.type?.startsWith('socks') ? p.type : (p.type === 'https' ? 'https' : 'http');
+    const auth = p.auth ? `${p.auth}@` : '';
+    return `${scheme}://${auth}${p.host}:${p.port}`;
   }
 
-  // Map upstream proxy type string to socks library type constant
-  _getSocksType() {
-    const t = this.upstreamProxy?.type;
-    if (t === 'socks4' || t === 'socks4a') return 4;
-    return 5; // socks5, socks5h
+  // Return an https-proxy-agent or socks-proxy-agent that handles CONNECT tunneling + TLS automatically.
+  // Matches HTTP Toolkit's approach: the agent opens the CONNECT tunnel and TLS-wraps the socket.
+  _getUpstreamAgent() {
+    const proxyUrl = this._getUpstreamProxyUrl();
+    if (this.upstreamProxy.type?.startsWith('socks')) {
+      return new SocksProxyAgent(proxyUrl);
+    }
+    return new HttpsProxyAgent(proxyUrl, { rejectUnauthorized: false });
   }
 
   // Whether the configured upstream proxy is a SOCKS proxy
@@ -2247,14 +2155,14 @@ export class ProxyServer {
     return this.upstreamProxy?.type?.startsWith('socks') || false;
   }
 
-  // Create a raw TCP socket through a SOCKS proxy
+  // Create a raw TCP socket through a SOCKS proxy (used for plain HTTP only)
   async _connectViaSocks(hostname, targetPort) {
     const proxy = this.upstreamProxy;
     const socksOptions = {
       proxy: {
         host: proxy.host,
         port: proxy.port,
-        type: this._getSocksType(),
+        type: (proxy.type === 'socks4' || proxy.type === 'socks4a') ? 4 : 5,
       },
       command: 'connect',
       destination: {
@@ -2269,12 +2177,6 @@ export class ProxyServer {
     }
     const { socket } = await SocksClient.createConnection(socksOptions);
     return socket;
-  }
-
-  // Create a TLS connection through a SOCKS proxy
-  // Opens a SOCKS tunnel and returns the raw socket — caller handles TLS.
-  async _connectViaSocksTls(hostname, targetPort) {
-    return await this._connectViaSocks(hostname, targetPort);
   }
 
   _flattenMockRules(rules) {
