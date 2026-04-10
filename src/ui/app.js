@@ -50,18 +50,24 @@
 
       ws.onopen = () => {
         wsReconnectDelay = 1000; // reset on success
-        document.getElementById('statusDot').classList.add('connected');
-        document.getElementById('statusText').textContent = 'Connected';
+        document.getElementById('statusDot')?.classList.add('connected');
+        const statusTextEl = document.getElementById('statusText');
+        if (statusTextEl) statusTextEl.textContent = 'Connected';
       };
 
       ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        handleWsMessage(msg);
+        try {
+          const msg = JSON.parse(event.data);
+          handleWsMessage(msg);
+        } catch (err) {
+          console.error('[WS] Failed to parse message:', err.message);
+        }
       };
 
       ws.onclose = () => {
-        document.getElementById('statusDot').classList.remove('connected');
-        document.getElementById('statusText').textContent = 'Disconnected';
+        document.getElementById('statusDot')?.classList.remove('connected');
+        const statusTextEl = document.getElementById('statusText');
+        if (statusTextEl) statusTextEl.textContent = 'Disconnected';
         const ss = document.getElementById('settingsStatus');
         if (ss) { ss.textContent = 'Disconnected'; ss.style.color = '#ce3939'; }
         // Reconnect with exponential backoff (max 30s)
@@ -70,18 +76,23 @@
       };
 
       ws.onerror = () => {
-        document.getElementById('statusDot').classList.remove('connected');
-        document.getElementById('statusText').textContent = 'Error';
+        document.getElementById('statusDot')?.classList.remove('connected');
+        const statusTextEl = document.getElementById('statusText');
+        if (statusTextEl) statusTextEl.textContent = 'Error';
       };
     }
 
     function handleWsMessage(msg) {
       switch (msg.type) {
-        case 'init':
-          document.getElementById('proxyPortDisplay').textContent = `127.0.0.1:${msg.proxyPort}`;
-          document.getElementById('apiPortDisplay').textContent = msg.apiPort;
-          document.getElementById('settingsProxyPort').textContent = msg.proxyPort;
-          document.getElementById('settingsApiPort').textContent = msg.apiPort;
+        case 'init': {
+          const proxyPortEl = document.getElementById('proxyPortDisplay');
+          if (proxyPortEl) proxyPortEl.textContent = `127.0.0.1:${msg.proxyPort}`;
+          const apiPortEl = document.getElementById('apiPortDisplay');
+          if (apiPortEl) apiPortEl.textContent = msg.apiPort;
+          const settingsProxyEl = document.getElementById('settingsProxyPort');
+          if (settingsProxyEl) settingsProxyEl.textContent = msg.proxyPort;
+          const settingsApiEl = document.getElementById('settingsApiPort');
+          if (settingsApiEl) settingsApiEl.textContent = msg.apiPort;
           const statusEl = document.getElementById('settingsStatus');
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
@@ -109,6 +120,7 @@
             }, 1500);
           }
           break;
+        }
         case 'request':
           if (!isPaused) {
             addRequest(msg.data);
@@ -1056,7 +1068,7 @@
         if (isTextFrame && req.requestBody && req.requestBody.length > 0) {
           // Detect language from content (try JSON first)
           let lang = 'plaintext';
-          try { JSON.parse(req.requestBody); lang = 'json'; } catch {}
+          try { JSON.parse(req.requestBody); lang = 'json'; } catch (e) { /* expected for non-JSON */ }
           initBodyMonacoEditor('wsFramePayload-monaco', req.requestBody, 'text/plain', lang === 'json' ? 'json' : 'text');
         }
         return;
@@ -1681,7 +1693,7 @@
             const u = new URL(req.url);
             code += `,\n  path: '${u.pathname}${u.search}'`;
             if (u.port) code += `,\n  port: ${u.port}`;
-          } catch {}
+          } catch (e) { console.error('[Error]', e.message); }
           const h = Object.entries(headers).filter(([k]) => k !== 'host' && k !== 'proxy-connection');
           if (h.length) {
             code += `,\n  headers: {\n${h.map(([k,v]) => `    '${k}': '${v}'`).join(',\n')}\n  }`;
@@ -1825,7 +1837,7 @@
         try {
           const parsed = JSON.parse(body);
           return syntaxHighlightJson(JSON.stringify(parsed, null, 2));
-        } catch {}
+        } catch (e) { console.error('[Error]', e.message); }
       }
 
       // URL-encoded
@@ -1839,7 +1851,7 @@
             result += '<span style="color:#ff8c38;">' + esc(decodeURIComponent(value)) + '</span>\n';
           }
           return result || esc(body);
-        } catch {}
+        } catch (e) { console.error('[Error]', e.message); }
       }
 
       // XML/HTML — highlight tags
@@ -2767,7 +2779,7 @@
               <span>${esc(i.name)}</span>
             </div>`
           ).join('');
-        } catch {}
+        } catch (e) { console.error('[Error]', e.message); }
       }
 
       expandedInterceptorId = id;
@@ -2872,8 +2884,8 @@
         container.innerHTML = `
           <div class="config-section">
             <h3>Connected Devices</h3>
-            <p style="color: var(--text-muted); font-size: 13px;">No Android devices detected. Make sure:</p>
-            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+            <p style="color: var(--text-watermark); font-size: 13px;">No Android devices detected. Make sure:</p>
+            <ul style="color: var(--text-watermark); font-size: 13px; margin: 8px 0; padding-left: 20px;">
               <li>USB debugging is enabled on your device</li>
               <li>Your device is connected via USB</li>
               <li>ADB is installed and in your PATH</li>
@@ -2969,7 +2981,7 @@
               <span>${esc(i.name)}</span>
             </div>`
           ).join('');
-        } catch {}
+        } catch (e) { console.error('[Error]', e.message); }
 
         toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
       } catch (err) {
@@ -3020,8 +3032,8 @@
         container.innerHTML = `
           <div class="config-section">
             <h3>Running JVM Processes</h3>
-            <p style="color: var(--text-muted); font-size: 13px;">No JVM processes detected. Make sure:</p>
-            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+            <p style="color: var(--text-watermark); font-size: 13px;">No JVM processes detected. Make sure:</p>
+            <ul style="color: var(--text-watermark); font-size: 13px; margin: 8px 0; padding-left: 20px;">
               <li>A Java application is running</li>
               <li>Java JDK (not JRE) is installed with <code>jps</code> in your PATH</li>
             </ul>
@@ -3118,7 +3130,7 @@
               <span>${esc(i.name)}</span>
             </div>`
           ).join('');
-        } catch {}
+        } catch (e) { console.error('[Error]', e.message); }
 
         toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
       } catch (err) {
@@ -3441,7 +3453,7 @@
         }
         updateMockSaveButtons();
         renderMockRules();
-      } catch {}
+      } catch (e) { console.error('[Error]', e.message); }
     }
 
     async function ensureDefaultMockRules() {
@@ -3462,7 +3474,7 @@
         });
         localStorage.setItem('http-freekit-defaults-created', 'true');
         await loadMockRules();
-      } catch {}
+      } catch (e) { console.error('[Error]', e.message); }
     }
 
     function normalizeMockRule(rule) {
@@ -5535,7 +5547,7 @@
         for (const [k, v] of Object.entries(obj)) {
           sendHeadersList.push({ key: k, value: String(v), enabled: true });
         }
-      } catch {}
+      } catch (e) { console.error('[Error]', e.message); }
       renderSendHeaders();
     }
 
@@ -5766,7 +5778,8 @@
         const res = await fetch(`${API_BASE}/api/config`);
         const data = await res.json();
         if (data.config) {
-          document.getElementById('settingsCaFingerprint').textContent = data.config.certificateFingerprint || '--';
+          const fpEl = document.getElementById('settingsCaFingerprint');
+          if (fpEl) fpEl.textContent = data.config.certificateFingerprint || '--';
           if (data.config.proxyPort) {
             const minEl = document.getElementById('settingsMinPort');
             const maxEl = document.getElementById('settingsMaxPort');
@@ -5776,7 +5789,10 @@
           const mpEl = document.getElementById('manualProxyPort');
           if (mpEl) mpEl.textContent = data.config.proxyPort;
         }
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     // ============ ROW NAVIGATION ============
@@ -5998,7 +6014,10 @@
           }
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--status-2xx);">Active: ' + (p.type || 'HTTP').toUpperCase() + ' proxy at ' + p.host + ':' + p.port + '</span>';
         }
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     // ============ PORT CONFIG ============
@@ -6021,7 +6040,10 @@
         const res = await fetch(API_BASE + '/api/tls-passthrough');
         const data = await res.json();
         renderTlsPassthrough(data.hosts || []);
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     function renderTlsPassthrough(hosts) {
@@ -6080,7 +6102,10 @@
         const data = await res.json();
         const sel = document.getElementById('http2Mode');
         if (sel) sel.value = data.mode || 'all';
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     async function saveHttp2Config() {
@@ -6101,7 +6126,10 @@
         const res = await fetch(API_BASE + '/api/client-certificates');
         const data = await res.json();
         renderClientCerts(data.certificates || []);
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     function renderClientCerts(certs) {
@@ -6190,7 +6218,10 @@
         const res = await fetch(API_BASE + '/api/trusted-cas');
         const data = await res.json();
         renderTrustedCAs(data.cas || []);
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     function renderTrustedCAs(cas) {
@@ -6248,7 +6279,10 @@
         const res = await fetch(API_BASE + '/api/https-whitelist');
         const data = await res.json();
         renderHttpsWhitelist(data.hosts || []);
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     function renderHttpsWhitelist(hosts) {
@@ -6328,7 +6362,10 @@
             }
           }, null, 2);
         }
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     async function toggleMcp(enabled) {
@@ -6351,7 +6388,10 @@
         const res = await fetch(API_BASE + '/api/specs');
         const data = await res.json();
         renderApiSpecs(data.specs || []);
-      } catch {}
+      } catch (e) {
+        console.error('[Error]', e.message);
+        toast('Error: ' + e.message, 'error');
+      }
     }
 
     function renderApiSpecs(specs) {
@@ -6755,12 +6795,13 @@
         if (!banner) return;
         if (data.pending && data.pending.length > 0) {
           banner.style.display = 'flex';
-          document.getElementById('breakpointBannerText').textContent =
+          const bannerText = document.getElementById('breakpointBannerText');
+          if (bannerText) bannerText.textContent =
             data.pending.length + ' request' + (data.pending.length > 1 ? 's' : '') + ' paused';
         } else {
           banner.style.display = 'none';
         }
-      } catch {}
+      } catch (e) { console.error('[Error]', e.message); }
     }
 
     async function resumeAllBreakpoints() {

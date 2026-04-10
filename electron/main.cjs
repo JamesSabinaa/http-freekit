@@ -168,6 +168,20 @@ function createWindow() {
     defaultHeight: 768
   });
 
+  // Validate saved window state is on-screen
+  const { screen } = require('electron');
+  const displays = screen.getAllDisplays();
+  const isOnScreen = displays.some(d => {
+    const b = d.bounds;
+    return windowState.x >= b.x && windowState.y >= b.y &&
+           windowState.x < b.x + b.width && windowState.y < b.y + b.height;
+  });
+  if (!isOnScreen) {
+    // Reset to center of primary display
+    delete windowState.x;
+    delete windowState.y;
+  }
+
   // Load window icon from build directory
   let windowIcon;
   try {

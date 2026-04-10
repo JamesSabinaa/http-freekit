@@ -1,4 +1,15 @@
-export function trafficToHar(requests) {
+const SENSITIVE_HEADERS = ['authorization', 'cookie', 'set-cookie', 'x-api-key', 'x-auth-token', 'proxy-authorization'];
+
+export function trafficToHar(requests, options = {}) {
+  const maskSensitive = options.maskSensitive !== undefined ? options.maskSensitive : true;
+
+  const maskHeaderValue = (name, value) => {
+    if (maskSensitive && SENSITIVE_HEADERS.includes(name.toLowerCase())) {
+      return '[REDACTED]';
+    }
+    return Array.isArray(value) ? value.join(', ') : String(value);
+  };
+
   return {
     log: {
       version: '1.2',
@@ -6,11 +17,11 @@ export function trafficToHar(requests) {
       entries: requests.map(req => {
         const reqHeaders = Object.entries(req.requestHeaders || {}).map(([name, value]) => ({
           name,
-          value: Array.isArray(value) ? value.join(', ') : String(value)
+          value: maskHeaderValue(name, value)
         }));
         const resHeaders = Object.entries(req.responseHeaders || {}).map(([name, value]) => ({
           name,
-          value: Array.isArray(value) ? value.join(', ') : String(value)
+          value: maskHeaderValue(name, value)
         }));
 
         const reqContentType = req.requestHeaders?.['content-type'] || '';

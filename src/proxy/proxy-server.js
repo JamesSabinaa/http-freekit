@@ -340,6 +340,7 @@ export class ProxyServer {
             path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
             body: this._safeBodyString(body), timestamp: Date.now(), resolve
           });
+          this._setBreakpointTimeout(requestId);
         });
         // Apply modifications if provided
         if (modifications.url) {
@@ -893,6 +894,7 @@ export class ProxyServer {
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), timestamp: Date.now(), resolve
               });
+              this._setBreakpointTimeout(requestId);
             });
             if (modifications.url) {
               try { fullUrl = modifications.url; } catch { /* keep original */ }
@@ -929,6 +931,7 @@ export class ProxyServer {
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
               });
+              this._setBreakpointTimeout(requestId);
             });
             if (modifications.status) {
               try {
@@ -998,6 +1001,7 @@ export class ProxyServer {
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
+            this._setBreakpointTimeout(requestId);
           });
           // Apply modifications if provided
           if (modifications.url) {
@@ -1256,6 +1260,7 @@ export class ProxyServer {
               path, headers: reqHeaders,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
+            this._setBreakpointTimeout(requestId);
           });
           // Apply modifications if provided (note: can't change pseudo-headers on existing stream)
           if (modifications.method) { /* method is fixed for this stream */ }
@@ -1454,6 +1459,7 @@ export class ProxyServer {
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
+            this._setBreakpointTimeout(requestId);
           });
           if (modifications.url) {
             try { fullUrl = modifications.url; } catch { /* keep original */ }
@@ -1823,6 +1829,7 @@ export class ProxyServer {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), timestamp: Date.now(), resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       // Fall through — but for h2 streams we can't easily re-proxy, so just send a generic response
     }
@@ -1847,6 +1854,7 @@ export class ProxyServer {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       if (modifications.status) {
         try {
@@ -2279,8 +2287,10 @@ export class ProxyServer {
         if (headerVal === undefined) return false;
         if (!matcher.value) return true; // just check presence
         if (matcher.value.includes('*')) {
-          const regex = new RegExp('^' + matcher.value.replace(/\*/g, '.*') + '$');
-          return regex.test(headerVal);
+          try {
+            const regex = new RegExp('^' + matcher.value.replace(/\*/g, '.*') + '$');
+            return regex.test(headerVal);
+          } catch { return false; }
         }
         return headerVal === matcher.value;
       }
@@ -2668,6 +2678,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       // Apply modifications and continue as normal proxy request
       if (modifications.url) {
@@ -2706,6 +2717,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       // Apply modifications to the response
       if (modifications.status) {
@@ -2746,6 +2758,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'request', resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       // Apply request modifications
       if (reqModifications.url) {
@@ -2780,6 +2793,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
+        this._setBreakpointTimeout(requestId);
       });
       // Apply response modifications
       if (resModifications.status) {
@@ -2957,6 +2971,19 @@ export class ProxyServer {
     return true;
   }
 
+  _setBreakpointTimeout(requestId) {
+    const timeout = setTimeout(() => {
+      if (this.pendingBreakpoints.has(requestId)) {
+        this.pendingBreakpoints.get(requestId).resolve({});
+        this.pendingBreakpoints.delete(requestId);
+      }
+    }, 5 * 60 * 1000); // 5 min timeout
+    // Wrap the resolve so we clear the timer when manually resumed
+    const bp = this.pendingBreakpoints.get(requestId);
+    const origResolve = bp.resolve;
+    bp.resolve = (val) => { clearTimeout(timeout); origResolve(val); };
+  }
+
   _checkBreakpoint(method, url, headers) {
     return this.breakpointRules.find(rule => {
       if (!rule.enabled) return false;
@@ -3076,7 +3103,8 @@ export class ProxyServer {
         if (!operation) continue;
 
         // Convert OpenAPI path pattern to regex: /users/{id} -> /users/[^/]+
-        const regex = new RegExp('^' + pathPattern.replace(/\{[^}]+\}/g, '[^/]+') + '$');
+        let regex;
+        try { regex = new RegExp('^' + pathPattern.replace(/\{[^}]+\}/g, '[^/]+') + '$'); } catch { continue; }
         const testPath = path.split('?')[0];
         if (regex.test(testPath)) {
           return {

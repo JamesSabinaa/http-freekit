@@ -131,13 +131,6 @@ async function main() {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-
-  // Handle Windows Ctrl+C
-  if (process.platform === 'win32') {
-    const readline = await import('readline');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.on('SIGINT', shutdown);
-  }
 }
 
 main().catch((err) => {

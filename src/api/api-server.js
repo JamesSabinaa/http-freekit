@@ -40,6 +40,12 @@ export class ApiServer {
     });
 
     this.app.use(express.json({ limit: '50mb' }));
+
+    // Request timeout
+    this.app.use((req, res, next) => {
+      req.setTimeout(30000);
+      next();
+    });
   }
 
   _setupRoutes() {
@@ -119,7 +125,7 @@ export class ApiServer {
 
     // Export as HAR (must be before :id param route)
     router.get('/api/traffic/export.har', (req, res) => {
-      const har = trafficToHar(this.trafficLog);
+      const har = trafficToHar(this.trafficLog, { maskSensitive: true });
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
       res.json(har);
@@ -161,6 +167,10 @@ export class ApiServer {
         const { requests } = req.body;
         if (Array.isArray(requests)) {
           this.trafficLog.push(...requests);
+          // Enforce max traffic log size after import
+          while (this.trafficLog.length > this.maxTrafficLog) {
+            this.trafficLog.shift();
+          }
           this._broadcast({ type: 'traffic-imported', count: requests.length });
           res.json({ success: true, imported: requests.length });
         } else {
@@ -218,6 +228,10 @@ export class ApiServer {
         });
 
         this.trafficLog.push(...imported);
+        // Enforce max traffic log size after import
+        while (this.trafficLog.length > this.maxTrafficLog) {
+          this.trafficLog.shift();
+        }
         this._broadcast({ type: 'traffic-imported', count: imported.length });
         res.json({ success: true, imported: imported.length });
       } catch (err) {

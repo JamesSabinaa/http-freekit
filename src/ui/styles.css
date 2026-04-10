@@ -94,7 +94,9 @@
       --font-heading: 'Saira', 'DM Sans', Arial, sans-serif;
       --font-title: 'Saira', 'DM Sans', Arial, sans-serif;
 
-      /* Legacy aliases for inline styles using old variable names */
+      /* DEPRECATED: Legacy aliases kept only for backward compatibility with
+         third-party extensions or user custom CSS. Do not use in new code —
+         prefer the canonical variable names listed above. */
       --accent: var(--pop-color);
       --error: var(--status-5xx);
       --success: var(--status-2xx);
@@ -1296,7 +1298,7 @@
       letter-spacing: 0.5px;
       color: var(--text-watermark);
       margin-bottom: 4px;
-      font-family: var(--font-sans);
+      font-family: var(--font-body);
       display: flex;
       align-items: center;
       gap: 4px;
@@ -2640,20 +2642,20 @@
       margin-right: 8px;
       white-space: nowrap;
     }
-    .mock-save-all-btn {
-      font-size: 13px !important;
+    .btn.mock-save-all-btn {
+      font-size: 13px;
       gap: 4px;
       display: inline-flex;
       align-items: center;
     }
-    .mock-revert-btn {
-      font-size: 13px !important;
+    .btn.mock-revert-btn {
+      font-size: 13px;
       gap: 4px;
       display: inline-flex;
       align-items: center;
     }
-    .mock-save-server {
-      color: #e8a030 !important;
+    .mock-toggle-btn.mock-save-server {
+      color: #e8a030;
     }
 
     .mock-page-scroll {
@@ -2741,13 +2743,13 @@
     }
     .mock-drag-handle:active { cursor: grabbing; }
     .mock-rule-dragging { opacity: 0.4; }
-    .mock-drag-over {
-      border-top: 2px solid var(--pop-color) !important;
+    .mock-rule-card.mock-drag-over {
+      border-top: 2px solid var(--pop-color);
     }
-    .mock-drag-combine {
-      outline: 2px dashed var(--pop-color) !important;
+    .mock-rule-card.mock-drag-combine {
+      outline: 2px dashed var(--pop-color);
       outline-offset: -2px;
-      background: rgba(225, 66, 31, 0.05) !important;
+      background: rgba(225, 66, 31, 0.05);
     }
     .mock-rule-title {
       font-weight: 600;
@@ -3135,15 +3137,15 @@
 
       /* Intercept: 3 columns instead of 4 */
       .intercept-page-grid {
-        grid-template-columns: 1fr 1fr 1fr !important;
-        grid-gap: 20px !important;
-        padding: 40px !important;
+        grid-template-columns: 1fr 1fr 1fr;
+        grid-gap: 20px;
+        padding: 40px;
       }
       .intercept-instructions {
-        grid-column: 1 / -1 !important;
+        grid-column: 1 / -1;
       }
       .intercept-connected-sources {
-        display: none !important;
+        display: none;
       }
       /* Expanded card: still span 2 of 3 columns */
       .intercept-card.expanded {
@@ -3161,7 +3163,7 @@
       .app { grid-template-columns: 44px 1fr; }
 
       .intercept-page-grid {
-        grid-template-columns: 1fr 1fr !important;
+        grid-template-columns: 1fr 1fr;
       }
       /* Expanded card spans full width at 2-column layout */
       .intercept-card.expanded {
@@ -3170,10 +3172,10 @@
 
       /* Send page: stack vertically */
       #panel-send > div {
-        flex-direction: column !important;
+        flex-direction: column;
       }
       #panel-send > div > div {
-        border-right: none !important;
+        border-right: none;
         border-bottom: 1px solid var(--border-color);
       }
       .send-resizer {
