@@ -7,6 +7,7 @@ import tls from 'tls';
 import zlib from 'zlib';
 import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
+import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
@@ -142,24 +143,37 @@ export class ProxyServer {
       socket.write(responseStr);
       if (proxyHead.length) socket.write(proxyHead);
 
-      // Track message counts
+      // Track message counts and bytes
       let clientMessages = 0;
       let serverMessages = 0;
       let clientBytes = 0;
       let serverBytes = 0;
       let cleanedUp = false;
+      let frameSequence = 0;
 
-      // Client -> Server
-      socket.on('data', (chunk) => {
+      // Frame parser for client -> server direction
+      const clientParser = new WsFrameParser((frame) => {
         clientMessages++;
+        this._emitWsFrame(frame, 'client', requestId, ++frameSequence);
+      });
+
+      // Frame parser for server -> client direction
+      const serverParser = new WsFrameParser((frame) => {
+        serverMessages++;
+        this._emitWsFrame(frame, 'server', requestId, ++frameSequence);
+      });
+
+      // Client -> Server: parse frames, forward raw bytes
+      socket.on('data', (chunk) => {
         clientBytes += chunk.length;
+        try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
         proxySocket.write(chunk);
       });
 
-      // Server -> Client
+      // Server -> Client: parse frames, forward raw bytes
       proxySocket.on('data', (chunk) => {
-        serverMessages++;
         serverBytes += chunk.length;
+        try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
         socket.write(chunk);
       });
 
@@ -202,6 +216,65 @@ export class ProxyServer {
     });
 
     proxyReq.end();
+  }
+
+  /**
+   * Emit a single WebSocket frame as a traffic event.
+   * @param {{ fin: boolean, opcode: number, masked: boolean, payload: Buffer, timestamp: number }} frame
+   * @param {'client'|'server'} direction
+   * @param {string} parentId - The WS connection request ID
+   * @param {number} sequence - Frame sequence number within the connection
+   */
+  _emitWsFrame(frame, direction, parentId, sequence) {
+    const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
+
+    let payload;
+    if (frame.opcode === WS_OPCODE.TEXT) {
+      // Decode text frames as UTF-8
+      payload = frame.payload.toString('utf-8');
+    } else if (frame.opcode === WS_OPCODE.CLOSE) {
+      // Parse close frame for code and reason
+      const close = parseClosePayload(frame.payload);
+      payload = close.code != null
+        ? `Close code: ${close.code}${close.reason ? ' - ' + close.reason : ''}`
+        : '';
+    } else if (frame.opcode === WS_OPCODE.BINARY) {
+      // Hex-encode binary frames
+      payload = frame.payload.toString('hex');
+    } else {
+      // Ping/pong: show payload as UTF-8 if present, otherwise empty
+      payload = frame.payload.length > 0 ? frame.payload.toString('utf-8') : '';
+    }
+
+    this._emitRequest({
+      id: uuidv4(),
+      protocol: 'ws-frame',
+      method: 'WS',
+      url: '',
+      host: '',
+      path: '',
+      requestHeaders: {},
+      requestBody: payload,
+      requestBodySize: frame.payload.length,
+      statusCode: 0,
+      statusMessage: opcodeName,
+      responseHeaders: {},
+      responseBody: '',
+      responseBodySize: 0,
+      duration: 0,
+      timestamp: frame.timestamp,
+      source: 'websocket',
+      tls: null,
+      remote: null,
+      // WebSocket frame-specific fields
+      direction,
+      opcode: frame.opcode,
+      opcodeName,
+      fin: frame.fin,
+      masked: frame.masked,
+      parentId,
+      sequence
+    });
   }
 
   // Handle plain HTTP requests (non-CONNECT)
