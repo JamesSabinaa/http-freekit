@@ -567,8 +567,6 @@ export class ProxyServer {
 
     clientSocket.on('error', () => {}); // Suppress connection reset errors
 
-    // CONNECT handler for HTTPS tunneling
-
     // Tell client the tunnel is established
     clientSocket.write(
       'HTTP/1.1 200 Connection Established\r\n' +
@@ -576,49 +574,64 @@ export class ProxyServer {
       '\r\n'
     );
 
-    // Create a TLS server for this connection to MITM
-    try {
-      const tlsServer = new tls.TLSSocket(clientSocket, {
-        isServer: true,
-        ...tlsOptions
-      });
+    // In passthrough mode, peek at the ClientHello to extract TLS fingerprint
+    const doPassthrough = this.tlsFingerprint === 'passthrough';
+    const startMitm = (clientHelloTls) => {
+      try {
+        const tlsServer = new tls.TLSSocket(clientSocket, {
+          isServer: true,
+          ...tlsOptions
+        });
 
-      if (useHttp2) {
-        // Use an HTTP/2 server with allowHTTP1 to handle both h2 and h1.1 clients
-        this._handleHttp2Connection(tlsServer, hostname, targetPort);
-      } else {
-        this._handleTlsConnection(tlsServer, hostname, targetPort);
+        if (useHttp2) {
+          this._handleHttp2Connection(tlsServer, hostname, targetPort, clientHelloTls);
+        } else {
+          this._handleTlsConnection(tlsServer, hostname, targetPort, clientHelloTls);
+        }
+      } catch (err) {
+        // TLS handshake failed (e.g., client disconnected)
+        clientSocket.destroy();
+        this._emitRequest({
+          id: uuidv4(),
+          protocol: 'tls-error',
+          method: 'CONNECT',
+          url: `https://${hostname}:${targetPort}`,
+          host: hostname,
+          path: '/',
+          requestHeaders: {},
+          requestBody: '',
+          requestBodySize: 0,
+          statusCode: 0,
+          statusMessage: 'TLS Handshake Failed',
+          responseHeaders: {},
+          responseBody: err.message || 'TLS error',
+          responseBodySize: 0,
+          duration: 0,
+          timestamp: Date.now(),
+          error: err.message,
+          errorCode: err.code || null,
+          source: 'tls-error',
+          tls: null,
+          remote: null
+        });
       }
-    } catch (err) {
-      // TLS handshake failed (e.g., client disconnected)
-      clientSocket.destroy();
-      this._emitRequest({
-        id: uuidv4(),
-        protocol: 'tls-error',
-        method: 'CONNECT',
-        url: `https://${hostname}:${targetPort}`,
-        host: hostname,
-        path: '/',
-        requestHeaders: {},
-        requestBody: '',
-        requestBodySize: 0,
-        statusCode: 0,
-        statusMessage: 'TLS Handshake Failed',
-        responseHeaders: {},
-        responseBody: err.message || 'TLS error',
-        responseBodySize: 0,
-        duration: 0,
-        timestamp: Date.now(),
-        error: err.message,
-        errorCode: err.code || null,
-        source: 'tls-error',
-        tls: null,
-        remote: null
+    };
+
+    if (doPassthrough) {
+      // Peek at the ClientHello before the TLS handshake starts
+      clientSocket.once('data', (chunk) => {
+        const parsed = ProxyServer._parseClientHello(chunk);
+        const clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
+        // Put the data back so the TLS handshake can consume it
+        clientSocket.unshift(chunk);
+        startMitm(clientHelloTls);
       });
+    } else {
+      startMitm(null);
     }
   }
 
-  _handleTlsConnection(tlsSocket, hostname, targetPort) {
+  _handleTlsConnection(tlsSocket, hostname, targetPort, clientHelloTls) {
     // Capture TLS session details from the MITM socket
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
@@ -1054,7 +1067,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: { ...req.headers },
-          ...this._getUpstreamTlsOptions(hostname)
+          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
         };
 
         let upstreamProtocol = 'https';
@@ -1190,7 +1203,7 @@ export class ProxyServer {
     });
   }
 
-  _handleHttp2Connection(tlsSocket, hostname, targetPort) {
+  _handleHttp2Connection(tlsSocket, hostname, targetPort, clientHelloTls) {
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
       version: tlsSocket.getProtocol?.() || 'TLSv1.2'
@@ -1358,7 +1371,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path, method,
           headers: upstreamHeaders,
-          ...this._getUpstreamTlsOptions(hostname)
+          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
         };
 
         const handleResponse = (proxyRes) => {
@@ -1546,7 +1559,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: { ...req.headers },
-          ...this._getUpstreamTlsOptions(hostname)
+          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
         };
 
         const handleResponse = (proxyRes) => {
@@ -2141,6 +2154,145 @@ export class ProxyServer {
     });
   }
 
+  // Parse a TLS ClientHello to extract cipher suites, supported groups, and sigalgs.
+  // Used by the "passthrough" fingerprint mode to mirror the client's TLS profile upstream.
+  static _parseClientHello(buf) {
+    try {
+      let pos = 0;
+      // TLS record header: type(1) + version(2) + length(2)
+      if (buf.length < 5 || buf[0] !== 0x16) return null; // not a Handshake record
+      const recordLen = buf.readUInt16BE(3);
+      if (buf.length < 5 + recordLen) return null;
+
+      pos = 5;
+      // Handshake header: type(1) + length(3)
+      if (buf[pos] !== 0x01) return null; // not ClientHello
+      const hsLen = (buf[pos + 1] << 16) | (buf[pos + 2] << 8) | buf[pos + 3];
+      pos += 4;
+
+      const chStart = pos;
+      // ClientHello: version(2) + random(32)
+      const tlsVersion = buf.readUInt16BE(pos);
+      pos += 2 + 32;
+
+      // Session ID
+      const sidLen = buf[pos]; pos += 1 + sidLen;
+
+      // Cipher suites
+      const csLen = buf.readUInt16BE(pos); pos += 2;
+      const cipherSuites = [];
+      for (let i = 0; i < csLen; i += 2) {
+        cipherSuites.push(buf.readUInt16BE(pos + i));
+      }
+      pos += csLen;
+
+      // Compression methods
+      const compLen = buf[pos]; pos += 1 + compLen;
+
+      // Extensions
+      const groups = [];
+      const sigalgs = [];
+      if (pos < chStart + hsLen + 4) {
+        const extLen = buf.readUInt16BE(pos); pos += 2;
+        const extEnd = pos + extLen;
+        while (pos + 4 <= extEnd) {
+          const extType = buf.readUInt16BE(pos);
+          const extDataLen = buf.readUInt16BE(pos + 2);
+          pos += 4;
+          if (extType === 0x000a && extDataLen >= 2) {
+            // supported_groups
+            const listLen = buf.readUInt16BE(pos);
+            for (let i = 0; i < listLen; i += 2) {
+              groups.push(buf.readUInt16BE(pos + 2 + i));
+            }
+          } else if (extType === 0x000d && extDataLen >= 2) {
+            // signature_algorithms
+            const listLen = buf.readUInt16BE(pos);
+            for (let i = 0; i < listLen; i += 2) {
+              sigalgs.push(buf.readUInt16BE(pos + 2 + i));
+            }
+          }
+          pos += extDataLen;
+        }
+      }
+
+      return { tlsVersion, cipherSuites, groups, sigalgs };
+    } catch {
+      return null;
+    }
+  }
+
+  // Map TLS cipher suite hex codes to OpenSSL names
+  static _CIPHER_MAP = {
+    0x1301: 'TLS_AES_128_GCM_SHA256', 0x1302: 'TLS_AES_256_GCM_SHA384',
+    0x1303: 'TLS_CHACHA20_POLY1305_SHA256',
+    0xc02b: 'ECDHE-ECDSA-AES128-GCM-SHA256', 0xc02f: 'ECDHE-RSA-AES128-GCM-SHA256',
+    0xc02c: 'ECDHE-ECDSA-AES256-GCM-SHA384', 0xc030: 'ECDHE-RSA-AES256-GCM-SHA384',
+    0xcca9: 'ECDHE-ECDSA-CHACHA20-POLY1305', 0xcca8: 'ECDHE-RSA-CHACHA20-POLY1305',
+    0xc009: 'ECDHE-ECDSA-AES128-SHA', 0xc013: 'ECDHE-RSA-AES128-SHA',
+    0xc00a: 'ECDHE-ECDSA-AES256-SHA', 0xc014: 'ECDHE-RSA-AES256-SHA',
+    0xc023: 'ECDHE-ECDSA-AES128-SHA256', 0xc027: 'ECDHE-RSA-AES128-SHA256',
+    0xc024: 'ECDHE-ECDSA-AES256-SHA384', 0xc028: 'ECDHE-RSA-AES256-SHA384',
+    0x009c: 'AES128-GCM-SHA256', 0x009d: 'AES256-GCM-SHA384',
+    0x002f: 'AES128-SHA', 0x0035: 'AES256-SHA',
+    0x003c: 'AES128-SHA256', 0x003d: 'AES256-SHA256',
+    0xc007: 'ECDHE-ECDSA-RC4-SHA', 0xc011: 'ECDHE-RSA-RC4-SHA',
+    0x0004: 'RC4-SHA', 0x0005: 'RC4-MD5',
+    0x000a: 'DES-CBC3-SHA',
+    0xc008: 'ECDHE-ECDSA-DES-CBC3-SHA', 0xc012: 'ECDHE-RSA-DES-CBC3-SHA',
+  };
+
+  // Map supported_groups hex codes to OpenSSL curve names
+  static _GROUP_MAP = {
+    0x0017: 'P-256', 0x0018: 'P-384', 0x0019: 'P-521',
+    0x001d: 'X25519', 0x001e: 'X448',
+    0x0100: 'ffdhe2048', 0x0101: 'ffdhe3072', 0x0102: 'ffdhe4096',
+    0x11ec: 'X25519MLKEM768',
+  };
+
+  // Map signature_algorithms hex codes to OpenSSL sigalgs names
+  static _SIGALG_MAP = {
+    0x0401: 'rsa_pkcs1_sha256', 0x0501: 'rsa_pkcs1_sha384', 0x0601: 'rsa_pkcs1_sha512',
+    0x0201: 'rsa_pkcs1_sha1',
+    0x0403: 'ecdsa_secp256r1_sha256', 0x0503: 'ecdsa_secp384r1_sha384', 0x0603: 'ecdsa_secp521r1_sha512',
+    0x0203: 'ECDSA+SHA1',
+    0x0804: 'rsa_pss_rsae_sha256', 0x0805: 'rsa_pss_rsae_sha384', 0x0806: 'rsa_pss_rsae_sha512',
+    0x0809: 'rsa_pss_pss_sha256', 0x080a: 'rsa_pss_pss_sha384', 0x080b: 'rsa_pss_pss_sha512',
+  };
+
+  // Convert parsed ClientHello to Node.js tls options
+  static _clientHelloToTlsOptions(parsed) {
+    if (!parsed) return null;
+
+    // Filter out GREASE values (0x?a?a pattern)
+    const isGrease = (v) => (v & 0x0f0f) === 0x0a0a;
+
+    const ciphers = parsed.cipherSuites
+      .filter(c => !isGrease(c))
+      .map(c => ProxyServer._CIPHER_MAP[c])
+      .filter(Boolean);
+
+    const groups = parsed.groups
+      .filter(g => !isGrease(g))
+      .map(g => ProxyServer._GROUP_MAP[g])
+      .filter(Boolean);
+
+    const sigalgs = parsed.sigalgs
+      .filter(s => !isGrease(s))
+      .map(s => ProxyServer._SIGALG_MAP[s])
+      .filter(Boolean);
+
+    if (ciphers.length === 0) return null;
+
+    return {
+      ciphers: ciphers.join(':'),
+      ecdhCurve: groups.length > 0 ? groups.join(':') : undefined,
+      sigalgs: sigalgs.length > 0 ? sigalgs.join(':') : undefined,
+      minVersion: parsed.tlsVersion <= 0x0301 ? 'TLSv1' : 'TLSv1.2',
+      maxVersion: 'TLSv1.3',
+    };
+  }
+
   // TLS fingerprint presets — emulate real browser Client Hello parameters
   // to prevent JA3/bot detection (Cloudflare, Akamai, etc.) from blocking.
   static TLS_FINGERPRINTS = {
@@ -2249,18 +2401,31 @@ export class ProxyServer {
     },
   };
 
-  _getUpstreamTlsOptions(hostname) {
-    const preset = ProxyServer.TLS_FINGERPRINTS[this.tlsFingerprint];
-    if (!preset) {
-      // 'default' — use Node.js built-in TLS defaults
-      return {
-        servername: net.isIP(hostname) ? undefined : hostname,
-        rejectUnauthorized: false,
-      };
-    }
-    return {
+  _getUpstreamTlsOptions(hostname, clientHelloTls) {
+    const base = {
       servername: net.isIP(hostname) ? undefined : hostname,
       rejectUnauthorized: false,
+    };
+
+    // Passthrough mode — mirror the client's exact TLS parameters
+    if (this.tlsFingerprint === 'passthrough' && clientHelloTls) {
+      return {
+        ...base,
+        minVersion: clientHelloTls.minVersion,
+        maxVersion: clientHelloTls.maxVersion,
+        ciphers: clientHelloTls.ciphers,
+        sigalgs: clientHelloTls.sigalgs,
+        ecdhCurve: clientHelloTls.ecdhCurve,
+        requestOCSP: true,
+      };
+    }
+
+    const preset = ProxyServer.TLS_FINGERPRINTS[this.tlsFingerprint];
+    if (!preset) {
+      return base; // 'default' — Node.js built-in TLS
+    }
+    return {
+      ...base,
       minVersion: preset.minVersion,
       maxVersion: preset.maxVersion,
       ciphers: preset.ciphers,
