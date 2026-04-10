@@ -128,7 +128,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui uses react-window FixedSizeList. We need a vanilla JS equivalent. Key concept: container has overflow-y:auto, inner div has height = totalRows * 32, visible rows positioned absolutely based on scrollTop."
     },
     {

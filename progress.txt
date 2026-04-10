@@ -27,6 +27,14 @@
 - Non-Monaco body view modes: hex (textToHex), decoded (key-value grid), image (placeholder) — all render in the fallback `<pre>`
 - Send page body editor: `sendBodyEditor` variable holds the editable Monaco instance; use `getSendBodyValue()` / `setSendBodyValue()` to read/write; `updateSendBodyLanguage()` syncs language from format dropdown
 - `monacoApi.editor.setModelLanguage(model, lang)` switches language without recreating the editor instance
+- Traffic list uses virtual scrolling: only ~60 DOM rows rendered at a time via spacer `<tr>` elements
+- Virtual scroll constants: `VS_ROW_HEIGHT=32`, `VS_BUFFER=15`, `VS_HEADER_HEIGHT=38` (sticky thead)
+- `renderVirtualRows()` is the lightweight scroll-triggered renderer; `renderTraffic()` handles full updates (counts, empty state, auto-scroll)
+- Spacer pattern: top `<tr class="vs-spacer">` + visible rows + bottom `<tr class="vs-spacer">` — total height = totalRows * 32
+- `vsForceRender = true` forces re-render even when scroll range unchanged (used after selection changes)
+- `scrollRowIntoView(index, alignment)` scrolls a row into the viewport; supports `'center'` alignment
+- Scroll handler uses `requestAnimationFrame` to batch scroll events for 60fps performance
+- Row HTML uses `data-id="${req.id}"` attribute for identification instead of parsing onclick strings
 
 ---
 
@@ -118,5 +126,20 @@
   - Monaco `addCommand()` is used for Ctrl+Enter (send) and Escape (abort) keybindings inside the editable editor
   - `monacoApi.editor.setModelLanguage(model, lang)` dynamically switches language without recreating the editor
   - The detail view request body now uses the same dual-container pattern as response body — `switchBodyView` handles both sections identically
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-007
+- What was implemented: Replaced innerHTML-based traffic list rendering with a virtual scroll implementation using spacer `<tr>` elements
+- Files changed:
+  - src/ui/app.js — Removed `renderedRequestIds`, `lastRenderedCount`, `lastRenderedFirst` state; added virtual scroll constants (`VS_ROW_HEIGHT=32`, `VS_BUFFER=15`, `VS_HEADER_HEIGHT=38`) and state (`vsRenderStart`, `vsRenderEnd`, `vsForceRender`, `vsRafId`); extracted `buildRowHtml()` to top-level with `data-id` attribute; created `renderVirtualRows()` for lightweight scroll-triggered rendering with top/bottom spacer rows; rewrote `renderTraffic()` to delegate to `renderVirtualRows()` with auto-scroll support; updated `selectRequest()` and `closeDetail()` to use `vsForceRender` instead of DOM queries; added `scrollRowIntoView(index, alignment)` for index-based scrolling; updated `selectRequestByIndex()` with scroll-into-view; updated scroll handler to use `requestAnimationFrame` for 60fps rendering
+  - src/ui/styles.css — Added `.vs-spacer` CSS rules to prevent spacer rows from having visual artifacts (hover, borders, cursor)
+- **Learnings for future iterations:**
+  - The spacer `<tr>` approach works well for virtualizing tables: top spacer + visible rows + bottom spacer maintains correct total height for the scrollbar
+  - With `border-collapse: collapse` tables, spacer rows need explicit `border: none; height: auto; cursor: default; background: none` to avoid visual artifacts
+  - The sticky thead (38px) must be accounted for in scroll position calculations — visible tbody starts at `scrollTop` in tbody coordinates
+  - `requestAnimationFrame` batching in the scroll handler prevents multiple renders per frame
+  - `vsForceRender` flag is needed for selection changes where scroll position doesn't change but row content does
+  - The old 2000-row cap is removed — virtual scroll handles unlimited rows efficiently
   - Manual browser verification is recommended for this story
 ---
