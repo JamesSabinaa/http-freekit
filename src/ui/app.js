@@ -20,6 +20,8 @@
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
     let currentSendAbort = null;
+    /** @type {object|null} Active Monaco editor for the Send page request body */
+    let sendBodyEditor = null;
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
 
@@ -707,6 +709,7 @@
       _urlBreakdownOpen = false;
 
       // Dispose any active body Monaco editors before replacing content
+      disposeBodyEditor('reqBody-monaco');
       disposeBodyEditor('resBody-monaco');
 
       // Store headers for context menu lookup
@@ -894,6 +897,7 @@
         const reqCt = req.requestHeaders?.['content-type'] || '';
         const reqBodyModes = getBodyViewModes(req.requestBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
+        const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !req.requestBody.startsWith('[Binary data:');
         html += `<div class="detail-card dir-right" id="card-req-body" style="border-right-color:${methodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -906,7 +910,10 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <pre class="body-content" id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">${formatBodyAs(req.requestBody, reqCt, reqDefaultMode)}</pre>
+            <div id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">
+              <div id="reqBody-monaco" style="display:${reqUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
+              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(req.requestBody, reqCt, reqDefaultMode)}</pre>
+            </div>
           </div>
         </div>`;
       }
@@ -1152,6 +1159,16 @@
       </div>`;
 
       content.innerHTML = html;
+
+      // Initialize Monaco editor for request body if the default view mode uses Monaco
+      if (req.requestBody && req.requestBody !== '' && !req.requestBody.startsWith('[Binary')) {
+        const reqCt2 = req.requestHeaders?.['content-type'] || '';
+        const reqModes2 = getBodyViewModes(req.requestBody, reqCt2);
+        const reqDefMode2 = reqModes2[0]?.value || 'text';
+        if (isMonacoViewMode(reqDefMode2)) {
+          initBodyMonacoEditor('reqBody-monaco', req.requestBody, reqCt2, reqDefMode2);
+        }
+      }
 
       // Initialize Monaco editor for response body if the default view mode uses Monaco
       if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
@@ -1638,8 +1655,8 @@
       const monacoId = elementId + '-monaco';
       const fallbackId = elementId + '-fallback';
 
-      // Response body uses Monaco for text-based modes; request body still uses <pre> for now
-      if (section === 'response' && isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
+      // Both request and response body use Monaco for text-based modes
+      if (isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
         // Show Monaco container, hide fallback
         const monacoEl = document.getElementById(monacoId);
         const fallbackEl = document.getElementById(fallbackId);
@@ -3899,8 +3916,7 @@
       const bodyContent = document.getElementById('sendBodyBody');
       const bodyArrow = document.getElementById('sendBodyArrow');
       if (bodyContent && bodyArrow) {
-        const bodyText = document.getElementById('sendBody');
-        const hasBody = bodyText && bodyText.value.trim().length > 0;
+        const hasBody = getSendBodyValue().trim().length > 0;
         if (METHODS_WITHOUT_BODY.includes(sel.value)) {
           // Collapse body card if body is empty
           if (!hasBody) {
@@ -3927,71 +3943,130 @@
       if (arrow) arrow.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
     }
 
-    function updateSendBodyPreview() {
-      const preview = document.getElementById('sendBodyPreview');
-      if (!preview || preview.style.display === 'none') return;
-      const body = document.getElementById('sendBody')?.value || '';
-      const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      if (!body.trim()) {
-        preview.innerHTML = '<span style="color:var(--text-watermark);">Empty</span>';
-        return;
-      }
-      preview.innerHTML = formatBodyAs(body, formatToContentType(format), format === 'text' ? 'text' : format);
-    }
-
     function formatToContentType(format) {
       const map = { json: 'application/json', xml: 'application/xml', html: 'text/html', css: 'text/css', javascript: 'application/javascript', text: 'text/plain' };
       return map[format] || 'text/plain';
     }
 
-    function toggleSendBodyView() {
-      const textarea = document.getElementById('sendBody');
-      const preview = document.getElementById('sendBodyPreview');
-      const toggleBtn = document.getElementById('sendBodyViewToggle');
-      if (!textarea || !preview) return;
+    /**
+     * Map send body format dropdown values to Monaco language ids.
+     * @param {string} format
+     * @returns {string}
+     */
+    function sendFormatToMonacoLanguage(format) {
+      const map = { json: 'json', xml: 'xml', html: 'html', css: 'css', javascript: 'javascript', text: 'plaintext' };
+      return map[format] || 'plaintext';
+    }
 
-      if (preview.style.display === 'none') {
-        // Switch to preview
-        preview.style.display = 'block';
-        textarea.style.display = 'none';
-        if (toggleBtn) toggleBtn.textContent = 'Edit';
-        updateSendBodyPreview();
-      } else {
-        // Switch to editor
-        preview.style.display = 'none';
-        textarea.style.display = 'block';
-        if (toggleBtn) toggleBtn.textContent = 'Preview';
-        textarea.focus();
+    /**
+     * Get the current send body editor content.
+     * @returns {string}
+     */
+    function getSendBodyValue() {
+      if (sendBodyEditor) {
+        return sendBodyEditor.getValue();
+      }
+      return '';
+    }
+
+    /**
+     * Set the send body editor content.
+     * @param {string} value
+     */
+    function setSendBodyValue(value) {
+      if (sendBodyEditor) {
+        sendBodyEditor.setValue(value || '');
       }
     }
 
-    function formatSendBody() {
-      const textarea = document.getElementById('sendBody');
+    /**
+     * Initialize or re-initialize the Send page body Monaco editor.
+     * @param {string} [initialValue='']
+     * @param {string} [format='text']
+     */
+    async function initSendBodyEditor(initialValue, format) {
+      const containerId = 'sendBody-monaco-container';
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      // Dispose previous instance if any
+      if (sendBodyEditor) {
+        sendBodyEditor.dispose();
+        sendBodyEditor = null;
+      }
+      container.innerHTML = '';
+
+      const language = sendFormatToMonacoLanguage(format || 'text');
+
+      const editor = await createMonacoEditor(containerId, {
+        value: initialValue || '',
+        language: language,
+        readOnly: false,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      });
+
+      if (editor) {
+        sendBodyEditor = editor;
+
+        // Ctrl+Enter sends the request
+        editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
+          sendRequest();
+        });
+
+        // Escape aborts the request
+        editor.addCommand(monacoApi.KeyCode.Escape, function () {
+          abortSendRequest();
+        });
+      }
+    }
+
+    /**
+     * Update the Monaco editor language when send body format dropdown changes.
+     */
+    function updateSendBodyLanguage() {
+      if (!sendBodyEditor || !monacoApi) return;
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      if (!textarea || !textarea.value.trim()) return;
+      const language = sendFormatToMonacoLanguage(format);
+      monacoApi.editor.setModelLanguage(sendBodyEditor.getModel(), language);
+    }
+
+    /** @deprecated No longer needed — kept as no-op for any stale references */
+    function updateSendBodyPreview() {}
+
+    /** @deprecated No longer needed — kept as no-op for any stale references */
+    function toggleSendBodyView() {}
+
+    function formatSendBody() {
+      if (!sendBodyEditor) return;
+      const format = document.getElementById('sendBodyFormat')?.value || 'text';
+      const value = sendBodyEditor.getValue().trim();
+      if (!value) return;
 
       try {
         if (format === 'json') {
-          const parsed = JSON.parse(textarea.value);
-          textarea.value = JSON.stringify(parsed, null, 2);
+          const parsed = JSON.parse(value);
+          sendBodyEditor.setValue(JSON.stringify(parsed, null, 2));
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
           // Basic XML/HTML indent formatting
-          let formatted = textarea.value
+          let formatted = value
             .replace(/>\s*</g, '>\n<')
             .replace(/(<[^\/][^>]*[^\/]>)\s*/g, '$1\n')
             .split('\n')
             .filter(l => l.trim())
             .join('\n');
-          textarea.value = formatted;
+          sendBodyEditor.setValue(formatted);
           toast('Formatted', 'success');
         } else {
-          toast('Format not applicable for ' + format, 'error');
+          // Try Monaco's built-in formatter for other languages
+          sendBodyEditor.getAction('editor.action.formatDocument')?.run();
         }
       } catch (err) {
         toast('Format error: ' + err.message, 'error');
       }
-      updateSendBodyPreview();
     }
 
     // ============ SEND HEADERS KEY-VALUE EDITOR ============
@@ -4093,7 +4168,7 @@
       tab.method = document.getElementById('sendMethod')?.value || 'GET';
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
-      tab.body = document.getElementById('sendBody')?.value || '';
+      tab.body = getSendBodyValue();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
     }
 
@@ -4102,9 +4177,10 @@
       document.getElementById('sendUrl').value = tab.url || '';
       sendHeadersList = (tab.headers || []).slice();
       renderSendHeaders();
-      document.getElementById('sendBody').value = tab.body || '';
       const fmt = document.getElementById('sendBodyFormat');
       if (fmt) fmt.value = tab.bodyFormat || 'text';
+      setSendBodyValue(tab.body || '');
+      updateSendBodyLanguage();
       if (typeof updateSendMethodColor === 'function') updateSendMethodColor();
       // Restore response if any
       const resEl = document.getElementById('sendResponse');
@@ -4157,7 +4233,12 @@
     }
 
     // Initialize with empty state on page load
-    setTimeout(() => { renderSendHeaders(); renderSendTabs(); }, 100);
+    setTimeout(() => {
+      renderSendHeaders();
+      renderSendTabs();
+      // Initialize the Send body Monaco editor
+      initSendBodyEditor('', 'text');
+    }, 100);
 
     function prepopulateSendUrl(input) {
       if (!input.value) {
@@ -4188,7 +4269,7 @@
       const method = document.getElementById('sendMethod').value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
-      const body = document.getElementById('sendBody').value;
+      const body = getSendBodyValue();
 
       if (!url) { toast('URL is required', 'error'); return; }
 
@@ -5649,7 +5730,7 @@
             loadSendHeadersFromJson(JSON.stringify(parsed.headers));
           }
           if (parsed.body) {
-            document.getElementById('sendBody').value = parsed.body;
+            setSendBodyValue(parsed.body);
           }
           saveSendTabState();
           renderSendTabs();

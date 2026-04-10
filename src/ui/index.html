@@ -247,7 +247,7 @@
             <div class="card" style="margin-top:12px;">
               <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyPreview()">
+                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyLanguage()">
                     <option value="text">Text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
@@ -259,13 +259,11 @@
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
                   <button class="btn" onclick="event.stopPropagation();formatSendBody()" style="padding:2px 8px;font-size:10px;" title="Format/prettify body">Format</button>
-                  <button class="btn" onclick="event.stopPropagation();toggleSendBodyView()" style="padding:2px 8px;font-size:10px;" id="sendBodyViewToggle" title="Toggle editor/preview">Preview</button>
                   <i id="sendBodyArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;"></i>
                 </div>
               </div>
               <div id="sendBodyBody">
-                <textarea id="sendBody" oninput="updateSendBodyPreview()" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:10px;font-family:var(--font-mono);font-size:12px;outline:none;resize:vertical;box-sizing:border-box;" placeholder="Request body..."></textarea>
-                <pre class="body-content" id="sendBodyPreview" style="display:none;min-height:120px;margin-top:8px;cursor:pointer;" onclick="toggleSendBodyView()" title="Click to edit"></pre>
+                <div id="sendBody-monaco-container" style="width:100%;min-height:150px;height:200px;border:1px solid var(--text-input-border);border-radius:4px;overflow:hidden;box-sizing:border-box;"></div>
               </div>
             </div>
           </div>
