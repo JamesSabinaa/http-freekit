@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTTP FreeKit</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-logo" title="HTTP FreeKit v1.0.0">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#e1421f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12C2 6.48 6.48 2 12 2s10 4.48 10 10-4.48 10-10 10S2 17.52 2 12z"/>
+          <path d="M2 12h20" opacity="0.5"/>
+          <path d="M12 2c-3 3.5-3 14.5 0 20" opacity="0.7"/>
+          <path d="M12 2c3 3.5 3 14.5 0 20" opacity="0.7"/>
+          <path d="M4.5 7h15M4.5 17h15" opacity="0.4"/>
+        </svg>
+      </div>
+
+      <div class="sidebar-item active" data-panel="intercept" onclick="switchPanel(this, 'intercept')" title="Connect clients to HTTP FreeKit (Ctrl+1)">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 7l-5 5m0 0l-5-5m5 5V2"/>
+          <path d="M7 17l5-5m0 0l5 5m-5-5v10"/>
+        </svg>
+        <span>Intercept</span>
+      </div>
+
+      <div class="sidebar-item" data-panel="traffic" onclick="switchPanel(this, 'traffic')" title="View intercepted HTTP traffic (Ctrl+2)">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <span>View</span>
+      </div>
+
+      <div class="sidebar-item" data-panel="mock" onclick="switchPanel(this, 'mock')" title="Add rules to transform &amp; mock HTTP traffic (Ctrl+3)">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+        <span>Mock</span>
+      </div>
+
+      <div class="sidebar-item" data-panel="send" onclick="switchPanel(this, 'send')" title="Send HTTP requests directly (Ctrl+4)">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+        <span>Send</span>
+      </div>
+
+      <div class="sidebar-bottom">
+        <div class="sidebar-item" data-panel="settings" onclick="switchPanel(this, 'settings')" title="Settings (Ctrl+9)">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Settings</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+      <!-- Traffic Panel -->
+      <div class="panel" id="panel-traffic">
+        <div class="traffic-split">
+          <div class="traffic-list-container">
+            <div id="breakpointBanner" style="display:none;background:#f1971f22;border-bottom:2px solid #f1971f;padding:8px 16px;font-size:13px;color:var(--text-main);align-items:center;gap:12px;">
+              <span style="font-weight:bold;color:#f1971f;">&#9208; Breakpoint</span>
+              <span id="breakpointBannerText">1 request paused</span>
+              <button class="btn" onclick="resumeAllBreakpoints()" style="margin-left:auto;font-size:11px;padding:3px 10px;">Resume All</button>
+            </div>
+            <div class="traffic-table-wrapper" id="trafficTableWrapper">
+              <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic">
+                <thead><tr>
+                  <th style="width:5px;padding:0;"></th>
+                  <th style="width:71px" onclick="sortBy('method')">Method</th>
+                  <th style="width:45px" onclick="sortBy('statusCode')">Status</th>
+                  <th style="width:49px">Source</th>
+                  <th onclick="sortBy('host')">Host</th>
+                  <th onclick="sortBy('path')">Path &amp; Query</th>
+                </tr></thead>
+                <tbody id="trafficBody"></tbody>
+              </table>
+              <div class="empty-state" id="emptyState">
+                <div class="icon">&#9783;</div>
+                <h3>Connect a client and intercept some requests, and they'll appear here</h3>
+              </div>
+            </div>
+            <div class="traffic-footer">
+              <div style="display:flex;align-items:center;gap:10px;flex:1;position:relative;">
+                <input class="search-input" type="text" id="searchInput" placeholder="Filter by method:, host:, status:, path:, header:, body:...">
+                <button id="searchClearBtn" class="search-clear-btn" onclick="clearSearchFilter()" style="display:none;" title="Clear filter">&times;</button>
+                <div id="filterHint" class="filter-hint-dropdown"></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="request-count" id="trafficCount">0</span>
+                <span class="request-count-label" id="trafficCountLabel">requests</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <button class="btn" id="pauseBtn" onclick="togglePause()" title="Pause/Resume capture">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+                <button class="btn" onclick="scrollToEnd()" title="Scroll to the bottom of the list">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                </button>
+                <button class="btn" onclick="exportTraffic('har')" title="Export as HAR">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
+                <button class="btn" onclick="importHar()" title="Import from HAR file">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                </button>
+                <button class="btn btn-danger" onclick="clearTraffic()" title="Clear all traffic">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="resizer" id="detailResizer"></div>
+          <div class="detail-panel" id="detailPanel">
+            <div id="detailEmptyState" class="empty-state" style="background:var(--bg-container);">
+              <svg viewBox="0 0 24 24" width="120" height="120" fill="none" stroke="currentColor" stroke-width="1" style="opacity:0.15;margin-bottom:16px;"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              <h3 style="font-size:24px;letter-spacing:-0.5px;">Select an exchange to see the full details.</h3>
+            </div>
+            <div id="detailActive" style="display:none;flex-direction:column;height:100%;">
+              <div class="detail-header">
+                <h3 id="detailTitle">Request Details</h3>
+                <button class="detail-close" onclick="closeDetail()">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <div class="detail-pane-scroll">
+                <div class="detail-pane-inner" id="detailContent"></div>
+              </div>
+              <div class="detail-footer">
+                <button class="btn" onclick="scrollToSelectedRequest()" title="Scroll the list to show this exchange">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+                <button class="btn" id="pinBtn" onclick="togglePinRequest()" title="Pin/unpin this exchange">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 9h9l-7 5 3 9-8-6-8 6 3-9-7-5h9z"/></svg>
+                </button>
+                <button class="btn btn-danger" onclick="deleteSelectedRequest()" title="Delete this exchange">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                </button>
+                <button class="btn" onclick="resendSelectedRequest()" title="Resend this request in the Send tab">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+                <button class="btn" onclick="createBreakpointFromRequest()" title="Create a breakpoint for this host" style="color:#f1971f;">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Intercept Panel -->
+      <div class="panel active" id="panel-intercept" style="overflow-y:auto;">
+        <div class="intercept-page-grid" id="interceptPageGrid">
+          <div class="intercept-instructions">
+            <h1>Intercept HTTP</h1>
+            <p>To collect &amp; view HTTP traffic, you need to connect a source of traffic, like a browser, mobile device, or docker container.</p>
+            <p>Click an option below to connect a traffic source, or search for connectors that could work for you:</p>
+            <div style="position:relative;width:100%;">
+              <input class="intercept-search" type="text" id="interceptSearch" placeholder="Browsers, mobile, docker..." oninput="filterInterceptors();document.getElementById('interceptSearchClear').style.display=this.value?'block':'none';" style="padding-right:28px;">
+              <button id="interceptSearchClear" class="search-clear-btn" onclick="document.getElementById('interceptSearch').value='';filterInterceptors();this.style.display='none';" style="display:none;" title="Clear search">&times;</button>
+            </div>
+          </div>
+          <div class="intercept-connected-sources" id="connectedSources">
+            <h1>Connected Sources</h1>
+            <div id="connectedSourcesList"></div>
+          </div>
+          <!-- Interceptor cards are rendered here by JS -->
+        </div>
+      </div>
+
+      <!-- Mock Rules Panel -->
+      <div class="panel" id="panel-mock" style="overflow:hidden;">
+        <div class="mock-page-container">
+          <div class="mock-page-header">
+            <h1 style="font-size:24px;font-weight:bold;font-family:var(--font-title);flex:1;">Transform &amp; Mock HTTP</h1>
+            <span style="font-size:11px;color:var(--text-watermark);margin-right:auto;" title="Hold Shift while dropping a rule onto another to combine them into a group">Tip: Shift+Drop to group rules</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button class="btn" onclick="createMockGroup()" title="Create a rule group">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+              </button>
+              <button class="btn" onclick="collapseAllMockRules()" title="Collapse all rules">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 12 6 20 14"/></svg>
+              </button>
+              <button class="btn" onclick="importMockRules()" title="Import a saved set of rules">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+              </button>
+              <button class="btn" onclick="exportMockRules()" title="Export these rules">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
+              <button class="btn btn-danger" onclick="clearAllMockRules()" title="Reset rules to default">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="mock-page-scroll">
+            <div class="mock-rules-list" id="mockRulesList">
+              <div class="empty-state" style="padding:40px;height:auto;">
+                <div class="icon" style="font-size:60px;opacity:0.15;">&#9881;</div>
+                <p style="font-size:16px;">No rules configured yet. Click below to add one.</p>
+              </div>
+            </div>
+            <div class="mock-add-rule-row" onclick="addNewMockRule()" id="addRuleTrigger">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Add a new rule to rewrite requests or responses</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Send Panel -->
+      <div class="panel" id="panel-send" style="overflow:hidden;">
+        <div class="send-tab-bar" id="sendTabBar"></div>
+        <div style="display:flex;flex:1;overflow:hidden;">
+          <div id="sendRequestPane" style="flex:1;overflow-y:auto;padding:20px;border-right:none;">
+            <div class="card" style="margin-bottom:0;">
+              <div style="display:flex;gap:0;margin-bottom:16px;box-shadow:0 2px 3px 0 rgba(0,0,0,0.12);">
+                <div style="position:relative;flex:0 0 105px;">
+                  <select id="sendMethod" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:pointer;width:100%;height:100%;appearance:none;-webkit-appearance:none;border-left:5px solid #4caf7d;" onchange="updateSendMethodColor()">
+                    <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option>
+                  </select>
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" style="position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <input type="url" id="sendUrl" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest(); if(event.key==='Escape') abortSendRequest();" onfocus="prepopulateSendUrl(this)">
+                <button class="btn btn-primary" onclick="sendRequest()" id="sendBtn" style="border-radius:0;padding:10px 18px;" title="Send this request (Ctrl+Enter)">
+                  <svg id="sendBtnArrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  <svg id="sendBtnSpinner" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" style="display:none;animation:spin 1s linear infinite;"><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                </button>
+                <button class="btn btn-danger" id="sendAbortBtn" onclick="abortSendRequest()" style="display:none;padding:10px 12px;border-radius:0 4px 4px 0;" title="Abort request (Escape)">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="card" style="margin-top:12px;">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span>Request Headers</span>
+                  <button class="btn" onclick="event.stopPropagation();addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header">+</button>
+                </div>
+                <svg id="sendHeadersArrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
+              <div id="sendHeadersBody">
+                <div id="sendHeaderRows"></div>
+                <input type="hidden" id="sendHeaders" value="{}">
+              </div>
+            </div>
+            <div class="card" style="margin-top:12px;">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyPreview()">
+                    <option value="text">Text</option>
+                    <option value="json">JSON</option>
+                    <option value="xml">XML</option>
+                    <option value="html">HTML</option>
+                    <option value="css">CSS</option>
+                    <option value="javascript">JavaScript</option>
+                  </select>
+                  <span>Request Body</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <button class="btn" onclick="event.stopPropagation();formatSendBody()" style="padding:2px 8px;font-size:10px;" title="Format/prettify body">Format</button>
+                  <button class="btn" onclick="event.stopPropagation();toggleSendBodyView()" style="padding:2px 8px;font-size:10px;" id="sendBodyViewToggle" title="Toggle editor/preview">Preview</button>
+                  <svg id="sendBodyArrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+              </div>
+              <div id="sendBodyBody">
+                <textarea id="sendBody" oninput="updateSendBodyPreview()" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:10px;font-family:var(--font-mono);font-size:12px;outline:none;resize:vertical;box-sizing:border-box;" placeholder="Request body..."></textarea>
+                <pre class="body-content" id="sendBodyPreview" style="display:none;min-height:120px;margin-top:8px;cursor:pointer;" onclick="toggleSendBodyView()" title="Click to edit"></pre>
+              </div>
+            </div>
+          </div>
+          <div class="send-resizer" id="sendResizer"></div>
+          <div id="sendResponsePane" style="flex:1;overflow-y:auto;padding:20px;background:var(--bg-container);">
+            <div id="sendResponse" style="display:none;">
+              <div class="card"><div class="card-header">Response Status</div><div class="detail-summary" style="margin-bottom:0;"><div class="detail-summary-item"><div class="detail-summary-label">Status</div><div class="detail-summary-value" id="sendResStatus">-</div></div><div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value" id="sendResDuration">-</div></div></div></div>
+              <div class="card"><div class="card-header">Response Headers</div><div id="sendResHeaders"></div></div>
+              <div class="card"><div class="card-header">Response Body</div><div class="body-content" id="sendResBody"></div></div>
+              <button id="sendViewInTraffic" class="view-in-traffic-btn" style="display:none;" title="View this exchange in the traffic log">&#128270; View in traffic</button>
+            </div>
+            <div id="sendEmptyResponse" class="empty-state" style="height:100%;"><div class="icon" style="font-size:80px;opacity:0.15;">&#8594;</div><h3 style="font-size:24px;">Send a request to see the response</h3><p>Enter a URL and click Send, or press Ctrl+Enter</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div class="panel" id="panel-settings" style="overflow-y:auto;">
+        <div style="max-width:800px;margin:0 auto;padding:40px;">
+          <h1 style="font-size:38px;font-weight:bold;margin-bottom:30px;letter-spacing:-1px;">Settings</h1>
+          <div class="card" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
+<div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:12px 0;">
+  <span class="settings-label">Port Range</span>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <input type="number" id="settingsMinPort" min="1" max="65535" placeholder="Min" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
+    <span style="color:var(--text-watermark);">to</span>
+    <input type="number" id="settingsMaxPort" min="1" max="65535" placeholder="Max" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
+    <button class="btn" onclick="savePortConfig()" style="font-size:11px;padding:4px 10px;">Save</button>
+  </div>
+  <p style="font-size:11px;color:var(--text-lowlight);line-height:1.4;">When starting, the proxy will use the first available port in this range. Changes take effect on restart.</p>
+</div>
+<p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">The proxy listens for HTTP and HTTPS traffic. Configure your browser or application to use this address as its proxy server.</p></div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">TLS Passthrough</div>
+  <p style="font-size:13px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
+    Hostnames listed here will have their TLS connections passed through directly without interception. Useful for certificate-pinned services.
+  </p>
+  <div id="tlsPassthroughList" style="margin-bottom:8px;"></div>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="tlsPassthroughInput" placeholder="A hostname whose TLS should not be intercepted" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <button class="btn" onclick="addTlsPassthrough()" style="font-size:11px;padding:4px 10px;">Add</button>
+  </div>
+</div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">HTTP/2</div>
+  <div class="settings-row">
+    <span class="settings-label">HTTP/2 Support</span>
+    <select id="http2Mode" onchange="saveHttp2Config()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
+      <option value="all">Enabled for all clients</option>
+      <option value="h2-only">Enabled only for HTTP/2-only clients</option>
+      <option value="disabled">Disabled for all clients</option>
+    </select>
+  </div>
+  <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+    Controls whether the proxy advertises HTTP/2 support via ALPN during TLS negotiation.
+  </p>
+</div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">Connection Settings</div>
+  <div class="form-group" style="margin-bottom:12px;">
+    <label>Upstream Proxy</label>
+    <select id="upstreamType" onchange="updateUpstreamFields()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-size:13px;cursor:pointer;width:100%;">
+      <option value="none">Connect directly (no upstream proxy)</option>
+      <option value="system">Use system settings</option>
+      <option value="http">Use an HTTP proxy</option>
+      <option value="https">Use an HTTPS proxy</option>
+      <option value="socks4">Use a SOCKS4 proxy</option>
+      <option value="socks5">Use a SOCKS5 proxy</option>
+    </select>
+  </div>
+  <div id="upstreamDetailsFields" style="display:none;">
+    <div class="form-group" style="margin-bottom:12px;">
+      <label id="upstreamDetailsLabel">Proxy details</label>
+      <input type="text" id="upstreamDetails" placeholder="hostname:port or user:pass@hostname:port" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
+    </div>
+    <div class="form-group" style="margin-bottom:12px;">
+      <label>Non-proxied hosts (optional, comma-separated)</label>
+      <input type="text" id="upstreamNoProxy" placeholder="localhost, 127.0.0.1, *.internal.com" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:12px;width:100%;box-sizing:border-box;">
+    </div>
+    <button class="btn btn-primary" onclick="saveUpstreamProxy()" style="font-size:12px;">Save proxy settings</button>
+  </div>
+  <div id="upstreamStatus" style="margin-top:8px;font-size:12px;color:var(--text-lowlight);"></div>
+  <p style="font-size:11px;color:var(--text-lowlight);margin-top:12px;line-height:1.4;">
+    Configure how intercepted traffic is forwarded. You can route traffic through an upstream proxy for corporate networks, VPNs, or Tor.
+  </p>
+</div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">Client Certificates</div>
+  <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
+    Configure client certificates to send when connecting to specific hosts. Useful for mutual TLS (mTLS) authentication.
+  </p>
+  <div id="clientCertList" style="margin-bottom:8px;"></div>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="clientCertHost" placeholder="hostname (or * for all hosts)" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <input type="text" id="clientCertPath" placeholder="Path to .pfx/.p12 file" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <button class="btn" onclick="addClientCert()" style="font-size:11px;">Add</button>
+  </div>
+</div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">Trusted CA Certificates</div>
+  <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
+    Additional CA certificates to trust when connecting to upstream servers.
+  </p>
+  <div id="trustedCAList" style="margin-bottom:8px;"></div>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="trustedCAPath" placeholder="Path to .pem/.crt file" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <button class="btn" onclick="addTrustedCA()" style="font-size:11px;">Add</button>
+  </div>
+</div>
+          <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">HTTPS Validation Whitelist</div>
+  <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
+    Hosts listed here will skip strict HTTPS certificate validation. Useful for self-signed certificates on internal services.
+  </p>
+  <div id="httpsWhitelistList" style="margin-bottom:8px;"></div>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="httpsWhitelistHost" placeholder="hostname to skip validation" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <button class="btn" onclick="addHttpsWhitelist()" style="font-size:11px;">Add</button>
+  </div>
+</div>
+          <div class="card" style="margin-bottom:20px;"><div class="card-header">Certificate Authority</div><div class="settings-row"><span class="settings-label">CA Fingerprint</span><span class="settings-value" style="font-size:10px;word-break:break-all;max-width:400px;" id="settingsCaFingerprint">--</span></div><div class="settings-row"><span class="settings-label">Download</span><button class="btn" onclick="downloadCert()">Download .pem</button></div><p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">To intercept HTTPS from manually configured clients, install this CA cert. Browsers launched from the Intercept page are configured automatically.</p></div>
+          <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">Theme</div>
+            <div class="settings-row">
+              <span class="settings-label">Appearance</span>
+              <select id="themeSelect" onchange="setTheme(this.value)" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
+                <option value="auto">Automatic (follow system)</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="high-contrast">High Contrast</option>
+              </select>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              Choose a theme. Automatic follows your operating system preference.
+            </p>
+          </div>
+          <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">API Specifications</div>
+            <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
+              Upload OpenAPI or Swagger specs to get auto-documentation for matching requests in the detail view.
+            </p>
+            <div id="apiSpecsList" style="margin-bottom:8px;"></div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button class="btn" onclick="uploadApiSpec()" style="font-size:12px;">Upload OpenAPI/Swagger Spec</button>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="status-indicator">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">Connecting...</span>
+        </div>
+        <span style="font-family:var(--font-mono);font-size:12px;" id="footerRequestCount">0 requests</span>
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-watermark);" id="footerFilterCount"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:12px;">
+        <span>Proxy: <span style="color:var(--pop-color);" id="proxyPortDisplay">--</span></span>
+        <span>API: <span style="color:var(--pop-color);" id="apiPortDisplay">--</span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
