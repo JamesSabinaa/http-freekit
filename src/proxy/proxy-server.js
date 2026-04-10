@@ -1135,32 +1135,28 @@ export class ProxyServer {
             const upstreamConn = this._isSocksProxy()
               ? await this._connectViaSocksTls(hostname, targetPort)
               : await this._connectViaUpstream(hostname, targetPort);
-            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, making HTTPS request via agent: ${req.method} ${req.url}`);
-            // Use a one-shot agent that provides the pre-connected tunnel socket
-            const tunnelAgent = new https.Agent({ keepAlive: false });
-            const origCreateConn = tunnelAgent.createConnection;
-            tunnelAgent.createConnection = function(opts, cb) {
-              console.log(`[Proxy Debug] Agent createConnection called for ${opts.host}`);
-              // Wrap the raw tunnel socket in TLS
-              const tlsSocket = tls.connect({
-                socket: upstreamConn,
-                servername: hostname,
-                rejectUnauthorized: false
-              }, () => {
-                console.log(`[Proxy Debug] TLS handshake complete for ${hostname}`);
-                cb(null, tlsSocket);
+            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, TLS connecting...`);
+            // Manually TLS-wrap the tunnel socket, then make a plain HTTP request over it
+            const tlsConn = tls.connect({
+              socket: upstreamConn,
+              servername: hostname,
+              rejectUnauthorized: false
+            });
+            await new Promise((tlsResolve, tlsReject) => {
+              tlsConn.once('secureConnect', () => {
+                console.log(`[Proxy Debug] TLS connected to ${hostname} via tunnel`);
+                tlsResolve();
               });
-              tlsSocket.on('error', (err) => {
+              tlsConn.once('error', (err) => {
                 console.log(`[Proxy Debug] TLS error for ${hostname}: ${err.message}`);
-                cb(err);
+                tlsReject(err);
               });
-              return tlsSocket;
-            };
-            proxyReq = https.request({
+            });
+            // Now make a plain HTTP request over the TLS socket
+            proxyReq = http.request({
               hostname, port: targetPort, path: req.url, method: req.method,
               headers: { ...req.headers },
-              agent: tunnelAgent,
-              rejectUnauthorized: false,
+              createConnection: () => tlsConn,
               insecureHTTPParser: true
             }, handleResponse);
             proxyReq.on('error', (err) => {
