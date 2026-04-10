@@ -1,4 +1,5 @@
 ## Codebase Patterns
+- Electron main process is `electron/main.cjs` (must be `.cjs` because `"type": "module"` in package.json); `"main"` in package.json points to it; server scripts still use explicit `src/index.js` path
 - Design tokens are CSS custom properties in src/ui/styles.css, organized by theme (:root = dark, [data-theme="light"], [data-theme="high-contrast"])
 - Reference source of truth for all design tokens: httptoolkit-ui/src/styles.ts
 - Box shadows use `rgb(0 0 0 / var(--box-shadow-alpha))` so they auto-adapt to themes (dark=0.4, light=0.3, high-contrast=0.1)
@@ -369,4 +370,19 @@
   - Each mock handler has ~5-8 `_emitRequest` calls (close, reset, forward success, forward error, serve-file, breakpoint-request, breakpoint-response, fixed-response) — all need `originalRequest` and `transformedBy` fields
   - `getEffectiveRequest(req)` returns a spread copy with original data overlaid — this avoids mutating the stored request object
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-020
+- What was implemented: Electron main process with BrowserWindow, electron-window-state for persistent window size/position, and `npm run electron` script
+- Files changed:
+  - electron/main.cjs — New file: Electron main process with BrowserWindow creation, window state persistence, secure webPreferences
+  - package.json — Added electron/electron-window-state devDependencies, set `"main": "electron/main.cjs"`, added `"electron": "electron ."` script
+  - package-lock.json — Updated with new dependencies
+- **Learnings for future iterations:**
+  - Electron main process must use `.cjs` extension because the project has `"type": "module"` in package.json — `.js` files are treated as ESM where `require()` doesn't work
+  - `electron-window-state` uses `windowState.manage(mainWindow)` to auto-persist size/position/maximized state
+  - The `"main"` field in package.json now points to `electron/main.cjs` (Electron's entry point); `npm start` / `npm run dev` still explicitly reference `src/index.js`
+  - Server must be running before launching Electron (US-021 will handle auto-start); for now: `npm start` in one terminal, `npm run electron` in another
+  - Window `show: false` + `ready-to-show` event prevents white flash on startup
+  - `contextIsolation: true` and `nodeIntegration: false` are security best practices for Electron
 ---
