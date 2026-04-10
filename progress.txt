@@ -48,6 +48,11 @@
 - H2 upstream is skipped when `this.upstreamProxy` is configured (upstream proxy uses CONNECT tunneling which is always h1.1)
 - `_h2Blacklist` Set remembers origins that failed h2 connect to avoid repeated 5s connect timeouts
 - All three HTTPS forwarding paths (_handleTlsConnection, _handleHttp2Connection stream, _handleHttp2Connection h1 fallback) try h2 upstream first with h1.1 fallback
+- TLS error events: `protocol: 'tls-error'`, `source: 'tls-error'`, include `error` (message) and `errorCode` (e.g. `ERR_SSL_WRONG_VERSION_NUMBER`) fields
+- Tunnel events: `protocol: 'tunnel'`, `source: 'tunnel'`; emitted for TLS passthrough (on close) and MITM connections with no HTTP request within 5s
+- TLS error and tunnel rows use `.tls-error-row` and `.tunnel-row` CSS classes (italic, 28px height, centered text) — distinct from standard 32px rows
+- Row marker colors: TLS error = `#ce3939` (red), tunnel = `#888` (grey)
+- Special row types (tls-error, tunnel) are handled as early returns in `buildRowHtml()` before the standard row logic, same pattern as `ws-frame`
 
 ---
 
@@ -216,4 +221,21 @@
   - H2 pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`) must be added for outgoing h2 requests and stripped from response headers
   - The `host` header must be excluded when sending h2 requests — h2 uses `:authority` instead
   - Connection-level h1 headers (`connection`, `keep-alive`, `transfer-encoding`, `upgrade`) must be stripped from h2 requests/responses
+---
+
+## 2026-04-10 - US-012
+- What was implemented: TLS failure and tunnel events with distinct row types and detail panes
+- Files changed:
+  - src/proxy/proxy-server.js — Added tunnel event emission for TLS passthrough (byte tracking, emit on close) and MITM timeout (5s no-HTTP-request detection) in both `_handleTlsConnection` and `_handleHttp2Connection`; added `errorCode` field to all TLS error event emissions
+  - src/ui/app.js — Added `tunnel` source icon (ph-plugs-connected); added dedicated TLS error and tunnel row rendering in `buildRowHtml()` with italic/28px/centered styling; updated `showDetail()` titles for tls-error and tunnel protocols; enhanced TLS error detail pane with error code field; added tunnel detail pane with hostname, port, bytes transferred, duration, and TLS info
+  - src/ui/styles.css — Added `.tls-error-row` and `.tunnel-row` CSS classes (28px, italic, 12px font); added light and high-contrast theme overrides for both row types
+  - prd.json — Set US-012 passes to true
+- **Learnings for future iterations:**
+  - TLS passthrough tunnels can track bytes by adding `data` event listeners before `pipe()` — both listeners fire since EventEmitter supports multiple listeners
+  - The 5s tunnel timeout approach works well for detecting non-HTTP CONNECT tunnels: set timer before feeding socket into virtual HTTP server, clear it when first request arrives
+  - Both `_handleTlsConnection` and `_handleHttp2Connection` need the tunnel timeout since either may be used depending on `http2Enabled` setting
+  - The h2 server's `request` event handler (h1.1 fallback path) also needs to clear the tunnel timer — not just the `stream` handler
+  - Special row types (tls-error, tunnel, ws-frame) follow the same early-return pattern in `buildRowHtml()` — check protocol first, return custom HTML before the standard row logic
+  - TLS error `err.code` values (e.g. `ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN`, `ERR_SSL_WRONG_VERSION_NUMBER`) are more useful for debugging than `err.message`
+  - Manual browser verification is recommended for this story
 ---

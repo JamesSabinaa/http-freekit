@@ -462,12 +462,37 @@ export class ProxyServer {
     // TLS passthrough — no MITM, no certificate generation
     if (this.tlsPassthrough.includes(hostname) ||
         this.tlsPassthrough.some(p => p.startsWith('*.') && hostname.endsWith(p.slice(1)))) {
+      const tunnelId = uuidv4();
+      const startTime = Date.now();
+      let clientBytes = head.length;
+      let serverBytes = 0;
+      let tunnelEmitted = false;
+
+      const emitTunnel = () => {
+        if (tunnelEmitted) return;
+        tunnelEmitted = true;
+        this._emitRequest({
+          id: tunnelId, protocol: 'tunnel', method: 'CONNECT',
+          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          requestHeaders: {}, requestBody: '', requestBodySize: clientBytes,
+          statusCode: 200, statusMessage: 'Tunnel Established',
+          responseHeaders: {}, responseBody: '', responseBodySize: serverBytes,
+          duration: Date.now() - startTime, timestamp: startTime,
+          source: 'tunnel', tls: null,
+          remote: { address: hostname, port: targetPort }
+        });
+      };
+
       const target = net.connect(targetPort, hostname, () => {
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         target.write(head);
+        clientSocket.on('data', chunk => { clientBytes += chunk.length; });
+        target.on('data', chunk => { serverBytes += chunk.length; });
         target.pipe(clientSocket);
         clientSocket.pipe(target);
       });
+      target.on('close', emitTunnel);
+      clientSocket.on('close', emitTunnel);
       target.on('error', () => clientSocket.destroy());
       clientSocket.on('error', () => target.destroy());
       return;
@@ -537,6 +562,7 @@ export class ProxyServer {
         duration: 0,
         timestamp: Date.now(),
         error: err.message,
+        errorCode: err.code || null,
         source: 'tls-error',
         tls: null,
         remote: null
@@ -551,9 +577,37 @@ export class ProxyServer {
       version: tlsSocket.getProtocol?.() || 'TLSv1.2'
     } : null;
 
+    // Track whether any HTTP request is received on this connection
+    let httpRequestReceived = false;
+    const tunnelStartTime = Date.now();
+    let tunnelBytesIn = 0;
+    let tunnelBytesOut = 0;
+    let tunnelEmitted = false;
+
+    const tunnelTimer = setTimeout(() => {
+      if (!httpRequestReceived && !tunnelEmitted) {
+        tunnelEmitted = true;
+        this._emitRequest({
+          id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
+          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          requestHeaders: {}, requestBody: '', requestBodySize: tunnelBytesIn,
+          statusCode: 200, statusMessage: 'Raw Tunnel',
+          responseHeaders: {}, responseBody: '', responseBodySize: tunnelBytesOut,
+          duration: Date.now() - tunnelStartTime, timestamp: tunnelStartTime,
+          source: 'tunnel', tls: tlsDetails,
+          remote: { address: hostname, port: targetPort }
+        });
+      }
+    }, 5000);
+
+    tlsSocket.on('data', chunk => { tunnelBytesIn += chunk.length; });
+    tlsSocket.on('close', () => clearTimeout(tunnelTimer));
+
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
     const virtualServer = http.createServer((req, res) => {
+      httpRequestReceived = true;
+      clearTimeout(tunnelTimer);
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
@@ -1049,6 +1103,7 @@ export class ProxyServer {
           duration: 0,
           timestamp: Date.now(),
           error: err.message,
+          errorCode: err.code || null,
           source: 'tls-error',
           tls: null,
           remote: null
@@ -1065,11 +1120,36 @@ export class ProxyServer {
       version: tlsSocket.getProtocol?.() || 'TLSv1.2'
     } : null;
 
+    // Track whether any HTTP request is received on this connection
+    let httpRequestReceived = false;
+    const tunnelStartTime = Date.now();
+    let tunnelEmitted = false;
+
+    const tunnelTimer = setTimeout(() => {
+      if (!httpRequestReceived && !tunnelEmitted) {
+        tunnelEmitted = true;
+        this._emitRequest({
+          id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
+          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          requestHeaders: {}, requestBody: '', requestBodySize: 0,
+          statusCode: 200, statusMessage: 'Raw Tunnel',
+          responseHeaders: {}, responseBody: '', responseBodySize: 0,
+          duration: Date.now() - tunnelStartTime, timestamp: tunnelStartTime,
+          source: 'tunnel', tls: tlsDetails,
+          remote: { address: hostname, port: targetPort }
+        });
+      }
+    }, 5000);
+
+    tlsSocket.on('close', () => clearTimeout(tunnelTimer));
+
     // Create an HTTP/2 server that also handles HTTP/1.1 fallback via allowHTTP1
     const h2Server = http2.createServer({ allowHTTP1: true });
 
     // HTTP/2 streams — each stream is a separate request
     h2Server.on('stream', (stream, headers) => {
+      httpRequestReceived = true;
+      clearTimeout(tunnelTimer);
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
@@ -1273,6 +1353,8 @@ export class ProxyServer {
 
     // HTTP/1.1 fallback — when allowHTTP1 is true and client negotiates h1.1
     h2Server.on('request', (req, res) => {
+      httpRequestReceived = true;
+      clearTimeout(tunnelTimer);
       // This fires for HTTP/1.1 requests when allowHTTP1 is true.
       // HTTP/2 requests are handled by the 'stream' event above, not this one.
       // Only handle if this is actually an HTTP/1.1 request (not an h2 stream).
@@ -1467,6 +1549,7 @@ export class ProxyServer {
           duration: 0,
           timestamp: Date.now(),
           error: err.message,
+          errorCode: err.code || null,
           source: 'tls-error',
           tls: null,
           remote: null

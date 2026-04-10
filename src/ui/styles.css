@@ -178,6 +178,12 @@
     [data-theme="light"] .traffic-table tbody tr.ws-frame-row:hover {
       background: #e8e8e8;
     }
+    [data-theme="light"] .traffic-table tbody tr.tls-error-row:hover {
+      background: #e8e8e8;
+    }
+    [data-theme="light"] .traffic-table tbody tr.tunnel-row:hover {
+      background: #e8e8e8;
+    }
 
     [data-theme="light"] .card {
       box-shadow: 0 2px 10px 0 rgb(0 0 0 / var(--box-shadow-alpha));
@@ -281,6 +287,10 @@
     }
     [data-theme="high-contrast"] .traffic-table tbody tr.ws-frame-row {
       background: #111111;
+    }
+    [data-theme="high-contrast"] .traffic-table tbody tr.tls-error-row,
+    [data-theme="high-contrast"] .traffic-table tbody tr.tunnel-row {
+      color: #ffffff;
     }
 
     [data-theme="high-contrast"] .card {
@@ -709,6 +719,37 @@
       background-color: var(--bg-highlight);
       font-weight: bold;
     }
+
+    /* TLS error rows — italic, 28px, centered */
+    .traffic-table tbody tr.tls-error-row {
+      height: 28px;
+      font-style: italic;
+      font-size: 12px;
+      color: var(--text-lowlight);
+    }
+    .traffic-table tbody tr.tls-error-row:hover {
+      background: var(--bg-highlight);
+    }
+    .traffic-table tbody tr.tls-error-row.selected {
+      background-color: var(--bg-highlight);
+      font-weight: bold;
+    }
+
+    /* Raw tunnel rows — italic, 28px, centered */
+    .traffic-table tbody tr.tunnel-row {
+      height: 28px;
+      font-style: italic;
+      font-size: 12px;
+      color: var(--text-lowlight);
+    }
+    .traffic-table tbody tr.tunnel-row:hover {
+      background: var(--bg-highlight);
+    }
+    .traffic-table tbody tr.tunnel-row.selected {
+      background-color: var(--bg-highlight);
+      font-weight: bold;
+    }
+
     .ws-frame-dir {
       display: inline-block;
       width: 16px;

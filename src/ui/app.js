@@ -349,7 +349,8 @@
       Docker: _cube,
       mock: _gear, import: _folder,
       proxy: _globe, Unknown: _globe, Other: _globe,
-      'tls-error': '<i class="ph ph-lock-simple-open" style="font-size:16px;line-height:1;color:#ce3939;"></i>'
+      'tls-error': '<i class="ph ph-lock-simple-open" style="font-size:16px;line-height:1;color:#ce3939;"></i>',
+      tunnel: '<i class="ph ph-plugs-connected" style="font-size:16px;line-height:1;color:#888;"></i>'
     };
 
     function buildRowHtml(req, index) {
@@ -369,8 +370,38 @@
         </tr>`;
       }
 
+      // ---- TLS error row (italic, 28px, centered text) ----
+      if (req.protocol === 'tls-error') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const source = req.source || 'tls-error';
+        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS['tls-error'];
+        return `<tr class="tls-error-row ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
+          <td><span class="method-badge method-CONNECT">TLS</span></td>
+          <td><span class="status-badge status-5xx">ERR</span></td>
+          <td class="source-cell"><span class="source-icon source-tls-error" title="TLS Error">${sourceIcon}</span></td>
+          <td colspan="2" style="text-align:center;" title="${esc(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
+        </tr>`;
+      }
+
+      // ---- Tunnel row (italic, 28px, centered text) ----
+      if (req.protocol === 'tunnel') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const source = req.source || 'tunnel';
+        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
+        const bytesSent = formatSize(req.requestBodySize || 0);
+        const bytesRecv = formatSize(req.responseBodySize || 0);
+        return `<tr class="tunnel-row ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
+          <td><span class="method-badge method-CONNECT">TUNNEL</span></td>
+          <td><span class="status-badge status-2xx">200</span></td>
+          <td class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
+          <td colspan="2" style="text-align:center;" title="Tunnel to ${esc(req.host || '-')}:${req.remote?.port || 443}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+        </tr>`;
+      }
+
       // ---- Standard row ----
-      const methodClass = req.protocol === 'ws' ? 'method-WS' : req.protocol === 'tls-error' ? 'method-CONNECT' : `method-${req.method}`;
+      const methodClass = req.protocol === 'ws' ? 'method-WS' : `method-${req.method}`;
       let statusClass = req.error ? 'status-err' :
         req.statusCode < 200 ? 'status-1xx' :
         req.statusCode < 300 ? 'status-2xx' :
@@ -378,9 +409,6 @@
         req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
       if (req.protocol === 'ws') {
         statusClass = 'status-2xx';
-      }
-      if (req.protocol === 'tls-error' || req.source === 'tls-error') {
-        statusClass = 'status-5xx';
       }
       const source = req.source || 'proxy';
       const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
@@ -406,7 +434,7 @@
 
       return `<tr class="${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td>${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
+        <td>${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
         <td>${statusHtml}</td>
         <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
         <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
@@ -547,6 +575,10 @@
       if (req.protocol === 'ws-frame') {
         const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
         document.getElementById('detailTitle').textContent = 'WS Frame: ' + (req.opcodeName || 'data') + ' (' + dirLabel + ')';
+      } else if (req.protocol === 'tls-error') {
+        document.getElementById('detailTitle').textContent = 'TLS Error: ' + (req.host || '-');
+      } else if (req.protocol === 'tunnel') {
+        document.getElementById('detailTitle').textContent = 'Tunnel: ' + (req.host || '-');
       } else {
         document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
       }
@@ -1055,6 +1087,10 @@
           </div>
         </div>`;
 
+        const errorCodeRow = req.errorCode
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">Error Code</div><div class="detail-summary-value" style="font-family:monospace;font-size:12px;color:#ce3939;">${esc(req.errorCode)}</div></div>`
+          : '';
+
         html += `<div class="detail-card dir-right" style="border-right-color:#ce3939;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -1065,10 +1101,62 @@
           </div>
           <div class="detail-card-body">
             <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Error</div><div class="detail-summary-value" style="font-size:11px;word-break:break-all;color:#ce3939;">${esc(req.error || req.responseBody || 'Unknown TLS error')}</div></div>
+              ${errorCodeRow}
               <div class="detail-summary-item"><div class="detail-summary-label">URL</div><div class="detail-summary-value" style="font-size:11px;word-break:break-all;">${esc(req.url)}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Host</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Method</div><div class="detail-summary-value">${esc(req.method)}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Timestamp</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleString()}</div></div>
+            </div>
+          </div>
+        </div>`;
+
+        content.innerHTML = html;
+        return;
+      }
+
+      // ---- Tunnel Card ----
+      if (req.protocol === 'tunnel') {
+        const bytesSent = formatSize(req.requestBodySize || 0);
+        const bytesRecv = formatSize(req.responseBodySize || 0);
+        const durationStr = req.duration >= 1000
+          ? (req.duration / 1000).toFixed(1) + 's'
+          : req.duration + 'ms';
+        const portStr = req.remote?.port || 443;
+
+        html += `<div class="detail-card" style="border-left:4px solid #888;background:rgba(136,136,136,0.07);">
+          <div class="detail-card-body" style="padding:16px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span style="font-size:20px;color:#888;">${SOURCE_ICONS.tunnel}</span>
+              <div style="flex:1;">
+                <div style="font-weight:bold;color:var(--text-main);margin-bottom:4px;">Raw Tunnel</div>
+                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${esc(req.host || '-')}:${portStr}</div>
+                <div style="font-size:12px;color:var(--text-lowlight);">CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received</div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+        const tlsRow = req.tls
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">TLS</div><div class="detail-summary-value">${esc(req.tls.version || '-')} / ${esc(req.tls.cipher || '-')}</div></div>`
+          : '';
+
+        html += `<div class="detail-card dir-right" style="border-right-color:#888;">
+          <div class="detail-card-header">
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+              <span class="detail-pill" style="background:#888;color:#fff;">Tunnel</span>
+              <span class="detail-card-heading">Details</span>
+              <span class="collapse-chevron">&#9650;</span>
+            </span>
+          </div>
+          <div class="detail-card-body">
+            <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Port</div><div class="detail-summary-value">${portStr}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Bytes Sent</div><div class="detail-summary-value">${bytesSent}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Bytes Received</div><div class="detail-summary-value">${bytesRecv}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value">${durationStr}</div></div>
+              ${tlsRow}
+              <div class="detail-summary-item"><div class="detail-summary-label">Timestamp</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleString()}</div></div>
             </div>
           </div>
         </div>`;
