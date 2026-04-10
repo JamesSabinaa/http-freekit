@@ -950,6 +950,7 @@
     .status-5xx { color: #ce3939; }
     .status-err { color: #ce3939; }
     .status-breakpoint { background: #f1971f33; color: #f1971f; font-size: 14px; }
+    .status-pending { background: transparent; color: var(--text-watermark); font-size: 12px; }
 
     /* ============================================================
        12. Traffic Footer (matches HTTP Toolkit: search | count | buttons)

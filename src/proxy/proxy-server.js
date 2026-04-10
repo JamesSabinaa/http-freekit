@@ -394,6 +394,15 @@ export class ProxyServer {
         };
       }
 
+      // Emit pending request immediately so it appears in the UI
+      this._emitPendingRequest({
+        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestBodySize: body.length, timestamp: startTime, source: 'proxy',
+        tls: null, remote: null
+      });
+
       const connectStart = Date.now();
       const proxyReq = http.request(options, (proxyRes) => {
         const responseBody = [];
@@ -410,7 +419,7 @@ export class ProxyServer {
           clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
           clientRes.end(resBody);
 
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId,
             protocol: 'http',
             method: clientReq.method,
@@ -445,7 +454,7 @@ export class ProxyServer {
         clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
         clientRes.end(`Proxy Error: ${err.message}`);
 
-        this._emitRequest({
+        this._emitRequestUpdate({
           id: requestId,
           protocol: 'http',
           method: clientReq.method,
@@ -2847,6 +2856,32 @@ export class ProxyServer {
       this.onRequest(data);
     } catch (err) {
       console.error('[Proxy] Error in request handler:', err.message);
+    }
+  }
+
+  // Emit a pending request that appears in the UI immediately (before response arrives)
+  _emitPendingRequest(data) {
+    data._pending = true;
+    data.statusCode = null;
+    data.statusMessage = 'Pending';
+    data.responseHeaders = {};
+    data.responseBody = '';
+    data.responseBodySize = 0;
+    data.duration = null;
+    this._emitRequest(data);
+  }
+
+  // Emit an update that replaces an existing pending request
+  _emitRequestUpdate(data) {
+    data._update = true;
+    // Auto-detect source
+    if (data.source === 'proxy' && data.requestHeaders) {
+      data.source = this._detectSource(data.requestHeaders);
+    }
+    try {
+      this.onRequest(data);
+    } catch (err) {
+      console.error('[Proxy] Error in request update handler:', err.message);
     }
   }
 

@@ -126,6 +126,20 @@
             addRequest(msg.data);
           }
           break;
+        case 'request-update':
+          // Update an existing request in-place (pending → complete)
+          if (msg.data?.id) {
+            const idx = requests.findIndex(r => r.id === msg.data.id);
+            if (idx !== -1) {
+              requests[idx] = msg.data;
+              applyFilter();
+              // If this request is currently selected, refresh the detail view
+              if (selectedRequestId === msg.data.id) {
+                renderDetailCards(msg.data);
+              }
+            }
+          }
+          break;
         case 'traffic-cleared':
           requests = requests.filter(r => r.pinned);
           wsFramesByParent = {};
@@ -445,7 +459,8 @@
 
       // ---- Standard row ----
       const methodClass = req.protocol === 'ws' ? 'method-WS' : `method-${req.method}`;
-      let statusClass = req.error ? 'status-err' :
+      let statusClass = req.statusCode === null || req.statusCode === undefined ? 'status-pending' :
+        req.error ? 'status-err' :
         req.statusCode < 200 ? 'status-1xx' :
         req.statusCode < 300 ? 'status-2xx' :
         req.statusCode < 400 ? 'status-3xx' :
@@ -459,7 +474,9 @@
       const markerColor = req.source === 'breakpoint' ? '#f1971f' :
         ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
         source === 'mock' ? '#6e40aa' : '#888';
-      const statusHtml = req.source === 'breakpoint' && req.statusCode === 0
+      const statusHtml = req.statusCode === null || req.statusCode === undefined
+        ? '<span class="status-badge status-pending" title="Pending..."><i class="ph ph-circle-notch" style="animation:spin 1s linear infinite;font-size:12px;"></i></span>'
+        : req.source === 'breakpoint' && req.statusCode === 0
         ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
         : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
       const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';

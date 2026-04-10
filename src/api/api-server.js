@@ -626,11 +626,25 @@ export class ApiServer {
     const apiMatch = this.proxy.matchApiSpec(data.method, data.path, data.host);
     if (apiMatch) data.apiMatch = apiMatch;
 
-    this.trafficLog.push(data);
-    if (this.trafficLog.length > this.maxTrafficLog) {
-      this.trafficLog.shift();
+    if (data._update) {
+      // Update an existing pending request in-place
+      delete data._update;
+      const idx = this.trafficLog.findIndex(r => r.id === data.id);
+      if (idx !== -1) {
+        this.trafficLog[idx] = data;
+      } else {
+        this.trafficLog.push(data);
+      }
+      this._broadcast({ type: 'request-update', data });
+    } else {
+      // New request (pending or complete)
+      delete data._pending;
+      this.trafficLog.push(data);
+      if (this.trafficLog.length > this.maxTrafficLog) {
+        this.trafficLog.shift();
+      }
+      this._broadcast({ type: 'request', data });
     }
-    this._broadcast({ type: 'request', data });
   }
 
   _broadcast(message) {
