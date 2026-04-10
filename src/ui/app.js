@@ -4663,12 +4663,38 @@
         toast('Rule saved as draft (unsaved)', 'success');
       } else {
         draft.id = ruleId;
-        mockDraftRules.set(ruleId, draft);
-        // Update local copy so render shows draft data
-        _applyDraftToLocal(ruleId, draft);
-        mockEditingRule = null;
-        mockEditDraft = null;
-        toast('Changes saved as draft (unsaved)', 'success');
+        // Compare against the original server rule — only create a draft if something actually changed
+        const original = mockRules.find(r => r.id === ruleId);
+        const originalJson = original ? JSON.stringify({
+          enabled: original.enabled !== false,
+          priority: original.priority || 'normal',
+          matchers: original.matchers,
+          preSteps: (original.preSteps || []).filter(s => s && s.type),
+          action: original.action,
+          title: original.title || undefined
+        }) : null;
+        const draftJson = JSON.stringify({
+          enabled: draft.enabled,
+          priority: draft.priority,
+          matchers: draft.matchers,
+          preSteps: draft.preSteps,
+          action: draft.action,
+          title: draft.title
+        });
+
+        if (originalJson === draftJson) {
+          // No actual changes — don't create a draft
+          mockDraftRules.delete(ruleId);
+          mockEditingRule = null;
+          mockEditDraft = null;
+          toast('No changes to save', 'success');
+        } else {
+          mockDraftRules.set(ruleId, draft);
+          _applyDraftToLocal(ruleId, draft);
+          mockEditingRule = null;
+          mockEditDraft = null;
+          toast('Changes saved as draft (unsaved)', 'success');
+        }
       }
       updateMockSaveButtons();
       renderMockRules();
