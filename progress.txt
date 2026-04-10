@@ -63,6 +63,10 @@
 - For interceptors that need dynamic metadata refresh (like android-adb, jvm), `handleExpandableCardClick` always calls activate even when already active
 - JVM interceptor uses `jps -v` for process discovery, Java Attach API for agent loading, and falls back to proxy flag instructions if attach fails
 - JVM process list UI follows the same pattern as Android device list: `renderJvmConfig()`, `activateJvmProcess(pid)`, `refreshJvmProcesses()` — all mirroring the Android equivalents
+- Mock rules use a draft model: edits stored in `mockDraftRules` Map (keyed by rule ID), new drafts tracked in `mockNewDraftIds` Set; `saveMockRule()` saves to draft, `saveAllMockRules()`/`saveOneMockRule()` persist to server
+- Draft rules have orange left border (`.mock-rule-draft`) and glow; `updateMockSaveButtons()` shows/hides Save All + Revert buttons and unsaved badge
+- `_applyDraftToLocal(ruleId, draft)` overlays draft data onto the local `mockRules` array — called from `loadMockRules()` to preserve drafts after server reload
+- Navigation away from Mock page with unsaved drafts triggers a `confirm()` dialog in `switchPanel()`
 
 ---
 
@@ -315,5 +319,21 @@
   - When agent attachment fails (common with security managers or older JVMs), the interceptor provides a fallback command string with `-D` proxy flags for manual JVM launch
   - The `activatedProcesses` Map tracks attached PIDs — same pattern as `activatedDevices` in Android ADB
   - Reused `.android-refresh-btn` CSS class for refresh button styling (no need to duplicate)
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-017
+- What was implemented: Draft-based mock rule save model — all rule edits now stored as client-side drafts until explicitly saved to server
+- Files changed:
+  - src/ui/app.js — Added `mockDraftRules` Map and `mockNewDraftIds` Set for draft state; refactored `saveMockRule()` to save drafts locally; added `saveAllMockRules()`, `saveOneMockRule()`, `revertMockRules()`, `hasUnsavedMockChanges()`, `updateMockSaveButtons()`, `_applyDraftToLocal()`; updated `deleteMockRule`, `cloneMockRule`, `toggleMockRuleEnabled`, `renameMockRule`, `renameMockGroup`, `toggleMockGroupEnabled` to use draft model; updated `loadMockRules` to preserve drafts; added navigation warning in `switchPanel()`; added `.mock-rule-draft` class to `renderMockRuleRow()` and `renderMockGroup()`; added per-rule save-to-server button for drafts
+  - src/ui/index.html — Added Save All button (`#mockSaveAllBtn`), Revert button (`#mockRevertBtn`), and unsaved changes badge (`#mockUnsavedBadge`) to mock page header
+  - src/ui/styles.css — Added `.mock-rule-draft` (orange left border + glow), `.mock-group.mock-rule-draft`, `.mock-unsaved-badge`, `.mock-save-all-btn`, `.mock-revert-btn`, `.mock-save-server` styles
+  - prd.json — Marked US-017 as passes: true
+- **Learnings for future iterations:**
+  - The draft model uses a Map keyed by rule ID — for new rules that don't exist on the server yet, a temporary `__draft_` prefixed ID is assigned and tracked in `mockNewDraftIds`
+  - `loadMockRules()` must re-apply drafts after every server fetch: new drafts are re-appended to `mockRules`, existing drafts overlaid via `_applyDraftToLocal()`
+  - `cloneMockRule` and `addNewMockRule` now create draft entries instead of POSTing — this keeps the entire flow consistent
+  - Toggle enabled, rename, and group operations all save as drafts — they no longer send immediate API calls
+  - The `clearAllMockRules()` and `importMockRules()` (replace mode) must clear drafts to avoid stale state
   - Manual browser verification is recommended for this story
 ---

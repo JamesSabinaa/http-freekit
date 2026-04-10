@@ -8,6 +8,10 @@
     let sortDirection = 'desc';
     let config = {};
     let mockRules = [];
+    /** @type {Map<string, object>} Draft rules — unsaved changes keyed by rule ID */
+    const mockDraftRules = new Map();
+    /** @type {Set<string>} IDs of rules that are new (not yet on server) */
+    const mockNewDraftIds = new Set();
     let autoScroll = true;
     let requestCounter = 0;
     let filterDebounceTimer = null;
@@ -2979,6 +2983,8 @@
       if (mockRules.length === 0) return;
       try {
         await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+        mockDraftRules.clear();
+        mockNewDraftIds.clear();
         toast('All rules cleared', 'success');
         loadMockRules();
       } catch (err) {
@@ -3087,15 +3093,14 @@
       const name = prompt('Rule name:', rule.title || '');
       if (name === null) return;
       rule.title = name || undefined;
-
-      fetch(API_BASE + '/api/mock-rules/' + ruleId, {
-        method: 'PUT',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(rule)
-      }).then(() => {
-        renderMockRules();
-        toast(name ? 'Rule renamed' : 'Rule name cleared', 'success');
-      }).catch(err => toast('Error: ' + err.message, 'error'));
+      // Save as draft change
+      const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
+      draft.title = rule.title;
+      draft.id = ruleId;
+      mockDraftRules.set(ruleId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
+      toast(name ? 'Rule renamed (unsaved)' : 'Rule name cleared (unsaved)', 'success');
     }
 
     async function loadMockRules() {
@@ -3103,6 +3108,19 @@
         const res = await fetch(`${API_BASE}/api/mock-rules`);
         const data = await res.json();
         mockRules = data.rules || [];
+        // Re-add any new draft rules that haven't been saved to server yet
+        for (const [draftId, draft] of mockDraftRules) {
+          if (mockNewDraftIds.has(draftId)) {
+            // New draft not on server — add to local list
+            if (!mockRules.some(r => r.id === draftId)) {
+              mockRules.push(draft);
+            }
+          } else {
+            // Existing rule with unsaved changes — overlay draft onto local copy
+            _applyDraftToLocal(draftId, draft);
+          }
+        }
+        updateMockSaveButtons();
         renderMockRules();
       } catch {}
     }
@@ -3283,12 +3301,14 @@
       const nr = normalizeMockRule(rule);
       const isExpanded = mockExpandedRules.has(rule.id);
       const isEditing = mockEditingRule === rule.id;
+      const isDraft = mockDraftRules.has(rule.id);
       const summary = mockRuleSummary(rule);
       const color = MOCK_METHOD_COLORS[summary.methodStr] || MOCK_METHOD_COLORS['*'];
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
       const editingClass = isEditing ? ' mock-rule-editing' : '';
+      const draftClass = isDraft ? ' mock-rule-draft' : '';
 
-      let html = '<div class="mock-rule-card' + disabledClass + editingClass + '" data-rule-id="' + rule.id + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
+      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + rule.id + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
 
       html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(\'' + rule.id + '\')">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
@@ -3311,9 +3331,14 @@
       html += '<span style="font-size:10px;">' + chevron + '</span>';
       html += '</button>';
 
-      // 2. Save (when editing) or Edit (pencil icon)
+      // 2. Save to server (when draft) or Save draft (when editing) or Edit (pencil icon)
+      if (isDraft && !isEditing) {
+        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(\'' + rule.id + '\')" title="Save to server">';
+        html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
+        html += '</button>';
+      }
       if (isEditing) {
-        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save changes">';
+        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save as draft">';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       } else {
@@ -3359,8 +3384,10 @@
 
     function renderMockGroup(group) {
       const isCollapsed = group.collapsed;
+      const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
-      let html = '<div class="mock-group' + disabledClass + '" data-group-id="' + group.id + '">';
+      const draftClass = isDraft ? ' mock-rule-draft' : '';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '">';
 
       // Group header
       html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
@@ -3646,7 +3673,7 @@
       html += '</div>';
 
       html += '<div class="mock-editor-buttons">';
-      html += '<button class="btn btn-primary" onclick="saveMockRule(\'' + ruleId + '\')">Save</button>';
+      html += '<button class="btn btn-primary" onclick="saveMockRule(\'' + ruleId + '\')">Save Draft</button>';
       html += '<button class="btn" onclick="cancelMockEdit()">Cancel</button>';
       html += '</div>';
 
@@ -4002,9 +4029,8 @@
       if (mockExpandedRules.has(ruleId)) {
         // Collapse
         mockExpandedRules.delete(ruleId);
-        // If we were editing this rule, save and close
-        if (mockEditingRule === ruleId) {
-          // Auto-save on collapse
+        // If we were editing this rule, save as draft on collapse
+        if (mockEditingRule === ruleId && mockEditDraft) {
           saveMockRule(ruleId);
         }
         mockEditingRule = null;
@@ -4017,15 +4043,17 @@
       renderMockRules();
     }
 
-    async function toggleMockRuleEnabled(ruleId) {
-      try {
-        const res = await fetch(`${API_BASE}/api/mock-rules/${ruleId}/toggle`, { method: 'PATCH' });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        loadMockRules();
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-      }
+    function toggleMockRuleEnabled(ruleId) {
+      const rule = _findMockRuleDeep(ruleId);
+      if (!rule) return;
+      rule.enabled = rule.enabled === false ? true : false;
+      // Save as draft change
+      const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
+      draft.enabled = rule.enabled;
+      draft.id = ruleId;
+      mockDraftRules.set(ruleId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     function updateMockMatcher(idx, field, value, eid) {
@@ -4293,7 +4321,13 @@
       container.innerHTML = html;
     }
 
-    async function saveMockRule(ruleId) {
+    /** Check if there are any unsaved mock rule drafts */
+    function hasUnsavedMockChanges() {
+      return mockDraftRules.size > 0;
+    }
+
+    /** Save current editor state to draft (local only, not to server) */
+    function saveMockRule(ruleId) {
       if (!mockEditDraft) return;
 
       const hasContent = mockEditDraft.matchers.some(m => {
@@ -4305,45 +4339,172 @@
         return;
       }
 
-      try {
-        const preSteps = (mockEditDraft.preSteps || []).filter(s => s && s.type);
-        const payload = {
-          enabled: mockEditDraft.enabled !== false,
-          priority: mockEditDraft.priority || 'normal',
-          matchers: mockEditDraft.matchers,
-          preSteps: preSteps.length > 0 ? preSteps : undefined,
-          action: mockEditDraft.action,
-          title: mockEditDraft.title || undefined
-        };
+      const preSteps = (mockEditDraft.preSteps || []).filter(s => s && s.type);
+      const draft = {
+        enabled: mockEditDraft.enabled !== false,
+        priority: mockEditDraft.priority || 'normal',
+        matchers: mockEditDraft.matchers,
+        preSteps: preSteps.length > 0 ? preSteps : [],
+        action: mockEditDraft.action,
+        title: mockEditDraft.title || undefined
+      };
 
-        let res;
-        if (ruleId === '__new__') {
-          res = await fetch(`${API_BASE}/api/mock-rules`, {
+      if (ruleId === '__new__') {
+        // Assign a temporary client-side ID for the new draft
+        const tempId = '__draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        draft.id = tempId;
+        mockDraftRules.set(tempId, draft);
+        mockNewDraftIds.add(tempId);
+        // Add to local mockRules so it renders
+        mockRules.push(draft);
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('Rule saved as draft (unsaved)', 'success');
+      } else {
+        draft.id = ruleId;
+        mockDraftRules.set(ruleId, draft);
+        // Update local copy so render shows draft data
+        _applyDraftToLocal(ruleId, draft);
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('Changes saved as draft (unsaved)', 'success');
+      }
+      updateMockSaveButtons();
+      renderMockRules();
+    }
+
+    /** Apply a draft's data onto the local mockRules array for rendering */
+    function _applyDraftToLocal(ruleId, draft) {
+      for (let i = 0; i < mockRules.length; i++) {
+        if (mockRules[i].id === ruleId) {
+          Object.assign(mockRules[i], draft);
+          return;
+        }
+        if (mockRules[i].type === 'group' && mockRules[i].items) {
+          for (let j = 0; j < mockRules[i].items.length; j++) {
+            if (mockRules[i].items[j].id === ruleId) {
+              Object.assign(mockRules[i].items[j], draft);
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    /** Send ALL draft rules to the server */
+    async function saveAllMockRules() {
+      if (!hasUnsavedMockChanges()) return;
+      try {
+        const entries = Array.from(mockDraftRules.entries());
+        for (const [draftId, draft] of entries) {
+          const payload = { ...draft };
+          delete payload.id;
+          if (mockNewDraftIds.has(draftId)) {
+            const res = await fetch(`${API_BASE}/api/mock-rules`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+          } else {
+            const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+          }
+        }
+        mockDraftRules.clear();
+        mockNewDraftIds.clear();
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('All changes saved', 'success');
+        loadMockRules();
+      } catch (err) {
+        toast('Error saving rules: ' + err.message, 'error');
+      }
+    }
+
+    /** Send a single draft rule to the server */
+    async function saveOneMockRule(draftId) {
+      const draft = mockDraftRules.get(draftId);
+      if (!draft) return;
+      try {
+        const payload = { ...draft };
+        delete payload.id;
+        if (mockNewDraftIds.has(draftId)) {
+          const res = await fetch(`${API_BASE}/api/mock-rules`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
         } else {
-          res = await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, {
+          const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
         }
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        mockEditingRule = null;
-        mockEditDraft = null;
-        toast(ruleId === '__new__' ? 'Rule created' : 'Rule updated', 'success');
+        mockDraftRules.delete(draftId);
+        mockNewDraftIds.delete(draftId);
+        toast('Rule saved to server', 'success');
         loadMockRules();
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
     }
 
+    /** Revert all unsaved draft changes (reload from server) */
+    function revertMockRules() {
+      if (!hasUnsavedMockChanges()) return;
+      mockDraftRules.clear();
+      mockNewDraftIds.clear();
+      mockEditingRule = null;
+      mockEditDraft = null;
+      toast('All unsaved changes discarded', 'success');
+      loadMockRules();
+    }
+
+    /** Update Save All / Revert button visibility based on draft state */
+    function updateMockSaveButtons() {
+      const saveAllBtn = document.getElementById('mockSaveAllBtn');
+      const revertBtn = document.getElementById('mockRevertBtn');
+      const unsavedBadge = document.getElementById('mockUnsavedBadge');
+      const hasDrafts = hasUnsavedMockChanges();
+      if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
+      if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
+      if (unsavedBadge) {
+        unsavedBadge.style.display = hasDrafts ? '' : 'none';
+        unsavedBadge.textContent = mockDraftRules.size + ' unsaved change' + (mockDraftRules.size !== 1 ? 's' : '');
+      }
+    }
+
     async function deleteMockRule(ruleId) {
       try {
+        // If it's a new draft that hasn't been saved to server, just remove locally
+        if (mockNewDraftIds.has(ruleId)) {
+          mockDraftRules.delete(ruleId);
+          mockNewDraftIds.delete(ruleId);
+          mockRules = mockRules.filter(r => r.id !== ruleId);
+          mockExpandedRules.delete(ruleId);
+          if (mockEditingRule === ruleId) {
+            mockEditingRule = null;
+            mockEditDraft = null;
+          }
+          toast('Draft rule deleted', 'success');
+          updateMockSaveButtons();
+          renderMockRules();
+          return;
+        }
+        // Also clean up any draft for this rule
+        mockDraftRules.delete(ruleId);
         await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
         mockExpandedRules.delete(ruleId);
         if (mockEditingRule === ruleId) {
@@ -4351,26 +4512,27 @@
           mockEditDraft = null;
         }
         toast('Rule deleted', 'success');
+        updateMockSaveButtons();
         loadMockRules();
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
     }
 
-    async function cloneMockRule(ruleId) {
+    function cloneMockRule(ruleId) {
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       const clone = JSON.parse(JSON.stringify(rule));
-      delete clone.id; // Let the server assign a new ID
-      try {
-        await fetch(API_BASE + '/api/mock-rules', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(clone)
-        });
-        toast('Rule cloned', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      // Assign a temporary draft ID
+      const tempId = '__draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      clone.id = tempId;
+      if (clone.title) clone.title = clone.title + ' (copy)';
+      mockDraftRules.set(tempId, clone);
+      mockNewDraftIds.add(tempId);
+      mockRules.push(clone);
+      toast('Rule cloned as draft (unsaved)', 'success');
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     // ============ MOCK RULE GROUPS ============
@@ -4383,10 +4545,13 @@
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       group.enabled = group.enabled === false ? true : false;
-      fetch(API_BASE + '/api/mock-rules/' + groupId, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(group)
-      }).then(() => renderMockRules());
+      // Save as draft change
+      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      draft.enabled = group.enabled;
+      draft.id = groupId;
+      mockDraftRules.set(groupId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     function renameMockGroup(groupId) {
@@ -4395,13 +4560,13 @@
       const name = prompt('Group name:', group.title || '');
       if (name === null) return;
       group.title = name || 'Untitled Group';
-      fetch(API_BASE + '/api/mock-rules/' + groupId, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(group)
-      }).then(() => {
-        renderMockRules();
-        toast('Group renamed', 'success');
-      }).catch(err => toast('Error: ' + err.message, 'error'));
+      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      draft.title = group.title;
+      draft.id = groupId;
+      mockDraftRules.set(groupId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
+      toast('Group renamed (unsaved)', 'success');
     }
 
     async function deleteMockGroup(groupId) {
@@ -4492,6 +4657,8 @@
           if (shouldReplace) {
             // Delete all existing rules first
             await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+            mockDraftRules.clear();
+            mockNewDraftIds.clear();
           }
 
           for (const rule of rules) {
@@ -5725,8 +5892,14 @@
     };
 
     function switchPanel(el, panelId) {
-      // Save traffic scroll position when switching away from traffic panel
+      // Warn if leaving mock page with unsaved changes
       const currentPanel = document.querySelector('.sidebar-item.active')?.dataset?.panel;
+      if (currentPanel === 'mock' && panelId !== 'mock' && hasUnsavedMockChanges()) {
+        if (!confirm('You have unsaved mock rule changes. Leave without saving?')) {
+          return;
+        }
+      }
+      // Save traffic scroll position when switching away from traffic panel
       if (currentPanel === 'traffic') {
         const wrapper = document.getElementById('trafficTableWrapper');
         if (wrapper) {
