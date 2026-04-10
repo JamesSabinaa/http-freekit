@@ -5962,6 +5962,36 @@
       ).join('');
     }
 
+    function browseClientCert() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.pfx,.p12,.pem,.crt,.cert';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          document.getElementById('clientCertPath').value = file.name;
+          // Store the file path — on Electron we'd get the real path via webkitRelativePath
+          // In browser mode we just use the filename
+          document.getElementById('clientCertPath').dataset.fullPath = file.path || file.name;
+        }
+      };
+      input.click();
+    }
+
+    function browseTrustedCA() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.pem,.crt,.cert,.der';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          document.getElementById('trustedCAPath').value = file.name;
+          document.getElementById('trustedCAPath').dataset.fullPath = file.path || file.name;
+        }
+      };
+      input.click();
+    }
+
     async function addClientCert() {
       const host = document.getElementById('clientCertHost')?.value?.trim();
       const path = document.getElementById('clientCertPath')?.value?.trim();

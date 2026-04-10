@@ -368,7 +368,8 @@
   <div id="clientCertList" style="margin-bottom:8px;"></div>
   <div style="display:flex;gap:8px;">
     <input type="text" id="clientCertHost" placeholder="hostname (or * for all hosts)" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
-    <input type="text" id="clientCertPath" placeholder="Path to .pfx/.p12 file" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <input type="text" id="clientCertPath" placeholder="No file selected" readonly style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;cursor:pointer;" onclick="browseClientCert()">
+    <button class="btn" onclick="browseClientCert()" style="font-size:11px;">Browse</button>
     <button class="btn" onclick="addClientCert()" style="font-size:11px;">Add</button>
   </div>
 </div>
@@ -379,7 +380,8 @@
   </p>
   <div id="trustedCAList" style="margin-bottom:8px;"></div>
   <div style="display:flex;gap:8px;">
-    <input type="text" id="trustedCAPath" placeholder="Path to .pem/.crt file" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <input type="text" id="trustedCAPath" placeholder="No file selected" readonly style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;cursor:pointer;" onclick="browseTrustedCA()">
+    <button class="btn" onclick="browseTrustedCA()" style="font-size:11px;">Browse</button>
     <button class="btn" onclick="addTrustedCA()" style="font-size:11px;">Add</button>
   </div>
 </div>
