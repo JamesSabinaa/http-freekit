@@ -4,6 +4,7 @@ import { FreshTerminalInterceptor, ExistingTerminalInterceptor } from './termina
 import { SystemProxyInterceptor } from './system-proxy-interceptor.js';
 import { DockerInterceptor } from './docker-interceptor.js';
 import { ElectronInterceptor } from './electron-interceptor.js';
+import { AndroidAdbInterceptor } from './android-adb-interceptor.js';
 
 export class InterceptorManager {
   constructor(ca) {
@@ -21,6 +22,7 @@ export class InterceptorManager {
     this._register(new SystemProxyInterceptor());
     this._register(new DockerInterceptor());
     this._register(new ElectronInterceptor());
+    this._register(new AndroidAdbInterceptor());
 
     // Give all interceptors that need it a reference to the CA
     for (const interceptor of this.interceptors.values()) {

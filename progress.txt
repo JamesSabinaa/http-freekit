@@ -57,6 +57,8 @@
 - Expanded card CSS: `.intercept-card.expanded` spans 2 columns + 2 rows; `.intercept-card-close` is the X button; `.intercept-card-config` contains the config content
 - Config renderers: `renderDockerConfig(container)` shows docker run/compose commands; `renderTerminalConfig(container)` shows shell-tabbed env var commands with copy-to-clipboard
 - Config code blocks: `.config-code-block` has click-to-copy behavior via `copyConfigCode(el)`; `.config-tabs` + `.config-tab` for shell switching
+- Android ADB interceptor: `_getConnectedDevices()` parses `adb devices -l`; emulators use `10.0.2.2` as host IP, physical devices use LAN IP via `os.networkInterfaces()`
+- Interceptor interface: `isActivable()`, `isActive()`, `activate(proxyPort, options)`, `deactivate()`, `toJSON()` — register via `this._register()` in InterceptorManager constructor
 
 ---
 
@@ -260,4 +262,20 @@
   - The old modal approach (`showTerminalInstructions`) was completely replaced — no backwards compatibility needed since the inline config is strictly better UX
   - Responsive handling: at 3-column (≤1100px) expanded card still spans 2 columns; at 2-column (≤768px) it spans full width (1 / -1) for readability
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-014
+- What was implemented: Android ADB interceptor backend — detects connected Android devices via ADB, pushes CA cert, configures HTTP proxy, supports both physical devices and emulators
+- Files changed:
+  - src/interceptors/android-adb-interceptor.js — NEW: `AndroidAdbInterceptor` class with full lifecycle (isActivable, getMetadata, activate, deactivate) including device enumeration, proxy configuration, and CA cert management
+  - src/interceptors/interceptor-manager.js — Imported and registered AndroidAdbInterceptor
+  - prd.json — Set US-014 passes to true
+- **Learnings for future iterations:**
+  - `adb devices -l` outputs device properties like `model:Pixel_6` and `device:oriole` — parse with regex to extract human-readable names
+  - Android emulators use serial format `emulator-5554` — detect this prefix to use `10.0.2.2` (host loopback alias) instead of LAN IP
+  - Android global proxy is set via `adb shell settings put global http_proxy <host>:<port>` and cleared with `:0`
+  - CA certificates are pushed to `/data/local/tmp/` — users must manually install via Settings > Security on the device
+  - The `deactivate()` method in the manager calls `interceptor.deactivate()` with no arguments — the ADB interceptor handles this by deactivating all devices when no `deviceId` is passed in options
+  - Device status values from `adb devices`: `device` (ready), `offline`, `unauthorized` (needs USB debugging confirmation) — only `device` status should be activatable
+  - `os.networkInterfaces()` is used to find the host LAN IP for physical devices — picks the first non-internal IPv4 address
 ---
