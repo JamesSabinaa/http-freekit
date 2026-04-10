@@ -8,18 +8,36 @@
     let sortDirection = 'desc';
     let config = {};
     let mockRules = [];
+    /** @type {Map<string, object>} Draft rules — unsaved changes keyed by rule ID */
+    const mockDraftRules = new Map();
+    /** @type {Set<string>} IDs of rules that are new (not yet on server) */
+    const mockNewDraftIds = new Set();
     let autoScroll = true;
     let requestCounter = 0;
-    let renderedRequestIds = new Set(); // Track which rows have been rendered before
     let filterDebounceTimer = null;
-    let lastRenderedCount = 0;
-    let lastRenderedFirst = null;
+
+    // ============ WEBSOCKET FRAMES STATE ============
+    /** Map of parentId -> [frame request objects] for WS frame sub-rows */
+    let wsFramesByParent = {};
+    /** Set of WS connection IDs that are expanded to show frame sub-rows */
+    const wsExpandedConnections = new Set();
+
+    // ============ VIRTUAL SCROLL STATE ============
+    const VS_ROW_HEIGHT = 32;
+    const VS_BUFFER = 15;
+    const VS_HEADER_HEIGHT = 38;
+    let vsRenderStart = -1;
+    let vsRenderEnd = -1;
+    let vsForceRender = false;
+    let vsRafId = null;
 
     // ============ SEND TABS STATE ============
     let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null }];
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
     let currentSendAbort = null;
+    /** @type {object|null} Active Monaco editor for the Send page request body */
+    let sendBodyEditor = null;
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
 
@@ -97,12 +115,11 @@
           break;
         case 'traffic-cleared':
           requests = requests.filter(r => r.pinned);
+          wsFramesByParent = {};
           filteredRequests = [];
           requestCounter = requests.length;
-          renderedRequestIds.clear();
-          lastRenderedCount = 0;
-          lastRenderedFirst = null;
-          requests.forEach(r => renderedRequestIds.add(r.id));
+          vsRenderStart = -1;
+          vsRenderEnd = -1;
           renderTraffic();
           if (!requests.find(r => r.id === selectedRequestId)) closeDetail();
           break;
@@ -128,6 +145,13 @@
       requestCounter++;
       req._index = requestCounter;
       requests.push(req);
+
+      // Track WS frames by parent for sub-row rendering
+      if (req.protocol === 'ws-frame' && req.parentId) {
+        if (!wsFramesByParent[req.parentId]) wsFramesByParent[req.parentId] = [];
+        wsFramesByParent[req.parentId].push(req);
+      }
+
       // Keep max 10000
       if (requests.length > 10000) requests.shift();
       applyFilter();
@@ -136,15 +160,26 @@
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
 
+      // Rebuild wsFramesByParent index (handles clears, imports, etc.)
+      wsFramesByParent = {};
+      requests.forEach(r => {
+        if (r.protocol === 'ws-frame' && r.parentId) {
+          if (!wsFramesByParent[r.parentId]) wsFramesByParent[r.parentId] = [];
+          wsFramesByParent[r.parentId].push(r);
+        }
+      });
+
+      // Filter base list (exclude ws-frame — they appear as sub-rows)
+      let baseList;
       if (!raw) {
-        filteredRequests = [...requests];
+        baseList = requests.filter(r => r.protocol !== 'ws-frame');
       } else {
         const filters = parseFilters(raw);
-        filteredRequests = requests.filter(r => matchesAllFilters(r, filters));
+        baseList = requests.filter(r => r.protocol !== 'ws-frame' && matchesAllFilters(r, filters));
       }
 
       if (sortField) {
-        filteredRequests.sort((a, b) => {
+        baseList.sort((a, b) => {
           let aVal = a[sortField], bVal = b[sortField];
           if (typeof aVal === 'string') aVal = aVal.toLowerCase();
           if (typeof bVal === 'string') bVal = bVal.toLowerCase();
@@ -152,6 +187,16 @@
           if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
           return 0;
         });
+      }
+
+      // Expand WS connections: insert frame sub-rows after expanded parents
+      filteredRequests = [];
+      for (const r of baseList) {
+        filteredRequests.push(r);
+        if (r.protocol === 'ws' && wsExpandedConnections.has(r.id)) {
+          const frames = wsFramesByParent[r.id] || [];
+          filteredRequests.push(...frames);
+        }
       }
 
       renderTraffic();
@@ -293,22 +338,152 @@
       }
     }
 
-    // Source icons: globe for proxy, cog for mock, folder for import
-    // Source icons — keyed by the source string from _detectSource()
-    const _globe = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
-    const _browser = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
-    const _terminal = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="7 8 10 11 7 14"/><line x1="12" y1="14" x2="17" y2="14"/></svg>';
-    const _gear = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15"/></svg>';
-    const _folder = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+    // Source icons — Phosphor icon elements keyed by the source string from _detectSource()
+    const _globe = '<i class="ph ph-globe" style="font-size:16px;line-height:1;"></i>';
+    const _browser = '<i class="ph ph-globe" style="font-size:16px;line-height:1;"></i>';
+    const _terminal = '<i class="ph ph-terminal" style="font-size:16px;line-height:1;"></i>';
+    const _gear = '<i class="ph ph-gear-six" style="font-size:16px;line-height:1;"></i>';
+    const _folder = '<i class="ph ph-folder-open" style="font-size:16px;line-height:1;"></i>';
+    const _cube = '<i class="ph ph-cube" style="font-size:16px;line-height:1;"></i>';
     const SOURCE_ICONS = {
       Chrome: _browser, Firefox: _browser, Edge: _browser, Brave: _browser,
       Safari: _browser, Opera: _browser,
       'cURL': _terminal, wget: _terminal, PowerShell: _terminal,
       'Node.js': _terminal, Python: _terminal, Go: _terminal, Java: _terminal,
+      Docker: _cube,
       mock: _gear, import: _folder,
       proxy: _globe, Unknown: _globe, Other: _globe,
-      'tls-error': '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#ce3939" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><line x1="12" y1="15" x2="12" y2="17"/></svg>'
+      'tls-error': '<i class="ph ph-lock-simple-open" style="font-size:16px;line-height:1;color:#ce3939;"></i>',
+      tunnel: '<i class="ph ph-plugs-connected" style="font-size:16px;line-height:1;color:#888;"></i>'
     };
+
+    function buildRowHtml(req, index) {
+      // ---- WebSocket frame sub-row ----
+      if (req.protocol === 'ws-frame') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const dirArrow = req.direction === 'client' ? '&rarr;' : '&larr;';
+        const dirClass = req.direction === 'client' ? 'ws-frame-client' : 'ws-frame-server';
+        const preview = esc((req.requestBody || '').substring(0, 80)) + (req.requestBody && req.requestBody.length > 80 ? '...' : '');
+        const byteCount = formatSize(req.requestBodySize);
+        const opName = esc(req.opcodeName || 'data');
+        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
+          <td role="gridcell" colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
+          <td role="gridcell" style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
+          <td role="gridcell" colspan="2" class="ws-frame-preview" title="${esc(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
+        </tr>`;
+      }
+
+      // ---- TLS error row (italic, 28px, centered text) ----
+      if (req.protocol === 'tls-error') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const source = req.source || 'tls-error';
+        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS['tls-error'];
+        return `<tr class="tls-error-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
+          <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
+          <td role="gridcell"><span class="status-badge status-5xx">ERR</span></td>
+          <td role="gridcell" class="source-cell"><span class="source-icon source-tls-error" title="TLS Error">${sourceIcon}</span></td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="${esc(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
+        </tr>`;
+      }
+
+      // ---- Tunnel row (italic, 28px, centered text) ----
+      if (req.protocol === 'tunnel') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const source = req.source || 'tunnel';
+        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
+        const bytesSent = formatSize(req.requestBodySize || 0);
+        const bytesRecv = formatSize(req.responseBodySize || 0);
+        return `<tr class="tunnel-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
+          <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
+          <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
+          <td role="gridcell" class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="Tunnel to ${esc(req.host || '-')}:${req.remote?.port || 443}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+        </tr>`;
+      }
+
+      // ---- Standard row ----
+      const methodClass = req.protocol === 'ws' ? 'method-WS' : `method-${req.method}`;
+      let statusClass = req.error ? 'status-err' :
+        req.statusCode < 200 ? 'status-1xx' :
+        req.statusCode < 300 ? 'status-2xx' :
+        req.statusCode < 400 ? 'status-3xx' :
+        req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
+      if (req.protocol === 'ws') {
+        statusClass = 'status-2xx';
+      }
+      const source = req.source || 'proxy';
+      const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
+      const selected = req.id === selectedRequestId ? 'selected' : '';
+      const markerColor = req.source === 'breakpoint' ? '#f1971f' :
+        ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
+        source === 'mock' ? '#6e40aa' : '#888';
+      const statusHtml = req.source === 'breakpoint' && req.statusCode === 0
+        ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
+        : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
+      const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
+
+      // WS connection: add frame count badge and expand toggle
+      let wsFrameBadge = '';
+      if (req.protocol === 'ws') {
+        const frameCount = (wsFramesByParent[req.id] || []).length;
+        const isExpanded = wsExpandedConnections.has(req.id);
+        const expandIcon = isExpanded ? '&#9660;' : '&#9654;';
+        if (frameCount > 0) {
+          wsFrameBadge = `<span class="ws-expand-toggle" onclick="event.stopPropagation();toggleWsExpand('${req.id}')" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
+        }
+      }
+
+      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+        <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
+        <td role="gridcell">${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
+        <td role="gridcell">${statusHtml}</td>
+        <td role="gridcell" class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
+        <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
+        <td role="gridcell" title="${esc(req.path)}">${esc(req.path || '/')}</td>
+      </tr>`;
+    }
+
+    // Render the visible virtual-scroll rows into the tbody
+    function renderVirtualRows() {
+      const tbody = document.getElementById('trafficBody');
+      const wrapper = document.getElementById('trafficTableWrapper');
+      const totalRows = filteredRequests.length;
+      if (totalRows === 0) { tbody.innerHTML = ''; return; }
+
+      const scrollTop = wrapper.scrollTop;
+      const clientHeight = wrapper.clientHeight;
+
+      const firstVisible = Math.floor(scrollTop / VS_ROW_HEIGHT);
+      const lastVisible = Math.min(totalRows, Math.ceil((scrollTop + clientHeight - VS_HEADER_HEIGHT) / VS_ROW_HEIGHT));
+
+      const renderStart = Math.max(0, firstVisible - VS_BUFFER);
+      const renderEnd = Math.min(totalRows, lastVisible + VS_BUFFER);
+
+      // Skip re-render if range and selection haven't changed
+      if (!vsForceRender && renderStart === vsRenderStart && renderEnd === vsRenderEnd) return;
+
+      let html = '';
+      // Top spacer
+      if (renderStart > 0) {
+        html += `<tr class="vs-spacer"><td colspan="6" style="height:${renderStart * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+      }
+      // Visible rows
+      for (let i = renderStart; i < renderEnd; i++) {
+        html += buildRowHtml(filteredRequests[i], i);
+      }
+      // Bottom spacer
+      if (renderEnd < totalRows) {
+        html += `<tr class="vs-spacer"><td colspan="6" style="height:${(totalRows - renderEnd) * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+      }
+
+      tbody.innerHTML = html;
+      vsRenderStart = renderStart;
+      vsRenderEnd = renderEnd;
+      vsForceRender = false;
+    }
 
     function renderTraffic() {
       const tbody = document.getElementById('trafficBody');
@@ -317,6 +492,10 @@
       const countLabel = document.getElementById('trafficCountLabel');
       const footerCount = document.getElementById('footerRequestCount');
       const footerFilter = document.getElementById('footerFilterCount');
+
+      // Update aria-rowcount on the traffic table
+      const trafficTable = document.querySelector('.traffic-table');
+      if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
 
       const query = document.getElementById('searchInput').value.trim();
       if (query && filteredRequests.length !== requests.length) {
@@ -333,15 +512,14 @@
 
       if (filteredRequests.length === 0) {
         tbody.innerHTML = '';
+        vsRenderStart = -1;
+        vsRenderEnd = -1;
         const query = document.getElementById('searchInput')?.value?.trim();
         if (query && requests.length > 0) {
-          // Filter matches nothing
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">?</div><h3>No requests match this search filter</h3>';
         } else if (isPaused) {
-          // Paused
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">&#9208;</div><h3>Interception is paused, resume it to collect intercepted requests</h3>';
         } else {
-          // No traffic
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">&#9783;</div><h3>Connect a client and intercept some requests, and they\'ll appear here</h3>';
         }
         empty.style.display = 'flex';
@@ -350,101 +528,51 @@
 
       empty.style.display = 'none';
 
-      const MAX_VISIBLE = 2000;
-      const visible = filteredRequests.slice(-MAX_VISIBLE);
+      // Force re-render since data changed (filter, sort, new data)
+      vsForceRender = true;
+      vsRenderStart = -1;
+      vsRenderEnd = -1;
 
-      function buildRowHtml(req) {
-        const methodClass = req.protocol === 'ws' ? 'method-WS' : req.protocol === 'tls-error' ? 'method-CONNECT' : `method-${req.method}`;
-        let statusClass = req.error ? 'status-err' :
-          req.statusCode < 200 ? 'status-1xx' :
-          req.statusCode < 300 ? 'status-2xx' :
-          req.statusCode < 400 ? 'status-3xx' :
-          req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
-        // Special status for WebSocket and TLS errors
-        if (req.protocol === 'ws') {
-          statusClass = 'status-2xx'; // green for active WS
-        }
-        if (req.protocol === 'tls-error' || req.source === 'tls-error') {
-          statusClass = 'status-5xx'; // red for TLS failures
-        }
-        const source = req.source || 'proxy';
-        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
-        const selected = req.id === selectedRequestId ? 'selected' : '';
-        const isNew = !renderedRequestIds.has(req.id);
-        const newRowClass = isNew ? ' new-row' : '';
-        // Row marker color based on category: breakpoint = orange, mutative = red, mock = purple, default = grey
-        const markerColor = req.source === 'breakpoint' ? '#f1971f' :
-          ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
-          source === 'mock' ? '#6e40aa' : '#888';
-
-        // If this is a breakpoint-paused request, show pause icon instead of status
-        const statusHtml = req.source === 'breakpoint' && req.statusCode === 0
-          ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
-          : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
-
-        const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
-
-        return `<tr class="${selected}${newRowClass}" role="row" aria-rowindex="${req._index}" aria-selected="${req.id === selectedRequestId}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
-          <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-          <td>${pinIcon}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
-          <td>${statusHtml}</td>
-          <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
-          <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
-          <td title="${esc(req.path)}">${esc(req.path || '/')}</td>
-        </tr>`;
-      }
-
-      // Check if this is an append-only update (new rows added to the end)
-      const currentRows = tbody.children.length;
-      const isAppendOnly = currentRows > 0 &&
-        visible.length > currentRows &&
-        visible.length - currentRows < 50 && // small batch
-        !sortField; // not sorted
-
-      if (isAppendOnly) {
-        // Only add new rows
-        const newItems = visible.slice(currentRows);
-        let newHtml = '';
-        for (const req of newItems) {
-          newHtml += buildRowHtml(req);
-          renderedRequestIds.add(req.id);
-        }
-        tbody.insertAdjacentHTML('beforeend', newHtml);
-      } else {
-        // Full rebuild (filter changed, sorted, etc.)
-        tbody.innerHTML = visible.map(req => buildRowHtml(req)).join('');
-        visible.forEach(req => renderedRequestIds.add(req.id));
-        lastRenderedCount = visible.length;
-        lastRenderedFirst = visible[0]?.id;
-      }
-
-      // Auto-scroll to bottom
+      // Auto-scroll to bottom before rendering so renderVirtualRows uses final scrollTop
       if (autoScroll) {
         const wrapper = document.getElementById('trafficTableWrapper');
+        // Set scroll height based on total rows to position scrollbar correctly
+        // We need to render first so the spacers create the correct content height
+        // Temporarily set a large enough height so scrollTop can be set
+        tbody.innerHTML = `<tr class="vs-spacer"><td colspan="6" style="height:${filteredRequests.length * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
         wrapper.scrollTop = wrapper.scrollHeight;
       }
+
+      renderVirtualRows();
+    }
+
+    function updateTrafficActiveDescendant(id) {
+      const tbody = document.getElementById('trafficBody');
+      if (tbody) tbody.setAttribute('aria-activedescendant', id ? 'row-' + id : '');
     }
 
     function selectRequest(id) {
       if (selectedRequestId === id) {
-        // Deselect on re-click
         closeDetail();
         return;
       }
       selectedRequestId = id;
-      // Update URL hash for deep linking
+      updateTrafficActiveDescendant(id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', '#/view/' + id);
       }
       const req = requests.find(r => r.id === id);
       if (!req) return;
 
-      // Highlight row
-      document.querySelectorAll('.traffic-table tbody tr').forEach(tr => tr.classList.remove('selected'));
-      const rows = document.querySelectorAll('.traffic-table tbody tr');
-      rows.forEach(tr => {
-        if (tr.onclick?.toString().includes(id)) tr.classList.add('selected');
-      });
+      // Scroll selected row into view (center alignment)
+      const idx = filteredRequests.findIndex(r => r.id === id);
+      if (idx !== -1) {
+        scrollRowIntoView(idx, 'center');
+      }
+
+      // Re-render virtual rows to update selection highlight
+      vsForceRender = true;
+      renderVirtualRows();
 
       showDetail(req);
     }
@@ -458,19 +586,29 @@
       const activeEl = document.getElementById('detailActive');
       if (emptyEl) emptyEl.style.display = 'none';
       if (activeEl) activeEl.style.display = 'flex';
-      document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
+      if (req.protocol === 'ws-frame') {
+        const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
+        document.getElementById('detailTitle').textContent = 'WS Frame: ' + (req.opcodeName || 'data') + ' (' + dirLabel + ')';
+      } else if (req.protocol === 'tls-error') {
+        document.getElementById('detailTitle').textContent = 'TLS Error: ' + (req.host || '-');
+      } else if (req.protocol === 'tunnel') {
+        document.getElementById('detailTitle').textContent = 'Tunnel: ' + (req.host || '-');
+      } else {
+        document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
+      }
+      updatePinIcon(!!req.pinned);
       renderDetailCards(req);
     }
 
     function closeDetail() {
-      // Show empty state, hide active detail
       const emptyEl = document.getElementById('detailEmptyState');
       const activeEl = document.getElementById('detailActive');
       if (emptyEl) emptyEl.style.display = 'flex';
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
-      document.querySelectorAll('.traffic-table tbody tr').forEach(tr => tr.classList.remove('selected'));
-      // Remove request ID from hash when deselecting
+      // Re-render to remove selection highlight
+      vsForceRender = true;
+      renderVirtualRows();
       if (window.location.hash.startsWith('#/view/')) {
         history.replaceState(null, '', '#/view');
       }
@@ -479,12 +617,26 @@
     // ============ DETAIL FOOTER ACTIONS ============
     function scrollToSelectedRequest() {
       if (!selectedRequestId) return;
-      const rows = document.querySelectorAll('.traffic-table tbody tr');
-      for (const row of rows) {
-        if (row.onclick?.toString().includes(selectedRequestId)) {
-          row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          break;
-        }
+      const idx = filteredRequests.findIndex(r => r.id === selectedRequestId);
+      if (idx === -1) return;
+      scrollRowIntoView(idx, 'center');
+    }
+
+    // Scroll so that a given row index is visible in the traffic list
+    function scrollRowIntoView(index, alignment) {
+      const wrapper = document.getElementById('trafficTableWrapper');
+      const rowTop = index * VS_ROW_HEIGHT;
+      const rowBottom = rowTop + VS_ROW_HEIGHT;
+      const viewTop = wrapper.scrollTop;
+      const viewBottom = wrapper.scrollTop + wrapper.clientHeight - VS_HEADER_HEIGHT;
+
+      if (alignment === 'center') {
+        const viewHeight = wrapper.clientHeight - VS_HEADER_HEIGHT;
+        wrapper.scrollTop = Math.max(0, rowTop - viewHeight / 2 + VS_ROW_HEIGHT / 2);
+      } else if (rowTop < viewTop) {
+        wrapper.scrollTop = rowTop;
+      } else if (rowBottom > viewBottom) {
+        wrapper.scrollTop = rowBottom - (wrapper.clientHeight - VS_HEADER_HEIGHT);
       }
     }
 
@@ -493,9 +645,15 @@
       const req = requests.find(r => r.id === selectedRequestId);
       if (req) {
         req.pinned = !req.pinned;
+        updatePinIcon(req.pinned);
         renderTraffic();
         toast(req.pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
       }
+    }
+
+    function updatePinIcon(pinned) {
+      const icon = document.getElementById('pinBtnIcon');
+      if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
     }
 
     function deleteSelectedRequest() {
@@ -572,6 +730,7 @@
       if (!el) return;
       _cardCollapsed[cardId] = !_cardCollapsed[cardId];
       el.classList.toggle('collapsed');
+      el.setAttribute('aria-expanded', String(!_cardCollapsed[cardId]));
       const chevron = el.querySelector('.collapse-chevron');
       if (chevron) chevron.innerHTML = _cardCollapsed[cardId] ? '&#9660;' : '&#9650;';
     }
@@ -682,6 +841,42 @@
     // Track collapsed state for URL breakdown
     let _urlBreakdownOpen = false;
 
+    // Track transform perspective for requests modified by mock rules
+    let _transformPerspective = 'transformed';
+
+    function switchTransformPerspective(value) {
+      _transformPerspective = value;
+      const panel = document.getElementById('detailPanel');
+      if (panel && panel._request) {
+        renderDetailCards(panel._request);
+      }
+    }
+
+    // Returns the effective request data based on current transform perspective
+    function getEffectiveRequest(req) {
+      if (!req.originalRequest) return req;
+      const showOriginal = _transformPerspective === 'original' || _transformPerspective === 'client';
+      if (!showOriginal) return req;
+      // Build a view object with original data overlaid
+      const orig = req.originalRequest;
+      let origHost = req.host;
+      let origPath = req.path;
+      try {
+        const u = new URL(orig.url);
+        origHost = u.hostname;
+        origPath = u.pathname + u.search;
+      } catch { /* keep defaults */ }
+      return {
+        ...req,
+        method: orig.method,
+        url: orig.url,
+        host: origHost,
+        path: origPath,
+        requestHeaders: orig.headers,
+        requestBody: orig.body != null ? orig.body : req.requestBody
+      };
+    }
+
     function toggleUrlBreakdown() {
       _urlBreakdownOpen = !_urlBreakdownOpen;
       const el = document.getElementById('url-breakdown');
@@ -697,6 +892,13 @@
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
+      // Reset transform perspective only when viewing a new request (not when switching perspective)
+      if (!req.originalRequest) _transformPerspective = 'transformed';
+
+      // Dispose any active body Monaco editors before replacing content
+      disposeBodyEditor('reqBody-monaco');
+      disposeBodyEditor('resBody-monaco');
+      disposeBodyEditor('wsFramePayload-monaco');
 
       // Store headers for context menu lookup
       window._detailHeaders = { request: req.requestHeaders || {}, response: req.responseHeaders || {} };
@@ -719,6 +921,118 @@
             </div>
           </div>
         </div>`;
+      }
+
+      // ---- WebSocket Frame Detail ----
+      if (req.protocol === 'ws-frame') {
+        const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
+        const dirColor = req.direction === 'client' ? '#ff8c38' : '#4caf7d';
+        const opName = esc(req.opcodeName || 'data');
+        const isTextFrame = req.opcode === 1; // TEXT opcode
+        const isBinaryFrame = req.opcode === 2; // BINARY opcode
+        const isCloseFrame = req.opcode === 8; // CLOSE opcode
+
+        html += `<div class="detail-card dir-right" style="border-right-color:${dirColor};">
+          <div class="detail-card-header">
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+              <span class="detail-pill" style="background:${dirColor};color:#fff;">${dirLabel}</span>
+              <span class="detail-pill pill-muted">${opName}</span>
+              <span class="detail-card-heading">WebSocket Frame</span>
+              <span class="collapse-chevron">&#9650;</span>
+            </span>
+          </div>
+          <div class="detail-card-body">
+            <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Direction</div><div class="detail-summary-value">${dirLabel}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Opcode</div><div class="detail-summary-value">${opName} (0x${(req.opcode || 0).toString(16)})</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Size</div><div class="detail-summary-value">${formatSize(req.requestBodySize)}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">FIN</div><div class="detail-summary-value">${req.fin ? 'Yes' : 'No'}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Masked</div><div class="detail-summary-value">${req.masked ? 'Yes' : 'No'}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
+            </div>
+          </div>
+        </div>`;
+
+        // Close frame: show code and reason
+        if (isCloseFrame && req.requestBody) {
+          const closeMatch = req.requestBody.match(/^Close code: (\d+)(?:\s*-\s*(.*))?$/);
+          const closeCode = closeMatch ? closeMatch[1] : '';
+          const closeReason = closeMatch ? (closeMatch[2] || '') : req.requestBody;
+          html += `<div class="detail-card dir-left" style="border-left-color:#ce3939;">
+            <div class="detail-card-header">
+              <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                <span class="detail-pill" style="background:#ce3939;color:#fff;">Close</span>
+                <span class="detail-card-heading">Close Frame</span>
+                <span class="collapse-chevron">&#9650;</span>
+              </span>
+            </div>
+            <div class="detail-card-body">
+              <div class="detail-summary">
+                ${closeCode ? '<div class="detail-summary-item"><div class="detail-summary-label">Close Code</div><div class="detail-summary-value">' + esc(closeCode) + '</div></div>' : ''}
+                ${closeReason ? '<div class="detail-summary-item"><div class="detail-summary-label">Reason</div><div class="detail-summary-value">' + esc(closeReason) + '</div></div>' : ''}
+              </div>
+            </div>
+          </div>`;
+        }
+
+        // Payload card — text frames in Monaco, binary in hex
+        if (req.requestBody && req.requestBody.length > 0 && !isCloseFrame) {
+          if (isTextFrame) {
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <div id="wsFramePayload-monaco" style="min-height:80px;"></div>
+              </div>
+            </div>`;
+          } else if (isBinaryFrame) {
+            // Binary: show as hex dump
+            const hexBody = req.requestBody;
+            const hexFormatted = hexBody.replace(/(.{2})/g, '$1 ').replace(/(.{48})/g, '$1\n').trim();
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload (Binary)</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <pre class="body-content" style="font-size:12px;">${esc(hexFormatted)}</pre>
+              </div>
+            </div>`;
+          } else {
+            // Ping/pong: show as text
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <pre class="body-content">${esc(req.requestBody)}</pre>
+              </div>
+            </div>`;
+          }
+        }
+
+        content.innerHTML = html;
+
+        // Initialize Monaco for text frame payload
+        if (isTextFrame && req.requestBody && req.requestBody.length > 0) {
+          // Detect language from content (try JSON first)
+          let lang = 'plaintext';
+          try { JSON.parse(req.requestBody); lang = 'json'; } catch {}
+          initBodyMonacoEditor('wsFramePayload-monaco', req.requestBody, 'text/plain', lang === 'json' ? 'json' : 'text');
+        }
+        return;
       }
 
       // ---- WebSocket Card ----
@@ -772,6 +1086,41 @@
           </div>
         </div>`;
 
+        // ---- Stream Message List Card ----
+        const frames = wsFramesByParent[req.id] || [];
+        if (frames.length > 0) {
+          html += `<div class="detail-card dir-left" style="border-left-color:#4caf7d;">
+            <div class="detail-card-header">
+              <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                <span class="detail-pill pill-muted">${frames.length} frames</span>
+                <span class="detail-card-heading">Stream Messages</span>
+                <span class="collapse-chevron">&#9650;</span>
+              </span>
+            </div>
+            <div class="detail-card-body" style="padding:0;">
+              <div class="ws-stream-list">
+                ${frames.map((f, i) => {
+                  const dirArrow = f.direction === 'client' ? '→' : '←';
+                  const dirCls = f.direction === 'client' ? 'ws-msg-client' : 'ws-msg-server';
+                  const opLabel = esc(f.opcodeName || 'data');
+                  const preview = esc((f.requestBody || '').substring(0, 120));
+                  const byteStr = formatSize(f.requestBodySize);
+                  const timeStr = new Date(f.timestamp).toLocaleTimeString();
+                  const isClose = f.opcode === 8;
+                  return `<div class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" onclick="selectRequest('${f.id}')" title="Click to view details">
+                    <span class="ws-msg-index">#${i + 1}</span>
+                    <span class="ws-msg-dir">${dirArrow}</span>
+                    <span class="ws-msg-opcode">${opLabel}</span>
+                    <span class="ws-msg-preview">${preview || '<em>empty</em>'}</span>
+                    <span class="ws-msg-size">${byteStr}</span>
+                    <span class="ws-msg-time">${timeStr}</span>
+                  </div>`;
+                }).join('')}
+              </div>
+            </div>
+          </div>`;
+        }
+
         content.innerHTML = html;
         return;
       }
@@ -791,6 +1140,10 @@
           </div>
         </div>`;
 
+        const errorCodeRow = req.errorCode
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">Error Code</div><div class="detail-summary-value" style="font-family:monospace;font-size:12px;color:#ce3939;">${esc(req.errorCode)}</div></div>`
+          : '';
+
         html += `<div class="detail-card dir-right" style="border-right-color:#ce3939;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -801,10 +1154,62 @@
           </div>
           <div class="detail-card-body">
             <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Error</div><div class="detail-summary-value" style="font-size:11px;word-break:break-all;color:#ce3939;">${esc(req.error || req.responseBody || 'Unknown TLS error')}</div></div>
+              ${errorCodeRow}
               <div class="detail-summary-item"><div class="detail-summary-label">URL</div><div class="detail-summary-value" style="font-size:11px;word-break:break-all;">${esc(req.url)}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Host</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Method</div><div class="detail-summary-value">${esc(req.method)}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Timestamp</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleString()}</div></div>
+            </div>
+          </div>
+        </div>`;
+
+        content.innerHTML = html;
+        return;
+      }
+
+      // ---- Tunnel Card ----
+      if (req.protocol === 'tunnel') {
+        const bytesSent = formatSize(req.requestBodySize || 0);
+        const bytesRecv = formatSize(req.responseBodySize || 0);
+        const durationStr = req.duration >= 1000
+          ? (req.duration / 1000).toFixed(1) + 's'
+          : req.duration + 'ms';
+        const portStr = req.remote?.port || 443;
+
+        html += `<div class="detail-card" style="border-left:4px solid #888;background:rgba(136,136,136,0.07);">
+          <div class="detail-card-body" style="padding:16px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span style="font-size:20px;color:#888;">${SOURCE_ICONS.tunnel}</span>
+              <div style="flex:1;">
+                <div style="font-weight:bold;color:var(--text-main);margin-bottom:4px;">Raw Tunnel</div>
+                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${esc(req.host || '-')}:${portStr}</div>
+                <div style="font-size:12px;color:var(--text-lowlight);">CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received</div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+        const tlsRow = req.tls
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">TLS</div><div class="detail-summary-value">${esc(req.tls.version || '-')} / ${esc(req.tls.cipher || '-')}</div></div>`
+          : '';
+
+        html += `<div class="detail-card dir-right" style="border-right-color:#888;">
+          <div class="detail-card-header">
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+              <span class="detail-pill" style="background:#888;color:#fff;">Tunnel</span>
+              <span class="detail-card-heading">Details</span>
+              <span class="collapse-chevron">&#9650;</span>
+            </span>
+          </div>
+          <div class="detail-card-body">
+            <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Port</div><div class="detail-summary-value">${portStr}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Bytes Sent</div><div class="detail-summary-value">${bytesSent}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Bytes Received</div><div class="detail-summary-value">${bytesRecv}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value">${durationStr}</div></div>
+              ${tlsRow}
+              <div class="detail-summary-item"><div class="detail-summary-label">Timestamp</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleString()}</div></div>
             </div>
           </div>
         </div>`;
@@ -848,16 +1253,48 @@
         </div>`;
       }
 
+      // ---- Transform Card (shown only for requests modified by mock rules) ----
+      if (req.originalRequest) {
+        const perspectiveLabels = {
+          'original': 'Original (client sent)',
+          'transformed': 'Transformed (as modified)',
+          'client': 'Client perspective',
+          'server': 'Server perspective'
+        };
+        html += `<div class="detail-card transform-card" id="card-transform">
+          <div class="detail-card-body" style="padding:12px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <i class="ph ph-shuffle" style="font-size:18px;color:var(--pop-color);"></i>
+              <div style="flex:1;">
+                <div style="font-weight:600;font-size:13px;color:var(--pop-color);">Request Modified</div>
+                <div style="font-size:11px;color:var(--text-lowlight);">by ${esc(req.transformedBy || 'Mock Rule')}</div>
+              </div>
+              <select class="body-view-select transform-perspective-select" onchange="switchTransformPerspective(this.value)">
+                <option value="transformed"${_transformPerspective === 'transformed' ? ' selected' : ''}>Show transformed content</option>
+                <option value="original"${_transformPerspective === 'original' ? ' selected' : ''}>Show original content</option>
+                <option value="client"${_transformPerspective === 'client' ? ' selected' : ''}>Client perspective</option>
+                <option value="server"${_transformPerspective === 'server' ? ' selected' : ''}>Server perspective</option>
+              </select>
+              <span class="detail-pill transform-indicator" style="background:${_transformPerspective === 'original' || _transformPerspective === 'client' ? '#ff8c38' : 'var(--pop-color)'};color:#fff;font-size:10px;">
+                ${_transformPerspective === 'original' || _transformPerspective === 'client' ? 'ORIGINAL' : 'TRANSFORMED'}
+              </span>
+            </div>
+          </div>
+        </div>`;
+      }
+
       // ---- Request Card (border-right, pills left, heading right) ----
+      const effReq = getEffectiveRequest(req);
+      const effMethodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[effReq.method] || '#888';
       const sourceLabel = req.source || 'Unknown';
       const sourceIconHtml = SOURCE_ICONS[sourceLabel] || SOURCE_ICONS['Other'] || '';
       const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : req.protocol === 'https' ? 'HTTPS/1.1' : 'HTTP/1.1';
-      html += `<div class="detail-card dir-right" id="card-request" style="border-right-color:${methodColor};">
+      html += `<div class="detail-card dir-right" id="card-request" aria-expanded="true" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="source-icon" title="${esc(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
             <span class="detail-pill pill-muted" style="font-size:11px;">${httpVersion}</span>
-            <span class="detail-pill" style="background:${methodColor};color:#fff;">${esc(req.method)} ${esc(req.host || '').replace(/\./g, '\u2008.\u2008')}</span>
+            <span class="detail-pill" style="background:${effMethodColor};color:#fff;">${esc(effReq.method)} ${esc(effReq.host || '').replace(/\./g, '\u2008.\u2008')}</span>
             <span class="detail-card-heading">Request</span>
             <span class="collapse-chevron">&#9650;</span>
           </span>
@@ -867,23 +1304,25 @@
             <div class="section-label">URL</div>
             <div class="url-summary" onclick="toggleUrlBreakdown()">
               <span class="url-toggle" id="url-breakdown-icon">+</span>
-              <span class="url-text">${esc(req.url)}</span>
+              <span class="url-text">${esc(effReq.url)}</span>
             </div>
-            ${renderUrlBreakdown(req)}
+            ${renderUrlBreakdown(effReq)}
           </div>
           <div class="detail-card-section">
             <div class="section-label">Headers</div>
-            ${renderHeadersGrid(req.requestHeaders, 'request')}
+            ${renderHeadersGrid(effReq.requestHeaders, 'request')}
           </div>
         </div>
       </div>`;
 
       // ---- Request Body Card (separate card) ----
-      if (req.requestBody && req.requestBody !== '' && !req.requestBody.startsWith('[Binary')) {
-        const reqCt = req.requestHeaders?.['content-type'] || '';
-        const reqBodyModes = getBodyViewModes(req.requestBody, reqCt);
+      const effBody = effReq.requestBody;
+      if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
+        const reqCt = effReq.requestHeaders?.['content-type'] || '';
+        const reqBodyModes = getBodyViewModes(effBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
-        html += `<div class="detail-card dir-right" id="card-req-body" style="border-right-color:${methodColor};">
+        const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !effBody.startsWith('[Binary data:');
+        html += `<div class="detail-card dir-right" id="card-req-body" aria-expanded="true" style="border-right-color:${effMethodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
@@ -895,13 +1334,16 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <pre class="body-content" id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">${formatBodyAs(req.requestBody, reqCt, reqDefaultMode)}</pre>
+            <div id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">
+              <div id="reqBody-monaco" style="display:${reqUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
+              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(effBody, reqCt, reqDefaultMode)}</pre>
+            </div>
           </div>
         </div>`;
       }
 
       // ---- Response Card (border-left, pills left, heading right) ----
-      html += `<div class="detail-card dir-left" id="card-response" style="border-left-color:${statusColor};">
+      html += `<div class="detail-card dir-left" id="card-response" aria-expanded="true" style="border-left-color:${statusColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="detail-pill" style="background:${statusColor};color:#fff;">${req.statusCode || 'ERR'}</span>
@@ -926,7 +1368,8 @@
         const ct = req.responseHeaders?.['content-type'] || '';
         const resBodyModes = getBodyViewModes(req.responseBody, ct);
         const resDefaultMode = resBodyModes[0]?.value || 'text';
-        html += `<div class="detail-card dir-left" id="card-resp-body" style="border-left-color:${statusColor};">
+        const resUseMonaco = isMonacoViewMode(resDefaultMode) && !req.responseBody.startsWith('[Binary data:');
+        html += `<div class="detail-card dir-left" id="card-resp-body" aria-expanded="true" style="border-left-color:${statusColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
@@ -938,7 +1381,10 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <pre class="body-content" id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">${formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+            <div id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">
+              <div id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
+              <pre class="body-content" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+            </div>
           </div>
         </div>`;
       }
@@ -960,7 +1406,7 @@
 
       // ---- Error Card ----
       if (req.error) {
-        html += `<div class="detail-card dir-left" id="card-error" style="border-left-color:#ce3939;">
+        html += `<div class="detail-card dir-left" id="card-error" aria-expanded="true" style="border-left-color:#ce3939;">
           <div class="detail-card-header">
             <span class="detail-pill" style="background:#ce3939;color:#fff;">Error</span>
             <span class="detail-card-heading">Error</span>
@@ -979,7 +1425,7 @@
       const barWidth = Math.min(100, ((req.duration || 0) / maxDuration) * 100);
       const barColor = (req.duration || 0) < 200 ? '#4caf7d' : (req.duration || 0) < 1000 ? '#ff8c38' : '#ce3939';
 
-      html += `<div class="detail-card collapsed" id="card-perf">
+      html += `<div class="detail-card collapsed" id="card-perf" aria-expanded="false">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             ${req.duration != null ? '<span class="detail-pill pill-muted">' + Math.round(req.duration) + 'ms</span>' : ''}
@@ -1113,7 +1559,7 @@
       </div>`;
 
       // Export Card (collapsed by default)
-      html += `<div class="detail-card collapsed" id="card-export">
+      html += `<div class="detail-card collapsed" id="card-export" aria-expanded="false">
         <div class="detail-card-header">
           <select id="exportFormat" onchange="updateExportSnippet()" onclick="event.stopPropagation()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:3px 8px;font-size:11px;cursor:pointer;">
             <option value="curl">cURL</option>
@@ -1137,6 +1583,26 @@
       </div>`;
 
       content.innerHTML = html;
+
+      // Initialize Monaco editor for request body if the default view mode uses Monaco
+      if (req.requestBody && req.requestBody !== '' && !req.requestBody.startsWith('[Binary')) {
+        const reqCt2 = req.requestHeaders?.['content-type'] || '';
+        const reqModes2 = getBodyViewModes(req.requestBody, reqCt2);
+        const reqDefMode2 = reqModes2[0]?.value || 'text';
+        if (isMonacoViewMode(reqDefMode2)) {
+          initBodyMonacoEditor('reqBody-monaco', req.requestBody, reqCt2, reqDefMode2);
+        }
+      }
+
+      // Initialize Monaco editor for response body if the default view mode uses Monaco
+      if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
+        const resCt = req.responseHeaders?.['content-type'] || '';
+        const resModes = getBodyViewModes(req.responseBody, resCt);
+        const resDefMode = resModes[0]?.value || 'text';
+        if (isMonacoViewMode(resDefMode)) {
+          initBodyMonacoEditor('resBody-monaco', req.responseBody, resCt, resDefMode);
+        }
+      }
 
       // Generate initial export snippet
       if (document.getElementById('exportFormat')) {
@@ -1362,6 +1828,14 @@
       const modes = [];
       const ct = (contentType || '').toLowerCase();
 
+      // Image content types get an image preview mode
+      if (ct.includes('image/') && body && !body.startsWith('[Binary data:')) {
+        modes.push({ value: 'image', label: 'Image' });
+        modes.push({ value: 'text', label: 'Text' });
+        modes.push({ value: 'hex', label: 'Hex' });
+        return modes;
+      }
+
       if (ct.includes('x-www-form-urlencoded') || (body && body.includes('=') && body.includes('&') && !body.includes(' ') && !body.trimStart().startsWith('{') && body.length < 10000)) {
         modes.push({ value: 'decoded', label: 'Decoded' });
         modes.push({ value: 'raw', label: 'Raw' });
@@ -1377,12 +1851,66 @@
       } else if (ct.includes('xml') || ct.includes('html') || (body && body.trimStart().startsWith('<'))) {
         modes.push({ value: 'markup', label: ct.includes('html') ? 'HTML' : 'XML' });
         modes.push({ value: 'text', label: 'Text' });
+      } else if (ct.includes('yaml') || ct.includes('yml')) {
+        modes.push({ value: 'yaml', label: 'YAML' });
+        modes.push({ value: 'text', label: 'Text' });
       } else {
         modes.push({ value: 'text', label: 'Text' });
       }
       modes.push({ value: 'hex', label: 'Hex' });
       return modes;
     }
+
+    /**
+     * Map content-type to Monaco editor language identifier.
+     * @param {string} contentType
+     * @returns {string}
+     */
+    function contentTypeToMonacoLanguage(contentType) {
+      const ct = (contentType || '').toLowerCase();
+      if (ct.includes('json')) return 'json';
+      if (ct.includes('html')) return 'html';
+      if (ct.includes('xml') || ct.includes('svg')) return 'xml';
+      if (ct.includes('css')) return 'css';
+      if (ct.includes('javascript') || ct.includes('ecmascript')) return 'javascript';
+      if (ct.includes('typescript')) return 'typescript';
+      if (ct.includes('yaml') || ct.includes('yml')) return 'yaml';
+      return 'plaintext';
+    }
+
+    /**
+     * Map a body view mode to a Monaco language.
+     * @param {string} mode - The view mode (json, text, markup, javascript, css, yaml, raw)
+     * @param {string} contentType - The content-type header
+     * @returns {string}
+     */
+    function viewModeToMonacoLanguage(mode, contentType) {
+      switch (mode) {
+        case 'json': return 'json';
+        case 'markup': return (contentType || '').toLowerCase().includes('html') ? 'html' : 'xml';
+        case 'javascript': return 'javascript';
+        case 'css': return 'css';
+        case 'yaml': return 'yaml';
+        case 'text':
+        case 'raw':
+        default: return 'plaintext';
+      }
+    }
+
+    /**
+     * Check if a view mode should use Monaco editor (vs HTML rendering).
+     * @param {string} mode
+     * @returns {boolean}
+     */
+    function isMonacoViewMode(mode) {
+      return ['json', 'text', 'markup', 'javascript', 'css', 'yaml', 'raw'].includes(mode);
+    }
+
+    /**
+     * Track active Monaco editors for body panels (keyed by container element id).
+     * @type {Object<string, object>}
+     */
+    const activeBodyEditors = {};
 
     // Format body in a specific view mode
     // Wrap formatted HTML string in line-numbered spans
@@ -1468,10 +1996,78 @@
       }
     }
 
-    // Switch body view mode — re-renders the body content
+    /**
+     * Dispose an active Monaco editor for a body panel.
+     * @param {string} containerId
+     */
+    function disposeBodyEditor(containerId) {
+      const existing = activeBodyEditors[containerId];
+      if (existing) {
+        existing.dispose();
+        delete activeBodyEditors[containerId];
+      }
+    }
+
+    /**
+     * Get the appropriate body content for Monaco (pretty-printed for JSON).
+     * @param {string} body
+     * @param {string} mode
+     * @returns {string}
+     */
+    function getMonacoBodyValue(body, mode) {
+      if (mode === 'json') {
+        try {
+          return JSON.stringify(JSON.parse(body), null, 2);
+        } catch {
+          return body;
+        }
+      }
+      return body;
+    }
+
+    /**
+     * Initialize a Monaco editor inside a response/request body container.
+     * @param {string} containerId - The id of the Monaco container div
+     * @param {string} body - The raw body text
+     * @param {string} contentType - The content-type header
+     * @param {string} mode - The current view mode
+     */
+    async function initBodyMonacoEditor(containerId, body, contentType, mode) {
+      disposeBodyEditor(containerId);
+
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      const language = viewModeToMonacoLanguage(mode, contentType);
+      const value = getMonacoBodyValue(body, mode);
+
+      const editor = await createMonacoEditor(containerId, {
+        value: value,
+        language: language,
+        readOnly: true,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      });
+
+      if (editor) {
+        activeBodyEditors[containerId] = editor;
+
+        // Auto-size editor height based on content (capped at 500px)
+        const lineCount = editor.getModel().getLineCount();
+        const lineHeight = 18;
+        const padding = 16;
+        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), 500);
+        container.style.height = desiredHeight + 'px';
+        editor.layout();
+      }
+    }
+
+    // Switch body view mode — re-renders the body content (Monaco for text modes, HTML for hex/decoded/image)
     function switchBodyView(elementId, mode, section) {
-      const el = document.getElementById(elementId);
-      if (!el) return;
+      const wrapper = document.getElementById(elementId);
+      if (!wrapper) return;
       const req = document.getElementById('detailPanel')?._request;
       if (!req) return;
 
@@ -1480,8 +2076,40 @@
         ? (req.requestHeaders?.['content-type'] || '')
         : (req.responseHeaders?.['content-type'] || '');
 
-      el.dataset.viewMode = mode;
-      el.innerHTML = formatBodyAs(body, ct, mode);
+      const monacoId = elementId + '-monaco';
+      const fallbackId = elementId + '-fallback';
+
+      // Both request and response body use Monaco for text-based modes
+      if (isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
+        // Show Monaco container, hide fallback
+        const monacoEl = document.getElementById(monacoId);
+        const fallbackEl = document.getElementById(fallbackId);
+        if (monacoEl) monacoEl.style.display = 'block';
+        if (fallbackEl) fallbackEl.style.display = 'none';
+
+        initBodyMonacoEditor(monacoId, body, ct, mode);
+      } else {
+        // Dispose any active Monaco editor
+        const monacoId2 = elementId + '-monaco';
+        disposeBodyEditor(monacoId2);
+
+        const monacoEl = document.getElementById(monacoId);
+        const fallbackEl = document.getElementById(fallbackId);
+        if (monacoEl) monacoEl.style.display = 'none';
+
+        if (fallbackEl) {
+          fallbackEl.style.display = 'block';
+          if (mode === 'image') {
+            fallbackEl.innerHTML = '<div style="text-align:center;padding:20px;"><span style="color:var(--text-watermark);font-size:13px;">[Image: ' + esc(ct) + ']</span></div>';
+          } else {
+            fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
+          }
+        } else {
+          // Fallback for request body or old-style rendering
+          wrapper.dataset.viewMode = mode;
+          wrapper.innerHTML = formatBodyAs(body, ct, mode);
+        }
+      }
     }
 
     function syntaxHighlightJson(json) {
@@ -1702,7 +2330,9 @@
       'existing-terminal': '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="#888" stroke-width="1.5"/><polyline points="7 8 10 11 7 14" stroke="#888" stroke-width="1.5" fill="none"/><line x1="12" y1="14" x2="17" y2="14" stroke="#888" stroke-width="1.5"/></svg>',
       'system-proxy': '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="#9a9da8" stroke-width="1.5"/><line x1="8" y1="21" x2="16" y2="21" stroke="#9a9da8" stroke-width="1.5"/><line x1="12" y1="17" x2="12" y2="21" stroke="#9a9da8" stroke-width="1.5"/><circle cx="12" cy="10" r="3" fill="none" stroke="#9a9da8" stroke-width="1.5"/></svg>',
       'docker': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#2fb4e0" stroke-width="1.5"><rect x="3" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="11" width="4" height="4" rx="0.5"/><rect x="13" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="6" width="4" height="4" rx="0.5"/><rect x="13" y="6" width="4" height="4" rx="0.5"/><path d="M2 13c0 0 1-5 10-5s10 5 10 5" stroke-width="1"/></svg>',
-      'electron': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#47848f" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></svg>'
+      'electron': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#47848f" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></svg>',
+      'android-adb': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#78c257" stroke-width="1.5"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="9" y1="6" x2="15" y2="6"/></svg>',
+      'jvm': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#e76f00" stroke-width="1.5"><path d="M8 17c0 0 1.5 2 4 2s4-2 4-2"/><path d="M9 11c0 0-3 2-3 5 0 2 1.5 4 6 4s6-2 6-4c0-3-3-5-3-5"/><path d="M12 3c-1 0-2 1-2 2.5C10 7.5 12 9 12 9s2-1.5 2-3.5C14 4 13 3 12 3z"/><line x1="12" y1="9" x2="12" y2="15"/></svg>'
     };
 
     const INTERCEPTOR_DESCRIPTIONS = {
@@ -1715,7 +2345,9 @@
       'existing-terminal': ['Intercept launched processes from an existing terminal window.', 'Copy and paste environment variables to configure your terminal.'],
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', 'Set proxy environment variables when running containers.'],
-      'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.']
+      'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.'],
+      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.'],
+      'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
     };
 
     const INTERCEPTOR_COLORS = {
@@ -1729,6 +2361,8 @@
       'system-proxy': '#9a9da8',
       'docker': '#2fb4e0',
       'electron': '#47848f',
+      'android-adb': '#78c257',
+      'jvm': '#e76f00',
       'manual-setup': '#4caf7d'
     };
 
@@ -1743,7 +2377,9 @@
       'existing-terminal': ['terminal', 'cli', 'docker', 'node', 'python'],
       'system-proxy': ['system', 'global', 'machine'],
       'docker': ['docker', 'container', 'devops', 'virtualization'],
-      'electron': ['electron', 'desktop', 'app', 'application']
+      'electron': ['electron', 'desktop', 'app', 'application'],
+      'android-adb': ['android', 'adb', 'mobile', 'phone', 'device'],
+      'jvm': ['java', 'jvm', 'kotlin', 'scala', 'gradle', 'maven', 'spring']
     };
 
     // Icon for the "Anything" / manual-setup card
@@ -1751,6 +2387,11 @@
 
     let allInterceptors = [];
     let interceptorsInProgress = new Set();
+    let expandedInterceptorId = null;
+    let expandedInterceptorMetadata = null;
+
+    // Interceptors that have expandable config components
+    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb', 'jvm']);
 
     function renderInterceptors(interceptors) {
       allInterceptors = interceptors;
@@ -1819,7 +2460,15 @@
 
         let pillHtml = '';
         if (i.active) {
-          pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
+          if (i.id === 'android-adb' && expandedInterceptorMetadata?.activatedDevices?.length > 0) {
+            const deviceNames = expandedInterceptorMetadata.activatedDevices.map(d => d.model || d.serial).join(', ');
+            pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(deviceNames)}</span>`;
+          } else if (i.id === 'jvm' && expandedInterceptorMetadata?.activatedProcesses?.length > 0) {
+            const procNames = expandedInterceptorMetadata.activatedProcesses.map(p => p.name || p.pid).join(', ');
+            pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(procNames)}</span>`;
+          } else {
+            pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
+          }
         } else if (!i.activable) {
           if (i.supported !== false) {
             pillHtml = `<span class="intercept-pill pill-unavailable">Not available</span>`;
@@ -1832,12 +2481,21 @@
         }
 
         const card = document.createElement('div');
-        card.className = `intercept-card${isDisabled ? ' disabled' : ''}`;
+        const isExpanded = expandedInterceptorId === i.id;
+        card.className = `intercept-card${isDisabled ? ' disabled' : ''}${isExpanded ? ' expanded' : ''}`;
+        card.dataset.interceptorId = i.id;
         card.style.order = index;
+        if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
+          card.setAttribute('aria-expanded', String(isExpanded));
+        }
         if (i.activable) {
           card.setAttribute('tabindex', '0');
           card.setAttribute('role', 'button');
-          card.onclick = () => toggleInterceptor(i.id, i.active);
+          if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
+            card.onclick = () => handleExpandableCardClick(i.id, i.active);
+          } else {
+            card.onclick = () => toggleInterceptor(i.id, i.active);
+          }
           card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
         }
 
@@ -1845,12 +2503,22 @@
 
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
+          (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close" aria-label="Close"><i class="ph ph-x"></i></button>` : '') +
           `<h1>${esc(i.name)}</h1>` +
           desc.map(d => `<p>${esc(d)}</p>`).join('') +
           (pillHtml ? pillHtml : '') +
+          (isExpanded ? `<div class="intercept-card-config" id="interceptConfig-${i.id}"></div>` : '') +
           (isLoading ? '<div class="intercept-loading-overlay"><div class="intercept-spinner"></div></div>' : '');
 
         grid.appendChild(card);
+
+        // Render config content if expanded
+        if (isExpanded) {
+          const configContainer = document.getElementById(`interceptConfig-${i.id}`);
+          if (configContainer) {
+            renderInterceptorConfig(i.id, configContainer);
+          }
+        }
       });
 
       // Always add the "Anything" manual setup card at the end
@@ -1872,6 +2540,437 @@
       grid.appendChild(manualCard);
     }
 
+    async function handleExpandableCardClick(id, isActive) {
+      if (expandedInterceptorId === id) {
+        // Already expanded — collapse
+        collapseInterceptorCard();
+        return;
+      }
+
+      // Activate if not already active, then expand
+      // Always refresh for android-adb (device list may change)
+      if (!isActive || id === 'android-adb' || id === 'jvm') {
+        interceptorsInProgress.add(id);
+        filterInterceptors();
+        try {
+          const res = await fetch(`${API_BASE}/api/interceptors/${id}/activate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          expandedInterceptorMetadata = data.metadata || null;
+        } catch (err) {
+          interceptorsInProgress.delete(id);
+          filterInterceptors();
+          toast(`Error: ${err.message}`, 'error');
+          return;
+        } finally {
+          interceptorsInProgress.delete(id);
+        }
+        // Refresh interceptor state
+        try {
+          const res = await fetch(`${API_BASE}/api/interceptors`);
+          const data = await res.json();
+          allInterceptors = data.interceptors;
+          // Update connected sources
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+      }
+
+      expandedInterceptorId = id;
+      filterInterceptors();
+    }
+
+    function collapseInterceptorCard() {
+      expandedInterceptorId = null;
+      expandedInterceptorMetadata = null;
+      filterInterceptors();
+    }
+
+    function renderInterceptorConfig(id, container) {
+      if (id === 'docker') {
+        renderDockerConfig(container);
+      } else if (id === 'existing-terminal') {
+        renderTerminalConfig(container);
+      } else if (id === 'android-adb') {
+        renderAndroidConfig(container);
+      } else if (id === 'jvm') {
+        renderJvmConfig(container);
+      }
+    }
+
+    function renderDockerConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Docker Run</h3>
+          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(runCmd)}</div>
+        </div>
+        <div class="config-section">
+          <h3>Docker Compose</h3>
+          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(composeCmd)}</div>
+        </div>
+      `;
+    }
+
+    function renderTerminalConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const proxyUrl = meta?.proxyUrl || `http://127.0.0.1:${config.proxyPort || 8000}`;
+      const certPath = meta?.certPath || '';
+      const instructions = meta?.instructions || {
+        bash: `export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS="${certPath}" NODE_TLS_REJECT_UNAUTHORIZED=0`,
+        powershell: `$env:HTTP_PROXY="${proxyUrl}"; $env:HTTPS_PROXY="${proxyUrl}"; $env:NODE_EXTRA_CA_CERTS="${certPath}"; $env:NODE_TLS_REJECT_UNAUTHORIZED="0"`,
+        cmd: `set HTTP_PROXY=${proxyUrl}&& set HTTPS_PROXY=${proxyUrl}&& set NODE_EXTRA_CA_CERTS=${certPath}&& set NODE_TLS_REJECT_UNAUTHORIZED=0`
+      };
+
+      // Detect default shell
+      const platform = navigator.platform.toLowerCase();
+      let defaultTab = 'bash';
+      if (platform.includes('win')) defaultTab = 'powershell';
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Paste in your terminal</h3>
+          <div class="config-tabs">
+            <button class="config-tab${defaultTab === 'bash' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'bash')">Bash / Zsh</button>
+            <button class="config-tab${defaultTab === 'powershell' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'powershell')">PowerShell</button>
+            <button class="config-tab${defaultTab === 'cmd' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'cmd')">CMD</button>
+          </div>
+          <div class="config-code-block" id="terminalConfigCode" onclick="copyConfigCode(this)" title="Click to copy">${esc(instructions[defaultTab])}</div>
+        </div>
+      `;
+
+      // Store instructions on the container for tab switching
+      container._instructions = instructions;
+    }
+
+    function switchConfigTab(btn, tab) {
+      const tabsContainer = btn.parentElement;
+      tabsContainer.querySelectorAll('.config-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const configContainer = btn.closest('.intercept-card-config');
+      const codeBlock = configContainer.querySelector('#terminalConfigCode');
+      if (configContainer._instructions && configContainer._instructions[tab]) {
+        codeBlock.textContent = configContainer._instructions[tab];
+      }
+    }
+
+    function copyConfigCode(el) {
+      const text = el.textContent.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        toast('Copied to clipboard!', 'success');
+      }).catch(() => {
+        toast('Failed to copy', 'error');
+      });
+    }
+
+    function renderAndroidConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const devices = meta?.devices || [];
+      const activatedSerials = new Set(
+        (meta?.activatedDevices || []).map(d => d.serial)
+      );
+
+      if (devices.length === 0) {
+        container.innerHTML = `
+          <div class="config-section">
+            <h3>Connected Devices</h3>
+            <p style="color: var(--text-muted); font-size: 13px;">No Android devices detected. Make sure:</p>
+            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+              <li>USB debugging is enabled on your device</li>
+              <li>Your device is connected via USB</li>
+              <li>ADB is installed and in your PATH</li>
+            </ul>
+            <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshAndroidDevices();">
+              <i class="ph ph-arrows-clockwise"></i> Refresh
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Connected Devices</h3>
+          <div class="android-device-list">
+            ${devices.map(d => {
+              const isActivated = activatedSerials.has(d.serial);
+              const isUnauthorized = d.status === 'unauthorized';
+              const isOffline = d.status === 'offline';
+              return `
+                <div class="android-device-item${isActivated ? ' activated' : ''}" data-device-id="${esc(d.serial)}">
+                  <div class="android-device-info">
+                    <i class="ph ph-device-mobile"></i>
+                    <div class="android-device-details">
+                      <span class="android-device-model">${esc(d.model || d.serial)}</span>
+                      <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
+                    </div>
+                  </div>
+                  <div class="android-device-actions">
+                    ${isActivated
+                      ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
+                      : isUnauthorized
+                        ? '<span class="android-device-status status-warning">Unauthorized</span>'
+                        : isOffline
+                          ? '<span class="android-device-status status-offline">Offline</span>'
+                          : `<button class="android-device-activate" onclick="event.stopPropagation(); activateAndroidDevice('${esc(d.serial)}');">Activate</button>`
+                    }
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+          <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshAndroidDevices();">
+            <i class="ph ph-arrows-clockwise"></i> Refresh Devices
+          </button>
+        </div>
+      `;
+    }
+
+    async function activateAndroidDevice(deviceId) {
+      const item = document.querySelector(`[data-device-id="${deviceId}"]`);
+      const btn = item?.querySelector('.android-device-activate');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<div class="intercept-spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle;"></div>';
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        // Update metadata with fresh device and activation info
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            devices: data.metadata.devices || expandedInterceptorMetadata?.devices || [],
+            activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
+          };
+        }
+
+        // Re-render the config area
+        const container = document.getElementById('interceptConfig-android-adb');
+        if (container) {
+          renderAndroidConfig(container);
+        }
+
+        // Refresh interceptor list for pill update
+        try {
+          const r = await fetch(`${API_BASE}/api/interceptors`);
+          const d = await r.json();
+          allInterceptors = d.interceptors;
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+
+        toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = 'Activate';
+        }
+      }
+    }
+
+    async function refreshAndroidDevices() {
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            devices: data.metadata.devices || [],
+            activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
+          };
+        }
+        const container = document.getElementById('interceptConfig-android-adb');
+        if (container) {
+          renderAndroidConfig(container);
+        }
+        toast('Device list refreshed', 'success');
+      } catch (err) {
+        toast(`Error refreshing devices: ${err.message}`, 'error');
+      }
+    }
+
+    function renderJvmConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const processes = meta?.processes || [];
+      const activatedPids = new Set(
+        (meta?.activatedProcesses || []).map(p => p.pid)
+      );
+
+      const proxyPort = config.proxyPort || 8000;
+      const fallbackCmd = `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${proxyPort}`;
+
+      if (processes.length === 0) {
+        container.innerHTML = `
+          <div class="config-section">
+            <h3>Running JVM Processes</h3>
+            <p style="color: var(--text-muted); font-size: 13px;">No JVM processes detected. Make sure:</p>
+            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+              <li>A Java application is running</li>
+              <li>Java JDK (not JRE) is installed with <code>jps</code> in your PATH</li>
+            </ul>
+            <div class="config-section" style="margin-top: 12px;">
+              <h3>Or launch with proxy flags</h3>
+              <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+            </div>
+            <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
+              <i class="ph ph-arrows-clockwise"></i> Refresh
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Running JVM Processes</h3>
+          <div class="jvm-process-list">
+            ${processes.map(p => {
+              const isActivated = activatedPids.has(p.pid);
+              return `
+                <div class="jvm-process-item${isActivated ? ' activated' : ''}" data-jvm-pid="${esc(p.pid)}">
+                  <div class="jvm-process-info">
+                    <i class="ph ph-coffee"></i>
+                    <div class="jvm-process-details">
+                      <span class="jvm-process-name">${esc(p.name)}</span>
+                      <span class="jvm-process-meta">PID ${esc(p.pid)} · ${esc(p.mainClass)}</span>
+                    </div>
+                  </div>
+                  <div class="jvm-process-actions">
+                    ${isActivated
+                      ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
+                      : `<button class="jvm-process-activate" onclick="event.stopPropagation(); activateJvmProcess('${esc(p.pid)}');">Attach</button>`
+                    }
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+          <div class="config-section" style="margin-top: 12px;">
+            <h3>Or launch with proxy flags</h3>
+            <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+          </div>
+          <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
+            <i class="ph ph-arrows-clockwise"></i> Refresh Processes
+          </button>
+        </div>
+      `;
+    }
+
+    async function activateJvmProcess(pid) {
+      const item = document.querySelector(`[data-jvm-pid="${pid}"]`);
+      const btn = item?.querySelector('.jvm-process-activate');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<div class="intercept-spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle;"></div>';
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        // Update metadata with fresh process and activation info
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            processes: data.metadata.processes || expandedInterceptorMetadata?.processes || [],
+            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
+          };
+        }
+
+        // Re-render the config area
+        const container = document.getElementById('interceptConfig-jvm');
+        if (container) {
+          renderJvmConfig(container);
+        }
+
+        // Refresh interceptor list for pill update
+        try {
+          const r = await fetch(`${API_BASE}/api/interceptors`);
+          const d = await r.json();
+          allInterceptors = d.interceptors;
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+
+        toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = 'Attach';
+        }
+      }
+    }
+
+    async function refreshJvmProcesses() {
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            processes: data.metadata.processes || [],
+            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
+          };
+        }
+        const container = document.getElementById('interceptConfig-jvm');
+        if (container) {
+          renderJvmConfig(container);
+        }
+        toast('Process list refreshed', 'success');
+      } catch (err) {
+        toast(`Error refreshing processes: ${err.message}`, 'error');
+      }
+    }
+
     async function toggleInterceptor(id, isActive) {
       try {
         if (isActive) {
@@ -1889,15 +2988,10 @@
             const data = await res.json();
             if (data.error) throw new Error(data.error);
 
-            // Special handling for existing-terminal: show setup commands
-            if (id === 'existing-terminal' && data.metadata?.instructions) {
-              showTerminalInstructions(data.metadata);
-            } else {
-              toast(`Launched ${id}`, 'success');
-              // Auto-switch to Traffic view on successful activation (like HTTP Toolkit)
-              const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
-              if (trafficTab) switchPanel(trafficTab, 'traffic');
-            }
+            toast(`Launched ${id}`, 'success');
+            // Auto-switch to Traffic view on successful activation (like HTTP Toolkit)
+            const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+            if (trafficTab) switchPanel(trafficTab, 'traffic');
           } finally {
             interceptorsInProgress.delete(id);
           }
@@ -1910,88 +3004,41 @@
       }
     }
 
-    function showTerminalInstructions(metadata) {
-      const platform = navigator.platform.toLowerCase();
-      let defaultCmd = metadata.instructions.bash;
-      let defaultLabel = 'Bash / Zsh';
-      if (platform.includes('win')) {
-        defaultCmd = metadata.instructions.powershell;
-        defaultLabel = 'PowerShell';
-      }
-
-      // Create a modal-like overlay with the instructions
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2000;display:flex;align-items:center;justify-content:center;';
-      overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-      overlay.innerHTML = `
-        <div class="card" style="max-width:700px;width:90%;max-height:80vh;overflow-y:auto;padding:24px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-            <h3 style="font-size:20px;font-weight:bold;">Existing Terminal Setup</h3>
-            <button class="btn" onclick="this.closest('div[style*=fixed]').remove()" style="padding:4px 8px;">&times;</button>
-          </div>
-          <p style="color:var(--text-lowlight);margin-bottom:16px;line-height:1.5;">
-            Paste this command in your existing terminal to route its traffic through the proxy:
-          </p>
-          <div style="margin-bottom:12px;">
-            <div style="display:flex;gap:8px;margin-bottom:8px;">
-              <button class="btn termTabBtn active" onclick="switchTermTab(this,'bash')" style="font-size:11px;">Bash / Zsh</button>
-              <button class="btn termTabBtn" onclick="switchTermTab(this,'powershell')" style="font-size:11px;">PowerShell</button>
-              <button class="btn termTabBtn" onclick="switchTermTab(this,'cmd')" style="font-size:11px;">CMD</button>
-            </div>
-            <div class="body-content" id="termCmd" style="cursor:pointer;position:relative;" onclick="copyTermCmd()" title="Click to copy">
-              ${esc(metadata.instructions.bash)}
-            </div>
-          </div>
-          <p style="font-size:12px;color:var(--text-watermark);">Click the command to copy it to your clipboard.</p>
-        </div>
-      `;
-
-      // Store all instructions for tab switching
-      overlay._instructions = metadata.instructions;
-      document.body.appendChild(overlay);
-    }
-
-    function switchTermTab(btn, tab) {
-      document.querySelectorAll('.termTabBtn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const overlay = btn.closest('div[style*="fixed"]');
-      const instructions = overlay._instructions;
-      const cmdEl = document.getElementById('termCmd');
-      if (instructions[tab]) cmdEl.textContent = instructions[tab];
-    }
-
-    function copyTermCmd() {
-      const text = document.getElementById('termCmd').textContent.trim();
-      navigator.clipboard.writeText(text).then(() => {
-        toast('Copied to clipboard!', 'success');
-      }).catch(() => {
-        toast('Failed to copy', 'error');
-      });
-    }
-
     // ============ MOCK RULES ============
     const MOCK_METHOD_COLORS = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#888','*':'#888'};
-    const MOCK_MATCHER_TYPES = [
-      { value: 'method', label: 'Method' },
-      { value: 'path', label: 'Path' },
-      { value: 'regex-path', label: 'Regex Path' },
-      { value: 'host', label: 'Host' },
-      { value: 'header', label: 'Header' },
-      { value: 'query', label: 'Query Param' },
-      { value: 'exact-query', label: 'Exact Query String' },
-      { value: 'url-contains', label: 'URL Contains' },
-      { value: 'body-contains', label: 'Body Contains' },
-      { value: 'json-body-exact', label: 'JSON Body (exact)' },
-      { value: 'json-body-includes', label: 'JSON Body (partial match)' },
-      { value: 'port', label: 'Port' },
-      { value: 'protocol', label: 'Protocol (HTTP/HTTPS)' },
-      { value: 'cookie', label: 'Cookie' },
-      { value: 'form-data', label: 'Form Data Field' },
-      { value: 'regex-url', label: 'Regex URL (full)' },
-      { value: 'regex-body', label: 'Regex Body' },
-      { value: 'raw-body-exact', label: 'Raw Body (exact match)' }
+    const MOCK_MATCHER_GROUPS = [
+      { group: 'Basic', items: [
+        { value: 'wildcard', label: 'Wildcard (any request)' },
+        { value: 'method', label: 'Method' },
+        { value: 'host', label: 'Host' },
+        { value: 'path', label: 'Path' },
+      ]},
+      { group: 'URL', items: [
+        { value: 'hostname', label: 'Hostname (no port)' },
+        { value: 'regex-path', label: 'Regex Path' },
+        { value: 'regex-url', label: 'Regex URL (full)' },
+        { value: 'url-contains', label: 'URL Contains' },
+        { value: 'query', label: 'Query Param' },
+        { value: 'exact-query', label: 'Exact Query String' },
+        { value: 'port', label: 'Port' },
+        { value: 'protocol', label: 'Protocol (HTTP/HTTPS)' },
+      ]},
+      { group: 'Headers', items: [
+        { value: 'header', label: 'Header' },
+        { value: 'cookie', label: 'Cookie' },
+      ]},
+      { group: 'Body', items: [
+        { value: 'body-contains', label: 'Body Contains' },
+        { value: 'json-body-exact', label: 'JSON Body (exact)' },
+        { value: 'json-body-includes', label: 'JSON Body (partial match)' },
+        { value: 'regex-body', label: 'Regex Body' },
+        { value: 'raw-body-exact', label: 'Raw Body (exact match)' },
+        { value: 'form-data', label: 'Form Data Field' },
+        { value: 'multipart-form-data', label: 'Multipart Form Data' },
+      ]},
     ];
+    // Flat list for iteration
+    const MOCK_MATCHER_TYPES = MOCK_MATCHER_GROUPS.flatMap(g => g.items);
     const MOCK_ACTION_TYPES = [
       { value: 'fixed-response', label: 'Return a fixed response' },
       { value: 'serve-file', label: 'Serve content from a file' },
@@ -2001,6 +3048,8 @@
       { value: 'transform-response', label: 'Transform the response' },
       { value: 'breakpoint-request', label: 'Pause and manually edit the request (breakpoint)' },
       { value: 'breakpoint-response', label: 'Pause and manually edit the response (breakpoint)' },
+      { value: 'breakpoint-request-response', label: 'Pause and edit both request & response' },
+      { value: 'webhook', label: 'Send a webhook (fire-and-forget)' },
       { value: 'close', label: 'Close the connection' },
       { value: 'reset', label: 'Reset connection (send TCP RST)' },
       { value: 'timeout', label: 'Timeout (wait forever)' }
@@ -2017,6 +3066,7 @@
     let mockEditingRule = null;
     let mockEditDraft = null;
     let mockDragId = null;
+    let mockRenamingRuleId = null;
 
     // Helper: find a mock rule by ID, searching inside groups too
     function _findMockRuleDeep(ruleId) {
@@ -2034,6 +3084,8 @@
       if (mockRules.length === 0) return;
       try {
         await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+        mockDraftRules.clear();
+        mockNewDraftIds.clear();
         toast('All rules cleared', 'success');
         loadMockRules();
       } catch (err) {
@@ -2137,20 +3189,53 @@
     }
 
     function renameMockRule(ruleId) {
-      const rule = _findMockRuleDeep(ruleId);
-      if (!rule) return;
-      const name = prompt('Rule name:', rule.title || '');
-      if (name === null) return;
-      rule.title = name || undefined;
+      startInlineRename(ruleId);
+    }
 
-      fetch(API_BASE + '/api/mock-rules/' + ruleId, {
-        method: 'PUT',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(rule)
-      }).then(() => {
-        renderMockRules();
-        toast(name ? 'Rule renamed' : 'Rule name cleared', 'success');
-      }).catch(err => toast('Error: ' + err.message, 'error'));
+    function startInlineRename(ruleId) {
+      if (mockRenamingRuleId === ruleId) return;
+      mockRenamingRuleId = ruleId;
+      renderMockRules();
+      setTimeout(() => {
+        const input = document.getElementById('mock-rename-input');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      }, 0);
+    }
+
+    function confirmInlineRename(ruleId) {
+      if (mockRenamingRuleId !== ruleId) return;
+      const input = document.getElementById('mock-rename-input');
+      if (!input) { mockRenamingRuleId = null; return; }
+      const rule = _findMockRuleDeep(ruleId);
+      if (!rule) { mockRenamingRuleId = null; return; }
+      const name = input.value.trim();
+      rule.title = name || undefined;
+      const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
+      draft.title = rule.title;
+      draft.id = ruleId;
+      mockDraftRules.set(ruleId, draft);
+      mockRenamingRuleId = null;
+      updateMockSaveButtons();
+      renderMockRules();
+    }
+
+    function cancelInlineRename() {
+      if (!mockRenamingRuleId) return;
+      mockRenamingRuleId = null;
+      renderMockRules();
+    }
+
+    function handleRenameKeydown(event, ruleId) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        confirmInlineRename(ruleId);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelInlineRename();
+      }
     }
 
     async function loadMockRules() {
@@ -2158,6 +3243,19 @@
         const res = await fetch(`${API_BASE}/api/mock-rules`);
         const data = await res.json();
         mockRules = data.rules || [];
+        // Re-add any new draft rules that haven't been saved to server yet
+        for (const [draftId, draft] of mockDraftRules) {
+          if (mockNewDraftIds.has(draftId)) {
+            // New draft not on server — add to local list
+            if (!mockRules.some(r => r.id === draftId)) {
+              mockRules.push(draft);
+            }
+          } else {
+            // Existing rule with unsaved changes — overlay draft onto local copy
+            _applyDraftToLocal(draftId, draft);
+          }
+        }
+        updateMockSaveButtons();
         renderMockRules();
       } catch {}
     }
@@ -2310,6 +3408,12 @@
         case 'breakpoint-response':
           actionStr = 'Breakpoint (response)';
           break;
+        case 'breakpoint-request-response':
+          actionStr = 'Breakpoint (request + response)';
+          break;
+        case 'webhook':
+          actionStr = 'Webhook \u2192 ' + esc((nr.action.webhookUrl || '').substring(0, 40));
+          break;
       }
       if (nr.action.delay > 0) {
         actionStr += ' <span style="color:var(--text-watermark);">+' + nr.action.delay + 'ms</span>';
@@ -2338,19 +3442,27 @@
       const nr = normalizeMockRule(rule);
       const isExpanded = mockExpandedRules.has(rule.id);
       const isEditing = mockEditingRule === rule.id;
+      const isDraft = mockDraftRules.has(rule.id);
       const summary = mockRuleSummary(rule);
       const color = MOCK_METHOD_COLORS[summary.methodStr] || MOCK_METHOD_COLORS['*'];
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
       const editingClass = isEditing ? ' mock-rule-editing' : '';
+      const draftClass = isDraft ? ' mock-rule-draft' : '';
 
-      let html = '<div class="mock-rule-card' + disabledClass + editingClass + '" data-rule-id="' + rule.id + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
+      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + rule.id + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
 
       html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(\'' + rule.id + '\')">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
       html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + summary.methodStr + '</span>';
-      if (summary.title) {
-        html += '<span class="mock-rule-desc"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
+      const isRenaming = mockRenamingRuleId === rule.id;
+      if (isRenaming) {
+        const inputVal = esc(rule.title || '').replace(/"/g, '&quot;');
+        const placeholderVal = esc(summary.matchStr).replace(/"/g, '&quot;');
+        html += '<span class="mock-rule-desc" onclick="event.stopPropagation()">';
+        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, \'' + rule.id + '\')" onblur="confirmInlineRename(\'' + rule.id + '\')" onclick="event.stopPropagation()" />';
+      } else if (summary.title) {
+        html += '<span class="mock-rule-desc" onclick="event.stopPropagation(); startInlineRename(\'' + rule.id + '\')" title="Click to rename"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
       } else {
         html += '<span class="mock-rule-desc">' + summary.matchStr;
       }
@@ -2362,41 +3474,47 @@
       // 1. Collapse/Expand (chevron)
       const chevron = isExpanded || isEditing ? '&#9650;' : '&#9660;';
       const collapseTitle = isExpanded || isEditing ? 'Collapse rule' : 'Show rule details';
-      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(\'' + rule.id + '\')" title="' + collapseTitle + '">';
+      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(\'' + rule.id + '\')" title="' + collapseTitle + '" aria-label="' + collapseTitle + '">';
       html += '<span style="font-size:10px;">' + chevron + '</span>';
       html += '</button>';
 
-      // 2. Save (when editing) or Edit (pencil icon)
+      // 2. Save to server (when draft) or Save draft (when editing) or Edit (pencil icon)
+      if (isDraft && !isEditing) {
+        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(\'' + rule.id + '\')" title="Save to server" aria-label="Save to server">';
+        html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
+        html += '</button>';
+      }
       if (isEditing) {
-        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save changes">';
-        html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>';
+        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save as draft" aria-label="Save as draft">';
+        html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       } else {
-        html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule">';
-        html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
+        html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule" aria-label="Edit this rule">';
+        html += '<i class="ph ph-pencil-simple" style="font-size:14px;"></i>';
         html += '</button>';
       }
 
       // 3. Enable/Disable
-      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + (rule.enabled !== false ? 'Disable this rule' : 'Enable this rule') + '">';
+      const toggleLabel = rule.enabled !== false ? 'Disable this rule' : 'Enable this rule';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
       html += rule.enabled !== false
-        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>'
-        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="8" cy="12" r="4"/></svg>';
+        ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
+        : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 4. Rename (tag icon)
-      html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
+      html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule" aria-label="Rename this rule">';
+      html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 5. Clone
-      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule" aria-label="Clone this rule">';
+      html += '<i class="ph ph-copy-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 6. Delete
-      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" style="color:#ce3939;">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
+      html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       html += '</div>';
@@ -2414,33 +3532,36 @@
 
     function renderMockGroup(group) {
       const isCollapsed = group.collapsed;
+      const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
-      let html = '<div class="mock-group' + disabledClass + '" data-group-id="' + group.id + '">';
+      const draftClass = isDraft ? ' mock-rule-draft' : '';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '" aria-expanded="' + !isCollapsed + '">';
 
       // Group header
       html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
       html += '<span style="font-size:10px;margin-right:4px;">' + (isCollapsed ? '&#9654;' : '&#9660;') + '</span>';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5;"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>';
+      html += '<i class="ph ph-folder" style="font-size:14px;flex-shrink:0;opacity:0.5;"></i>';
       html += '<span class="mock-group-title">' + esc(group.title || 'Untitled Group') + '</span>';
       html += '<span style="color:var(--text-watermark);font-size:11px;margin-left:4px;">(' + (group.items || []).length + ' rule' + ((group.items || []).length !== 1 ? 's' : '') + ')</span>';
 
       html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
 
       // Enable/Disable group
-      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + (group.enabled !== false ? 'Disable group' : 'Enable group') + '">';
+      const grpToggleLabel = group.enabled !== false ? 'Disable group' : 'Enable group';
+      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + grpToggleLabel + '" aria-label="' + grpToggleLabel + '">';
       html += group.enabled !== false
-        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>'
-        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="8" cy="12" r="4"/></svg>';
+        ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
+        : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Rename group
-      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
+      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group" aria-label="Rename group">';
+      html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Delete group
-      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" style="color:#ce3939;">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" aria-label="Delete group" style="color:#ce3939;">';
+      html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       html += '</div>';
@@ -2516,9 +3637,11 @@
       for (const m of nr.matchers) {
         html += '<div style="font-size:12px;font-family:var(--font-mono);margin-bottom:4px;color:var(--text-lowlight);">';
         switch (m.type) {
+          case 'wildcard': html += '<span style="color:var(--text-watermark);">Wildcard</span> (matches any request)'; break;
           case 'method': html += '<span style="color:var(--text-watermark);">Method</span> = ' + esc(m.value); break;
           case 'path': html += '<span style="color:var(--text-watermark);">Path (' + (m.matchType || 'prefix') + ')</span> = ' + esc(m.value); break;
           case 'host': html += '<span style="color:var(--text-watermark);">Host</span> = ' + esc(m.value); break;
+          case 'hostname': html += '<span style="color:var(--text-watermark);">Hostname</span> = ' + esc(m.value); break;
           case 'header': html += '<span style="color:var(--text-watermark);">Header</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'query': html += '<span style="color:var(--text-watermark);">Query</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'regex-path': html += '<span style="color:var(--text-watermark);">Regex Path</span> = ' + esc(m.value); break;
@@ -2531,6 +3654,7 @@
           case 'protocol': html += '<span style="color:var(--text-watermark);">Protocol</span> = ' + esc((m.value || '').toUpperCase()); break;
           case 'cookie': html += '<span style="color:var(--text-watermark);">Cookie</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'form-data': html += '<span style="color:var(--text-watermark);">Form Data</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
+          case 'multipart-form-data': html += '<span style="color:var(--text-watermark);">Multipart</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'regex-url': html += '<span style="color:var(--text-watermark);">Regex URL</span> = ' + esc(m.value); break;
           case 'regex-body': html += '<span style="color:var(--text-watermark);">Regex Body</span> = ' + esc((m.value || '').substring(0, 80)); break;
           case 'raw-body-exact': html += '<span style="color:var(--text-watermark);">Raw Body (exact)</span> = ' + esc((m.value || '').substring(0, 80)); break;
@@ -2597,6 +3721,12 @@
         case 'breakpoint-response':
           html += 'Breakpoint &mdash; pause and edit response';
           break;
+        case 'breakpoint-request-response':
+          html += 'Breakpoint &mdash; pause and edit both request &amp; response';
+          break;
+        case 'webhook':
+          html += 'Webhook &rarr; <strong>' + esc(nr.action.webhookUrl || '') + '</strong>';
+          break;
       }
       if (nr.action.delay > 0) html += ' (delay: ' + nr.action.delay + 'ms)';
       html += '</div>';
@@ -2632,6 +3762,17 @@
         html += '<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-watermark);text-transform:uppercase;">Replacement Body</span>';
         html += '<div class="body-content" style="max-height:200px;margin-top:4px;">' + formatBody(nr.action.body, 'text/plain') + '</div>';
         html += '</div>';
+      }
+
+      if (nr.action.type === 'webhook' && nr.action.webhookHeaders) {
+        const whEntries = Object.entries(nr.action.webhookHeaders);
+        if (whEntries.length > 0) {
+          html += '<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-watermark);text-transform:uppercase;">Custom Headers</span>';
+          for (const [k, v] of whEntries) {
+            html += '<div style="font-family:var(--font-mono);font-size:12px;color:var(--text-lowlight);">' + esc(k) + ': ' + esc(v) + '</div>';
+          }
+          html += '</div>';
+        }
       }
 
       html += '</div>';
@@ -2681,7 +3822,7 @@
       html += '<div class="mock-action-config" id="mockActionConfig_' + eid + '">';
       // Group action types: common first, then advanced
       const _primaryActions = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
-      const _advancedActions = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'transform-response'];
+      const _advancedActions = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
       html += '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
       html += '<optgroup label="Common">';
       for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions.includes(a.value))) {
@@ -2701,7 +3842,7 @@
       html += '</div>';
 
       html += '<div class="mock-editor-buttons">';
-      html += '<button class="btn btn-primary" onclick="saveMockRule(\'' + ruleId + '\')">Save</button>';
+      html += '<button class="btn btn-primary" onclick="saveMockRule(\'' + ruleId + '\')">Save Draft</button>';
       html += '<button class="btn" onclick="cancelMockEdit()">Cancel</button>';
       html += '</div>';
 
@@ -2712,12 +3853,19 @@
     function renderMockMatcherRow(matcher, idx, eid) {
       let html = '<div class="mock-matcher-row" data-idx="' + idx + '">';
       html += '<select onchange="updateMockMatcher(' + idx + ', \'type\', this.value, \'' + eid + '\')">';
-      for (const mt of MOCK_MATCHER_TYPES) {
-        html += '<option value="' + mt.value + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + mt.label + '</option>';
+      for (const grp of MOCK_MATCHER_GROUPS) {
+        html += '<optgroup label="' + grp.group + '">';
+        for (const mt of grp.items) {
+          html += '<option value="' + mt.value + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + mt.label + '</option>';
+        }
+        html += '</optgroup>';
       }
       html += '</select>';
 
       switch (matcher.type) {
+        case 'wildcard':
+          html += '<span style="color:var(--text-lowlight);font-size:12px;padding:4px 8px;">Matches any request</span>';
+          break;
         case 'method':
           html += '<select onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           for (const meth of ['*', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
@@ -2734,7 +3882,10 @@
           html += '<input type="text" placeholder="/api/users" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'host':
-          html += '<input type="text" placeholder="example.com or *.example.com" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="example.com:8080 or *.example.com" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          break;
+        case 'hostname':
+          html += '<input type="text" placeholder="example.com (hostname only, no port)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'header':
           html += '<input type="text" style="max-width:140px;" placeholder="Header name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
@@ -2788,10 +3939,14 @@
         case 'raw-body-exact':
           html += '<textarea placeholder="Exact body content to match" style="min-height:60px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
           break;
+        case 'multipart-form-data':
+          html += '<input type="text" placeholder="Field name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          break;
       }
 
       html += '<button class="mock-remove-btn" onclick="removeMockMatcher(' + idx + ', \'' + eid + '\')" title="Remove condition">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
       return html;
@@ -2817,7 +3972,7 @@
             html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
             html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
             html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
-            html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
           });
           html += '</div>';
@@ -2882,7 +4037,7 @@
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
               html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
+              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'req\',\'' + eid + '\')">+ Add header</button>';
@@ -2943,7 +4098,7 @@
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
               html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
+              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'res\',\'' + eid + '\')">+ Add header</button>';
@@ -3008,6 +4163,31 @@
         case 'breakpoint-response':
           html += '<p style="color:var(--text-lowlight);font-size:12px;">The request will be forwarded normally, but the response will be paused before being sent back to the client. You can inspect and modify it before releasing.</p>';
           break;
+
+        case 'breakpoint-request-response':
+          html += '<p style="color:var(--text-lowlight);font-size:12px;">When a matching request arrives, it will be paused for editing. After you resume the request, the response will also be paused so you can inspect and modify it before sending it back to the client.</p>';
+          break;
+
+        case 'webhook':
+          html += '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:11px;margin-bottom:3px;">Webhook URL</label>';
+          html += '<input type="text" placeholder="https://example.com/webhook" value="' + esc(action.webhookUrl || '') + '" onchange="mockEditDraft.action.webhookUrl=this.value"></div>';
+          html += '<div style="margin-bottom:8px;">';
+          html += '<label style="font-size:11px;color:var(--text-watermark);display:block;margin-bottom:4px;">Custom Headers (optional)</label>';
+          html += '<div id="mockWebhookHeaders_' + eid + '">';
+          const whEntries = Object.entries(action.webhookHeaders || {});
+          whEntries.forEach(([k, v], hi) => {
+            html += '<div class="mock-header-row">';
+            html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
+            html += '<i class="ph ph-x" style="font-size:12px;"></i>';
+            html += '</button></div>';
+          });
+          html += '</div>';
+          html += '<button class="mock-add-matcher-btn" onclick="addMockWebhookHeader(\'' + eid + '\')">+ Add header</button>';
+          html += '</div>';
+          html += '<p style="color:var(--text-lowlight);font-size:12px;margin:0;">A copy of the matching request will be POSTed to this URL. The original client receives a 200 OK response immediately.</p>';
+          break;
       }
       return html;
     }
@@ -3057,9 +4237,8 @@
       if (mockExpandedRules.has(ruleId)) {
         // Collapse
         mockExpandedRules.delete(ruleId);
-        // If we were editing this rule, save and close
-        if (mockEditingRule === ruleId) {
-          // Auto-save on collapse
+        // If we were editing this rule, save as draft on collapse
+        if (mockEditingRule === ruleId && mockEditDraft) {
           saveMockRule(ruleId);
         }
         mockEditingRule = null;
@@ -3072,15 +4251,17 @@
       renderMockRules();
     }
 
-    async function toggleMockRuleEnabled(ruleId) {
-      try {
-        const res = await fetch(`${API_BASE}/api/mock-rules/${ruleId}/toggle`, { method: 'PATCH' });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        loadMockRules();
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-      }
+    function toggleMockRuleEnabled(ruleId) {
+      const rule = _findMockRuleDeep(ruleId);
+      if (!rule) return;
+      rule.enabled = rule.enabled === false ? true : false;
+      // Save as draft change
+      const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
+      draft.enabled = rule.enabled;
+      draft.id = ruleId;
+      mockDraftRules.set(ruleId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     function updateMockMatcher(idx, field, value, eid) {
@@ -3090,13 +4271,16 @@
       if (field === 'type') {
         const newM = { type: value };
         switch (value) {
+          case 'wildcard': break; // no properties needed
           case 'method': newM.value = 'GET'; break;
           case 'path': newM.value = '/'; newM.matchType = 'prefix'; break;
           case 'host': newM.value = ''; break;
+          case 'hostname': newM.value = ''; break;
           case 'header': newM.name = ''; newM.value = ''; break;
           case 'query': newM.name = ''; newM.value = ''; break;
           case 'url-contains': newM.value = ''; break;
           case 'body-contains': newM.value = ''; break;
+          case 'multipart-form-data': newM.name = ''; newM.value = ''; break;
         }
         mockEditDraft.matchers[idx] = newM;
         rerenderMockMatchers(eid);
@@ -3161,7 +4345,7 @@
       }
 
       html += '<button class="mock-remove-btn" onclick="removeMockPreStep(' + idx + ', \'' + eid + '\')" title="Remove step">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
       return html;
@@ -3267,13 +4451,18 @@
           break;
         case 'breakpoint-request':
         case 'breakpoint-response':
+        case 'breakpoint-request-response':
           // No special fields needed
+          break;
+        case 'webhook':
+          mockEditDraft.action.webhookUrl = oldAction.webhookUrl || '';
+          mockEditDraft.action.webhookHeaders = oldAction.webhookHeaders || {};
           break;
       }
       const configEl = document.getElementById('mockActionConfig_' + eid);
       if (configEl) {
         const _primaryActions2 = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
-        const _advancedActions2 = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'transform-response'];
+        const _advancedActions2 = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
         let selectHtml = '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
         selectHtml += '<optgroup label="Common">';
         for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions2.includes(a.value))) {
@@ -3342,13 +4531,77 @@
         html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
         html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
-        html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
       container.innerHTML = html;
     }
 
-    async function saveMockRule(ruleId) {
+    function updateMockWebhookHeader(idx, which, value, eid) {
+      if (!mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      if (idx < 0 || idx >= entries.length) return;
+      if (which === 'key') {
+        const val = entries[idx][1];
+        const newHeaders = {};
+        entries.forEach(([k, v], i) => {
+          if (i === idx) newHeaders[value] = val;
+          else newHeaders[k] = v;
+        });
+        mockEditDraft.action.webhookHeaders = newHeaders;
+      } else {
+        entries[idx][1] = value;
+        const newHeaders = {};
+        entries.forEach(([k, v]) => { newHeaders[k] = v; });
+        mockEditDraft.action.webhookHeaders = newHeaders;
+      }
+    }
+
+    function addMockWebhookHeader(eid) {
+      if (!mockEditDraft) return;
+      if (!mockEditDraft.action.webhookHeaders) mockEditDraft.action.webhookHeaders = {};
+      let key = 'X-Custom';
+      let n = 1;
+      while (mockEditDraft.action.webhookHeaders[key]) { key = 'X-Custom-' + n; n++; }
+      mockEditDraft.action.webhookHeaders[key] = '';
+      rerenderMockWebhookHeaders(eid);
+    }
+
+    function removeMockWebhookHeader(idx, eid) {
+      if (!mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      if (idx < 0 || idx >= entries.length) return;
+      const newHeaders = {};
+      entries.forEach(([k, v], i) => {
+        if (i !== idx) newHeaders[k] = v;
+      });
+      mockEditDraft.action.webhookHeaders = newHeaders;
+      rerenderMockWebhookHeaders(eid);
+    }
+
+    function rerenderMockWebhookHeaders(eid) {
+      const container = document.getElementById('mockWebhookHeaders_' + eid);
+      if (!container || !mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      let html = '';
+      entries.forEach(([k, v], hi) => {
+        html += '<div class="mock-header-row">';
+        html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
+        html += '</button></div>';
+      });
+      container.innerHTML = html;
+    }
+
+    /** Check if there are any unsaved mock rule drafts */
+    function hasUnsavedMockChanges() {
+      return mockDraftRules.size > 0;
+    }
+
+    /** Save current editor state to draft (local only, not to server) */
+    function saveMockRule(ruleId) {
       if (!mockEditDraft) return;
 
       const hasContent = mockEditDraft.matchers.some(m => {
@@ -3360,45 +4613,172 @@
         return;
       }
 
-      try {
-        const preSteps = (mockEditDraft.preSteps || []).filter(s => s && s.type);
-        const payload = {
-          enabled: mockEditDraft.enabled !== false,
-          priority: mockEditDraft.priority || 'normal',
-          matchers: mockEditDraft.matchers,
-          preSteps: preSteps.length > 0 ? preSteps : undefined,
-          action: mockEditDraft.action,
-          title: mockEditDraft.title || undefined
-        };
+      const preSteps = (mockEditDraft.preSteps || []).filter(s => s && s.type);
+      const draft = {
+        enabled: mockEditDraft.enabled !== false,
+        priority: mockEditDraft.priority || 'normal',
+        matchers: mockEditDraft.matchers,
+        preSteps: preSteps.length > 0 ? preSteps : [],
+        action: mockEditDraft.action,
+        title: mockEditDraft.title || undefined
+      };
 
-        let res;
-        if (ruleId === '__new__') {
-          res = await fetch(`${API_BASE}/api/mock-rules`, {
+      if (ruleId === '__new__') {
+        // Assign a temporary client-side ID for the new draft
+        const tempId = '__draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        draft.id = tempId;
+        mockDraftRules.set(tempId, draft);
+        mockNewDraftIds.add(tempId);
+        // Add to local mockRules so it renders
+        mockRules.push(draft);
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('Rule saved as draft (unsaved)', 'success');
+      } else {
+        draft.id = ruleId;
+        mockDraftRules.set(ruleId, draft);
+        // Update local copy so render shows draft data
+        _applyDraftToLocal(ruleId, draft);
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('Changes saved as draft (unsaved)', 'success');
+      }
+      updateMockSaveButtons();
+      renderMockRules();
+    }
+
+    /** Apply a draft's data onto the local mockRules array for rendering */
+    function _applyDraftToLocal(ruleId, draft) {
+      for (let i = 0; i < mockRules.length; i++) {
+        if (mockRules[i].id === ruleId) {
+          Object.assign(mockRules[i], draft);
+          return;
+        }
+        if (mockRules[i].type === 'group' && mockRules[i].items) {
+          for (let j = 0; j < mockRules[i].items.length; j++) {
+            if (mockRules[i].items[j].id === ruleId) {
+              Object.assign(mockRules[i].items[j], draft);
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    /** Send ALL draft rules to the server */
+    async function saveAllMockRules() {
+      if (!hasUnsavedMockChanges()) return;
+      try {
+        const entries = Array.from(mockDraftRules.entries());
+        for (const [draftId, draft] of entries) {
+          const payload = { ...draft };
+          delete payload.id;
+          if (mockNewDraftIds.has(draftId)) {
+            const res = await fetch(`${API_BASE}/api/mock-rules`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+          } else {
+            const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+          }
+        }
+        mockDraftRules.clear();
+        mockNewDraftIds.clear();
+        mockEditingRule = null;
+        mockEditDraft = null;
+        toast('All changes saved', 'success');
+        loadMockRules();
+      } catch (err) {
+        toast('Error saving rules: ' + err.message, 'error');
+      }
+    }
+
+    /** Send a single draft rule to the server */
+    async function saveOneMockRule(draftId) {
+      const draft = mockDraftRules.get(draftId);
+      if (!draft) return;
+      try {
+        const payload = { ...draft };
+        delete payload.id;
+        if (mockNewDraftIds.has(draftId)) {
+          const res = await fetch(`${API_BASE}/api/mock-rules`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
         } else {
-          res = await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, {
+          const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
         }
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        mockEditingRule = null;
-        mockEditDraft = null;
-        toast(ruleId === '__new__' ? 'Rule created' : 'Rule updated', 'success');
+        mockDraftRules.delete(draftId);
+        mockNewDraftIds.delete(draftId);
+        toast('Rule saved to server', 'success');
         loadMockRules();
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
     }
 
+    /** Revert all unsaved draft changes (reload from server) */
+    function revertMockRules() {
+      if (!hasUnsavedMockChanges()) return;
+      mockDraftRules.clear();
+      mockNewDraftIds.clear();
+      mockEditingRule = null;
+      mockEditDraft = null;
+      toast('All unsaved changes discarded', 'success');
+      loadMockRules();
+    }
+
+    /** Update Save All / Revert button visibility based on draft state */
+    function updateMockSaveButtons() {
+      const saveAllBtn = document.getElementById('mockSaveAllBtn');
+      const revertBtn = document.getElementById('mockRevertBtn');
+      const unsavedBadge = document.getElementById('mockUnsavedBadge');
+      const hasDrafts = hasUnsavedMockChanges();
+      if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
+      if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
+      if (unsavedBadge) {
+        unsavedBadge.style.display = hasDrafts ? '' : 'none';
+        unsavedBadge.textContent = mockDraftRules.size + ' unsaved change' + (mockDraftRules.size !== 1 ? 's' : '');
+      }
+    }
+
     async function deleteMockRule(ruleId) {
       try {
+        // If it's a new draft that hasn't been saved to server, just remove locally
+        if (mockNewDraftIds.has(ruleId)) {
+          mockDraftRules.delete(ruleId);
+          mockNewDraftIds.delete(ruleId);
+          mockRules = mockRules.filter(r => r.id !== ruleId);
+          mockExpandedRules.delete(ruleId);
+          if (mockEditingRule === ruleId) {
+            mockEditingRule = null;
+            mockEditDraft = null;
+          }
+          toast('Draft rule deleted', 'success');
+          updateMockSaveButtons();
+          renderMockRules();
+          return;
+        }
+        // Also clean up any draft for this rule
+        mockDraftRules.delete(ruleId);
         await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
         mockExpandedRules.delete(ruleId);
         if (mockEditingRule === ruleId) {
@@ -3406,26 +4786,27 @@
           mockEditDraft = null;
         }
         toast('Rule deleted', 'success');
+        updateMockSaveButtons();
         loadMockRules();
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
     }
 
-    async function cloneMockRule(ruleId) {
+    function cloneMockRule(ruleId) {
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       const clone = JSON.parse(JSON.stringify(rule));
-      delete clone.id; // Let the server assign a new ID
-      try {
-        await fetch(API_BASE + '/api/mock-rules', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(clone)
-        });
-        toast('Rule cloned', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      // Assign a temporary draft ID
+      const tempId = '__draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      clone.id = tempId;
+      if (clone.title) clone.title = clone.title + ' (copy)';
+      mockDraftRules.set(tempId, clone);
+      mockNewDraftIds.add(tempId);
+      mockRules.push(clone);
+      toast('Rule cloned as draft (unsaved)', 'success');
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     // ============ MOCK RULE GROUPS ============
@@ -3438,10 +4819,13 @@
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       group.enabled = group.enabled === false ? true : false;
-      fetch(API_BASE + '/api/mock-rules/' + groupId, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(group)
-      }).then(() => renderMockRules());
+      // Save as draft change
+      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      draft.enabled = group.enabled;
+      draft.id = groupId;
+      mockDraftRules.set(groupId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
     }
 
     function renameMockGroup(groupId) {
@@ -3450,13 +4834,13 @@
       const name = prompt('Group name:', group.title || '');
       if (name === null) return;
       group.title = name || 'Untitled Group';
-      fetch(API_BASE + '/api/mock-rules/' + groupId, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(group)
-      }).then(() => {
-        renderMockRules();
-        toast('Group renamed', 'success');
-      }).catch(err => toast('Error: ' + err.message, 'error'));
+      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      draft.title = group.title;
+      draft.id = groupId;
+      mockDraftRules.set(groupId, draft);
+      updateMockSaveButtons();
+      renderMockRules();
+      toast('Group renamed (unsaved)', 'success');
     }
 
     async function deleteMockGroup(groupId) {
@@ -3547,6 +4931,8 @@
           if (shouldReplace) {
             // Delete all existing rules first
             await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+            mockDraftRules.clear();
+            mockNewDraftIds.clear();
           }
 
           for (const rule of rules) {
@@ -3627,7 +5013,7 @@
         html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
         html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'' + kind + '\',' + hi + ', \'' + eid + '\')">';
-        html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
       container.innerHTML = html;
@@ -3712,8 +5098,7 @@
       const bodyContent = document.getElementById('sendBodyBody');
       const bodyArrow = document.getElementById('sendBodyArrow');
       if (bodyContent && bodyArrow) {
-        const bodyText = document.getElementById('sendBody');
-        const hasBody = bodyText && bodyText.value.trim().length > 0;
+        const hasBody = getSendBodyValue().trim().length > 0;
         if (METHODS_WITHOUT_BODY.includes(sel.value)) {
           // Collapse body card if body is empty
           if (!hasBody) {
@@ -3738,18 +5123,11 @@
       const isHidden = content.style.display === 'none';
       content.style.display = isHidden ? 'block' : 'none';
       if (arrow) arrow.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-    }
-
-    function updateSendBodyPreview() {
-      const preview = document.getElementById('sendBodyPreview');
-      if (!preview || preview.style.display === 'none') return;
-      const body = document.getElementById('sendBody')?.value || '';
-      const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      if (!body.trim()) {
-        preview.innerHTML = '<span style="color:var(--text-watermark);">Empty</span>';
-        return;
+      // Update aria-expanded on the card header
+      const header = content.previousElementSibling;
+      if (header && header.classList.contains('card-header')) {
+        header.setAttribute('aria-expanded', String(isHidden));
       }
-      preview.innerHTML = formatBodyAs(body, formatToContentType(format), format === 'text' ? 'text' : format);
     }
 
     function formatToContentType(format) {
@@ -3757,54 +5135,125 @@
       return map[format] || 'text/plain';
     }
 
-    function toggleSendBodyView() {
-      const textarea = document.getElementById('sendBody');
-      const preview = document.getElementById('sendBodyPreview');
-      const toggleBtn = document.getElementById('sendBodyViewToggle');
-      if (!textarea || !preview) return;
+    /**
+     * Map send body format dropdown values to Monaco language ids.
+     * @param {string} format
+     * @returns {string}
+     */
+    function sendFormatToMonacoLanguage(format) {
+      const map = { json: 'json', xml: 'xml', html: 'html', css: 'css', javascript: 'javascript', text: 'plaintext' };
+      return map[format] || 'plaintext';
+    }
 
-      if (preview.style.display === 'none') {
-        // Switch to preview
-        preview.style.display = 'block';
-        textarea.style.display = 'none';
-        if (toggleBtn) toggleBtn.textContent = 'Edit';
-        updateSendBodyPreview();
-      } else {
-        // Switch to editor
-        preview.style.display = 'none';
-        textarea.style.display = 'block';
-        if (toggleBtn) toggleBtn.textContent = 'Preview';
-        textarea.focus();
+    /**
+     * Get the current send body editor content.
+     * @returns {string}
+     */
+    function getSendBodyValue() {
+      if (sendBodyEditor) {
+        return sendBodyEditor.getValue();
+      }
+      return '';
+    }
+
+    /**
+     * Set the send body editor content.
+     * @param {string} value
+     */
+    function setSendBodyValue(value) {
+      if (sendBodyEditor) {
+        sendBodyEditor.setValue(value || '');
       }
     }
 
-    function formatSendBody() {
-      const textarea = document.getElementById('sendBody');
+    /**
+     * Initialize or re-initialize the Send page body Monaco editor.
+     * @param {string} [initialValue='']
+     * @param {string} [format='text']
+     */
+    async function initSendBodyEditor(initialValue, format) {
+      const containerId = 'sendBody-monaco-container';
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      // Dispose previous instance if any
+      if (sendBodyEditor) {
+        sendBodyEditor.dispose();
+        sendBodyEditor = null;
+      }
+      container.innerHTML = '';
+
+      const language = sendFormatToMonacoLanguage(format || 'text');
+
+      const editor = await createMonacoEditor(containerId, {
+        value: initialValue || '',
+        language: language,
+        readOnly: false,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      });
+
+      if (editor) {
+        sendBodyEditor = editor;
+
+        // Ctrl+Enter sends the request
+        editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
+          sendRequest();
+        });
+
+        // Escape aborts the request
+        editor.addCommand(monacoApi.KeyCode.Escape, function () {
+          abortSendRequest();
+        });
+      }
+    }
+
+    /**
+     * Update the Monaco editor language when send body format dropdown changes.
+     */
+    function updateSendBodyLanguage() {
+      if (!sendBodyEditor || !monacoApi) return;
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      if (!textarea || !textarea.value.trim()) return;
+      const language = sendFormatToMonacoLanguage(format);
+      monacoApi.editor.setModelLanguage(sendBodyEditor.getModel(), language);
+    }
+
+    /** @deprecated No longer needed — kept as no-op for any stale references */
+    function updateSendBodyPreview() {}
+
+    /** @deprecated No longer needed — kept as no-op for any stale references */
+    function toggleSendBodyView() {}
+
+    function formatSendBody() {
+      if (!sendBodyEditor) return;
+      const format = document.getElementById('sendBodyFormat')?.value || 'text';
+      const value = sendBodyEditor.getValue().trim();
+      if (!value) return;
 
       try {
         if (format === 'json') {
-          const parsed = JSON.parse(textarea.value);
-          textarea.value = JSON.stringify(parsed, null, 2);
+          const parsed = JSON.parse(value);
+          sendBodyEditor.setValue(JSON.stringify(parsed, null, 2));
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
           // Basic XML/HTML indent formatting
-          let formatted = textarea.value
+          let formatted = value
             .replace(/>\s*</g, '>\n<')
             .replace(/(<[^\/][^>]*[^\/]>)\s*/g, '$1\n')
             .split('\n')
             .filter(l => l.trim())
             .join('\n');
-          textarea.value = formatted;
+          sendBodyEditor.setValue(formatted);
           toast('Formatted', 'success');
         } else {
-          toast('Format not applicable for ' + format, 'error');
+          // Try Monaco's built-in formatter for other languages
+          sendBodyEditor.getAction('editor.action.formatDocument')?.run();
         }
       } catch (err) {
         toast('Format error: ' + err.message, 'error');
       }
-      updateSendBodyPreview();
     }
 
     // ============ SEND HEADERS KEY-VALUE EDITOR ============
@@ -3887,17 +5336,20 @@
     function renderSendTabs() {
       const bar = document.getElementById('sendTabBar');
       if (!bar) return;
+      bar.setAttribute('role', 'tablist');
+      bar.setAttribute('aria-label', 'Request tabs');
       bar.innerHTML = sendTabs.map(tab => {
-        const active = tab.id === activeSendTab ? ' active' : '';
+        const isActive = tab.id === activeSendTab;
+        const active = isActive ? ' active' : '';
         let label = 'New request';
         if (tab.url) {
           try { label = tab.method + ' ' + new URL(tab.url).hostname; } catch { label = tab.method + ' ' + tab.url.substring(0, 30); }
         }
-        return '<div class="send-tab' + active + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
+        return '<div class="send-tab' + active + '" role="tab" aria-selected="' + isActive + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
           '<span>' + label + '</span>' +
-          (sendTabs.length > 1 ? '<span class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab">&times;</span>' : '') +
+          (sendTabs.length > 1 ? '<span class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab" aria-label="Close tab">&times;</span>' : '') +
           '</div>';
-      }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab">+</div>';
+      }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab" aria-label="New request tab">+</div>';
     }
 
     function saveSendTabState() {
@@ -3906,7 +5358,7 @@
       tab.method = document.getElementById('sendMethod')?.value || 'GET';
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
-      tab.body = document.getElementById('sendBody')?.value || '';
+      tab.body = getSendBodyValue();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
     }
 
@@ -3915,9 +5367,10 @@
       document.getElementById('sendUrl').value = tab.url || '';
       sendHeadersList = (tab.headers || []).slice();
       renderSendHeaders();
-      document.getElementById('sendBody').value = tab.body || '';
       const fmt = document.getElementById('sendBodyFormat');
       if (fmt) fmt.value = tab.bodyFormat || 'text';
+      setSendBodyValue(tab.body || '');
+      updateSendBodyLanguage();
       if (typeof updateSendMethodColor === 'function') updateSendMethodColor();
       // Restore response if any
       const resEl = document.getElementById('sendResponse');
@@ -3970,7 +5423,12 @@
     }
 
     // Initialize with empty state on page load
-    setTimeout(() => { renderSendHeaders(); renderSendTabs(); }, 100);
+    setTimeout(() => {
+      renderSendHeaders();
+      renderSendTabs();
+      // Initialize the Send body Monaco editor
+      initSendBodyEditor('', 'text');
+    }, 100);
 
     function prepopulateSendUrl(input) {
       if (!input.value) {
@@ -4001,7 +5459,7 @@
       const method = document.getElementById('sendMethod').value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
-      const body = document.getElementById('sendBody').value;
+      const body = getSendBodyValue();
 
       if (!url) { toast('URL is required', 'error'); return; }
 
@@ -4124,7 +5582,29 @@
       if (delta === 'first') newIdx = 0;
       else if (delta === 'last') newIdx = filteredRequests.length - 1;
       else newIdx = Math.max(0, Math.min(filteredRequests.length - 1, currentIdx + delta));
-      selectRequest(filteredRequests[newIdx].id);
+
+      const req = filteredRequests[newIdx];
+      selectedRequestId = req.id;
+      updateTrafficActiveDescendant(req.id);
+      if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
+        history.replaceState(null, '', '#/view/' + req.id);
+      }
+      // Scroll the selected row into view
+      scrollRowIntoView(newIdx);
+      // Re-render to update selection
+      vsForceRender = true;
+      renderVirtualRows();
+      showDetail(req);
+    }
+
+    // ============ WS FRAME EXPAND/COLLAPSE ============
+    function toggleWsExpand(parentId) {
+      if (wsExpandedConnections.has(parentId)) {
+        wsExpandedConnections.delete(parentId);
+      } else {
+        wsExpandedConnections.add(parentId);
+      }
+      applyFilter();
     }
 
     // ============ SCROLL TO END ============
@@ -4229,7 +5709,9 @@
           http: 'The HTTP proxy details, e.g. proxy.example.com:8080 or user:pwd@proxy:8080',
           https: 'The HTTPS proxy details, e.g. proxy.example.com:443',
           socks4: 'The SOCKS4 proxy details, e.g. proxy.example.com:1080',
+          socks4a: 'The SOCKS4a proxy details, e.g. proxy.example.com:1080',
           socks5: 'The SOCKS5 proxy details, e.g. user:pwd@proxy.example.com:1080',
+          socks5h: 'The SOCKS5h proxy details, e.g. user:pwd@proxy.example.com:1080',
         };
         label.textContent = type.toUpperCase() + ' proxy details';
         input.placeholder = placeholders[type] || 'hostname:port';
@@ -4650,11 +6132,11 @@
       const btn = document.getElementById('pauseBtn');
       if (!btn) return;
       if (isPaused) {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"/></svg>';
+        btn.innerHTML = '<i class="ph ph-play" style="font-size:14px;"></i>';
         btn.title = 'Resume capture';
         btn.style.color = 'var(--warning-color)';
       } else {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+        btn.innerHTML = '<i class="ph ph-pause" style="font-size:14px;"></i>';
         btn.title = 'Pause capture';
         btn.style.color = '';
       }
@@ -4695,14 +6177,60 @@
     };
 
     function switchPanel(el, panelId) {
-      document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+      // Warn if leaving mock page with unsaved changes
+      const currentPanel = document.querySelector('.sidebar-item.active')?.dataset?.panel;
+      if (currentPanel === 'mock' && panelId !== 'mock' && hasUnsavedMockChanges()) {
+        if (!confirm('You have unsaved mock rule changes. Leave without saving?')) {
+          return;
+        }
+      }
+      // Save traffic scroll position when switching away from traffic panel
+      if (currentPanel === 'traffic') {
+        const wrapper = document.getElementById('trafficTableWrapper');
+        if (wrapper) {
+          localStorage.setItem('trafficScrollTop', String(wrapper.scrollTop));
+          localStorage.setItem('trafficAutoScroll', String(autoScroll));
+        }
+      }
+
+      document.querySelectorAll('.sidebar-item').forEach(i => {
+        i.classList.remove('active');
+        i.setAttribute('aria-selected', 'false');
+      });
       el.classList.add('active');
+      el.setAttribute('aria-selected', 'true');
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       document.getElementById(`panel-${panelId}`).classList.add('active');
+
+      // Restore traffic scroll position when switching to traffic panel
+      if (panelId === 'traffic') {
+        restoreTrafficScrollPosition();
+      }
 
       // Update URL hash for bookmarkability
       const hashRoute = PANEL_TO_HASH[panelId] || panelId;
       window.location.hash = '#/' + hashRoute;
+    }
+
+    // Restore traffic list scroll position from localStorage
+    function restoreTrafficScrollPosition() {
+      requestAnimationFrame(() => {
+        const wrapper = document.getElementById('trafficTableWrapper');
+        if (!wrapper) return;
+        const savedAutoScroll = localStorage.getItem('trafficAutoScroll');
+        if (savedAutoScroll === 'true') {
+          autoScroll = true;
+          wrapper.scrollTop = wrapper.scrollHeight;
+        } else {
+          const savedScrollTop = localStorage.getItem('trafficScrollTop');
+          if (savedScrollTop !== null) {
+            autoScroll = false;
+            wrapper.scrollTop = parseFloat(savedScrollTop);
+          }
+        }
+        vsForceRender = true;
+        renderVirtualRows();
+      });
     }
 
     // Navigate to panel by hash route on page load or hash change
@@ -4738,6 +6266,9 @@
           el.classList.add('active');
           document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
           document.getElementById(`panel-${panelId}`).classList.add('active');
+        }
+        if (panelId === 'traffic') {
+          restoreTrafficScrollPosition();
         }
       }
     }
@@ -5033,10 +6564,16 @@
       }
     })();
 
-    // Auto-scroll detection
+    // Virtual scroll: re-render visible rows on scroll + auto-scroll detection
     document.getElementById('trafficTableWrapper').addEventListener('scroll', function() {
       const el = this;
       autoScroll = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      // Debounce virtual scroll rendering with requestAnimationFrame
+      if (vsRafId) cancelAnimationFrame(vsRafId);
+      vsRafId = requestAnimationFrame(() => {
+        vsRafId = null;
+        renderVirtualRows();
+      });
     });
 
     // Search input
@@ -5187,6 +6724,213 @@
       }
     });
 
+    // ============ MONACO EDITOR ============
+    /** @type {typeof import('monaco-editor')|null} */
+    let monacoApi = null;
+    /** @type {Promise<typeof import('monaco-editor')>} */
+    const monacoReady = new Promise((resolve) => {
+      if (typeof require !== 'undefined' && typeof require.config === 'function') {
+        require(['vs/editor/editor.main'], function (monaco) {
+          monacoApi = monaco;
+
+          // Define custom dark theme matching HTTP Toolkit
+          monaco.editor.defineTheme('httptoolkit-dark', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+              { token: 'string', foreground: '4caf7d' },
+              { token: 'string.key.json', foreground: 'e1421f' },
+              { token: 'string.value.json', foreground: '4caf7d' },
+              { token: 'keyword', foreground: '6e40aa' },
+              { token: 'number', foreground: '5a80cc' },
+              { token: 'comment', foreground: '818490' },
+              { token: 'type', foreground: '2fb4e0' },
+              { token: 'delimiter', foreground: '9a9da8' },
+              { token: 'tag', foreground: 'e1421f' },
+              { token: 'attribute.name', foreground: '6e40aa' },
+              { token: 'attribute.value', foreground: '4caf7d' },
+              { token: 'metatag', foreground: '818490' },
+              { token: 'variable', foreground: 'e4e8ed' },
+              { token: 'operator', foreground: '9a9da8' },
+            ],
+            colors: {
+              'editor.background': '#16181e',
+              'editor.foreground': '#e4e8ed',
+              'editor.lineHighlightBackground': '#1e202800',
+              'editor.selectionBackground': '#53565e80',
+              'editorCursor.foreground': '#e1421f',
+              'editorLineNumber.foreground': '#818490',
+              'editorLineNumber.activeForeground': '#e4e8ed',
+              'editor.inactiveSelectionBackground': '#53565e40',
+              'editorWidget.background': '#1e2028',
+              'editorWidget.border': '#53565e',
+              'input.background': '#16181e',
+              'input.border': '#53565e',
+              'input.foreground': '#e4e8ed',
+              'dropdown.background': '#1e2028',
+              'dropdown.border': '#53565e',
+              'list.activeSelectionBackground': '#53565e',
+              'list.hoverBackground': '#25262e',
+              'scrollbarSlider.background': '#53565e80',
+              'scrollbarSlider.hoverBackground': '#818490',
+              'scrollbarSlider.activeBackground': '#9a9da8',
+            }
+          });
+
+          // Define custom light theme matching HTTP Toolkit
+          monaco.editor.defineTheme('httptoolkit-light', {
+            base: 'vs',
+            inherit: true,
+            rules: [
+              { token: 'string', foreground: '117733' },
+              { token: 'string.key.json', foreground: 'c22f2f' },
+              { token: 'string.value.json', foreground: '117733' },
+              { token: 'keyword', foreground: '6e40aa' },
+              { token: 'number', foreground: '2d4cbd' },
+              { token: 'comment', foreground: '818490' },
+              { token: 'type', foreground: '1976d2' },
+              { token: 'delimiter', foreground: '53565e' },
+              { token: 'tag', foreground: 'c22f2f' },
+              { token: 'attribute.name', foreground: '6e40aa' },
+              { token: 'attribute.value', foreground: '117733' },
+              { token: 'metatag', foreground: '818490' },
+              { token: 'variable', foreground: '1e2028' },
+              { token: 'operator', foreground: '53565e' },
+            ],
+            colors: {
+              'editor.background': '#ffffff',
+              'editor.foreground': '#1e2028',
+              'editor.lineHighlightBackground': '#f2f2f200',
+              'editor.selectionBackground': '#6284fa30',
+              'editorCursor.foreground': '#e1421f',
+              'editorLineNumber.foreground': '#818490',
+              'editorLineNumber.activeForeground': '#1e2028',
+              'editor.inactiveSelectionBackground': '#6284fa18',
+              'editorWidget.background': '#fafafa',
+              'editorWidget.border': '#9a9da8',
+              'input.background': '#ffffff',
+              'input.border': '#9a9da8',
+              'input.foreground': '#1e2028',
+              'dropdown.background': '#fafafa',
+              'dropdown.border': '#9a9da8',
+              'list.activeSelectionBackground': '#6284fa30',
+              'list.hoverBackground': '#f2f2f2',
+              'scrollbarSlider.background': '#c0c2c880',
+              'scrollbarSlider.hoverBackground': '#9a9da8',
+              'scrollbarSlider.activeBackground': '#818490',
+            }
+          });
+
+          resolve(monaco);
+        });
+      }
+    });
+
+    /**
+     * Track all active Monaco editor instances for theme switching.
+     * @type {Array<{editor: object, container: HTMLElement}>}
+     */
+    const monacoInstances = [];
+
+    /**
+     * Creates a Monaco Editor instance inside the given container element.
+     * @param {string} containerId - The DOM id of the container element.
+     * @param {object} [options] - Editor options.
+     * @param {string} [options.language='plaintext'] - Language mode.
+     * @param {boolean} [options.readOnly=false] - Read-only mode.
+     * @param {string} [options.theme] - Theme name (auto-detected from current app theme if omitted).
+     * @param {string} [options.value=''] - Initial editor content.
+     * @param {boolean} [options.minimap=false] - Show minimap.
+     * @param {boolean|string} [options.lineNumbers=true] - Show line numbers ('on','off','relative').
+     * @param {string} [options.wordWrap='on'] - Word wrap mode.
+     * @param {boolean} [options.folding=true] - Enable code folding.
+     * @returns {Promise<object|null>} The Monaco editor instance, or null if Monaco failed to load.
+     */
+    async function createMonacoEditor(containerId, options = {}) {
+      const monaco = await monacoReady;
+      if (!monaco) return null;
+
+      const container = document.getElementById(containerId);
+      if (!container) {
+        console.warn('[Monaco] Container not found:', containerId);
+        return null;
+      }
+
+      // Determine current theme
+      const resolvedTheme = options.theme || getMonacoTheme();
+
+      const lineNumbers = options.lineNumbers === false ? 'off'
+        : options.lineNumbers === true ? 'on'
+        : (options.lineNumbers || 'on');
+
+      const editor = monaco.editor.create(container, {
+        value: options.value || '',
+        language: options.language || 'plaintext',
+        readOnly: options.readOnly || false,
+        theme: resolvedTheme,
+        minimap: { enabled: options.minimap === true },
+        lineNumbers: lineNumbers,
+        wordWrap: options.wordWrap || 'on',
+        folding: options.folding !== false,
+        automaticLayout: false,
+        scrollBeyondLastLine: false,
+        fontSize: 12,
+        fontFamily: "'DM Mono', monospace",
+        renderLineHighlight: 'none',
+        overviewRulerBorder: false,
+        hideCursorInOverviewRuler: true,
+        scrollbar: {
+          verticalScrollbarSize: 10,
+          horizontalScrollbarSize: 10,
+        },
+        padding: { top: 8, bottom: 8 },
+      });
+
+      // Auto-resize when container resizes
+      const resizeObserver = new ResizeObserver(() => {
+        editor.layout();
+      });
+      resizeObserver.observe(container);
+
+      // Track instance for theme switching and cleanup
+      const instance = { editor, container, resizeObserver };
+      monacoInstances.push(instance);
+
+      // Cleanup when container is removed from DOM
+      const mutationObserver = new MutationObserver(() => {
+        if (!document.body.contains(container)) {
+          editor.dispose();
+          resizeObserver.disconnect();
+          mutationObserver.disconnect();
+          const idx = monacoInstances.indexOf(instance);
+          if (idx !== -1) monacoInstances.splice(idx, 1);
+        }
+      });
+      mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+      return editor;
+    }
+
+    /**
+     * Returns the Monaco theme name for the current app theme.
+     * @returns {string}
+     */
+    function getMonacoTheme() {
+      const dataTheme = document.documentElement.getAttribute('data-theme');
+      if (dataTheme === 'light') return 'httptoolkit-light';
+      return 'httptoolkit-dark';
+    }
+
+    /**
+     * Update all active Monaco editors to use the given theme.
+     * @param {string} monacoThemeName
+     */
+    function setMonacoTheme(monacoThemeName) {
+      if (monacoApi) {
+        monacoApi.editor.setTheme(monacoThemeName);
+      }
+    }
+
     // ============ INIT ============
     // Apply hash-based routing on initial page load
     if (window.location.hash) {
@@ -5213,19 +6957,235 @@
       }
     })();
 
+    // ============ CUSTOM THEME ============
+
+    // The custom theme <style> element injected into <head>
+    var _customThemeStyleEl = null;
+
+    // Known CSS variable names that a custom theme file can override
+    var _themeOverridableVars = [
+      'bg-main','bg-lowlight','bg-container','bg-input','bg-highlight',
+      'highlight-color','border-color','text-main','text-lowlight','text-watermark',
+      'text-input-border','pop-color','pop-overlay-color','warning-color','warning-background',
+      'primary-input-bg','primary-input-color','secondary-input-border','secondary-input-color',
+      'input-hover-bg','input-placeholder-color','input-warning-placeholder',
+      'container-watermark','container-border',
+      'link-color','visited-link-color',
+      'lowlight-text-opacity','box-shadow-alpha','pill-contrast','pill-default-color',
+      'modal-color',
+      'status-1xx','status-2xx','status-3xx','status-4xx','status-5xx',
+      'method-get','method-post','method-delete','method-put','method-patch','method-head','method-options',
+      'ink-black','ink-grey','darker-grey','dark-grey','darkish-grey','medium-grey','light-grey',
+      'ghost-grey','grey-white','almost-white','darker-blue','lighter-blue',
+      'accent','error','success','warning','info'
+    ];
+
+    /**
+     * Apply a custom theme object by injecting CSS variable overrides.
+     * themeData: object mapping CSS variable names (with or without --) to values.
+     */
+    function applyCustomThemeData(themeData) {
+      if (!themeData || typeof themeData !== 'object') return;
+      // Remove old custom style
+      if (_customThemeStyleEl) {
+        _customThemeStyleEl.remove();
+        _customThemeStyleEl = null;
+      }
+      var lines = [];
+      var keys = Object.keys(themeData);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        // Normalize: allow keys like "bg-main", "--bg-main", "bgMain" (camelCase→kebab)
+        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+        if (_themeOverridableVars.indexOf(varName) !== -1) {
+          lines.push('  --' + varName + ': ' + themeData[key] + ';');
+        }
+      }
+      if (lines.length === 0) return;
+      var css = '[data-theme="custom"] {\n' + lines.join('\n') + '\n}';
+      _customThemeStyleEl = document.createElement('style');
+      _customThemeStyleEl.id = 'custom-theme-style';
+      _customThemeStyleEl.textContent = css;
+      document.head.appendChild(_customThemeStyleEl);
+    }
+
+    /**
+     * Render 10 color swatches from a custom theme data object.
+     */
+    function renderCustomThemeSwatches(themeData) {
+      var container = document.getElementById('customThemeSwatches');
+      if (!container) return;
+
+      // Pick up to 10 color values for preview
+      var swatchColors = [];
+      var colorKeys = ['bg-main','bg-container','bg-input','text-main','text-lowlight',
+        'pop-color','status-2xx','status-5xx','method-get','method-post',
+        'warning-color','link-color','darker-blue','lighter-blue','highlight-color'];
+      var keys = Object.keys(themeData);
+      for (var i = 0; i < keys.length && swatchColors.length < 10; i++) {
+        var key = keys[i];
+        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+        var val = themeData[key];
+        // Only show values that look like colors
+        if (typeof val === 'string' && /^(#|rgb|hsl)/.test(val.trim())) {
+          swatchColors.push({ name: varName, color: val });
+        }
+      }
+      // If fewer than 10 from user keys, fill from preferred order
+      if (swatchColors.length < 10) {
+        for (var j = 0; j < colorKeys.length && swatchColors.length < 10; j++) {
+          var ck = colorKeys[j];
+          var v = themeData[ck] || themeData['--' + ck];
+          if (v && typeof v === 'string' && /^(#|rgb|hsl)/.test(v.trim())) {
+            var already = swatchColors.some(function(s) { return s.name === ck; });
+            if (!already) swatchColors.push({ name: ck, color: v });
+          }
+        }
+      }
+
+      if (swatchColors.length === 0) {
+        container.style.display = 'none';
+        return;
+      }
+
+      var html = '<div style="font-size:11px;color:var(--text-lowlight);margin-bottom:6px;">Theme Preview</div>';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      for (var k = 0; k < swatchColors.length; k++) {
+        var s = swatchColors[k];
+        html += '<div title="' + s.name + ': ' + s.color + '" style="' +
+          'width:32px;height:32px;border-radius:4px;' +
+          'background:' + s.color + ';' +
+          'border:1px solid var(--text-input-border);' +
+          'cursor:default;' +
+          '"></div>';
+      }
+      html += '</div>';
+      container.innerHTML = html;
+      container.style.display = 'block';
+    }
+
+    /**
+     * Upload a custom theme file (.htktheme, .htk-theme, .json).
+     */
+    function uploadCustomTheme() {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.htktheme,.htk-theme,.json';
+      input.onchange = function(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        file.text().then(function(text) {
+          var themeData;
+          try {
+            themeData = JSON.parse(text);
+          } catch (err) {
+            toast('Invalid theme file: not valid JSON', 'error');
+            return;
+          }
+          if (typeof themeData !== 'object' || themeData === null || Array.isArray(themeData)) {
+            toast('Invalid theme file: expected a JSON object with color overrides', 'error');
+            return;
+          }
+          // Check that at least one key maps to a recognized variable
+          var validCount = 0;
+          var keys = Object.keys(themeData);
+          for (var i = 0; i < keys.length; i++) {
+            var varName = keys[i].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+            if (_themeOverridableVars.indexOf(varName) !== -1) validCount++;
+          }
+          if (validCount === 0) {
+            toast('No recognized CSS variable overrides found in theme file', 'error');
+            return;
+          }
+          // Save and apply
+          localStorage.setItem('http-freekit-custom-theme', JSON.stringify(themeData));
+          applyCustomThemeData(themeData);
+          renderCustomThemeSwatches(themeData);
+          setTheme('custom');
+          var removeBtn = document.getElementById('removeCustomThemeBtn');
+          if (removeBtn) removeBtn.style.display = '';
+          toast('Custom theme loaded (' + validCount + ' overrides applied)', 'success');
+        }).catch(function(err) {
+          toast('Failed to read theme file: ' + err.message, 'error');
+        });
+      };
+      input.click();
+    }
+
+    /**
+     * Remove the current custom theme and revert to dark.
+     */
+    function removeCustomTheme() {
+      localStorage.removeItem('http-freekit-custom-theme');
+      if (_customThemeStyleEl) {
+        _customThemeStyleEl.remove();
+        _customThemeStyleEl = null;
+      }
+      var swatches = document.getElementById('customThemeSwatches');
+      if (swatches) { swatches.innerHTML = ''; swatches.style.display = 'none'; }
+      var removeBtn = document.getElementById('removeCustomThemeBtn');
+      if (removeBtn) removeBtn.style.display = 'none';
+      setTheme('dark');
+      toast('Custom theme removed', 'success');
+    }
+
+    /**
+     * Show/hide the custom theme section based on dropdown value.
+     */
+    function updateCustomThemeSection(theme) {
+      var section = document.getElementById('customThemeSection');
+      if (!section) return;
+      section.style.display = (theme === 'custom') ? 'block' : 'none';
+      if (theme === 'custom') {
+        var saved = localStorage.getItem('http-freekit-custom-theme');
+        if (saved) {
+          try {
+            var data = JSON.parse(saved);
+            renderCustomThemeSwatches(data);
+            var removeBtn = document.getElementById('removeCustomThemeBtn');
+            if (removeBtn) removeBtn.style.display = '';
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
     function setTheme(theme) {
       localStorage.setItem('http-freekit-theme', theme);
       var resolved = theme;
       if (theme === 'auto') {
         resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       }
+      if (theme === 'custom') {
+        resolved = 'custom';
+        // Ensure custom theme CSS is injected
+        var savedCustom = localStorage.getItem('http-freekit-custom-theme');
+        if (savedCustom) {
+          try { applyCustomThemeData(JSON.parse(savedCustom)); } catch (e) { /* ignore */ }
+        }
+      } else {
+        // Remove custom theme style when switching away
+        if (_customThemeStyleEl) {
+          _customThemeStyleEl.remove();
+          _customThemeStyleEl = null;
+        }
+      }
       document.documentElement.setAttribute('data-theme', resolved);
       var sel = document.getElementById('themeSelect');
       if (sel) sel.value = theme;
+
+      // Show/hide custom theme section
+      updateCustomThemeSection(theme);
+
+      // Sync Monaco editor theme
+      setMonacoTheme(resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
     }
 
     function loadTheme() {
       var saved = localStorage.getItem('http-freekit-theme') || 'dark';
+      // If custom was saved but no theme data exists, fall back to dark
+      if (saved === 'custom' && !localStorage.getItem('http-freekit-custom-theme')) {
+        saved = 'dark';
+      }
       setTheme(saved);
     }
 
@@ -5237,6 +7197,80 @@
 
     loadTheme();
     connectWebSocket();
+
+    // ============ AUTO-UPDATER UI ============
+    (function initAutoUpdaterUI() {
+      if (!window.electronApi || !window.electronApi.onUpdaterStatus) return;
+
+      let updateVersion = null;
+
+      window.electronApi.onUpdaterStatus(function(data) {
+        switch (data.status) {
+          case 'update-available':
+            updateVersion = data.version;
+            toast('Update v' + data.version + ' available — downloading...', 'success');
+            break;
+          case 'update-available-linux':
+            updateVersion = data.version;
+            showLinuxUpdateToast(data.version, data.url);
+            break;
+          case 'downloading':
+            // Optionally show download progress (silent for now to avoid spam)
+            break;
+          case 'update-downloaded':
+            showUpdateReadyToast(data.version);
+            break;
+          case 'error':
+            // Silently ignore update errors — don't bother the user
+            break;
+        }
+      });
+
+      function showUpdateReadyToast(version) {
+        var container = document.getElementById('toastContainer');
+        var t = document.createElement('div');
+        t.className = 'toast toast-success';
+        t.innerHTML = 'Update v' + escapeHtml(version) + ' ready. <a href="#" class="toast-action" id="installUpdateBtn">Restart to install</a>';
+        container.appendChild(t);
+        var btn = t.querySelector('#installUpdateBtn');
+        if (btn) {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            window.electronApi.installUpdate();
+          });
+        }
+        // Don't auto-dismiss — let user decide when to restart
+      }
+
+      function showLinuxUpdateToast(version, url) {
+        var container = document.getElementById('toastContainer');
+        var t = document.createElement('div');
+        t.className = 'toast toast-success';
+        t.innerHTML = 'Update v' + escapeHtml(version) + ' available. <a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="toast-action">Download</a>';
+        container.appendChild(t);
+        setTimeout(function() {
+          t.classList.add('toast-exit');
+          t.addEventListener('animationend', function() { t.remove(); });
+          setTimeout(function() { if (t.parentNode) t.remove(); }, 400);
+        }, 15000);
+      }
+
+      function escapeHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+      }
+
+      // Expose manual check for Settings page
+      window._checkForUpdates = function() {
+        window.electronApi.checkForUpdates();
+        toast('Checking for updates...', 'success');
+      };
+
+      // Show the "Check for Updates" button in Settings
+      var updateRow = document.getElementById('updateCheckRow');
+      if (updateRow) updateRow.style.display = '';
+    })();
 
     // cURL paste detection on Send URL input
     document.getElementById('sendUrl')?.addEventListener('paste', (e) => {
@@ -5252,7 +7286,7 @@
             loadSendHeadersFromJson(JSON.stringify(parsed.headers));
           }
           if (parsed.body) {
-            document.getElementById('sendBody').value = parsed.body;
+            setSendBodyValue(parsed.body);
           }
           saveSendTabState();
           renderSendTabs();

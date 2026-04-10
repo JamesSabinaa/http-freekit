@@ -34,7 +34,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/icons.ts for icon name mapping"
     },
     {
@@ -51,7 +51,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/icons.ts"
     },
     {
@@ -70,7 +70,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/editor/base-editor.tsx. Monaco is ~5MB bundled. Workers needed: editor.worker, json.worker, css.worker, html.worker, ts.worker"
     },
     {
@@ -91,7 +91,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/editor/content-viewer.tsx"
     },
     {
@@ -109,7 +109,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -128,7 +128,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui uses react-window FixedSizeList. We need a vanilla JS equivalent. Key concept: container has overflow-y:auto, inner div has height = totalRows * 32, visible rows positioned absolutely based on scrollTop."
     },
     {
@@ -146,7 +146,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -165,7 +165,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: WebSocket frame format RFC 6455 Section 5.2. Our proxy-server.js _handleHttpUpgrade currently just pipes bytes. Need to interpose a frame parser."
     },
     {
@@ -183,7 +183,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/http/stream-message-list-card.tsx"
     },
     {
@@ -200,7 +200,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-server/src/rules/http-agents.ts. Currently our proxy speaks h1.1 to all upstreams."
     },
     {
@@ -217,7 +217,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/tls-failure-details-pane.tsx"
     },
     {
@@ -236,7 +236,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/intercept/intercept-option.tsx"
     },
     {
@@ -254,7 +254,7 @@
         "Typecheck passes"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-server/src/interceptors/android/android-adb-interceptor.ts"
     },
     {
@@ -272,7 +272,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -290,7 +290,7 @@
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-server/src/interceptors/jvm.ts"
     },
     {
@@ -309,7 +309,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/model/rules/rules-store.ts"
     },
     {
@@ -328,7 +328,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/modify/rule-row.tsx"
     },
     {
@@ -346,7 +346,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/http/transform-card.tsx. Need to capture pre-transform data in the proxy."
     },
     {
@@ -364,7 +364,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/index.ts"
     },
     {
@@ -381,7 +381,7 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/index.ts"
     },
     {
@@ -399,7 +399,7 @@
         "Typecheck passes"
       ],
       "priority": 22,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/menu.ts"
     },
     {
@@ -417,7 +417,7 @@
         "Typecheck passes"
       ],
       "priority": 23,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/preload.cts"
     },
     {
@@ -435,7 +435,7 @@
         "Typecheck passes"
       ],
       "priority": 24,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/electron-builder.config.cjs"
     },
     {
@@ -453,7 +453,7 @@
         "Typecheck passes"
       ],
       "priority": 25,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop uses electron-updater with GitHub releases"
     },
     {
@@ -471,7 +471,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 26,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/settings/settings-page.tsx"
     },
     {
@@ -490,7 +490,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 27,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/view-event-list.tsx for ARIA patterns"
     },
     {
@@ -507,7 +507,7 @@
         "Typecheck passes"
       ],
       "priority": 28,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/model/rules/rule-definitions.ts. We already have 18 matchers, need the remaining ~2-3."
     },
     {
@@ -523,7 +523,7 @@
         "Typecheck passes"
       ],
       "priority": 29,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-server/src/rules/handlers.ts"
     },
     {
@@ -538,7 +538,7 @@
         "Typecheck passes"
       ],
       "priority": 30,
-      "passes": false,
+      "passes": true,
       "notes": "Consider using the 'socks' npm package for SOCKS client implementation."
     },
     {
@@ -558,7 +558,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 31,
-      "passes": false,
+      "passes": true,
       "notes": "Use HTTP Toolkit's live app at https://app.httptoolkit.tech for comparison screenshots"
     }
   ]

@@ -5,14 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HTTP FreeKit</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/vendor/phosphor/regular/style.css">
+  <link rel="stylesheet" href="/vendor/monaco/vs/editor/editor.main.css">
   <style>
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-to-content">Skip to content</a>
   <div class="app">
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" role="tablist" aria-label="Main navigation" aria-orientation="vertical">
       <div class="sidebar-logo" title="HTTP FreeKit v1.0.0">
         <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#e1421f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12C2 6.48 6.48 2 12 2s10 4.48 10 10-4.48 10-10 10S2 17.52 2 12z"/>
@@ -23,70 +26,55 @@
         </svg>
       </div>
 
-      <div class="sidebar-item active" data-panel="intercept" onclick="switchPanel(this, 'intercept')" title="Connect clients to HTTP FreeKit (Ctrl+1)">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M17 7l-5 5m0 0l-5-5m5 5V2"/>
-          <path d="M7 17l5-5m0 0l5 5m-5-5v10"/>
-        </svg>
+      <div class="sidebar-item active" id="tab-intercept" data-panel="intercept" role="tab" aria-selected="true" aria-controls="panel-intercept" onclick="switchPanel(this, 'intercept')" title="Connect clients to HTTP FreeKit (Ctrl+1)">
+        <i class="ph ph-plug"></i>
         <span>Intercept</span>
       </div>
 
-      <div class="sidebar-item" data-panel="traffic" onclick="switchPanel(this, 'traffic')" title="View intercepted HTTP traffic (Ctrl+2)">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8"/>
-          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
+      <div class="sidebar-item" id="tab-traffic" data-panel="traffic" role="tab" aria-selected="false" aria-controls="panel-traffic" onclick="switchPanel(this, 'traffic')" title="View intercepted HTTP traffic (Ctrl+2)">
+        <i class="ph ph-magnifying-glass"></i>
         <span>View</span>
       </div>
 
-      <div class="sidebar-item" data-panel="mock" onclick="switchPanel(this, 'mock')" title="Add rules to transform &amp; mock HTTP traffic (Ctrl+3)">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-        </svg>
+      <div class="sidebar-item" id="tab-mock" data-panel="mock" role="tab" aria-selected="false" aria-controls="panel-mock" onclick="switchPanel(this, 'mock')" title="Add rules to transform &amp; mock HTTP traffic (Ctrl+3)">
+        <i class="ph ph-pencil-simple"></i>
         <span>Mock</span>
       </div>
 
-      <div class="sidebar-item" data-panel="send" onclick="switchPanel(this, 'send')" title="Send HTTP requests directly (Ctrl+4)">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13"/>
-          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-        </svg>
+      <div class="sidebar-item" id="tab-send" data-panel="send" role="tab" aria-selected="false" aria-controls="panel-send" onclick="switchPanel(this, 'send')" title="Send HTTP requests directly (Ctrl+4)">
+        <i class="ph ph-paper-plane-tilt"></i>
         <span>Send</span>
       </div>
 
       <div class="sidebar-bottom">
-        <div class="sidebar-item" data-panel="settings" onclick="switchPanel(this, 'settings')" title="Settings (Ctrl+9)">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
+        <div class="sidebar-item" id="tab-settings" data-panel="settings" role="tab" aria-selected="false" aria-controls="panel-settings" onclick="switchPanel(this, 'settings')" title="Settings (Ctrl+9)">
+          <i class="ph ph-gear"></i>
           <span>Settings</span>
         </div>
       </div>
     </div>
 
     <!-- Content -->
-    <div class="content">
+    <div class="content" id="main-content">
 
       <!-- Traffic Panel -->
-      <div class="panel" id="panel-traffic">
+      <div class="panel" id="panel-traffic" role="tabpanel" aria-labelledby="tab-traffic">
         <div class="traffic-split">
           <div class="traffic-list-container">
-            <div id="breakpointBanner" style="display:none;background:#f1971f22;border-bottom:2px solid #f1971f;padding:8px 16px;font-size:13px;color:var(--text-main);align-items:center;gap:12px;">
+            <div id="breakpointBanner" role="alert" style="display:none;background:#f1971f22;border-bottom:2px solid #f1971f;padding:8px 16px;font-size:13px;color:var(--text-main);align-items:center;gap:12px;">
               <span style="font-weight:bold;color:#f1971f;">&#9208; Breakpoint</span>
               <span id="breakpointBannerText">1 request paused</span>
               <button class="btn" onclick="resumeAllBreakpoints()" style="margin-left:auto;font-size:11px;padding:3px 10px;">Resume All</button>
             </div>
             <div class="traffic-table-wrapper" id="trafficTableWrapper">
-              <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic">
-                <thead><tr>
-                  <th style="width:5px;padding:0;"></th>
-                  <th style="width:71px" onclick="sortBy('method')">Method</th>
-                  <th style="width:45px" onclick="sortBy('statusCode')">Status</th>
-                  <th style="width:49px">Source</th>
-                  <th onclick="sortBy('host')">Host</th>
-                  <th onclick="sortBy('path')">Path &amp; Query</th>
+              <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic" aria-rowcount="0" aria-colcount="6">
+                <thead><tr role="row">
+                  <th role="columnheader" style="width:5px;padding:0;" aria-label="Row marker"></th>
+                  <th role="columnheader" style="width:71px" onclick="sortBy('method')">Method</th>
+                  <th role="columnheader" style="width:45px" onclick="sortBy('statusCode')">Status</th>
+                  <th role="columnheader" style="width:49px">Source</th>
+                  <th role="columnheader" onclick="sortBy('host')">Host</th>
+                  <th role="columnheader" onclick="sortBy('path')">Path &amp; Query</th>
                 </tr></thead>
                 <tbody id="trafficBody"></tbody>
               </table>
@@ -97,8 +85,8 @@
             </div>
             <div class="traffic-footer">
               <div style="display:flex;align-items:center;gap:10px;flex:1;position:relative;">
-                <input class="search-input" type="text" id="searchInput" placeholder="Filter by method:, host:, status:, path:, header:, body:...">
-                <button id="searchClearBtn" class="search-clear-btn" onclick="clearSearchFilter()" style="display:none;" title="Clear filter">&times;</button>
+                <input class="search-input" type="text" id="searchInput" placeholder="Filter by method:, host:, status:, path:, header:, body:..." aria-label="Filter traffic">
+                <button id="searchClearBtn" class="search-clear-btn" onclick="clearSearchFilter()" style="display:none;" title="Clear filter" aria-label="Clear filter">&times;</button>
                 <div id="filterHint" class="filter-hint-dropdown"></div>
               </div>
               <div style="display:flex;align-items:center;gap:8px;">
@@ -106,20 +94,20 @@
                 <span class="request-count-label" id="trafficCountLabel">requests</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px;">
-                <button class="btn" id="pauseBtn" onclick="togglePause()" title="Pause/Resume capture">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                <button class="btn" id="pauseBtn" onclick="togglePause()" title="Pause/Resume capture" aria-label="Pause capture">
+                  <i class="ph ph-pause" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="scrollToEnd()" title="Scroll to the bottom of the list">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                <button class="btn" onclick="scrollToEnd()" title="Scroll to the bottom of the list" aria-label="Scroll to end">
+                  <i class="ph ph-arrow-down" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="exportTraffic('har')" title="Export as HAR">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <button class="btn" onclick="exportTraffic('har')" title="Export as HAR" aria-label="Export as HAR">
+                  <i class="ph ph-download-simple" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="importHar()" title="Import from HAR file">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                <button class="btn" onclick="importHar()" title="Import from HAR file" aria-label="Import from HAR file">
+                  <i class="ph ph-folder-open" style="font-size:14px;"></i>
                 </button>
-                <button class="btn btn-danger" onclick="clearTraffic()" title="Clear all traffic">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                <button class="btn btn-danger" onclick="clearTraffic()" title="Clear all traffic" aria-label="Clear all traffic">
+                  <i class="ph ph-trash-simple" style="font-size:14px;"></i>
                 </button>
               </div>
             </div>
@@ -127,34 +115,34 @@
           <div class="resizer" id="detailResizer"></div>
           <div class="detail-panel" id="detailPanel">
             <div id="detailEmptyState" class="empty-state" style="background:var(--bg-container);">
-              <svg viewBox="0 0 24 24" width="120" height="120" fill="none" stroke="currentColor" stroke-width="1" style="opacity:0.15;margin-bottom:16px;"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              <i class="ph ph-arrow-left" style="font-size:120px;opacity:0.15;margin-bottom:16px;"></i>
               <h3 style="font-size:24px;letter-spacing:-0.5px;">Select an exchange to see the full details.</h3>
             </div>
             <div id="detailActive" style="display:none;flex-direction:column;height:100%;">
               <div class="detail-header">
                 <h3 id="detailTitle">Request Details</h3>
-                <button class="detail-close" onclick="closeDetail()">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <button class="detail-close" onclick="closeDetail()" aria-label="Close detail panel">
+                  <i class="ph ph-x" style="font-size:16px;"></i>
                 </button>
               </div>
               <div class="detail-pane-scroll">
                 <div class="detail-pane-inner" id="detailContent"></div>
               </div>
               <div class="detail-footer">
-                <button class="btn" onclick="scrollToSelectedRequest()" title="Scroll the list to show this exchange">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <button class="btn" onclick="scrollToSelectedRequest()" title="Scroll the list to show this exchange" aria-label="Scroll to selected exchange">
+                  <i class="ph ph-eye" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" id="pinBtn" onclick="togglePinRequest()" title="Pin/unpin this exchange">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 9h9l-7 5 3 9-8-6-8 6 3-9-7-5h9z"/></svg>
+                <button class="btn" id="pinBtn" onclick="togglePinRequest()" title="Pin/unpin this exchange" aria-label="Pin this exchange">
+                  <i class="ph ph-push-pin" id="pinBtnIcon" style="font-size:14px;transform:rotate(45deg);"></i>
                 </button>
-                <button class="btn btn-danger" onclick="deleteSelectedRequest()" title="Delete this exchange">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                <button class="btn btn-danger" onclick="deleteSelectedRequest()" title="Delete this exchange" aria-label="Delete this exchange">
+                  <i class="ph ph-trash-simple" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="resendSelectedRequest()" title="Resend this request in the Send tab">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                <button class="btn" onclick="resendSelectedRequest()" title="Resend this request in the Send tab" aria-label="Resend this request">
+                  <i class="ph ph-paper-plane-tilt" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="createBreakpointFromRequest()" title="Create a breakpoint for this host" style="color:#f1971f;">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                <button class="btn" onclick="createBreakpointFromRequest()" title="Create a breakpoint for this host" aria-label="Create breakpoint" style="color:#f1971f;">
+                  <i class="ph ph-pause" style="font-size:14px;"></i>
                 </button>
               </div>
             </div>
@@ -163,15 +151,15 @@
       </div>
 
       <!-- Intercept Panel -->
-      <div class="panel active" id="panel-intercept" style="overflow-y:auto;">
+      <div class="panel active" id="panel-intercept" role="tabpanel" aria-labelledby="tab-intercept" style="overflow-y:auto;">
         <div class="intercept-page-grid" id="interceptPageGrid">
           <div class="intercept-instructions">
             <h1>Intercept HTTP</h1>
             <p>To collect &amp; view HTTP traffic, you need to connect a source of traffic, like a browser, mobile device, or docker container.</p>
             <p>Click an option below to connect a traffic source, or search for connectors that could work for you:</p>
             <div style="position:relative;width:100%;">
-              <input class="intercept-search" type="text" id="interceptSearch" placeholder="Browsers, mobile, docker..." oninput="filterInterceptors();document.getElementById('interceptSearchClear').style.display=this.value?'block':'none';" style="padding-right:28px;">
-              <button id="interceptSearchClear" class="search-clear-btn" onclick="document.getElementById('interceptSearch').value='';filterInterceptors();this.style.display='none';" style="display:none;" title="Clear search">&times;</button>
+              <input class="intercept-search" type="text" id="interceptSearch" placeholder="Browsers, mobile, docker..." aria-label="Search interceptors" oninput="filterInterceptors();document.getElementById('interceptSearchClear').style.display=this.value?'block':'none';" style="padding-right:28px;">
+              <button id="interceptSearchClear" class="search-clear-btn" onclick="document.getElementById('interceptSearch').value='';filterInterceptors();this.style.display='none';" style="display:none;" title="Clear search" aria-label="Clear search">&times;</button>
             </div>
           </div>
           <div class="intercept-connected-sources" id="connectedSources">
@@ -183,26 +171,33 @@
       </div>
 
       <!-- Mock Rules Panel -->
-      <div class="panel" id="panel-mock" style="overflow:hidden;">
+      <div class="panel" id="panel-mock" role="tabpanel" aria-labelledby="tab-mock" style="overflow:hidden;">
         <div class="mock-page-container">
           <div class="mock-page-header">
             <h1 style="font-size:24px;font-weight:bold;font-family:var(--font-title);flex:1;">Transform &amp; Mock HTTP</h1>
+            <span id="mockUnsavedBadge" class="mock-unsaved-badge" style="display:none;"></span>
             <span style="font-size:11px;color:var(--text-watermark);margin-right:auto;" title="Hold Shift while dropping a rule onto another to combine them into a group">Tip: Shift+Drop to group rules</span>
             <div style="display:flex;gap:8px;align-items:center;">
-              <button class="btn" onclick="createMockGroup()" title="Create a rule group">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+              <button id="mockSaveAllBtn" class="btn btn-primary mock-save-all-btn" onclick="saveAllMockRules()" title="Save all changes to server" style="display:none;">
+                <i class="ph ph-floppy-disk" style="font-size:14px;"></i> Save All
               </button>
-              <button class="btn" onclick="collapseAllMockRules()" title="Collapse all rules">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 12 6 20 14"/></svg>
+              <button id="mockRevertBtn" class="btn mock-revert-btn" onclick="revertMockRules()" title="Discard all unsaved changes" style="display:none;">
+                <i class="ph ph-arrow-counter-clockwise" style="font-size:14px;"></i> Revert
               </button>
-              <button class="btn" onclick="importMockRules()" title="Import a saved set of rules">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+              <button class="btn" onclick="createMockGroup()" title="Create a rule group" aria-label="Create a rule group">
+                <i class="ph ph-folder-plus" style="font-size:14px;"></i>
               </button>
-              <button class="btn" onclick="exportMockRules()" title="Export these rules">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <button class="btn" onclick="collapseAllMockRules()" title="Collapse all rules" aria-label="Collapse all rules">
+                <i class="ph ph-caret-up" style="font-size:14px;"></i>
               </button>
-              <button class="btn btn-danger" onclick="clearAllMockRules()" title="Reset rules to default">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              <button class="btn" onclick="importMockRules()" title="Import a saved set of rules" aria-label="Import rules">
+                <i class="ph ph-folder-open" style="font-size:14px;"></i>
+              </button>
+              <button class="btn" onclick="exportMockRules()" title="Export these rules" aria-label="Export rules">
+                <i class="ph ph-download-simple" style="font-size:14px;"></i>
+              </button>
+              <button class="btn btn-danger" onclick="clearAllMockRules()" title="Reset rules to default" aria-label="Reset rules to default">
+                <i class="ph ph-trash-simple" style="font-size:14px;"></i>
               </button>
             </div>
           </div>
@@ -214,7 +209,7 @@
               </div>
             </div>
             <div class="mock-add-rule-row" onclick="addNewMockRule()" id="addRuleTrigger">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <i class="ph ph-plus" style="font-size:16px;flex-shrink:0;"></i>
               <span>Add a new rule to rewrite requests or responses</span>
             </div>
           </div>
@@ -222,7 +217,7 @@
       </div>
 
       <!-- Send Panel -->
-      <div class="panel" id="panel-send" style="overflow:hidden;">
+      <div class="panel" id="panel-send" role="tabpanel" aria-labelledby="tab-send" style="overflow:hidden;">
         <div class="send-tab-bar" id="sendTabBar"></div>
         <div style="display:flex;flex:1;overflow:hidden;">
           <div id="sendRequestPane" style="flex:1;overflow-y:auto;padding:20px;border-right:none;">
@@ -232,25 +227,25 @@
                   <select id="sendMethod" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:pointer;width:100%;height:100%;appearance:none;-webkit-appearance:none;border-left:5px solid #4caf7d;" onchange="updateSendMethodColor()">
                     <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option>
                   </select>
-                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" style="position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"><polyline points="6 9 12 15 18 9"/></svg>
+                  <i class="ph ph-caret-down" style="font-size:12px;position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"></i>
                 </div>
                 <input type="url" id="sendUrl" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest(); if(event.key==='Escape') abortSendRequest();" onfocus="prepopulateSendUrl(this)">
-                <button class="btn btn-primary" onclick="sendRequest()" id="sendBtn" style="border-radius:0;padding:10px 18px;" title="Send this request (Ctrl+Enter)">
-                  <svg id="sendBtnArrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                  <svg id="sendBtnSpinner" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" style="display:none;animation:spin 1s linear infinite;"><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                <button class="btn btn-primary" onclick="sendRequest()" id="sendBtn" style="border-radius:0;padding:10px 18px;" title="Send this request (Ctrl+Enter)" aria-label="Send request">
+                  <i id="sendBtnArrow" class="ph ph-arrow-right" style="font-size:16px;"></i>
+                  <i id="sendBtnSpinner" class="ph ph-circle-notch" style="font-size:16px;display:none;animation:spin 1s linear infinite;"></i>
                 </button>
-                <button class="btn btn-danger" id="sendAbortBtn" onclick="abortSendRequest()" style="display:none;padding:10px 12px;border-radius:0 4px 4px 0;" title="Abort request (Escape)">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <button class="btn btn-danger" id="sendAbortBtn" onclick="abortSendRequest()" style="display:none;padding:10px 12px;border-radius:0 4px 4px 0;" title="Abort request (Escape)" aria-label="Abort request">
+                  <i class="ph ph-x" style="font-size:14px;"></i>
                 </button>
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')" role="button" aria-expanded="true" aria-controls="sendHeadersBody">
                 <div style="display:flex;align-items:center;gap:8px;">
                   <span>Request Headers</span>
-                  <button class="btn" onclick="event.stopPropagation();addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header">+</button>
+                  <button class="btn" onclick="event.stopPropagation();addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header" aria-label="Add header">+</button>
                 </div>
-                <svg id="sendHeadersArrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>
+                <i id="sendHeadersArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;"></i>
               </div>
               <div id="sendHeadersBody">
                 <div id="sendHeaderRows"></div>
@@ -258,9 +253,9 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')" role="button" aria-expanded="true" aria-controls="sendBodyBody">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyPreview()">
+                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyLanguage()">
                     <option value="text">Text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
@@ -272,13 +267,11 @@
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
                   <button class="btn" onclick="event.stopPropagation();formatSendBody()" style="padding:2px 8px;font-size:10px;" title="Format/prettify body">Format</button>
-                  <button class="btn" onclick="event.stopPropagation();toggleSendBodyView()" style="padding:2px 8px;font-size:10px;" id="sendBodyViewToggle" title="Toggle editor/preview">Preview</button>
-                  <svg id="sendBodyArrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>
+                  <i id="sendBodyArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;"></i>
                 </div>
               </div>
               <div id="sendBodyBody">
-                <textarea id="sendBody" oninput="updateSendBodyPreview()" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:10px;font-family:var(--font-mono);font-size:12px;outline:none;resize:vertical;box-sizing:border-box;" placeholder="Request body..."></textarea>
-                <pre class="body-content" id="sendBodyPreview" style="display:none;min-height:120px;margin-top:8px;cursor:pointer;" onclick="toggleSendBodyView()" title="Click to edit"></pre>
+                <div id="sendBody-monaco-container" style="width:100%;min-height:150px;height:200px;border:1px solid var(--text-input-border);border-radius:4px;overflow:hidden;box-sizing:border-box;"></div>
               </div>
             </div>
           </div>
@@ -296,7 +289,7 @@
       </div>
 
       <!-- Settings Panel -->
-      <div class="panel" id="panel-settings" style="overflow-y:auto;">
+      <div class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" style="overflow-y:auto;">
         <div style="max-width:800px;margin:0 auto;padding:40px;">
           <h1 style="font-size:38px;font-weight:bold;margin-bottom:30px;letter-spacing:-1px;">Settings</h1>
           <div class="card" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
@@ -346,7 +339,9 @@
       <option value="http">Use an HTTP proxy</option>
       <option value="https">Use an HTTPS proxy</option>
       <option value="socks4">Use a SOCKS4 proxy</option>
+      <option value="socks4a">Use a SOCKS4a proxy</option>
       <option value="socks5">Use a SOCKS5 proxy</option>
+      <option value="socks5h">Use a SOCKS5h proxy</option>
     </select>
   </div>
   <div id="upstreamDetailsFields" style="display:none;">
@@ -409,11 +404,22 @@
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="high-contrast">High Contrast</option>
+                <option value="custom">Custom</option>
               </select>
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
               Choose a theme. Automatic follows your operating system preference.
             </p>
+            <div id="customThemeSection" style="display:none;margin-top:12px;">
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+                <button class="btn" onclick="uploadCustomTheme()" style="font-size:12px;">Upload Theme File</button>
+                <button class="btn" id="removeCustomThemeBtn" onclick="removeCustomTheme()" style="font-size:12px;display:none;">Remove Custom Theme</button>
+              </div>
+              <p style="font-size:11px;color:var(--text-lowlight);line-height:1.4;margin-bottom:8px;">
+                Upload a .htktheme, .htk-theme, or .json file with color overrides for CSS variables.
+              </p>
+              <div id="customThemeSwatches" style="display:none;margin-top:10px;"></div>
+            </div>
           </div>
           <div class="card" style="margin-bottom:20px;">
             <div class="card-header">API Specifications</div>
@@ -425,7 +431,7 @@
               <button class="btn" onclick="uploadApiSpec()" style="font-size:12px;">Upload OpenAPI/Swagger Spec</button>
             </div>
           </div>
-          <div class="card" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div></div>
+          <div class="card" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div><div class="settings-row" id="updateCheckRow" style="display:none;"><span class="settings-label">Updates</span><span class="settings-value"><button class="btn" onclick="window._checkForUpdates && window._checkForUpdates()" style="font-size:12px;">Check for Updates</button></span></div></div>
         </div>
       </div>
 
@@ -449,6 +455,10 @@
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+  <script src="/vendor/monaco/vs/loader.js"></script>
+  <script>
+    require.config({ paths: { vs: '/vendor/monaco/vs' } });
+  </script>
   <script src="/app.js"></script>
 </body>
 </html>
