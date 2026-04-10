@@ -66,6 +66,10 @@ async function main() {
   // Serve UI static files (index.html, styles.css, app.js)
   api.app.use(express.static(UI_DIR));
 
+  // Serve Phosphor Icons assets from node_modules
+  const PHOSPHOR_DIR = path.join(__dirname, '..', 'node_modules', '@phosphor-icons', 'web', 'src');
+  api.app.use('/vendor/phosphor', express.static(PHOSPHOR_DIR));
+
   // 5. Start servers
   await proxy.start();
   await api.start();

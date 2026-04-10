@@ -531,6 +531,8 @@
 
     .sidebar-item svg { width: 28px; height: 28px; flex-shrink: 0; margin-bottom: 5px; }
 
+    .sidebar-item i.ph { font-size: 34px; flex-shrink: 0; margin-bottom: 5px; }
+
     .sidebar-item:hover {
       color: var(--pop-color);
       opacity: 1;
@@ -2420,6 +2422,7 @@
         min-height: 50px;
         width: 100%;
       }
+      .sidebar-item i.ph { font-size: 24px; }
       .app {
         grid-template-columns: 50px 1fr;
       }
@@ -2464,6 +2467,7 @@
       .sidebar { width: 44px; min-width: 44px; }
       .sidebar-logo { width: 44px; height: 44px; }
       .sidebar-item { height: 44px; min-height: 44px; }
+      .sidebar-item i.ph { font-size: 22px; }
       .app { grid-template-columns: 44px 1fr; }
 
       .intercept-page-grid {
