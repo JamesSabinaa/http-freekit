@@ -6780,15 +6780,224 @@
       }
     })();
 
+    // ============ CUSTOM THEME ============
+
+    // The custom theme <style> element injected into <head>
+    var _customThemeStyleEl = null;
+
+    // Known CSS variable names that a custom theme file can override
+    var _themeOverridableVars = [
+      'bg-main','bg-lowlight','bg-container','bg-input','bg-highlight',
+      'highlight-color','border-color','text-main','text-lowlight','text-watermark',
+      'text-input-border','pop-color','pop-overlay-color','warning-color','warning-background',
+      'primary-input-bg','primary-input-color','secondary-input-border','secondary-input-color',
+      'input-hover-bg','input-placeholder-color','input-warning-placeholder',
+      'container-watermark','container-border',
+      'link-color','visited-link-color',
+      'lowlight-text-opacity','box-shadow-alpha','pill-contrast','pill-default-color',
+      'modal-color',
+      'status-1xx','status-2xx','status-3xx','status-4xx','status-5xx',
+      'method-get','method-post','method-delete','method-put','method-patch','method-head','method-options',
+      'ink-black','ink-grey','darker-grey','dark-grey','darkish-grey','medium-grey','light-grey',
+      'ghost-grey','grey-white','almost-white','darker-blue','lighter-blue',
+      'accent','error','success','warning','info'
+    ];
+
+    /**
+     * Apply a custom theme object by injecting CSS variable overrides.
+     * themeData: object mapping CSS variable names (with or without --) to values.
+     */
+    function applyCustomThemeData(themeData) {
+      if (!themeData || typeof themeData !== 'object') return;
+      // Remove old custom style
+      if (_customThemeStyleEl) {
+        _customThemeStyleEl.remove();
+        _customThemeStyleEl = null;
+      }
+      var lines = [];
+      var keys = Object.keys(themeData);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        // Normalize: allow keys like "bg-main", "--bg-main", "bgMain" (camelCase→kebab)
+        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+        if (_themeOverridableVars.indexOf(varName) !== -1) {
+          lines.push('  --' + varName + ': ' + themeData[key] + ';');
+        }
+      }
+      if (lines.length === 0) return;
+      var css = '[data-theme="custom"] {\n' + lines.join('\n') + '\n}';
+      _customThemeStyleEl = document.createElement('style');
+      _customThemeStyleEl.id = 'custom-theme-style';
+      _customThemeStyleEl.textContent = css;
+      document.head.appendChild(_customThemeStyleEl);
+    }
+
+    /**
+     * Render 10 color swatches from a custom theme data object.
+     */
+    function renderCustomThemeSwatches(themeData) {
+      var container = document.getElementById('customThemeSwatches');
+      if (!container) return;
+
+      // Pick up to 10 color values for preview
+      var swatchColors = [];
+      var colorKeys = ['bg-main','bg-container','bg-input','text-main','text-lowlight',
+        'pop-color','status-2xx','status-5xx','method-get','method-post',
+        'warning-color','link-color','darker-blue','lighter-blue','highlight-color'];
+      var keys = Object.keys(themeData);
+      for (var i = 0; i < keys.length && swatchColors.length < 10; i++) {
+        var key = keys[i];
+        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+        var val = themeData[key];
+        // Only show values that look like colors
+        if (typeof val === 'string' && /^(#|rgb|hsl)/.test(val.trim())) {
+          swatchColors.push({ name: varName, color: val });
+        }
+      }
+      // If fewer than 10 from user keys, fill from preferred order
+      if (swatchColors.length < 10) {
+        for (var j = 0; j < colorKeys.length && swatchColors.length < 10; j++) {
+          var ck = colorKeys[j];
+          var v = themeData[ck] || themeData['--' + ck];
+          if (v && typeof v === 'string' && /^(#|rgb|hsl)/.test(v.trim())) {
+            var already = swatchColors.some(function(s) { return s.name === ck; });
+            if (!already) swatchColors.push({ name: ck, color: v });
+          }
+        }
+      }
+
+      if (swatchColors.length === 0) {
+        container.style.display = 'none';
+        return;
+      }
+
+      var html = '<div style="font-size:11px;color:var(--text-lowlight);margin-bottom:6px;">Theme Preview</div>';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      for (var k = 0; k < swatchColors.length; k++) {
+        var s = swatchColors[k];
+        html += '<div title="' + s.name + ': ' + s.color + '" style="' +
+          'width:32px;height:32px;border-radius:4px;' +
+          'background:' + s.color + ';' +
+          'border:1px solid var(--text-input-border);' +
+          'cursor:default;' +
+          '"></div>';
+      }
+      html += '</div>';
+      container.innerHTML = html;
+      container.style.display = 'block';
+    }
+
+    /**
+     * Upload a custom theme file (.htktheme, .htk-theme, .json).
+     */
+    function uploadCustomTheme() {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.htktheme,.htk-theme,.json';
+      input.onchange = function(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        file.text().then(function(text) {
+          var themeData;
+          try {
+            themeData = JSON.parse(text);
+          } catch (err) {
+            toast('Invalid theme file: not valid JSON', 'error');
+            return;
+          }
+          if (typeof themeData !== 'object' || themeData === null || Array.isArray(themeData)) {
+            toast('Invalid theme file: expected a JSON object with color overrides', 'error');
+            return;
+          }
+          // Check that at least one key maps to a recognized variable
+          var validCount = 0;
+          var keys = Object.keys(themeData);
+          for (var i = 0; i < keys.length; i++) {
+            var varName = keys[i].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+            if (_themeOverridableVars.indexOf(varName) !== -1) validCount++;
+          }
+          if (validCount === 0) {
+            toast('No recognized CSS variable overrides found in theme file', 'error');
+            return;
+          }
+          // Save and apply
+          localStorage.setItem('http-freekit-custom-theme', JSON.stringify(themeData));
+          applyCustomThemeData(themeData);
+          renderCustomThemeSwatches(themeData);
+          setTheme('custom');
+          var removeBtn = document.getElementById('removeCustomThemeBtn');
+          if (removeBtn) removeBtn.style.display = '';
+          toast('Custom theme loaded (' + validCount + ' overrides applied)', 'success');
+        }).catch(function(err) {
+          toast('Failed to read theme file: ' + err.message, 'error');
+        });
+      };
+      input.click();
+    }
+
+    /**
+     * Remove the current custom theme and revert to dark.
+     */
+    function removeCustomTheme() {
+      localStorage.removeItem('http-freekit-custom-theme');
+      if (_customThemeStyleEl) {
+        _customThemeStyleEl.remove();
+        _customThemeStyleEl = null;
+      }
+      var swatches = document.getElementById('customThemeSwatches');
+      if (swatches) { swatches.innerHTML = ''; swatches.style.display = 'none'; }
+      var removeBtn = document.getElementById('removeCustomThemeBtn');
+      if (removeBtn) removeBtn.style.display = 'none';
+      setTheme('dark');
+      toast('Custom theme removed', 'success');
+    }
+
+    /**
+     * Show/hide the custom theme section based on dropdown value.
+     */
+    function updateCustomThemeSection(theme) {
+      var section = document.getElementById('customThemeSection');
+      if (!section) return;
+      section.style.display = (theme === 'custom') ? 'block' : 'none';
+      if (theme === 'custom') {
+        var saved = localStorage.getItem('http-freekit-custom-theme');
+        if (saved) {
+          try {
+            var data = JSON.parse(saved);
+            renderCustomThemeSwatches(data);
+            var removeBtn = document.getElementById('removeCustomThemeBtn');
+            if (removeBtn) removeBtn.style.display = '';
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
     function setTheme(theme) {
       localStorage.setItem('http-freekit-theme', theme);
       var resolved = theme;
       if (theme === 'auto') {
         resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       }
+      if (theme === 'custom') {
+        resolved = 'custom';
+        // Ensure custom theme CSS is injected
+        var savedCustom = localStorage.getItem('http-freekit-custom-theme');
+        if (savedCustom) {
+          try { applyCustomThemeData(JSON.parse(savedCustom)); } catch (e) { /* ignore */ }
+        }
+      } else {
+        // Remove custom theme style when switching away
+        if (_customThemeStyleEl) {
+          _customThemeStyleEl.remove();
+          _customThemeStyleEl = null;
+        }
+      }
       document.documentElement.setAttribute('data-theme', resolved);
       var sel = document.getElementById('themeSelect');
       if (sel) sel.value = theme;
+
+      // Show/hide custom theme section
+      updateCustomThemeSection(theme);
 
       // Sync Monaco editor theme
       setMonacoTheme(resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
@@ -6796,6 +7005,10 @@
 
     function loadTheme() {
       var saved = localStorage.getItem('http-freekit-theme') || 'dark';
+      // If custom was saved but no theme data exists, fall back to dark
+      if (saved === 'custom' && !localStorage.getItem('http-freekit-custom-theme')) {
+        saved = 'dark';
+      }
       setTheme(saved);
     }
 

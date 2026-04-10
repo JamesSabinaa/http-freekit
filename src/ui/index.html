@@ -401,11 +401,22 @@
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="high-contrast">High Contrast</option>
+                <option value="custom">Custom</option>
               </select>
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
               Choose a theme. Automatic follows your operating system preference.
             </p>
+            <div id="customThemeSection" style="display:none;margin-top:12px;">
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+                <button class="btn" onclick="uploadCustomTheme()" style="font-size:12px;">Upload Theme File</button>
+                <button class="btn" id="removeCustomThemeBtn" onclick="removeCustomTheme()" style="font-size:12px;display:none;">Remove Custom Theme</button>
+              </div>
+              <p style="font-size:11px;color:var(--text-lowlight);line-height:1.4;margin-bottom:8px;">
+                Upload a .htktheme, .htk-theme, or .json file with color overrides for CSS variables.
+              </p>
+              <div id="customThemeSwatches" style="display:none;margin-top:10px;"></div>
+            </div>
           </div>
           <div class="card" style="margin-bottom:20px;">
             <div class="card-header">API Specifications</div>

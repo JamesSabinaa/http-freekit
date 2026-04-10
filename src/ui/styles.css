@@ -318,6 +318,12 @@
     [data-theme="high-contrast"] ::-webkit-scrollbar-track { background: #000000; }
     [data-theme="high-contrast"] ::-webkit-scrollbar-thumb { background: #ffffff; }
 
+    /* Custom theme: inherits dark theme defaults from :root.
+       Actual overrides injected dynamically via <style id="custom-theme-style">. */
+    [data-theme="custom"] {
+      /* Inherits all :root (dark) variables by default */
+    }
+
     /* ---- Reset ---- */
     *, *::before, *::after {
       margin: 0;
