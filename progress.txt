@@ -1,7 +1,13 @@
 ## Codebase Patterns
 - Electron main process is `electron/main.cjs` (must be `.cjs` because `"type": "module"` in package.json); `"main"` in package.json points to it; server scripts still use explicit `src/index.js` path
+- Electron preload script is `electron/preload.cjs`; exposes `window.electronApi` with 7 methods via `contextBridge.exposeInMainWorld`; all IPC calls use `ipcMain.handle`/`ipcRenderer.invoke` pattern with channel whitelist and origin validation (`validateSender` checks `event.senderFrame.url`)
 - Electron app menu is in `electron/menu.cjs` (`buildAppMenu(mainWindow)` returns a `Menu`); system tray in `electron/tray.cjs` (`createTray(mainWindow)` / `destroyTray()`)
 - Electron spawns server via `spawn(process.execPath, [serverScript], { env: { ELECTRON_RUN_AS_NODE: '1', ... } })` — this makes the Electron binary behave as Node.js for child processes
+- electron-builder config is `electron-builder.config.cjs`; build output goes to `dist/`; icons in `build/` (icon.png, icon.ico) and `build/icons/` (sized PNGs for Linux)
+- `electron-window-state` must be in `dependencies` (not devDependencies) so electron-builder bundles it — it's required at runtime by `electron/main.cjs`
+- Icon generation: `node scripts/generate-icons.js` creates all icon sizes from scratch using raw PNG/ICO encoding (no external image libraries)
+- Build scripts: `build:win` (NSIS + zip), `build:mac` (DMG), `build:linux` (AppImage + deb + rpm); `build` runs all platforms
+- The `data/` directory (CA certs) is NOT bundled — the app generates CA certs at runtime on first launch
 - Server port is auto-detected via `net.createServer()` on port 0; auth token generated with `crypto.randomBytes(32).toString('hex')` and passed via `AUTH_TOKEN` env var
 - Design tokens are CSS custom properties in src/ui/styles.css, organized by theme (:root = dark, [data-theme="light"], [data-theme="high-contrast"])
 - Reference source of truth for all design tokens: httptoolkit-ui/src/styles.ts
@@ -422,4 +428,38 @@
   - Tray context menu labels (Show/Hide) need to be rebuilt when window visibility changes; listen to `mainWindow.on('show'/'hide')` to update
   - `destroyTray()` must be called before app.quit() to avoid orphaned tray icons on Windows
   - Manual browser verification recommended for this story
+---
+
+## 2026-04-10 - US-023
+- What was implemented: Electron preload script with contextBridge exposing 7 native APIs to the renderer, plus IPC handlers in main process with origin validation
+- Files changed:
+  - electron/preload.cjs — New file: contextBridge.exposeInMainWorld('electronApi', ...) with channel whitelist
+  - electron/main.cjs — Added ipcMain import, preload path in webPreferences, 7 IPC handlers with validateSender origin checks
+- **Learnings for future iterations:**
+  - Preload must be `.cjs` (same as main.cjs) because package.json has `"type": "module"`
+  - Use `ipcMain.handle` / `ipcRenderer.invoke` (async) pattern — not `send`/`on` — for request-response IPC
+  - Channel whitelist in preload prevents renderer from invoking arbitrary IPC channels even if contextBridge is compromised
+  - `event.senderFrame.url` is the correct way to validate IPC origin in Electron; compare against `http://127.0.0.1:${apiPort}`
+  - `openContextMenu` returns a Promise resolved by the clicked item's id — use `menu.popup({ callback })` for dismiss detection
+  - `app.relaunch()` + `app.exit(0)` is the standard Electron restart pattern
+  - The renderer accesses APIs via `window.electronApi.methodName()` — all methods return Promises
+---
+
+## 2026-04-10 - US-024
+- What was implemented: Electron Builder cross-platform packaging configuration with app icons and build scripts
+- Files changed:
+  - `electron-builder.config.cjs` — New build config with Windows (NSIS + zip), macOS (DMG), and Linux (AppImage + deb + rpm) targets
+  - `scripts/generate-icons.js` — New script that generates PNG icons at 9 sizes (16-1024px), ICO for Windows, all from raw pixel data with no external dependencies
+  - `build/icon.png` — 512x512 main app icon
+  - `build/icon.ico` — Windows ICO (embeds 16, 32, 48, 256px PNGs)
+  - `build/icons/*.png` — 9 PNG sizes for Linux
+  - `package.json` — Added build:win/mac/linux/build scripts; moved electron-window-state to dependencies; added electron-builder devDependency
+  - `package-lock.json` — Updated lockfile
+- **Learnings for future iterations:**
+  - electron-builder only bundles `dependencies` (not `devDependencies`) — any package required at runtime must be in `dependencies`
+  - electron-builder can embed PNG data directly in ICO format (supported since Windows Vista) — no need for BMP conversion
+  - The `files` array in electron-builder config controls what gets packed into the asar; exclude `data/`, `scripts/`, `tasks/`, `prd.json`, `progress.txt`
+  - Windows NSIS build produces both installer .exe and portable .zip; output goes to `dist/`
+  - `build/` is the default `buildResources` directory — electron-builder looks here for icons automatically
+  - PNG icons can be generated from scratch using Node.js zlib (deflateSync) for PNG compression and a simple CRC32 implementation — no canvas/sharp/imagemagick needed
 ---

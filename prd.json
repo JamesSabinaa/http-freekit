@@ -417,7 +417,7 @@
         "Typecheck passes"
       ],
       "priority": 23,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/src/preload.cts"
     },
     {
@@ -435,7 +435,7 @@
         "Typecheck passes"
       ],
       "priority": 24,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop/electron-builder.config.cjs"
     },
     {
