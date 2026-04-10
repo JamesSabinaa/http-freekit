@@ -91,6 +91,9 @@
 - Multipart form data matcher parses boundary from Content-Type header and splits body on `--boundary` to find field names via Content-Disposition regex
 - SOCKS proxy support uses `socks` npm package (`SocksClient.createConnection`); `_isSocksProxy()` checks `type.startsWith('socks')`; `_getSocksType()` maps socks4/socks4a→4, socks5/socks5h→5; `_connectViaSocks()` returns raw TCP socket, `_connectViaSocksTls()` wraps in TLS
 - Upstream proxy type is stored in `this.upstreamProxy.type` (e.g. 'http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h'); SOCKS proxies use `createConnection` callback pattern for HTTP and `_connectViaSocksTls` for HTTPS paths
+- High-contrast theme needs explicit overrides for any element using hardcoded `rgba()` borders/shadows — semi-transparent values become invisible on black backgrounds; always add `[data-theme="high-contrast"]` rules with solid `#ffffff` borders for such elements
+- Resizer uses `var(--border-color, #000)` with `opacity: 0.2` (hover `0.5`) — theme-aware, consistent between main `.resizer` and `.send-resizer`
+- All border-radius values must be 4px (the single standard); watch for accidental 6px or other values in new elements
 
 ---
 
@@ -567,4 +570,29 @@
   - For HTTP requests through SOCKS, use Node's `createConnection` option in `http.request()` — this lets you supply a pre-connected socket while still using the normal HTTP client
   - SOCKS auth uses `userId` and `password` fields (not Basic auth headers like HTTP proxies)
   - Port defaults for all SOCKS variants: 1080 (handled by `type.startsWith('socks')` check)
+---
+
+## 2026-04-10 - US-031
+- What was implemented: Final visual audit and pixel-perfect polish across all pages and themes
+- Files changed:
+  - src/ui/styles.css — 76 insertions, 16 deletions across all theme and component styles
+- Fixes applied:
+  - Fixed 3 undefined CSS variables (`--bg-active` → `--bg-input`, `--card-bg` → `--bg-input`, `--font-main` → `--font-body`)
+  - Made intercept search box-shadow theme-aware using `calc(var(--box-shadow-alpha) / 2)`
+  - Added opacity treatment to TLS error and tunnel rows (0.7 default, 1.0 on hover/selected)
+  - Fixed view-in-traffic button border-radius from 6px to 4px for consistency
+  - Fixed intercept loading overlay to match reference (0.2 bg + inset shadow)
+  - Reduced detail panel min-width from 350px to 300px to match HTTP Toolkit reference
+  - Fixed mock group header hover (was using --bg-highlight which is too strong, now uses subtle rgba)
+  - Added traffic header padding-right for scrollbar offset alignment
+  - Made main resizer theme-aware (uses --border-color instead of hardcoded #000)
+  - Increased detail footer button gap from 4px to 8px
+  - Added comprehensive high-contrast theme overrides for mock, intercept, and detail cards
+  - Added send-resizer horizontal mode at 768px responsive breakpoint
+- **Learnings for future iterations:**
+  - Always check that CSS custom properties are defined before using them — `--bg-active`, `--card-bg`, and `--font-main` were used but never declared, causing fallback to initial (transparent/serif)
+  - HTTP Toolkit's reference styles.ts is the single source of truth; use `calc()` with CSS custom properties to make theme-dependent values (like `boxShadowAlpha / 2`) dynamic
+  - High-contrast theme needs explicit overrides for semi-transparent borders/shadows that use hardcoded `rgba()` values — these become invisible on black backgrounds
+  - The resizer should use `var(--border-color)` so it adapts to all themes (especially important for light and high-contrast)
+  - TLS error and tunnel rows in HTTP Toolkit use `opacity: 0.7` to visually distinguish them from normal HTTP rows
 ---

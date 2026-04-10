@@ -558,7 +558,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 31,
-      "passes": false,
+      "passes": true,
       "notes": "Use HTTP Toolkit's live app at https://app.httptoolkit.tech for comparison screenshots"
     }
   ]
