@@ -29,7 +29,7 @@ export class ExistingBrowserInterceptor {
     const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
 
     const args = [
-      `--proxy-server=http://127.0.0.1:${proxyPort}`,
+      `--proxy-server=127.0.0.1:${proxyPort}`,
       '--ignore-certificate-errors',
       `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
       '--test-type',

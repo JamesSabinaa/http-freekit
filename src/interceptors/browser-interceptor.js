@@ -69,7 +69,7 @@ export class BrowserInterceptor {
     const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
 
     const args = [
-      `--proxy-server=http://127.0.0.1:${proxyPort}`,
+      `--proxy-server=127.0.0.1:${proxyPort}`,
       `--user-data-dir=${this.profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
