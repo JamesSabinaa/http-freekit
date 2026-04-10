@@ -417,7 +417,12 @@ export class ProxyServer {
           };
           const trailers = proxyRes.trailers;
 
-          clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
+          // Strip proxy-specific headers that shouldn't be forwarded to the client
+          const resHeaders = { ...proxyRes.headers };
+          delete resHeaders['proxy-authenticate'];
+          delete resHeaders['proxy-authorization'];
+          delete resHeaders['proxy-connection'];
+          clientRes.writeHead(proxyRes.statusCode, resHeaders);
           clientRes.end(resBody);
 
           this._emitRequestUpdate({
@@ -2153,6 +2158,11 @@ export class ProxyServer {
         headers: this.upstreamProxy.auth
           ? { 'proxy-authorization': 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64') }
           : {}
+      });
+      // Handle non-2xx responses (e.g. 407 Proxy Authentication Required)
+      connectReq.on('response', (res) => {
+        res.resume(); // drain the response
+        reject(new Error(`Upstream proxy rejected CONNECT: ${res.statusCode} ${res.statusMessage || ''}`));
       });
       connectReq.on('connect', (res, socket) => {
         if (res.statusCode !== 200) {
