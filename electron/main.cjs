@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -6,6 +6,8 @@ const crypto = require('crypto');
 const net = require('net');
 const http = require('http');
 const windowStateKeeper = require('electron-window-state');
+const { buildAppMenu } = require('./menu.cjs');
+const { createTray, destroyTray } = require('./tray.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -180,6 +182,13 @@ app.whenReady().then(async () => {
   try {
     await startServer();
     createWindow();
+
+    // Set up application menu
+    const appMenu = buildAppMenu(mainWindow);
+    Menu.setApplicationMenu(appMenu);
+
+    // Set up system tray
+    createTray(mainWindow);
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);
     app.quit();
@@ -187,6 +196,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  destroyTray();
   shutdownServer().then(() => app.quit());
 });
 
