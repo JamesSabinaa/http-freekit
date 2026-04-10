@@ -67,7 +67,16 @@ async function startServer() {
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
   logStream.write(`\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`);
 
-  const serverScript = path.join(__dirname, '..', 'src', 'index.js');
+  // In packaged app, __dirname is inside app.asar — use app.getAppPath() and
+  // replace .asar with .asar.unpacked if needed, or use the unpacked path.
+  // The server needs to run outside asar since it uses ESM and dynamic imports.
+  let serverScript = path.join(__dirname, '..', 'src', 'index.js');
+
+  // When packaged, the asar path won't work for spawning a child process.
+  // Use the asar-unpacked path instead.
+  if (serverScript.includes('app.asar')) {
+    serverScript = serverScript.replace('app.asar', 'app.asar.unpacked');
+  }
 
   serverProcess = spawn(process.execPath, [serverScript], {
     env: {
@@ -77,7 +86,8 @@ async function startServer() {
       AUTH_TOKEN: authToken,
       ELECTRON: '1'
     },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: path.dirname(serverScript)
   });
 
   serverProcess.stdout.pipe(logStream);

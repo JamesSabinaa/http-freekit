@@ -98,6 +98,17 @@ module.exports = {
   // Rebuild native dependencies for the target Electron version
   npmRebuild: true,
 
-  // asar packing (default enabled)
-  asar: true
+  // asar packing — server files unpacked since they run as a child process with ESM
+  asar: true,
+  asarUnpack: [
+    'src/**/*',
+    'node_modules/express/**/*',
+    'node_modules/body-parser/**/*',
+    'node_modules/node-forge/**/*',
+    'node_modules/ws/**/*',
+    'node_modules/uuid/**/*',
+    'node_modules/socks/**/*',
+    'node_modules/monaco-editor/**/*',
+    'node_modules/@phosphor-icons/**/*'
+  ]
 };
