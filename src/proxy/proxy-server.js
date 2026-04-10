@@ -2512,6 +2512,50 @@ export class ProxyServer {
       return;
     }
 
+    // Webhook — send a copy of the request to a configured URL (fire-and-forget)
+    if (action.type === 'webhook' && action.webhookUrl) {
+      try {
+        const webhookTarget = new URL(action.webhookUrl);
+        const isHttps = webhookTarget.protocol === 'https:';
+        const lib = isHttps ? https : http;
+        const webhookHeaders = {
+          'content-type': clientReq.headers['content-type'] || 'application/octet-stream',
+          'x-forwarded-method': clientReq.method,
+          'x-forwarded-url': targetUrl.href,
+          'x-forwarded-host': targetUrl.hostname,
+          ...(action.webhookHeaders || {})
+        };
+        const webhookReq = lib.request({
+          hostname: webhookTarget.hostname,
+          port: webhookTarget.port || (isHttps ? 443 : 80),
+          path: webhookTarget.pathname + webhookTarget.search,
+          method: 'POST',
+          headers: webhookHeaders,
+          rejectUnauthorized: false
+        });
+        webhookReq.on('error', (err) => {
+          console.error('[Proxy] Webhook error:', err.message);
+        });
+        webhookReq.end(body);
+      } catch (err) {
+        console.error('[Proxy] Webhook setup error:', err.message);
+      }
+      // Respond 200 OK to the client
+      clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
+      clientRes.end('');
+      this._emitRequest({
+        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestBodySize: body.length, statusCode: 200, statusMessage: 'Webhook sent',
+        responseHeaders: { 'Content-Type': 'text/plain' }, responseBody: '', responseBodySize: 0,
+        duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
+        tls: null, remote: null,
+        originalRequest, transformedBy
+      });
+      return;
+    }
+
     // Breakpoint on request (pause for manual editing)
     if (action.type === 'breakpoint-request') {
       this._emitRequest({
@@ -2581,6 +2625,80 @@ export class ProxyServer {
       if (modifications.status) {
         clientRes.writeHead(modifications.status, modifications.headers || {});
         clientRes.end(modifications.body || '');
+      } else {
+        clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
+        clientRes.end('Breakpoint released');
+      }
+      return;
+    }
+
+    // Breakpoint on both request and response
+    if (action.type === 'breakpoint-request-response') {
+      // Phase 1: Pause on the request
+      this._emitRequest({
+        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (request)',
+        responseHeaders: {}, responseBody: '', responseBodySize: 0,
+        duration: 0, timestamp: startTime, source: 'breakpoint',
+        tls: null, remote: null,
+        originalRequest, transformedBy
+      });
+      try {
+        this.onBreakpoint({
+          type: 'breakpoint-hit', requestId,
+          method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
+          phase: 'request'
+        });
+      } catch (err) {
+        console.error('[Proxy] Error in breakpoint handler:', err.message);
+      }
+      const reqModifications = await new Promise((resolve) => {
+        this.pendingBreakpoints.set(requestId, {
+          method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
+          path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
+          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'request', resolve
+        });
+      });
+      // Apply request modifications
+      if (reqModifications.url) {
+        try { targetUrl = new URL(reqModifications.url); } catch { /* keep original */ }
+      }
+      if (reqModifications.method) clientReq.method = reqModifications.method;
+      if (reqModifications.headers) Object.assign(clientReq.headers, reqModifications.headers);
+
+      // Phase 2: Pause on the response
+      this._emitRequest({
+        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
+        responseHeaders: {}, responseBody: '', responseBodySize: 0,
+        duration: 0, timestamp: startTime, source: 'breakpoint',
+        tls: null, remote: null,
+        originalRequest, transformedBy
+      });
+      try {
+        this.onBreakpoint({
+          type: 'breakpoint-hit', requestId,
+          method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
+          phase: 'response'
+        });
+      } catch (err) {
+        console.error('[Proxy] Error in breakpoint handler:', err.message);
+      }
+      const resModifications = await new Promise((resolve) => {
+        this.pendingBreakpoints.set(requestId, {
+          method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
+          path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
+          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
+        });
+      });
+      // Apply response modifications
+      if (resModifications.status) {
+        clientRes.writeHead(resModifications.status, resModifications.headers || {});
+        clientRes.end(resModifications.body || '');
       } else {
         clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
         clientRes.end('Breakpoint released');

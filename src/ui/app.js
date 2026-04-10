@@ -3048,6 +3048,8 @@
       { value: 'transform-response', label: 'Transform the response' },
       { value: 'breakpoint-request', label: 'Pause and manually edit the request (breakpoint)' },
       { value: 'breakpoint-response', label: 'Pause and manually edit the response (breakpoint)' },
+      { value: 'breakpoint-request-response', label: 'Pause and edit both request & response' },
+      { value: 'webhook', label: 'Send a webhook (fire-and-forget)' },
       { value: 'close', label: 'Close the connection' },
       { value: 'reset', label: 'Reset connection (send TCP RST)' },
       { value: 'timeout', label: 'Timeout (wait forever)' }
@@ -3406,6 +3408,12 @@
         case 'breakpoint-response':
           actionStr = 'Breakpoint (response)';
           break;
+        case 'breakpoint-request-response':
+          actionStr = 'Breakpoint (request + response)';
+          break;
+        case 'webhook':
+          actionStr = 'Webhook \u2192 ' + esc((nr.action.webhookUrl || '').substring(0, 40));
+          break;
       }
       if (nr.action.delay > 0) {
         actionStr += ' <span style="color:var(--text-watermark);">+' + nr.action.delay + 'ms</span>';
@@ -3713,6 +3721,12 @@
         case 'breakpoint-response':
           html += 'Breakpoint &mdash; pause and edit response';
           break;
+        case 'breakpoint-request-response':
+          html += 'Breakpoint &mdash; pause and edit both request &amp; response';
+          break;
+        case 'webhook':
+          html += 'Webhook &rarr; <strong>' + esc(nr.action.webhookUrl || '') + '</strong>';
+          break;
       }
       if (nr.action.delay > 0) html += ' (delay: ' + nr.action.delay + 'ms)';
       html += '</div>';
@@ -3748,6 +3762,17 @@
         html += '<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-watermark);text-transform:uppercase;">Replacement Body</span>';
         html += '<div class="body-content" style="max-height:200px;margin-top:4px;">' + formatBody(nr.action.body, 'text/plain') + '</div>';
         html += '</div>';
+      }
+
+      if (nr.action.type === 'webhook' && nr.action.webhookHeaders) {
+        const whEntries = Object.entries(nr.action.webhookHeaders);
+        if (whEntries.length > 0) {
+          html += '<div style="margin-top:8px;"><span style="font-size:11px;color:var(--text-watermark);text-transform:uppercase;">Custom Headers</span>';
+          for (const [k, v] of whEntries) {
+            html += '<div style="font-family:var(--font-mono);font-size:12px;color:var(--text-lowlight);">' + esc(k) + ': ' + esc(v) + '</div>';
+          }
+          html += '</div>';
+        }
       }
 
       html += '</div>';
@@ -3797,7 +3822,7 @@
       html += '<div class="mock-action-config" id="mockActionConfig_' + eid + '">';
       // Group action types: common first, then advanced
       const _primaryActions = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
-      const _advancedActions = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'transform-response'];
+      const _advancedActions = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
       html += '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
       html += '<optgroup label="Common">';
       for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions.includes(a.value))) {
@@ -4138,6 +4163,31 @@
         case 'breakpoint-response':
           html += '<p style="color:var(--text-lowlight);font-size:12px;">The request will be forwarded normally, but the response will be paused before being sent back to the client. You can inspect and modify it before releasing.</p>';
           break;
+
+        case 'breakpoint-request-response':
+          html += '<p style="color:var(--text-lowlight);font-size:12px;">When a matching request arrives, it will be paused for editing. After you resume the request, the response will also be paused so you can inspect and modify it before sending it back to the client.</p>';
+          break;
+
+        case 'webhook':
+          html += '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:11px;margin-bottom:3px;">Webhook URL</label>';
+          html += '<input type="text" placeholder="https://example.com/webhook" value="' + esc(action.webhookUrl || '') + '" onchange="mockEditDraft.action.webhookUrl=this.value"></div>';
+          html += '<div style="margin-bottom:8px;">';
+          html += '<label style="font-size:11px;color:var(--text-watermark);display:block;margin-bottom:4px;">Custom Headers (optional)</label>';
+          html += '<div id="mockWebhookHeaders_' + eid + '">';
+          const whEntries = Object.entries(action.webhookHeaders || {});
+          whEntries.forEach(([k, v], hi) => {
+            html += '<div class="mock-header-row">';
+            html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
+            html += '<i class="ph ph-x" style="font-size:12px;"></i>';
+            html += '</button></div>';
+          });
+          html += '</div>';
+          html += '<button class="mock-add-matcher-btn" onclick="addMockWebhookHeader(\'' + eid + '\')">+ Add header</button>';
+          html += '</div>';
+          html += '<p style="color:var(--text-lowlight);font-size:12px;margin:0;">A copy of the matching request will be POSTed to this URL. The original client receives a 200 OK response immediately.</p>';
+          break;
       }
       return html;
     }
@@ -4401,13 +4451,18 @@
           break;
         case 'breakpoint-request':
         case 'breakpoint-response':
+        case 'breakpoint-request-response':
           // No special fields needed
+          break;
+        case 'webhook':
+          mockEditDraft.action.webhookUrl = oldAction.webhookUrl || '';
+          mockEditDraft.action.webhookHeaders = oldAction.webhookHeaders || {};
           break;
       }
       const configEl = document.getElementById('mockActionConfig_' + eid);
       if (configEl) {
         const _primaryActions2 = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
-        const _advancedActions2 = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'transform-response'];
+        const _advancedActions2 = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
         let selectHtml = '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
         selectHtml += '<optgroup label="Common">';
         for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions2.includes(a.value))) {
@@ -4476,6 +4531,64 @@
         html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
         html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
+        html += '</button></div>';
+      });
+      container.innerHTML = html;
+    }
+
+    function updateMockWebhookHeader(idx, which, value, eid) {
+      if (!mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      if (idx < 0 || idx >= entries.length) return;
+      if (which === 'key') {
+        const val = entries[idx][1];
+        const newHeaders = {};
+        entries.forEach(([k, v], i) => {
+          if (i === idx) newHeaders[value] = val;
+          else newHeaders[k] = v;
+        });
+        mockEditDraft.action.webhookHeaders = newHeaders;
+      } else {
+        entries[idx][1] = value;
+        const newHeaders = {};
+        entries.forEach(([k, v]) => { newHeaders[k] = v; });
+        mockEditDraft.action.webhookHeaders = newHeaders;
+      }
+    }
+
+    function addMockWebhookHeader(eid) {
+      if (!mockEditDraft) return;
+      if (!mockEditDraft.action.webhookHeaders) mockEditDraft.action.webhookHeaders = {};
+      let key = 'X-Custom';
+      let n = 1;
+      while (mockEditDraft.action.webhookHeaders[key]) { key = 'X-Custom-' + n; n++; }
+      mockEditDraft.action.webhookHeaders[key] = '';
+      rerenderMockWebhookHeaders(eid);
+    }
+
+    function removeMockWebhookHeader(idx, eid) {
+      if (!mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      if (idx < 0 || idx >= entries.length) return;
+      const newHeaders = {};
+      entries.forEach(([k, v], i) => {
+        if (i !== idx) newHeaders[k] = v;
+      });
+      mockEditDraft.action.webhookHeaders = newHeaders;
+      rerenderMockWebhookHeaders(eid);
+    }
+
+    function rerenderMockWebhookHeaders(eid) {
+      const container = document.getElementById('mockWebhookHeaders_' + eid);
+      if (!container || !mockEditDraft) return;
+      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      let html = '';
+      entries.forEach(([k, v], hi) => {
+        html += '<div class="mock-header-row">';
+        html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
