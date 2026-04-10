@@ -4696,7 +4696,8 @@
         mockEditingRule = null;
         mockEditDraft = null;
         toast('All changes saved', 'success');
-        loadMockRules();
+        // Reload from server to get real IDs for all rules
+        await loadMockRules();
       } catch (err) {
         toast('Error saving rules: ' + err.message, 'error');
       }
@@ -4762,32 +4763,28 @@
 
     async function deleteMockRule(ruleId) {
       try {
-        // If it's a new draft that hasn't been saved to server, just remove locally
-        if (mockNewDraftIds.has(ruleId)) {
-          mockDraftRules.delete(ruleId);
-          mockNewDraftIds.delete(ruleId);
-          mockRules = mockRules.filter(r => r.id !== ruleId);
-          mockExpandedRules.delete(ruleId);
-          if (mockEditingRule === ruleId) {
-            mockEditingRule = null;
-            mockEditDraft = null;
-          }
-          toast('Draft rule deleted', 'success');
-          updateMockSaveButtons();
-          renderMockRules();
-          return;
-        }
-        // Also clean up any draft for this rule
+        // Clean up local draft state
         mockDraftRules.delete(ruleId);
-        await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
         mockExpandedRules.delete(ruleId);
         if (mockEditingRule === ruleId) {
           mockEditingRule = null;
           mockEditDraft = null;
         }
-        toast('Rule deleted', 'success');
-        updateMockSaveButtons();
-        loadMockRules();
+
+        if (mockNewDraftIds.has(ruleId)) {
+          // Unsaved draft — remove locally only (it's not on the server yet)
+          mockNewDraftIds.delete(ruleId);
+          mockRules = mockRules.filter(r => r.id !== ruleId);
+          toast('Draft rule deleted', 'success');
+          updateMockSaveButtons();
+          renderMockRules();
+        } else {
+          // Saved rule — delete from server AND reload to get fresh state
+          await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
+          toast('Rule deleted', 'success');
+          updateMockSaveButtons();
+          await loadMockRules();
+        }
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
