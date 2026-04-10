@@ -70,6 +70,10 @@ async function main() {
   const PHOSPHOR_DIR = path.join(__dirname, '..', 'node_modules', '@phosphor-icons', 'web', 'src');
   api.app.use('/vendor/phosphor', express.static(PHOSPHOR_DIR));
 
+  // Serve Monaco Editor assets from node_modules
+  const MONACO_DIR = path.join(__dirname, '..', 'node_modules', 'monaco-editor', 'min');
+  api.app.use('/vendor/monaco', express.static(MONACO_DIR));
+
   // 5. Start servers
   await proxy.start();
   await api.start();

@@ -6,6 +6,7 @@
   <title>HTTP FreeKit</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/vendor/phosphor/regular/style.css">
+  <link rel="stylesheet" href="/vendor/monaco/vs/editor/editor.main.css">
   <style>
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   </style>
@@ -435,6 +436,10 @@
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+  <script src="/vendor/monaco/vs/loader.js"></script>
+  <script>
+    require.config({ paths: { vs: '/vendor/monaco/vs' } });
+  </script>
   <script src="/app.js"></script>
 </body>
 </html>

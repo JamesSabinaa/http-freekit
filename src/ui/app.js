@@ -5195,6 +5195,213 @@
       }
     });
 
+    // ============ MONACO EDITOR ============
+    /** @type {typeof import('monaco-editor')|null} */
+    let monacoApi = null;
+    /** @type {Promise<typeof import('monaco-editor')>} */
+    const monacoReady = new Promise((resolve) => {
+      if (typeof require !== 'undefined' && typeof require.config === 'function') {
+        require(['vs/editor/editor.main'], function (monaco) {
+          monacoApi = monaco;
+
+          // Define custom dark theme matching HTTP Toolkit
+          monaco.editor.defineTheme('httptoolkit-dark', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+              { token: 'string', foreground: '4caf7d' },
+              { token: 'string.key.json', foreground: 'e1421f' },
+              { token: 'string.value.json', foreground: '4caf7d' },
+              { token: 'keyword', foreground: '6e40aa' },
+              { token: 'number', foreground: '5a80cc' },
+              { token: 'comment', foreground: '818490' },
+              { token: 'type', foreground: '2fb4e0' },
+              { token: 'delimiter', foreground: '9a9da8' },
+              { token: 'tag', foreground: 'e1421f' },
+              { token: 'attribute.name', foreground: '6e40aa' },
+              { token: 'attribute.value', foreground: '4caf7d' },
+              { token: 'metatag', foreground: '818490' },
+              { token: 'variable', foreground: 'e4e8ed' },
+              { token: 'operator', foreground: '9a9da8' },
+            ],
+            colors: {
+              'editor.background': '#16181e',
+              'editor.foreground': '#e4e8ed',
+              'editor.lineHighlightBackground': '#1e202800',
+              'editor.selectionBackground': '#53565e80',
+              'editorCursor.foreground': '#e1421f',
+              'editorLineNumber.foreground': '#818490',
+              'editorLineNumber.activeForeground': '#e4e8ed',
+              'editor.inactiveSelectionBackground': '#53565e40',
+              'editorWidget.background': '#1e2028',
+              'editorWidget.border': '#53565e',
+              'input.background': '#16181e',
+              'input.border': '#53565e',
+              'input.foreground': '#e4e8ed',
+              'dropdown.background': '#1e2028',
+              'dropdown.border': '#53565e',
+              'list.activeSelectionBackground': '#53565e',
+              'list.hoverBackground': '#25262e',
+              'scrollbarSlider.background': '#53565e80',
+              'scrollbarSlider.hoverBackground': '#818490',
+              'scrollbarSlider.activeBackground': '#9a9da8',
+            }
+          });
+
+          // Define custom light theme matching HTTP Toolkit
+          monaco.editor.defineTheme('httptoolkit-light', {
+            base: 'vs',
+            inherit: true,
+            rules: [
+              { token: 'string', foreground: '117733' },
+              { token: 'string.key.json', foreground: 'c22f2f' },
+              { token: 'string.value.json', foreground: '117733' },
+              { token: 'keyword', foreground: '6e40aa' },
+              { token: 'number', foreground: '2d4cbd' },
+              { token: 'comment', foreground: '818490' },
+              { token: 'type', foreground: '1976d2' },
+              { token: 'delimiter', foreground: '53565e' },
+              { token: 'tag', foreground: 'c22f2f' },
+              { token: 'attribute.name', foreground: '6e40aa' },
+              { token: 'attribute.value', foreground: '117733' },
+              { token: 'metatag', foreground: '818490' },
+              { token: 'variable', foreground: '1e2028' },
+              { token: 'operator', foreground: '53565e' },
+            ],
+            colors: {
+              'editor.background': '#ffffff',
+              'editor.foreground': '#1e2028',
+              'editor.lineHighlightBackground': '#f2f2f200',
+              'editor.selectionBackground': '#6284fa30',
+              'editorCursor.foreground': '#e1421f',
+              'editorLineNumber.foreground': '#818490',
+              'editorLineNumber.activeForeground': '#1e2028',
+              'editor.inactiveSelectionBackground': '#6284fa18',
+              'editorWidget.background': '#fafafa',
+              'editorWidget.border': '#9a9da8',
+              'input.background': '#ffffff',
+              'input.border': '#9a9da8',
+              'input.foreground': '#1e2028',
+              'dropdown.background': '#fafafa',
+              'dropdown.border': '#9a9da8',
+              'list.activeSelectionBackground': '#6284fa30',
+              'list.hoverBackground': '#f2f2f2',
+              'scrollbarSlider.background': '#c0c2c880',
+              'scrollbarSlider.hoverBackground': '#9a9da8',
+              'scrollbarSlider.activeBackground': '#818490',
+            }
+          });
+
+          resolve(monaco);
+        });
+      }
+    });
+
+    /**
+     * Track all active Monaco editor instances for theme switching.
+     * @type {Array<{editor: object, container: HTMLElement}>}
+     */
+    const monacoInstances = [];
+
+    /**
+     * Creates a Monaco Editor instance inside the given container element.
+     * @param {string} containerId - The DOM id of the container element.
+     * @param {object} [options] - Editor options.
+     * @param {string} [options.language='plaintext'] - Language mode.
+     * @param {boolean} [options.readOnly=false] - Read-only mode.
+     * @param {string} [options.theme] - Theme name (auto-detected from current app theme if omitted).
+     * @param {string} [options.value=''] - Initial editor content.
+     * @param {boolean} [options.minimap=false] - Show minimap.
+     * @param {boolean|string} [options.lineNumbers=true] - Show line numbers ('on','off','relative').
+     * @param {string} [options.wordWrap='on'] - Word wrap mode.
+     * @param {boolean} [options.folding=true] - Enable code folding.
+     * @returns {Promise<object|null>} The Monaco editor instance, or null if Monaco failed to load.
+     */
+    async function createMonacoEditor(containerId, options = {}) {
+      const monaco = await monacoReady;
+      if (!monaco) return null;
+
+      const container = document.getElementById(containerId);
+      if (!container) {
+        console.warn('[Monaco] Container not found:', containerId);
+        return null;
+      }
+
+      // Determine current theme
+      const resolvedTheme = options.theme || getMonacoTheme();
+
+      const lineNumbers = options.lineNumbers === false ? 'off'
+        : options.lineNumbers === true ? 'on'
+        : (options.lineNumbers || 'on');
+
+      const editor = monaco.editor.create(container, {
+        value: options.value || '',
+        language: options.language || 'plaintext',
+        readOnly: options.readOnly || false,
+        theme: resolvedTheme,
+        minimap: { enabled: options.minimap === true },
+        lineNumbers: lineNumbers,
+        wordWrap: options.wordWrap || 'on',
+        folding: options.folding !== false,
+        automaticLayout: false,
+        scrollBeyondLastLine: false,
+        fontSize: 12,
+        fontFamily: "'DM Mono', monospace",
+        renderLineHighlight: 'none',
+        overviewRulerBorder: false,
+        hideCursorInOverviewRuler: true,
+        scrollbar: {
+          verticalScrollbarSize: 10,
+          horizontalScrollbarSize: 10,
+        },
+        padding: { top: 8, bottom: 8 },
+      });
+
+      // Auto-resize when container resizes
+      const resizeObserver = new ResizeObserver(() => {
+        editor.layout();
+      });
+      resizeObserver.observe(container);
+
+      // Track instance for theme switching and cleanup
+      const instance = { editor, container, resizeObserver };
+      monacoInstances.push(instance);
+
+      // Cleanup when container is removed from DOM
+      const mutationObserver = new MutationObserver(() => {
+        if (!document.body.contains(container)) {
+          editor.dispose();
+          resizeObserver.disconnect();
+          mutationObserver.disconnect();
+          const idx = monacoInstances.indexOf(instance);
+          if (idx !== -1) monacoInstances.splice(idx, 1);
+        }
+      });
+      mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+      return editor;
+    }
+
+    /**
+     * Returns the Monaco theme name for the current app theme.
+     * @returns {string}
+     */
+    function getMonacoTheme() {
+      const dataTheme = document.documentElement.getAttribute('data-theme');
+      if (dataTheme === 'light') return 'httptoolkit-light';
+      return 'httptoolkit-dark';
+    }
+
+    /**
+     * Update all active Monaco editors to use the given theme.
+     * @param {string} monacoThemeName
+     */
+    function setMonacoTheme(monacoThemeName) {
+      if (monacoApi) {
+        monacoApi.editor.setTheme(monacoThemeName);
+      }
+    }
+
     // ============ INIT ============
     // Apply hash-based routing on initial page load
     if (window.location.hash) {
@@ -5230,6 +5437,9 @@
       document.documentElement.setAttribute('data-theme', resolved);
       var sel = document.getElementById('themeSelect');
       if (sel) sel.value = theme;
+
+      // Sync Monaco editor theme
+      setMonacoTheme(resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
     }
 
     function loadTheme() {
