@@ -22,6 +22,9 @@
 - `monacoReady` promise resolves when Monaco API is available; `monacoApi` holds the global reference
 - `monacoInstances` array tracks all active editors for theme switching and cleanup
 - Editor auto-resizes via ResizeObserver; auto-cleans up when container is removed from DOM
+- Body viewers use dual-container pattern: `id="resBody-monaco"` (Monaco) + `id="resBody-fallback"` (pre); toggled by `isMonacoViewMode(mode)`
+- `activeBodyEditors` tracks live Monaco body editors by container id; call `disposeBodyEditor(id)` before DOM replacement
+- Non-Monaco body view modes: hex (textToHex), decoded (key-value grid), image (placeholder) — all render in the fallback `<pre>`
 
 ---
 
@@ -86,4 +89,18 @@
   - MutationObserver on document.body detects container removal for cleanup; watch for performance if many editors are created/destroyed
   - The `monacoReady` promise pattern lets any code await Monaco initialization without race conditions
   - For JSON syntax: `string.key.json` and `string.value.json` are distinct tokens — keys should be red/accent, values should be green/string color
+---
+
+## 2026-04-10 - US-005
+- What was implemented: Replaced the response body `<pre>` viewer with a Monaco Editor instance with full syntax highlighting, folding, and search
+- Files changed:
+  - src/ui/app.js — Changed response body card HTML to use dual-container pattern (Monaco div + fallback pre); added Monaco initialization after `content.innerHTML` is set; added `disposeBodyEditor` cleanup at start of `renderDetailCards`; connected `initBodyMonacoEditor`, `switchBodyView`, `disposeBodyEditor`, `isMonacoViewMode`, `viewModeToMonacoLanguage`, and `getMonacoBodyValue` helper functions to the response body rendering flow
+- **Learnings for future iterations:**
+  - The dual-container pattern (id=`*-monaco` + id=`*-fallback`) is used for body viewers: Monaco-compatible modes show the Monaco container, non-Monaco modes (hex, decoded, image) show the fallback `<pre>`
+  - `switchBodyView(elementId, mode, section)` toggles between Monaco and fallback based on `isMonacoViewMode(mode)` — hex, decoded, and image are NOT Monaco modes
+  - Active Monaco body editors are tracked in `activeBodyEditors` keyed by container id; always call `disposeBodyEditor()` before replacing DOM content
+  - The `initBodyMonacoEditor` function auto-sizes editor height based on line count (min 80px, max 500px)
+  - Monaco's built-in Ctrl+F find/replace works automatically in read-only mode — no extra setup needed
+  - The Send page response body (`sendResBody`) uses its own separate rendering path via `innerHTML` — it is NOT affected by the detail panel Monaco changes
+  - Manual browser verification is recommended for this story
 ---
