@@ -1,0 +1,24 @@
+## Codebase Patterns
+- Design tokens are CSS custom properties in src/ui/styles.css, organized by theme (:root = dark, [data-theme="light"], [data-theme="high-contrast"])
+- Reference source of truth for all design tokens: httptoolkit-ui/src/styles.ts
+- Box shadows use `rgb(0 0 0 / var(--box-shadow-alpha))` so they auto-adapt to themes (dark=0.4, light=0.3, high-contrast=0.1)
+- Font size tokens follow naming: `--font-size-{small-print|text-input|text|sub-heading|heading|large-heading|loud-heading|screaming-heading}`
+- Link colors use `--link-color` and `--visited-link-color` variables (theme-aware)
+- The project is vanilla JS (no framework, no TypeScript) — "typecheck" means verifying `node --check` passes on JS files
+- All border-radius=4px, resizer=11px, sidebar=75px, header/footer=38px, row=32px
+
+---
+
+## 2026-04-10 - US-001
+- What was implemented: Audited and fixed all CSS design tokens in styles.css against HTTP Toolkit's styles.ts
+- Files changed:
+  - src/ui/styles.css — Added 40+ CSS variables across all 3 themes
+- **Learnings for future iterations:**
+  - HTTP Toolkit's styles.ts is the single source of truth; fetch from https://raw.githubusercontent.com/httptoolkit/httptoolkit-ui/main/src/styles.ts
+  - Dark theme (`:root`) maps to `darkTheme`, light to `lightTheme`, high-contrast to `highContrastTheme`
+  - Named color constants (inkBlack, inkGrey, darkerGrey, etc.) are used throughout the codebase as semantic tokens
+  - Box shadow alpha values differ per theme: dark=0.4, light=0.3, high-contrast=0.1
+  - CSS `rgb(0 0 0 / var(--custom-property))` works in modern browsers for dynamic alpha
+  - Input theming variables (--primary-input-bg, --secondary-input-border, etc.) are theme-specific
+  - The 8 font size tokens are critical for pixel-perfect sizing across all UI components
+---
