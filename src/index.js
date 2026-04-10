@@ -82,6 +82,8 @@ async function main() {
   if (savedTrustedCAs) proxy.setTrustedCAs(savedTrustedCAs);
   const savedHttpsWhitelist = settings.get('httpsWhitelist');
   if (savedHttpsWhitelist) proxy.setHttpsWhitelist(savedHttpsWhitelist);
+  const savedTlsFingerprint = settings.get('tlsFingerprint');
+  if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
   const savedMockRules = settings.get('mockRules');
   if (savedMockRules && Array.isArray(savedMockRules) && savedMockRules.length > 0) {
     proxy.mockRules = savedMockRules;

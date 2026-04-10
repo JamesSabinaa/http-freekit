@@ -31,6 +31,7 @@ export class ProxyServer {
     this.clientCertificates = []; // [{host, pfxPath}]
     this.trustedCAs = []; // [certPath]
     this.httpsWhitelist = []; // [hostname]
+    this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
     // HTTP/2 upstream session cache: Map<"host:port", {session, timer, pending?}>
     this._h2Sessions = new Map();
@@ -78,6 +79,11 @@ export class ProxyServer {
   setHttpsWhitelist(hosts) {
     this.httpsWhitelist = hosts || [];
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
+  }
+
+  setTlsFingerprint(preset) {
+    this.tlsFingerprint = preset || 'chrome-136';
+    console.log(`[Proxy] TLS fingerprint: ${this.tlsFingerprint}`);
   }
 
   start() {
@@ -2135,43 +2141,131 @@ export class ProxyServer {
     });
   }
 
-  // TLS options that emulate Chrome 136's Client Hello fingerprint.
-  // Prevents sites with JA3/bot detection (Cloudflare, Akamai, etc.)
-  // from blocking proxy connections.
-  _getUpstreamTlsOptions(hostname) {
-    return {
-      servername: net.isIP(hostname) ? undefined : hostname,
-      rejectUnauthorized: false,
+  // TLS fingerprint presets — emulate real browser Client Hello parameters
+  // to prevent JA3/bot detection (Cloudflare, Akamai, etc.) from blocking.
+  static TLS_FINGERPRINTS = {
+    'chrome-136': {
+      label: 'Chrome 136',
       minVersion: 'TLSv1.2',
       maxVersion: 'TLSv1.3',
       ciphers: [
-        'TLS_AES_128_GCM_SHA256',
-        'TLS_AES_256_GCM_SHA384',
-        'TLS_CHACHA20_POLY1305_SHA256',
-        'ECDHE-ECDSA-AES128-GCM-SHA256',
-        'ECDHE-RSA-AES128-GCM-SHA256',
-        'ECDHE-ECDSA-AES256-GCM-SHA384',
-        'ECDHE-RSA-AES256-GCM-SHA384',
-        'ECDHE-ECDSA-CHACHA20-POLY1305',
-        'ECDHE-RSA-CHACHA20-POLY1305',
-        'ECDHE-RSA-AES128-SHA',
-        'ECDHE-RSA-AES256-SHA',
-        'AES128-GCM-SHA256',
-        'AES256-GCM-SHA384',
-        'AES128-SHA',
-        'AES256-SHA',
+        'TLS_AES_128_GCM_SHA256', 'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256',
+        'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+        'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-AES128-SHA', 'ECDHE-RSA-AES256-SHA',
+        'AES128-GCM-SHA256', 'AES256-GCM-SHA384', 'AES128-SHA', 'AES256-SHA',
       ].join(':'),
       sigalgs: [
-        'ecdsa_secp256r1_sha256',
-        'rsa_pss_rsae_sha256',
-        'rsa_pkcs1_sha256',
-        'ecdsa_secp384r1_sha384',
-        'rsa_pss_rsae_sha384',
-        'rsa_pkcs1_sha384',
-        'rsa_pss_rsae_sha512',
-        'rsa_pkcs1_sha512',
+        'ecdsa_secp256r1_sha256', 'rsa_pss_rsae_sha256', 'rsa_pkcs1_sha256',
+        'ecdsa_secp384r1_sha384', 'rsa_pss_rsae_sha384', 'rsa_pkcs1_sha384',
+        'rsa_pss_rsae_sha512', 'rsa_pkcs1_sha512',
       ].join(':'),
       ecdhCurve: 'X25519:P-256:P-384',
+    },
+    'chrome-124': {
+      label: 'Chrome 124',
+      minVersion: 'TLSv1.2',
+      maxVersion: 'TLSv1.3',
+      ciphers: [
+        'TLS_AES_128_GCM_SHA256', 'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256',
+        'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+        'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-AES128-SHA', 'ECDHE-RSA-AES256-SHA',
+        'AES128-GCM-SHA256', 'AES256-GCM-SHA384', 'AES128-SHA', 'AES256-SHA',
+      ].join(':'),
+      sigalgs: [
+        'ecdsa_secp256r1_sha256', 'rsa_pss_rsae_sha256', 'rsa_pkcs1_sha256',
+        'ecdsa_secp384r1_sha384', 'rsa_pss_rsae_sha384', 'rsa_pkcs1_sha384',
+        'rsa_pss_rsae_sha512', 'rsa_pkcs1_sha512',
+      ].join(':'),
+      ecdhCurve: 'X25519:P-256:P-384',
+    },
+    'firefox-133': {
+      label: 'Firefox 133',
+      minVersion: 'TLSv1',
+      maxVersion: 'TLSv1.3',
+      ciphers: [
+        'TLS_AES_128_GCM_SHA256', 'TLS_CHACHA20_POLY1305_SHA256', 'TLS_AES_256_GCM_SHA384',
+        'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+        'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+        'ECDHE-ECDSA-AES256-SHA', 'ECDHE-ECDSA-AES128-SHA',
+        'ECDHE-RSA-AES128-SHA', 'ECDHE-RSA-AES256-SHA',
+        'AES128-GCM-SHA256', 'AES256-GCM-SHA384', 'AES128-SHA', 'AES256-SHA',
+      ].join(':') + ':@SECLEVEL=0',
+      sigalgs: [
+        'ecdsa_secp256r1_sha256', 'ecdsa_secp384r1_sha384', 'ecdsa_secp521r1_sha512',
+        'rsa_pss_rsae_sha256', 'rsa_pss_rsae_sha384', 'rsa_pss_rsae_sha512',
+        'rsa_pkcs1_sha256', 'rsa_pkcs1_sha384', 'rsa_pkcs1_sha512',
+        'ECDSA+SHA1', 'rsa_pkcs1_sha1',
+      ].join(':'),
+      ecdhCurve: 'X25519:prime256v1:secp384r1:secp521r1',
+    },
+    'safari-18': {
+      label: 'Safari 18',
+      minVersion: 'TLSv1.2',
+      maxVersion: 'TLSv1.3',
+      ciphers: [
+        'TLS_AES_128_GCM_SHA256', 'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256',
+        'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-ECDSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-RSA-CHACHA20-POLY1305',
+        'AES256-GCM-SHA384', 'AES128-GCM-SHA256',
+        'ECDHE-ECDSA-AES256-SHA384', 'ECDHE-ECDSA-AES128-SHA256',
+        'ECDHE-RSA-AES256-SHA384', 'ECDHE-RSA-AES128-SHA256',
+        'AES256-SHA256', 'AES128-SHA256',
+        'ECDHE-ECDSA-AES256-SHA', 'ECDHE-ECDSA-AES128-SHA',
+        'ECDHE-RSA-AES256-SHA', 'ECDHE-RSA-AES128-SHA',
+        'AES256-SHA', 'AES128-SHA',
+      ].join(':'),
+      sigalgs: [
+        'ecdsa_secp256r1_sha256', 'rsa_pss_rsae_sha256', 'rsa_pkcs1_sha256',
+        'ecdsa_secp384r1_sha384', 'rsa_pss_rsae_sha384', 'rsa_pkcs1_sha384',
+        'rsa_pss_rsae_sha512', 'rsa_pkcs1_sha512',
+      ].join(':'),
+      ecdhCurve: 'X25519:P-256:P-384:P-521',
+    },
+    'edge-136': {
+      label: 'Edge 136',
+      minVersion: 'TLSv1.2',
+      maxVersion: 'TLSv1.3',
+      ciphers: [
+        'TLS_AES_128_GCM_SHA256', 'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256',
+        'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+        'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-AES128-SHA', 'ECDHE-RSA-AES256-SHA',
+        'AES128-GCM-SHA256', 'AES256-GCM-SHA384', 'AES128-SHA', 'AES256-SHA',
+      ].join(':'),
+      sigalgs: [
+        'ecdsa_secp256r1_sha256', 'rsa_pss_rsae_sha256', 'rsa_pkcs1_sha256',
+        'ecdsa_secp384r1_sha384', 'rsa_pss_rsae_sha384', 'rsa_pkcs1_sha384',
+        'rsa_pss_rsae_sha512', 'rsa_pkcs1_sha512',
+      ].join(':'),
+      ecdhCurve: 'X25519:P-256:P-384',
+    },
+  };
+
+  _getUpstreamTlsOptions(hostname) {
+    const preset = ProxyServer.TLS_FINGERPRINTS[this.tlsFingerprint];
+    if (!preset) {
+      // 'default' — use Node.js built-in TLS defaults
+      return {
+        servername: net.isIP(hostname) ? undefined : hostname,
+        rejectUnauthorized: false,
+      };
+    }
+    return {
+      servername: net.isIP(hostname) ? undefined : hostname,
+      rejectUnauthorized: false,
+      minVersion: preset.minVersion,
+      maxVersion: preset.maxVersion,
+      ciphers: preset.ciphers,
+      sigalgs: preset.sigalgs,
+      ecdhCurve: preset.ecdhCurve,
       requestOCSP: true,
     };
   }

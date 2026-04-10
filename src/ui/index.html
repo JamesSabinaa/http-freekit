@@ -330,6 +330,24 @@
   </p>
 </div>
           <div class="card" style="margin-bottom:20px;">
+  <div class="card-header">TLS Fingerprint</div>
+  <div class="settings-row">
+    <span class="settings-label">Upstream TLS Profile</span>
+    <select id="tlsFingerprint" onchange="saveTlsFingerprint()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
+      <option value="chrome-136">Chrome 136</option>
+      <option value="chrome-124">Chrome 124</option>
+      <option value="firefox-133">Firefox 133</option>
+      <option value="safari-18">Safari 18</option>
+      <option value="edge-136">Edge 136</option>
+      <option value="default">Node.js Default</option>
+    </select>
+  </div>
+  <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+    Controls the TLS Client Hello fingerprint used for upstream connections. Sites with bot detection
+    (Cloudflare, Akamai) use JA3 fingerprinting to block non-browser TLS — select a browser profile to bypass this.
+  </p>
+</div>
+          <div class="card" style="margin-bottom:20px;">
   <div class="card-header">Connection Settings</div>
   <div class="form-group" style="margin-bottom:12px;">
     <label>Upstream Proxy</label>

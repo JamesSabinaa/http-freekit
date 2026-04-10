@@ -521,6 +521,20 @@ export class ApiServer {
       res.json({ success: true, mode: this.proxy.http2Enabled });
     });
 
+    // TLS fingerprint config
+    router.get('/api/tls-fingerprint', (req, res) => {
+      const fingerprints = this.proxy.constructor.TLS_FINGERPRINTS || {};
+      const presets = Object.entries(fingerprints).map(([id, p]) => ({ id, label: p.label }));
+      res.json({ fingerprint: this.proxy.tlsFingerprint, presets });
+    });
+
+    router.post('/api/tls-fingerprint', (req, res) => {
+      const { fingerprint } = req.body;
+      this.proxy.setTlsFingerprint(fingerprint);
+      this.settings?.set('tlsFingerprint', fingerprint);
+      res.json({ success: true, fingerprint: this.proxy.tlsFingerprint });
+    });
+
     // Proxy port range config
     router.get('/api/port-config', (req, res) => {
       res.json({

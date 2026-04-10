@@ -107,6 +107,7 @@
           loadTrustedCAs();
           loadHttpsWhitelist();
           loadHttp2Config();
+          loadTlsFingerprint();
           loadApiSpecs();
           loadMcpStatus();
           // Check for deep-linked request to auto-select after traffic loads
@@ -6166,6 +6167,30 @@
           body: JSON.stringify({ mode })
         });
         toast('HTTP/2 setting saved', 'success');
+      } catch (err) { toast('Error: ' + err.message, 'error'); }
+    }
+
+    // ============ TLS FINGERPRINT ============
+    async function loadTlsFingerprint() {
+      try {
+        const res = await fetch(API_BASE + '/api/tls-fingerprint');
+        const data = await res.json();
+        const sel = document.getElementById('tlsFingerprint');
+        if (sel) sel.value = data.fingerprint || 'chrome-136';
+      } catch (e) {
+        console.error('[Error]', e.message);
+      }
+    }
+
+    async function saveTlsFingerprint() {
+      const fingerprint = document.getElementById('tlsFingerprint')?.value || 'chrome-136';
+      try {
+        await fetch(API_BASE + '/api/tls-fingerprint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fingerprint })
+        });
+        toast('TLS fingerprint saved: ' + fingerprint, 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
