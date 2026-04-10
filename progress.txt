@@ -53,6 +53,10 @@
 - TLS error and tunnel rows use `.tls-error-row` and `.tunnel-row` CSS classes (italic, 28px height, centered text) — distinct from standard 32px rows
 - Row marker colors: TLS error = `#ce3939` (red), tunnel = `#888` (grey)
 - Special row types (tls-error, tunnel) are handled as early returns in `buildRowHtml()` before the standard row logic, same pattern as `ws-frame`
+- Expandable interceptor cards: `EXPANDABLE_INTERCEPTORS` Set defines which interceptors expand in-grid; `expandedInterceptorId` tracks the currently expanded card; `handleExpandableCardClick()` activates + expands; `collapseInterceptorCard()` collapses
+- Expanded card CSS: `.intercept-card.expanded` spans 2 columns + 2 rows; `.intercept-card-close` is the X button; `.intercept-card-config` contains the config content
+- Config renderers: `renderDockerConfig(container)` shows docker run/compose commands; `renderTerminalConfig(container)` shows shell-tabbed env var commands with copy-to-clipboard
+- Config code blocks: `.config-code-block` has click-to-copy behavior via `copyConfigCode(el)`; `.config-tabs` + `.config-tab` for shell switching
 
 ---
 
@@ -237,5 +241,23 @@
   - The h2 server's `request` event handler (h1.1 fallback path) also needs to clear the tunnel timer — not just the `stream` handler
   - Special row types (tls-error, tunnel, ws-frame) follow the same early-return pattern in `buildRowHtml()` — check protocol first, return custom HTML before the standard row logic
   - TLS error `err.code` values (e.g. `ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN`, `ERR_SSL_WRONG_VERSION_NUMBER`) are more useful for debugging than `err.message`
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-013
+- What was implemented: Expandable interceptor card config UI — cards for Docker and Existing Terminal now expand in-grid to show configuration/instructions instead of using modals
+- Files changed:
+  - src/ui/app.js — Added `EXPANDABLE_INTERCEPTORS` Set, `expandedInterceptorId` and `expandedInterceptorMetadata` state; added `handleExpandableCardClick()` for activate-then-expand flow; added `collapseInterceptorCard()` for collapse; added `renderInterceptorConfig()` dispatcher, `renderDockerConfig()` (docker run/compose commands), `renderTerminalConfig()` (shell-tabbed env var commands); added `switchConfigTab()` and `copyConfigCode()` helpers; modified `filterInterceptors()` to handle expanded card class, close button, and config container rendering; removed old `showTerminalInstructions()`, `switchTermTab()`, and `copyTermCmd()` modal functions; removed special-case existing-terminal handling from `toggleInterceptor()`
+  - src/ui/styles.css — Added `.intercept-card.expanded` (grid-column/row span 2); `.intercept-card-close` button positioning; `.intercept-card-config` container with `.config-code-block` (click-to-copy with hover outline), `.config-tabs` / `.config-tab` (shell tab switcher), `.config-section` spacing; responsive breakpoints: expanded card spans 2/3 columns at ≤1100px, full width at ≤768px
+  - prd.json — Set US-013 passes to true
+- **Learnings for future iterations:**
+  - The `EXPANDABLE_INTERCEPTORS` Set pattern makes it easy to add new expandable cards: just add the id and write a render function
+  - Expanded cards use `handleExpandableCardClick()` which activates the interceptor first (to get metadata like proxyUrl), then sets `expandedInterceptorId` and re-renders the grid
+  - The `expandedInterceptorMetadata` stores the activation response metadata (proxyUrl, instructions, certPath) for use by config renderers
+  - Only one card can be expanded at a time — setting `expandedInterceptorId` to a new id auto-collapses the previous one
+  - Config code blocks use `onclick="copyConfigCode(this)"` — the element reference is passed directly so no id is needed
+  - `event.stopPropagation()` is critical on close button and tab buttons to prevent the card's main onclick from firing
+  - The old modal approach (`showTerminalInstructions`) was completely replaced — no backwards compatibility needed since the inline config is strictly better UX
+  - Responsive handling: at 3-column (≤1100px) expanded card still spans 2 columns; at 2-column (≤768px) it spans full width (1 / -1) for readability
   - Manual browser verification is recommended for this story
 ---

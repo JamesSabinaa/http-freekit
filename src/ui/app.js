@@ -2293,6 +2293,11 @@
 
     let allInterceptors = [];
     let interceptorsInProgress = new Set();
+    let expandedInterceptorId = null;
+    let expandedInterceptorMetadata = null;
+
+    // Interceptors that have expandable config components
+    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal']);
 
     function renderInterceptors(interceptors) {
       allInterceptors = interceptors;
@@ -2374,12 +2379,18 @@
         }
 
         const card = document.createElement('div');
-        card.className = `intercept-card${isDisabled ? ' disabled' : ''}`;
+        const isExpanded = expandedInterceptorId === i.id;
+        card.className = `intercept-card${isDisabled ? ' disabled' : ''}${isExpanded ? ' expanded' : ''}`;
+        card.dataset.interceptorId = i.id;
         card.style.order = index;
         if (i.activable) {
           card.setAttribute('tabindex', '0');
           card.setAttribute('role', 'button');
-          card.onclick = () => toggleInterceptor(i.id, i.active);
+          if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
+            card.onclick = () => handleExpandableCardClick(i.id, i.active);
+          } else {
+            card.onclick = () => toggleInterceptor(i.id, i.active);
+          }
           card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
         }
 
@@ -2387,12 +2398,22 @@
 
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
+          (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close"><i class="ph ph-x"></i></button>` : '') +
           `<h1>${esc(i.name)}</h1>` +
           desc.map(d => `<p>${esc(d)}</p>`).join('') +
           (pillHtml ? pillHtml : '') +
+          (isExpanded ? `<div class="intercept-card-config" id="interceptConfig-${i.id}"></div>` : '') +
           (isLoading ? '<div class="intercept-loading-overlay"><div class="intercept-spinner"></div></div>' : '');
 
         grid.appendChild(card);
+
+        // Render config content if expanded
+        if (isExpanded) {
+          const configContainer = document.getElementById(`interceptConfig-${i.id}`);
+          if (configContainer) {
+            renderInterceptorConfig(i.id, configContainer);
+          }
+        }
       });
 
       // Always add the "Anything" manual setup card at the end
@@ -2414,6 +2435,138 @@
       grid.appendChild(manualCard);
     }
 
+    async function handleExpandableCardClick(id, isActive) {
+      if (expandedInterceptorId === id) {
+        // Already expanded — collapse
+        collapseInterceptorCard();
+        return;
+      }
+
+      // Activate if not already active, then expand
+      if (!isActive) {
+        interceptorsInProgress.add(id);
+        filterInterceptors();
+        try {
+          const res = await fetch(`${API_BASE}/api/interceptors/${id}/activate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          expandedInterceptorMetadata = data.metadata || null;
+        } catch (err) {
+          interceptorsInProgress.delete(id);
+          filterInterceptors();
+          toast(`Error: ${err.message}`, 'error');
+          return;
+        } finally {
+          interceptorsInProgress.delete(id);
+        }
+        // Refresh interceptor state
+        try {
+          const res = await fetch(`${API_BASE}/api/interceptors`);
+          const data = await res.json();
+          allInterceptors = data.interceptors;
+          // Update connected sources
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+      }
+
+      expandedInterceptorId = id;
+      filterInterceptors();
+    }
+
+    function collapseInterceptorCard() {
+      expandedInterceptorId = null;
+      expandedInterceptorMetadata = null;
+      filterInterceptors();
+    }
+
+    function renderInterceptorConfig(id, container) {
+      if (id === 'docker') {
+        renderDockerConfig(container);
+      } else if (id === 'existing-terminal') {
+        renderTerminalConfig(container);
+      }
+    }
+
+    function renderDockerConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Docker Run</h3>
+          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(runCmd)}</div>
+        </div>
+        <div class="config-section">
+          <h3>Docker Compose</h3>
+          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(composeCmd)}</div>
+        </div>
+      `;
+    }
+
+    function renderTerminalConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const proxyUrl = meta?.proxyUrl || `http://127.0.0.1:${config.proxyPort || 8000}`;
+      const certPath = meta?.certPath || '';
+      const instructions = meta?.instructions || {
+        bash: `export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS="${certPath}" NODE_TLS_REJECT_UNAUTHORIZED=0`,
+        powershell: `$env:HTTP_PROXY="${proxyUrl}"; $env:HTTPS_PROXY="${proxyUrl}"; $env:NODE_EXTRA_CA_CERTS="${certPath}"; $env:NODE_TLS_REJECT_UNAUTHORIZED="0"`,
+        cmd: `set HTTP_PROXY=${proxyUrl}&& set HTTPS_PROXY=${proxyUrl}&& set NODE_EXTRA_CA_CERTS=${certPath}&& set NODE_TLS_REJECT_UNAUTHORIZED=0`
+      };
+
+      // Detect default shell
+      const platform = navigator.platform.toLowerCase();
+      let defaultTab = 'bash';
+      if (platform.includes('win')) defaultTab = 'powershell';
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Paste in your terminal</h3>
+          <div class="config-tabs">
+            <button class="config-tab${defaultTab === 'bash' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'bash')">Bash / Zsh</button>
+            <button class="config-tab${defaultTab === 'powershell' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'powershell')">PowerShell</button>
+            <button class="config-tab${defaultTab === 'cmd' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'cmd')">CMD</button>
+          </div>
+          <div class="config-code-block" id="terminalConfigCode" onclick="copyConfigCode(this)" title="Click to copy">${esc(instructions[defaultTab])}</div>
+        </div>
+      `;
+
+      // Store instructions on the container for tab switching
+      container._instructions = instructions;
+    }
+
+    function switchConfigTab(btn, tab) {
+      const tabsContainer = btn.parentElement;
+      tabsContainer.querySelectorAll('.config-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const configContainer = btn.closest('.intercept-card-config');
+      const codeBlock = configContainer.querySelector('#terminalConfigCode');
+      if (configContainer._instructions && configContainer._instructions[tab]) {
+        codeBlock.textContent = configContainer._instructions[tab];
+      }
+    }
+
+    function copyConfigCode(el) {
+      const text = el.textContent.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        toast('Copied to clipboard!', 'success');
+      }).catch(() => {
+        toast('Failed to copy', 'error');
+      });
+    }
+
     async function toggleInterceptor(id, isActive) {
       try {
         if (isActive) {
@@ -2431,15 +2584,10 @@
             const data = await res.json();
             if (data.error) throw new Error(data.error);
 
-            // Special handling for existing-terminal: show setup commands
-            if (id === 'existing-terminal' && data.metadata?.instructions) {
-              showTerminalInstructions(data.metadata);
-            } else {
-              toast(`Launched ${id}`, 'success');
-              // Auto-switch to Traffic view on successful activation (like HTTP Toolkit)
-              const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
-              if (trafficTab) switchPanel(trafficTab, 'traffic');
-            }
+            toast(`Launched ${id}`, 'success');
+            // Auto-switch to Traffic view on successful activation (like HTTP Toolkit)
+            const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+            if (trafficTab) switchPanel(trafficTab, 'traffic');
           } finally {
             interceptorsInProgress.delete(id);
           }
@@ -2450,66 +2598,6 @@
         filterInterceptors();
         toast(`Error: ${err.message}`, 'error');
       }
-    }
-
-    function showTerminalInstructions(metadata) {
-      const platform = navigator.platform.toLowerCase();
-      let defaultCmd = metadata.instructions.bash;
-      let defaultLabel = 'Bash / Zsh';
-      if (platform.includes('win')) {
-        defaultCmd = metadata.instructions.powershell;
-        defaultLabel = 'PowerShell';
-      }
-
-      // Create a modal-like overlay with the instructions
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2000;display:flex;align-items:center;justify-content:center;';
-      overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-      overlay.innerHTML = `
-        <div class="card" style="max-width:700px;width:90%;max-height:80vh;overflow-y:auto;padding:24px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-            <h3 style="font-size:20px;font-weight:bold;">Existing Terminal Setup</h3>
-            <button class="btn" onclick="this.closest('div[style*=fixed]').remove()" style="padding:4px 8px;">&times;</button>
-          </div>
-          <p style="color:var(--text-lowlight);margin-bottom:16px;line-height:1.5;">
-            Paste this command in your existing terminal to route its traffic through the proxy:
-          </p>
-          <div style="margin-bottom:12px;">
-            <div style="display:flex;gap:8px;margin-bottom:8px;">
-              <button class="btn termTabBtn active" onclick="switchTermTab(this,'bash')" style="font-size:11px;">Bash / Zsh</button>
-              <button class="btn termTabBtn" onclick="switchTermTab(this,'powershell')" style="font-size:11px;">PowerShell</button>
-              <button class="btn termTabBtn" onclick="switchTermTab(this,'cmd')" style="font-size:11px;">CMD</button>
-            </div>
-            <div class="body-content" id="termCmd" style="cursor:pointer;position:relative;" onclick="copyTermCmd()" title="Click to copy">
-              ${esc(metadata.instructions.bash)}
-            </div>
-          </div>
-          <p style="font-size:12px;color:var(--text-watermark);">Click the command to copy it to your clipboard.</p>
-        </div>
-      `;
-
-      // Store all instructions for tab switching
-      overlay._instructions = metadata.instructions;
-      document.body.appendChild(overlay);
-    }
-
-    function switchTermTab(btn, tab) {
-      document.querySelectorAll('.termTabBtn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const overlay = btn.closest('div[style*="fixed"]');
-      const instructions = overlay._instructions;
-      const cmdEl = document.getElementById('termCmd');
-      if (instructions[tab]) cmdEl.textContent = instructions[tab];
-    }
-
-    function copyTermCmd() {
-      const text = document.getElementById('termCmd').textContent.trim();
-      navigator.clipboard.writeText(text).then(() => {
-        toast('Copied to clipboard!', 'success');
-      }).catch(() => {
-        toast('Failed to copy', 'error');
-      });
     }
 
     // ============ MOCK RULES ============

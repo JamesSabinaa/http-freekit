@@ -236,7 +236,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/intercept/intercept-option.tsx"
     },
     {
