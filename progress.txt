@@ -84,6 +84,8 @@
 - Auto-updater: `electron/updater.cjs` exports `initAutoUpdater(win)` and `stopAutoUpdater()`; uses `electron-updater` with GitHub Releases as default provider; update feed URL overridable via `UPDATE_URL` env var
 - Preload IPC pattern: `ALLOWED_INVOKE_CHANNELS` for request/response IPC, `ALLOWED_ON_CHANNELS` for push events from main process (used by updater status notifications)
 - UI listens for updater events via `window.electronApi.onUpdaterStatus(callback)` — returns unsubscribe function; all auto-updater UI is gated behind `window.electronApi` existence check
+- ARIA accessibility: sidebar uses `role="tablist"` with `role="tab"` items and `role="tabpanel"` panels; `switchPanel()` syncs `aria-selected`; traffic table has `role="grid"` with `aria-rowcount`, rows have `role="row"` + `role="gridcell"` cells, `id="row-{reqId}"` for `aria-activedescendant`; collapsible detail cards get `aria-expanded` toggled in `toggleCardCollapse()`; mock rules/groups get `aria-expanded` in their render functions; send tabs use `role="tablist"` + `role="tab"` with `aria-selected`
+- Skip-to-content: `<a href="#main-content" class="skip-to-content">` is the first focusable element in `<body>`; CSS hides it offscreen until `:focus`
 
 ---
 
@@ -486,4 +488,35 @@
   - Preload needs `ipcRenderer.on` for push events from main process (not just `invoke`); use a whitelist pattern (`ALLOWED_ON_CHANNELS`) for security
   - electron-builder `publish` config (provider: 'github') is required for electron-updater to know where to check for updates
   - Toast with action link (e.g., "Restart to install") should NOT auto-dismiss — let the user decide when to act
+---
+
+## 2026-04-10 - US-026
+- What was implemented: Custom theme file upload (.htktheme) — users can upload a JSON theme file to override CSS variables, with color swatch preview
+- Files changed:
+  - src/ui/index.html — Added "Custom" option to theme dropdown; added custom theme section with upload button, remove button, description, and swatch preview container
+  - src/ui/app.js — Added `applyCustomThemeData()` to inject CSS variable overrides via dynamic `<style>` element; `renderCustomThemeSwatches()` renders up to 10 color swatches; `uploadCustomTheme()` opens file picker for .htktheme/.htk-theme/.json, validates JSON, checks for recognized CSS variables; `removeCustomTheme()` clears custom theme and reverts to dark; `updateCustomThemeSection()` toggles custom theme UI visibility; enhanced `setTheme()` to support 'custom' value with localStorage persistence; enhanced `loadTheme()` to fall back to dark if custom theme data is missing
+  - src/ui/styles.css — Added `[data-theme="custom"]` selector block (inherits dark theme defaults; actual overrides injected dynamically)
+- **Learnings for future iterations:**
+  - Custom themes work by injecting a `<style id="custom-theme-style">` element that sets CSS variables under `[data-theme="custom"]` — this layer overrides :root defaults
+  - Theme file validation: must be a JSON object, and at least one key must map to a recognized CSS variable from `_themeOverridableVars`
+  - Key normalization: theme files can use `bg-main`, `--bg-main`, or `bgMain` (camelCase→kebab) — all are normalized to the `--bg-main` form
+  - Swatch preview collects color values (matching `#`, `rgb`, or `hsl` prefixes) from the theme file, up to 10 swatches
+  - When switching away from custom theme, the injected `<style>` is removed to avoid stale overrides
+  - Monaco editor theme stays as dark/light toggle for custom themes (custom Monaco token colors not supported)
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-027
+- What was implemented: Complete ARIA accessibility attributes for keyboard and screen reader support
+- Files changed:
+  - src/ui/index.html — Added skip-to-content link, role=tablist/tab/tabpanel to sidebar and panels, aria-selected/aria-controls on sidebar items, role=columnheader on traffic table headers, aria-rowcount/aria-colcount on traffic table, aria-expanded on send card headers, aria-label on all icon-only buttons, role=alert on breakpoint banner, aria-label on search inputs
+  - src/ui/app.js — Added role=gridcell and id="row-{id}" to all traffic row <td> elements, updateTrafficActiveDescendant() for aria-activedescendant on traffic tbody, switchPanel() now syncs aria-selected on sidebar tabs, toggleCardCollapse() now updates aria-expanded, toggleSendCard() updates aria-expanded on card headers, renderMockRuleRow() adds aria-expanded and aria-label to mock rule cards and buttons, renderMockGroup() adds aria-expanded and aria-label to mock groups and buttons, renderSendTabs() adds role=tablist/tab/aria-selected, filterInterceptors() adds aria-expanded to expandable interceptor cards, aria-label on interceptor close button
+  - src/ui/styles.css — Added .skip-to-content styles (hidden by default, visible on :focus at top of page)
+- **Learnings for future iterations:**
+  - The `title` attribute provides an accessible name for buttons, but `aria-label` is more reliable for screen readers — add both
+  - `aria-activedescendant` on the traffic table tbody points to the `id` of the currently selected row, updated on selection change
+  - `aria-rowcount` on the traffic table is dynamically updated in `renderTraffic()` to reflect filtered count
+  - `aria-expanded` must be updated in both the initial render AND the toggle handler to stay in sync
+  - Skip-to-content link uses `position:absolute; top:-100%` (hidden) with `:focus { top:0 }` to appear on Tab
+  - Manual browser verification is recommended for this story
 ---

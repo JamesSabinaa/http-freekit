@@ -366,11 +366,11 @@
         const preview = esc((req.requestBody || '').substring(0, 80)) + (req.requestBody && req.requestBody.length > 80 ? '...' : '');
         const byteCount = formatSize(req.requestBodySize);
         const opName = esc(req.opcodeName || 'data');
-        return `<tr class="ws-frame-row ${dirClass} ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
-          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
-          <td colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
-          <td style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
-          <td colspan="2" class="ws-frame-preview" title="${esc(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
+        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
+          <td role="gridcell" colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
+          <td role="gridcell" style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
+          <td role="gridcell" colspan="2" class="ws-frame-preview" title="${esc(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
         </tr>`;
       }
 
@@ -379,12 +379,12 @@
         const selected = req.id === selectedRequestId ? 'selected' : '';
         const source = req.source || 'tls-error';
         const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS['tls-error'];
-        return `<tr class="tls-error-row ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
-          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
-          <td><span class="method-badge method-CONNECT">TLS</span></td>
-          <td><span class="status-badge status-5xx">ERR</span></td>
-          <td class="source-cell"><span class="source-icon source-tls-error" title="TLS Error">${sourceIcon}</span></td>
-          <td colspan="2" style="text-align:center;" title="${esc(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
+        return `<tr class="tls-error-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
+          <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
+          <td role="gridcell"><span class="status-badge status-5xx">ERR</span></td>
+          <td role="gridcell" class="source-cell"><span class="source-icon source-tls-error" title="TLS Error">${sourceIcon}</span></td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="${esc(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
         </tr>`;
       }
 
@@ -395,12 +395,12 @@
         const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
         const bytesSent = formatSize(req.requestBodySize || 0);
         const bytesRecv = formatSize(req.responseBodySize || 0);
-        return `<tr class="tunnel-row ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
-          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
-          <td><span class="method-badge method-CONNECT">TUNNEL</span></td>
-          <td><span class="status-badge status-2xx">200</span></td>
-          <td class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
-          <td colspan="2" style="text-align:center;" title="Tunnel to ${esc(req.host || '-')}:${req.remote?.port || 443}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+        return `<tr class="tunnel-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
+          <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
+          <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
+          <td role="gridcell" class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="Tunnel to ${esc(req.host || '-')}:${req.remote?.port || 443}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
         </tr>`;
       }
 
@@ -436,13 +436,13 @@
         }
       }
 
-      return `<tr class="${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
-        <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td>${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
-        <td>${statusHtml}</td>
-        <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
-        <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
-        <td title="${esc(req.path)}">${esc(req.path || '/')}</td>
+      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+        <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
+        <td role="gridcell">${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
+        <td role="gridcell">${statusHtml}</td>
+        <td role="gridcell" class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
+        <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
+        <td role="gridcell" title="${esc(req.path)}">${esc(req.path || '/')}</td>
       </tr>`;
     }
 
@@ -493,6 +493,10 @@
       const footerCount = document.getElementById('footerRequestCount');
       const footerFilter = document.getElementById('footerFilterCount');
 
+      // Update aria-rowcount on the traffic table
+      const trafficTable = document.querySelector('.traffic-table');
+      if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
+
       const query = document.getElementById('searchInput').value.trim();
       if (query && filteredRequests.length !== requests.length) {
         countEl.textContent = filteredRequests.length + ' / ' + requests.length;
@@ -542,12 +546,18 @@
       renderVirtualRows();
     }
 
+    function updateTrafficActiveDescendant(id) {
+      const tbody = document.getElementById('trafficBody');
+      if (tbody) tbody.setAttribute('aria-activedescendant', id ? 'row-' + id : '');
+    }
+
     function selectRequest(id) {
       if (selectedRequestId === id) {
         closeDetail();
         return;
       }
       selectedRequestId = id;
+      updateTrafficActiveDescendant(id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', '#/view/' + id);
       }
@@ -720,6 +730,7 @@
       if (!el) return;
       _cardCollapsed[cardId] = !_cardCollapsed[cardId];
       el.classList.toggle('collapsed');
+      el.setAttribute('aria-expanded', String(!_cardCollapsed[cardId]));
       const chevron = el.querySelector('.collapse-chevron');
       if (chevron) chevron.innerHTML = _cardCollapsed[cardId] ? '&#9660;' : '&#9650;';
     }
@@ -1278,7 +1289,7 @@
       const sourceLabel = req.source || 'Unknown';
       const sourceIconHtml = SOURCE_ICONS[sourceLabel] || SOURCE_ICONS['Other'] || '';
       const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : req.protocol === 'https' ? 'HTTPS/1.1' : 'HTTP/1.1';
-      html += `<div class="detail-card dir-right" id="card-request" style="border-right-color:${effMethodColor};">
+      html += `<div class="detail-card dir-right" id="card-request" aria-expanded="true" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="source-icon" title="${esc(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
@@ -1311,7 +1322,7 @@
         const reqBodyModes = getBodyViewModes(effBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
         const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !effBody.startsWith('[Binary data:');
-        html += `<div class="detail-card dir-right" id="card-req-body" style="border-right-color:${effMethodColor};">
+        html += `<div class="detail-card dir-right" id="card-req-body" aria-expanded="true" style="border-right-color:${effMethodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
@@ -1332,7 +1343,7 @@
       }
 
       // ---- Response Card (border-left, pills left, heading right) ----
-      html += `<div class="detail-card dir-left" id="card-response" style="border-left-color:${statusColor};">
+      html += `<div class="detail-card dir-left" id="card-response" aria-expanded="true" style="border-left-color:${statusColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="detail-pill" style="background:${statusColor};color:#fff;">${req.statusCode || 'ERR'}</span>
@@ -1358,7 +1369,7 @@
         const resBodyModes = getBodyViewModes(req.responseBody, ct);
         const resDefaultMode = resBodyModes[0]?.value || 'text';
         const resUseMonaco = isMonacoViewMode(resDefaultMode) && !req.responseBody.startsWith('[Binary data:');
-        html += `<div class="detail-card dir-left" id="card-resp-body" style="border-left-color:${statusColor};">
+        html += `<div class="detail-card dir-left" id="card-resp-body" aria-expanded="true" style="border-left-color:${statusColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
@@ -1395,7 +1406,7 @@
 
       // ---- Error Card ----
       if (req.error) {
-        html += `<div class="detail-card dir-left" id="card-error" style="border-left-color:#ce3939;">
+        html += `<div class="detail-card dir-left" id="card-error" aria-expanded="true" style="border-left-color:#ce3939;">
           <div class="detail-card-header">
             <span class="detail-pill" style="background:#ce3939;color:#fff;">Error</span>
             <span class="detail-card-heading">Error</span>
@@ -1414,7 +1425,7 @@
       const barWidth = Math.min(100, ((req.duration || 0) / maxDuration) * 100);
       const barColor = (req.duration || 0) < 200 ? '#4caf7d' : (req.duration || 0) < 1000 ? '#ff8c38' : '#ce3939';
 
-      html += `<div class="detail-card collapsed" id="card-perf">
+      html += `<div class="detail-card collapsed" id="card-perf" aria-expanded="false">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             ${req.duration != null ? '<span class="detail-pill pill-muted">' + Math.round(req.duration) + 'ms</span>' : ''}
@@ -1548,7 +1559,7 @@
       </div>`;
 
       // Export Card (collapsed by default)
-      html += `<div class="detail-card collapsed" id="card-export">
+      html += `<div class="detail-card collapsed" id="card-export" aria-expanded="false">
         <div class="detail-card-header">
           <select id="exportFormat" onchange="updateExportSnippet()" onclick="event.stopPropagation()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:3px 8px;font-size:11px;cursor:pointer;">
             <option value="curl">cURL</option>
@@ -2474,6 +2485,9 @@
         card.className = `intercept-card${isDisabled ? ' disabled' : ''}${isExpanded ? ' expanded' : ''}`;
         card.dataset.interceptorId = i.id;
         card.style.order = index;
+        if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
+          card.setAttribute('aria-expanded', String(isExpanded));
+        }
         if (i.activable) {
           card.setAttribute('tabindex', '0');
           card.setAttribute('role', 'button');
@@ -2489,7 +2503,7 @@
 
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
-          (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close"><i class="ph ph-x"></i></button>` : '') +
+          (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close" aria-label="Close"><i class="ph ph-x"></i></button>` : '') +
           `<h1>${esc(i.name)}</h1>` +
           desc.map(d => `<p>${esc(d)}</p>`).join('') +
           (pillHtml ? pillHtml : '') +
@@ -3414,7 +3428,7 @@
       const editingClass = isEditing ? ' mock-rule-editing' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
 
-      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + rule.id + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
+      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + rule.id + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
 
       html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(\'' + rule.id + '\')">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
@@ -3439,45 +3453,46 @@
       // 1. Collapse/Expand (chevron)
       const chevron = isExpanded || isEditing ? '&#9650;' : '&#9660;';
       const collapseTitle = isExpanded || isEditing ? 'Collapse rule' : 'Show rule details';
-      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(\'' + rule.id + '\')" title="' + collapseTitle + '">';
+      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(\'' + rule.id + '\')" title="' + collapseTitle + '" aria-label="' + collapseTitle + '">';
       html += '<span style="font-size:10px;">' + chevron + '</span>';
       html += '</button>';
 
       // 2. Save to server (when draft) or Save draft (when editing) or Edit (pencil icon)
       if (isDraft && !isEditing) {
-        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(\'' + rule.id + '\')" title="Save to server">';
+        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(\'' + rule.id + '\')" title="Save to server" aria-label="Save to server">';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       }
       if (isEditing) {
-        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save as draft">';
+        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save as draft" aria-label="Save as draft">';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       } else {
-        html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule">';
+        html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule" aria-label="Edit this rule">';
         html += '<i class="ph ph-pencil-simple" style="font-size:14px;"></i>';
         html += '</button>';
       }
 
       // 3. Enable/Disable
-      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + (rule.enabled !== false ? 'Disable this rule' : 'Enable this rule') + '">';
+      const toggleLabel = rule.enabled !== false ? 'Disable this rule' : 'Enable this rule';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
       html += rule.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 4. Rename (tag icon)
-      html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule">';
+      html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule" aria-label="Rename this rule">';
       html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 5. Clone
-      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule">';
+      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule" aria-label="Clone this rule">';
       html += '<i class="ph ph-copy-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 6. Delete
-      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
@@ -3499,7 +3514,7 @@
       const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
-      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '">';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '" aria-expanded="' + !isCollapsed + '">';
 
       // Group header
       html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
@@ -3511,19 +3526,20 @@
       html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
 
       // Enable/Disable group
-      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + (group.enabled !== false ? 'Disable group' : 'Enable group') + '">';
+      const grpToggleLabel = group.enabled !== false ? 'Disable group' : 'Enable group';
+      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + grpToggleLabel + '" aria-label="' + grpToggleLabel + '">';
       html += group.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Rename group
-      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group">';
+      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group" aria-label="Rename group">';
       html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Delete group
-      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" aria-label="Delete group" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
@@ -4961,6 +4977,11 @@
       const isHidden = content.style.display === 'none';
       content.style.display = isHidden ? 'block' : 'none';
       if (arrow) arrow.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+      // Update aria-expanded on the card header
+      const header = content.previousElementSibling;
+      if (header && header.classList.contains('card-header')) {
+        header.setAttribute('aria-expanded', String(isHidden));
+      }
     }
 
     function formatToContentType(format) {
@@ -5169,17 +5190,20 @@
     function renderSendTabs() {
       const bar = document.getElementById('sendTabBar');
       if (!bar) return;
+      bar.setAttribute('role', 'tablist');
+      bar.setAttribute('aria-label', 'Request tabs');
       bar.innerHTML = sendTabs.map(tab => {
-        const active = tab.id === activeSendTab ? ' active' : '';
+        const isActive = tab.id === activeSendTab;
+        const active = isActive ? ' active' : '';
         let label = 'New request';
         if (tab.url) {
           try { label = tab.method + ' ' + new URL(tab.url).hostname; } catch { label = tab.method + ' ' + tab.url.substring(0, 30); }
         }
-        return '<div class="send-tab' + active + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
+        return '<div class="send-tab' + active + '" role="tab" aria-selected="' + isActive + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
           '<span>' + label + '</span>' +
-          (sendTabs.length > 1 ? '<span class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab">&times;</span>' : '') +
+          (sendTabs.length > 1 ? '<span class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab" aria-label="Close tab">&times;</span>' : '') +
           '</div>';
-      }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab">+</div>';
+      }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab" aria-label="New request tab">+</div>';
     }
 
     function saveSendTabState() {
@@ -5415,6 +5439,7 @@
 
       const req = filteredRequests[newIdx];
       selectedRequestId = req.id;
+      updateTrafficActiveDescendant(req.id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', '#/view/' + req.id);
       }
@@ -6020,8 +6045,12 @@
         }
       }
 
-      document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+      document.querySelectorAll('.sidebar-item').forEach(i => {
+        i.classList.remove('active');
+        i.setAttribute('aria-selected', 'false');
+      });
       el.classList.add('active');
+      el.setAttribute('aria-selected', 'true');
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       document.getElementById(`panel-${panelId}`).classList.add('active');
 

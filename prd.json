@@ -471,7 +471,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 26,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/settings/settings-page.tsx"
     },
     {
@@ -490,7 +490,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 27,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/view-event-list.tsx for ARIA patterns"
     },
     {

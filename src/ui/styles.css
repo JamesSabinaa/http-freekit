@@ -344,6 +344,25 @@
       line-height: 1.4;
     }
 
+    /* ---- Skip to content (accessibility) ---- */
+    .skip-to-content {
+      position: absolute;
+      top: -100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--pop-color);
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 0 0 4px 4px;
+      z-index: 10000;
+      font-size: 14px;
+      text-decoration: none;
+      transition: top 0.2s;
+    }
+    .skip-to-content:focus {
+      top: 0;
+    }
+
     /* ---- Typography: large headings use Saira ---- */
     h1 {
       font-family: var(--font-title);
