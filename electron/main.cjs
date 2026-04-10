@@ -8,6 +8,7 @@ const http = require('http');
 const windowStateKeeper = require('electron-window-state');
 const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
+const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -268,6 +269,9 @@ app.whenReady().then(async () => {
 
     // Set up system tray
     createTray(mainWindow);
+
+    // Set up auto-updater
+    initAutoUpdater(mainWindow);
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);
     app.quit();
@@ -275,6 +279,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  stopAutoUpdater();
   destroyTray();
   shutdownServer().then(() => app.quit());
 });

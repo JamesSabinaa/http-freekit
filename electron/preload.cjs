@@ -16,7 +16,14 @@ const ALLOWED_INVOKE_CHANNELS = [
   'select-file-path',
   'select-save-file-path',
   'open-context-menu',
-  'restart-app'
+  'restart-app',
+  'updater-check-now',
+  'updater-install'
+];
+
+// Whitelist of allowed IPC channels the renderer may listen on
+const ALLOWED_ON_CHANNELS = [
+  'updater-status'
 ];
 
 /**
@@ -78,5 +85,32 @@ contextBridge.exposeInMainWorld('electronApi', {
    * Restarts the Electron app (relaunches and quits current instance).
    * @returns {Promise<void>}
    */
-  restartApp: () => safeInvoke('restart-app')
+  restartApp: () => safeInvoke('restart-app'),
+
+  /**
+   * Manually trigger an update check.
+   * @returns {Promise<void>}
+   */
+  checkForUpdates: () => safeInvoke('updater-check-now'),
+
+  /**
+   * Quit and install a downloaded update.
+   * @returns {Promise<void>}
+   */
+  installUpdate: () => safeInvoke('updater-install'),
+
+  /**
+   * Listen for auto-updater status events from the main process.
+   * @param {(data: {status: string, version?: string, url?: string, percent?: number, error?: string}) => void} callback
+   * @returns {() => void} Unsubscribe function
+   */
+  onUpdaterStatus: (callback) => {
+    const channel = 'updater-status';
+    if (!ALLOWED_ON_CHANNELS.includes(channel)) {
+      throw new Error(`IPC channel "${channel}" is not allowed`);
+    }
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
+  }
 });

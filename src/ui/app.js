@@ -6808,6 +6808,80 @@
     loadTheme();
     connectWebSocket();
 
+    // ============ AUTO-UPDATER UI ============
+    (function initAutoUpdaterUI() {
+      if (!window.electronApi || !window.electronApi.onUpdaterStatus) return;
+
+      let updateVersion = null;
+
+      window.electronApi.onUpdaterStatus(function(data) {
+        switch (data.status) {
+          case 'update-available':
+            updateVersion = data.version;
+            toast('Update v' + data.version + ' available — downloading...', 'success');
+            break;
+          case 'update-available-linux':
+            updateVersion = data.version;
+            showLinuxUpdateToast(data.version, data.url);
+            break;
+          case 'downloading':
+            // Optionally show download progress (silent for now to avoid spam)
+            break;
+          case 'update-downloaded':
+            showUpdateReadyToast(data.version);
+            break;
+          case 'error':
+            // Silently ignore update errors — don't bother the user
+            break;
+        }
+      });
+
+      function showUpdateReadyToast(version) {
+        var container = document.getElementById('toastContainer');
+        var t = document.createElement('div');
+        t.className = 'toast toast-success';
+        t.innerHTML = 'Update v' + escapeHtml(version) + ' ready. <a href="#" class="toast-action" id="installUpdateBtn">Restart to install</a>';
+        container.appendChild(t);
+        var btn = t.querySelector('#installUpdateBtn');
+        if (btn) {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            window.electronApi.installUpdate();
+          });
+        }
+        // Don't auto-dismiss — let user decide when to restart
+      }
+
+      function showLinuxUpdateToast(version, url) {
+        var container = document.getElementById('toastContainer');
+        var t = document.createElement('div');
+        t.className = 'toast toast-success';
+        t.innerHTML = 'Update v' + escapeHtml(version) + ' available. <a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="toast-action">Download</a>';
+        container.appendChild(t);
+        setTimeout(function() {
+          t.classList.add('toast-exit');
+          t.addEventListener('animationend', function() { t.remove(); });
+          setTimeout(function() { if (t.parentNode) t.remove(); }, 400);
+        }, 15000);
+      }
+
+      function escapeHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+      }
+
+      // Expose manual check for Settings page
+      window._checkForUpdates = function() {
+        window.electronApi.checkForUpdates();
+        toast('Checking for updates...', 'success');
+      };
+
+      // Show the "Check for Updates" button in Settings
+      var updateRow = document.getElementById('updateCheckRow');
+      if (updateRow) updateRow.style.display = '';
+    })();
+
     // cURL paste detection on Send URL input
     document.getElementById('sendUrl')?.addEventListener('paste', (e) => {
       const text = (e.clipboardData || window.clipboardData).getData('text').trim();

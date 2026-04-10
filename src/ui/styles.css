@@ -2177,6 +2177,15 @@
     .toast-success { border-left: 3px solid #4caf7d; }
     .toast-error { border-left: 3px solid #ce3939; }
 
+    .toast-action {
+      color: var(--link-color, #4caf7d);
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: bold;
+      margin-left: 4px;
+    }
+    .toast-action:hover { opacity: 0.8; }
+
     /* ============================================================
        31. Detail Cards (HTTP Toolkit card-based layout)
        ============================================================ */

@@ -86,6 +86,15 @@ module.exports = {
     description: 'Free HTTP(S) debugging proxy for intercepting, viewing, and mocking HTTP traffic.'
   },
 
+  // Auto-update: publish to GitHub Releases by default
+  publish: [
+    {
+      provider: 'github',
+      owner: 'AmenRa',
+      repo: 'http-freekit'
+    }
+  ],
+
   // Rebuild native dependencies for the target Electron version
   npmRebuild: true,
 
