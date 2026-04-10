@@ -356,6 +356,7 @@ export class ProxyServer {
 
       const headers = { ...clientReq.headers };
       delete headers['proxy-connection'];
+      delete headers['proxy-authorization']; // Remove browser's proxy auth — we add our own for upstream
 
       let options;
       if (this.upstreamProxy && this._isSocksProxy()) {
