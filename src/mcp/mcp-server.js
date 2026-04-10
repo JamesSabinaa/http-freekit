@@ -10,7 +10,7 @@ import { trafficToHar } from '../api/har-converter.js';
 const TOOL_DEFINITIONS = [
   {
     name: 'search_traffic',
-    description: 'Search captured HTTP traffic. Filter by method, status code, hostname, or free-text query across URLs, headers, and bodies.',
+    description: 'Search captured HTTP traffic and update the UI filter in real-time. The traffic list in the user\'s browser will immediately update to show only matching requests. Filter by method, status code, hostname, or free-text query.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -59,6 +59,17 @@ const TOOL_DEFINITIONS = [
     name: 'get_live_summary',
     description: 'Get current state of the HTTP FreeKit proxy: port, active interceptors, captured request count, mock rules, and breakpoints.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'select_request',
+    description: 'Select a specific request in the HTTP FreeKit UI, opening its detail pane so the user can see the full request/response details in their browser.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        request_id: { type: 'string', description: 'The request ID to select and show details for' }
+      },
+      required: ['request_id']
+    }
   }
 ];
 
@@ -100,6 +111,7 @@ export class McpServerBridge {
           case 'security_scan': return this._handleSecurityScan();
           case 'export_traffic': return this._handleExportTraffic(args || {});
           case 'get_live_summary': return this._handleGetLiveSummary();
+          case 'select_request': return this._handleSelectRequest(args || {});
           default:
             return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
         }
@@ -158,10 +170,19 @@ export class McpServerBridge {
       responseSize: r.responseBodySize
     }));
 
+    // Build a filter string and broadcast to the UI so it updates live
+    const filterParts = [];
+    if (method) filterParts.push('method:' + method);
+    if (status) filterParts.push('status:' + status);
+    if (host) filterParts.push('host:' + host);
+    if (query) filterParts.push(query);
+    const filterStr = filterParts.join(' ');
+    this._broadcastToUi({ type: 'mcp-filter', filter: filterStr });
+
     return {
       content: [{
         type: 'text',
-        text: `Found ${results.length} matching requests (showing ${matched.length}):\n\n` +
+        text: `Found ${results.length} matching requests (showing ${matched.length}). The UI filter has been updated to show these results.\n\n` +
           JSON.stringify(matched, null, 2)
       }]
     };
@@ -379,6 +400,29 @@ export class McpServerBridge {
     };
 
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+  }
+
+  _handleSelectRequest({ request_id }) {
+    const req = this.apiServer.trafficLog.find(r => r.id === request_id);
+    if (!req) {
+      return { content: [{ type: 'text', text: `Request ${request_id} not found` }], isError: true };
+    }
+    // Broadcast to UI to select this request and open detail pane
+    this._broadcastToUi({ type: 'mcp-select', requestId: request_id });
+    return {
+      content: [{
+        type: 'text',
+        text: `Selected request ${request_id} in the UI. The user can now see:\n` +
+          `${req.method} ${req.url} — ${req.statusCode} (${req.duration}ms)`
+      }]
+    };
+  }
+
+  // Broadcast a message to all connected WebSocket UI clients
+  _broadcastToUi(message) {
+    if (this.apiServer && this.apiServer._broadcast) {
+      this.apiServer._broadcast(message);
+    }
   }
 
   // ========== Transports ==========

@@ -138,6 +138,32 @@
         case 'breakpoint-resumed':
           updateBreakpointBanner();
           break;
+        case 'mcp-filter':
+          // MCP tool applied a filter — update the search input and re-filter
+          const searchInput = document.getElementById('searchInput');
+          if (searchInput) {
+            searchInput.value = msg.filter || '';
+            if (typeof updateSearchClearBtn === 'function') updateSearchClearBtn();
+          }
+          // Switch to the View tab if not already there
+          const viewTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+          if (viewTab && !document.getElementById('panel-traffic')?.classList.contains('active')) {
+            switchPanel(viewTab, 'traffic');
+          }
+          applyFilter();
+          toast('Filter applied by AI: ' + (msg.filter || '(cleared)'), 'success');
+          break;
+        case 'mcp-select':
+          // MCP tool selected a request — switch to View tab and select it
+          const viewTab2 = document.querySelector('.sidebar-item[data-panel="traffic"]');
+          if (viewTab2 && !document.getElementById('panel-traffic')?.classList.contains('active')) {
+            switchPanel(viewTab2, 'traffic');
+          }
+          if (msg.requestId) {
+            setTimeout(() => selectRequest(msg.requestId), 200);
+          }
+          toast('Request selected by AI', 'success');
+          break;
       }
     }
 
