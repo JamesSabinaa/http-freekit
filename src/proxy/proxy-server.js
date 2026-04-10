@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import { Duplex } from 'stream';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 
 export class ProxyServer {
@@ -574,64 +575,64 @@ export class ProxyServer {
       '\r\n'
     );
 
-    // In passthrough mode, peek at the ClientHello to extract TLS fingerprint
-    const doPassthrough = this.tlsFingerprint === 'passthrough';
-    const startMitm = (clientHelloTls) => {
-      try {
-        const tlsServer = new tls.TLSSocket(clientSocket, {
-          isServer: true,
-          ...tlsOptions
-        });
+    // In passthrough mode, wrap the socket in a Duplex that captures
+    // the ClientHello as it passes through (unshift doesn't work with TLSSocket
+    // because TLS reads from the native handle, not Node's readable buffer).
+    let socketForTls = clientSocket;
+    if (this.tlsFingerprint === 'passthrough') {
+      socketForTls = this._createCapturingSocket(clientSocket);
+    }
 
-        if (useHttp2) {
-          this._handleHttp2Connection(tlsServer, hostname, targetPort, clientHelloTls);
-        } else {
-          this._handleTlsConnection(tlsServer, hostname, targetPort, clientHelloTls);
-        }
-      } catch (err) {
-        // TLS handshake failed (e.g., client disconnected)
-        clientSocket.destroy();
-        this._emitRequest({
-          id: uuidv4(),
-          protocol: 'tls-error',
-          method: 'CONNECT',
-          url: `https://${hostname}:${targetPort}`,
-          host: hostname,
-          path: '/',
-          requestHeaders: {},
-          requestBody: '',
-          requestBodySize: 0,
-          statusCode: 0,
-          statusMessage: 'TLS Handshake Failed',
-          responseHeaders: {},
-          responseBody: err.message || 'TLS error',
-          responseBodySize: 0,
-          duration: 0,
-          timestamp: Date.now(),
-          error: err.message,
-          errorCode: err.code || null,
-          source: 'tls-error',
-          tls: null,
-          remote: null
+    try {
+      const tlsServer = new tls.TLSSocket(socketForTls, {
+        isServer: true,
+        ...tlsOptions
+      });
+
+      // After TLS handshake, extract the captured ClientHello params
+      if (socketForTls._captured !== undefined) {
+        tlsServer.once('secure', () => {
+          const parsed = socketForTls._captured;
+          if (parsed) {
+            tlsServer._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
+          }
         });
       }
-    };
 
-    if (doPassthrough) {
-      // Peek at the ClientHello before the TLS handshake starts
-      clientSocket.once('data', (chunk) => {
-        const parsed = ProxyServer._parseClientHello(chunk);
-        const clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
-        // Put the data back so the TLS handshake can consume it
-        clientSocket.unshift(chunk);
-        startMitm(clientHelloTls);
+      if (useHttp2) {
+        this._handleHttp2Connection(tlsServer, hostname, targetPort);
+      } else {
+        this._handleTlsConnection(tlsServer, hostname, targetPort);
+      }
+    } catch (err) {
+      clientSocket.destroy();
+      this._emitRequest({
+        id: uuidv4(),
+        protocol: 'tls-error',
+        method: 'CONNECT',
+        url: `https://${hostname}:${targetPort}`,
+        host: hostname,
+        path: '/',
+        requestHeaders: {},
+        requestBody: '',
+        requestBodySize: 0,
+        statusCode: 0,
+        statusMessage: 'TLS Handshake Failed',
+        responseHeaders: {},
+        responseBody: err.message || 'TLS error',
+        responseBodySize: 0,
+        duration: 0,
+        timestamp: Date.now(),
+        error: err.message,
+        errorCode: err.code || null,
+        source: 'tls-error',
+        tls: null,
+        remote: null
       });
-    } else {
-      startMitm(null);
     }
   }
 
-  _handleTlsConnection(tlsSocket, hostname, targetPort, clientHelloTls) {
+  _handleTlsConnection(tlsSocket, hostname, targetPort) {
     // Capture TLS session details from the MITM socket
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
@@ -1067,7 +1068,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: { ...req.headers },
-          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
+          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
         let upstreamProtocol = 'https';
@@ -1203,7 +1204,7 @@ export class ProxyServer {
     });
   }
 
-  _handleHttp2Connection(tlsSocket, hostname, targetPort, clientHelloTls) {
+  _handleHttp2Connection(tlsSocket, hostname, targetPort) {
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
       version: tlsSocket.getProtocol?.() || 'TLSv1.2'
@@ -1371,7 +1372,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path, method,
           headers: upstreamHeaders,
-          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
+          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
         const handleResponse = (proxyRes) => {
@@ -1559,7 +1560,7 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: { ...req.headers },
-          ...this._getUpstreamTlsOptions(hostname, clientHelloTls)
+          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
         const handleResponse = (proxyRes) => {
@@ -2291,6 +2292,35 @@ export class ProxyServer {
       minVersion: parsed.tlsVersion <= 0x0301 ? 'TLSv1' : 'TLSv1.2',
       maxVersion: 'TLSv1.3',
     };
+  }
+
+  // Create a Duplex wrapper around a socket that transparently captures the
+  // first chunk (the TLS ClientHello) as it passes through. Unlike unshift(),
+  // this works with tls.TLSSocket which reads from the native handle.
+  _createCapturingSocket(socket) {
+    let captured = false;
+    const wrapper = new Duplex({
+      read() { socket.resume(); },
+      write(chunk, enc, cb) { socket.write(chunk, enc, cb); },
+      final(cb) { socket.end(cb); },
+      destroy(err, cb) { socket.destroy(err); cb(err); }
+    });
+    wrapper._captured = null; // will hold parsed ClientHello
+
+    socket.on('data', (chunk) => {
+      if (!captured) {
+        captured = true;
+        wrapper._captured = ProxyServer._parseClientHello(chunk);
+      }
+      if (!wrapper.push(chunk)) socket.pause();
+    });
+    wrapper.on('drain', () => socket.resume());
+    socket.on('end', () => wrapper.push(null));
+    socket.on('error', (err) => { if (!wrapper.destroyed) wrapper.destroy(err); });
+    socket.on('close', () => { if (!wrapper.destroyed) wrapper.destroy(); });
+    wrapper.on('close', () => { if (!socket.destroyed) socket.destroy(); });
+
+    return wrapper;
   }
 
   // TLS fingerprint presets — emulate real browser Client Hello parameters
