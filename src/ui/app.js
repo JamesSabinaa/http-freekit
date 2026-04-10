@@ -2366,6 +2366,23 @@
       'manual-setup': '#4caf7d'
     };
 
+    // Download URLs for browsers that aren't installed
+    const BROWSER_DOWNLOAD_URLS = {
+      chrome: 'https://www.google.com/chrome/',
+      firefox: 'https://www.mozilla.org/firefox/new/',
+      edge: 'https://www.microsoft.com/edge/download',
+      brave: 'https://brave.com/download/',
+    };
+
+    function downloadBrowser(id, name) {
+      const url = BROWSER_DOWNLOAD_URLS[id];
+      if (!url) return;
+      if (confirm(`${name} is not installed. Would you like to download it now?`)) {
+        window.open(url, '_blank');
+        toast(`Opening ${name} download page...`, 'success');
+      }
+    }
+
     // Tags for search filtering (matching HTTP Toolkit's tag-based filtering)
     const INTERCEPTOR_TAGS = {
       chrome: ['browsers', 'web', 'google'],
@@ -2470,7 +2487,9 @@
             pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
           }
         } else if (!i.activable) {
-          if (i.supported !== false) {
+          if (BROWSER_DOWNLOAD_URLS[i.id]) {
+            pillHtml = `<span class="intercept-pill pill-unavailable" style="cursor:pointer;">Click to install</span>`;
+          } else if (i.supported !== false) {
             pillHtml = `<span class="intercept-pill pill-unavailable">Not available</span>`;
           } else {
             pillHtml = `<span class="intercept-pill pill-coming-soon">Coming soon</span>`;
@@ -2496,6 +2515,14 @@
           } else {
             card.onclick = () => toggleInterceptor(i.id, i.active);
           }
+          card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
+        } else if (BROWSER_DOWNLOAD_URLS[i.id]) {
+          // Not installed — offer to download
+          card.classList.remove('disabled');
+          card.setAttribute('tabindex', '0');
+          card.setAttribute('role', 'button');
+          card.style.cursor = 'pointer';
+          card.onclick = () => downloadBrowser(i.id, i.name);
           card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
         }
 
