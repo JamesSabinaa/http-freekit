@@ -36,6 +36,10 @@
 - Scroll handler uses `requestAnimationFrame` to batch scroll events for 60fps performance
 - Row HTML uses `data-id="${req.id}"` attribute for identification instead of parsing onclick strings
 - Scroll position persistence uses localStorage keys `trafficScrollTop` and `trafficAutoScroll`; restored via `restoreTrafficScrollPosition()` in both `switchPanel()` and `navigateFromHash()`
+- WebSocket frame parser: `WsFrameParser` class in `src/proxy/ws-frame-parser.js` — streaming parser with `push(chunk)` and `onFrame` callback
+- WS frame events emitted with `protocol: 'ws-frame'`, `parentId` linking to the parent WS connection, and `direction: 'client'|'server'`
+- WS frame opcodes: `WS_OPCODE` constants and `WS_OPCODE_NAMES` map in ws-frame-parser.js; `parseClosePayload()` extracts close code + reason
+- Frame parsing is non-blocking: raw bytes are always forwarded even if parser throws; parser errors don't break the proxy
 
 ---
 
@@ -157,4 +161,19 @@
   - `scrollToEnd()` already re-enables autoScroll — no changes needed there
   - Selection highlight during virtual scroll already works because `buildRowHtml()` checks `selectedRequestId` on every render and `vsForceRender` ensures re-render after selection changes
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-009
+- What was implemented: WebSocket frame-level interception backend — a streaming frame parser that intercepts WS data and emits per-frame events
+- Files changed:
+  - src/proxy/ws-frame-parser.js — NEW: `WsFrameParser` class implementing RFC 6455 Section 5.2 frame parsing, `WS_OPCODE` / `WS_OPCODE_NAMES` constants, `parseClosePayload()` helper
+  - src/proxy/proxy-server.js — Imported ws-frame-parser; replaced raw data piping in `_handleHttpUpgrade` with frame-aware parsing (client/server parsers feed `_emitWsFrame`); added `_emitWsFrame()` method that emits per-frame events with protocol='ws-frame'; raw bytes still forwarded regardless of parse success
+- **Learnings for future iterations:**
+  - WebSocket frames in RFC 6455 have variable-length headers: 2 bytes minimum, up to 14 bytes with 64-bit extended length + mask key
+  - Client->server frames are always masked (XOR with 4-byte key); server->client frames are unmasked
+  - The parser uses a streaming buffer approach: accumulate bytes, try to parse a frame, consume parsed bytes, repeat — handles frames split across TCP chunks
+  - Frame parsing must be non-blocking and failure-tolerant: wrap `parser.push()` in try/catch so proxy forwarding is never interrupted
+  - Close frames have a special payload format: 2-byte status code (big-endian) + optional UTF-8 reason string
+  - The `_handleHttpUpgrade` only handles plain HTTP upgrades (WS over HTTP). WSS (WS over TLS) goes through CONNECT -> `_handleTlsConnection` -> `virtualServer` which currently does NOT handle WebSocket upgrades — a future story may need to add upgrade handling there
+  - Frame events use `parentId` to link back to the WS connection event, allowing the UI to show frames as sub-rows under the connection
 ---

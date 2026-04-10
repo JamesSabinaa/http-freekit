@@ -165,7 +165,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: WebSocket frame format RFC 6455 Section 5.2. Our proxy-server.js _handleHttpUpgrade currently just pipes bytes. Need to interpose a frame parser."
     },
     {
