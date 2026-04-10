@@ -87,6 +87,28 @@ export class ProxyServer {
     console.log(`[Proxy] TLS fingerprint: ${this.tlsFingerprint}`);
   }
 
+  // Convert rawHeaders array to an object preserving original case.
+  // Node.js lowercases header names in req.headers; this keeps e.g. "User-Agent" not "user-agent".
+  // Filters out proxy-specific headers that shouldn't be forwarded upstream.
+  _rawHeadersToObject(rawHeaders) {
+    const headers = {};
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+      const name = rawHeaders[i];
+      const value = rawHeaders[i + 1];
+      const lower = name.toLowerCase();
+      if (lower === 'proxy-connection' || lower === 'proxy-authorization') continue;
+      if (headers[name] !== undefined) {
+        // Multiple values — combine (cookie is common)
+        headers[name] = Array.isArray(headers[name])
+          ? [...headers[name], value]
+          : [headers[name], value];
+      } else {
+        headers[name] = value;
+      }
+    }
+    return headers;
+  }
+
   start() {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
@@ -145,10 +167,9 @@ export class ProxyServer {
       hostname: targetUrl.hostname,
       port: targetUrl.port || 80,
       path: targetUrl.pathname + targetUrl.search,
-      headers: { ...req.headers },
+      headers: this._rawHeadersToObject(req.rawHeaders),
       method: 'GET'
     };
-    delete options.headers['proxy-connection'];
 
     const proxyReq = http.request(options);
     proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
@@ -364,9 +385,7 @@ export class ProxyServer {
         }
       }
 
-      const headers = { ...clientReq.headers };
-      delete headers['proxy-connection'];
-      delete headers['proxy-authorization']; // Remove browser's proxy auth — we add our own for upstream
+      const headers = this._rawHeadersToObject(clientReq.rawHeaders);
 
       let options;
       if (this.upstreamProxy && this._isSocksProxy()) {
@@ -781,13 +800,15 @@ export class ProxyServer {
               const forwardUrl = new URL(action.forwardTo);
               const isForwardHttps = forwardUrl.protocol === 'https:';
               const fwdLib = isForwardHttps ? https : http;
-              const reqHeaders = { ...req.headers };
+              const reqHeaders = this._rawHeadersToObject(req.rawHeaders);
               if (action.addRequestHeaders) {
                 for (const [k, v] of Object.entries(action.addRequestHeaders)) {
-                  reqHeaders[k.toLowerCase()] = v;
+                  reqHeaders[k] = v;
                 }
               }
-              reqHeaders.host = forwardUrl.host;
+              // Update Host to match forward target
+              const hostKey = Object.keys(reqHeaders).find(k => k.toLowerCase() === 'host') || 'Host';
+              reqHeaders[hostKey] = forwardUrl.host;
 
               const fwdReq = fwdLib.request({
                 hostname: forwardUrl.hostname,
@@ -1064,10 +1085,10 @@ export class ProxyServer {
           }
         }
 
-        // Forward to real server with Firefox TLS fingerprint
+        // Forward to real server — preserve raw header case to avoid bot detection
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: { ...req.headers },
+          headers: this._rawHeadersToObject(req.rawHeaders),
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
@@ -1556,10 +1577,10 @@ export class ProxyServer {
           }
         }
 
-        // Fallback: HTTPS/1.1 with Firefox TLS fingerprint
+        // Fallback: HTTPS/1.1 — preserve raw header case
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: { ...req.headers },
+          headers: this._rawHeadersToObject(req.rawHeaders),
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
@@ -2794,14 +2815,14 @@ export class ProxyServer {
         const forwardUrl = new URL(action.forwardTo);
         const isHttps = forwardUrl.protocol === 'https:';
         const lib = isHttps ? https : http;
-        const reqHeaders = { ...clientReq.headers };
-        // Apply request header modifications if present
+        const reqHeaders = this._rawHeadersToObject(clientReq.rawHeaders);
         if (action.addRequestHeaders) {
           for (const [k, v] of Object.entries(action.addRequestHeaders)) {
-            reqHeaders[k.toLowerCase()] = v;
+            reqHeaders[k] = v;
           }
         }
-        reqHeaders.host = forwardUrl.host;
+        const hostKey = Object.keys(reqHeaders).find(k => k.toLowerCase() === 'host') || 'Host';
+        reqHeaders[hostKey] = forwardUrl.host;
 
         const proxyReq = lib.request({
           hostname: forwardUrl.hostname,
