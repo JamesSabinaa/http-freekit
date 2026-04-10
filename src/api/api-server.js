@@ -286,6 +286,7 @@ export class ApiServer {
           preSteps: body.preSteps || undefined,
           action: body.action
         });
+        this._persistMockRules();
         return res.json({ success: true, rule });
       }
 
@@ -305,18 +306,21 @@ export class ApiServer {
           body: response?.body || ''
         }
       });
+      this._persistMockRules();
       res.json({ success: true, rule });
     });
 
     router.put('/api/mock-rules/:id', (req, res) => {
       const updated = this.proxy.updateMockRule(req.params.id, req.body);
       if (!updated) return res.status(404).json({ error: 'Rule not found' });
+      this._persistMockRules();
       res.json({ success: true, rule: updated });
     });
 
     router.patch('/api/mock-rules/:id/toggle', (req, res) => {
       const toggled = this.proxy.toggleMockRule(req.params.id);
       if (!toggled) return res.status(404).json({ error: 'Rule not found' });
+      this._persistMockRules();
       res.json({ success: true, rule: toggled });
     });
 
@@ -324,6 +328,7 @@ export class ApiServer {
       const { ids } = req.body;
       if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array is required' });
       const rules = this.proxy.reorderMockRules(ids);
+      this._persistMockRules();
       res.json({ success: true, rules });
     });
 
@@ -338,6 +343,7 @@ export class ApiServer {
         collapsed: false
       };
       this.proxy.mockRules.push(group);
+      this._persistMockRules();
       res.json({ success: true, group });
     });
 
@@ -355,6 +361,7 @@ export class ApiServer {
         return res.status(404).json({ error: 'Group not found' });
       }
       group.items.push(rule);
+      this._persistMockRules();
       res.json({ success: true });
     });
 
@@ -364,6 +371,7 @@ export class ApiServer {
       const rule = this._removeRuleById(ruleId);
       if (!rule) return res.status(404).json({ error: 'Rule not found' });
       this.proxy.mockRules.push(rule);
+      this._persistMockRules();
       res.json({ success: true });
     });
 
@@ -379,11 +387,13 @@ export class ApiServer {
         const removed = this.proxy.removeMockRuleById(param);
         if (!removed) return res.status(404).json({ error: 'Rule not found' });
       }
+      this._persistMockRules();
       res.json({ success: true });
     });
 
     router.delete('/api/mock-rules', (req, res) => {
       this.proxy.clearMockRules();
+      this._persistMockRules();
       res.json({ success: true });
     });
 
@@ -420,11 +430,13 @@ export class ApiServer {
     router.post('/api/upstream-proxy', (req, res) => {
       const { host, port, auth, type } = req.body;
       this.proxy.setUpstreamProxy(host ? { host, port, auth, type } : null);
+      this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
       res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
     });
 
     router.delete('/api/upstream-proxy', (req, res) => {
       this.proxy.setUpstreamProxy(null);
+      this.settings?.set('upstreamProxy', null);
       res.json({ success: true });
     });
 
@@ -436,6 +448,7 @@ export class ApiServer {
     router.post('/api/tls-passthrough', (req, res) => {
       const { hosts } = req.body;
       this.proxy.setTlsPassthrough(hosts || []);
+      this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
 
@@ -445,6 +458,7 @@ export class ApiServer {
     });
     router.post('/api/client-certificates', (req, res) => {
       this.proxy.setClientCertificates(req.body.certificates || []);
+      this.settings?.set('clientCertificates', this.proxy.clientCertificates);
       res.json({ success: true });
     });
 
@@ -454,6 +468,7 @@ export class ApiServer {
     });
     router.post('/api/trusted-cas', (req, res) => {
       this.proxy.setTrustedCAs(req.body.cas || []);
+      this.settings?.set('trustedCAs', this.proxy.trustedCAs);
       res.json({ success: true });
     });
 
@@ -463,6 +478,7 @@ export class ApiServer {
     });
     router.post('/api/https-whitelist', (req, res) => {
       this.proxy.setHttpsWhitelist(req.body.hosts || []);
+      this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
       res.json({ success: true });
     });
 
@@ -501,6 +517,7 @@ export class ApiServer {
         return res.status(400).json({ error: 'Invalid mode. Use: all, h2-only, disabled' });
       }
       this.proxy.setHttp2Config(mode);
+      this.settings?.set('http2Enabled', mode);
       res.json({ success: true, mode: this.proxy.http2Enabled });
     });
 
@@ -730,6 +747,10 @@ export class ApiServer {
       default:
         ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
     }
+  }
+
+  _persistMockRules() {
+    this.settings?.set('mockRules', this.proxy.mockRules);
   }
 
   setMcpBridge(bridge) {

@@ -5596,6 +5596,38 @@
       tab.headers = sendHeadersList.slice();
       tab.body = getSendBodyValue();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
+      // Persist tabs to localStorage
+      persistSendTabs();
+    }
+
+    function persistSendTabs() {
+      try {
+        const toSave = sendTabs.map(t => ({
+          id: t.id, method: t.method, url: t.url,
+          headers: t.headers, body: t.body, bodyFormat: t.bodyFormat
+        }));
+        localStorage.setItem('http-freekit-send-tabs', JSON.stringify(toSave));
+        localStorage.setItem('http-freekit-send-active', activeSendTab);
+      } catch {}
+    }
+
+    function restoreSendTabs() {
+      try {
+        const saved = localStorage.getItem('http-freekit-send-tabs');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            sendTabs = parsed.map(t => ({ ...t, response: null }));
+            sendTabCounter = sendTabs.length;
+            const savedActive = localStorage.getItem('http-freekit-send-active');
+            if (savedActive && sendTabs.find(t => t.id === savedActive)) {
+              activeSendTab = savedActive;
+            } else {
+              activeSendTab = sendTabs[0].id;
+            }
+          }
+        }
+      } catch {}
     }
 
     function loadSendTabState(tab) {
@@ -7272,6 +7304,9 @@
     }
 
     // ============ INIT ============
+    // Restore send tabs from localStorage
+    restoreSendTabs();
+
     // Apply hash-based routing on initial page load
     if (window.location.hash) {
       navigateFromHash();

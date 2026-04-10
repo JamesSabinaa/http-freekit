@@ -8,6 +8,7 @@ import { ProxyServer } from './proxy/proxy-server.js';
 import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
 import { McpServerBridge } from './mcp/mcp-server.js';
+import { Settings } from './settings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,10 +53,14 @@ async function main() {
     }
   }
 
-  // 2. Initialize Interceptor Manager (pass CA for SPKI fingerprints)
+  // 2. Load persistent settings
+  const settings = new Settings(DATA_DIR);
+  console.log(`[Boot] Settings loaded from ${DATA_DIR}/settings.json`);
+
+  // 3. Initialize Interceptor Manager (pass CA for SPKI fingerprints)
   const interceptors = new InterceptorManager(ca);
 
-  // 3. Initialize Proxy Server
+  // 4. Initialize Proxy Server
   console.log(`[Boot] Starting proxy on port ${PROXY_PORT}...`);
   const proxy = new ProxyServer(ca, {
     port: PROXY_PORT,
@@ -64,8 +69,28 @@ async function main() {
     }
   });
 
-  // 4. Initialize API Server (with UI serving)
+  // Restore saved proxy settings
+  const savedUpstream = settings.get('upstreamProxy');
+  if (savedUpstream) proxy.setUpstreamProxy(savedUpstream);
+  const savedTlsPassthrough = settings.get('tlsPassthrough');
+  if (savedTlsPassthrough) proxy.setTlsPassthrough(savedTlsPassthrough);
+  const savedHttp2 = settings.get('http2Enabled');
+  if (savedHttp2) proxy.setHttp2Config(savedHttp2);
+  const savedClientCerts = settings.get('clientCertificates');
+  if (savedClientCerts) proxy.setClientCertificates(savedClientCerts);
+  const savedTrustedCAs = settings.get('trustedCAs');
+  if (savedTrustedCAs) proxy.setTrustedCAs(savedTrustedCAs);
+  const savedHttpsWhitelist = settings.get('httpsWhitelist');
+  if (savedHttpsWhitelist) proxy.setHttpsWhitelist(savedHttpsWhitelist);
+  const savedMockRules = settings.get('mockRules');
+  if (savedMockRules && Array.isArray(savedMockRules) && savedMockRules.length > 0) {
+    proxy.mockRules = savedMockRules;
+    console.log(`[Boot] Restored ${savedMockRules.length} mock rules from settings`);
+  }
+
+  // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, { port: API_PORT });
+  api.settings = settings; // Give API server access to persist settings
 
   // Serve UI static files (index.html, styles.css, app.js)
   api.app.use(express.static(UI_DIR));
