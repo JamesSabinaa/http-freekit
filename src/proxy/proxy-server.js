@@ -5,7 +5,6 @@ import https from 'https';
 import net from 'net';
 import tls from 'tls';
 import zlib from 'zlib';
-import crypto from 'crypto';
 import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
@@ -2136,52 +2135,43 @@ export class ProxyServer {
     });
   }
 
-  // TLS options that emulate Firefox v103's Client Hello fingerprint.
-  // Matches HTTP Toolkit's approach — prevents sites with JA3/bot detection
-  // (Cloudflare, Akamai, etc.) from blocking proxy connections.
+  // TLS options that emulate Chrome 136's Client Hello fingerprint.
+  // Prevents sites with JA3/bot detection (Cloudflare, Akamai, etc.)
+  // from blocking proxy connections.
   _getUpstreamTlsOptions(hostname) {
-    const SSL_OP_TLSEXT_PADDING = 1 << 4;
-    const SSL_OP_NO_ENCRYPT_THEN_MAC = 1 << 19;
-    const SSL_OP_LEGACY_SERVER_CONNECT = 1 << 2;
-
     return {
       servername: net.isIP(hostname) ? undefined : hostname,
       rejectUnauthorized: false,
-      minVersion: 'TLSv1',
+      minVersion: 'TLSv1.2',
+      maxVersion: 'TLSv1.3',
       ciphers: [
         'TLS_AES_128_GCM_SHA256',
-        'TLS_CHACHA20_POLY1305_SHA256',
         'TLS_AES_256_GCM_SHA384',
+        'TLS_CHACHA20_POLY1305_SHA256',
         'ECDHE-ECDSA-AES128-GCM-SHA256',
         'ECDHE-RSA-AES128-GCM-SHA256',
-        'ECDHE-ECDSA-CHACHA20-POLY1305',
-        'ECDHE-RSA-CHACHA20-POLY1305',
         'ECDHE-ECDSA-AES256-GCM-SHA384',
         'ECDHE-RSA-AES256-GCM-SHA384',
-        'ECDHE-ECDSA-AES256-SHA',
-        'ECDHE-ECDSA-AES128-SHA',
+        'ECDHE-ECDSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-CHACHA20-POLY1305',
         'ECDHE-RSA-AES128-SHA',
         'ECDHE-RSA-AES256-SHA',
         'AES128-GCM-SHA256',
         'AES256-GCM-SHA384',
         'AES128-SHA',
         'AES256-SHA',
-      ].join(':') + ':@SECLEVEL=0',
+      ].join(':'),
       sigalgs: [
         'ecdsa_secp256r1_sha256',
-        'ecdsa_secp384r1_sha384',
-        'ecdsa_secp521r1_sha512',
         'rsa_pss_rsae_sha256',
-        'rsa_pss_rsae_sha384',
-        'rsa_pss_rsae_sha512',
         'rsa_pkcs1_sha256',
+        'ecdsa_secp384r1_sha384',
+        'rsa_pss_rsae_sha384',
         'rsa_pkcs1_sha384',
+        'rsa_pss_rsae_sha512',
         'rsa_pkcs1_sha512',
-        'ECDSA+SHA1',
-        'rsa_pkcs1_sha1',
       ].join(':'),
-      ecdhCurve: 'X25519:prime256v1:secp384r1:secp521r1',
-      secureOptions: SSL_OP_TLSEXT_PADDING | SSL_OP_NO_ENCRYPT_THEN_MAC | SSL_OP_LEGACY_SERVER_CONNECT,
+      ecdhCurve: 'X25519:P-256:P-384',
       requestOCSP: true,
     };
   }
