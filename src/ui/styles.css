@@ -1643,6 +1643,126 @@
       margin-bottom: 0;
     }
 
+    /* Android ADB device list */
+    .android-device-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .android-device-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--bg-active);
+      border-radius: 4px;
+      border-left: 3px solid transparent;
+    }
+
+    .android-device-item.activated {
+      border-left-color: #4caf7d;
+    }
+
+    .android-device-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .android-device-info > i.ph {
+      font-size: 22px;
+      color: var(--text-lowlight);
+      flex-shrink: 0;
+    }
+
+    .android-device-details {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .android-device-model {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .android-device-serial {
+      font-size: 11px;
+      color: var(--text-lowlight);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .android-device-actions {
+      flex-shrink: 0;
+      margin-left: 12px;
+    }
+
+    .android-device-activate {
+      padding: 4px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 4px;
+      border: none;
+      background: var(--pop-color);
+      color: white;
+      cursor: pointer;
+    }
+
+    .android-device-activate:hover {
+      opacity: 0.85;
+    }
+
+    .android-device-activate:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    .android-device-status {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+
+    .android-device-status.status-warning {
+      color: #f1971f;
+      background: rgba(241, 151, 31, 0.15);
+    }
+
+    .android-device-status.status-offline {
+      color: var(--text-lowlight);
+      background: rgba(154, 157, 168, 0.15);
+    }
+
+    .android-refresh-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      font-size: 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background: none;
+      color: var(--text-lowlight);
+      cursor: pointer;
+      margin-top: 4px;
+    }
+
+    .android-refresh-btn:hover {
+      color: var(--text-main);
+      border-color: var(--text-lowlight);
+    }
+
     /* ============================================================
        22. Mock / Send / Settings Panels
        ============================================================ */

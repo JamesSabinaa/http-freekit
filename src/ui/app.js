@@ -2244,7 +2244,8 @@
       'existing-terminal': '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="#888" stroke-width="1.5"/><polyline points="7 8 10 11 7 14" stroke="#888" stroke-width="1.5" fill="none"/><line x1="12" y1="14" x2="17" y2="14" stroke="#888" stroke-width="1.5"/></svg>',
       'system-proxy': '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="#9a9da8" stroke-width="1.5"/><line x1="8" y1="21" x2="16" y2="21" stroke="#9a9da8" stroke-width="1.5"/><line x1="12" y1="17" x2="12" y2="21" stroke="#9a9da8" stroke-width="1.5"/><circle cx="12" cy="10" r="3" fill="none" stroke="#9a9da8" stroke-width="1.5"/></svg>',
       'docker': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#2fb4e0" stroke-width="1.5"><rect x="3" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="11" width="4" height="4" rx="0.5"/><rect x="13" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="6" width="4" height="4" rx="0.5"/><rect x="13" y="6" width="4" height="4" rx="0.5"/><path d="M2 13c0 0 1-5 10-5s10 5 10 5" stroke-width="1"/></svg>',
-      'electron': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#47848f" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></svg>'
+      'electron': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#47848f" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></svg>',
+      'android-adb': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#78c257" stroke-width="1.5"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="9" y1="6" x2="15" y2="6"/></svg>'
     };
 
     const INTERCEPTOR_DESCRIPTIONS = {
@@ -2257,7 +2258,8 @@
       'existing-terminal': ['Intercept launched processes from an existing terminal window.', 'Copy and paste environment variables to configure your terminal.'],
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', 'Set proxy environment variables when running containers.'],
-      'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.']
+      'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.'],
+      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.']
     };
 
     const INTERCEPTOR_COLORS = {
@@ -2271,6 +2273,7 @@
       'system-proxy': '#9a9da8',
       'docker': '#2fb4e0',
       'electron': '#47848f',
+      'android-adb': '#78c257',
       'manual-setup': '#4caf7d'
     };
 
@@ -2285,7 +2288,8 @@
       'existing-terminal': ['terminal', 'cli', 'docker', 'node', 'python'],
       'system-proxy': ['system', 'global', 'machine'],
       'docker': ['docker', 'container', 'devops', 'virtualization'],
-      'electron': ['electron', 'desktop', 'app', 'application']
+      'electron': ['electron', 'desktop', 'app', 'application'],
+      'android-adb': ['android', 'adb', 'mobile', 'phone', 'device']
     };
 
     // Icon for the "Anything" / manual-setup card
@@ -2297,7 +2301,7 @@
     let expandedInterceptorMetadata = null;
 
     // Interceptors that have expandable config components
-    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal']);
+    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb']);
 
     function renderInterceptors(interceptors) {
       allInterceptors = interceptors;
@@ -2366,7 +2370,12 @@
 
         let pillHtml = '';
         if (i.active) {
-          pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
+          if (i.id === 'android-adb' && expandedInterceptorMetadata?.activatedDevices?.length > 0) {
+            const deviceNames = expandedInterceptorMetadata.activatedDevices.map(d => d.model || d.serial).join(', ');
+            pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(deviceNames)}</span>`;
+          } else {
+            pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
+          }
         } else if (!i.activable) {
           if (i.supported !== false) {
             pillHtml = `<span class="intercept-pill pill-unavailable">Not available</span>`;
@@ -2443,7 +2452,8 @@
       }
 
       // Activate if not already active, then expand
-      if (!isActive) {
+      // Always refresh for android-adb (device list may change)
+      if (!isActive || id === 'android-adb') {
         interceptorsInProgress.add(id);
         filterInterceptors();
         try {
@@ -2495,6 +2505,8 @@
         renderDockerConfig(container);
       } else if (id === 'existing-terminal') {
         renderTerminalConfig(container);
+      } else if (id === 'android-adb') {
+        renderAndroidConfig(container);
       }
     }
 
@@ -2565,6 +2577,151 @@
       }).catch(() => {
         toast('Failed to copy', 'error');
       });
+    }
+
+    function renderAndroidConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const devices = meta?.devices || [];
+      const activatedSerials = new Set(
+        (meta?.activatedDevices || []).map(d => d.serial)
+      );
+
+      if (devices.length === 0) {
+        container.innerHTML = `
+          <div class="config-section">
+            <h3>Connected Devices</h3>
+            <p style="color: var(--text-muted); font-size: 13px;">No Android devices detected. Make sure:</p>
+            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+              <li>USB debugging is enabled on your device</li>
+              <li>Your device is connected via USB</li>
+              <li>ADB is installed and in your PATH</li>
+            </ul>
+            <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshAndroidDevices();">
+              <i class="ph ph-arrows-clockwise"></i> Refresh
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Connected Devices</h3>
+          <div class="android-device-list">
+            ${devices.map(d => {
+              const isActivated = activatedSerials.has(d.serial);
+              const isUnauthorized = d.status === 'unauthorized';
+              const isOffline = d.status === 'offline';
+              return `
+                <div class="android-device-item${isActivated ? ' activated' : ''}" data-device-id="${esc(d.serial)}">
+                  <div class="android-device-info">
+                    <i class="ph ph-device-mobile"></i>
+                    <div class="android-device-details">
+                      <span class="android-device-model">${esc(d.model || d.serial)}</span>
+                      <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
+                    </div>
+                  </div>
+                  <div class="android-device-actions">
+                    ${isActivated
+                      ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
+                      : isUnauthorized
+                        ? '<span class="android-device-status status-warning">Unauthorized</span>'
+                        : isOffline
+                          ? '<span class="android-device-status status-offline">Offline</span>'
+                          : `<button class="android-device-activate" onclick="event.stopPropagation(); activateAndroidDevice('${esc(d.serial)}');">Activate</button>`
+                    }
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+          <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshAndroidDevices();">
+            <i class="ph ph-arrows-clockwise"></i> Refresh Devices
+          </button>
+        </div>
+      `;
+    }
+
+    async function activateAndroidDevice(deviceId) {
+      const item = document.querySelector(`[data-device-id="${deviceId}"]`);
+      const btn = item?.querySelector('.android-device-activate');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<div class="intercept-spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle;"></div>';
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        // Update metadata with fresh device and activation info
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            devices: data.metadata.devices || expandedInterceptorMetadata?.devices || [],
+            activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
+          };
+        }
+
+        // Re-render the config area
+        const container = document.getElementById('interceptConfig-android-adb');
+        if (container) {
+          renderAndroidConfig(container);
+        }
+
+        // Refresh interceptor list for pill update
+        try {
+          const r = await fetch(`${API_BASE}/api/interceptors`);
+          const d = await r.json();
+          allInterceptors = d.interceptors;
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+
+        toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = 'Activate';
+        }
+      }
+    }
+
+    async function refreshAndroidDevices() {
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            devices: data.metadata.devices || [],
+            activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
+          };
+        }
+        const container = document.getElementById('interceptConfig-android-adb');
+        if (container) {
+          renderAndroidConfig(container);
+        }
+        toast('Device list refreshed', 'success');
+      } catch (err) {
+        toast(`Error refreshing devices: ${err.message}`, 'error');
+      }
     }
 
     async function toggleInterceptor(id, isActive) {

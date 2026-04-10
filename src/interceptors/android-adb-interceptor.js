@@ -199,6 +199,10 @@ export class AndroidAdbInterceptor {
         success: true,
         metadata: {
           devices,
+          activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
+            serial,
+            ...info
+          })),
           requiresDeviceSelection: true
         }
       };
@@ -251,7 +255,11 @@ export class AndroidAdbInterceptor {
         certInstallNote: remoteCertPath
           ? 'CA certificate pushed to device. Install it via Settings > Security > Install from storage > /data/local/tmp/http-freekit-ca.pem'
           : 'No CA certificate available. HTTPS interception will show certificate warnings.',
-        devices: this._getConnectedDevices()
+        devices: this._getConnectedDevices(),
+        activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
+          serial,
+          ...info
+        }))
       }
     };
   }
