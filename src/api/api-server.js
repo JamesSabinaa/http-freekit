@@ -532,6 +532,24 @@ export class ApiServer {
       }
     });
 
+    // MCP Server status and control
+    router.get('/api/mcp/status', (req, res) => {
+      if (!this.mcpBridge) return res.json({ enabled: false, sseEndpoint: null, connectedClients: 0 });
+      const status = this.mcpBridge.getStatus();
+      status.sseEndpoint = status.enabled ? `http://127.0.0.1:${this.port}/mcp/sse` : null;
+      res.json(status);
+    });
+
+    router.post('/api/mcp/toggle', (req, res) => {
+      if (!this.mcpBridge) return res.status(500).json({ error: 'MCP bridge not initialized' });
+      const { enabled } = req.body;
+      this.mcpBridge.setEnabled(!!enabled);
+      if (enabled) {
+        this.mcpBridge.startSse(this.app);
+      }
+      res.json({ success: true, enabled: !!enabled });
+    });
+
     this.app.use(router);
   }
 
@@ -684,6 +702,10 @@ export class ApiServer {
       default:
         ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
     }
+  }
+
+  setMcpBridge(bridge) {
+    this.mcpBridge = bridge;
   }
 
   stop() {

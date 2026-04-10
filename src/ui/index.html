@@ -433,6 +433,32 @@
               <button class="btn" onclick="uploadApiSpec()" style="font-size:12px;">Upload OpenAPI/Swagger Spec</button>
             </div>
           </div>
+          <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">MCP Server (AI Integration)</div>
+            <div class="settings-row">
+              <span class="settings-label">Status</span>
+              <span class="settings-value" id="mcpStatus" style="color:var(--text-lowlight);">Checking...</span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">SSE Endpoint</span>
+              <span class="settings-value" id="mcpSseEndpoint" style="font-size:11px;">--</span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">Connected Clients</span>
+              <span class="settings-value" id="mcpClientCount">0</span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">Enable MCP</span>
+              <span class="settings-value"><input type="checkbox" id="mcpEnabledToggle" onchange="toggleMcp(this.checked)" checked style="cursor:pointer;width:18px;height:18px;"></span>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              The MCP (Model Context Protocol) server lets AI assistants like Claude search, analyze, and export your captured HTTP traffic. Connect via SSE at the endpoint above, or launch with <code style="background:var(--bg-input);padding:2px 4px;border-radius:3px;">--mcp-stdio</code> for Claude Desktop.
+            </p>
+            <details style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">
+              <summary style="cursor:pointer;color:var(--text-watermark);">Claude Desktop Configuration</summary>
+              <pre id="mcpClaudeConfig" style="margin-top:8px;background:var(--bg-input);padding:12px;border-radius:4px;font-family:var(--font-mono);font-size:11px;overflow-x:auto;white-space:pre;color:var(--text-main);"></pre>
+            </details>
+          </div>
           <div class="card" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div><div class="settings-row" id="updateCheckRow" style="display:none;"><span class="settings-label">Updates</span><span class="settings-value"><button class="btn" onclick="window._checkForUpdates && window._checkForUpdates()" style="font-size:12px;">Check for Updates</button></span></div></div>
         </div>
       </div>

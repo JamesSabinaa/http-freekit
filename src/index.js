@@ -7,6 +7,7 @@ import { CertificateAuthority } from './proxy/certificate-authority.js';
 import { ProxyServer } from './proxy/proxy-server.js';
 import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
+import { McpServerBridge } from './mcp/mcp-server.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,14 +82,34 @@ async function main() {
   await proxy.start();
   await api.start();
 
+  // 6. Initialize MCP Server (Model Context Protocol)
+  const mcpBridge = new McpServerBridge({
+    apiServer: api,
+    proxyServer: proxy,
+    interceptorManager: interceptors,
+    options: { enabled: true }
+  });
+  api.setMcpBridge(mcpBridge);
+  mcpBridge.startSse(api.app);
+
+  // If launched with --mcp-stdio, enable stdio transport for Claude Desktop
+  if (process.argv.includes('--mcp-stdio')) {
+    // Redirect console to stderr so stdout is reserved for MCP protocol
+    const origLog = console.log;
+    console.log = (...args) => process.stderr.write(args.join(' ') + '\n');
+    await mcpBridge.startStdio();
+  }
+
   console.log('');
   console.log('  ┌─────────────────────────────────────┐');
   const proxyStr = `http://127.0.0.1:${PROXY_PORT}`;
   const uiStr = `http://127.0.0.1:${API_PORT}`;
   const apiStr = `http://127.0.0.1:${API_PORT}/api`;
+  const mcpStr = `http://127.0.0.1:${API_PORT}/mcp/sse`;
   console.log(`  │  Proxy:  ${proxyStr.padEnd(26)}│`);
   console.log(`  │  UI:     ${uiStr.padEnd(26)}│`);
   console.log(`  │  API:    ${apiStr.padEnd(26)}│`);
+  console.log(`  │  MCP:    ${mcpStr.padEnd(26)}│`);
   console.log('  └─────────────────────────────────────┘');
   console.log('');
   console.log('  Configure your browser/app to use proxy: 127.0.0.1:' + PROXY_PORT);
@@ -100,6 +121,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\n[Shutdown] Stopping servers...');
+    await mcpBridge.stop();
     await interceptors.deactivateAll();
     await proxy.stop();
     await api.stop();

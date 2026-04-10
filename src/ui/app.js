@@ -97,6 +97,7 @@
           loadHttpsWhitelist();
           loadHttp2Config();
           loadApiSpecs();
+          loadMcpStatus();
           // Check for deep-linked request to auto-select after traffic loads
           const deepLinkMatch = window.location.hash.match(/^#\/view\/(.+)$/);
           if (deepLinkMatch) {
@@ -2149,6 +2150,8 @@
           return body;
         }
       }
+      if (mode === 'javascript') return beautifyJs(body);
+      if (mode === 'css') return beautifyCss(body);
       return body;
     }
 
@@ -2181,11 +2184,12 @@
       if (editor) {
         activeBodyEditors[containerId] = editor;
 
-        // Auto-size editor height based on content (capped at 500px)
+        // Auto-size editor height based on content (capped at 70vh)
         const lineCount = editor.getModel().getLineCount();
         const lineHeight = 18;
         const padding = 16;
-        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), 500);
+        const maxHeight = Math.round(window.innerHeight * 0.7);
+        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), maxHeight);
         container.style.height = desiredHeight + 'px';
         editor.layout();
       }
@@ -6268,6 +6272,51 @@
         loadHttpsWhitelist();
         toast('Removed', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
+    }
+
+    // ============ MCP SERVER ============
+    async function loadMcpStatus() {
+      try {
+        const res = await fetch(API_BASE + '/api/mcp/status');
+        const data = await res.json();
+        const statusEl = document.getElementById('mcpStatus');
+        if (statusEl) {
+          statusEl.textContent = data.enabled ? 'Running' : 'Stopped';
+          statusEl.style.color = data.enabled ? '#4caf7d' : 'var(--text-lowlight)';
+        }
+        const endpointEl = document.getElementById('mcpSseEndpoint');
+        if (endpointEl) endpointEl.textContent = data.sseEndpoint || '--';
+        const clientEl = document.getElementById('mcpClientCount');
+        if (clientEl) clientEl.textContent = data.connectedClients || 0;
+        const toggleEl = document.getElementById('mcpEnabledToggle');
+        if (toggleEl) toggleEl.checked = data.enabled;
+        const configEl = document.getElementById('mcpClaudeConfig');
+        if (configEl) {
+          configEl.textContent = JSON.stringify({
+            mcpServers: {
+              'http-freekit': {
+                command: 'node',
+                args: ['src/index.js', '--mcp-stdio'],
+                env: { API_PORT: String(config.apiPort || 8001) }
+              }
+            }
+          }, null, 2);
+        }
+      } catch {}
+    }
+
+    async function toggleMcp(enabled) {
+      try {
+        await fetch(API_BASE + '/api/mcp/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        toast(enabled ? 'MCP server enabled' : 'MCP server disabled', 'success');
+        loadMcpStatus();
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+      }
     }
 
     // ============ API SPECS ============

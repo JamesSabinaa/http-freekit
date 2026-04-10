@@ -15,6 +15,7 @@
     "build": "electron-builder --win --mac --linux --config electron-builder.config.cjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@phosphor-icons/web": "^2.1.2",
     "electron-updater": "^6.8.3",
     "electron-window-state": "^5.0.3",
