@@ -379,7 +379,8 @@ export class ProxyServer {
           port: this.upstreamProxy.port,
           path: targetUrl.href,
           method: clientReq.method,
-          headers
+          headers,
+          insecureHTTPParser: true
         };
         if (this.upstreamProxy.auth) {
           options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
@@ -1121,7 +1122,8 @@ export class ProxyServer {
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
-              socket: upstreamConn
+              socket: upstreamConn,
+              insecureHTTPParser: true
             }, handleResponse);
           } catch (err) {
             handleError(err);
@@ -1391,7 +1393,8 @@ export class ProxyServer {
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
-              socket: upstreamConn
+              socket: upstreamConn,
+              insecureHTTPParser: true
             }, handleResponse);
           } catch (err) {
             handleError(err);
@@ -1566,7 +1569,8 @@ export class ProxyServer {
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
-              socket: upstreamConn
+              socket: upstreamConn,
+              insecureHTTPParser: true
             }, handleResponse);
           } catch (err) {
             handleError(err);
@@ -2144,6 +2148,8 @@ export class ProxyServer {
         port: this.upstreamProxy.port,
         method: 'CONNECT',
         path: `${hostname}:${targetPort}`,
+        // Tolerate non-compliant proxies that use \n instead of \r\n
+        insecureHTTPParser: true,
         headers: this.upstreamProxy.auth
           ? { 'proxy-authorization': 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64') }
           : {}
