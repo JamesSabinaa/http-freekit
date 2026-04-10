@@ -12,7 +12,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Configuration
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// When running inside Electron, use a writable user data path for CA certs
+const DATA_DIR = process.env.ELECTRON
+  ? path.join(process.env.APPDATA || process.env.HOME || __dirname, 'http-freekit', 'data')
+  : path.join(__dirname, '..', 'data');
 const UI_DIR = path.join(__dirname, 'ui');
 const PROXY_PORT = parseInt(process.env.PROXY_PORT) || 8081;
 const API_PORT = parseInt(process.env.API_PORT) || 8001;

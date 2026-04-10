@@ -67,16 +67,8 @@ async function startServer() {
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
   logStream.write(`\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`);
 
-  // In packaged app, __dirname is inside app.asar — use app.getAppPath() and
-  // replace .asar with .asar.unpacked if needed, or use the unpacked path.
-  // The server needs to run outside asar since it uses ESM and dynamic imports.
-  let serverScript = path.join(__dirname, '..', 'src', 'index.js');
-
-  // When packaged, the asar path won't work for spawning a child process.
-  // Use the asar-unpacked path instead.
-  if (serverScript.includes('app.asar')) {
-    serverScript = serverScript.replace('app.asar', 'app.asar.unpacked');
-  }
+  // asar is disabled, so the path resolves normally in both dev and packaged builds
+  const serverScript = path.join(__dirname, '..', 'src', 'index.js');
 
   serverProcess = spawn(process.execPath, [serverScript], {
     env: {
