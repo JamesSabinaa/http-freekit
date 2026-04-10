@@ -68,6 +68,9 @@
 - `_applyDraftToLocal(ruleId, draft)` overlays draft data onto the local `mockRules` array — called from `loadMockRules()` to preserve drafts after server reload
 - Navigation away from Mock page with unsaved drafts triggers a `confirm()` dialog in `switchPanel()`
 - Inline editing pattern: `mockRenamingRuleId` state + `startInlineRename()`/`confirmInlineRename()`/`cancelInlineRename()`; input rendered in `renderMockRuleRow()` with Enter/Escape/blur handlers; use `setTimeout(focus, 0)` after re-render
+- Transform perspective: `_transformPerspective` state ('original'|'transformed'|'client'|'server'); `getEffectiveRequest(req)` overlays `req.originalRequest` data when viewing original perspective; `switchTransformPerspective(value)` re-renders detail cards
+- Proxy emits `originalRequest` (with method, url, headers, body) and `transformedBy` (rule title/id) on mock-matched requests whose preSteps modified method/URL/headers
+- Transform card uses `.transform-card` CSS class with pop-color left border and 6% tinted background
 
 ---
 
@@ -350,5 +353,20 @@
   - `esc()` (textContent→innerHTML) does NOT escape double quotes — for HTML attribute values (`value="..."`), additionally call `.replace(/"/g, '&quot;')` on the escaped string
   - The `setTimeout(() => input.focus(), 0)` pattern is needed after `renderMockRules()` because the input DOM element doesn't exist until the render completes
   - Title-only rules (with `summary.title`) get click-to-rename on the title text; auto-generated summary rules get renamed only via the tag icon button to avoid confusion with the expand toggle
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-019
+- What was implemented: Content perspective toggle for transformed requests — when a mock rule modifies a request via preSteps (rewrite-url, rewrite-method, add/remove headers), the proxy captures the original request data and emits it alongside the transformed data. The UI shows a Transform card with a dropdown to switch between original/transformed/client/server perspectives.
+- Files changed:
+  - src/proxy/proxy-server.js — Capture original method/URL/headers before preSteps in `_serveMockResponse`, `_handleTlsConnection` inline mock handling, and `_handleH2MockResponse`; emit `originalRequest` and `transformedBy` fields on all mock-sourced events
+  - src/ui/app.js — Added `_transformPerspective` state, `switchTransformPerspective()`, `getEffectiveRequest()` functions; Transform card HTML before Request card; Request card and Request Body card use `effReq` (effective request based on perspective)
+  - src/ui/styles.css — Added `.transform-card`, `.transform-perspective-select`, `.transform-indicator` styles
+  - prd.json — Marked US-019 as passes: true
+- **Learnings for future iterations:**
+  - Mock rule preSteps modify request in-place (mutating `clientReq.method`, `clientReq.headers`, `targetUrl`), so original data must be captured BEFORE the preSteps loop runs
+  - Four separate code paths handle mock rules: `_serveMockResponse` (HTTP/1.1), TLS handler inline (HTTPS/1.1), `_handleH2MockResponse` (HTTP/2), and `_serveMockResponseH1OnH2` (H1 fallback on H2) — the last one doesn't process preSteps so no transform data is needed
+  - Each mock handler has ~5-8 `_emitRequest` calls (close, reset, forward success, forward error, serve-file, breakpoint-request, breakpoint-response, fixed-response) — all need `originalRequest` and `transformedBy` fields
+  - `getEffectiveRequest(req)` returns a spread copy with original data overlaid — this avoids mutating the stored request object
   - Manual browser verification is recommended for this story
 ---

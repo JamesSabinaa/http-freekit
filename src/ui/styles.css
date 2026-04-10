@@ -2225,6 +2225,20 @@
     .detail-card.dir-right { border-right: 5px solid var(--text-watermark); padding-right: 15px; }
     .detail-card.dir-left { border-left: 5px solid var(--text-watermark); padding-left: 15px; }
 
+    /* Transform card — shown when a mock rule modified the request */
+    .detail-card.transform-card {
+      border-left: 4px solid var(--pop-color);
+      background: color-mix(in srgb, var(--pop-color) 6%, var(--bg-main));
+    }
+    .transform-perspective-select {
+      min-width: 190px;
+    }
+    .transform-indicator {
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 700;
+    }
+
     /* Collapse chevron on far right */
     .collapse-chevron {
       color: var(--text-watermark);

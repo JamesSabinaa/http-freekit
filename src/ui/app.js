@@ -830,6 +830,42 @@
     // Track collapsed state for URL breakdown
     let _urlBreakdownOpen = false;
 
+    // Track transform perspective for requests modified by mock rules
+    let _transformPerspective = 'transformed';
+
+    function switchTransformPerspective(value) {
+      _transformPerspective = value;
+      const panel = document.getElementById('detailPanel');
+      if (panel && panel._request) {
+        renderDetailCards(panel._request);
+      }
+    }
+
+    // Returns the effective request data based on current transform perspective
+    function getEffectiveRequest(req) {
+      if (!req.originalRequest) return req;
+      const showOriginal = _transformPerspective === 'original' || _transformPerspective === 'client';
+      if (!showOriginal) return req;
+      // Build a view object with original data overlaid
+      const orig = req.originalRequest;
+      let origHost = req.host;
+      let origPath = req.path;
+      try {
+        const u = new URL(orig.url);
+        origHost = u.hostname;
+        origPath = u.pathname + u.search;
+      } catch { /* keep defaults */ }
+      return {
+        ...req,
+        method: orig.method,
+        url: orig.url,
+        host: origHost,
+        path: origPath,
+        requestHeaders: orig.headers,
+        requestBody: orig.body != null ? orig.body : req.requestBody
+      };
+    }
+
     function toggleUrlBreakdown() {
       _urlBreakdownOpen = !_urlBreakdownOpen;
       const el = document.getElementById('url-breakdown');
@@ -845,6 +881,8 @@
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
+      // Reset transform perspective only when viewing a new request (not when switching perspective)
+      if (!req.originalRequest) _transformPerspective = 'transformed';
 
       // Dispose any active body Monaco editors before replacing content
       disposeBodyEditor('reqBody-monaco');
@@ -1204,16 +1242,48 @@
         </div>`;
       }
 
+      // ---- Transform Card (shown only for requests modified by mock rules) ----
+      if (req.originalRequest) {
+        const perspectiveLabels = {
+          'original': 'Original (client sent)',
+          'transformed': 'Transformed (as modified)',
+          'client': 'Client perspective',
+          'server': 'Server perspective'
+        };
+        html += `<div class="detail-card transform-card" id="card-transform">
+          <div class="detail-card-body" style="padding:12px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <i class="ph ph-shuffle" style="font-size:18px;color:var(--pop-color);"></i>
+              <div style="flex:1;">
+                <div style="font-weight:600;font-size:13px;color:var(--pop-color);">Request Modified</div>
+                <div style="font-size:11px;color:var(--text-lowlight);">by ${esc(req.transformedBy || 'Mock Rule')}</div>
+              </div>
+              <select class="body-view-select transform-perspective-select" onchange="switchTransformPerspective(this.value)">
+                <option value="transformed"${_transformPerspective === 'transformed' ? ' selected' : ''}>Show transformed content</option>
+                <option value="original"${_transformPerspective === 'original' ? ' selected' : ''}>Show original content</option>
+                <option value="client"${_transformPerspective === 'client' ? ' selected' : ''}>Client perspective</option>
+                <option value="server"${_transformPerspective === 'server' ? ' selected' : ''}>Server perspective</option>
+              </select>
+              <span class="detail-pill transform-indicator" style="background:${_transformPerspective === 'original' || _transformPerspective === 'client' ? '#ff8c38' : 'var(--pop-color)'};color:#fff;font-size:10px;">
+                ${_transformPerspective === 'original' || _transformPerspective === 'client' ? 'ORIGINAL' : 'TRANSFORMED'}
+              </span>
+            </div>
+          </div>
+        </div>`;
+      }
+
       // ---- Request Card (border-right, pills left, heading right) ----
+      const effReq = getEffectiveRequest(req);
+      const effMethodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[effReq.method] || '#888';
       const sourceLabel = req.source || 'Unknown';
       const sourceIconHtml = SOURCE_ICONS[sourceLabel] || SOURCE_ICONS['Other'] || '';
       const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : req.protocol === 'https' ? 'HTTPS/1.1' : 'HTTP/1.1';
-      html += `<div class="detail-card dir-right" id="card-request" style="border-right-color:${methodColor};">
+      html += `<div class="detail-card dir-right" id="card-request" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="source-icon" title="${esc(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
             <span class="detail-pill pill-muted" style="font-size:11px;">${httpVersion}</span>
-            <span class="detail-pill" style="background:${methodColor};color:#fff;">${esc(req.method)} ${esc(req.host || '').replace(/\./g, '\u2008.\u2008')}</span>
+            <span class="detail-pill" style="background:${effMethodColor};color:#fff;">${esc(effReq.method)} ${esc(effReq.host || '').replace(/\./g, '\u2008.\u2008')}</span>
             <span class="detail-card-heading">Request</span>
             <span class="collapse-chevron">&#9650;</span>
           </span>
@@ -1223,24 +1293,25 @@
             <div class="section-label">URL</div>
             <div class="url-summary" onclick="toggleUrlBreakdown()">
               <span class="url-toggle" id="url-breakdown-icon">+</span>
-              <span class="url-text">${esc(req.url)}</span>
+              <span class="url-text">${esc(effReq.url)}</span>
             </div>
-            ${renderUrlBreakdown(req)}
+            ${renderUrlBreakdown(effReq)}
           </div>
           <div class="detail-card-section">
             <div class="section-label">Headers</div>
-            ${renderHeadersGrid(req.requestHeaders, 'request')}
+            ${renderHeadersGrid(effReq.requestHeaders, 'request')}
           </div>
         </div>
       </div>`;
 
       // ---- Request Body Card (separate card) ----
-      if (req.requestBody && req.requestBody !== '' && !req.requestBody.startsWith('[Binary')) {
-        const reqCt = req.requestHeaders?.['content-type'] || '';
-        const reqBodyModes = getBodyViewModes(req.requestBody, reqCt);
+      const effBody = effReq.requestBody;
+      if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
+        const reqCt = effReq.requestHeaders?.['content-type'] || '';
+        const reqBodyModes = getBodyViewModes(effBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
-        const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !req.requestBody.startsWith('[Binary data:');
-        html += `<div class="detail-card dir-right" id="card-req-body" style="border-right-color:${methodColor};">
+        const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !effBody.startsWith('[Binary data:');
+        html += `<div class="detail-card dir-right" id="card-req-body" style="border-right-color:${effMethodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
@@ -1254,7 +1325,7 @@
           <div class="detail-card-body">
             <div id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">
               <div id="reqBody-monaco" style="display:${reqUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
-              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(req.requestBody, reqCt, reqDefaultMode)}</pre>
+              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(effBody, reqCt, reqDefaultMode)}</pre>
             </div>
           </div>
         </div>`;

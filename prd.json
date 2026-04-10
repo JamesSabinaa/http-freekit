@@ -346,7 +346,7 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/view/http/transform-card.tsx. Need to capture pre-transform data in the proxy."
     },
     {

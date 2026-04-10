@@ -629,6 +629,11 @@ export class ProxyServer {
             delay: 0
           };
 
+          // Capture original request data before pre-steps modify it
+          const origMethod = req.method;
+          const origUrl = fullUrl;
+          const origHeaders = { ...req.headers };
+
           // Execute pre-steps (step chaining) before the terminal action
           const preSteps = mockRule.preSteps || [];
           for (const step of preSteps) {
@@ -661,6 +666,16 @@ export class ProxyServer {
             }
           }
 
+          // Detect if pre-steps transformed the request
+          const transformed = origMethod !== req.method ||
+            origUrl !== fullUrl ||
+            JSON.stringify(origHeaders) !== JSON.stringify(req.headers);
+          const originalRequest = transformed ? {
+            method: origMethod, url: origUrl, headers: origHeaders,
+            body: this._safeBodyString(body)
+          } : null;
+          const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+
           // Close connection
           if (action.type === 'close') {
             res.destroy();
@@ -671,7 +686,8 @@ export class ProxyServer {
               statusCode: 0, statusMessage: 'Connection Closed', responseHeaders: {},
               responseBody: '', responseBodySize: 0,
               duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-              tls: tlsDetails, remote: null
+              tls: tlsDetails, remote: null,
+              originalRequest, transformedBy
             });
             return;
           }
@@ -686,7 +702,8 @@ export class ProxyServer {
               statusCode: 0, statusMessage: 'Connection Reset', responseHeaders: {},
               responseBody: '', responseBodySize: 0,
               duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-              tls: tlsDetails, remote: null
+              tls: tlsDetails, remote: null,
+              originalRequest, transformedBy
             });
             return;
           }
@@ -741,7 +758,8 @@ export class ProxyServer {
                     responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding']),
                     responseBodySize: resBody.length, duration: Date.now() - startTime,
                     timestamp: startTime, source: 'mock',
-                    tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort }
+                    tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
+                    originalRequest, transformedBy
                   });
                 });
               });
@@ -758,7 +776,8 @@ export class ProxyServer {
                   responseBody: `Forward Error: ${err.message}`, responseBodySize: 0,
                   duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                   error: err.message,
-                  tls: tlsDetails, remote: null
+                  tls: tlsDetails, remote: null,
+                  originalRequest, transformedBy
                 });
               });
               fwdReq.end(body);
@@ -787,7 +806,8 @@ export class ProxyServer {
                 responseHeaders: { 'Content-Type': 'text/plain' },
                 responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-                tls: tlsDetails, remote: null
+                tls: tlsDetails, remote: null,
+                originalRequest, transformedBy
               });
               return;
             }
@@ -806,7 +826,8 @@ export class ProxyServer {
                 responseBody: this._safeBodyString(content),
                 responseBodySize: content.length,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-                tls: tlsDetails, remote: null
+                tls: tlsDetails, remote: null,
+                originalRequest, transformedBy
               });
             } catch (err) {
               try {
@@ -821,7 +842,8 @@ export class ProxyServer {
                 responseHeaders: { 'Content-Type': 'text/plain' },
                 responseBody: 'File not found: ' + filePath, responseBodySize: 0,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-                error: err.message, tls: tlsDetails, remote: null
+                error: err.message, tls: tlsDetails, remote: null,
+                originalRequest, transformedBy
               });
             }
             return;
@@ -836,7 +858,8 @@ export class ProxyServer {
               statusCode: 0, statusMessage: 'Breakpoint',
               responseHeaders: {}, responseBody: '', responseBodySize: 0,
               duration: 0, timestamp: startTime, source: 'breakpoint',
-              tls: tlsDetails, remote: null
+              tls: tlsDetails, remote: null,
+              originalRequest, transformedBy
             });
             try {
               this.onBreakpoint({
@@ -870,7 +893,8 @@ export class ProxyServer {
               statusCode: 0, statusMessage: 'Breakpoint (response)',
               responseHeaders: {}, responseBody: '', responseBodySize: 0,
               duration: 0, timestamp: startTime, source: 'breakpoint',
-              tls: tlsDetails, remote: null
+              tls: tlsDetails, remote: null,
+              originalRequest, transformedBy
             });
             try {
               this.onBreakpoint({
@@ -920,7 +944,8 @@ export class ProxyServer {
             statusCode: mockStatus, statusMessage: 'Mocked', responseHeaders: mockHeaders,
             responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
             duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-            tls: tlsDetails, remote: null
+            tls: tlsDetails, remote: null,
+            originalRequest, transformedBy
           });
           return;
         }
@@ -1572,6 +1597,9 @@ export class ProxyServer {
       delay: 0
     };
 
+    // Capture original request data before pre-steps modify it
+    const origHeaders = { ...reqHeaders };
+
     // Execute pre-steps
     const preSteps = mockRule.preSteps || [];
     for (const step of preSteps) {
@@ -1588,6 +1616,14 @@ export class ProxyServer {
       }
     }
 
+    // Detect if pre-steps transformed the request
+    const transformed = JSON.stringify(origHeaders) !== JSON.stringify(reqHeaders);
+    const originalRequest = transformed ? {
+      method, url: fullUrl, headers: origHeaders,
+      body: this._safeBodyString(body)
+    } : null;
+    const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+
     // Close connection
     if (action.type === 'close' || action.type === 'reset') {
       try { stream.destroy(); } catch (e) { /* */ }
@@ -1598,7 +1634,8 @@ export class ProxyServer {
         statusCode: 0, statusMessage: action.type === 'close' ? 'Connection Closed' : 'Connection Reset',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: tlsDetails, remote: null
+        tls: tlsDetails, remote: null,
+        originalRequest, transformedBy
       });
       return;
     }
@@ -1660,7 +1697,8 @@ export class ProxyServer {
               responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding']),
               responseBodySize: resBody.length, duration: Date.now() - startTime,
               timestamp: startTime, source: 'mock',
-              tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort }
+              tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
+              originalRequest, transformedBy
             });
           });
         });
@@ -1678,7 +1716,8 @@ export class ProxyServer {
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: 'Forward Error: ' + err.message, responseBodySize: 0,
             duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-            error: err.message, tls: tlsDetails, remote: null
+            error: err.message, tls: tlsDetails, remote: null,
+            originalRequest, transformedBy
           });
         });
         fwdReq.end(body);
@@ -1722,7 +1761,8 @@ export class ProxyServer {
           responseBody: this._safeBodyString(content),
           responseBodySize: content.length,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          tls: tlsDetails, remote: null
+          tls: tlsDetails, remote: null,
+          originalRequest, transformedBy
         });
       } catch (err) {
         try {
@@ -1744,7 +1784,8 @@ export class ProxyServer {
         statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
         responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: tlsDetails, remote: null
+        tls: tlsDetails, remote: null,
+        originalRequest, transformedBy
       });
       try {
         this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url: fullUrl, host: authority });
@@ -1767,7 +1808,8 @@ export class ProxyServer {
         statusCode: 0, statusMessage: 'Breakpoint (response)', responseHeaders: {},
         responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: tlsDetails, remote: null
+        tls: tlsDetails, remote: null,
+        originalRequest, transformedBy
       });
       try {
         this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url: fullUrl, host: authority, phase: 'response' });
@@ -1824,7 +1866,8 @@ export class ProxyServer {
       responseHeaders: actionHeaders,
       responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
       duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-      tls: tlsDetails, remote: null
+      tls: tlsDetails, remote: null,
+      originalRequest, transformedBy
     });
   }
 
@@ -2226,6 +2269,11 @@ export class ProxyServer {
       delay: 0
     };
 
+    // Capture original request data before pre-steps modify it
+    const origMethod = clientReq.method;
+    const origUrl = targetUrl.href;
+    const origHeaders = { ...clientReq.headers };
+
     // Execute pre-steps (step chaining) before the terminal action
     const preSteps = mockRule.preSteps || [];
     for (const step of preSteps) {
@@ -2258,6 +2306,16 @@ export class ProxyServer {
       }
     }
 
+    // Detect if pre-steps transformed the request
+    const transformed = origMethod !== clientReq.method ||
+      origUrl !== targetUrl.href ||
+      JSON.stringify(origHeaders) !== JSON.stringify(clientReq.headers);
+    const originalRequest = transformed ? {
+      method: origMethod, url: origUrl, headers: origHeaders,
+      body: this._safeBodyString(body)
+    } : null;
+    const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+
     // Close connection action
     if (action.type === 'close') {
       clientRes.destroy();
@@ -2268,7 +2326,8 @@ export class ProxyServer {
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Closed',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: null, remote: null
+        tls: null, remote: null,
+        originalRequest, transformedBy
       });
       return;
     }
@@ -2283,7 +2342,8 @@ export class ProxyServer {
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Reset',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: null, remote: null
+        tls: null, remote: null,
+        originalRequest, transformedBy
       });
       return;
     }
@@ -2340,7 +2400,8 @@ export class ProxyServer {
               responseBodySize: resBody.length, duration: Date.now() - startTime,
               timestamp: startTime, source: 'mock',
               tls: null, remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
-              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
+              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null,
+              originalRequest, transformedBy
             });
           });
         });
@@ -2355,7 +2416,8 @@ export class ProxyServer {
             responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
             responseBodySize: 0, duration: Date.now() - startTime,
             timestamp: startTime, source: 'mock', error: err.message,
-            tls: null, remote: null
+            tls: null, remote: null,
+            originalRequest, transformedBy
           });
         });
         proxyReq.end(body);
@@ -2380,7 +2442,8 @@ export class ProxyServer {
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          tls: null, remote: null
+          tls: null, remote: null,
+          originalRequest, transformedBy
         });
         return;
       }
@@ -2399,7 +2462,8 @@ export class ProxyServer {
           responseBody: this._safeBodyString(content),
           responseBodySize: content.length,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          tls: null, remote: null
+          tls: null, remote: null,
+          originalRequest, transformedBy
         });
       } catch (err) {
         clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -2412,7 +2476,8 @@ export class ProxyServer {
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'File not found: ' + filePath, responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          error: err.message, tls: null, remote: null
+          error: err.message, tls: null, remote: null,
+          originalRequest, transformedBy
         });
       }
       return;
@@ -2427,7 +2492,8 @@ export class ProxyServer {
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null
+        tls: null, remote: null,
+        originalRequest, transformedBy
       });
       try {
         this.onBreakpoint({
@@ -2463,7 +2529,8 @@ export class ProxyServer {
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null
+        tls: null, remote: null,
+        originalRequest, transformedBy
       });
       try {
         this.onBreakpoint({
@@ -2526,7 +2593,9 @@ export class ProxyServer {
       timestamp: startTime,
       source: 'mock',
       tls: null,
-      remote: null
+      remote: null,
+      originalRequest,
+      transformedBy
     });
   }
 
