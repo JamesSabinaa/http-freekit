@@ -2950,7 +2950,15 @@ export class ProxyServer {
     if (!rule.id) rule.id = uuidv4();
     if (rule.enabled === undefined) rule.enabled = true;
     if (!rule.priority) rule.priority = 'normal';
-    this.mockRules.push(rule);
+    // Insert before any wildcard/passthrough rules so new rules take priority
+    const passthroughIdx = this.mockRules.findIndex(r =>
+      r.action?.type === 'passthrough' && r.matchers?.some(m => m.type === 'method' && m.value === '*')
+    );
+    if (passthroughIdx !== -1) {
+      this.mockRules.splice(passthroughIdx, 0, rule);
+    } else {
+      this.mockRules.push(rule);
+    }
     return rule;
   }
 
