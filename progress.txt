@@ -22,9 +22,11 @@
 - `monacoReady` promise resolves when Monaco API is available; `monacoApi` holds the global reference
 - `monacoInstances` array tracks all active editors for theme switching and cleanup
 - Editor auto-resizes via ResizeObserver; auto-cleans up when container is removed from DOM
-- Body viewers use dual-container pattern: `id="resBody-monaco"` (Monaco) + `id="resBody-fallback"` (pre); toggled by `isMonacoViewMode(mode)`
+- Body viewers use dual-container pattern: `id="*-monaco"` (Monaco) + `id="*-fallback"` (pre); toggled by `isMonacoViewMode(mode)` — used by both request body (`reqBody-monaco`) and response body (`resBody-monaco`)
 - `activeBodyEditors` tracks live Monaco body editors by container id; call `disposeBodyEditor(id)` before DOM replacement
 - Non-Monaco body view modes: hex (textToHex), decoded (key-value grid), image (placeholder) — all render in the fallback `<pre>`
+- Send page body editor: `sendBodyEditor` variable holds the editable Monaco instance; use `getSendBodyValue()` / `setSendBodyValue()` to read/write; `updateSendBodyLanguage()` syncs language from format dropdown
+- `monacoApi.editor.setModelLanguage(model, lang)` switches language without recreating the editor instance
 
 ---
 
@@ -102,5 +104,19 @@
   - The `initBodyMonacoEditor` function auto-sizes editor height based on line count (min 80px, max 500px)
   - Monaco's built-in Ctrl+F find/replace works automatically in read-only mode — no extra setup needed
   - The Send page response body (`sendResBody`) uses its own separate rendering path via `innerHTML` — it is NOT affected by the detail panel Monaco changes
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-006
+- What was implemented: Replaced request body viewer with Monaco Editor (read-only) in detail view and replaced Send page textarea with Monaco Editor (editable)
+- Files changed:
+  - src/ui/app.js — Added dual-container pattern for request body card (reqBody-monaco + reqBody-fallback); added Monaco init for request body after content.innerHTML; updated switchBodyView to handle request body Monaco (removed response-only restriction); added sendBodyEditor variable and helper functions (getSendBodyValue, setSendBodyValue, initSendBodyEditor, updateSendBodyLanguage, sendFormatToMonacoLanguage); replaced formatSendBody to use Monaco editor; updated saveSendTabState/loadSendTabState/sendRequest to use Monaco; added Ctrl+Enter and Escape keybindings to send body editor; removed old textarea-based updateSendBodyPreview and toggleSendBodyView functions
+  - src/ui/index.html — Replaced textarea#sendBody with div#sendBody-monaco-container for Monaco; removed Preview toggle button; updated sendBodyFormat onchange to call updateSendBodyLanguage
+- **Learnings for future iterations:**
+  - The Send page body editor uses a standalone `sendBodyEditor` variable (not in `activeBodyEditors`) since it persists across panel switches and has editable mode
+  - `initSendBodyEditor(value, format)` must be called once on page load and does NOT need to be called on tab switches — `setSendBodyValue()` and `updateSendBodyLanguage()` are sufficient
+  - Monaco `addCommand()` is used for Ctrl+Enter (send) and Escape (abort) keybindings inside the editable editor
+  - `monacoApi.editor.setModelLanguage(model, lang)` dynamically switches language without recreating the editor
+  - The detail view request body now uses the same dual-container pattern as response body — `switchBodyView` handles both sections identically
   - Manual browser verification is recommended for this story
 ---
