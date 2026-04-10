@@ -706,6 +706,9 @@
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
 
+      // Dispose any active body Monaco editors before replacing content
+      disposeBodyEditor('resBody-monaco');
+
       // Store headers for context menu lookup
       window._detailHeaders = { request: req.requestHeaders || {}, response: req.responseHeaders || {} };
 
@@ -934,6 +937,7 @@
         const ct = req.responseHeaders?.['content-type'] || '';
         const resBodyModes = getBodyViewModes(req.responseBody, ct);
         const resDefaultMode = resBodyModes[0]?.value || 'text';
+        const resUseMonaco = isMonacoViewMode(resDefaultMode) && !req.responseBody.startsWith('[Binary data:');
         html += `<div class="detail-card dir-left" id="card-resp-body" style="border-left-color:${statusColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -946,7 +950,10 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <pre class="body-content" id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">${formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+            <div id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">
+              <div id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
+              <pre class="body-content" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+            </div>
           </div>
         </div>`;
       }
@@ -1145,6 +1152,16 @@
       </div>`;
 
       content.innerHTML = html;
+
+      // Initialize Monaco editor for response body if the default view mode uses Monaco
+      if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
+        const resCt = req.responseHeaders?.['content-type'] || '';
+        const resModes = getBodyViewModes(req.responseBody, resCt);
+        const resDefMode = resModes[0]?.value || 'text';
+        if (isMonacoViewMode(resDefMode)) {
+          initBodyMonacoEditor('resBody-monaco', req.responseBody, resCt, resDefMode);
+        }
+      }
 
       // Generate initial export snippet
       if (document.getElementById('exportFormat')) {
@@ -1370,6 +1387,14 @@
       const modes = [];
       const ct = (contentType || '').toLowerCase();
 
+      // Image content types get an image preview mode
+      if (ct.includes('image/') && body && !body.startsWith('[Binary data:')) {
+        modes.push({ value: 'image', label: 'Image' });
+        modes.push({ value: 'text', label: 'Text' });
+        modes.push({ value: 'hex', label: 'Hex' });
+        return modes;
+      }
+
       if (ct.includes('x-www-form-urlencoded') || (body && body.includes('=') && body.includes('&') && !body.includes(' ') && !body.trimStart().startsWith('{') && body.length < 10000)) {
         modes.push({ value: 'decoded', label: 'Decoded' });
         modes.push({ value: 'raw', label: 'Raw' });
@@ -1385,12 +1410,66 @@
       } else if (ct.includes('xml') || ct.includes('html') || (body && body.trimStart().startsWith('<'))) {
         modes.push({ value: 'markup', label: ct.includes('html') ? 'HTML' : 'XML' });
         modes.push({ value: 'text', label: 'Text' });
+      } else if (ct.includes('yaml') || ct.includes('yml')) {
+        modes.push({ value: 'yaml', label: 'YAML' });
+        modes.push({ value: 'text', label: 'Text' });
       } else {
         modes.push({ value: 'text', label: 'Text' });
       }
       modes.push({ value: 'hex', label: 'Hex' });
       return modes;
     }
+
+    /**
+     * Map content-type to Monaco editor language identifier.
+     * @param {string} contentType
+     * @returns {string}
+     */
+    function contentTypeToMonacoLanguage(contentType) {
+      const ct = (contentType || '').toLowerCase();
+      if (ct.includes('json')) return 'json';
+      if (ct.includes('html')) return 'html';
+      if (ct.includes('xml') || ct.includes('svg')) return 'xml';
+      if (ct.includes('css')) return 'css';
+      if (ct.includes('javascript') || ct.includes('ecmascript')) return 'javascript';
+      if (ct.includes('typescript')) return 'typescript';
+      if (ct.includes('yaml') || ct.includes('yml')) return 'yaml';
+      return 'plaintext';
+    }
+
+    /**
+     * Map a body view mode to a Monaco language.
+     * @param {string} mode - The view mode (json, text, markup, javascript, css, yaml, raw)
+     * @param {string} contentType - The content-type header
+     * @returns {string}
+     */
+    function viewModeToMonacoLanguage(mode, contentType) {
+      switch (mode) {
+        case 'json': return 'json';
+        case 'markup': return (contentType || '').toLowerCase().includes('html') ? 'html' : 'xml';
+        case 'javascript': return 'javascript';
+        case 'css': return 'css';
+        case 'yaml': return 'yaml';
+        case 'text':
+        case 'raw':
+        default: return 'plaintext';
+      }
+    }
+
+    /**
+     * Check if a view mode should use Monaco editor (vs HTML rendering).
+     * @param {string} mode
+     * @returns {boolean}
+     */
+    function isMonacoViewMode(mode) {
+      return ['json', 'text', 'markup', 'javascript', 'css', 'yaml', 'raw'].includes(mode);
+    }
+
+    /**
+     * Track active Monaco editors for body panels (keyed by container element id).
+     * @type {Object<string, object>}
+     */
+    const activeBodyEditors = {};
 
     // Format body in a specific view mode
     // Wrap formatted HTML string in line-numbered spans
@@ -1476,10 +1555,78 @@
       }
     }
 
-    // Switch body view mode — re-renders the body content
+    /**
+     * Dispose an active Monaco editor for a body panel.
+     * @param {string} containerId
+     */
+    function disposeBodyEditor(containerId) {
+      const existing = activeBodyEditors[containerId];
+      if (existing) {
+        existing.dispose();
+        delete activeBodyEditors[containerId];
+      }
+    }
+
+    /**
+     * Get the appropriate body content for Monaco (pretty-printed for JSON).
+     * @param {string} body
+     * @param {string} mode
+     * @returns {string}
+     */
+    function getMonacoBodyValue(body, mode) {
+      if (mode === 'json') {
+        try {
+          return JSON.stringify(JSON.parse(body), null, 2);
+        } catch {
+          return body;
+        }
+      }
+      return body;
+    }
+
+    /**
+     * Initialize a Monaco editor inside a response/request body container.
+     * @param {string} containerId - The id of the Monaco container div
+     * @param {string} body - The raw body text
+     * @param {string} contentType - The content-type header
+     * @param {string} mode - The current view mode
+     */
+    async function initBodyMonacoEditor(containerId, body, contentType, mode) {
+      disposeBodyEditor(containerId);
+
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      const language = viewModeToMonacoLanguage(mode, contentType);
+      const value = getMonacoBodyValue(body, mode);
+
+      const editor = await createMonacoEditor(containerId, {
+        value: value,
+        language: language,
+        readOnly: true,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      });
+
+      if (editor) {
+        activeBodyEditors[containerId] = editor;
+
+        // Auto-size editor height based on content (capped at 500px)
+        const lineCount = editor.getModel().getLineCount();
+        const lineHeight = 18;
+        const padding = 16;
+        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), 500);
+        container.style.height = desiredHeight + 'px';
+        editor.layout();
+      }
+    }
+
+    // Switch body view mode — re-renders the body content (Monaco for text modes, HTML for hex/decoded/image)
     function switchBodyView(elementId, mode, section) {
-      const el = document.getElementById(elementId);
-      if (!el) return;
+      const wrapper = document.getElementById(elementId);
+      if (!wrapper) return;
       const req = document.getElementById('detailPanel')?._request;
       if (!req) return;
 
@@ -1488,8 +1635,40 @@
         ? (req.requestHeaders?.['content-type'] || '')
         : (req.responseHeaders?.['content-type'] || '');
 
-      el.dataset.viewMode = mode;
-      el.innerHTML = formatBodyAs(body, ct, mode);
+      const monacoId = elementId + '-monaco';
+      const fallbackId = elementId + '-fallback';
+
+      // Response body uses Monaco for text-based modes; request body still uses <pre> for now
+      if (section === 'response' && isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
+        // Show Monaco container, hide fallback
+        const monacoEl = document.getElementById(monacoId);
+        const fallbackEl = document.getElementById(fallbackId);
+        if (monacoEl) monacoEl.style.display = 'block';
+        if (fallbackEl) fallbackEl.style.display = 'none';
+
+        initBodyMonacoEditor(monacoId, body, ct, mode);
+      } else {
+        // Dispose any active Monaco editor
+        const monacoId2 = elementId + '-monaco';
+        disposeBodyEditor(monacoId2);
+
+        const monacoEl = document.getElementById(monacoId);
+        const fallbackEl = document.getElementById(fallbackId);
+        if (monacoEl) monacoEl.style.display = 'none';
+
+        if (fallbackEl) {
+          fallbackEl.style.display = 'block';
+          if (mode === 'image') {
+            fallbackEl.innerHTML = '<div style="text-align:center;padding:20px;"><span style="color:var(--text-watermark);font-size:13px;">[Image: ' + esc(ct) + ']</span></div>';
+          } else {
+            fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
+          }
+        } else {
+          // Fallback for request body or old-style rendering
+          wrapper.dataset.viewMode = mode;
+          wrapper.innerHTML = formatBodyAs(body, ct, mode);
+        }
+      }
     }
 
     function syntaxHighlightJson(json) {
