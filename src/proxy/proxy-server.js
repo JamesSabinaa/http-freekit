@@ -417,9 +417,12 @@ export class ProxyServer {
           };
           const trailers = proxyRes.trailers;
 
-          // Strip proxy-specific headers that shouldn't be forwarded to the client
+          // Strip proxy hop-by-hop headers from responses forwarded to the browser.
+          // proxy-authenticate is only valid on 407 responses — on anything else Chrome throws ERR_UNEXPECTED_PROXY_AUTH
           const resHeaders = { ...proxyRes.headers };
-          delete resHeaders['proxy-authenticate'];
+          if (proxyRes.statusCode !== 407) {
+            delete resHeaders['proxy-authenticate'];
+          }
           delete resHeaders['proxy-authorization'];
           delete resHeaders['proxy-connection'];
           clientRes.writeHead(proxyRes.statusCode, resHeaders);
@@ -2160,9 +2163,10 @@ export class ProxyServer {
           : {}
       });
       // Handle non-2xx responses (e.g. 407 Proxy Authentication Required)
-      connectReq.on('response', (res) => {
-        res.resume(); // drain the response
-        reject(new Error(`Upstream proxy rejected CONNECT: ${res.statusCode} ${res.statusMessage || ''}`));
+      // Forward the response to the client so the browser can handle auth challenges
+      connectReq.on('response', (proxyRes) => {
+        reject(new Error(`Upstream proxy rejected CONNECT: ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}`));
+        proxyRes.resume();
       });
       connectReq.on('connect', (res, socket) => {
         if (res.statusCode !== 200) {
