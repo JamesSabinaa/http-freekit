@@ -168,6 +168,15 @@ function createWindow() {
     defaultHeight: 768
   });
 
+  // Load window icon from build directory
+  let windowIcon;
+  try {
+    const { nativeImage } = require('electron');
+    const iconPath = path.join(__dirname, '..', 'build', 'icon.png');
+    windowIcon = nativeImage.createFromPath(iconPath);
+    if (windowIcon.isEmpty()) windowIcon = undefined;
+  } catch {}
+
   mainWindow = new BrowserWindow({
     x: windowState.x,
     y: windowState.y,
@@ -177,6 +186,7 @@ function createWindow() {
     minHeight: 600,
     show: false,
     title: 'HTTP FreeKit',
+    icon: windowIcon,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

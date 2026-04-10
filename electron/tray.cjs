@@ -1,13 +1,28 @@
 const { Tray, Menu, nativeImage, app } = require('electron');
+const path = require('path');
 
 let tray = null;
 
 /**
- * Create a minimal 16x16 tray icon using nativeImage.
- * Draws a simple "H" letterform in the HTTP Toolkit blue (#4775e2).
+ * Load the app icon from the build directory.
+ * Falls back to a generated icon if the file isn't found.
  */
 function createTrayIcon() {
-  // 16x16 RGBA pixel buffer
+  // Try to load the real icon from build/icons
+  const iconPaths = [
+    path.join(__dirname, '..', 'build', 'icons', '32x32.png'),
+    path.join(__dirname, '..', 'build', 'icons', '16x16.png'),
+    path.join(__dirname, '..', 'build', 'icon.png'),
+  ];
+
+  for (const iconPath of iconPaths) {
+    try {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });
+    } catch {}
+  }
+
+  // Fallback: generate a simple icon programmatically
   const size = 16;
   const buf = Buffer.alloc(size * size * 4, 0);
 
@@ -20,10 +35,8 @@ function createTrayIcon() {
     buf[offset + 3] = a;
   }
 
-  // Draw "H" shape in #4775e2 (71, 117, 226) on transparent background
-  const r = 71, g = 117, b = 226, a = 255;
+  const r = 225, g = 66, b = 31, a = 255; // #e1421f pop-color
 
-  // Background circle
   const cx = 7.5, cy = 7.5, radius = 7.5;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
