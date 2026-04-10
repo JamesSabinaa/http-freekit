@@ -5,6 +5,7 @@ import https from 'https';
 import net from 'net';
 import tls from 'tls';
 import zlib from 'zlib';
+import crypto from 'crypto';
 import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
@@ -1044,10 +1045,11 @@ export class ProxyServer {
           }
         }
 
-        // Forward to real server
+        // Forward to real server with Firefox TLS fingerprint
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: { ...req.headers }, rejectUnauthorized: false
+          headers: { ...req.headers },
+          ...this._getUpstreamTlsOptions(hostname)
         };
 
         let upstreamProtocol = 'https';
@@ -1347,10 +1349,11 @@ export class ProxyServer {
           }
         }
 
-        // Fallback: HTTPS/1.1 upstream
+        // Fallback: HTTPS/1.1 upstream with Firefox TLS fingerprint
         const proxyOpts = {
           hostname, port: targetPort, path, method,
-          headers: upstreamHeaders, rejectUnauthorized: false
+          headers: upstreamHeaders,
+          ...this._getUpstreamTlsOptions(hostname)
         };
 
         const handleResponse = (proxyRes) => {
@@ -1534,10 +1537,11 @@ export class ProxyServer {
           }
         }
 
-        // Fallback: HTTPS/1.1
+        // Fallback: HTTPS/1.1 with Firefox TLS fingerprint
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: { ...req.headers }, rejectUnauthorized: false
+          headers: { ...req.headers },
+          ...this._getUpstreamTlsOptions(hostname)
         };
 
         const handleResponse = (proxyRes) => {
@@ -2130,6 +2134,56 @@ export class ProxyServer {
         stream.end();
       }
     });
+  }
+
+  // TLS options that emulate Firefox v103's Client Hello fingerprint.
+  // Matches HTTP Toolkit's approach — prevents sites with JA3/bot detection
+  // (Cloudflare, Akamai, etc.) from blocking proxy connections.
+  _getUpstreamTlsOptions(hostname) {
+    const SSL_OP_TLSEXT_PADDING = 1 << 4;
+    const SSL_OP_NO_ENCRYPT_THEN_MAC = 1 << 19;
+    const SSL_OP_LEGACY_SERVER_CONNECT = 1 << 2;
+
+    return {
+      servername: net.isIP(hostname) ? undefined : hostname,
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1',
+      ciphers: [
+        'TLS_AES_128_GCM_SHA256',
+        'TLS_CHACHA20_POLY1305_SHA256',
+        'TLS_AES_256_GCM_SHA384',
+        'ECDHE-ECDSA-AES128-GCM-SHA256',
+        'ECDHE-RSA-AES128-GCM-SHA256',
+        'ECDHE-ECDSA-CHACHA20-POLY1305',
+        'ECDHE-RSA-CHACHA20-POLY1305',
+        'ECDHE-ECDSA-AES256-GCM-SHA384',
+        'ECDHE-RSA-AES256-GCM-SHA384',
+        'ECDHE-ECDSA-AES256-SHA',
+        'ECDHE-ECDSA-AES128-SHA',
+        'ECDHE-RSA-AES128-SHA',
+        'ECDHE-RSA-AES256-SHA',
+        'AES128-GCM-SHA256',
+        'AES256-GCM-SHA384',
+        'AES128-SHA',
+        'AES256-SHA',
+      ].join(':') + ':@SECLEVEL=0',
+      sigalgs: [
+        'ecdsa_secp256r1_sha256',
+        'ecdsa_secp384r1_sha384',
+        'ecdsa_secp521r1_sha512',
+        'rsa_pss_rsae_sha256',
+        'rsa_pss_rsae_sha384',
+        'rsa_pss_rsae_sha512',
+        'rsa_pkcs1_sha256',
+        'rsa_pkcs1_sha384',
+        'rsa_pkcs1_sha512',
+        'ECDSA+SHA1',
+        'rsa_pkcs1_sha1',
+      ].join(':'),
+      ecdhCurve: 'X25519:prime256v1:secp384r1:secp521r1',
+      secureOptions: SSL_OP_TLSEXT_PADDING | SSL_OP_NO_ENCRYPT_THEN_MAC | SSL_OP_LEGACY_SERVER_CONNECT,
+      requestOCSP: true,
+    };
   }
 
   // Build a proxy URL from the upstream proxy config
