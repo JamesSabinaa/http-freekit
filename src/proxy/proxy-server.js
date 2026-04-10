@@ -422,7 +422,7 @@ export class ProxyServer {
             statusCode: proxyRes.statusCode,
             statusMessage: proxyRes.statusMessage,
             responseHeaders: proxyRes.headers,
-            responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding']),
+            responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
             responseBodySize: resBody.length,
             duration,
             timing,
@@ -773,7 +773,7 @@ export class ProxyServer {
                     requestBody: this._safeBodyString(body), requestBodySize: body.length,
                     statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
                     responseHeaders: resHeaders,
-                    responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding']),
+                    responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
                     responseBodySize: resBody.length, duration: Date.now() - startTime,
                     timestamp: startTime, source: 'mock',
                     tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
@@ -1032,7 +1032,7 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
             tls: tlsDetails, remote,
             trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
@@ -1277,7 +1277,7 @@ export class ProxyServer {
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime,
             source, tls: tlsDetails, remote
           });
@@ -1472,7 +1472,7 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding']),
+            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
             tls: tlsDetails, remote
           });
@@ -1722,7 +1722,7 @@ export class ProxyServer {
               requestBody: this._safeBodyString(body), requestBodySize: body.length,
               statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
               responseHeaders: fwdRes.headers,
-              responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding']),
+              responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
               responseBodySize: resBody.length, duration: Date.now() - startTime,
               timestamp: startTime, source: 'mock',
               tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
@@ -2511,7 +2511,7 @@ export class ProxyServer {
               requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
               requestBodySize: body.length, statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage, responseHeaders: resHeaders,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding']),
+              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
               responseBodySize: resBody.length, duration: Date.now() - startTime,
               timestamp: startTime, source: 'mock',
               tls: null, remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
@@ -2885,11 +2885,18 @@ export class ProxyServer {
     }
   }
 
-  _safeBodyString(buffer, contentEncoding) {
+  _safeBodyString(buffer, contentEncoding, contentType) {
     if (!buffer || buffer.length === 0) return '';
 
     // Decompress if needed
     let decoded = this._decompressBody(buffer, contentEncoding);
+
+    // For images, encode as base64 data URI so the UI can display them
+    const ct = (contentType || '').toLowerCase();
+    if (ct.startsWith('image/') && decoded.length < 2 * 1024 * 1024) { // up to 2MB images
+      const mimeType = ct.split(';')[0].trim();
+      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+    }
 
     // Limit body capture to 512KB
     const maxSize = 512 * 1024;

@@ -1948,6 +1948,14 @@
       if (body.startsWith('[Binary data:')) return '<span style="color:var(--text-watermark);">' + esc(body) + '</span>';
 
       switch (mode) {
+        case 'image': {
+          if (body.startsWith('data:image/')) {
+            return '<div style="display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg-lowlight);border-radius:4px;">' +
+              '<img src="' + body + '" style="max-width:100%;max-height:60vh;object-fit:contain;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,0.3);" alt="Response image">' +
+              '</div>';
+          }
+          return '<span style="color:var(--text-watermark);">[Image data not available]</span>';
+        }
         case 'decoded': {
           // URL-encoded key/value pairs — no line numbers (has its own layout)
           try {
