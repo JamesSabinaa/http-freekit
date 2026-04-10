@@ -98,8 +98,12 @@ module.exports = {
   // Rebuild native dependencies for the target Electron version
   npmRebuild: true,
 
-  // asar disabled — the server runs as a child process with ESM imports,
-  // which doesn't work from inside an asar archive. Disabling asar avoids
-  // all path resolution and transitive dependency issues.
-  asar: false
+  // asar enabled — the electron/ shell stays packed for performance.
+  // src/ and all node_modules are unpacked because the server runs as a
+  // child process with ESM imports, which requires real filesystem paths.
+  asar: true,
+  asarUnpack: [
+    'src/**/*',
+    'node_modules/**/*'
+  ]
 };

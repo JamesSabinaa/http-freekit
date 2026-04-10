@@ -67,8 +67,11 @@ async function startServer() {
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
   logStream.write(`\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`);
 
-  // asar is disabled, so the path resolves normally in both dev and packaged builds
-  const serverScript = path.join(__dirname, '..', 'src', 'index.js');
+  // Server files are in app.asar.unpacked (via asarUnpack config)
+  let serverScript = path.join(__dirname, '..', 'src', 'index.js');
+  if (serverScript.includes('app.asar')) {
+    serverScript = serverScript.replace('app.asar', 'app.asar.unpacked');
+  }
 
   serverProcess = spawn(process.execPath, [serverScript], {
     env: {
