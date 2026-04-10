@@ -1430,7 +1430,7 @@
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             ${req.duration != null ? '<span class="detail-pill pill-muted">' + Math.round(req.duration) + 'ms</span>' : ''}
             <span class="detail-card-heading">Performance</span>
-            <span class="collapse-chevron">&#9650;</span>
+            <span class="collapse-chevron">&#9660;</span>
           </span>
         </div>
         <div class="detail-card-body">
@@ -1574,7 +1574,7 @@
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <button class="btn" onclick="event.stopPropagation();copyExportSnippet()" style="padding:3px 8px;font-size:11px;" title="Copy to clipboard">Copy</button>
             <span class="detail-card-heading">Export</span>
-            <span class="collapse-chevron">&#9650;</span>
+            <span class="collapse-chevron">&#9660;</span>
           </span>
         </div>
         <div class="detail-card-body">
