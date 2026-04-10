@@ -191,6 +191,49 @@ The Electron desktop app provides:
 - **Cross-platform** — Windows (.exe), macOS (.dmg), Linux (.AppImage, .deb, .rpm)
 - **Secure IPC** — context isolation enabled, preload script with contextBridge API
 
+## MCP Server (AI Integration)
+
+HTTP FreeKit includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets AI assistants like Claude search, analyze, and export your captured HTTP traffic.
+
+### Tools Available
+
+| Tool | Description |
+|------|-------------|
+| `search_traffic` | Filter requests by query, method, status, host |
+| `get_request_detail` | Full headers, body, timing, TLS info for a request |
+| `get_traffic_stats` | Aggregate analytics: counts by method/status/host, avg response time, bandwidth |
+| `security_scan` | Find missing HTTPS, insecure cookies, exposed tokens, missing security headers |
+| `export_traffic` | Filtered HAR 1.2 export |
+| `get_live_summary` | Proxy state, active interceptors, mock rules, breakpoints |
+
+### Connecting via SSE
+
+The MCP server runs on the same port as the UI with no extra configuration:
+
+```
+SSE Endpoint: http://127.0.0.1:8001/mcp/sse
+```
+
+### Connecting via Claude Desktop
+
+Add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "http-freekit": {
+      "command": "node",
+      "args": ["path/to/http-freekit/src/index.js", "--mcp-stdio"],
+      "env": { "API_PORT": "8001" }
+    }
+  }
+}
+```
+
+### Enable/Disable
+
+Toggle the MCP server on or off in **Settings > MCP Server (AI Integration)**.
+
 ## API
 
 The management API runs on the same port as the UI (default 8001):
@@ -224,6 +267,10 @@ The management API runs on the same port as the UI (default 8001):
 | DELETE | `/api/specs/:id` | Remove API spec |
 | POST | `/api/send` | Send an HTTP request |
 | GET | `/api/certificate` | Download CA certificate (.pem) |
+| GET | `/api/mcp/status` | MCP server status |
+| POST | `/api/mcp/toggle` | Enable/disable MCP server |
+| GET | `/mcp/sse` | MCP SSE transport endpoint |
+| POST | `/mcp/messages` | MCP message endpoint |
 | WS | `/ws` | Real-time traffic streaming |
 
 ## Certificate Trust
