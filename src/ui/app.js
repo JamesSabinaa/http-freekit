@@ -3006,26 +3006,39 @@
 
     // ============ MOCK RULES ============
     const MOCK_METHOD_COLORS = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#888','*':'#888'};
-    const MOCK_MATCHER_TYPES = [
-      { value: 'method', label: 'Method' },
-      { value: 'path', label: 'Path' },
-      { value: 'regex-path', label: 'Regex Path' },
-      { value: 'host', label: 'Host' },
-      { value: 'header', label: 'Header' },
-      { value: 'query', label: 'Query Param' },
-      { value: 'exact-query', label: 'Exact Query String' },
-      { value: 'url-contains', label: 'URL Contains' },
-      { value: 'body-contains', label: 'Body Contains' },
-      { value: 'json-body-exact', label: 'JSON Body (exact)' },
-      { value: 'json-body-includes', label: 'JSON Body (partial match)' },
-      { value: 'port', label: 'Port' },
-      { value: 'protocol', label: 'Protocol (HTTP/HTTPS)' },
-      { value: 'cookie', label: 'Cookie' },
-      { value: 'form-data', label: 'Form Data Field' },
-      { value: 'regex-url', label: 'Regex URL (full)' },
-      { value: 'regex-body', label: 'Regex Body' },
-      { value: 'raw-body-exact', label: 'Raw Body (exact match)' }
+    const MOCK_MATCHER_GROUPS = [
+      { group: 'Basic', items: [
+        { value: 'wildcard', label: 'Wildcard (any request)' },
+        { value: 'method', label: 'Method' },
+        { value: 'host', label: 'Host' },
+        { value: 'path', label: 'Path' },
+      ]},
+      { group: 'URL', items: [
+        { value: 'hostname', label: 'Hostname (no port)' },
+        { value: 'regex-path', label: 'Regex Path' },
+        { value: 'regex-url', label: 'Regex URL (full)' },
+        { value: 'url-contains', label: 'URL Contains' },
+        { value: 'query', label: 'Query Param' },
+        { value: 'exact-query', label: 'Exact Query String' },
+        { value: 'port', label: 'Port' },
+        { value: 'protocol', label: 'Protocol (HTTP/HTTPS)' },
+      ]},
+      { group: 'Headers', items: [
+        { value: 'header', label: 'Header' },
+        { value: 'cookie', label: 'Cookie' },
+      ]},
+      { group: 'Body', items: [
+        { value: 'body-contains', label: 'Body Contains' },
+        { value: 'json-body-exact', label: 'JSON Body (exact)' },
+        { value: 'json-body-includes', label: 'JSON Body (partial match)' },
+        { value: 'regex-body', label: 'Regex Body' },
+        { value: 'raw-body-exact', label: 'Raw Body (exact match)' },
+        { value: 'form-data', label: 'Form Data Field' },
+        { value: 'multipart-form-data', label: 'Multipart Form Data' },
+      ]},
     ];
+    // Flat list for iteration
+    const MOCK_MATCHER_TYPES = MOCK_MATCHER_GROUPS.flatMap(g => g.items);
     const MOCK_ACTION_TYPES = [
       { value: 'fixed-response', label: 'Return a fixed response' },
       { value: 'serve-file', label: 'Serve content from a file' },
@@ -3616,9 +3629,11 @@
       for (const m of nr.matchers) {
         html += '<div style="font-size:12px;font-family:var(--font-mono);margin-bottom:4px;color:var(--text-lowlight);">';
         switch (m.type) {
+          case 'wildcard': html += '<span style="color:var(--text-watermark);">Wildcard</span> (matches any request)'; break;
           case 'method': html += '<span style="color:var(--text-watermark);">Method</span> = ' + esc(m.value); break;
           case 'path': html += '<span style="color:var(--text-watermark);">Path (' + (m.matchType || 'prefix') + ')</span> = ' + esc(m.value); break;
           case 'host': html += '<span style="color:var(--text-watermark);">Host</span> = ' + esc(m.value); break;
+          case 'hostname': html += '<span style="color:var(--text-watermark);">Hostname</span> = ' + esc(m.value); break;
           case 'header': html += '<span style="color:var(--text-watermark);">Header</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'query': html += '<span style="color:var(--text-watermark);">Query</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'regex-path': html += '<span style="color:var(--text-watermark);">Regex Path</span> = ' + esc(m.value); break;
@@ -3631,6 +3646,7 @@
           case 'protocol': html += '<span style="color:var(--text-watermark);">Protocol</span> = ' + esc((m.value || '').toUpperCase()); break;
           case 'cookie': html += '<span style="color:var(--text-watermark);">Cookie</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'form-data': html += '<span style="color:var(--text-watermark);">Form Data</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
+          case 'multipart-form-data': html += '<span style="color:var(--text-watermark);">Multipart</span> ' + esc(m.name) + (m.value ? ' = ' + esc(m.value) : ' (present)'); break;
           case 'regex-url': html += '<span style="color:var(--text-watermark);">Regex URL</span> = ' + esc(m.value); break;
           case 'regex-body': html += '<span style="color:var(--text-watermark);">Regex Body</span> = ' + esc((m.value || '').substring(0, 80)); break;
           case 'raw-body-exact': html += '<span style="color:var(--text-watermark);">Raw Body (exact)</span> = ' + esc((m.value || '').substring(0, 80)); break;
@@ -3812,12 +3828,19 @@
     function renderMockMatcherRow(matcher, idx, eid) {
       let html = '<div class="mock-matcher-row" data-idx="' + idx + '">';
       html += '<select onchange="updateMockMatcher(' + idx + ', \'type\', this.value, \'' + eid + '\')">';
-      for (const mt of MOCK_MATCHER_TYPES) {
-        html += '<option value="' + mt.value + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + mt.label + '</option>';
+      for (const grp of MOCK_MATCHER_GROUPS) {
+        html += '<optgroup label="' + grp.group + '">';
+        for (const mt of grp.items) {
+          html += '<option value="' + mt.value + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + mt.label + '</option>';
+        }
+        html += '</optgroup>';
       }
       html += '</select>';
 
       switch (matcher.type) {
+        case 'wildcard':
+          html += '<span style="color:var(--text-lowlight);font-size:12px;padding:4px 8px;">Matches any request</span>';
+          break;
         case 'method':
           html += '<select onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           for (const meth of ['*', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
@@ -3834,7 +3857,10 @@
           html += '<input type="text" placeholder="/api/users" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'host':
-          html += '<input type="text" placeholder="example.com or *.example.com" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="example.com:8080 or *.example.com" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          break;
+        case 'hostname':
+          html += '<input type="text" placeholder="example.com (hostname only, no port)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'header':
           html += '<input type="text" style="max-width:140px;" placeholder="Header name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
@@ -3887,6 +3913,10 @@
           break;
         case 'raw-body-exact':
           html += '<textarea placeholder="Exact body content to match" style="min-height:60px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
+          break;
+        case 'multipart-form-data':
+          html += '<input type="text" placeholder="Field name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
       }
 
@@ -4191,13 +4221,16 @@
       if (field === 'type') {
         const newM = { type: value };
         switch (value) {
+          case 'wildcard': break; // no properties needed
           case 'method': newM.value = 'GET'; break;
           case 'path': newM.value = '/'; newM.matchType = 'prefix'; break;
           case 'host': newM.value = ''; break;
+          case 'hostname': newM.value = ''; break;
           case 'header': newM.name = ''; newM.value = ''; break;
           case 'query': newM.name = ''; newM.value = ''; break;
           case 'url-contains': newM.value = ''; break;
           case 'body-contains': newM.value = ''; break;
+          case 'multipart-form-data': newM.name = ''; newM.value = ''; break;
         }
         mockEditDraft.matchers[idx] = newM;
         rerenderMockMatchers(eid);

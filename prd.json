@@ -507,7 +507,7 @@
         "Typecheck passes"
       ],
       "priority": 28,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/model/rules/rule-definitions.ts. We already have 18 matchers, need the remaining ~2-3."
     },
     {

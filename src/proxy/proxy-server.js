@@ -2156,6 +2156,8 @@ export class ProxyServer {
 
   _evaluateMatcher(matcher, method, url, headers, body) {
     switch (matcher.type) {
+      case 'wildcard':
+        return true;
       case 'method':
         return matcher.value === '*' || matcher.value.toUpperCase() === method.toUpperCase();
       case 'path': {
@@ -2169,11 +2171,19 @@ export class ProxyServer {
       }
       case 'host': {
         let urlHost;
-        try { urlHost = new URL(url).hostname; } catch { urlHost = ''; }
+        try { urlHost = new URL(url).host; } catch { urlHost = ''; }
         if (matcher.value.startsWith('*')) {
           return urlHost.endsWith(matcher.value.slice(1));
         }
         return urlHost === matcher.value;
+      }
+      case 'hostname': {
+        let urlHostname;
+        try { urlHostname = new URL(url).hostname; } catch { urlHostname = ''; }
+        if (matcher.value.startsWith('*')) {
+          return urlHostname.endsWith(matcher.value.slice(1));
+        }
+        return urlHostname === matcher.value;
       }
       case 'url-contains':
         return url.includes(matcher.value);
@@ -2243,6 +2253,25 @@ export class ProxyServer {
           if (matcher.value) return params.get(matcher.name) === matcher.value;
           return params.has(matcher.name);
         } catch { return false; }
+      }
+      case 'multipart-form-data': {
+        // Match multipart/form-data field by name and optional value
+        if (!body || !matcher.name) return false;
+        const ct = headers['content-type'] || '';
+        const boundaryMatch = ct.match(/boundary=([^\s;]+)/);
+        if (!boundaryMatch) return false;
+        const boundary = boundaryMatch[1];
+        const parts = body.split('--' + boundary);
+        for (const part of parts) {
+          const dispMatch = part.match(/Content-Disposition:\s*form-data;\s*name="([^"]+)"/i);
+          if (!dispMatch || dispMatch[1] !== matcher.name) continue;
+          if (!matcher.value) return true; // field exists
+          const bodyStart = part.indexOf('\r\n\r\n');
+          if (bodyStart === -1) continue;
+          const fieldValue = part.slice(bodyStart + 4).replace(/\r\n$/, '');
+          if (fieldValue === matcher.value) return true;
+        }
+        return false;
       }
       case 'regex-url': {
         try { return new RegExp(matcher.value).test(url); } catch { return false; }

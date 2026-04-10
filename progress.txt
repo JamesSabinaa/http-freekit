@@ -86,6 +86,9 @@
 - UI listens for updater events via `window.electronApi.onUpdaterStatus(callback)` — returns unsubscribe function; all auto-updater UI is gated behind `window.electronApi` existence check
 - ARIA accessibility: sidebar uses `role="tablist"` with `role="tab"` items and `role="tabpanel"` panels; `switchPanel()` syncs `aria-selected`; traffic table has `role="grid"` with `aria-rowcount`, rows have `role="row"` + `role="gridcell"` cells, `id="row-{reqId}"` for `aria-activedescendant`; collapsible detail cards get `aria-expanded` toggled in `toggleCardCollapse()`; mock rules/groups get `aria-expanded` in their render functions; send tabs use `role="tablist"` + `role="tab"` with `aria-selected`
 - Skip-to-content: `<a href="#main-content" class="skip-to-content">` is the first focusable element in `<body>`; CSS hides it offscreen until `:focus`
+- Matcher types are defined in `MOCK_MATCHER_GROUPS` (grouped with optgroups) and `MOCK_MATCHER_TYPES` (flat, derived via `.flatMap()`); 21 total matchers across 4 groups: Basic (wildcard, method, host, path), URL (hostname, regex-path, regex-url, url-contains, query, exact-query, port, protocol), Headers (header, cookie), Body (body-contains, json-body-exact, json-body-includes, regex-body, raw-body-exact, form-data, multipart-form-data)
+- `host` matcher uses `new URL(url).host` (includes port); `hostname` matcher uses `new URL(url).hostname` (no port) — both support wildcard prefix matching
+- Multipart form data matcher parses boundary from Content-Type header and splits body on `--boundary` to find field names via Content-Disposition regex
 
 ---
 
@@ -519,4 +522,18 @@
   - `aria-expanded` must be updated in both the initial render AND the toggle handler to stay in sync
   - Skip-to-content link uses `position:absolute; top:-100%` (hidden) with `:focus { top:0 }` to appear on Tab
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-028
+- What was implemented: Added 3 new matcher types (Wildcard, Hostname, MultipartFormData) and grouped matcher dropdown with optgroups
+- Files changed:
+  - src/ui/app.js — Added MOCK_MATCHER_GROUPS with 4 optgroups (Basic, URL, Headers, Body); replaced flat dropdown with optgroup-based select; added wildcard/hostname/multipart-form-data editor fields; added summary display cases; added type-switching defaults
+  - src/proxy/proxy-server.js — Added wildcard matcher (always returns true); added hostname matcher (uses URL.hostname, supports wildcards); updated host matcher to use URL.host (includes port); added multipart-form-data matcher (parses boundary, Content-Disposition headers, field values)
+  - prd.json — Marked US-028 as passes:true
+- **Learnings for future iterations:**
+  - `host` matcher now uses `new URL(url).host` (includes port like `example.com:8080`); `hostname` uses `new URL(url).hostname` (no port) — this distinction matches HTTP Toolkit's separation
+  - Multipart body parsing: split on `--boundary`, regex for `Content-Disposition: form-data; name="fieldName"`, field value starts after `\r\n\r\n`
+  - `MOCK_MATCHER_GROUPS` is the grouped structure; `MOCK_MATCHER_TYPES` is a flat version derived via `.flatMap()` — both are used depending on context
+  - Matcher dropdown uses `<optgroup label="...">` for grouping; the flat `MOCK_MATCHER_TYPES` array is still used where only a flat list is needed
+  - Wildcard matcher has no properties — the editor just shows a "Matches any request" label
 ---
