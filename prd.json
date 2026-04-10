@@ -538,7 +538,7 @@
         "Typecheck passes"
       ],
       "priority": 30,
-      "passes": false,
+      "passes": true,
       "notes": "Consider using the 'socks' npm package for SOCKS client implementation."
     },
     {

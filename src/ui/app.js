@@ -5709,7 +5709,9 @@
           http: 'The HTTP proxy details, e.g. proxy.example.com:8080 or user:pwd@proxy:8080',
           https: 'The HTTPS proxy details, e.g. proxy.example.com:443',
           socks4: 'The SOCKS4 proxy details, e.g. proxy.example.com:1080',
+          socks4a: 'The SOCKS4a proxy details, e.g. proxy.example.com:1080',
           socks5: 'The SOCKS5 proxy details, e.g. user:pwd@proxy.example.com:1080',
+          socks5h: 'The SOCKS5h proxy details, e.g. user:pwd@proxy.example.com:1080',
         };
         label.textContent = type.toUpperCase() + ' proxy details';
         input.placeholder = placeholders[type] || 'hostname:port';

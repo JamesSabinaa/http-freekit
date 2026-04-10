@@ -89,6 +89,8 @@
 - Matcher types are defined in `MOCK_MATCHER_GROUPS` (grouped with optgroups) and `MOCK_MATCHER_TYPES` (flat, derived via `.flatMap()`); 21 total matchers across 4 groups: Basic (wildcard, method, host, path), URL (hostname, regex-path, regex-url, url-contains, query, exact-query, port, protocol), Headers (header, cookie), Body (body-contains, json-body-exact, json-body-includes, regex-body, raw-body-exact, form-data, multipart-form-data)
 - `host` matcher uses `new URL(url).host` (includes port); `hostname` matcher uses `new URL(url).hostname` (no port) — both support wildcard prefix matching
 - Multipart form data matcher parses boundary from Content-Type header and splits body on `--boundary` to find field names via Content-Disposition regex
+- SOCKS proxy support uses `socks` npm package (`SocksClient.createConnection`); `_isSocksProxy()` checks `type.startsWith('socks')`; `_getSocksType()` maps socks4/socks4a→4, socks5/socks5h→5; `_connectViaSocks()` returns raw TCP socket, `_connectViaSocksTls()` wraps in TLS
+- Upstream proxy type is stored in `this.upstreamProxy.type` (e.g. 'http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h'); SOCKS proxies use `createConnection` callback pattern for HTTP and `_connectViaSocksTls` for HTTPS paths
 
 ---
 
@@ -548,4 +550,21 @@
   - RequestAndResponseBreakpoint (`breakpoint-request-response`) is a two-phase handler: uses two sequential `pendingBreakpoints` entries — first for request phase, then for response phase — each emitting `breakpoint-hit` with different `phase` values
   - Both handler types are in the Advanced optgroup alongside close, reset, timeout, breakpoint-request, breakpoint-response
   - Webhook header helpers follow the exact same pattern as `updateMockRespHeader`/`addMockRespHeader`/`removeMockRespHeader`/`rerenderMockRespHeaders` but operate on `action.webhookHeaders` instead of `action.headers`
+---
+
+## 2026-04-10 - US-030
+- What was implemented: Added SOCKS4a and SOCKS5h upstream proxy types (hostname resolved by proxy, not client)
+- Files changed:
+  - package.json — Added `socks` as a direct dependency (was already available transitively)
+  - src/ui/index.html — Added `socks4a` and `socks5h` options to the upstream proxy type dropdown
+  - src/ui/app.js — Added placeholder text for socks4a and socks5h types in `updateUpstreamFields()`
+  - src/api/api-server.js — Now passes `type` field from POST body to `setUpstreamProxy()`
+  - src/proxy/proxy-server.js — Stores proxy `type` in `this.upstreamProxy`; added `SocksClient` import; added `_isSocksProxy()`, `_getSocksType()`, `_connectViaSocks()`, `_connectViaSocksTls()` methods; HTTP path uses `createConnection` callback for SOCKS; all 3 HTTPS paths use `_connectViaSocksTls` for SOCKS proxies
+- **Learnings for future iterations:**
+  - The `socks` npm package's `SocksClient.createConnection()` returns `{ socket }` — the socket is a raw TCP connection through the SOCKS proxy; for TLS, wrap it with `tls.connect({ socket, servername })`
+  - SOCKS4a vs SOCKS4: both use type=4 in the socks library; the 'a' variant means hostname resolution happens on the SOCKS server (the socks library handles this automatically when you pass a hostname string instead of an IP)
+  - SOCKS5h vs SOCKS5: both use type=5; the 'h' variant means hostname resolution happens on the SOCKS server (same automatic handling by the socks library)
+  - For HTTP requests through SOCKS, use Node's `createConnection` option in `http.request()` — this lets you supply a pre-connected socket while still using the normal HTTP client
+  - SOCKS auth uses `userId` and `password` fields (not Basic auth headers like HTTP proxies)
+  - Port defaults for all SOCKS variants: 1080 (handled by `type.startsWith('socks')` check)
 ---

@@ -7,6 +7,7 @@ import tls from 'tls';
 import zlib from 'zlib';
 import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
+import { SocksClient } from 'socks';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 
 export class ProxyServer {
@@ -41,12 +42,15 @@ export class ProxyServer {
       console.log('[Proxy] Upstream proxy disabled');
       return;
     }
+    const type = config.type || 'http';
+    const defaultPort = type === 'https' ? 443 : type.startsWith('socks') ? 1080 : 8080;
     this.upstreamProxy = {
       host: config.host,
-      port: parseInt(config.port) || 8080,
-      auth: config.auth || null // "user:pass" or null
+      port: parseInt(config.port) || defaultPort,
+      auth: config.auth || null, // "user:pass" or null
+      type
     };
-    console.log(`[Proxy] Upstream proxy set to ${this.upstreamProxy.host}:${this.upstreamProxy.port}`);
+    console.log(`[Proxy] Upstream proxy set to ${type.toUpperCase()} ${this.upstreamProxy.host}:${this.upstreamProxy.port}`);
   }
 
   setTlsPassthrough(hostnames) {
@@ -353,8 +357,22 @@ export class ProxyServer {
       delete headers['proxy-connection'];
 
       let options;
-      if (this.upstreamProxy) {
-        // Route through upstream proxy — send full URL as path
+      if (this.upstreamProxy && this._isSocksProxy()) {
+        // Route through SOCKS proxy — connect via SOCKS then send normal request
+        options = {
+          hostname: targetUrl.hostname,
+          port: parseInt(targetUrl.port) || 80,
+          path: targetUrl.pathname + targetUrl.search,
+          method: clientReq.method,
+          headers,
+          createConnection: (opts, oncreate) => {
+            this._connectViaSocks(opts.hostname, opts.port)
+              .then(socket => oncreate(null, socket))
+              .catch(err => oncreate(err));
+          }
+        };
+      } else if (this.upstreamProxy) {
+        // Route through HTTP/HTTPS upstream proxy — send full URL as path
         options = {
           hostname: this.upstreamProxy.host,
           port: this.upstreamProxy.port,
@@ -1080,7 +1098,9 @@ export class ProxyServer {
         let proxyReq;
         if (this.upstreamProxy) {
           try {
-            const upstreamConn = await this._connectViaUpstream(hostname, targetPort);
+            const upstreamConn = this._isSocksProxy()
+              ? await this._connectViaSocksTls(hostname, targetPort)
+              : await this._connectViaUpstream(hostname, targetPort);
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
@@ -1347,7 +1367,9 @@ export class ProxyServer {
         let proxyReq;
         if (this.upstreamProxy) {
           try {
-            const upstreamConn = await this._connectViaUpstream(hostname, targetPort);
+            const upstreamConn = this._isSocksProxy()
+              ? await this._connectViaSocksTls(hostname, targetPort)
+              : await this._connectViaUpstream(hostname, targetPort);
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
@@ -1519,7 +1541,9 @@ export class ProxyServer {
         let proxyReq;
         if (this.upstreamProxy) {
           try {
-            const upstreamConn = await this._connectViaUpstream(hostname, targetPort);
+            const upstreamConn = this._isSocksProxy()
+              ? await this._connectViaSocksTls(hostname, targetPort)
+              : await this._connectViaUpstream(hostname, targetPort);
             proxyReq = https.request({
               ...proxyOpts,
               createConnection: () => upstreamConn,
@@ -2108,6 +2132,56 @@ export class ProxyServer {
       });
       connectReq.on('error', reject);
       connectReq.end();
+    });
+  }
+
+  // Map upstream proxy type string to socks library type constant
+  _getSocksType() {
+    const t = this.upstreamProxy?.type;
+    if (t === 'socks4' || t === 'socks4a') return 4;
+    return 5; // socks5, socks5h
+  }
+
+  // Whether the configured upstream proxy is a SOCKS proxy
+  _isSocksProxy() {
+    return this.upstreamProxy?.type?.startsWith('socks') || false;
+  }
+
+  // Create a raw TCP socket through a SOCKS proxy
+  async _connectViaSocks(hostname, targetPort) {
+    const proxy = this.upstreamProxy;
+    const socksOptions = {
+      proxy: {
+        host: proxy.host,
+        port: proxy.port,
+        type: this._getSocksType(),
+      },
+      command: 'connect',
+      destination: {
+        host: hostname,
+        port: targetPort,
+      },
+    };
+    if (proxy.auth) {
+      const [userId, password] = proxy.auth.split(':');
+      socksOptions.proxy.userId = userId;
+      socksOptions.proxy.password = password || '';
+    }
+    const { socket } = await SocksClient.createConnection(socksOptions);
+    return socket;
+  }
+
+  // Create a TLS connection through a SOCKS proxy
+  async _connectViaSocksTls(hostname, targetPort) {
+    const rawSocket = await this._connectViaSocks(hostname, targetPort);
+    return new Promise((resolve, reject) => {
+      const tlsConn = tls.connect({ socket: rawSocket, servername: hostname, rejectUnauthorized: false }, () => {
+        resolve(tlsConn);
+      });
+      tlsConn.on('error', (err) => {
+        rawSocket.destroy();
+        reject(err);
+      });
     });
   }
 

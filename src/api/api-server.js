@@ -404,8 +404,8 @@ export class ApiServer {
     });
 
     router.post('/api/upstream-proxy', (req, res) => {
-      const { host, port, auth } = req.body;
-      this.proxy.setUpstreamProxy(host ? { host, port, auth } : null);
+      const { host, port, auth, type } = req.body;
+      this.proxy.setUpstreamProxy(host ? { host, port, auth, type } : null);
       res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
     });
 
