@@ -1763,6 +1763,90 @@
       border-color: var(--text-lowlight);
     }
 
+    /* JVM Process List */
+    .jvm-process-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .jvm-process-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--bg-active);
+      border-radius: 4px;
+      border-left: 3px solid transparent;
+    }
+
+    .jvm-process-item.activated {
+      border-left-color: #e76f00;
+    }
+
+    .jvm-process-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .jvm-process-info > i.ph {
+      font-size: 22px;
+      color: var(--text-lowlight);
+      flex-shrink: 0;
+    }
+
+    .jvm-process-details {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .jvm-process-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .jvm-process-meta {
+      font-size: 11px;
+      color: var(--text-lowlight);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .jvm-process-actions {
+      flex-shrink: 0;
+      margin-left: 12px;
+    }
+
+    .jvm-process-activate {
+      padding: 4px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 4px;
+      border: none;
+      background: #e76f00;
+      color: white;
+      cursor: pointer;
+    }
+
+    .jvm-process-activate:hover {
+      opacity: 0.85;
+    }
+
+    .jvm-process-activate:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
     /* ============================================================
        22. Mock / Send / Settings Panels
        ============================================================ */

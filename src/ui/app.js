@@ -2245,7 +2245,8 @@
       'system-proxy': '<svg viewBox="0 0 24 24" width="36" height="36"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="#9a9da8" stroke-width="1.5"/><line x1="8" y1="21" x2="16" y2="21" stroke="#9a9da8" stroke-width="1.5"/><line x1="12" y1="17" x2="12" y2="21" stroke="#9a9da8" stroke-width="1.5"/><circle cx="12" cy="10" r="3" fill="none" stroke="#9a9da8" stroke-width="1.5"/></svg>',
       'docker': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#2fb4e0" stroke-width="1.5"><rect x="3" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="11" width="4" height="4" rx="0.5"/><rect x="13" y="11" width="4" height="4" rx="0.5"/><rect x="8" y="6" width="4" height="4" rx="0.5"/><rect x="13" y="6" width="4" height="4" rx="0.5"/><path d="M2 13c0 0 1-5 10-5s10 5 10 5" stroke-width="1"/></svg>',
       'electron': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#47848f" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></svg>',
-      'android-adb': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#78c257" stroke-width="1.5"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="9" y1="6" x2="15" y2="6"/></svg>'
+      'android-adb': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#78c257" stroke-width="1.5"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="9" y1="6" x2="15" y2="6"/></svg>',
+      'jvm': '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#e76f00" stroke-width="1.5"><path d="M8 17c0 0 1.5 2 4 2s4-2 4-2"/><path d="M9 11c0 0-3 2-3 5 0 2 1.5 4 6 4s6-2 6-4c0-3-3-5-3-5"/><path d="M12 3c-1 0-2 1-2 2.5C10 7.5 12 9 12 9s2-1.5 2-3.5C14 4 13 3 12 3z"/><line x1="12" y1="9" x2="12" y2="15"/></svg>'
     };
 
     const INTERCEPTOR_DESCRIPTIONS = {
@@ -2259,7 +2260,8 @@
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', 'Set proxy environment variables when running containers.'],
       'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.'],
-      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.']
+      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.'],
+      'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
     };
 
     const INTERCEPTOR_COLORS = {
@@ -2274,6 +2276,7 @@
       'docker': '#2fb4e0',
       'electron': '#47848f',
       'android-adb': '#78c257',
+      'jvm': '#e76f00',
       'manual-setup': '#4caf7d'
     };
 
@@ -2289,7 +2292,8 @@
       'system-proxy': ['system', 'global', 'machine'],
       'docker': ['docker', 'container', 'devops', 'virtualization'],
       'electron': ['electron', 'desktop', 'app', 'application'],
-      'android-adb': ['android', 'adb', 'mobile', 'phone', 'device']
+      'android-adb': ['android', 'adb', 'mobile', 'phone', 'device'],
+      'jvm': ['java', 'jvm', 'kotlin', 'scala', 'gradle', 'maven', 'spring']
     };
 
     // Icon for the "Anything" / manual-setup card
@@ -2301,7 +2305,7 @@
     let expandedInterceptorMetadata = null;
 
     // Interceptors that have expandable config components
-    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb']);
+    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb', 'jvm']);
 
     function renderInterceptors(interceptors) {
       allInterceptors = interceptors;
@@ -2373,6 +2377,9 @@
           if (i.id === 'android-adb' && expandedInterceptorMetadata?.activatedDevices?.length > 0) {
             const deviceNames = expandedInterceptorMetadata.activatedDevices.map(d => d.model || d.serial).join(', ');
             pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(deviceNames)}</span>`;
+          } else if (i.id === 'jvm' && expandedInterceptorMetadata?.activatedProcesses?.length > 0) {
+            const procNames = expandedInterceptorMetadata.activatedProcesses.map(p => p.name || p.pid).join(', ');
+            pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(procNames)}</span>`;
           } else {
             pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
           }
@@ -2453,7 +2460,7 @@
 
       // Activate if not already active, then expand
       // Always refresh for android-adb (device list may change)
-      if (!isActive || id === 'android-adb') {
+      if (!isActive || id === 'android-adb' || id === 'jvm') {
         interceptorsInProgress.add(id);
         filterInterceptors();
         try {
@@ -2507,6 +2514,8 @@
         renderTerminalConfig(container);
       } else if (id === 'android-adb') {
         renderAndroidConfig(container);
+      } else if (id === 'jvm') {
+        renderJvmConfig(container);
       }
     }
 
@@ -2721,6 +2730,155 @@
         toast('Device list refreshed', 'success');
       } catch (err) {
         toast(`Error refreshing devices: ${err.message}`, 'error');
+      }
+    }
+
+    function renderJvmConfig(container) {
+      const meta = expandedInterceptorMetadata;
+      const processes = meta?.processes || [];
+      const activatedPids = new Set(
+        (meta?.activatedProcesses || []).map(p => p.pid)
+      );
+
+      const proxyPort = config.proxyPort || 8000;
+      const fallbackCmd = `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${proxyPort}`;
+
+      if (processes.length === 0) {
+        container.innerHTML = `
+          <div class="config-section">
+            <h3>Running JVM Processes</h3>
+            <p style="color: var(--text-muted); font-size: 13px;">No JVM processes detected. Make sure:</p>
+            <ul style="color: var(--text-muted); font-size: 13px; margin: 8px 0; padding-left: 20px;">
+              <li>A Java application is running</li>
+              <li>Java JDK (not JRE) is installed with <code>jps</code> in your PATH</li>
+            </ul>
+            <div class="config-section" style="margin-top: 12px;">
+              <h3>Or launch with proxy flags</h3>
+              <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+            </div>
+            <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
+              <i class="ph ph-arrows-clockwise"></i> Refresh
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Running JVM Processes</h3>
+          <div class="jvm-process-list">
+            ${processes.map(p => {
+              const isActivated = activatedPids.has(p.pid);
+              return `
+                <div class="jvm-process-item${isActivated ? ' activated' : ''}" data-jvm-pid="${esc(p.pid)}">
+                  <div class="jvm-process-info">
+                    <i class="ph ph-coffee"></i>
+                    <div class="jvm-process-details">
+                      <span class="jvm-process-name">${esc(p.name)}</span>
+                      <span class="jvm-process-meta">PID ${esc(p.pid)} · ${esc(p.mainClass)}</span>
+                    </div>
+                  </div>
+                  <div class="jvm-process-actions">
+                    ${isActivated
+                      ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
+                      : `<button class="jvm-process-activate" onclick="event.stopPropagation(); activateJvmProcess('${esc(p.pid)}');">Attach</button>`
+                    }
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+          <div class="config-section" style="margin-top: 12px;">
+            <h3>Or launch with proxy flags</h3>
+            <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+          </div>
+          <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
+            <i class="ph ph-arrows-clockwise"></i> Refresh Processes
+          </button>
+        </div>
+      `;
+    }
+
+    async function activateJvmProcess(pid) {
+      const item = document.querySelector(`[data-jvm-pid="${pid}"]`);
+      const btn = item?.querySelector('.jvm-process-activate');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<div class="intercept-spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle;"></div>';
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        // Update metadata with fresh process and activation info
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            processes: data.metadata.processes || expandedInterceptorMetadata?.processes || [],
+            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
+          };
+        }
+
+        // Re-render the config area
+        const container = document.getElementById('interceptConfig-jvm');
+        if (container) {
+          renderJvmConfig(container);
+        }
+
+        // Refresh interceptor list for pill update
+        try {
+          const r = await fetch(`${API_BASE}/api/interceptors`);
+          const d = await r.json();
+          allInterceptors = d.interceptors;
+          const active = allInterceptors.filter(i => i.active);
+          const sourcesList = document.getElementById('connectedSourcesList');
+          sourcesList.innerHTML = active.map(i =>
+            `<div class="connected-source-item">
+              ${INTERCEPTOR_ICONS[i.id] || ''}
+              <span>${esc(i.name)}</span>
+            </div>`
+          ).join('');
+        } catch {}
+
+        toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = 'Attach';
+        }
+      }
+    }
+
+    async function refreshJvmProcesses() {
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.metadata) {
+          expandedInterceptorMetadata = {
+            ...expandedInterceptorMetadata,
+            processes: data.metadata.processes || [],
+            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
+          };
+        }
+        const container = document.getElementById('interceptConfig-jvm');
+        if (container) {
+          renderJvmConfig(container);
+        }
+        toast('Process list refreshed', 'success');
+      } catch (err) {
+        toast(`Error refreshing processes: ${err.message}`, 'error');
       }
     }
 

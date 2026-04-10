@@ -59,6 +59,10 @@
 - Config code blocks: `.config-code-block` has click-to-copy behavior via `copyConfigCode(el)`; `.config-tabs` + `.config-tab` for shell switching
 - Android ADB interceptor: `_getConnectedDevices()` parses `adb devices -l`; emulators use `10.0.2.2` as host IP, physical devices use LAN IP via `os.networkInterfaces()`
 - Interceptor interface: `isActivable()`, `isActive()`, `activate(proxyPort, options)`, `deactivate()`, `toJSON()` — register via `this._register()` in InterceptorManager constructor
+- Android ADB UI: `renderAndroidConfig()` renders device list from `expandedInterceptorMetadata.devices`; `activateAndroidDevice(deviceId)` calls activate with deviceId; `refreshAndroidDevices()` re-fetches device list
+- For interceptors that need dynamic metadata refresh (like android-adb, jvm), `handleExpandableCardClick` always calls activate even when already active
+- JVM interceptor uses `jps -v` for process discovery, Java Attach API for agent loading, and falls back to proxy flag instructions if attach fails
+- JVM process list UI follows the same pattern as Android device list: `renderJvmConfig()`, `activateJvmProcess(pid)`, `refreshJvmProcesses()` — all mirroring the Android equivalents
 
 ---
 
@@ -278,4 +282,38 @@
   - The `deactivate()` method in the manager calls `interceptor.deactivate()` with no arguments — the ADB interceptor handles this by deactivating all devices when no `deviceId` is passed in options
   - Device status values from `adb devices`: `device` (ready), `offline`, `unauthorized` (needs USB debugging confirmation) — only `device` status should be activatable
   - `os.networkInterfaces()` is used to find the host LAN IP for physical devices — picks the first non-internal IPv4 address
+---
+
+## 2026-04-10 - US-015
+- What was implemented: Android ADB interceptor UI with expandable card — phone icon, device list with serial/model/status, per-device activate buttons, loading spinner, status pill with device name
+- Files changed:
+  - src/ui/app.js — Added android-adb to INTERCEPTOR_ICONS (phone SVG), INTERCEPTOR_DESCRIPTIONS, INTERCEPTOR_COLORS (#78c257), INTERCEPTOR_TAGS; added 'android-adb' to EXPANDABLE_INTERCEPTORS; modified handleExpandableCardClick to always refresh metadata for android-adb; added renderAndroidConfig(), activateAndroidDevice(), refreshAndroidDevices() functions; customized pill display for android-adb to show activated device names
+  - src/ui/styles.css — Added .android-device-list, .android-device-item (with .activated green left border), .android-device-info, .android-device-details, .android-device-model, .android-device-serial, .android-device-actions, .android-device-activate (pop-color button), .android-device-status (warning/offline variants), .android-refresh-btn styles
+  - src/interceptors/android-adb-interceptor.js — Added activatedDevices array to both no-deviceId and with-deviceId activate responses so the UI can track which devices are proxied
+- **Learnings for future iterations:**
+  - The `handleExpandableCardClick` function needs special handling for android-adb: always call activate (even when already active) to refresh the device list since devices may connect/disconnect
+  - The activate(no-deviceId) endpoint is idempotent and returns fresh device + activatedDevices metadata — safe to call repeatedly for refreshing
+  - Device status rendering follows a priority: activated > unauthorized > offline > activatable — only `device` status allows the Activate button
+  - The spinner uses the existing `.intercept-spinner` class with inline size overrides for the smaller button context
+  - `expandedInterceptorMetadata` persists activated device info across re-renders within the same expand session; `collapseInterceptorCard` clears it
+  - The pill customization for android-adb checks `expandedInterceptorMetadata?.activatedDevices` — this means device names only show in the pill when metadata is available (after expanding at least once)
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-016
+- What was implemented: JVM/Java interceptor — backend that discovers running JVM processes via jps and attaches a Java agent to set proxy system properties, plus expandable interceptor card UI with process list
+- Files changed:
+  - src/interceptors/jvm-interceptor.js — NEW: `JvmInterceptor` class with `isActivable()` (checks java + jps), `_getRunningProcesses()` (parses jps -v), `_getAgentJarPath()` (builds proxy agent JAR on-the-fly), `_attachAgent()` (attaches via Java Attach API), `activate(proxyPort, {pid})` (process selection + attach), `deactivate()`, `toJSON()`
+  - src/interceptors/interceptor-manager.js — Imported and registered `JvmInterceptor`
+  - src/ui/app.js — Added `jvm` entry to INTERCEPTOR_ICONS (orange coffee/Java icon SVG), INTERCEPTOR_DESCRIPTIONS, INTERCEPTOR_COLORS (#e76f00), INTERCEPTOR_TAGS (java, jvm, kotlin, scala, gradle, maven, spring); added `jvm` to EXPANDABLE_INTERCEPTORS set; added pill display for activated JVM processes; added `jvm` to handleExpandableCardClick always-refresh list; added `renderJvmConfig()` (process list with fallback JVM flags), `activateJvmProcess(pid)`, `refreshJvmProcesses()` functions; added `jvm` case to `renderInterceptorConfig()` dispatcher
+  - src/ui/styles.css — Added `.jvm-process-list`, `.jvm-process-item`, `.jvm-process-info`, `.jvm-process-details`, `.jvm-process-name`, `.jvm-process-meta`, `.jvm-process-actions`, `.jvm-process-activate` CSS rules (mirroring the Android device list pattern with #e76f00 accent color)
+- **Learnings for future iterations:**
+  - The JVM interceptor follows the exact same expandable card pattern as Android ADB: activate(no-pid) returns process list for UI selection, activate(pid) attaches to a specific process
+  - `jps -v` output format is `<pid> <mainClass> <jvmArgs...>` — skip "Jps" entries (the jps tool itself)
+  - The Java Attach API (`com.sun.tools.attach.VirtualMachine`) requires JDK, not JRE — the `AttachProxy.java` helper is compiled on first use and cached
+  - Agent JAR is built on-the-fly with `javac` + `jar` — requires JDK. The agent sets `http.proxyHost`, `http.proxyPort`, `https.proxyHost`, `https.proxyPort` system properties
+  - When agent attachment fails (common with security managers or older JVMs), the interceptor provides a fallback command string with `-D` proxy flags for manual JVM launch
+  - The `activatedProcesses` Map tracks attached PIDs — same pattern as `activatedDevices` in Android ADB
+  - Reused `.android-refresh-btn` CSS class for refresh button styling (no need to duplicate)
+  - Manual browser verification is recommended for this story
 ---
