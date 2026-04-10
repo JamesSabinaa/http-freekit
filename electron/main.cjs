@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -161,7 +161,8 @@ function createWindow() {
     title: 'HTTP FreeKit',
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.cjs')
     }
   });
 
@@ -177,6 +178,84 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// ---------------------------------------------------------------------------
+// IPC handlers — invoked from the renderer via the preload contextBridge
+// ---------------------------------------------------------------------------
+
+/** Validate that the IPC call originates from the expected local server URL. */
+function validateSender(event) {
+  const url = event.senderFrame?.url || '';
+  return url.startsWith(`http://127.0.0.1:${apiPort}`);
+}
+
+ipcMain.handle('get-desktop-version', (event) => {
+  if (!validateSender(event)) return null;
+  return app.getVersion();
+});
+
+ipcMain.handle('get-server-auth-token', (event) => {
+  if (!validateSender(event)) return null;
+  return authToken;
+});
+
+ipcMain.handle('get-device-info', (event) => {
+  if (!validateSender(event)) return null;
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    electronVersion: process.versions.electron,
+    osVersion: process.getSystemVersion()
+  };
+});
+
+ipcMain.handle('select-file-path', async (event, options) => {
+  if (!validateSender(event)) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: options.title || 'Select File',
+    filters: options.filters || [],
+    properties: ['openFile']
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('select-save-file-path', async (event, options) => {
+  if (!validateSender(event)) return null;
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options.title || 'Save File',
+    defaultPath: options.defaultPath || undefined,
+    filters: options.filters || []
+  });
+  if (result.canceled) return null;
+  return result.filePath;
+});
+
+ipcMain.handle('open-context-menu', (event, items) => {
+  if (!validateSender(event)) return null;
+  const { Menu: ElectronMenu } = require('electron');
+  return new Promise((resolve) => {
+    const template = items.map((item) => {
+      if (item.type === 'separator') return { type: 'separator' };
+      return {
+        label: item.label || '',
+        enabled: item.enabled !== false,
+        click: () => resolve(item.id || null)
+      };
+    });
+    const menu = ElectronMenu.buildFromTemplate(template);
+    menu.popup({
+      window: mainWindow,
+      callback: () => resolve(null) // menu dismissed without selection
+    });
+  });
+});
+
+ipcMain.handle('restart-app', (event) => {
+  if (!validateSender(event)) return;
+  app.relaunch();
+  app.exit(0);
+});
 
 app.whenReady().then(async () => {
   try {
