@@ -292,12 +292,6 @@ export class ProxyServer {
     const requestId = uuidv4();
     this.requestCount++;
 
-    // Debug: log proxy-related headers from browser
-    if (clientReq.headers['proxy-authorization'] || clientReq.headers['proxy-authenticate']) {
-      console.log(`[Proxy Debug] ${clientReq.method} ${clientReq.url}`);
-      console.log(`[Proxy Debug] Browser sent proxy-authorization:`, clientReq.headers['proxy-authorization'] ? 'yes' : 'no');
-      console.log(`[Proxy Debug] Browser sent proxy-authenticate:`, clientReq.headers['proxy-authenticate'] ? 'yes' : 'no');
-    }
 
     let targetUrl;
     try {
@@ -2165,6 +2159,7 @@ export class ProxyServer {
   // Returns the raw TCP socket — the caller is responsible for TLS if needed.
   _connectViaUpstream(hostname, targetPort) {
     return new Promise((resolve, reject) => {
+      console.log(`[Proxy Debug] CONNECT via upstream ${this.upstreamProxy.host}:${this.upstreamProxy.port} -> ${hostname}:${targetPort} auth=${this.upstreamProxy.auth ? 'yes(' + this.upstreamProxy.auth.length + 'chars)' : 'no'}`);
       const connectReq = http.request({
         hostname: this.upstreamProxy.host,
         port: this.upstreamProxy.port,
@@ -2179,10 +2174,15 @@ export class ProxyServer {
       // Handle non-2xx responses (e.g. 407 Proxy Authentication Required)
       // Forward the response to the client so the browser can handle auth challenges
       connectReq.on('response', (proxyRes) => {
-        reject(new Error(`Upstream proxy rejected CONNECT: ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}`));
-        proxyRes.resume();
+        let body = '';
+        proxyRes.on('data', c => body += c);
+        proxyRes.on('end', () => {
+          console.log(`[Proxy Debug] Upstream CONNECT rejected: ${proxyRes.statusCode} headers=${JSON.stringify(proxyRes.headers)} body=${body.substring(0, 200)}`);
+          reject(new Error(`Upstream proxy rejected CONNECT: ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}`));
+        });
       });
       connectReq.on('connect', (res, socket) => {
+        console.log(`[Proxy Debug] Upstream CONNECT success: ${res.statusCode} headers=${JSON.stringify(res.headers)}`);
         if (res.statusCode !== 200) {
           socket.destroy();
           return reject(new Error(`Upstream CONNECT failed: ${res.statusCode}`));
