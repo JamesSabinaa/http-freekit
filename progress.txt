@@ -1,5 +1,6 @@
 ## Codebase Patterns
 - Electron main process is `electron/main.cjs` (must be `.cjs` because `"type": "module"` in package.json); `"main"` in package.json points to it; server scripts still use explicit `src/index.js` path
+- Electron app menu is in `electron/menu.cjs` (`buildAppMenu(mainWindow)` returns a `Menu`); system tray in `electron/tray.cjs` (`createTray(mainWindow)` / `destroyTray()`)
 - Electron spawns server via `spawn(process.execPath, [serverScript], { env: { ELECTRON_RUN_AS_NODE: '1', ... } })` — this makes the Electron binary behave as Node.js for child processes
 - Server port is auto-detected via `net.createServer()` on port 0; auth token generated with `crypto.randomBytes(32).toString('hex')` and passed via `AUTH_TOKEN` env var
 - Design tokens are CSS custom properties in src/ui/styles.css, organized by theme (:root = dark, [data-theme="light"], [data-theme="high-contrast"])
@@ -405,4 +406,20 @@
   - Auth token passed to UI via URL query param (`?authToken=...`) — UI can read from `window.location.search`
   - `isShuttingDown` flag prevents the unexpected-exit error dialog from showing during intentional shutdown
   - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-022
+- What was implemented: Electron application menu (File, Edit, View, Help) and system tray icon with context menu
+- Files changed:
+  - electron/menu.cjs — New file: `buildAppMenu(mainWindow)` builds platform-aware menu template (macOS app menu with About/Hide/Quit, Windows/Linux File menu with Quit)
+  - electron/tray.cjs — New file: `createTray(mainWindow)` creates system tray with programmatic 16x16 "H" icon, Show/Hide Window + Quit context menu, double-click to show
+  - electron/main.cjs — Added imports for menu.cjs and tray.cjs; `Menu.setApplicationMenu()` and `createTray()` called after window creation; `destroyTray()` on window-all-closed
+- **Learnings for future iterations:**
+  - Electron `Menu.buildFromTemplate()` uses `role` shortcuts for standard OS menu items (undo, redo, cut, copy, paste, selectAll, quit, close, toggleDevTools, etc.) — avoids manual accelerator/click definitions
+  - macOS requires a dedicated app-name menu as the first template entry with `role: 'about'`, `role: 'hide'`, etc.; on Windows/Linux the File menu handles Quit
+  - `CmdOrCtrl` accelerator prefix works cross-platform (Cmd on macOS, Ctrl elsewhere)
+  - System tray icons can be created programmatically via `nativeImage.createFromBuffer(rgbaBuffer, { width, height })` — no asset files needed
+  - Tray context menu labels (Show/Hide) need to be rebuilt when window visibility changes; listen to `mainWindow.on('show'/'hide')` to update
+  - `destroyTray()` must be called before app.quit() to avoid orphaned tray icons on Windows
+  - Manual browser verification recommended for this story
 ---
