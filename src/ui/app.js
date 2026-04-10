@@ -12,6 +12,12 @@
     let requestCounter = 0;
     let filterDebounceTimer = null;
 
+    // ============ WEBSOCKET FRAMES STATE ============
+    /** Map of parentId -> [frame request objects] for WS frame sub-rows */
+    let wsFramesByParent = {};
+    /** Set of WS connection IDs that are expanded to show frame sub-rows */
+    const wsExpandedConnections = new Set();
+
     // ============ VIRTUAL SCROLL STATE ============
     const VS_ROW_HEIGHT = 32;
     const VS_BUFFER = 15;
@@ -105,6 +111,7 @@
           break;
         case 'traffic-cleared':
           requests = requests.filter(r => r.pinned);
+          wsFramesByParent = {};
           filteredRequests = [];
           requestCounter = requests.length;
           vsRenderStart = -1;
@@ -134,6 +141,13 @@
       requestCounter++;
       req._index = requestCounter;
       requests.push(req);
+
+      // Track WS frames by parent for sub-row rendering
+      if (req.protocol === 'ws-frame' && req.parentId) {
+        if (!wsFramesByParent[req.parentId]) wsFramesByParent[req.parentId] = [];
+        wsFramesByParent[req.parentId].push(req);
+      }
+
       // Keep max 10000
       if (requests.length > 10000) requests.shift();
       applyFilter();
@@ -142,15 +156,26 @@
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
 
+      // Rebuild wsFramesByParent index (handles clears, imports, etc.)
+      wsFramesByParent = {};
+      requests.forEach(r => {
+        if (r.protocol === 'ws-frame' && r.parentId) {
+          if (!wsFramesByParent[r.parentId]) wsFramesByParent[r.parentId] = [];
+          wsFramesByParent[r.parentId].push(r);
+        }
+      });
+
+      // Filter base list (exclude ws-frame — they appear as sub-rows)
+      let baseList;
       if (!raw) {
-        filteredRequests = [...requests];
+        baseList = requests.filter(r => r.protocol !== 'ws-frame');
       } else {
         const filters = parseFilters(raw);
-        filteredRequests = requests.filter(r => matchesAllFilters(r, filters));
+        baseList = requests.filter(r => r.protocol !== 'ws-frame' && matchesAllFilters(r, filters));
       }
 
       if (sortField) {
-        filteredRequests.sort((a, b) => {
+        baseList.sort((a, b) => {
           let aVal = a[sortField], bVal = b[sortField];
           if (typeof aVal === 'string') aVal = aVal.toLowerCase();
           if (typeof bVal === 'string') bVal = bVal.toLowerCase();
@@ -158,6 +183,16 @@
           if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
           return 0;
         });
+      }
+
+      // Expand WS connections: insert frame sub-rows after expanded parents
+      filteredRequests = [];
+      for (const r of baseList) {
+        filteredRequests.push(r);
+        if (r.protocol === 'ws' && wsExpandedConnections.has(r.id)) {
+          const frames = wsFramesByParent[r.id] || [];
+          filteredRequests.push(...frames);
+        }
       }
 
       renderTraffic();
@@ -318,6 +353,23 @@
     };
 
     function buildRowHtml(req, index) {
+      // ---- WebSocket frame sub-row ----
+      if (req.protocol === 'ws-frame') {
+        const selected = req.id === selectedRequestId ? 'selected' : '';
+        const dirArrow = req.direction === 'client' ? '&rarr;' : '&larr;';
+        const dirClass = req.direction === 'client' ? 'ws-frame-client' : 'ws-frame-server';
+        const preview = esc((req.requestBody || '').substring(0, 80)) + (req.requestBody && req.requestBody.length > 80 ? '...' : '');
+        const byteCount = formatSize(req.requestBodySize);
+        const opName = esc(req.opcodeName || 'data');
+        return `<tr class="ws-frame-row ${dirClass} ${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+          <td style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
+          <td colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
+          <td style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
+          <td colspan="2" class="ws-frame-preview" title="${esc(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
+        </tr>`;
+      }
+
+      // ---- Standard row ----
       const methodClass = req.protocol === 'ws' ? 'method-WS' : req.protocol === 'tls-error' ? 'method-CONNECT' : `method-${req.method}`;
       let statusClass = req.error ? 'status-err' :
         req.statusCode < 200 ? 'status-1xx' :
@@ -341,9 +393,20 @@
         : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
       const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
 
+      // WS connection: add frame count badge and expand toggle
+      let wsFrameBadge = '';
+      if (req.protocol === 'ws') {
+        const frameCount = (wsFramesByParent[req.id] || []).length;
+        const isExpanded = wsExpandedConnections.has(req.id);
+        const expandIcon = isExpanded ? '&#9660;' : '&#9654;';
+        if (frameCount > 0) {
+          wsFrameBadge = `<span class="ws-expand-toggle" onclick="event.stopPropagation();toggleWsExpand('${req.id}')" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
+        }
+      }
+
       return `<tr class="${selected}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td>${pinIcon}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
+        <td>${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : req.protocol === 'tls-error' ? 'TLS' : esc(req.method)}</span></td>
         <td>${statusHtml}</td>
         <td class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
         <td title="${esc(req.host)}">${esc(req.host || '-')}</td>
@@ -481,7 +544,12 @@
       const activeEl = document.getElementById('detailActive');
       if (emptyEl) emptyEl.style.display = 'none';
       if (activeEl) activeEl.style.display = 'flex';
-      document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
+      if (req.protocol === 'ws-frame') {
+        const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
+        document.getElementById('detailTitle').textContent = 'WS Frame: ' + (req.opcodeName || 'data') + ' (' + dirLabel + ')';
+      } else {
+        document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
+      }
       updatePinIcon(!!req.pinned);
       renderDetailCards(req);
     }
@@ -745,6 +813,7 @@
       // Dispose any active body Monaco editors before replacing content
       disposeBodyEditor('reqBody-monaco');
       disposeBodyEditor('resBody-monaco');
+      disposeBodyEditor('wsFramePayload-monaco');
 
       // Store headers for context menu lookup
       window._detailHeaders = { request: req.requestHeaders || {}, response: req.responseHeaders || {} };
@@ -767,6 +836,118 @@
             </div>
           </div>
         </div>`;
+      }
+
+      // ---- WebSocket Frame Detail ----
+      if (req.protocol === 'ws-frame') {
+        const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
+        const dirColor = req.direction === 'client' ? '#ff8c38' : '#4caf7d';
+        const opName = esc(req.opcodeName || 'data');
+        const isTextFrame = req.opcode === 1; // TEXT opcode
+        const isBinaryFrame = req.opcode === 2; // BINARY opcode
+        const isCloseFrame = req.opcode === 8; // CLOSE opcode
+
+        html += `<div class="detail-card dir-right" style="border-right-color:${dirColor};">
+          <div class="detail-card-header">
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+              <span class="detail-pill" style="background:${dirColor};color:#fff;">${dirLabel}</span>
+              <span class="detail-pill pill-muted">${opName}</span>
+              <span class="detail-card-heading">WebSocket Frame</span>
+              <span class="collapse-chevron">&#9650;</span>
+            </span>
+          </div>
+          <div class="detail-card-body">
+            <div class="detail-summary">
+              <div class="detail-summary-item"><div class="detail-summary-label">Direction</div><div class="detail-summary-value">${dirLabel}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Opcode</div><div class="detail-summary-value">${opName} (0x${(req.opcode || 0).toString(16)})</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Size</div><div class="detail-summary-value">${formatSize(req.requestBodySize)}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">FIN</div><div class="detail-summary-value">${req.fin ? 'Yes' : 'No'}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Masked</div><div class="detail-summary-value">${req.masked ? 'Yes' : 'No'}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
+            </div>
+          </div>
+        </div>`;
+
+        // Close frame: show code and reason
+        if (isCloseFrame && req.requestBody) {
+          const closeMatch = req.requestBody.match(/^Close code: (\d+)(?:\s*-\s*(.*))?$/);
+          const closeCode = closeMatch ? closeMatch[1] : '';
+          const closeReason = closeMatch ? (closeMatch[2] || '') : req.requestBody;
+          html += `<div class="detail-card dir-left" style="border-left-color:#ce3939;">
+            <div class="detail-card-header">
+              <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                <span class="detail-pill" style="background:#ce3939;color:#fff;">Close</span>
+                <span class="detail-card-heading">Close Frame</span>
+                <span class="collapse-chevron">&#9650;</span>
+              </span>
+            </div>
+            <div class="detail-card-body">
+              <div class="detail-summary">
+                ${closeCode ? '<div class="detail-summary-item"><div class="detail-summary-label">Close Code</div><div class="detail-summary-value">' + esc(closeCode) + '</div></div>' : ''}
+                ${closeReason ? '<div class="detail-summary-item"><div class="detail-summary-label">Reason</div><div class="detail-summary-value">' + esc(closeReason) + '</div></div>' : ''}
+              </div>
+            </div>
+          </div>`;
+        }
+
+        // Payload card — text frames in Monaco, binary in hex
+        if (req.requestBody && req.requestBody.length > 0 && !isCloseFrame) {
+          if (isTextFrame) {
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <div id="wsFramePayload-monaco" style="min-height:80px;"></div>
+              </div>
+            </div>`;
+          } else if (isBinaryFrame) {
+            // Binary: show as hex dump
+            const hexBody = req.requestBody;
+            const hexFormatted = hexBody.replace(/(.{2})/g, '$1 ').replace(/(.{48})/g, '$1\n').trim();
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload (Binary)</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <pre class="body-content" style="font-size:12px;">${esc(hexFormatted)}</pre>
+              </div>
+            </div>`;
+          } else {
+            // Ping/pong: show as text
+            html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
+              <div class="detail-card-header">
+                <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                  <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+                  <span class="detail-card-heading">Payload</span>
+                  <span class="collapse-chevron">&#9650;</span>
+                </span>
+              </div>
+              <div class="detail-card-body">
+                <pre class="body-content">${esc(req.requestBody)}</pre>
+              </div>
+            </div>`;
+          }
+        }
+
+        content.innerHTML = html;
+
+        // Initialize Monaco for text frame payload
+        if (isTextFrame && req.requestBody && req.requestBody.length > 0) {
+          // Detect language from content (try JSON first)
+          let lang = 'plaintext';
+          try { JSON.parse(req.requestBody); lang = 'json'; } catch {}
+          initBodyMonacoEditor('wsFramePayload-monaco', req.requestBody, 'text/plain', lang === 'json' ? 'json' : 'text');
+        }
+        return;
       }
 
       // ---- WebSocket Card ----
@@ -819,6 +1000,41 @@
             ${req.remote?.address ? '<div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + (req.remote.port || '') + '</div>' : ''}
           </div>
         </div>`;
+
+        // ---- Stream Message List Card ----
+        const frames = wsFramesByParent[req.id] || [];
+        if (frames.length > 0) {
+          html += `<div class="detail-card dir-left" style="border-left-color:#4caf7d;">
+            <div class="detail-card-header">
+              <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                <span class="detail-pill pill-muted">${frames.length} frames</span>
+                <span class="detail-card-heading">Stream Messages</span>
+                <span class="collapse-chevron">&#9650;</span>
+              </span>
+            </div>
+            <div class="detail-card-body" style="padding:0;">
+              <div class="ws-stream-list">
+                ${frames.map((f, i) => {
+                  const dirArrow = f.direction === 'client' ? '→' : '←';
+                  const dirCls = f.direction === 'client' ? 'ws-msg-client' : 'ws-msg-server';
+                  const opLabel = esc(f.opcodeName || 'data');
+                  const preview = esc((f.requestBody || '').substring(0, 120));
+                  const byteStr = formatSize(f.requestBodySize);
+                  const timeStr = new Date(f.timestamp).toLocaleTimeString();
+                  const isClose = f.opcode === 8;
+                  return `<div class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" onclick="selectRequest('${f.id}')" title="Click to view details">
+                    <span class="ws-msg-index">#${i + 1}</span>
+                    <span class="ws-msg-dir">${dirArrow}</span>
+                    <span class="ws-msg-opcode">${opLabel}</span>
+                    <span class="ws-msg-preview">${preview || '<em>empty</em>'}</span>
+                    <span class="ws-msg-size">${byteStr}</span>
+                    <span class="ws-msg-time">${timeStr}</span>
+                  </div>`;
+                }).join('')}
+              </div>
+            </div>
+          </div>`;
+        }
 
         content.innerHTML = html;
         return;
@@ -4438,6 +4654,16 @@
       vsForceRender = true;
       renderVirtualRows();
       showDetail(req);
+    }
+
+    // ============ WS FRAME EXPAND/COLLAPSE ============
+    function toggleWsExpand(parentId) {
+      if (wsExpandedConnections.has(parentId)) {
+        wsExpandedConnections.delete(parentId);
+      } else {
+        wsExpandedConnections.add(parentId);
+      }
+      applyFilter();
     }
 
     // ============ SCROLL TO END ============

@@ -40,6 +40,10 @@
 - WS frame events emitted with `protocol: 'ws-frame'`, `parentId` linking to the parent WS connection, and `direction: 'client'|'server'`
 - WS frame opcodes: `WS_OPCODE` constants and `WS_OPCODE_NAMES` map in ws-frame-parser.js; `parseClosePayload()` extracts close code + reason
 - Frame parsing is non-blocking: raw bytes are always forwarded even if parser throws; parser errors don't break the proxy
+- WS frame sub-rows: `wsFramesByParent` map groups frames by parentId; `wsExpandedConnections` set tracks expanded WS connections; `applyFilter()` rebuilds the map and inserts frames inline into `filteredRequests`
+- WS frame rows use `.ws-frame-row` CSS class (28px height, indented, lighter bg); parent WS rows show expand toggle + frame count badge
+- Stream message list card in WS detail view renders all frames chronologically with clickable rows that call `selectRequest(frameId)`
+- WS frame detail view: text frames render payload in Monaco (auto-detects JSON), binary frames render hex dump, close frames show code + reason
 
 ---
 
@@ -176,4 +180,20 @@
   - Close frames have a special payload format: 2-byte status code (big-endian) + optional UTF-8 reason string
   - The `_handleHttpUpgrade` only handles plain HTTP upgrades (WS over HTTP). WSS (WS over TLS) goes through CONNECT -> `_handleTlsConnection` -> `virtualServer` which currently does NOT handle WebSocket upgrades — a future story may need to add upgrade handling there
   - Frame events use `parentId` to link back to the WS connection event, allowing the UI to show frames as sub-rows under the connection
+---
+
+## 2026-04-10 - US-010
+- What was implemented: WebSocket frame display in UI — sub-rows in traffic list, expand/collapse toggle, frame detail view with Monaco/hex payload, stream message list card in parent WS detail
+- Files changed:
+  - src/ui/app.js — Added `wsFramesByParent` map and `wsExpandedConnections` set state; modified `addRequest()` to track frames by parent; rewrote `applyFilter()` to exclude ws-frame from base list, rebuild frame index, and insert frame sub-rows for expanded WS connections; added ws-frame sub-row rendering in `buildRowHtml()` with direction arrow, payload preview, opcode name, byte count; added expand toggle + frame count badge to parent WS rows; added `toggleWsExpand()` function; added ws-frame detail view in `renderDetailCards()` with text/binary/close frame handling and Monaco payload display; added stream message list card to parent WS connection detail view; added `wsFramePayload-monaco` disposal in `renderDetailCards()`; updated `showDetail()` title for ws-frame protocol; cleared `wsFramesByParent` on traffic-cleared event
+  - src/ui/styles.css — Added `.ws-frame-row` sub-row styling (28px height, indented, lighter bg); `.ws-frame-dir`, `.ws-frame-opcode`, `.ws-frame-preview` inline styles; `.ws-expand-toggle` and `.ws-frame-count` badge styles; `.ws-stream-list` and `.ws-msg-row` stream message list card styles with direction-colored arrows; light and high-contrast theme overrides for frame rows
+  - prd.json — Set US-010 passes to true
+- **Learnings for future iterations:**
+  - The `applyFilter()` approach of rebuilding `wsFramesByParent` from scratch on each call is simple and correct — no need for incremental map maintenance since it handles clears, imports, and edge cases automatically
+  - WS frame sub-rows use `colspan` for merged cells to avoid column alignment issues with the 6-column traffic table
+  - Frame sub-rows are inserted into `filteredRequests` inline after expanded parent connections, so virtual scroll treats them as regular rows (same 32px height calculation works)
+  - The `event.stopPropagation()` on the expand toggle onclick prevents the parent row's `selectRequest` from firing when clicking the toggle
+  - Text frame payloads attempt JSON.parse to auto-detect JSON language for Monaco — a common pattern in WebSocket APIs
+  - Light and high-contrast theme overrides are needed for `.ws-frame-row` because the base theme rules set explicit backgrounds on `.traffic-table tbody tr`
+  - Manual browser verification is recommended for this story
 ---
