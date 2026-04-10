@@ -459,6 +459,12 @@
       const req = requests.find(r => r.id === id);
       if (!req) return;
 
+      // Scroll selected row into view (center alignment)
+      const idx = filteredRequests.findIndex(r => r.id === id);
+      if (idx !== -1) {
+        scrollRowIntoView(idx, 'center');
+      }
+
       // Re-render virtual rows to update selection highlight
       vsForceRender = true;
       renderVirtualRows();
@@ -5002,14 +5008,50 @@
     };
 
     function switchPanel(el, panelId) {
+      // Save traffic scroll position when switching away from traffic panel
+      const currentPanel = document.querySelector('.sidebar-item.active')?.dataset?.panel;
+      if (currentPanel === 'traffic') {
+        const wrapper = document.getElementById('trafficTableWrapper');
+        if (wrapper) {
+          localStorage.setItem('trafficScrollTop', String(wrapper.scrollTop));
+          localStorage.setItem('trafficAutoScroll', String(autoScroll));
+        }
+      }
+
       document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
       el.classList.add('active');
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       document.getElementById(`panel-${panelId}`).classList.add('active');
 
+      // Restore traffic scroll position when switching to traffic panel
+      if (panelId === 'traffic') {
+        restoreTrafficScrollPosition();
+      }
+
       // Update URL hash for bookmarkability
       const hashRoute = PANEL_TO_HASH[panelId] || panelId;
       window.location.hash = '#/' + hashRoute;
+    }
+
+    // Restore traffic list scroll position from localStorage
+    function restoreTrafficScrollPosition() {
+      requestAnimationFrame(() => {
+        const wrapper = document.getElementById('trafficTableWrapper');
+        if (!wrapper) return;
+        const savedAutoScroll = localStorage.getItem('trafficAutoScroll');
+        if (savedAutoScroll === 'true') {
+          autoScroll = true;
+          wrapper.scrollTop = wrapper.scrollHeight;
+        } else {
+          const savedScrollTop = localStorage.getItem('trafficScrollTop');
+          if (savedScrollTop !== null) {
+            autoScroll = false;
+            wrapper.scrollTop = parseFloat(savedScrollTop);
+          }
+        }
+        vsForceRender = true;
+        renderVirtualRows();
+      });
     }
 
     // Navigate to panel by hash route on page load or hash change
@@ -5045,6 +5087,9 @@
           el.classList.add('active');
           document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
           document.getElementById(`panel-${panelId}`).classList.add('active');
+        }
+        if (panelId === 'traffic') {
+          restoreTrafficScrollPosition();
         }
       }
     }

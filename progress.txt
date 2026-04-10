@@ -35,6 +35,7 @@
 - `scrollRowIntoView(index, alignment)` scrolls a row into the viewport; supports `'center'` alignment
 - Scroll handler uses `requestAnimationFrame` to batch scroll events for 60fps performance
 - Row HTML uses `data-id="${req.id}"` attribute for identification instead of parsing onclick strings
+- Scroll position persistence uses localStorage keys `trafficScrollTop` and `trafficAutoScroll`; restored via `restoreTrafficScrollPosition()` in both `switchPanel()` and `navigateFromHash()`
 
 ---
 
@@ -141,5 +142,19 @@
   - `requestAnimationFrame` batching in the scroll handler prevents multiple renders per frame
   - `vsForceRender` flag is needed for selection changes where scroll position doesn't change but row content does
   - The old 2000-row cap is removed — virtual scroll handles unlimited rows efficiently
+  - Manual browser verification is recommended for this story
+---
+
+## 2026-04-10 - US-008
+- What was implemented: Added scroll position persistence across panel switches and improved selectRequest scroll-into-view behavior
+- Files changed:
+  - src/ui/app.js — Added localStorage save/restore of scroll position and autoScroll state in switchPanel(); created restoreTrafficScrollPosition() helper used by both switchPanel and navigateFromHash; added scrollRowIntoView(idx, 'center') call in selectRequest() for programmatic selection
+- **Learnings for future iterations:**
+  - `switchPanel()` is the main panel-switching function called from sidebar clicks; `navigateFromHash()` handles URL hash-based navigation on load/hashchange — both need scroll restore logic
+  - Scroll position is saved as two localStorage keys: `trafficScrollTop` (numeric position) and `trafficAutoScroll` (boolean string) — both must be restored together
+  - `requestAnimationFrame` is needed when restoring scroll position after panel switch because the DOM needs to be visible first
+  - The autoScroll flag is already maintained by the scroll event handler — no need to duplicate that logic
+  - `scrollToEnd()` already re-enables autoScroll — no changes needed there
+  - Selection highlight during virtual scroll already works because `buildRowHtml()` checks `selectedRequestId` on every render and `vsForceRender` ensures re-render after selection changes
   - Manual browser verification is recommended for this story
 ---
