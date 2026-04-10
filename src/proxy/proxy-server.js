@@ -292,6 +292,13 @@ export class ProxyServer {
     const requestId = uuidv4();
     this.requestCount++;
 
+    // Debug: log proxy-related headers from browser
+    if (clientReq.headers['proxy-authorization'] || clientReq.headers['proxy-authenticate']) {
+      console.log(`[Proxy Debug] ${clientReq.method} ${clientReq.url}`);
+      console.log(`[Proxy Debug] Browser sent proxy-authorization:`, clientReq.headers['proxy-authorization'] ? 'yes' : 'no');
+      console.log(`[Proxy Debug] Browser sent proxy-authenticate:`, clientReq.headers['proxy-authenticate'] ? 'yes' : 'no');
+    }
+
     let targetUrl;
     try {
       targetUrl = new URL(clientReq.url);
@@ -419,8 +426,12 @@ export class ProxyServer {
           const trailers = proxyRes.trailers;
 
           // Strip proxy hop-by-hop headers from responses forwarded to the browser.
-          // proxy-authenticate is only valid on 407 responses — on anything else Chrome throws ERR_UNEXPECTED_PROXY_AUTH
           const resHeaders = { ...proxyRes.headers };
+          // Debug: log if upstream sent proxy headers
+          if (resHeaders['proxy-authenticate'] || resHeaders['proxy-authorization'] || resHeaders['proxy-connection']) {
+            console.log(`[Proxy Debug] Upstream response ${proxyRes.statusCode} has proxy headers:`,
+              Object.keys(resHeaders).filter(k => k.startsWith('proxy-')).join(', '));
+          }
           if (proxyRes.statusCode !== 407) {
             delete resHeaders['proxy-authenticate'];
           }
@@ -558,6 +569,8 @@ export class ProxyServer {
     };
 
     clientSocket.on('error', () => {}); // Suppress connection reset errors
+
+    console.log(`[Proxy Debug] CONNECT ${hostname}:${targetPort} upstream=${!!this.upstreamProxy}`);
 
     // Tell client the tunnel is established
     clientSocket.write(
