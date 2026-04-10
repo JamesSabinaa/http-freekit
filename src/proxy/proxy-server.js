@@ -2126,6 +2126,8 @@ export class ProxyServer {
   }
 
   // Create a TLS connection through the upstream proxy's CONNECT tunnel
+  // Opens a CONNECT tunnel through the upstream HTTP proxy.
+  // Returns the raw TCP socket — the caller is responsible for TLS if needed.
   _connectViaUpstream(hostname, targetPort) {
     return new Promise((resolve, reject) => {
       const connectReq = http.request({
@@ -2142,10 +2144,8 @@ export class ProxyServer {
           socket.destroy();
           return reject(new Error(`Upstream CONNECT failed: ${res.statusCode}`));
         }
-        const tlsConn = tls.connect({ socket, servername: hostname, rejectUnauthorized: false }, () => {
-          resolve(tlsConn);
-        });
-        tlsConn.on('error', reject);
+        // Return the raw socket — https.request() will handle TLS on top of it
+        resolve(socket);
       });
       connectReq.on('error', reject);
       connectReq.end();
@@ -2189,17 +2189,9 @@ export class ProxyServer {
   }
 
   // Create a TLS connection through a SOCKS proxy
+  // Opens a SOCKS tunnel and returns the raw socket — caller handles TLS.
   async _connectViaSocksTls(hostname, targetPort) {
-    const rawSocket = await this._connectViaSocks(hostname, targetPort);
-    return new Promise((resolve, reject) => {
-      const tlsConn = tls.connect({ socket: rawSocket, servername: hostname, rejectUnauthorized: false }, () => {
-        resolve(tlsConn);
-      });
-      tlsConn.on('error', (err) => {
-        rawSocket.destroy();
-        reject(err);
-      });
-    });
+    return await this._connectViaSocks(hostname, targetPort);
   }
 
   _flattenMockRules(rules) {
