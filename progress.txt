@@ -15,6 +15,13 @@
 - Mock rule action Phosphor icons: FloppyDisk (save), PencilSimple (edit), ToggleRight/ToggleLeft (enable/disable), Tag (rename), CopySimple (clone), TrashSimple (delete)
 - Pin icon uses PushPin with `transform:rotate(45deg)` when unpinned, `transform:none` when pinned
 - For dynamic icon switching (e.g. togglePause), update `btn.innerHTML` with Phosphor `<i>` elements
+- Monaco Editor served via Express static at `/vendor/monaco` from `node_modules/monaco-editor/min`
+- Monaco loaded via AMD loader: `<script src="/vendor/monaco/vs/loader.js">` + `require.config({ paths: { vs: '/vendor/monaco/vs' } })`
+- Use `createMonacoEditor(containerId, options)` to create editors — returns a Promise<editor>
+- Monaco custom themes: `httptoolkit-dark` and `httptoolkit-light` — auto-synced via `setTheme()`
+- `monacoReady` promise resolves when Monaco API is available; `monacoApi` holds the global reference
+- `monacoInstances` array tracks all active editors for theme switching and cleanup
+- Editor auto-resizes via ResizeObserver; auto-cleans up when container is removed from DOM
 
 ---
 
@@ -61,4 +68,22 @@
   - For dynamic icons (pause/play toggle), set `btn.innerHTML` with the new Phosphor `<i>` element
   - The pin icon uses `transform:rotate(45deg)` for unpinned state (tilted) and `transform:none` for pinned (upright)
   - Interceptor card brand icons (Chrome, Firefox, etc. at 36x36) are kept as custom SVGs since they use brand-specific colors/shapes — not suitable for generic Phosphor replacement
+---
+
+## 2026-04-10 - US-004
+- What was implemented: Installed Monaco Editor and created a reusable wrapper function for rendering code editors
+- Files changed:
+  - package.json / package-lock.json — Added monaco-editor@0.55.1 dependency
+  - src/index.js — Added Express static route `/vendor/monaco` serving from node_modules/monaco-editor/min
+  - src/ui/index.html — Added Monaco CSS link, AMD loader script, and require.config for paths
+  - src/ui/app.js — Added Monaco initialization via AMD require, custom dark/light themes (httptoolkit-dark, httptoolkit-light), createMonacoEditor() wrapper function with auto-resize and cleanup, theme sync in setTheme()
+- **Learnings for future iterations:**
+  - Monaco 0.55.1 still ships an AMD loader at `min/vs/loader.js` alongside ESM — the AMD path is simplest for vanilla JS projects
+  - Workers are in `min/vs/assets/` with hashed filenames (e.g. `editor.worker-Be8ye1pW.js`) — the loader resolves them automatically when `paths.vs` is configured
+  - Language workers (json, css, html, ts) are bundled as separate files and loaded on-demand when that language is first used
+  - Monaco's `automaticLayout: true` uses polling — using `ResizeObserver` is more efficient and reliable
+  - `monaco.editor.setTheme()` globally switches all editor instances — no need to iterate instances for theme changes
+  - MutationObserver on document.body detects container removal for cleanup; watch for performance if many editors are created/destroyed
+  - The `monacoReady` promise pattern lets any code await Monaco initialization without race conditions
+  - For JSON syntax: `string.key.json` and `string.value.json` are distinct tokens — keys should be red/accent, values should be green/string color
 ---

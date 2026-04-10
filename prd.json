@@ -70,7 +70,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/components/editor/base-editor.tsx. Monaco is ~5MB bundled. Workers needed: editor.worker, json.worker, css.worker, html.worker, ts.worker"
     },
     {
