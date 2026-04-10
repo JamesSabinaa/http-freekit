@@ -81,6 +81,9 @@
 - Transform perspective: `_transformPerspective` state ('original'|'transformed'|'client'|'server'); `getEffectiveRequest(req)` overlays `req.originalRequest` data when viewing original perspective; `switchTransformPerspective(value)` re-renders detail cards
 - Proxy emits `originalRequest` (with method, url, headers, body) and `transformedBy` (rule title/id) on mock-matched requests whose preSteps modified method/URL/headers
 - Transform card uses `.transform-card` CSS class with pop-color left border and 6% tinted background
+- Auto-updater: `electron/updater.cjs` exports `initAutoUpdater(win)` and `stopAutoUpdater()`; uses `electron-updater` with GitHub Releases as default provider; update feed URL overridable via `UPDATE_URL` env var
+- Preload IPC pattern: `ALLOWED_INVOKE_CHANNELS` for request/response IPC, `ALLOWED_ON_CHANNELS` for push events from main process (used by updater status notifications)
+- UI listens for updater events via `window.electronApi.onUpdaterStatus(callback)` — returns unsubscribe function; all auto-updater UI is gated behind `window.electronApi` existence check
 
 ---
 
@@ -462,4 +465,25 @@
   - Windows NSIS build produces both installer .exe and portable .zip; output goes to `dist/`
   - `build/` is the default `buildResources` directory — electron-builder looks here for icons automatically
   - PNG icons can be generated from scratch using Node.js zlib (deflateSync) for PNG compression and a simple CRC32 implementation — no canvas/sharp/imagemagick needed
+---
+
+## 2026-04-10 - US-025
+- What was implemented: Electron auto-update system using electron-updater
+- Files changed:
+  - electron/updater.cjs — New module: auto-update logic with electron-updater (check on launch + every 6h, configurable feed URL)
+  - electron/main.cjs — Import and initialize auto-updater, clean up on window close
+  - electron/preload.cjs — Added updater IPC channels (updater-check-now, updater-install, updater-status) and onUpdaterStatus listener
+  - electron-builder.config.cjs — Added `publish` config for GitHub Releases provider
+  - package.json — Added electron-updater dependency
+  - src/ui/app.js — Auto-updater UI: toast notifications for update available/downloaded, Linux download link, manual check function
+  - src/ui/index.html — "Check for Updates" button in Settings About card (visible only in Electron)
+  - src/ui/styles.css — `.toast-action` style for clickable links within toasts
+- **Learnings for future iterations:**
+  - `electron-updater` must be in `dependencies` (not devDependencies) so electron-builder bundles it at runtime
+  - `autoUpdater.autoDownload = false` lets you notify users before downloading; set `autoInstallOnAppQuit = true` for seamless installs
+  - Linux doesn't support NSIS/DMG auto-install — must check GitHub releases and show download link manually
+  - Update feed URL is configurable via `UPDATE_URL` env var (for self-hosted release servers)
+  - Preload needs `ipcRenderer.on` for push events from main process (not just `invoke`); use a whitelist pattern (`ALLOWED_ON_CHANNELS`) for security
+  - electron-builder `publish` config (provider: 'github') is required for electron-updater to know where to check for updates
+  - Toast with action link (e.g., "Restart to install") should NOT auto-dismiss — let the user decide when to act
 ---

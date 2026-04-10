@@ -453,7 +453,7 @@
         "Typecheck passes"
       ],
       "priority": 25,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-desktop uses electron-updater with GitHub releases"
     },
     {
