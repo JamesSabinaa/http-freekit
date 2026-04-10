@@ -1150,6 +1150,7 @@
     .btn:hover { border-color: var(--pop-color); color: var(--pop-color); }
     .btn:active { transform: scale(0.97); }
     .btn svg { width: 14px; height: 14px; }
+    .btn i.ph { display: inline-flex; align-items: center; justify-content: center; }
 
     .btn-primary {
       background: var(--pop-color);
@@ -1620,10 +1621,14 @@
       width: 18px;
       height: 18px;
     }
+    .source-icon i.ph {
+      font-size: 16px;
+      line-height: 1;
+    }
 
-    .source-proxy svg { color: #5a80cc; stroke: #5a80cc; }
-    .source-mock svg { color: #6e40aa; stroke: #6e40aa; }
-    .source-import svg { color: #ff8c38; stroke: #ff8c38; }
+    .source-proxy svg, .source-proxy i.ph { color: #5a80cc; stroke: #5a80cc; }
+    .source-mock svg, .source-mock i.ph { color: #6e40aa; stroke: #6e40aa; }
+    .source-import svg, .source-import i.ph { color: #ff8c38; stroke: #ff8c38; }
 
     .protocol-badge {
       font-size: 10px;
@@ -2151,6 +2156,9 @@
       font-size: 16px;
       line-height: 1;
       border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
     .mock-toggle-btn:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
     .mock-toggle-btn.mock-enabled { color: #4caf7d; }

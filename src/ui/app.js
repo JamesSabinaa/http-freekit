@@ -293,21 +293,22 @@
       }
     }
 
-    // Source icons: globe for proxy, cog for mock, folder for import
-    // Source icons — keyed by the source string from _detectSource()
-    const _globe = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
-    const _browser = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
-    const _terminal = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="7 8 10 11 7 14"/><line x1="12" y1="14" x2="17" y2="14"/></svg>';
-    const _gear = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15"/></svg>';
-    const _folder = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+    // Source icons — Phosphor icon elements keyed by the source string from _detectSource()
+    const _globe = '<i class="ph ph-globe" style="font-size:16px;line-height:1;"></i>';
+    const _browser = '<i class="ph ph-globe" style="font-size:16px;line-height:1;"></i>';
+    const _terminal = '<i class="ph ph-terminal" style="font-size:16px;line-height:1;"></i>';
+    const _gear = '<i class="ph ph-gear-six" style="font-size:16px;line-height:1;"></i>';
+    const _folder = '<i class="ph ph-folder-open" style="font-size:16px;line-height:1;"></i>';
+    const _cube = '<i class="ph ph-cube" style="font-size:16px;line-height:1;"></i>';
     const SOURCE_ICONS = {
       Chrome: _browser, Firefox: _browser, Edge: _browser, Brave: _browser,
       Safari: _browser, Opera: _browser,
       'cURL': _terminal, wget: _terminal, PowerShell: _terminal,
       'Node.js': _terminal, Python: _terminal, Go: _terminal, Java: _terminal,
+      Docker: _cube,
       mock: _gear, import: _folder,
       proxy: _globe, Unknown: _globe, Other: _globe,
-      'tls-error': '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#ce3939" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><line x1="12" y1="15" x2="12" y2="17"/></svg>'
+      'tls-error': '<i class="ph ph-lock-simple-open" style="font-size:16px;line-height:1;color:#ce3939;"></i>'
     };
 
     function renderTraffic() {
@@ -459,6 +460,7 @@
       if (emptyEl) emptyEl.style.display = 'none';
       if (activeEl) activeEl.style.display = 'flex';
       document.getElementById('detailTitle').textContent = req.method + ' ' + req.host + req.path;
+      updatePinIcon(!!req.pinned);
       renderDetailCards(req);
     }
 
@@ -493,9 +495,15 @@
       const req = requests.find(r => r.id === selectedRequestId);
       if (req) {
         req.pinned = !req.pinned;
+        updatePinIcon(req.pinned);
         renderTraffic();
         toast(req.pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
       }
+    }
+
+    function updatePinIcon(pinned) {
+      const icon = document.getElementById('pinBtnIcon');
+      if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
     }
 
     function deleteSelectedRequest() {
@@ -2369,34 +2377,34 @@
       // 2. Save (when editing) or Edit (pencil icon)
       if (isEditing) {
         html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save changes">';
-        html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>';
+        html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       } else {
         html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule">';
-        html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
+        html += '<i class="ph ph-pencil-simple" style="font-size:14px;"></i>';
         html += '</button>';
       }
 
       // 3. Enable/Disable
       html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + (rule.enabled !== false ? 'Disable this rule' : 'Enable this rule') + '">';
       html += rule.enabled !== false
-        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>'
-        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="8" cy="12" r="4"/></svg>';
+        ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
+        : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 4. Rename (tag icon)
       html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
+      html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 5. Clone
       html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+      html += '<i class="ph ph-copy-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 6. Delete
       html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" style="color:#ce3939;">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+      html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       html += '</div>';
@@ -2420,7 +2428,7 @@
       // Group header
       html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
       html += '<span style="font-size:10px;margin-right:4px;">' + (isCollapsed ? '&#9654;' : '&#9660;') + '</span>';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5;"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>';
+      html += '<i class="ph ph-folder" style="font-size:14px;flex-shrink:0;opacity:0.5;"></i>';
       html += '<span class="mock-group-title">' + esc(group.title || 'Untitled Group') + '</span>';
       html += '<span style="color:var(--text-watermark);font-size:11px;margin-left:4px;">(' + (group.items || []).length + ' rule' + ((group.items || []).length !== 1 ? 's' : '') + ')</span>';
 
@@ -2429,18 +2437,18 @@
       // Enable/Disable group
       html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + (group.enabled !== false ? 'Disable group' : 'Enable group') + '">';
       html += group.enabled !== false
-        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>'
-        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="8" cy="12" r="4"/></svg>';
+        ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
+        : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Rename group
       html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
+      html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Delete group
       html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" style="color:#ce3939;">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+      html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       html += '</div>';
@@ -2791,7 +2799,7 @@
       }
 
       html += '<button class="mock-remove-btn" onclick="removeMockMatcher(' + idx + ', \'' + eid + '\')" title="Remove condition">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
       return html;
@@ -2817,7 +2825,7 @@
             html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
             html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
             html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
-            html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
           });
           html += '</div>';
@@ -2882,7 +2890,7 @@
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
               html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
+              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'req\',\'' + eid + '\')">+ Add header</button>';
@@ -2943,7 +2951,7 @@
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
               html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
+              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'res\',\'' + eid + '\')">+ Add header</button>';
@@ -3161,7 +3169,7 @@
       }
 
       html += '<button class="mock-remove-btn" onclick="removeMockPreStep(' + idx + ', \'' + eid + '\')" title="Remove step">';
-      html += '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
       return html;
@@ -3342,7 +3350,7 @@
         html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
         html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
-        html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
       container.innerHTML = html;
@@ -3627,7 +3635,7 @@
         html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
         html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'' + kind + '\',' + hi + ', \'' + eid + '\')">';
-        html += '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
       container.innerHTML = html;
@@ -4650,11 +4658,11 @@
       const btn = document.getElementById('pauseBtn');
       if (!btn) return;
       if (isPaused) {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"/></svg>';
+        btn.innerHTML = '<i class="ph ph-play" style="font-size:14px;"></i>';
         btn.title = 'Resume capture';
         btn.style.color = 'var(--warning-color)';
       } else {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+        btn.innerHTML = '<i class="ph ph-pause" style="font-size:14px;"></i>';
         btn.title = 'Pause capture';
         btn.style.color = '';
       }
