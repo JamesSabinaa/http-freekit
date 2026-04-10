@@ -6,6 +6,9 @@
 - Link colors use `--link-color` and `--visited-link-color` variables (theme-aware)
 - The project is vanilla JS (no framework, no TypeScript) — "typecheck" means verifying `node --check` passes on JS files
 - All border-radius=4px, resizer=11px, sidebar=75px, header/footer=38px, row=32px
+- Phosphor Icons loaded via `<link rel="stylesheet" href="/vendor/phosphor/regular/style.css">` — served from node_modules via Express static at `/vendor/phosphor`
+- Phosphor icon class format: `<i class="ph ph-icon-name"></i>` (regular weight), size controlled via `font-size` CSS
+- Sidebar icons: Intercept=ph-plug, View=ph-magnifying-glass, Mock=ph-pencil-simple, Send=ph-paper-plane-tilt, Settings=ph-gear
 
 ---
 
@@ -21,4 +24,19 @@
   - CSS `rgb(0 0 0 / var(--custom-property))` works in modern browsers for dynamic alpha
   - Input theming variables (--primary-input-bg, --secondary-input-border, etc.) are theme-specific
   - The 8 font size tokens are critical for pixel-perfect sizing across all UI components
+---
+
+## 2026-04-10 - US-002
+- What was implemented: Installed @phosphor-icons/web and replaced all 5 sidebar SVG icons with Phosphor icon font equivalents
+- Files changed:
+  - package.json / package-lock.json — Added @phosphor-icons/web dependency
+  - src/index.js — Added Express static route `/vendor/phosphor` serving from node_modules/@phosphor-icons/web/src
+  - src/ui/index.html — Added Phosphor CSS link, replaced inline SVGs with `<i class="ph ph-*">` elements
+  - src/ui/styles.css — Added `.sidebar-item i.ph` rule at 34px, plus responsive reductions (24px at ≤1200px, 22px at ≤768px)
+- **Learnings for future iterations:**
+  - Phosphor Icons package structure: `node_modules/@phosphor-icons/web/src/{regular,bold,fill,...}/` each with style.css + font files
+  - Font files referenced relatively from style.css so serving via Express static at a stable path is critical
+  - The `ph` base class + weight-specific class (e.g. `ph-bold`) controls weight; omitting weight class defaults to regular
+  - Sidebar logo is still an inline SVG (globe icon) — not replaced since it's a custom brand mark
+  - Responsive breakpoints for sidebar: ≤1200px shrinks to 50px wide, ≤768px shrinks to 44px wide — icon sizes must scale accordingly
 ---

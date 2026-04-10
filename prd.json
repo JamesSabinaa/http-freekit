@@ -34,7 +34,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: httptoolkit-ui/src/icons.ts for icon name mapping"
     },
     {
