@@ -1135,7 +1135,25 @@ export class ProxyServer {
             const upstreamConn = this._isSocksProxy()
               ? await this._connectViaSocksTls(hostname, targetPort)
               : await this._connectViaUpstream(hostname, targetPort);
-            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, TLS connecting...`);
+            console.log(`[Proxy Debug] Got tunnel socket for ${hostname}, peeking at tunnel data...`);
+            // Debug: read first chunk to see what the tunnel is giving us
+            const firstChunk = await new Promise((r) => {
+              upstreamConn.once('readable', () => {
+                const chunk = upstreamConn.read();
+                if (chunk) r(chunk);
+                else upstreamConn.once('data', r);
+              });
+              // Timeout after 5s
+              setTimeout(() => r(null), 5000);
+            });
+            if (firstChunk) {
+              const hex = firstChunk.slice(0, 20).toString('hex');
+              const ascii = firstChunk.slice(0, 60).toString('ascii').replace(/[^\x20-\x7e]/g, '.');
+              console.log(`[Proxy Debug] Tunnel peek for ${hostname}: hex=${hex} ascii="${ascii}" len=${firstChunk.length}`);
+              upstreamConn.unshift(firstChunk); // put it back
+            } else {
+              console.log(`[Proxy Debug] Tunnel peek for ${hostname}: no data within 5s`);
+            }
             // Manually TLS-wrap the tunnel socket, then make a plain HTTP request over it
             const tlsConn = tls.connect({
               socket: upstreamConn,
