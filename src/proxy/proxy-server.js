@@ -1156,10 +1156,11 @@ export class ProxyServer {
               });
               return tlsSocket;
             };
-            proxyReq = http.request({
+            proxyReq = https.request({
               hostname, port: targetPort, path: req.url, method: req.method,
               headers: { ...req.headers },
               agent: tunnelAgent,
+              rejectUnauthorized: false,
               insecureHTTPParser: true
             }, handleResponse);
             proxyReq.on('error', (err) => {
