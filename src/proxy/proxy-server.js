@@ -699,6 +699,14 @@ export class ProxyServer {
       req.on('end', async () => {
         const body = Buffer.concat(requestBody);
 
+        // Emit pending request immediately so it appears in the UI
+        this._emitPendingRequest({
+          id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+          host: hostname, path: req.url, requestHeaders: req.headers,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
+        });
+
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
         if (mockRule) {
@@ -1096,7 +1104,7 @@ export class ProxyServer {
 
         const emitSuccess = (statusCode, statusMessage, responseHeaders, resBody, remote, trailers) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
@@ -1110,7 +1118,7 @@ export class ProxyServer {
 
         const emitError = (err) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
@@ -1283,6 +1291,14 @@ export class ProxyServer {
           if (!k.startsWith(':')) reqHeaders[k] = v;
         }
 
+        // Emit pending request immediately so it appears in the UI
+        this._emitPendingRequest({
+          id: requestId, protocol: 'h2', method, url: fullUrl,
+          host: authority, path, requestHeaders: reqHeaders,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
+        });
+
         // Check mock rules
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, this._safeBodyString(body));
         if (mockRule) {
@@ -1335,7 +1351,7 @@ export class ProxyServer {
 
         const emitH2Success = (statusCode, statusMessage, responseHeaders, resBody, remote) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
@@ -1348,7 +1364,7 @@ export class ProxyServer {
 
         const emitH2Error = (err) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
@@ -1483,6 +1499,14 @@ export class ProxyServer {
       req.on('end', async () => {
         const body = Buffer.concat(requestBody);
 
+        // Emit pending request immediately so it appears in the UI
+        this._emitPendingRequest({
+          id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+          host: hostname, path: req.url, requestHeaders: req.headers,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
+        });
+
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
         if (mockRule) {
@@ -1530,7 +1554,7 @@ export class ProxyServer {
 
         const emitH1Success = (statusCode, statusMessage, responseHeaders, resBody, remote) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
@@ -1543,7 +1567,7 @@ export class ProxyServer {
 
         const emitH1Error = (err) => {
           const duration = Date.now() - startTime;
-          this._emitRequest({
+          this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
