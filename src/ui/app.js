@@ -476,7 +476,7 @@
         ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
         source === 'mock' ? '#6e40aa' : '#888';
       const statusHtml = req.statusCode === null || req.statusCode === undefined
-        ? '<span class="status-badge status-pending" title="Pending..."><i class="ph ph-circle-notch" style="animation:spin 1s linear infinite;font-size:12px;"></i></span>'
+        ? '<span class="status-badge status-pending" title="Pending..."><svg width="14" height="14" viewBox="0 0 16 16" style="animation:spin 0.8s linear infinite;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="28 10" stroke-linecap="round" opacity="0.8"/></svg></span>'
         : req.source === 'breakpoint' && req.statusCode === 0
         ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
         : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
