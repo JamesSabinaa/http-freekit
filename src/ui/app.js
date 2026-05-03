@@ -102,6 +102,7 @@
           loadInterceptors();
           loadMockRules().then(() => ensureDefaultMockRules());
           loadUpstreamProxy();
+          loadBottingToolsProxyProviders();
           loadTlsPassthrough();
           loadClientCerts();
           loadTrustedCAs();
@@ -6044,25 +6045,82 @@
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
+    function updateUpstreamProxyUi(proxy, provider) {
+      const typeEl = document.getElementById('upstreamType');
+      const detailsEl = document.getElementById('upstreamDetails');
+      const statusEl = document.getElementById('upstreamStatus');
+
+      if (typeEl) typeEl.value = proxy.type || 'http';
+      updateUpstreamFields();
+
+      if (detailsEl) {
+        let details = proxy.host + ':' + proxy.port;
+        if (proxy.auth) details = proxy.auth + '@' + details;
+        detailsEl.value = details;
+      }
+
+      if (statusEl) {
+        const providerText = provider ? ' from ' + provider : '';
+        statusEl.innerHTML = '<span style="color:var(--status-2xx);">Active: ' + (proxy.type || 'HTTP').toUpperCase() + ' proxy at ' + proxy.host + ':' + proxy.port + providerText + '</span>';
+      }
+    }
+
+    async function loadBottingToolsProxyProviders() {
+      const listEl = document.getElementById('bottingToolsProviders');
+      if (!listEl) return;
+
+      try {
+        const res = await fetch(API_BASE + '/api/bottingtools/proxy-providers');
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        listEl.innerHTML = '';
+        (data.providers || []).forEach(provider => {
+          const option = document.createElement('option');
+          option.value = provider;
+          listEl.appendChild(option);
+        });
+      } catch (err) {
+        console.warn('[BottingTools]', err.message);
+      }
+    }
+
+    async function rotateBottingToolsProxy() {
+      const providerEl = document.getElementById('bottingToolsProvider');
+      const buttonEl = document.getElementById('bottingToolsRotateBtn');
+      const provider = (providerEl?.value || 'lemonprime').trim() || 'lemonprime';
+
+      if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.textContent = 'Rotating...';
+      }
+
+      try {
+        const res = await fetch(API_BASE + '/api/bottingtools/rotate-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, refill: true })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        updateUpstreamProxyUi(data.upstreamProxy, data.provider);
+        toast('BottingTools proxy rotated', 'success');
+      } catch (err) {
+        toast('BottingTools: ' + err.message, 'error');
+      } finally {
+        if (buttonEl) {
+          buttonEl.disabled = false;
+          buttonEl.textContent = 'Rotate with BottingTools';
+        }
+      }
+    }
+
     async function loadUpstreamProxy() {
       try {
         const res = await fetch(API_BASE + '/api/upstream-proxy');
         const data = await res.json();
         if (data.upstreamProxy) {
           const p = data.upstreamProxy;
-          const typeEl = document.getElementById('upstreamType');
-          const detailsEl = document.getElementById('upstreamDetails');
-          const statusEl = document.getElementById('upstreamStatus');
-
-          if (typeEl) typeEl.value = p.type || 'http';
-          updateUpstreamFields();
-
-          if (detailsEl) {
-            let details = p.host + ':' + p.port;
-            if (p.auth) details = p.auth + '@' + details;
-            detailsEl.value = details;
-          }
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--status-2xx);">Active: ' + (p.type || 'HTTP').toUpperCase() + ' proxy at ' + p.host + ':' + p.port + '</span>';
+          updateUpstreamProxyUi(p);
         }
       } catch (e) {
         console.error('[Error]', e.message);

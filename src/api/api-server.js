@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
+import { execFile } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
@@ -26,6 +27,68 @@ export class ApiServer {
 
     this._setupMiddleware();
     this._setupRoutes();
+  }
+
+  _runPythonJson(script, args = []) {
+    return new Promise((resolve, reject) => {
+      execFile('python3', ['-c', script, ...args], { timeout: 30000 }, (error, stdout, stderr) => {
+        if (error) {
+          const message = (stderr || stdout || error.message).trim();
+          reject(new Error(message || error.message));
+          return;
+        }
+
+        const lines = stdout.split(/\r?\n/)
+          .map(line => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '').trim())
+          .filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const objectStart = lines[i].indexOf('{');
+          const objectEnd = lines[i].lastIndexOf('}');
+          const jsonText = objectStart >= 0 && objectEnd > objectStart
+            ? lines[i].slice(objectStart, objectEnd + 1)
+            : lines[i];
+          try {
+            resolve(JSON.parse(jsonText));
+            return;
+          } catch {}
+        }
+
+        reject(new Error('BottingTools did not return JSON output.'));
+      });
+    });
+  }
+
+  async _getBottingToolsProxy(provider = 'lemonprime', refill = true) {
+    const script = `
+import json
+import sys
+from bottingtools import get_proxy
+
+provider = sys.argv[1] or "lemonprime"
+refill = sys.argv[2].lower() == "true"
+proxy = get_proxy(provider=provider, refill=refill)
+auth = None
+if proxy.username is not None and proxy.password is not None:
+    auth = f"{proxy.username}:{proxy.password}"
+print(json.dumps({
+    "provider": provider,
+    "host": proxy.ip,
+    "port": int(proxy.port),
+    "auth": auth,
+    "type": "http",
+    "raw": str(proxy),
+}))
+`;
+    return this._runPythonJson(script, [String(provider || 'lemonprime'), refill ? 'true' : 'false']);
+  }
+
+  async _getBottingToolsProviders() {
+    const script = `
+import json
+from bottingtools import get_proxy_providers
+print(json.dumps({"providers": get_proxy_providers()}))
+`;
+    return this._runPythonJson(script);
   }
 
   _setupMiddleware() {
@@ -438,6 +501,34 @@ export class ApiServer {
       this.proxy.setUpstreamProxy(null);
       this.settings?.set('upstreamProxy', null);
       res.json({ success: true });
+    });
+
+    router.get('/api/bottingtools/proxy-providers', async (req, res) => {
+      try {
+        const data = await this._getBottingToolsProviders();
+        res.json(data);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    router.post('/api/bottingtools/rotate-proxy', async (req, res) => {
+      try {
+        const provider = req.body?.provider || 'lemonprime';
+        const refill = req.body?.refill !== false;
+        const proxy = await this._getBottingToolsProxy(provider, refill);
+        const upstreamProxy = {
+          host: proxy.host,
+          port: proxy.port,
+          auth: proxy.auth || null,
+          type: proxy.type || 'http'
+        };
+        this.proxy.setUpstreamProxy(upstreamProxy);
+        this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
+        res.json({ success: true, provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
     // TLS Passthrough

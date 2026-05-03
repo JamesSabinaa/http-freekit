@@ -375,6 +375,14 @@
     </div>
     <button class="btn btn-primary" onclick="saveUpstreamProxy()" style="font-size:12px;">Save proxy settings</button>
   </div>
+  <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--text-input-border);">
+    <div class="form-group" style="margin-bottom:10px;">
+      <label>BottingTools provider</label>
+      <input type="text" id="bottingToolsProvider" list="bottingToolsProviders" value="lemonprime" placeholder="lemonprime" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
+      <datalist id="bottingToolsProviders"></datalist>
+    </div>
+    <button class="btn btn-secondary" id="bottingToolsRotateBtn" onclick="rotateBottingToolsProxy()" style="font-size:12px;">Rotate with BottingTools</button>
+  </div>
   <div id="upstreamStatus" style="margin-top:8px;font-size:12px;color:var(--text-lowlight);"></div>
   <p style="font-size:11px;color:var(--text-lowlight);margin-top:12px;line-height:1.4;">
     Configure how intercepted traffic is forwarded. You can route traffic through an upstream proxy for corporate networks, VPNs, or Tor.
