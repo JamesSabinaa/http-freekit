@@ -19,6 +19,7 @@ export class ProxyServer {
     this.port = options.port || 8080;
     this.onRequest = options.onRequest || (() => {});
     this.onBreakpoint = options.onBreakpoint || (() => {});
+    this.onUpstreamProxyRetry = options.onUpstreamProxyRetry || (async () => false);
     this.server = null;
     this.requestCount = 0;
     this.activeConnections = new Set();
@@ -39,6 +40,37 @@ export class ProxyServer {
     // Set of origins known not to support h2: Set<"host:port">
     this._h2Blacklist = new Set();
   }
+
+  async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
+    if (!this.upstreamProxy || context.attempt > 0) return false;
+    if (proxyRes?.statusCode !== 410) return false;
+    if (!this._canSafelyReplayRequest(context.method)) return false;
+    try {
+      return await this.onUpstreamProxyRetry({
+        reason: '410 Gone',
+        statusCode: proxyRes.statusCode,
+        statusMessage: proxyRes.statusMessage,
+        url: context.url,
+        method: context.method,
+        host: context.host
+      });
+    } catch (err) {
+      console.error('[Proxy] Upstream proxy retry hook failed:', err.message);
+      return false;
+    }
+  }
+
+  _canSafelyReplayRequest(method) {
+    return ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(String(method || '').toUpperCase());
+  }
+
+  _setContentLength(headers, length) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-length') delete headers[key];
+    }
+    headers['content-length'] = String(length);
+  }
+
 
   setUpstreamProxy(config) {
     if (!config || !config.host) {
@@ -96,7 +128,7 @@ export class ProxyServer {
       const name = rawHeaders[i];
       const value = rawHeaders[i + 1];
       const lower = name.toLowerCase();
-      if (lower === 'proxy-connection' || lower === 'proxy-authorization') continue;
+      if (this._shouldStripUpstreamHeader(lower)) continue;
       if (headers[name] !== undefined) {
         // Multiple values — combine (cookie is common)
         headers[name] = Array.isArray(headers[name])
@@ -107,6 +139,38 @@ export class ProxyServer {
       }
     }
     return headers;
+  }
+
+  _shouldStripUpstreamHeader(name) {
+    const lower = String(name || '').toLowerCase();
+    return [
+      'proxy-connection',
+      'proxy-authorization',
+      'proxy-authenticate',
+      'via',
+      'forwarded',
+      'x-forwarded-for',
+      'x-forwarded-host',
+      'x-forwarded-proto',
+      'x-forwarded-protocol',
+      'x-forwarded-port',
+      'x-forwarded-server',
+      'x-real-ip',
+      'client-ip',
+      'true-client-ip',
+      'forwarded-for',
+      'forwarded-host',
+      'forwarded-proto'
+    ].includes(lower);
+  }
+
+  _stripUpstreamHeaders(headers) {
+    const clean = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      if (this._shouldStripUpstreamHeader(name)) continue;
+      clean[name] = value;
+    }
+    return clean;
   }
 
   start() {
@@ -336,7 +400,8 @@ export class ProxyServer {
     const requestBody = [];
     clientReq.on('data', chunk => requestBody.push(chunk));
     clientReq.on('end', async () => {
-      const body = Buffer.concat(requestBody);
+      let body = Buffer.concat(requestBody);
+      let breakpointBodyModified = false;
 
       // Check mock rules
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, this._safeBodyString(body));
@@ -383,47 +448,57 @@ export class ProxyServer {
         if (modifications.headers) {
           Object.assign(clientReq.headers, modifications.headers);
         }
+        if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+          body = Buffer.from(String(modifications.body || ''));
+          this._setContentLength(clientReq.headers, body.length);
+          breakpointBodyModified = true;
+        }
       }
 
-      const headers = this._rawHeadersToObject(clientReq.rawHeaders);
+      const buildOptions = () => {
+        const headers = { ...this._rawHeadersToObject(clientReq.rawHeaders), ...clientReq.headers };
+        if (breakpointBodyModified) this._setContentLength(headers, body.length);
 
-      let options;
-      if (this.upstreamProxy && this._isSocksProxy()) {
-        // Route through SOCKS proxy — connect via SOCKS then send normal request
-        options = {
-          hostname: targetUrl.hostname,
-          port: parseInt(targetUrl.port) || 80,
-          path: targetUrl.pathname + targetUrl.search,
-          method: clientReq.method,
-          headers,
-          createConnection: (opts, oncreate) => {
-            this._connectViaSocks(opts.hostname, opts.port)
-              .then(socket => oncreate(null, socket))
-              .catch(err => oncreate(err));
-          }
-        };
-      } else if (this.upstreamProxy) {
-        // Route through HTTP/HTTPS upstream proxy — send full URL as path
-        options = {
-          hostname: this.upstreamProxy.host,
-          port: this.upstreamProxy.port,
-          path: targetUrl.href,
-          method: clientReq.method,
-          headers,
-          insecureHTTPParser: true
-        };
-        if (this.upstreamProxy.auth) {
-          options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+        if (this.upstreamProxy && this._isSocksProxy()) {
+          // Route through SOCKS proxy — connect via SOCKS then send normal request
+          return {
+            hostname: targetUrl.hostname,
+            port: parseInt(targetUrl.port) || 80,
+            path: targetUrl.pathname + targetUrl.search,
+            method: clientReq.method,
+            headers,
+            createConnection: (opts, oncreate) => {
+              this._connectViaSocks(opts.hostname, opts.port)
+                .then(socket => oncreate(null, socket))
+                .catch(err => oncreate(err));
+            }
+          };
         }
-      } else {
-        options = {
+
+        if (this.upstreamProxy) {
+          // Route through HTTP/HTTPS upstream proxy — send full URL as path
+          const options = {
+            hostname: this.upstreamProxy.host,
+            port: this.upstreamProxy.port,
+            path: targetUrl.href,
+            method: clientReq.method,
+            headers,
+            insecureHTTPParser: true
+          };
+          if (this.upstreamProxy.auth) {
+            options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+          }
+          return options;
+        }
+
+        return {
           hostname: targetUrl.hostname,
           port: targetUrl.port || 80,
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,
           headers
         };
-      }
+      };
 
       // Emit pending request immediately so it appears in the UI
       this._emitPendingRequest({
@@ -435,11 +510,24 @@ export class ProxyServer {
       });
 
       const connectStart = Date.now();
-      const proxyReq = http.request(options, (proxyRes) => {
+      const sendProxyRequest = (attempt = 0) => {
+      const options = buildOptions();
+      const requestLib = this.upstreamProxy?.type === 'https' ? https : http;
+      if (requestLib === https) {
+        options.rejectUnauthorized = false;
+      }
+      const proxyReq = requestLib.request(options, (proxyRes) => {
         const responseBody = [];
         proxyRes.on('data', chunk => responseBody.push(chunk));
-        proxyRes.on('end', () => {
+        proxyRes.on('end', async () => {
           const resBody = Buffer.concat(responseBody);
+          if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            attempt, method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname
+          })) {
+            sendProxyRequest(attempt + 1);
+            return;
+          }
+
           const duration = Date.now() - startTime;
           const timing = {
             total: Date.now() - startTime,
@@ -517,6 +605,9 @@ export class ProxyServer {
       });
 
       proxyReq.end(body);
+      };
+
+      sendProxyRequest();
     });
   }
 
@@ -590,7 +681,6 @@ export class ProxyServer {
     // Tell client the tunnel is established
     clientSocket.write(
       'HTTP/1.1 200 Connection Established\r\n' +
-      'Proxy-Agent: HTTP-FreeKit\r\n' +
       '\r\n'
     );
 
@@ -696,8 +786,9 @@ export class ProxyServer {
 
       const requestBody = [];
       req.on('data', chunk => requestBody.push(chunk));
-      req.on('end', async () => {
-        const body = Buffer.concat(requestBody);
+    req.on('end', async () => {
+        let body = Buffer.concat(requestBody);
+        let breakpointBodyModified = false;
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -969,10 +1060,21 @@ export class ProxyServer {
               this._setBreakpointTimeout(requestId);
             });
             if (modifications.url) {
-              try { fullUrl = modifications.url; } catch { /* keep original */ }
+              try {
+                const nextUrl = new URL(modifications.url);
+                fullUrl = nextUrl.href;
+                hostname = nextUrl.hostname;
+                targetPort = parseInt(nextUrl.port, 10) || 443;
+                req.url = nextUrl.pathname + nextUrl.search;
+              } catch { /* keep original */ }
             }
             if (modifications.method) req.method = modifications.method;
             if (modifications.headers) Object.assign(req.headers, modifications.headers);
+            if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+              body = Buffer.from(String(modifications.body || ''));
+              this._setContentLength(req.headers, body.length);
+              breakpointBodyModified = true;
+            }
             // Fall through to normal proxy behavior
           }
 
@@ -1091,12 +1193,21 @@ export class ProxyServer {
           if (modifications.headers) {
             Object.assign(req.headers, modifications.headers);
           }
+          if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+            body = Buffer.from(String(modifications.body || ''));
+            this._setContentLength(req.headers, body.length);
+            breakpointBodyModified = true;
+          }
         }
 
         // Forward to real server — preserve raw header case to avoid bot detection
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: this._rawHeadersToObject(req.rawHeaders),
+          headers: (() => {
+            const headers = { ...this._rawHeadersToObject(req.rawHeaders), ...req.headers };
+            if (breakpointBodyModified) this._setContentLength(headers, body.length);
+            return headers;
+          })(),
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
@@ -1153,11 +1264,18 @@ export class ProxyServer {
         }
 
         // Fallback: HTTPS/1.1
-        const handleResponse = (proxyRes) => {
+        const handleResponse = (attempt) => (proxyRes) => {
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
-          proxyRes.on('end', () => {
+          proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
+            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+              attempt, method: req.method, url: fullUrl, host: hostname
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+
             const trailers = proxyRes.trailers;
             try {
               res.writeHead(proxyRes.statusCode, proxyRes.headers);
@@ -1177,19 +1295,23 @@ export class ProxyServer {
         };
 
         let proxyReq;
-        if (this.upstreamProxy) {
-          const agent = this._getUpstreamAgent();
-          proxyReq = https.request({
-            ...proxyOpts,
-            agent,
-            insecureHTTPParser: true
-          }, handleResponse);
-        } else {
-          proxyReq = https.request(proxyOpts, handleResponse);
-        }
+        const sendProxyRequest = (attempt = 0) => {
+          if (this.upstreamProxy) {
+            const agent = this._getUpstreamAgent();
+            proxyReq = https.request({
+              ...proxyOpts,
+              agent,
+              insecureHTTPParser: true
+            }, handleResponse(attempt));
+          } else {
+            proxyReq = https.request(proxyOpts, handleResponse(attempt));
+          }
 
-        proxyReq.on('error', handleError);
-        proxyReq.end(body);
+          proxyReq.on('error', handleError);
+          proxyReq.end(body);
+        };
+
+        sendProxyRequest();
       });
     });
 
@@ -1283,7 +1405,8 @@ export class ProxyServer {
       const requestBody = [];
       stream.on('data', chunk => requestBody.push(chunk));
       stream.on('end', async () => {
-        const body = Buffer.concat(requestBody);
+        let body = Buffer.concat(requestBody);
+        let breakpointBodyModified = false;
 
         // Convert h2 pseudo-headers to regular headers for matching
         const reqHeaders = {};
@@ -1339,10 +1462,16 @@ export class ProxyServer {
           // Apply modifications if provided (note: can't change pseudo-headers on existing stream)
           if (modifications.method) { /* method is fixed for this stream */ }
           if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
+          if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+            body = Buffer.from(String(modifications.body || ''));
+            this._setContentLength(reqHeaders, body.length);
+            breakpointBodyModified = true;
+          }
         }
 
         // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
-        const upstreamHeaders = { ...reqHeaders };
+        const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
+        if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
         if (!upstreamHeaders.host) {
           upstreamHeaders.host = targetPort === 443 ? hostname : `${hostname}:${targetPort}`;
         }
@@ -1412,11 +1541,17 @@ export class ProxyServer {
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
-        const handleResponse = (proxyRes) => {
+        const handleResponse = (attempt) => (proxyRes) => {
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
-          proxyRes.on('end', () => {
+          proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
+            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+              attempt, method, url: fullUrl, host: authority
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
 
             // Build h2 response headers, filtering out h1-specific ones
             const responseHeaders = { ':status': proxyRes.statusCode };
@@ -1449,27 +1584,31 @@ export class ProxyServer {
         };
 
         let proxyReq;
-        if (this.upstreamProxy) {
-          try {
-            const agent = this._getUpstreamAgent();
-            proxyReq = https.request({
-              ...proxyOpts,
-              agent,
-              insecureHTTPParser: true
-            }, handleResponse);
-          } catch (err) {
-            handleError(err);
-            return;
+        const sendProxyRequest = (attempt = 0) => {
+          if (this.upstreamProxy) {
+            try {
+              const agent = this._getUpstreamAgent();
+              proxyReq = https.request({
+                ...proxyOpts,
+                agent,
+                insecureHTTPParser: true
+              }, handleResponse(attempt));
+            } catch (err) {
+              handleError(err);
+              return;
+            }
+          } else {
+            proxyReq = https.request(proxyOpts, handleResponse(attempt));
           }
-        } else {
-          proxyReq = https.request(proxyOpts, handleResponse);
-        }
 
-        proxyReq.on('error', handleError);
-        proxyReq.setTimeout(30000, () => {
-          proxyReq.destroy(new Error('Request timeout after 30s'));
-        });
-        proxyReq.end(body);
+          proxyReq.on('error', handleError);
+          proxyReq.setTimeout(30000, () => {
+            proxyReq.destroy(new Error('Request timeout after 30s'));
+          });
+          proxyReq.end(body);
+        };
+
+        sendProxyRequest();
       });
 
       // Handle stream errors (e.g., client reset)
@@ -1497,7 +1636,8 @@ export class ProxyServer {
       const requestBody = [];
       req.on('data', chunk => requestBody.push(chunk));
       req.on('end', async () => {
-        const body = Buffer.concat(requestBody);
+        let body = Buffer.concat(requestBody);
+        let breakpointBodyModified = false;
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -1543,10 +1683,21 @@ export class ProxyServer {
             this._setBreakpointTimeout(requestId);
           });
           if (modifications.url) {
-            try { fullUrl = modifications.url; } catch { /* keep original */ }
+            try {
+              const nextUrl = new URL(modifications.url);
+              fullUrl = nextUrl.href;
+              hostname = nextUrl.hostname;
+              targetPort = parseInt(nextUrl.port, 10) || 443;
+              req.url = nextUrl.pathname + nextUrl.search;
+            } catch { /* keep original */ }
           }
           if (modifications.method) req.method = modifications.method;
           if (modifications.headers) Object.assign(req.headers, modifications.headers);
+          if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+            body = Buffer.from(String(modifications.body || ''));
+            this._setContentLength(req.headers, body.length);
+            breakpointBodyModified = true;
+          }
         }
 
         // Forward to real server — try HTTP/2 upstream first
@@ -1604,15 +1755,26 @@ export class ProxyServer {
         // Fallback: HTTPS/1.1 — preserve raw header case
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
-          headers: this._rawHeadersToObject(req.rawHeaders),
+          headers: (() => {
+            const headers = { ...this._rawHeadersToObject(req.rawHeaders), ...req.headers };
+            if (breakpointBodyModified) this._setContentLength(headers, body.length);
+            return headers;
+          })(),
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
-        const handleResponse = (proxyRes) => {
+        const handleResponse = (attempt) => (proxyRes) => {
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
-          proxyRes.on('end', () => {
+          proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
+            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+              attempt, method: req.method, url: fullUrl, host: hostname
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+
             try {
               res.writeHead(proxyRes.statusCode, proxyRes.headers);
               res.end(resBody);
@@ -1631,19 +1793,23 @@ export class ProxyServer {
         };
 
         let proxyReq;
-        if (this.upstreamProxy) {
-          const agent = this._getUpstreamAgent();
-          proxyReq = https.request({
-            ...proxyOpts,
-            agent,
-            insecureHTTPParser: true
-          }, handleResponse);
-        } else {
-          proxyReq = https.request(proxyOpts, handleResponse);
-        }
+        const sendProxyRequest = (attempt = 0) => {
+          if (this.upstreamProxy) {
+            const agent = this._getUpstreamAgent();
+            proxyReq = https.request({
+              ...proxyOpts,
+              agent,
+              insecureHTTPParser: true
+            }, handleResponse(attempt));
+          } else {
+            proxyReq = https.request(proxyOpts, handleResponse(attempt));
+          }
 
-        proxyReq.on('error', handleError);
-        proxyReq.end(body);
+          proxyReq.on('error', handleError);
+          proxyReq.end(body);
+        };
+
+        sendProxyRequest();
       });
     });
 
@@ -1696,7 +1862,8 @@ export class ProxyServer {
 
   // Handle mock responses for HTTP/2 streams
   async _handleH2MockResponse(stream, mockRule, ctx) {
-    const { requestId, method, fullUrl, authority, path, reqHeaders, body, startTime, tlsDetails } = ctx;
+    const { requestId, startTime, tlsDetails } = ctx;
+    let { method, fullUrl, authority, path, reqHeaders, body } = ctx;
 
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -1899,13 +2066,32 @@ export class ProxyServer {
       try {
         this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url: fullUrl, host: authority });
       } catch (err) { console.error('[Proxy] Error in breakpoint handler:', err.message); }
-      await new Promise((resolve) => {
+      const modifications = await new Promise((resolve) => {
         this.pendingBreakpoints.set(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), timestamp: Date.now(), resolve
         });
         this._setBreakpointTimeout(requestId);
       });
+      if (modifications.url) {
+        try {
+          const nextUrl = new URL(modifications.url);
+          fullUrl = nextUrl.href;
+          authority = nextUrl.host;
+          path = nextUrl.pathname + nextUrl.search;
+          reqHeaders[':authority'] = authority;
+          reqHeaders[':path'] = path;
+        } catch { /* keep original */ }
+      }
+      if (modifications.method) {
+        method = String(modifications.method).trim().toUpperCase();
+        reqHeaders[':method'] = method;
+      }
+      if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
+      if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+        body = Buffer.from(String(modifications.body || ''));
+        this._setContentLength(reqHeaders, body.length);
+      }
       // Fall through — but for h2 streams we can't easily re-proxy, so just send a generic response
     }
 
@@ -2150,7 +2336,7 @@ export class ProxyServer {
         const lower = k.toLowerCase();
         if (lower.startsWith(':')) continue; // skip existing pseudo-headers
         if (['connection', 'keep-alive', 'transfer-encoding', 'upgrade',
-             'http2-settings', 'proxy-connection', 'host'].includes(lower)) continue;
+             'http2-settings', 'host'].includes(lower) || this._shouldStripUpstreamHeader(lower)) continue;
         h2Headers[lower] = v;
       }
 
@@ -2290,7 +2476,7 @@ export class ProxyServer {
 
   // Map supported_groups hex codes to OpenSSL curve names
   static _GROUP_MAP = {
-    0x0017: 'P-256', 0x0018: 'P-384', 0x0019: 'P-521',
+    0x0017: 'prime256v1', 0x0018: 'secp384r1', 0x0019: 'secp521r1',
     0x001d: 'X25519', 0x001e: 'X448',
     0x0100: 'ffdhe2048', 0x0101: 'ffdhe3072', 0x0102: 'ffdhe4096',
     0x11ec: 'X25519MLKEM768',
@@ -2332,11 +2518,46 @@ export class ProxyServer {
 
     return {
       ciphers: ciphers.join(':'),
-      ecdhCurve: groups.length > 0 ? groups.join(':') : undefined,
+      ecdhCurve: ProxyServer._filterSupportedEcdhCurves(groups.join(':')),
       sigalgs: sigalgs.length > 0 ? sigalgs.join(':') : undefined,
       minVersion: parsed.tlsVersion <= 0x0301 ? 'TLSv1' : 'TLSv1.2',
       maxVersion: 'TLSv1.3',
     };
+  }
+
+  static _ecdhCurveSupport = new Map();
+
+  static _isEcdhCurveSupported(curve) {
+    if (!curve) return false;
+    if (ProxyServer._ecdhCurveSupport.has(curve)) {
+      return ProxyServer._ecdhCurveSupport.get(curve);
+    }
+    try {
+      tls.createSecureContext({ ecdhCurve: curve });
+      ProxyServer._ecdhCurveSupport.set(curve, true);
+      return true;
+    } catch {
+      ProxyServer._ecdhCurveSupport.set(curve, false);
+      return false;
+    }
+  }
+
+  static _filterSupportedEcdhCurves(ecdhCurve) {
+    const curves = String(ecdhCurve || '')
+      .split(':')
+      .map(curve => curve.trim())
+      .filter(Boolean)
+      .filter(curve => ProxyServer._isEcdhCurveSupported(curve));
+    return curves.length > 0 ? curves.join(':') : undefined;
+  }
+
+  static _sanitizeUpstreamTlsOptions(options) {
+    const sanitized = { ...options };
+    if (sanitized.ecdhCurve) {
+      sanitized.ecdhCurve = ProxyServer._filterSupportedEcdhCurves(sanitized.ecdhCurve);
+      if (!sanitized.ecdhCurve) delete sanitized.ecdhCurve;
+    }
+    return sanitized;
   }
 
   // Create a Duplex wrapper around a socket that transparently captures the
@@ -2484,7 +2705,7 @@ export class ProxyServer {
 
     // Passthrough mode — mirror the client's exact TLS parameters
     if (this.tlsFingerprint === 'passthrough' && clientHelloTls) {
-      return {
+      return ProxyServer._sanitizeUpstreamTlsOptions({
         ...base,
         minVersion: clientHelloTls.minVersion,
         maxVersion: clientHelloTls.maxVersion,
@@ -2492,14 +2713,14 @@ export class ProxyServer {
         sigalgs: clientHelloTls.sigalgs,
         ecdhCurve: clientHelloTls.ecdhCurve,
         requestOCSP: true,
-      };
+      });
     }
 
     const preset = ProxyServer.TLS_FINGERPRINTS[this.tlsFingerprint];
     if (!preset) {
       return base; // 'default' — Node.js built-in TLS
     }
-    return {
+    return ProxyServer._sanitizeUpstreamTlsOptions({
       ...base,
       minVersion: preset.minVersion,
       maxVersion: preset.maxVersion,
@@ -2507,14 +2728,20 @@ export class ProxyServer {
       sigalgs: preset.sigalgs,
       ecdhCurve: preset.ecdhCurve,
       requestOCSP: true,
-    };
+    });
   }
 
   // Build a proxy URL from the upstream proxy config
   _getUpstreamProxyUrl() {
     const p = this.upstreamProxy;
     const scheme = p.type?.startsWith('socks') ? p.type : (p.type === 'https' ? 'https' : 'http');
-    const auth = p.auth ? `${p.auth}@` : '';
+    let auth = '';
+    if (p.auth) {
+      const colonIdx = p.auth.indexOf(':');
+      const user = colonIdx === -1 ? p.auth : p.auth.slice(0, colonIdx);
+      const pass = colonIdx === -1 ? '' : p.auth.slice(colonIdx + 1);
+      auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
+    }
     return `${scheme}://${auth}${p.host}:${p.port}`;
   }
 
@@ -3041,6 +3268,10 @@ export class ProxyServer {
       }
       if (modifications.method) clientReq.method = modifications.method;
       if (modifications.headers) Object.assign(clientReq.headers, modifications.headers);
+      if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+        body = Buffer.from(String(modifications.body || ''));
+        this._setContentLength(clientReq.headers, body.length);
+      }
       // Fall through to normal proxy behavior (don't return here)
     }
 
@@ -3121,6 +3352,10 @@ export class ProxyServer {
       }
       if (reqModifications.method) clientReq.method = reqModifications.method;
       if (reqModifications.headers) Object.assign(clientReq.headers, reqModifications.headers);
+      if (Object.prototype.hasOwnProperty.call(reqModifications, 'body')) {
+        body = Buffer.from(String(reqModifications.body || ''));
+        this._setContentLength(clientReq.headers, body.length);
+      }
 
       // Phase 2: Pause on the response
       this._emitRequest({
@@ -3206,6 +3441,7 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
+    if (this._shouldSuppressTrafficLog(data)) return;
     try {
       this.onRequest(data);
     } catch (err) {
@@ -3232,11 +3468,57 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
+    if (this._shouldSuppressTrafficLog(data)) return;
     try {
       this.onRequest(data);
     } catch (err) {
       console.error('[Proxy] Error in request update handler:', err.message);
     }
+  }
+
+  _shouldSuppressTrafficLog(data) {
+    if (data.source !== 'Chrome' && data.source !== 'Edge' && data.source !== 'Brave') return false;
+    if (data.protocol === 'ws-frame') return false;
+
+    const host = String(data.host || '').toLowerCase();
+    const path = String(data.path || '').toLowerCase();
+    const url = String(data.url || '').toLowerCase();
+    const target = host || (() => {
+      try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
+    })();
+
+    if (!target) return false;
+
+    const exactHosts = new Set([
+      'update.googleapis.com',
+      'optimizationguide-pa.googleapis.com',
+      'safebrowsing.googleapis.com',
+      'safebrowsing.google.com',
+      'clients1.google.com',
+      'clients2.google.com',
+      'clients3.google.com',
+      'clients4.google.com',
+      'clients5.google.com',
+      'clients6.google.com',
+      'redirector.gvt1.com'
+    ]);
+
+    if (exactHosts.has(target)) return true;
+    if (target.endsWith('.gvt1.com') || target.endsWith('.gvt2.com')) return true;
+    if (target.endsWith('.googleapis.com') && (
+      target.includes('update') ||
+      target.includes('safebrowsing') ||
+      target.includes('optimizationguide')
+    )) return true;
+
+    if (target === 'www.google.com' && (
+      path.startsWith('/async/folae') ||
+      path.startsWith('/complete/search') ||
+      path.startsWith('/gen_204') ||
+      path.startsWith('/chrome/')
+    )) return true;
+
+    return false;
   }
 
   _detectSource(headers) {
@@ -3293,10 +3575,6 @@ export class ProxyServer {
       return `data:${mimeType};base64,${decoded.toString('base64')}`;
     }
 
-    // Limit body capture to 512KB
-    const maxSize = 512 * 1024;
-    if (decoded.length > maxSize) decoded = decoded.slice(0, maxSize);
-
     // Check if it looks like text
     const sample = decoded.slice(0, 512);
     let isText = true;
@@ -3309,8 +3587,16 @@ export class ProxyServer {
     }
 
     if (isText) {
+      const maxSize = 512 * 1024;
+      if (decoded.length > maxSize) decoded = decoded.slice(0, maxSize);
       return decoded.toString('utf8');
     }
+
+    if (decoded.length < 2 * 1024 * 1024) {
+      const mimeType = ct.split(';')[0].trim() || 'application/octet-stream';
+      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+    }
+
     return `[Binary data: ${buffer.length} bytes]`;
   }
 
@@ -3325,6 +3611,13 @@ export class ProxyServer {
 
   removeBreakpoint(id) {
     this.breakpointRules = this.breakpointRules.filter(r => r.id !== id);
+  }
+
+  updateBreakpoint(id, patch = {}) {
+    const rule = this.breakpointRules.find(r => r.id === id);
+    if (!rule) return null;
+    Object.assign(rule, patch);
+    return rule;
   }
 
   getBreakpoints() {

@@ -11,6 +11,7 @@ export class InterceptorManager {
   constructor(ca) {
     this.interceptors = new Map();
     this.ca = ca;
+    this.onStatusChange = null;
 
     // Register all interceptors (order matches HTTP Toolkit's sidebar)
     this._register(new BrowserInterceptor('chrome', 'Chrome', 'chrome'));
@@ -35,6 +36,11 @@ export class InterceptorManager {
   }
 
   _register(interceptor) {
+    interceptor.onStatusChange = (event) => {
+      if (typeof this.onStatusChange === 'function') {
+        this.onStatusChange(event);
+      }
+    };
     this.interceptors.set(interceptor.id, interceptor);
   }
 
@@ -66,6 +72,15 @@ export class InterceptorManager {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
     await interceptor.deactivate();
+  }
+
+  async focus(id) {
+    const interceptor = this.interceptors.get(id);
+    if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
+    if (typeof interceptor.focus !== 'function') {
+      throw new Error(`${interceptor.name} cannot be focused`);
+    }
+    return await interceptor.focus();
   }
 
   async deactivateAll() {

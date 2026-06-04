@@ -8,6 +8,8 @@ export class ExistingBrowserInterceptor {
     this.browserType = browserType;
     this.active = false;
     this.ca = null;
+    this.process = null;
+    this.onStatusChange = null;
   }
 
   async isActivable() {
@@ -26,15 +28,19 @@ export class ExistingBrowserInterceptor {
 
     // For "Global" mode, we re-launch the browser with proxy flags but using
     // the user's existing default profile (no --user-data-dir override)
-    const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-
     const args = [
       `--proxy-server=127.0.0.1:${proxyPort}`,
-      '--ignore-certificate-errors',
-      `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
-      '--test-type',
-      '--allow-insecure-localhost',
     ];
+
+    if (!this.ca?.systemTrustInstalled) {
+      const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
+      args.push(
+        '--ignore-certificate-errors',
+        `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
+        '--test-type',
+        '--allow-insecure-localhost'
+      );
+    }
 
     if (options.url) {
       args.push(options.url);
@@ -48,14 +54,17 @@ export class ExistingBrowserInterceptor {
     });
 
     this.active = true;
+    this._emitStatus('active');
 
     this.process.on('exit', () => {
       this.active = false;
+      this._emitStatus('exited');
     });
 
     this.process.on('error', (err) => {
       console.error(`[Interceptor] ${this.name} error:`, err.message);
       this.active = false;
+      this._emitStatus('error', { error: err.message });
     });
 
     return { success: true, pid: this.process.pid, browser: this.name };
@@ -66,6 +75,20 @@ export class ExistingBrowserInterceptor {
       this.process.kill();
     }
     this.active = false;
+    this._emitStatus('inactive');
+  }
+
+  _emitStatus(reason, extra = {}) {
+    if (typeof this.onStatusChange !== 'function') return;
+    this.onStatusChange({
+      id: this.id,
+      name: this.name,
+      type: this.browserType,
+      active: this.active,
+      pid: this.process?.pid || null,
+      reason,
+      ...extra
+    });
   }
 
   toJSON() {

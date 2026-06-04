@@ -2,10 +2,14 @@ import express from 'express';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
-import { execFile } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
+import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
+
+const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 
 export class ApiServer {
   constructor(proxyServer, certificateAuthority, interceptorManager, options = {}) {
@@ -19,11 +23,22 @@ export class ApiServer {
     this.clients = new Set();
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
+    this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
+    this._autoRotateInFlight = false;
+    this._autoRotatePromise = null;
+    this._lastAutoRotateAt = 0;
 
     // Wire up breakpoint broadcast so the UI gets real-time breakpoint events
     this.proxy.onBreakpoint = (event) => {
       this._broadcast(event);
     };
+    this.proxy.onUpstreamProxyRetry = (event) => this._rotateProxyForTransparentRetry(event);
+
+    if (this.interceptors) {
+      this.interceptors.onStatusChange = (event) => {
+        this._broadcast({ type: 'interceptor-status', data: event });
+      };
+    }
 
     this._setupMiddleware();
     this._setupRoutes();
@@ -91,6 +106,354 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return this._runPythonJson(script);
   }
 
+  _getAutoRotateProxyConfig() {
+    const saved = this.settings?.get('autoRotateProxyOnError');
+    return {
+      enabled: !!saved?.enabled,
+      provider: saved?.provider || this.autoRotateProxy.provider || 'lemonprime'
+    };
+  }
+
+  _setAutoRotateProxyConfig(config = {}) {
+    this.autoRotateProxy = {
+      enabled: !!config.enabled,
+      provider: String(config.provider || 'lemonprime').trim() || 'lemonprime'
+    };
+    this.settings?.set('autoRotateProxyOnError', this.autoRotateProxy);
+    return this.autoRotateProxy;
+  }
+
+  async _rotateBottingToolsProxy(provider, refill = true) {
+    const proxy = await this._getBottingToolsProxy(provider, refill);
+    const upstreamProxy = {
+      host: proxy.host,
+      port: proxy.port,
+      auth: proxy.auth || null,
+      type: proxy.type || 'http'
+    };
+    this.proxy.setUpstreamProxy(upstreamProxy);
+    this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
+    return { provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy };
+  }
+
+  _maybeAutoRotateProxyOnError(data) {
+    const config = this._getAutoRotateProxyConfig();
+    const reason = this._getAutoRotateProxyReason(data);
+    if (!config.enabled || !this.proxy.upstreamProxy || !reason) return;
+
+    const now = Date.now();
+    if (this._autoRotateInFlight || now - this._lastAutoRotateAt < 10000) return;
+
+    this._autoRotateInFlight = true;
+    this._lastAutoRotateAt = now;
+    this._broadcast({ type: 'proxy-auto-rotate', status: 'started', provider: config.provider, reason });
+
+    this._autoRotatePromise = this._rotateBottingToolsProxy(config.provider, true)
+      .then(result => {
+        this._broadcast({
+          type: 'proxy-auto-rotate',
+          status: 'success',
+          provider: result.provider,
+          upstreamProxy: result.upstreamProxy
+        });
+      })
+      .catch(err => {
+        this._broadcast({
+          type: 'proxy-auto-rotate',
+          status: 'error',
+          provider: config.provider,
+          error: err.message
+        });
+      })
+      .finally(() => {
+        this._autoRotateInFlight = false;
+        this._autoRotatePromise = null;
+      });
+  }
+
+  async _rotateProxyForTransparentRetry(event = {}) {
+    const config = this._getAutoRotateProxyConfig();
+    if (!config.enabled || !this.proxy.upstreamProxy) return false;
+
+    if (this._autoRotateInFlight && this._autoRotatePromise) {
+      return await this._autoRotatePromise;
+    }
+
+    this._autoRotateInFlight = true;
+    this._lastAutoRotateAt = Date.now();
+    this._broadcast({
+      type: 'proxy-auto-rotate',
+      status: 'started',
+      provider: config.provider,
+      reason: event.reason || 'upstream proxy error',
+      transparent: true
+    });
+
+    this._autoRotatePromise = this._rotateBottingToolsProxy(config.provider, true)
+      .then(result => {
+        this._broadcast({
+          type: 'proxy-auto-rotate',
+          status: 'success',
+          provider: result.provider,
+          upstreamProxy: result.upstreamProxy,
+          transparent: true
+        });
+        return true;
+      })
+      .catch(err => {
+        this._broadcast({
+          type: 'proxy-auto-rotate',
+          status: 'error',
+          provider: config.provider,
+          error: err.message,
+          transparent: true
+        });
+        return false;
+      })
+      .finally(() => {
+        this._autoRotateInFlight = false;
+        this._autoRotatePromise = null;
+      });
+
+    return await this._autoRotatePromise;
+  }
+
+  _getAutoRotateProxyReason(data) {
+    if (data?.statusCode === 410) return '410 Gone';
+
+    const errorText = `${data?.error || ''}\n${data?.responseBody || ''}\n${data?.statusMessage || ''}`;
+    if (/request timeout after 30s/i.test(errorText)) return 'request timeout';
+
+    return null;
+  }
+
+  _isTunnelRequest(req) {
+    return req?.protocol === 'tunnel' || req?.method === 'CONNECT';
+  }
+
+  _getHarExportTraffic() {
+    const hideTunnelRequests = this.settings?.get('hideTunnelRequests', true) !== false;
+    return this.trafficLog.filter(req => {
+      if (req?.protocol === 'ws-frame') return false;
+      if (hideTunnelRequests && this._isTunnelRequest(req)) return false;
+      return true;
+    });
+  }
+
+  _sanitizeGeneratorSessionName(value) {
+    const sanitized = String(value || '')
+      .trim()
+      .replace(/[^0-9A-Za-z_-]/g, '_')
+      .replace(/^_+|_+$/g, '');
+    return sanitized || `http-freekit-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  }
+
+  _toHostPath(value) {
+    const raw = String(value || '');
+    if (process.platform !== 'win32') return raw;
+
+    const match = raw.match(/^\/mnt\/([a-z])\/(.+)$/i);
+    if (!match) return raw;
+
+    return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, '\\')}`;
+  }
+
+  _getGeneratorDir() {
+    return this._toHostPath(process.env.GENERATOR_DIR || DEFAULT_GENERATOR_DIR);
+  }
+
+  _getGeneratorPythonCandidates() {
+    if (process.env.GENERATOR_PYTHON) {
+      return [{ command: process.env.GENERATOR_PYTHON, args: [] }];
+    }
+
+    if (process.platform === 'win32') {
+      return [
+        { command: 'py', args: ['-3'] },
+        { command: 'python', args: [] },
+        { command: 'python3', args: [] }
+      ];
+    }
+
+    return [
+      { command: 'python3', args: [] },
+      { command: 'python', args: [] }
+    ];
+  }
+
+  _getGeneratorLaunchPythonCandidates(pythonCandidates = this._getGeneratorPythonCandidates()) {
+    if (process.platform !== 'win32') return pythonCandidates;
+
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (candidate) => {
+      const key = `${candidate.command}\0${candidate.args.join('\0')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    };
+    const toWindowedPython = (candidate) => {
+      const command = String(candidate.command || '');
+      const basename = path.basename(command).toLowerCase();
+      const dirname = path.dirname(command);
+      const hasDirectory = dirname && dirname !== '.';
+      let windowedCommand = command;
+
+      if (basename === 'py' || basename === 'py.exe') {
+        windowedCommand = hasDirectory ? path.join(dirname, 'pyw.exe') : 'pyw';
+      } else if (
+        basename === 'python' ||
+        basename === 'python.exe' ||
+        basename === 'python3' ||
+        basename === 'python3.exe'
+      ) {
+        windowedCommand = hasDirectory ? path.join(dirname, 'pythonw.exe') : 'pythonw';
+      }
+
+      return { command: windowedCommand, args: candidate.args };
+    };
+
+    for (const candidate of pythonCandidates) {
+      addCandidate(toWindowedPython(candidate));
+    }
+
+    addCandidate({ command: 'pyw', args: ['-3'] });
+    addCandidate({ command: 'pythonw', args: [] });
+    return candidates;
+  }
+
+  _formatCommand(candidate) {
+    return [candidate.command, ...candidate.args].join(' ');
+  }
+
+  async _getGeneratorHarBaseDir(generatorDir, pythonCandidates) {
+    if (process.env.GENERATOR_HARS_DIR) {
+      return this._toHostPath(process.env.GENERATOR_HARS_DIR);
+    }
+
+    const script = `
+import json
+import os
+import sys
+
+generator_dir = sys.argv[1]
+os.chdir(generator_dir)
+sys.path.insert(0, generator_dir)
+
+import config
+config.load_config()
+print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
+`;
+    const result = await this._runGeneratorPythonJson(script, [generatorDir], {
+      cwd: generatorDir,
+      candidates: pythonCandidates
+    });
+    return this._toHostPath(result.harsBaseDir);
+  }
+
+  _execGeneratorPythonJson(candidate, script, args = [], options = {}) {
+    return new Promise((resolve, reject) => {
+      execFile(candidate.command, [...candidate.args, '-c', script, ...args], {
+        timeout: 30000,
+        cwd: options.cwd,
+        windowsHide: true
+      }, (error, stdout, stderr) => {
+        if (error) {
+          const message = (stderr || stdout || error.message).trim();
+          reject(new Error(message || error.message));
+          return;
+        }
+
+        const lines = stdout.split(/\r?\n/)
+          .map(line => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '').trim())
+          .filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const objectStart = lines[i].indexOf('{');
+          const objectEnd = lines[i].lastIndexOf('}');
+          const jsonText = objectStart >= 0 && objectEnd > objectStart
+            ? lines[i].slice(objectStart, objectEnd + 1)
+            : lines[i];
+          try {
+            resolve(JSON.parse(jsonText));
+            return;
+          } catch {}
+        }
+
+        reject(new Error('Generator did not return JSON output.'));
+      });
+    });
+  }
+
+  async _runGeneratorPythonJson(script, args = [], options = {}) {
+    const candidates = options.candidates || this._getGeneratorPythonCandidates();
+    const errors = [];
+
+    for (const candidate of candidates) {
+      try {
+        return await this._execGeneratorPythonJson(candidate, script, args, options);
+      } catch (err) {
+        errors.push(`${this._formatCommand(candidate)}: ${err.message}`);
+      }
+    }
+
+    throw new Error(`Could not run generator Python. Tried ${errors.join('; ')}`);
+  }
+
+  async _spawnGeneratorPython(pythonCandidates, args, options = {}) {
+    const errors = [];
+
+    for (const candidate of pythonCandidates) {
+      try {
+        await new Promise((resolve, reject) => {
+          const child = spawn(candidate.command, [...candidate.args, ...args], {
+            cwd: options.cwd,
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+          });
+          child.once('error', reject);
+          child.once('spawn', () => {
+            child.unref();
+            resolve();
+          });
+        });
+        return;
+      } catch (err) {
+        errors.push(`${this._formatCommand(candidate)}: ${err.message}`);
+      }
+    }
+
+    throw new Error(`Could not launch generator. Tried ${errors.join('; ')}`);
+  }
+
+  async _exportToGenerator() {
+    const generatorDir = this._getGeneratorDir();
+    const pythonCandidates = this._getGeneratorPythonCandidates();
+    const sessionName = this._sanitizeGeneratorSessionName(
+      `http-freekit-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`
+    );
+    const harBaseDir = await this._getGeneratorHarBaseDir(generatorDir, pythonCandidates);
+    const sessionDir = path.join(harBaseDir, sessionName);
+    const harPath = path.join(sessionDir, `${sessionName}.har`);
+    const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: true });
+
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(harPath, JSON.stringify(har, null, 2), 'utf8');
+
+    await this._spawnGeneratorPython(
+      this._getGeneratorLaunchPythonCandidates(pythonCandidates),
+      ['main_app.py', '--session', sessionName],
+      { cwd: generatorDir }
+    );
+
+    return {
+      sessionName,
+      harPath,
+      requestCount: har.log.entries.length
+    };
+  }
+
   _setupMiddleware() {
     // CORS
     this.app.use((req, res, next) => {
@@ -131,6 +494,18 @@ print(json.dumps({"providers": get_proxy_providers()}))
           apiPort: this.port
         }
       });
+    });
+
+    router.get('/api/ui-settings', (req, res) => {
+      res.json({
+        hideTunnelRequests: this.settings?.get('hideTunnelRequests', true) !== false
+      });
+    });
+
+    router.post('/api/ui-settings', (req, res) => {
+      const hideTunnelRequests = req.body?.hideTunnelRequests !== false;
+      this.settings?.set('hideTunnelRequests', hideTunnelRequests);
+      res.json({ success: true, hideTunnelRequests });
     });
 
     // Proxy stats
@@ -186,9 +561,22 @@ print(json.dumps({"providers": get_proxy_providers()}))
       });
     });
 
+    // Export as HAR into the external generator app and launch it with the new session selected
+    router.post('/api/traffic/export-generator', async (req, res) => {
+      try {
+        const result = await this._exportToGenerator();
+        res.json({ success: true, ...result });
+      } catch (err) {
+        res.status(500).json({
+          success: false,
+          error: err.message || 'Failed to export HAR to generator'
+        });
+      }
+    });
+
     // Export as HAR (must be before :id param route)
     router.get('/api/traffic/export.har', (req, res) => {
-      const har = trafficToHar(this.trafficLog, { maskSensitive: true });
+      const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: true });
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
       res.json(har);
@@ -325,6 +713,15 @@ print(json.dumps({"providers": get_proxy_providers()}))
       try {
         await this.interceptors.deactivate(req.params.id);
         res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    router.post('/api/interceptors/:id/focus', async (req, res) => {
+      try {
+        const result = await this.interceptors.focus(req.params.id);
+        res.json({ success: true, ...(result || {}) });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
@@ -470,6 +867,12 @@ print(json.dumps({"providers": get_proxy_providers()}))
       res.json({ success: true, rule });
     });
 
+    router.patch('/api/breakpoints/:id', (req, res) => {
+      const updated = this.proxy.updateBreakpoint(req.params.id, req.body || {});
+      if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
+      res.json({ success: true, rule: updated });
+    });
+
     // Pending breakpoints (paused requests) — must be before /:id to avoid matching "pending" as an id
     router.get('/api/breakpoints/pending', (req, res) => {
       res.json({ pending: this.proxy.getPendingBreakpoints() });
@@ -516,19 +919,25 @@ print(json.dumps({"providers": get_proxy_providers()}))
       try {
         const provider = req.body?.provider || 'lemonprime';
         const refill = req.body?.refill !== false;
-        const proxy = await this._getBottingToolsProxy(provider, refill);
-        const upstreamProxy = {
-          host: proxy.host,
-          port: proxy.port,
-          auth: proxy.auth || null,
-          type: proxy.type || 'http'
-        };
-        this.proxy.setUpstreamProxy(upstreamProxy);
-        this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
-        res.json({ success: true, provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy });
+        const result = await this._rotateBottingToolsProxy(provider, refill);
+        const autoConfig = this._getAutoRotateProxyConfig();
+        this._setAutoRotateProxyConfig({ ...autoConfig, provider: result.provider });
+        res.json({ success: true, ...result });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
+    });
+
+    router.get('/api/bottingtools/auto-rotate-proxy', (req, res) => {
+      res.json(this._getAutoRotateProxyConfig());
+    });
+
+    router.post('/api/bottingtools/auto-rotate-proxy', (req, res) => {
+      const config = this._setAutoRotateProxyConfig({
+        enabled: req.body?.enabled,
+        provider: req.body?.provider
+      });
+      res.json({ success: true, ...config });
     });
 
     // TLS Passthrough
@@ -758,6 +1167,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
         this.trafficLog.push(data);
       }
       this._broadcast({ type: 'request-update', data });
+      this._maybeAutoRotateProxyOnError(data);
     } else {
       // New request (pending or complete)
       delete data._pending;

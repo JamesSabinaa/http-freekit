@@ -70,11 +70,11 @@
               <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic" aria-rowcount="0" aria-colcount="6">
                 <thead><tr role="row">
                   <th role="columnheader" style="width:5px;padding:0;" aria-label="Row marker"></th>
-                  <th role="columnheader" style="width:71px" onclick="sortBy('method')">Method</th>
-                  <th role="columnheader" style="width:45px" onclick="sortBy('statusCode')">Status</th>
+                  <th role="columnheader" class="sortable" data-sort-field="method" aria-sort="none" style="width:71px" onclick="sortBy('method')"><span>Method</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="statusCode" aria-sort="none" style="width:45px" onclick="sortBy('statusCode')"><span>Status</span><span class="sort-chevron" aria-hidden="true"></span></th>
                   <th role="columnheader" style="width:49px">Source</th>
-                  <th role="columnheader" onclick="sortBy('host')">Host</th>
-                  <th role="columnheader" onclick="sortBy('path')">Path &amp; Query</th>
+                  <th role="columnheader" class="sortable" data-sort-field="host" aria-sort="none" onclick="sortBy('host')"><span>Host</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="path" aria-sort="none" onclick="sortBy('path')"><span>Path &amp; Query</span><span class="sort-chevron" aria-hidden="true"></span></th>
                 </tr></thead>
                 <tbody id="trafficBody"></tbody>
               </table>
@@ -102,6 +102,9 @@
                 </button>
                 <button class="btn" onclick="exportTraffic('har')" title="Export as HAR" aria-label="Export as HAR">
                   <i class="ph ph-download-simple" style="font-size:14px;"></i>
+                </button>
+                <button class="btn" onclick="exportHarToGenerator()" title="Open HAR in Generator" aria-label="Open HAR in Generator">
+                  <i class="ph ph-code" style="font-size:14px;"></i>
                 </button>
                 <button class="btn" onclick="importHar()" title="Import from HAR file" aria-label="Import from HAR file">
                   <i class="ph ph-folder-open" style="font-size:14px;"></i>
@@ -292,6 +295,16 @@
       <div class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" style="overflow-y:auto;">
         <div style="max-width:800px;margin:0 auto;padding:40px;">
           <h1 style="font-size:38px;font-weight:bold;margin-bottom:30px;letter-spacing:-1px;">Settings</h1>
+          <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">Traffic View</div>
+            <div class="settings-row">
+              <span class="settings-label">Hide TUNNEL / CONNECT requests</span>
+              <span class="settings-value"><input type="checkbox" id="hideTunnelRequestsToggle" onchange="saveHideTunnelRequests(this.checked)" checked style="cursor:pointer;width:18px;height:18px;"></span>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              Hides low-level CONNECT tunnel rows from the traffic list while keeping the captured HTTP requests visible.
+            </p>
+          </div>
           <div class="card" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
 <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:12px 0;">
   <span class="settings-label">Port Range</span>
@@ -378,10 +391,14 @@
   <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--text-input-border);">
     <div class="form-group" style="margin-bottom:10px;">
       <label>BottingTools provider</label>
-      <input type="text" id="bottingToolsProvider" list="bottingToolsProviders" value="lemonprime" placeholder="lemonprime" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
+      <input type="text" id="bottingToolsProvider" list="bottingToolsProviders" value="lemonprime" placeholder="lemonprime" onchange="saveAutoRotateProxyOnError(false)" onblur="saveAutoRotateProxyOnError(false)" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
       <datalist id="bottingToolsProviders"></datalist>
     </div>
     <button class="btn btn-secondary" id="bottingToolsRotateBtn" onclick="rotateBottingToolsProxy()" style="font-size:12px;">Rotate with BottingTools</button>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-lowlight);cursor:pointer;">
+      <input type="checkbox" id="autoRotateProxyOnError" onchange="saveAutoRotateProxyOnError(true)">
+      <span>Auto rotate proxy on 410 Gone or timeout</span>
+    </label>
   </div>
   <div id="upstreamStatus" style="margin-top:8px;font-size:12px;color:var(--text-lowlight);"></div>
   <p style="font-size:11px;color:var(--text-lowlight);margin-top:12px;line-height:1.4;">

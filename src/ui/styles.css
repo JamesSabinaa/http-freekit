@@ -732,13 +732,53 @@
       text-align: left;
       font-size: 12px;
       color: var(--text-lowlight);
-      cursor: pointer;
+      cursor: default;
       user-select: none;
       white-space: nowrap;
       z-index: 10;
     }
 
     .traffic-table th:hover { color: var(--text-main); }
+
+    .traffic-table th.sortable {
+      align-items: center;
+      cursor: pointer;
+      display: table-cell;
+    }
+
+    .traffic-table th.sortable .sort-chevron {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-left: 6px;
+      color: var(--text-watermark);
+      vertical-align: 1px;
+    }
+
+    .traffic-table th.sortable.sorted {
+      color: var(--text-main);
+    }
+
+    .traffic-table th.sortable.sorted .sort-chevron {
+      color: var(--pop-color);
+    }
+
+    .traffic-table th.sortable.sorted .sort-chevron::before {
+      content: '';
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+    }
+
+    .traffic-table th.sortable.sorted-desc .sort-chevron::before {
+      transform: rotate(45deg);
+    }
+
+    .traffic-table th.sortable.sorted-asc .sort-chevron::before {
+      transform: translateY(3px) rotate(225deg);
+    }
 
     .traffic-table td {
       height: 32px;
@@ -950,6 +990,51 @@
     .status-5xx { color: #ce3939; }
     .status-err { color: #ce3939; }
     .status-breakpoint { background: #f1971f33; color: #f1971f; font-size: 14px; }
+
+    .breakpoint-edit-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .breakpoint-edit-row {
+      display: grid;
+      grid-template-columns: 80px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .breakpoint-edit-label {
+      color: var(--text-lowlight);
+      font-size: 11px;
+      font-weight: 700;
+      padding-top: 3px;
+      text-transform: uppercase;
+    }
+
+    .breakpoint-edit-value {
+      background: var(--bg-input);
+      border: 1px solid var(--text-input-border);
+      border-radius: 4px;
+      color: var(--text-main);
+      cursor: text;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.45;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      padding: 5px 7px;
+    }
+
+    .breakpoint-edit-value:hover {
+      border-color: #f1971f;
+    }
+
+    .breakpoint-edit-pre {
+      margin: 0;
+      max-height: 160px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
     .status-pending { background: transparent; color: var(--text-watermark); font-size: 12px; }
 
     /* ============================================================
@@ -1458,6 +1543,15 @@
       font-size: 20px;
       display: flex;
       align-items: center;
+      gap: 12px;
+    }
+
+    .connected-source-item.focusable {
+      cursor: pointer;
+    }
+
+    .connected-source-item.focusable:hover span {
+      color: var(--pop-color);
     }
 
     .connected-source-item:last-child {
@@ -1465,7 +1559,41 @@
     }
 
     .connected-source-item svg {
-      margin-right: 30px;
+      margin-right: 18px;
+      flex-shrink: 0;
+    }
+
+    .connected-source-item span {
+      flex: 1;
+    }
+
+    .connected-source-stop,
+    .intercept-card-stop {
+      border: 1px solid var(--text-input-border);
+      background: var(--bg-input);
+      color: var(--text-lowlight);
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .connected-source-stop:hover,
+    .intercept-card-stop:hover {
+      color: #ce3939;
+      border-color: #ce3939;
+    }
+
+    .intercept-card-stop {
+      position: absolute !important;
+      top: 10px;
+      right: 10px;
+      z-index: 3 !important;
     }
 
     /* ---- Intercept Card (LittleCard style) ---- */
@@ -2719,6 +2847,23 @@
       box-shadow: 0 0 0 1px var(--pop-color), 0 0 8px 0 rgba(232, 160, 48, 0.2), 0 2px 14px 0 rgba(0,0,0,0.5);
     }
 
+    .mock-breakpoint-section {
+      margin-bottom: 18px;
+    }
+
+    .mock-breakpoint-section-header {
+      color: var(--text-lowlight);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      margin: 0 0 8px 2px;
+      text-transform: uppercase;
+    }
+
+    .mock-breakpoint-rule {
+      border-left: 3px solid #f1971f;
+    }
+
     .mock-rule-summary {
       display: flex;
       align-items: center;
@@ -3427,14 +3572,26 @@
     .send-tab:hover { color: var(--text-main); }
     .send-tab.active { color: var(--text-main); border-bottom-color: var(--pop-color); }
     .send-tab .send-tab-close {
-      opacity: 0;
-      font-size: 14px;
+      align-items: center;
+      background: transparent;
+      border: 0;
+      border-radius: 3px;
       color: var(--text-watermark);
       cursor: pointer;
-      padding: 0 2px;
+      display: inline-flex;
+      flex: 0 0 auto;
+      font-size: 14px;
+      height: 18px;
+      justify-content: center;
+      line-height: 1;
+      margin-right: -4px;
+      padding: 0;
+      width: 18px;
     }
-    .send-tab:hover .send-tab-close, .send-tab.active .send-tab-close { opacity: 1; }
-    .send-tab-close:hover { color: var(--pop-color); }
+    .send-tab-close:hover {
+      background: var(--bg-lowlight);
+      color: var(--pop-color);
+    }
     .send-tab-add {
       padding: 0 12px;
       height: 100%;

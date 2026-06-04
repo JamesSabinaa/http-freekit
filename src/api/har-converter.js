@@ -26,6 +26,8 @@ export function trafficToHar(requests, options = {}) {
 
         const reqContentType = req.requestHeaders?.['content-type'] || '';
         const resContentType = req.responseHeaders?.['content-type'] || '';
+        const requestBody = toHarBody(req.requestBody);
+        const responseBody = toHarBody(req.responseBody);
 
         return {
           startedDateTime: new Date(req.timestamp).toISOString(),
@@ -37,9 +39,10 @@ export function trafficToHar(requests, options = {}) {
             cookies: [],
             headers: reqHeaders,
             queryString: parseQueryString(req.url),
-            postData: req.requestBody ? {
+            postData: requestBody ? {
               mimeType: reqContentType,
-              text: req.requestBody
+              text: requestBody.text,
+              ...(requestBody.encoding ? { encoding: requestBody.encoding } : {})
             } : undefined,
             headersSize: -1,
             bodySize: req.requestBodySize || 0
@@ -53,7 +56,8 @@ export function trafficToHar(requests, options = {}) {
             content: {
               size: req.responseBodySize || 0,
               mimeType: resContentType,
-              text: req.responseBody || ''
+              text: responseBody?.text || '',
+              ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {})
             },
             redirectURL: req.responseHeaders?.location || '',
             headersSize: -1,
@@ -77,4 +81,19 @@ function parseQueryString(url) {
     const parsed = new URL(url);
     return [...parsed.searchParams.entries()].map(([name, value]) => ({ name, value }));
   } catch { return []; }
+}
+
+function toHarBody(body) {
+  if (!body) return null;
+  if (typeof body !== 'string') body = String(body);
+
+  const dataUriMatch = body.match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/);
+  if (dataUriMatch) {
+    return {
+      text: dataUriMatch[2].replace(/\s+/g, ''),
+      encoding: 'base64'
+    };
+  }
+
+  return { text: body };
 }

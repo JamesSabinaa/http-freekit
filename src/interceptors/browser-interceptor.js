@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'child_process';
+import { spawn, execFileSync, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -13,6 +13,8 @@ export class BrowserInterceptor {
     this.profileDir = null;
     this.active = false;
     this.ca = null; // Set by InterceptorManager
+    this.onStatusChange = null;
+    this.statusMonitor = null;
   }
 
   async isActivable() {
@@ -42,16 +44,22 @@ export class BrowserInterceptor {
     });
 
     this.active = true;
+    this._emitStatus('active');
+    this._startStatusMonitor();
 
     this.process.on('exit', (code) => {
       console.log(`[Interceptor] ${this.name} exited with code ${code}`);
-      this.active = false;
-      this._cleanup();
+      if (!this.active) return;
+      if (this._isBrowserStillRunning()) {
+        this._startStatusMonitor();
+        return;
+      }
+      this._markInactive('exited', { code });
     });
 
     this.process.on('error', (err) => {
       console.error(`[Interceptor] ${this.name} error:`, err.message);
-      this.active = false;
+      this._markInactive('error', { error: err.message });
     });
 
     return { success: true, pid: this.process.pid, browser: this.name };
@@ -65,27 +73,22 @@ export class BrowserInterceptor {
   }
 
   _getChromiumArgs(proxyPort, options) {
-    // Get the SPKI fingerprint of our CA so Chrome trusts our MITM certs
-    const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-
     const args = [
       `--proxy-server=127.0.0.1:${proxyPort}`,
       `--user-data-dir=${this.profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--disable-default-apps',
-      '--disable-extensions',
-      '--disable-sync',
-      '--disable-translate',
-      '--metrics-recording-only',
-      // These two flags together suppress "Not Secure" for our CA-signed certs
-      '--ignore-certificate-errors',
-      `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
-      '--test-type', // Suppresses "unsupported command-line flag" warnings
-      '--allow-insecure-localhost',
     ];
+
+    if (!this.ca?.systemTrustInstalled) {
+      const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
+      args.push(
+        '--ignore-certificate-errors',
+        `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
+        '--test-type',
+        '--allow-insecure-localhost'
+      );
+    }
 
     if (options.url) {
       args.push(options.url);
@@ -165,9 +168,154 @@ export class BrowserInterceptor {
     if (this.process && !this.process.killed) {
       console.log(`[Interceptor] Stopping ${this.name}...`);
       this.process.kill();
-      this.active = false;
     }
+    this._markInactive('inactive');
+  }
+
+  _markInactive(reason, extra = {}) {
+    this._stopStatusMonitor();
+    this.active = false;
     this._cleanup();
+    this._emitStatus(reason, extra);
+  }
+
+  _startStatusMonitor() {
+    this._stopStatusMonitor();
+    this.statusMonitor = setInterval(() => {
+      if (!this.active) {
+        this._stopStatusMonitor();
+        return;
+      }
+      if (!this._isBrowserStillRunning()) {
+        this._markInactive('closed');
+      }
+    }, 1500);
+    this.statusMonitor.unref?.();
+  }
+
+  _stopStatusMonitor() {
+    if (this.statusMonitor) {
+      clearInterval(this.statusMonitor);
+      this.statusMonitor = null;
+    }
+  }
+
+  _isBrowserStillRunning() {
+    return this._isSpawnedProcessRunning() || this._hasProfileProcess();
+  }
+
+  _isSpawnedProcessRunning() {
+    if (!this.process?.pid || this.process.exitCode !== null || this.process.signalCode !== null) {
+      return false;
+    }
+    try {
+      process.kill(this.process.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _hasProfileProcess() {
+    if (process.platform !== 'win32' || !this.profileDir) return false;
+
+    const escapedProfileDir = String(this.profileDir).replace(/'/g, "''");
+    const script = `
+$profileDir = '${escapedProfileDir}'
+$matches = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($profileDir) }
+if ($matches) { exit 0 }
+exit 1
+`;
+    try {
+      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+        stdio: 'ignore',
+        timeout: 3000,
+        windowsHide: true
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _emitStatus(reason, extra = {}) {
+    if (typeof this.onStatusChange !== 'function') return;
+    this.onStatusChange({
+      id: this.id,
+      name: this.name,
+      type: this.browserType,
+      active: this.active,
+      pid: this.process?.pid || null,
+      reason,
+      ...extra
+    });
+  }
+
+  async focus() {
+    if (!(await this.isActive())) {
+      throw new Error(`${this.name} is not running`);
+    }
+
+    if (process.platform === 'win32') {
+      const escapedProfileDir = String(this.profileDir || '').replace(/'/g, "''");
+      const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+}
+"@
+$candidatePids = @(${this.process.pid})
+$profileDir = '${escapedProfileDir}'
+if ($profileDir) {
+  $profileMatches = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profileDir) } |
+    Select-Object -ExpandProperty ProcessId
+  $candidatePids = @($candidatePids + $profileMatches) | Select-Object -Unique
+}
+
+foreach ($pidValue in $candidatePids) {
+  $p = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+  if ($p -and $p.MainWindowHandle -ne 0) {
+    if ([Win32]::IsIconic($p.MainWindowHandle)) {
+      [Win32]::ShowWindowAsync($p.MainWindowHandle, 9) | Out-Null
+    } else {
+      [Win32]::ShowWindowAsync($p.MainWindowHandle, 5) | Out-Null
+    }
+    if ([Win32]::SetForegroundWindow($p.MainWindowHandle)) {
+      exit 0
+    }
+  }
+}
+
+exit 1
+`;
+      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+        stdio: 'ignore',
+        timeout: 5000
+      });
+      return { success: true };
+    }
+
+    if (process.platform === 'darwin') {
+      const appNames = {
+        chrome: 'Google Chrome',
+        firefox: 'Firefox',
+        edge: 'Microsoft Edge',
+        brave: 'Brave Browser'
+      };
+      execFileSync('osascript', ['-e', `tell application "${appNames[this.browserType] || this.name}" to activate`], {
+        stdio: 'ignore',
+        timeout: 5000
+      });
+      return { success: true };
+    }
+
+    throw new Error(`Focusing ${this.name} is not supported on this platform`);
   }
 
   _cleanup() {

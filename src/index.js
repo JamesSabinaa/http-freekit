@@ -47,10 +47,14 @@ async function main() {
   if (process.platform === 'win32') {
     try {
       execSync(`certutil -addstore -user -f Root "${certInfo.certPath}"`, { stdio: 'ignore' });
+      ca.systemTrustInstalled = true;
       console.log('[Boot] CA certificate present in Windows user trust store');
     } catch (err) {
+      ca.systemTrustInstalled = false;
       console.log('[Boot] Could not install CA cert in trust store (non-critical):', err.message);
     }
+  } else {
+    ca.systemTrustInstalled = false;
   }
 
   // 2. Load persistent settings

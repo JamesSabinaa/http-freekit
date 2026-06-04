@@ -7,7 +7,9 @@
     let sortField = null;
     let sortDirection = 'desc';
     let config = {};
+    let hideTunnelRequests = true;
     let mockRules = [];
+    let breakpointRules = [];
     /** @type {Map<string, object>} Draft rules — unsaved changes keyed by rule ID */
     const mockDraftRules = new Map();
     /** @type {Set<string>} IDs of rules that are new (not yet on server) */
@@ -38,6 +40,7 @@
     let currentSendAbort = null;
     /** @type {object|null} Active Monaco editor for the Send page request body */
     let sendBodyEditor = null;
+    const breakpointEditDrafts = new Map();
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
 
@@ -99,10 +102,13 @@
           config.apiPort = msg.apiPort;
           // Load initial data
           loadConfig();
+          loadUiSettings();
           loadInterceptors();
           loadMockRules().then(() => ensureDefaultMockRules());
+          loadBreakpointRules();
           loadUpstreamProxy();
           loadBottingToolsProxyProviders();
+          loadAutoRotateProxyOnError();
           loadTlsPassthrough();
           loadClientCerts();
           loadTrustedCAs();
@@ -142,6 +148,12 @@
             }
           }
           break;
+        case 'proxy-auto-rotate':
+          handleProxyAutoRotateEvent(msg);
+          break;
+        case 'interceptor-status':
+          handleInterceptorStatusEvent(msg.data);
+          break;
         case 'traffic-cleared':
           requests = requests.filter(r => r.pinned);
           wsFramesByParent = {};
@@ -162,6 +174,13 @@
           break;
         case 'breakpoint-hit':
           updateBreakpointBanner();
+          {
+            const viewTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+            if (viewTab && !document.getElementById('panel-traffic')?.classList.contains('active')) {
+              switchPanel(viewTab, 'traffic');
+            }
+          }
+          selectBreakpointRequest(msg.requestId);
           break;
         case 'breakpoint-resumed':
           updateBreakpointBanner();
@@ -212,6 +231,10 @@
       applyFilter();
     }
 
+    function isTunnelRequest(req) {
+      return req?.protocol === 'tunnel' || req?.method === 'CONNECT';
+    }
+
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
 
@@ -227,10 +250,14 @@
       // Filter base list (exclude ws-frame — they appear as sub-rows)
       let baseList;
       if (!raw) {
-        baseList = requests.filter(r => r.protocol !== 'ws-frame');
+        baseList = requests.filter(r => r.protocol !== 'ws-frame' && (!hideTunnelRequests || !isTunnelRequest(r)));
       } else {
         const filters = parseFilters(raw);
-        baseList = requests.filter(r => r.protocol !== 'ws-frame' && matchesAllFilters(r, filters));
+        baseList = requests.filter(r =>
+          r.protocol !== 'ws-frame' &&
+          (!hideTunnelRequests || !isTunnelRequest(r)) &&
+          matchesAllFilters(r, filters)
+        );
       }
 
       if (sortField) {
@@ -551,14 +578,19 @@
       const footerCount = document.getElementById('footerRequestCount');
       const footerFilter = document.getElementById('footerFilterCount');
 
+      updateSortHeaders();
+
       // Update aria-rowcount on the traffic table
       const trafficTable = document.querySelector('.traffic-table');
       if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
 
       const query = document.getElementById('searchInput').value.trim();
-      if (query && filteredRequests.length !== requests.length) {
-        countEl.textContent = filteredRequests.length + ' / ' + requests.length;
-        if (footerFilter) footerFilter.textContent = '(' + filteredRequests.length + ' shown)';
+      const visibleTotal = requests.filter(r => r.protocol !== 'ws-frame' && (!hideTunnelRequests || !isTunnelRequest(r))).length;
+      if (query && filteredRequests.length !== visibleTotal) {
+        countEl.textContent = filteredRequests.length + ' / ' + visibleTotal;
+        if (footerFilter) {
+          footerFilter.textContent = '(' + filteredRequests.length + ' shown)';
+        }
       } else {
         countEl.textContent = filteredRequests.length;
         if (footerFilter) footerFilter.textContent = '';
@@ -566,7 +598,7 @@
       if (countLabel) {
         countLabel.textContent = 'requests';
       }
-      if (footerCount) footerCount.textContent = requests.length + ' requests';
+      if (footerCount) footerCount.textContent = visibleTotal + ' requests';
 
       if (filteredRequests.length === 0) {
         tbody.innerHTML = '';
@@ -633,6 +665,20 @@
       renderVirtualRows();
 
       showDetail(req);
+    }
+
+    function selectBreakpointRequest(requestId, attempts = 0) {
+      if (!requestId) return;
+      const req = requests.find(r => r.id === requestId);
+      if (req) {
+        if (selectedRequestId !== requestId) {
+          selectRequest(requestId);
+        }
+        return;
+      }
+      if (attempts < 5) {
+        setTimeout(() => selectBreakpointRequest(requestId, attempts + 1), 100);
+      }
     }
 
     // ============ DETAIL PANEL ============
@@ -727,9 +773,9 @@
       }
     }
 
-    function resendSelectedRequest() {
-      if (!selectedRequestId) return;
-      const req = requests.find(r => r.id === selectedRequestId);
+    function resendSelectedRequest(requestId = selectedRequestId) {
+      if (!requestId) return;
+      const req = requests.find(r => r.id === requestId);
       if (!req) return;
 
       // Save current tab state before creating a new one
@@ -965,17 +1011,36 @@
 
       // ---- Breakpoint Card (if paused) ----
       if (req.source === 'breakpoint' && req.statusCode === 0) {
+        const draft = getBreakpointEditDraft(req);
         html += `<div class="detail-card" style="border-left:4px solid #f1971f;background:#f1971f11;">
           <div class="detail-card-body" style="padding:16px 20px;">
-            <div style="display:flex;align-items:center;gap:12px;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
               <span style="font-size:20px;">&#9208;</span>
               <div style="flex:1;">
                 <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">Request Paused at Breakpoint</div>
-                <div style="font-size:12px;color:var(--text-lowlight);">This request is waiting. You can inspect it and then resume.</div>
+                <div style="font-size:12px;color:var(--text-lowlight);">Double-click a field to edit it before resuming.</div>
               </div>
               <button class="btn btn-primary" onclick="resumeBreakpointRequest('${req.id}')" style="padding:8px 20px;">
                 Resume
               </button>
+            </div>
+            <div class="breakpoint-edit-grid">
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Method</span>
+                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'method')">${esc(draft.method)}</span>
+              </div>
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">URL</span>
+                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'url')">${esc(draft.url)}</span>
+              </div>
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Headers</span>
+                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+              </div>
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Body</span>
+                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'body')">${esc(draft.body || '')}</pre>
+              </div>
             </div>
           </div>
         </div>`;
@@ -2597,24 +2662,62 @@
 
     // Interceptors that have expandable config components
     const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb', 'jvm']);
+    const FOCUSABLE_INTERCEPTORS = new Set(['chrome', 'firefox', 'edge', 'brave']);
+
+    function renderConnectedSources(interceptors = allInterceptors) {
+      const active = interceptors.filter(i => i.active);
+      const sourcesList = document.getElementById('connectedSourcesList');
+      if (!sourcesList) return;
+
+      if (active.length === 0) {
+        sourcesList.innerHTML = '';
+        return;
+      }
+
+      sourcesList.innerHTML = active.map(i => {
+        const canFocus = FOCUSABLE_INTERCEPTORS.has(i.id);
+        return `<div class="connected-source-item${canFocus ? ' focusable' : ''}" ${canFocus ? `onclick="focusInterceptor('${i.id}')"` : ''}>
+            ${INTERCEPTOR_ICONS[i.id] || ''}
+            <span>${esc(i.name)}</span>
+            <button class="connected-source-stop" onclick="event.stopPropagation(); deactivateInterceptor('${i.id}')" title="Stop intercepting ${esc(i.name)}" aria-label="Stop intercepting ${esc(i.name)}">
+              <i class="ph ph-x"></i>
+            </button>
+          </div>`;
+      }).join('');
+    }
 
     function renderInterceptors(interceptors) {
       allInterceptors = interceptors;
 
       // Update connected sources (styled like HTTP Toolkit ConnectedSources)
-      const active = interceptors.filter(i => i.active);
-      const sourcesList = document.getElementById('connectedSourcesList');
-      if (active.length > 0) {
-        sourcesList.innerHTML = active.map(i =>
-          `<div class="connected-source-item">
-            ${INTERCEPTOR_ICONS[i.id] || ''}
-            <span>${esc(i.name)}</span>
-          </div>`
-        ).join('');
-      } else {
-        sourcesList.innerHTML = '';
+      renderConnectedSources(interceptors);
+
+      filterInterceptors();
+    }
+
+    function handleInterceptorStatusEvent(event) {
+      if (!event?.id) {
+        loadInterceptors();
+        return;
       }
 
+      const idx = allInterceptors.findIndex(i => i.id === event.id);
+      if (idx === -1) {
+        loadInterceptors();
+        return;
+      }
+
+      allInterceptors[idx] = {
+        ...allInterceptors[idx],
+        active: !!event.active,
+        pid: event.pid || null
+      };
+      interceptorsInProgress.delete(event.id);
+      if (!event.active && expandedInterceptorId === event.id) {
+        collapseInterceptorCard();
+        return;
+      }
+      renderConnectedSources(allInterceptors);
       filterInterceptors();
     }
 
@@ -2700,6 +2803,8 @@
           card.setAttribute('role', 'button');
           if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
             card.onclick = () => handleExpandableCardClick(i.id, i.active);
+          } else if (i.active && FOCUSABLE_INTERCEPTORS.has(i.id)) {
+            card.onclick = () => focusInterceptor(i.id, i.name);
           } else {
             card.onclick = () => toggleInterceptor(i.id, i.active);
           }
@@ -2719,6 +2824,7 @@
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
           (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close" aria-label="Close"><i class="ph ph-x"></i></button>` : '') +
+          (i.active && !isExpanded ? `<button class="intercept-card-stop" onclick="event.stopPropagation(); deactivateInterceptor('${i.id}');" title="Stop intercepting ${esc(i.name)}" aria-label="Stop intercepting ${esc(i.name)}"><i class="ph ph-x"></i></button>` : '') +
           `<h1>${esc(i.name)}</h1>` +
           desc.map(d => `<p>${esc(d)}</p>`).join('') +
           (pillHtml ? pillHtml : '') +
@@ -2789,15 +2895,7 @@
           const res = await fetch(`${API_BASE}/api/interceptors`);
           const data = await res.json();
           allInterceptors = data.interceptors;
-          // Update connected sources
-          const active = allInterceptors.filter(i => i.active);
-          const sourcesList = document.getElementById('connectedSourcesList');
-          sourcesList.innerHTML = active.map(i =>
-            `<div class="connected-source-item">
-              ${INTERCEPTOR_ICONS[i.id] || ''}
-              <span>${esc(i.name)}</span>
-            </div>`
-          ).join('');
+          renderConnectedSources(allInterceptors);
         } catch (e) { console.error('[Error]', e.message); }
       }
 
@@ -2992,14 +3090,7 @@
           const r = await fetch(`${API_BASE}/api/interceptors`);
           const d = await r.json();
           allInterceptors = d.interceptors;
-          const active = allInterceptors.filter(i => i.active);
-          const sourcesList = document.getElementById('connectedSourcesList');
-          sourcesList.innerHTML = active.map(i =>
-            `<div class="connected-source-item">
-              ${INTERCEPTOR_ICONS[i.id] || ''}
-              <span>${esc(i.name)}</span>
-            </div>`
-          ).join('');
+          renderConnectedSources(allInterceptors);
         } catch (e) { console.error('[Error]', e.message); }
 
         toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
@@ -3141,14 +3232,7 @@
           const r = await fetch(`${API_BASE}/api/interceptors`);
           const d = await r.json();
           allInterceptors = d.interceptors;
-          const active = allInterceptors.filter(i => i.active);
-          const sourcesList = document.getElementById('connectedSourcesList');
-          sourcesList.innerHTML = active.map(i =>
-            `<div class="connected-source-item">
-              ${INTERCEPTOR_ICONS[i.id] || ''}
-              <span>${esc(i.name)}</span>
-            </div>`
-          ).join('');
+          renderConnectedSources(allInterceptors);
         } catch (e) { console.error('[Error]', e.message); }
 
         toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
@@ -3186,11 +3270,42 @@
       }
     }
 
+    async function focusInterceptor(id) {
+      const interceptor = allInterceptors.find(i => i.id === id);
+      const name = interceptor?.name || id;
+      try {
+        const res = await fetch(`${API_BASE}/api/interceptors/${id}/focus`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        toast(`Focused ${name}`, 'success');
+      } catch (err) {
+        toast(`Could not focus ${name}: ${err.message}`, 'error');
+      }
+    }
+
+    async function deactivateInterceptor(id) {
+      const interceptor = allInterceptors.find(i => i.id === id);
+      const name = interceptor?.name || id;
+      try {
+        interceptorsInProgress.add(id);
+        filterInterceptors();
+        const res = await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        toast(`Stopped ${name}`, 'success');
+        setTimeout(loadInterceptors, 300);
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+      } finally {
+        interceptorsInProgress.delete(id);
+        filterInterceptors();
+      }
+    }
+
     async function toggleInterceptor(id, isActive) {
       try {
         if (isActive) {
-          await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, { method: 'POST' });
-          toast(`Stopped ${id}`, 'success');
+          await deactivateInterceptor(id);
         } else {
           interceptorsInProgress.add(id);
           filterInterceptors(); // re-render to show loading overlay
@@ -3282,6 +3397,17 @@
     let mockEditDraft = null;
     let mockDragId = null;
     let mockRenamingRuleId = null;
+
+    async function loadBreakpointRules() {
+      try {
+        const res = await fetch(API_BASE + '/api/breakpoints');
+        const data = await res.json();
+        breakpointRules = data.rules || [];
+        renderMockRules();
+      } catch (e) {
+        console.error('[Error]', e.message);
+      }
+    }
 
     // Helper: find a mock rule by ID, searching inside groups too
     function _findMockRuleDeep(ruleId) {
@@ -3471,6 +3597,7 @@
           }
         }
         updateMockSaveButtons();
+        await loadBreakpointRules();
         renderMockRules();
       } catch (e) { console.error('[Error]', e.message); }
     }
@@ -3814,15 +3941,24 @@
     function renderMockRules() {
       const list = document.getElementById('mockRulesList');
       const mockBadge = document.getElementById('mockBadgeCount');
-      const totalCount = _countAllMockRules(mockRules);
+      const totalCount = _countAllMockRules(mockRules) + breakpointRules.length;
       if (mockBadge) mockBadge.textContent = totalCount;
 
-      if (mockRules.length === 0 && mockEditingRule !== '__new__') {
+      if (mockRules.length === 0 && breakpointRules.length === 0 && mockEditingRule !== '__new__') {
         list.innerHTML = '<div class="empty-state" style="padding:40px;height:auto;"><div class="icon" style="font-size:60px;opacity:0.15;">&#9881;</div><p style="font-size:16px;">No rules configured yet. Click below to add one.</p></div>';
         return;
       }
 
       let html = '';
+
+      if (breakpointRules.length > 0) {
+        html += '<div class="mock-breakpoint-section">';
+        html += '<div class="mock-breakpoint-section-header">Breakpoints</div>';
+        for (const rule of breakpointRules) {
+          html += renderBreakpointRuleRow(rule);
+        }
+        html += '</div>';
+      }
 
       for (const item of mockRules) {
         if (item.type === 'group') {
@@ -3841,6 +3977,93 @@
       }
 
       list.innerHTML = html;
+    }
+
+    function breakpointRuleSummary(rule) {
+      const matchers = rule.matchers || [];
+      const parts = [];
+      let methodStr = 'ANY';
+      for (const m of matchers) {
+        switch (m.type) {
+          case 'method':
+            methodStr = m.value === '*' ? 'ANY' : (m.value || 'ANY');
+            break;
+          case 'host':
+            parts.push('host=' + esc(m.value || ''));
+            break;
+          case 'path':
+            parts.push('path=' + esc(m.value || ''));
+            break;
+          case 'url-contains':
+            parts.push('url~' + esc(m.value || ''));
+            break;
+          case 'header':
+            parts.push('header:' + esc(m.name || '') + (m.value ? '=' + esc(m.value) : ''));
+            break;
+          default:
+            parts.push(esc(m.type || 'match') + (m.value ? '=' + esc(String(m.value)) : ''));
+        }
+      }
+      return {
+        methodStr,
+        matchStr: parts.length ? parts.join(' ') : '*'
+      };
+    }
+
+    function renderBreakpointRuleRow(rule) {
+      const summary = breakpointRuleSummary(rule);
+      const color = '#f1971f';
+      const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
+      let html = '<div class="mock-rule-card mock-breakpoint-rule' + disabledClass + '" data-breakpoint-id="' + rule.id + '">';
+      html += '<div class="mock-rule-summary">';
+      html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
+      html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
+      html += '<span class="mock-rule-desc">' + summary.matchStr + '<span class="mock-arrow">\u2192</span><span style="color:#f1971f;">Breakpoint</span></span>';
+      html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
+      const toggleLabel = rule.enabled !== false ? 'Disable this breakpoint' : 'Enable this breakpoint';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleBreakpointRuleEnabled(\'' + rule.id + '\')" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
+      html += rule.enabled !== false
+        ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
+        : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
+      html += '</button>';
+      html += '<button class="mock-toggle-btn" onclick="deleteBreakpointRule(\'' + rule.id + '\')" title="Delete this breakpoint" aria-label="Delete this breakpoint" style="color:#ce3939;">';
+      html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
+      html += '</button>';
+      html += '</div></div></div>';
+      return html;
+    }
+
+    async function toggleBreakpointRuleEnabled(ruleId) {
+      const rule = breakpointRules.find(r => r.id === ruleId);
+      if (!rule) return;
+      const enabled = rule.enabled === false;
+      rule.enabled = enabled;
+      renderMockRules();
+      try {
+        const res = await fetch(API_BASE + '/api/breakpoints/' + ruleId, {
+          method: 'PATCH',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || 'Failed to update breakpoint');
+        toast(enabled ? 'Breakpoint enabled' : 'Breakpoint disabled', 'success');
+        loadBreakpointRules();
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+        loadBreakpointRules();
+      }
+    }
+
+    async function deleteBreakpointRule(ruleId) {
+      try {
+        await fetch(API_BASE + '/api/breakpoints/' + ruleId, { method: 'DELETE' });
+        breakpointRules = breakpointRules.filter(r => r.id !== ruleId);
+        renderMockRules();
+        toast('Breakpoint deleted', 'success');
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+      }
     }
 
     function renderMockRuleDetail(nr) {
@@ -5585,7 +5808,7 @@
         }
         return '<div class="send-tab' + active + '" role="tab" aria-selected="' + isActive + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
           '<span>' + label + '</span>' +
-          (sendTabs.length > 1 ? '<span class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab" aria-label="Close tab">&times;</span>' : '') +
+          '<button type="button" class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab" aria-label="Close tab">&times;</button>' +
           '</div>';
       }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab" aria-label="New request tab">+</div>';
     }
@@ -5682,14 +5905,26 @@
     }
 
     function closeSendTab(tabId) {
-      if (sendTabs.length <= 1) return;
+      saveSendTabState();
       const idx = sendTabs.findIndex(t => t.id === tabId);
+      if (idx === -1) return;
+      if (sendTabs.length <= 1) {
+        sendTabCounter++;
+        const newTab = { id: 'tab-' + sendTabCounter, method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null };
+        sendTabs = [newTab];
+        activeSendTab = newTab.id;
+        loadSendTabState(newTab);
+        renderSendTabs();
+        persistSendTabs();
+        return;
+      }
       sendTabs.splice(idx, 1);
       if (activeSendTab === tabId) {
         activeSendTab = sendTabs[Math.min(idx, sendTabs.length - 1)].id;
         loadSendTabState(sendTabs.find(t => t.id === activeSendTab));
       }
       renderSendTabs();
+      persistSendTabs();
     }
 
     // Initialize with empty state on page load
@@ -5846,6 +6081,34 @@
       }
     }
 
+    async function loadUiSettings() {
+      try {
+        const res = await fetch(API_BASE + '/api/ui-settings');
+        const data = await res.json();
+        hideTunnelRequests = data.hideTunnelRequests !== false;
+        const toggle = document.getElementById('hideTunnelRequestsToggle');
+        if (toggle) toggle.checked = hideTunnelRequests;
+        applyFilter();
+      } catch (e) {
+        console.error('[Error]', e.message);
+      }
+    }
+
+    async function saveHideTunnelRequests(enabled) {
+      hideTunnelRequests = !!enabled;
+      applyFilter();
+      try {
+        await fetch(API_BASE + '/api/ui-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hideTunnelRequests })
+        });
+        toast('Traffic display setting saved', 'success');
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+      }
+    }
+
     // ============ ROW NAVIGATION ============
     function selectRequestByIndex(delta) {
       if (filteredRequests.length === 0) return;
@@ -5963,6 +6226,22 @@
         }
       } catch (err) {
         toast(`Export failed: ${err.message}`, 'error');
+      }
+    }
+
+    async function exportHarToGenerator() {
+      try {
+        const res = await fetch(`${API_BASE}/api/traffic/export-generator`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        toast(`Opened ${data.requestCount || 0} requests in Generator`, 'success');
+      } catch (err) {
+        toast(`Generator export failed: ${err.message}`, 'error');
       }
     }
 
@@ -6111,6 +6390,56 @@
           buttonEl.disabled = false;
           buttonEl.textContent = 'Rotate with BottingTools';
         }
+      }
+    }
+
+    async function loadAutoRotateProxyOnError() {
+      try {
+        const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy');
+        const data = await res.json();
+        const checkbox = document.getElementById('autoRotateProxyOnError');
+        const providerEl = document.getElementById('bottingToolsProvider');
+        if (checkbox) checkbox.checked = !!data.enabled;
+        if (providerEl && data.provider) providerEl.value = data.provider;
+      } catch (err) {
+        console.warn('[BottingTools auto-rotate]', err.message);
+      }
+    }
+
+    async function saveAutoRotateProxyOnError(showToast = true) {
+      const checkbox = document.getElementById('autoRotateProxyOnError');
+      const providerEl = document.getElementById('bottingToolsProvider');
+      const enabled = !!checkbox?.checked;
+      const provider = (providerEl?.value || 'lemonprime').trim() || 'lemonprime';
+
+      try {
+        const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled, provider })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (showToast) {
+          toast(enabled ? 'Auto proxy rotation enabled' : 'Auto proxy rotation disabled', 'success');
+        }
+      } catch (err) {
+        if (showToast) toast('Auto rotate setting failed: ' + err.message, 'error');
+      }
+    }
+
+    function handleProxyAutoRotateEvent(msg) {
+      if (msg.status === 'started') {
+        toast((msg.reason || 'Proxy error') + ' detected; rotating BottingTools proxy...', 'success');
+        return;
+      }
+      if (msg.status === 'success') {
+        if (msg.upstreamProxy) updateUpstreamProxyUi(msg.upstreamProxy, msg.provider);
+        toast('BottingTools proxy auto-rotated', 'success');
+        return;
+      }
+      if (msg.status === 'error') {
+        toast('Auto proxy rotation failed: ' + (msg.error || 'unknown error'), 'error');
       }
     }
 
@@ -6605,12 +6934,27 @@
     // ============ SORTING ============
     function sortBy(field) {
       if (sortField === field) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+        if (sortDirection === 'desc') {
+          sortDirection = 'asc';
+        } else {
+          sortField = null;
+          sortDirection = 'desc';
+        }
       } else {
         sortField = field;
-        sortDirection = 'asc';
+        sortDirection = 'desc';
       }
       applyFilter();
+    }
+
+    function updateSortHeaders() {
+      document.querySelectorAll('.traffic-table th.sortable').forEach(th => {
+        const isActive = th.dataset.sortField === sortField;
+        th.classList.toggle('sorted', isActive);
+        th.classList.toggle('sorted-asc', isActive && sortDirection === 'asc');
+        th.classList.toggle('sorted-desc', isActive && sortDirection === 'desc');
+        th.setAttribute('aria-sort', isActive ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none');
+      });
     }
 
     // ============ PANELS ============
@@ -6780,7 +7124,9 @@
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
 
-      selectRequest(requestId);
+      if (selectedRequestId !== requestId) {
+        selectRequest(requestId);
+      }
 
       showContextMenu(e.clientX, e.clientY, [
         { label: 'Copy URL', action: () => navigator.clipboard.writeText(req.url).then(() => toast('URL copied', 'success')) },
@@ -6789,7 +7135,7 @@
           navigator.clipboard.writeText(snippet).then(() => toast('cURL command copied', 'success'));
         }},
         { separator: true },
-        { label: 'Resend in Send tab', action: () => resendSelectedRequest() },
+        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId) },
         { label: 'Create mock rule', action: () => createMockFromRequest(requestId) },
         { label: 'Create breakpoint', action: () => createBreakpointFromRequest() },
         { separator: true },
@@ -6941,20 +7287,91 @@
         const res = await fetch(API_BASE + '/api/breakpoints/pending');
         const data = await res.json();
         for (const bp of (data.pending || [])) {
-          await fetch(API_BASE + '/api/breakpoints/pending/' + bp.id + '/resume', {
+          const resumeRes = await fetch(API_BASE + '/api/breakpoints/pending/' + bp.id + '/resume', {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
           });
+          let resumeData = null;
+          try { resumeData = await resumeRes.json(); } catch { /* ignore non-json error bodies */ }
+          if (!resumeRes.ok || resumeData?.success === false) {
+            throw new Error(resumeData?.error || `Resume failed (${resumeRes.status})`);
+          }
         }
         toast('All breakpoints resumed', 'success');
         updateBreakpointBanner();
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
+    function getBreakpointEditDraft(req) {
+      if (!breakpointEditDrafts.has(req.id)) {
+        breakpointEditDrafts.set(req.id, {
+          method: req.method || 'GET',
+          url: req.url || '',
+          headers: { ...(req.requestHeaders || {}) },
+          body: req.requestBody || '',
+          _dirty: {}
+        });
+      }
+      const draft = breakpointEditDrafts.get(req.id);
+      if (!draft._dirty) draft._dirty = {};
+      return draft;
+    }
+
+    function editBreakpointField(requestId, field) {
+      const req = requests.find(r => r.id === requestId);
+      if (!req) return;
+      const draft = getBreakpointEditDraft(req);
+
+      if (field === 'method') {
+        const value = prompt('Request method:', draft.method || 'GET');
+        if (value === null) return;
+        draft.method = value.trim().toUpperCase() || draft.method;
+        draft._dirty.method = true;
+      } else if (field === 'url') {
+        const value = prompt('Request URL:', draft.url || '');
+        if (value === null) return;
+        draft.url = value.trim() || draft.url;
+        draft._dirty.url = true;
+      } else if (field === 'headers') {
+        const value = prompt('Request headers as JSON:', JSON.stringify(draft.headers || {}, null, 2));
+        if (value === null) return;
+        try {
+          const parsed = JSON.parse(value);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected a JSON object');
+          draft.headers = parsed;
+        } catch (err) {
+          toast('Invalid headers JSON: ' + err.message, 'error');
+          return;
+        }
+        draft._dirty.headers = true;
+      } else if (field === 'body') {
+        const value = prompt('Request body:', draft.body || '');
+        if (value === null) return;
+        draft.body = value;
+        draft._dirty.body = true;
+      }
+
+      renderDetailCards(req);
+    }
+
     async function resumeBreakpointRequest(requestId) {
       try {
-        await fetch(API_BASE + '/api/breakpoints/pending/' + requestId + '/resume', {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+        const draft = breakpointEditDrafts.get(requestId) || {};
+        const dirty = draft._dirty || {};
+        const modifications = {};
+        for (const field of ['method', 'url', 'headers', 'body']) {
+          if (dirty[field]) modifications[field] = draft[field];
+        }
+        const res = await fetch(API_BASE + '/api/breakpoints/pending/' + requestId + '/resume', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(modifications)
         });
+        let data = null;
+        try { data = await res.json(); } catch { /* ignore non-json error bodies */ }
+        if (!res.ok || data?.success === false) {
+          throw new Error(data?.error || `Resume failed (${res.status})`);
+        }
+        breakpointEditDrafts.delete(requestId);
         toast('Request resumed', 'success');
         updateBreakpointBanner();
       } catch (err) { toast('Error: ' + err.message, 'error'); }
@@ -6976,6 +7393,7 @@
         })
       }).then(() => {
         toast('Breakpoint created for ' + req.method + ' ' + req.host, 'success');
+        loadBreakpointRules();
       }).catch(err => toast('Error: ' + err.message, 'error'));
     }
 
@@ -7664,13 +8082,19 @@
 
       window.electronApi.onUpdaterStatus(function(data) {
         switch (data.status) {
+          case 'checking':
+            if (data.manual) toast('Checking for updates...', 'success');
+            break;
           case 'update-available':
             updateVersion = data.version;
-            toast('Update v' + data.version + ' available — downloading...', 'success');
+            toast('Update v' + data.version + ' available', 'success');
             break;
           case 'update-available-linux':
             updateVersion = data.version;
             showLinuxUpdateToast(data.version, data.url);
+            break;
+          case 'download-started':
+            toast('Downloading update v' + data.version + '...', 'success');
             break;
           case 'downloading':
             // Optionally show download progress (silent for now to avoid spam)
@@ -7678,8 +8102,14 @@
           case 'update-downloaded':
             showUpdateReadyToast(data.version);
             break;
+          case 'up-to-date':
+            if (data.manual) toast('HTTP FreeKit is up to date', 'success');
+            break;
+          case 'update-dismissed':
+            if (data.manual) toast('Update postponed', 'success');
+            break;
           case 'error':
-            // Silently ignore update errors — don't bother the user
+            if (data.manual) toast('Update check failed: ' + (data.error || 'unknown error'), 'error');
             break;
         }
       });
@@ -7722,7 +8152,6 @@
       // Expose manual check for Settings page
       window._checkForUpdates = function() {
         window.electronApi.checkForUpdates();
-        toast('Checking for updates...', 'success');
       };
 
       // Show the "Check for Updates" button in Settings
