@@ -74,7 +74,7 @@ function buildAppMenu(mainWindow) {
       {
         label: 'Documentation',
         click: () => {
-          shell.openExternal('https://github.com/nickthecook/http-freekit#readme');
+          shell.openExternal('https://github.com/jamessabinaa/http-freekit#readme');
         }
       },
       { type: 'separator' },

@@ -2,6 +2,7 @@
   "name": "http-freekit",
   "version": "1.0.0",
   "description": "Free HTTP(S) debugging, interception & testing toolkit",
+  "author": "HTTP FreeKit",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -9,31 +10,34 @@
     "dev": "node --watch src/index.js",
     "electron": "electron .",
     "generate-icons": "node scripts/generate-icons.js",
-    "build:win": "electron-builder --win --config electron-builder.config.cjs",
-    "build:mac": "electron-builder --mac --config electron-builder.config.cjs",
-    "build:linux": "electron-builder --linux --config electron-builder.config.cjs",
-    "build": "electron-builder --win --mac --linux --config electron-builder.config.cjs"
+    "build:win": "node --no-deprecation ./node_modules/electron-builder/cli.js --win --config electron-builder.config.cjs",
+    "build:mac": "node --no-deprecation ./node_modules/electron-builder/cli.js --mac --config electron-builder.config.cjs",
+    "build:linux": "node --no-deprecation ./node_modules/electron-builder/cli.js --linux --config electron-builder.config.cjs",
+    "build": "node --no-deprecation ./node_modules/electron-builder/cli.js --win --mac --linux --config electron-builder.config.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@phosphor-icons/web": "^2.1.2",
     "electron-updater": "^6.8.3",
     "electron-window-state": "^5.0.3",
-    "express": "^4.18.2",
+    "express": "^5.2.1",
     "https-proxy-agent": "^9.0.0",
     "monaco-editor": "^0.55.1",
     "node-forge": "^1.3.1",
-    "socks": "^2.8.7",
+    "socks": "^2.8.9",
     "socks-proxy-agent": "^10.0.0",
-    "uuid": "^9.0.0",
-    "ws": "^8.16.0"
+    "uuid": "^14.0.0",
+    "ws": "^8.21.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "dompurify": "^3.4.6"
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^41.2.0",
+    "electron": "^42.3.0",
     "electron-builder": "^26.0.12",
     "sharp": "^0.34.5"
   }

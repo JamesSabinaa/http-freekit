@@ -1,5 +1,5 @@
 const { autoUpdater } = require('electron-updater');
-const { app, ipcMain } = require('electron');
+const { app, dialog, ipcMain, shell } = require('electron');
 
 /**
  * Auto-update module for HTTP FreeKit.
@@ -16,6 +16,10 @@ const { app, ipcMain } = require('electron');
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 let mainWindow = null;
 let checkInterval = null;
+let currentCheckIsManual = false;
+let isDownloading = false;
+let updatePromptOpen = false;
+let lastPromptedVersion = null;
 
 /**
  * Send an updater status event to the renderer.
@@ -23,6 +27,71 @@ let checkInterval = null;
 function sendStatus(data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('updater-status', data);
+  }
+}
+
+function checkForUpdates(manual = false) {
+  currentCheckIsManual = manual;
+  return autoUpdater.checkForUpdates().catch((err) => {
+    const wasManual = currentCheckIsManual;
+    currentCheckIsManual = false;
+    sendStatus({ status: 'error', error: err.message, manual: wasManual });
+    return null;
+  });
+}
+
+async function promptForUpdate(info, options = {}) {
+  const version = info.version;
+  const manual = Boolean(options.manual);
+
+  if (isDownloading || updatePromptOpen) return;
+  if (!manual && lastPromptedVersion === version) return;
+
+  lastPromptedVersion = version;
+  updatePromptOpen = true;
+
+  try {
+    if (process.platform === 'linux') {
+      const url = options.url || getGitHubReleasesUrl(info);
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update Available',
+        message: `HTTP FreeKit ${version} is available`,
+        detail: `You are running ${app.getVersion()}.\n\nDownload the latest Linux package from GitHub Releases.`,
+        buttons: ['Open Download Page', 'Later'],
+        defaultId: 0,
+        cancelId: 1
+      });
+      if (result.response === 0) {
+        shell.openExternal(url);
+      } else {
+        sendStatus({ status: 'update-dismissed', version, manual });
+      }
+      return;
+    }
+
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Update Available',
+      message: `HTTP FreeKit ${version} is available`,
+      detail: `You are running ${app.getVersion()}.\n\nDownload the update now? It will be installed after it downloads and you choose to restart.`,
+      buttons: ['Download Update', 'Later'],
+      defaultId: 0,
+      cancelId: 1
+    });
+
+    if (result.response !== 0) {
+      sendStatus({ status: 'update-dismissed', version, manual });
+      return;
+    }
+
+    isDownloading = true;
+    sendStatus({ status: 'download-started', version, manual });
+    await autoUpdater.downloadUpdate();
+  } catch (err) {
+    sendStatus({ status: 'error', error: err.message, manual });
+  } finally {
+    updatePromptOpen = false;
   }
 }
 
@@ -45,25 +114,29 @@ function initAutoUpdater(win) {
   // --- Events ---
 
   autoUpdater.on('checking-for-update', () => {
-    sendStatus({ status: 'checking' });
+    sendStatus({ status: 'checking', manual: currentCheckIsManual });
   });
 
   autoUpdater.on('update-available', (info) => {
     const version = info.version;
+    const wasManual = currentCheckIsManual;
+    currentCheckIsManual = false;
 
     if (process.platform === 'linux') {
       // Linux: no auto-install, send download URL for manual update
       const repoUrl = getGitHubReleasesUrl(info);
-      sendStatus({ status: 'update-available-linux', version, url: repoUrl });
+      sendStatus({ status: 'update-available-linux', version, url: repoUrl, manual: wasManual });
+      promptForUpdate(info, { manual: wasManual, url: repoUrl });
     } else {
-      sendStatus({ status: 'update-available', version });
-      // Auto-download on Windows/macOS
-      autoUpdater.downloadUpdate();
+      sendStatus({ status: 'update-available', version, manual: wasManual });
+      promptForUpdate(info, { manual: wasManual });
     }
   });
 
   autoUpdater.on('update-not-available', () => {
-    sendStatus({ status: 'up-to-date' });
+    const wasManual = currentCheckIsManual;
+    currentCheckIsManual = false;
+    sendStatus({ status: 'up-to-date', manual: wasManual });
   });
 
   autoUpdater.on('download-progress', (progress) => {
@@ -74,17 +147,21 @@ function initAutoUpdater(win) {
   });
 
   autoUpdater.on('update-downloaded', (info) => {
+    isDownloading = false;
     sendStatus({ status: 'update-downloaded', version: info.version });
   });
 
   autoUpdater.on('error', (err) => {
-    sendStatus({ status: 'error', error: err.message });
+    const wasManual = currentCheckIsManual;
+    currentCheckIsManual = false;
+    isDownloading = false;
+    sendStatus({ status: 'error', error: err.message, manual: wasManual });
   });
 
   // --- IPC handlers ---
 
   ipcMain.handle('updater-check-now', () => {
-    return autoUpdater.checkForUpdates().catch(() => null);
+    return checkForUpdates(true);
   });
 
   ipcMain.handle('updater-install', () => {
@@ -96,12 +173,12 @@ function initAutoUpdater(win) {
 
   // Check on launch (with a short delay to let the window settle)
   setTimeout(() => {
-    autoUpdater.checkForUpdates().catch(() => {});
+    checkForUpdates(false);
   }, 10000);
 
   // Check every 6 hours
   checkInterval = setInterval(() => {
-    autoUpdater.checkForUpdates().catch(() => {});
+    checkForUpdates(false);
   }, SIX_HOURS_MS);
 }
 
@@ -132,7 +209,7 @@ function getGitHubReleasesUrl(info) {
     // ignore
   }
   // Fallback: generic releases page
-  return `https://github.com/AmenRa/http-freekit/releases/latest`;
+  return `https://github.com/jamessabinaa/http-freekit/releases/latest`;
 }
 
 /**

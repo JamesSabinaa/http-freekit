@@ -92,7 +92,7 @@ module.exports = {
   publish: [
     {
       provider: 'github',
-      owner: 'AmenRa',
+      owner: 'jamessabinaa',
       repo: 'http-freekit'
     }
   ],
