@@ -397,6 +397,10 @@ export class ProxyServer {
       return;
     }
 
+    if (this._serveHttpToolkitAndroidConfig(clientReq, clientRes, targetUrl)) {
+      return;
+    }
+
     const requestBody = [];
     clientReq.on('data', chunk => requestBody.push(chunk));
     clientReq.on('end', async () => {
@@ -609,6 +613,37 @@ export class ProxyServer {
 
       sendProxyRequest();
     });
+  }
+
+  _serveHttpToolkitAndroidConfig(clientReq, clientRes, targetUrl) {
+    if (clientReq.method !== 'GET') return false;
+
+    const host = targetUrl.hostname.toLowerCase();
+    const path = targetUrl.pathname;
+    const certInfo = this.ca?.getCertInfo?.();
+    const certificate = certInfo?.certificateContent;
+    if (!certificate) return false;
+
+    if (host === 'android.httptoolkit.tech' && path === '/config') {
+      const body = JSON.stringify({ certificate });
+      clientRes.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      });
+      clientRes.end(body);
+      return true;
+    }
+
+    if (host === 'amiusing.httptoolkit.tech' && path === '/certificate') {
+      clientRes.writeHead(200, {
+        'Content-Type': 'application/x-pem-file',
+        'Content-Length': Buffer.byteLength(certificate)
+      });
+      clientRes.end(certificate);
+      return true;
+    }
+
+    return false;
   }
 
   // Handle CONNECT method for HTTPS tunneling + MITM

@@ -2993,12 +2993,34 @@
     function renderAndroidConfig(container) {
       const meta = expandedInterceptorMetadata;
       const devices = meta?.devices || [];
+      const activatedDevices = meta?.activatedDevices || [];
       const activatedSerials = new Set(
-        (meta?.activatedDevices || []).map(d => d.serial)
+        activatedDevices.map(d => d.serial)
       );
+      const activationBySerial = new Map(activatedDevices.map(d => [d.serial, d]));
+      const qrHtml = meta?.qrAvailable && meta?.qrImageDataUrl
+        ? `
+          <div class="config-section">
+            <h3>Scan QR</h3>
+            <div class="android-qr-layout">
+              <img class="android-qr-image" src="${esc(meta.qrImageDataUrl)}" alt="Android setup QR code">
+              <div class="android-qr-details">
+                <p class="android-setup-note">Open the HTTP Toolkit Android app and scan this code.</p>
+                <div class="config-code-block android-qr-url" onclick="copyConfigCode(this)" title="Click to copy">${esc(meta.qrConnectUrl || '')}</div>
+              </div>
+            </div>
+          </div>
+        `
+        : `
+          <div class="config-section">
+            <h3>Scan QR</h3>
+            <p class="android-setup-note">${esc(meta?.qrError || 'QR setup is not available yet.')}</p>
+          </div>
+        `;
 
       if (devices.length === 0) {
         container.innerHTML = `
+          ${qrHtml}
           <div class="config-section">
             <h3>Connected Devices</h3>
             <p style="color: var(--text-watermark); font-size: 13px;">No Android devices detected. Make sure:</p>
@@ -3016,13 +3038,17 @@
       }
 
       container.innerHTML = `
+        ${qrHtml}
         <div class="config-section">
           <h3>Connected Devices</h3>
+          <p class="android-setup-note">Uses the HTTP Toolkit Android VPN app when installed, then falls back to Android's global proxy setting.</p>
           <div class="android-device-list">
             ${devices.map(d => {
               const isActivated = activatedSerials.has(d.serial);
+              const activation = activationBySerial.get(d.serial);
               const isUnauthorized = d.status === 'unauthorized';
               const isOffline = d.status === 'offline';
+              const modeLabel = activation?.mode === 'http-toolkit-app' ? 'VPN app' : 'Global proxy';
               return `
                 <div class="android-device-item${isActivated ? ' activated' : ''}" data-device-id="${esc(d.serial)}">
                   <div class="android-device-info">
@@ -3030,6 +3056,7 @@
                     <div class="android-device-details">
                       <span class="android-device-model">${esc(d.model || d.serial)}</span>
                       <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
+                      ${isActivated ? `<span class="android-device-mode">${esc(modeLabel)}</span>` : ''}
                     </div>
                   </div>
                   <div class="android-device-actions">

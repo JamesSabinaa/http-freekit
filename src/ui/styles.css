@@ -1855,6 +1855,40 @@
     }
 
     /* Android ADB device list */
+    .android-setup-note {
+      margin: 0 0 10px;
+      color: var(--text-watermark);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .android-qr-layout {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .android-qr-image {
+      width: 132px;
+      height: 132px;
+      background: #fff;
+      border-radius: 4px;
+      padding: 6px;
+      border: 1px solid var(--border-color);
+    }
+
+    .android-qr-details {
+      min-width: 0;
+    }
+
+    .android-qr-url {
+      max-height: 80px;
+      overflow: auto;
+      word-break: break-all;
+      font-size: 10px;
+    }
+
     .android-device-list {
       display: flex;
       flex-direction: column;
@@ -1911,6 +1945,13 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .android-device-mode {
+      font-size: 11px;
+      color: #4caf7d;
+      font-weight: 600;
+      margin-top: 2px;
     }
 
     .android-device-actions {
