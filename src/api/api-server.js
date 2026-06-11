@@ -436,7 +436,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const harBaseDir = await this._getGeneratorHarBaseDir(generatorDir, pythonCandidates);
     const sessionDir = path.join(harBaseDir, sessionName);
     const harPath = path.join(sessionDir, `${sessionName}.har`);
-    const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: true });
+    const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: false });
 
     await fs.mkdir(sessionDir, { recursive: true });
     await fs.writeFile(harPath, JSON.stringify(har, null, 2), 'utf8');
@@ -576,7 +576,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Export as HAR (must be before :id param route)
     router.get('/api/traffic/export.har', (req, res) => {
-      const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: true });
+      const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: false });
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
       res.json(har);
