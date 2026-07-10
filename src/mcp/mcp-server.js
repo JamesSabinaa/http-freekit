@@ -81,6 +81,7 @@ export class McpServerBridge {
     this.enabled = options.enabled !== false;
     this.server = null;
     this.sseSessions = new Map();
+    this.sseRoutesRegistered = false;
     this.stdioTransport = null;
 
     if (this.enabled) {
@@ -89,19 +90,24 @@ export class McpServerBridge {
   }
 
   _createServer() {
-    this.server = new Server(
+    this.server = this._buildServer();
+  }
+
+  _buildServer() {
+    const server = new Server(
       { name: 'http-freekit', version: '1.0.0' },
       { capabilities: { tools: {} } }
     );
-    this._registerTools();
+    this._registerTools(server);
+    return server;
   }
 
-  _registerTools() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  _registerTools(server) {
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: TOOL_DEFINITIONS
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
         switch (name) {
@@ -300,12 +306,12 @@ export class McpServerBridge {
       if (setCookie) {
         const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
         for (const cookie of cookies) {
-          const c = cookie.toLowerCase();
-          if (!c.includes('secure')) {
+          const attributes = String(cookie).split(';').slice(1).map(part => part.trim().toLowerCase());
+          if (!attributes.includes('secure')) {
             issues.push({ severity: 'medium', category: 'Insecure Cookie', url: r.url, requestId: r.id,
               description: `Cookie missing Secure flag: ${cookie.split(';')[0]}` });
           }
-          if (!c.includes('httponly')) {
+          if (!attributes.includes('httponly')) {
             issues.push({ severity: 'medium', category: 'Insecure Cookie', url: r.url, requestId: r.id,
               description: `Cookie missing HttpOnly flag: ${cookie.split(';')[0]}` });
           }
@@ -332,7 +338,7 @@ export class McpServerBridge {
 
     // Sort by severity, cap per category
     const severityOrder = { high: 0, medium: 1, low: 2 };
-    issues.sort((a, b) => (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9));
+    issues.sort((a, b) => (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9));
 
     const summary = {
       totalIssues: issues.length,
@@ -428,31 +434,39 @@ export class McpServerBridge {
   // ========== Transports ==========
 
   startSse(expressApp) {
-    if (!this.server) return;
+    if (!this.server || this.sseRoutesRegistered) return;
+    this.sseRoutesRegistered = true;
 
     expressApp.get('/mcp/sse', (req, res) => {
+      if (!this.enabled || !this.server) {
+        return res.status(503).json({ error: 'MCP server is disabled' });
+      }
       const transport = new SSEServerTransport('/mcp/messages', res);
+      const server = this._buildServer();
       const sessionId = transport.sessionId;
-      this.sseSessions.set(sessionId, transport);
+      this.sseSessions.set(sessionId, { transport, server });
 
-      transport.onClose = () => {
+      transport.onclose = () => {
         this.sseSessions.delete(sessionId);
       };
 
-      this.server.connect(transport).catch(err => {
+      server.connect(transport).catch(err => {
         console.error('[MCP] SSE connection error:', err.message);
         this.sseSessions.delete(sessionId);
       });
     });
 
     expressApp.post('/mcp/messages', (req, res) => {
+      if (!this.enabled || !this.server) {
+        return res.status(503).json({ error: 'MCP server is disabled' });
+      }
       const sessionId = req.query.sessionId;
-      const transport = this.sseSessions.get(sessionId);
-      if (!transport) {
+      const session = this.sseSessions.get(sessionId);
+      if (!session) {
         res.status(404).json({ error: 'Session not found' });
         return;
       }
-      transport.handlePostMessage(req, res);
+      return session.transport.handlePostMessage(req, res, req.body);
     });
 
     console.log('[MCP] SSE transport ready on /mcp/sse');
@@ -466,23 +480,26 @@ export class McpServerBridge {
   }
 
   async stop() {
-    for (const [id, transport] of this.sseSessions) {
-      try { transport.close(); } catch {}
+    for (const { transport, server } of this.sseSessions.values()) {
+      try { await transport.close(); } catch {}
+      try { await server.close(); } catch {}
     }
     this.sseSessions.clear();
     if (this.server) {
       try { await this.server.close(); } catch {}
     }
+    this.stdioTransport = null;
     this.server = null;
     this.enabled = false;
   }
 
-  setEnabled(enabled) {
+  async setEnabled(enabled) {
     if (enabled && !this.server) {
       this._createServer();
       this.enabled = true;
     } else if (!enabled && this.server) {
-      this.stop();
+      this.enabled = false;
+      await this.stop();
     }
   }
 

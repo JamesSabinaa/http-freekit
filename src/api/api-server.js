@@ -1087,10 +1087,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json(status);
     });
 
-    router.post('/api/mcp/toggle', (req, res) => {
+    router.post('/api/mcp/toggle', async (req, res) => {
       if (!this.mcpBridge) return res.status(500).json({ error: 'MCP bridge not initialized' });
       const { enabled } = req.body;
-      this.mcpBridge.setEnabled(!!enabled);
+      await this.mcpBridge.setEnabled(!!enabled);
       if (enabled) {
         this.mcpBridge.startSse(this.app);
       }
