@@ -2,6 +2,7 @@ import forge from 'node-forge';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import net from 'net';
 
 const { pki, md, asn1 } = forge;
 
@@ -107,11 +108,11 @@ export class CertificateAuthority {
 
     cert.setIssuer(this.caCert.subject.attributes);
 
-    const altNames = [{ type: 2, value: hostname }]; // DNS type
-    // If it looks like an IP, add IP alt name
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
-      altNames.push({ type: 7, ip: hostname });
-    }
+    // IP literals (IPv4 and IPv6) must use an iPAddress SAN. A dNSName SAN
+    // does not match an IP literal during certificate verification.
+    const altNames = net.isIP(hostname)
+      ? [{ type: 7, ip: hostname }]
+      : [{ type: 2, value: hostname }];
 
     cert.setExtensions([
       { name: 'basicConstraints', cA: false },
@@ -147,7 +148,7 @@ export class CertificateAuthority {
     };
 
     // Cache (limit cache to 1000 entries)
-    if (this.certCache.size > 1000) {
+    if (this.certCache.size >= 1000) {
       const firstKey = this.certCache.keys().next().value;
       this.certCache.delete(firstKey);
     }

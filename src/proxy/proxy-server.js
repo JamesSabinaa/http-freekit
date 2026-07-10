@@ -35,6 +35,7 @@ export class ProxyServer {
     this.httpsWhitelist = []; // [hostname]
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
+    this.filterSafeFonts = false;
     // HTTP/2 upstream session cache: Map<"host:port", {session, timer, pending?}>
     this._h2Sessions = new Map();
     // Set of origins known not to support h2: Set<"host:port">
@@ -226,7 +227,13 @@ export class ProxyServer {
   _handleHttpUpgrade(req, socket, head) {
     const startTime = Date.now();
     const requestId = uuidv4();
-    const targetUrl = new URL(req.url);
+    let targetUrl;
+    try {
+      targetUrl = new URL(req.url);
+    } catch {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      return;
+    }
     const options = {
       hostname: targetUrl.hostname,
       port: targetUrl.port || 80,
@@ -265,6 +272,18 @@ export class ProxyServer {
         serverMessages++;
         this._emitWsFrame(frame, 'server', requestId, ++frameSequence);
       });
+
+      // `head`/`proxyHead` contain bytes already read beyond the HTTP upgrade
+      // headers. They are part of the WebSocket stream and must not be dropped.
+      if (head.length) {
+        clientBytes += head.length;
+        try { clientParser.push(head); } catch { /* forward even if parse fails */ }
+        proxySocket.write(head);
+      }
+      if (proxyHead.length) {
+        serverBytes += proxyHead.length;
+        try { serverParser.push(proxyHead); } catch { /* already forwarded above */ }
+      }
 
       // Client -> Server: parse frames, forward raw bytes
       socket.on('data', (chunk) => {
@@ -311,6 +330,18 @@ export class ProxyServer {
       proxySocket.on('error', () => { socket.destroy(); cleanup(); });
       socket.on('end', () => proxySocket.end());
       socket.on('error', () => { proxySocket.destroy(); cleanup(); });
+    });
+
+    // A server may reject an upgrade with a normal HTTP response (for example
+    // 401 or 404). In that case Node emits `response`, not `upgrade`.
+    proxyReq.on('response', (proxyRes) => {
+      let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}\r\n`;
+      for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+        responseStr += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
+      }
+      responseStr += '\r\n';
+      socket.write(responseStr);
+      proxyRes.pipe(socket);
     });
 
     proxyReq.on('error', (err) => {
@@ -648,8 +679,18 @@ export class ProxyServer {
 
   // Handle CONNECT method for HTTPS tunneling + MITM
   _handleConnect(req, clientSocket, head) {
-    const [hostname, port] = req.url.split(':');
-    const targetPort = parseInt(port) || 443;
+    let connectTarget;
+    try {
+      connectTarget = new URL(`https://${req.url}`);
+    } catch {
+      clientSocket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      return;
+    }
+    // WHATWG URL keeps brackets in IPv6 hostnames; socket and certificate APIs
+    // require the literal address without them.
+    const hostname = connectTarget.hostname.replace(/^\[|\]$/g, '');
+    const targetPort = parseInt(connectTarget.port, 10) || 443;
+    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // TLS passthrough — no MITM, no certificate generation
     if (this.tlsPassthrough.includes(hostname) ||
@@ -665,7 +706,7 @@ export class ProxyServer {
         tunnelEmitted = true;
         this._emitRequest({
           id: tunnelId, protocol: 'tunnel', method: 'CONNECT',
-          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
           requestHeaders: {}, requestBody: '', requestBodySize: clientBytes,
           statusCode: 200, statusMessage: 'Tunnel Established',
           responseHeaders: {}, responseBody: '', responseBodySize: serverBytes,
@@ -723,8 +764,10 @@ export class ProxyServer {
     // the ClientHello as it passes through (unshift doesn't work with TLSSocket
     // because TLS reads from the native handle, not Node's readable buffer).
     let socketForTls = clientSocket;
-    if (this.tlsFingerprint === 'passthrough') {
-      socketForTls = this._createCapturingSocket(clientSocket);
+    if (this.tlsFingerprint === 'passthrough' || head.length > 0) {
+      // `head` may already contain the start (or all) of the ClientHello. Feed
+      // it through the wrapper because TLSSocket does not consume socket.unshift().
+      socketForTls = this._createCapturingSocket(clientSocket, head);
     }
 
     try {
@@ -754,7 +797,7 @@ export class ProxyServer {
         id: uuidv4(),
         protocol: 'tls-error',
         method: 'CONNECT',
-        url: `https://${hostname}:${targetPort}`,
+        url: `https://${urlHostname}:${targetPort}`,
         host: hostname,
         path: '/',
         requestHeaders: {},
@@ -777,6 +820,7 @@ export class ProxyServer {
   }
 
   _handleTlsConnection(tlsSocket, hostname, targetPort) {
+    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
     // Capture TLS session details from the MITM socket
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
@@ -795,7 +839,7 @@ export class ProxyServer {
         tunnelEmitted = true;
         this._emitRequest({
           id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
-          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
           requestHeaders: {}, requestBody: '', requestBodySize: tunnelBytesIn,
           statusCode: 200, statusMessage: 'Raw Tunnel',
           responseHeaders: {}, responseBody: '', responseBodySize: tunnelBytesOut,
@@ -817,7 +861,7 @@ export class ProxyServer {
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
-      let fullUrl = `https://${hostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+      let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
       const requestBody = [];
       req.on('data', chunk => requestBody.push(chunk));
@@ -1365,7 +1409,7 @@ export class ProxyServer {
           id: uuidv4(),
           protocol: 'tls-error',
           method: 'CONNECT',
-          url: `https://${hostname}:${targetPort}`,
+          url: `https://${urlHostname}:${targetPort}`,
           host: hostname,
           path: '/',
           requestHeaders: {},
@@ -1391,6 +1435,7 @@ export class ProxyServer {
   }
 
   _handleHttp2Connection(tlsSocket, hostname, targetPort) {
+    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
     const tlsDetails = tlsSocket.getCipher ? {
       cipher: tlsSocket.getCipher()?.name || null,
       version: tlsSocket.getProtocol?.() || 'TLSv1.2'
@@ -1406,7 +1451,7 @@ export class ProxyServer {
         tunnelEmitted = true;
         this._emitRequest({
           id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
-          url: `tunnel://${hostname}:${targetPort}`, host: hostname, path: '/',
+          url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
           requestHeaders: {}, requestBody: '', requestBodySize: 0,
           statusCode: 200, statusMessage: 'Raw Tunnel',
           responseHeaders: {}, responseBody: '', responseBodySize: 0,
@@ -1508,7 +1553,7 @@ export class ProxyServer {
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
         if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
         if (!upstreamHeaders.host) {
-          upstreamHeaders.host = targetPort === 443 ? hostname : `${hostname}:${targetPort}`;
+          upstreamHeaders.host = targetPort === 443 ? urlHostname : `${urlHostname}:${targetPort}`;
         }
 
         const source = this._detectSource(reqHeaders);
@@ -1666,7 +1711,7 @@ export class ProxyServer {
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
-      let fullUrl = `https://${hostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+      let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
       const requestBody = [];
       req.on('data', chunk => requestBody.push(chunk));
@@ -1870,7 +1915,7 @@ export class ProxyServer {
           id: uuidv4(),
           protocol: 'tls-error',
           method: 'CONNECT',
-          url: `https://${hostname}:${targetPort}`,
+          url: `https://${urlHostname}:${targetPort}`,
           host: hostname,
           path: '/',
           requestHeaders: {},
@@ -2250,12 +2295,17 @@ export class ProxyServer {
   // Returns the h2 session or null if the origin doesn't support h2.
   _getH2Session(hostname, port) {
     const origin = `${hostname}:${port}`;
+    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // Known not to support h2
     if (this._h2Blacklist.has(origin)) return Promise.resolve(null);
 
-    // Existing live session
+    // Already connecting — wait for it rather than exposing a session that has
+    // not completed its TLS/ALPN handshake yet.
     const cached = this._h2Sessions.get(origin);
+    if (cached && cached.pending) return cached.pending;
+
+    // Existing live session
     if (cached && !cached.session.destroyed && !cached.session.closed) {
       // Reset idle timer
       clearTimeout(cached.timer);
@@ -2263,12 +2313,9 @@ export class ProxyServer {
       return Promise.resolve(cached.session);
     }
 
-    // Already connecting — wait for it
-    if (cached && cached.pending) return cached.pending;
-
     // Create new session
     const pending = new Promise((resolve) => {
-      const url = `https://${hostname}:${port}`;
+      const url = `https://${urlHostname}:${port}`;
       let settled = false;
 
       const session = http2.connect(url, {
@@ -2321,8 +2368,10 @@ export class ProxyServer {
       session.on('connect', () => clearTimeout(connectTimeout));
       session.on('error', () => clearTimeout(connectTimeout));
 
-      // Store pending promise so concurrent requests share it
-      this._h2Sessions.set(origin, { session, timer, pending });
+      // The pending promise is attached immediately after construction below.
+      // Referencing it here would hit its temporal dead zone because Promise
+      // executors run synchronously.
+      this._h2Sessions.set(origin, { session, timer });
     });
 
     // Update cache entry with the pending promise
@@ -2363,7 +2412,9 @@ export class ProxyServer {
         ':method': method,
         ':path': path,
         ':scheme': 'https',
-        ':authority': port === 443 ? hostname : `${hostname}:${port}`
+        ':authority': port === 443
+          ? (net.isIP(hostname) === 6 ? `[${hostname}]` : hostname)
+          : `${net.isIP(hostname) === 6 ? `[${hostname}]` : hostname}:${port}`
       };
 
       // Copy regular headers, filtering out h1-specific ones
@@ -2598,15 +2649,19 @@ export class ProxyServer {
   // Create a Duplex wrapper around a socket that transparently captures the
   // first chunk (the TLS ClientHello) as it passes through. Unlike unshift(),
   // this works with tls.TLSSocket which reads from the native handle.
-  _createCapturingSocket(socket) {
-    let captured = false;
+  _createCapturingSocket(socket, initialData = Buffer.alloc(0)) {
+    let captured = initialData.length > 0;
     const wrapper = new Duplex({
       read() { socket.resume(); },
       write(chunk, enc, cb) { socket.write(chunk, enc, cb); },
       final(cb) { socket.end(cb); },
       destroy(err, cb) { socket.destroy(err); cb(err); }
     });
-    wrapper._captured = null; // will hold parsed ClientHello
+    wrapper._captured = captured
+      ? ProxyServer._parseClientHello(initialData)
+      : null; // will hold parsed ClientHello
+
+    if (initialData.length > 0) wrapper.push(initialData);
 
     socket.on('data', (chunk) => {
       if (!captured) {
@@ -3524,6 +3579,8 @@ export class ProxyServer {
 
     if (!target) return false;
 
+    if (this.filterSafeFonts && (target === 'fonts.gstatic.com' || target === 'fonts.googleapis.com')) return true;
+
     const exactHosts = new Set([
       'update.googleapis.com',
       'optimizationguide-pa.googleapis.com',
@@ -3535,6 +3592,8 @@ export class ProxyServer {
       'clients4.google.com',
       'clients5.google.com',
       'clients6.google.com',
+      'content-autofill.googleapis.com',
+      'google-ohttp-relay-safebrowsing.fastly-edge.com',
       'redirector.gvt1.com'
     ]);
 
@@ -3552,6 +3611,10 @@ export class ProxyServer {
       path.startsWith('/gen_204') ||
       path.startsWith('/chrome/')
     )) return true;
+
+    if ((target === 'google.com' || target === 'www.google.com') &&
+      path.startsWith('/domainreliability/upload')
+    ) return true;
 
     return false;
   }
@@ -3605,6 +3668,16 @@ export class ProxyServer {
 
     // For images, encode as base64 data URI so the UI can display them
     const ct = (contentType || '').toLowerCase();
+    const isProtobufLike = ct.includes('application/grpc') ||
+      ct.includes('application/connect+proto') ||
+      ct.includes('protobuf') ||
+      ct.includes('x-protobuf') ||
+      ct.includes('x-protobuffer');
+    if (isProtobufLike && decoded.length < 2 * 1024 * 1024) {
+      const mimeType = ct.split(';')[0].trim() || 'application/x-protobuf';
+      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+    }
+
     if (ct.startsWith('image/') && decoded.length < 2 * 1024 * 1024) { // up to 2MB images
       const mimeType = ct.split(';')[0].trim();
       return `data:${mimeType};base64,${decoded.toString('base64')}`;
