@@ -1358,6 +1358,12 @@
     }
     .body-view-select:focus { border-color: var(--pop-color); }
 
+    .protobuf-type-select {
+      max-width: 260px;
+      min-width: 120px;
+      text-overflow: ellipsis;
+    }
+
     /* URL-decoded key/value pairs display */
     .url-decoded-params {
       display: flex;

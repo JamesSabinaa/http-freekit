@@ -265,6 +265,8 @@
                     <option value="html">HTML</option>
                     <option value="css">CSS</option>
                     <option value="javascript">JavaScript</option>
+                    <option value="markdown">Markdown</option>
+                    <option value="yaml">YAML</option>
                   </select>
                   <span>Request Body</span>
                 </div>
@@ -283,7 +285,19 @@
             <div id="sendResponse" style="display:none;">
               <div class="card"><div class="card-header">Response Status</div><div class="detail-summary" style="margin-bottom:0;"><div class="detail-summary-item"><div class="detail-summary-label">Status</div><div class="detail-summary-value" id="sendResStatus">-</div></div><div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value" id="sendResDuration">-</div></div></div></div>
               <div class="card"><div class="card-header">Response Headers</div><div id="sendResHeaders"></div></div>
-              <div class="card"><div class="card-header">Response Body</div><div class="body-content" id="sendResBody"></div></div>
+              <div class="card">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                  <span>Response Body</span>
+                  <span style="display:flex;align-items:center;gap:8px;">
+                    <select id="sendResBody-schema" class="body-view-select protobuf-type-select" onchange="setProtobufBodyType('sendResBody', this.value, 'standalone')" style="display:none;"></select>
+                    <select id="sendResBodyMode" class="body-view-select" onchange="switchBodyView('sendResBody', this.value, 'standalone')" style="display:none;"></select>
+                  </span>
+                </div>
+                <div id="sendResBody" data-view-mode="text">
+                  <div id="sendResBody-monaco" style="display:none;min-height:80px;"></div>
+                  <pre class="body-content" id="sendResBody-fallback" style="display:none;"></pre>
+                </div>
+              </div>
               <button id="sendViewInTraffic" class="view-in-traffic-btn" style="display:none;" title="View this exchange in the traffic log">&#128270; View in traffic</button>
             </div>
             <div id="sendEmptyResponse" class="empty-state" style="height:100%;"><div class="icon" style="font-size:80px;opacity:0.15;">&#8594;</div><h3 style="font-size:24px;">Send a request to see the response</h3><p>Enter a URL and click Send, or press Ctrl+Enter</p></div>
@@ -303,6 +317,27 @@
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
               Hides low-level CONNECT tunnel rows from the traffic list while keeping the captured HTTP requests visible.
+            </p>
+            <div class="settings-row">
+              <span class="settings-label">Filter Safe Fonts</span>
+              <span class="settings-value"><input type="checkbox" id="filterSafeFontsToggle" onchange="saveFilterSafeFonts(this.checked)" style="cursor:pointer;width:18px;height:18px;"></span>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              Filters browser font requests to fonts.googleapis.com and fonts.gstatic.com from the traffic list and exports.
+            </p>
+          </div>
+          <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">Protobuf Schemas</div>
+            <div class="settings-row">
+              <span class="settings-label">Loaded Schemas</span>
+              <span class="settings-value" id="protobufSchemaStatus">None</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn" onclick="importProtobufSchemas()" style="font-size:12px;">Import .proto</button>
+              <button class="btn" onclick="clearProtobufSchemas()" style="font-size:12px;">Clear</button>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              Loaded schemas are used locally to decode protobuf and gRPC bodies with field names.
             </p>
           </div>
           <div class="card" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
@@ -532,6 +567,8 @@
   <script>
     require.config({ paths: { vs: '/vendor/monaco/vs' } });
   </script>
+  <script src="/vendor/protobufjs/protobuf.min.js"></script>
+  <script src="/vendor/pako/pako.umd.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -97,6 +97,7 @@ async function main() {
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, { port: API_PORT });
   api.settings = settings; // Give API server access to persist settings
+  proxy.filterSafeFonts = settings.get('filterSafeFonts', false) === true;
 
   // Serve UI static files (index.html, styles.css, app.js)
   api.app.use(express.static(UI_DIR));
@@ -108,6 +109,14 @@ async function main() {
   // Serve Monaco Editor assets from node_modules
   const MONACO_DIR = path.join(__dirname, '..', 'node_modules', 'monaco-editor', 'min');
   api.app.use('/vendor/monaco', express.static(MONACO_DIR));
+
+  // Serve protobufjs browser bundle for schema-aware protobuf/gRPC body decoding
+  const PROTOBUFJS_DIR = path.join(__dirname, '..', 'node_modules', 'protobufjs', 'dist');
+  api.app.use('/vendor/protobufjs', express.static(PROTOBUFJS_DIR));
+
+  // Serve pako browser bundle for gzip/deflate gRPC message decompression
+  const PAKO_DIR = path.join(__dirname, '..', 'node_modules', 'pako', 'dist', 'browser');
+  api.app.use('/vendor/pako', express.static(PAKO_DIR));
 
   // 5. Start servers
   await proxy.start();

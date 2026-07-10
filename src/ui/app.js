@@ -8,6 +8,10 @@
     let sortDirection = 'desc';
     let config = {};
     let hideTunnelRequests = true;
+    let filterSafeFonts = false;
+    let protobufSchemaFiles = [];
+    let protobufRoot = null;
+    let protobufSchemaError = '';
     let mockRules = [];
     let breakpointRules = [];
     /** @type {Map<string, object>} Draft rules — unsaved changes keyed by rule ID */
@@ -103,6 +107,7 @@
           // Load initial data
           loadConfig();
           loadUiSettings();
+          loadProtobufSchemas();
           loadInterceptors();
           loadMockRules().then(() => ensureDefaultMockRules());
           loadBreakpointRules();
@@ -235,6 +240,10 @@
       return req?.protocol === 'tunnel' || req?.method === 'CONNECT';
     }
 
+    function isSafeFontRequest(req) {
+      return ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase());
+    }
+
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
 
@@ -250,12 +259,17 @@
       // Filter base list (exclude ws-frame — they appear as sub-rows)
       let baseList;
       if (!raw) {
-        baseList = requests.filter(r => r.protocol !== 'ws-frame' && (!hideTunnelRequests || !isTunnelRequest(r)));
+        baseList = requests.filter(r =>
+          r.protocol !== 'ws-frame' &&
+          (!hideTunnelRequests || !isTunnelRequest(r)) &&
+          (!filterSafeFonts || !isSafeFontRequest(r))
+        );
       } else {
         const filters = parseFilters(raw);
         baseList = requests.filter(r =>
           r.protocol !== 'ws-frame' &&
           (!hideTunnelRequests || !isTunnelRequest(r)) &&
+          (!filterSafeFonts || !isSafeFontRequest(r)) &&
           matchesAllFilters(r, filters)
         );
       }
@@ -585,7 +599,11 @@
       if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
 
       const query = document.getElementById('searchInput').value.trim();
-      const visibleTotal = requests.filter(r => r.protocol !== 'ws-frame' && (!hideTunnelRequests || !isTunnelRequest(r))).length;
+      const visibleTotal = requests.filter(r =>
+        r.protocol !== 'ws-frame' &&
+        (!hideTunnelRequests || !isTunnelRequest(r)) &&
+        (!filterSafeFonts || !isSafeFontRequest(r))
+      ).length;
       if (query && filteredRequests.length !== visibleTotal) {
         countEl.textContent = filteredRequests.length + ' / ' + visibleTotal;
         if (footerFilter) {
@@ -801,6 +819,8 @@
         else if (ct.includes('html')) bodyFormat = 'html';
         else if (ct.includes('css')) bodyFormat = 'css';
         else if (ct.includes('javascript')) bodyFormat = 'javascript';
+        else if (ct.includes('markdown') || ct.includes('/x-markdown')) bodyFormat = 'markdown';
+        else if (ct.includes('yaml') || ct.includes('yml')) bodyFormat = 'yaml';
       }
 
       // Create a new send tab with the request data
@@ -1451,6 +1471,7 @@
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
               ${reqBodyModes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('')}
             </select>
+            <select class="body-view-select protobuf-type-select" id="reqBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('reqBody', this.value, 'request')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
             <span class="detail-card-heading">Request Body</span>
             <span class="collapse-chevron">&#9650;</span>
@@ -1498,6 +1519,7 @@
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
               ${resBodyModes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('')}
             </select>
+            <select class="body-view-select protobuf-type-select" id="resBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('resBody', this.value, 'response')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.responseBodySize)}</span>
             <span class="detail-card-heading">Response Body</span>
             <span class="collapse-chevron">&#9650;</span>
@@ -1701,30 +1723,29 @@
           </span>
         </div>
         <div class="detail-card-body">
-          <div class="body-content" id="exportSnippetContent" style="cursor:pointer;" onclick="copyExportSnippet()" title="Click to copy"></div>
+          <div id="exportSnippetContent" style="cursor:pointer;" onclick="copyExportSnippet()" title="Click to copy">
+            <div id="exportSnippetContent-monaco" style="min-height:120px;"></div>
+            <pre class="body-content" id="exportSnippetContent-fallback" style="display:none;"></pre>
+          </div>
         </div>
       </div>`;
 
       content.innerHTML = html;
 
-      // Initialize Monaco editor for request body if the default view mode uses Monaco
-      if (req.requestBody && req.requestBody !== '' && !req.requestBody.startsWith('[Binary')) {
-        const reqCt2 = req.requestHeaders?.['content-type'] || '';
-        const reqModes2 = getBodyViewModes(req.requestBody, reqCt2);
+      // Initialize the request body viewer from the currently selected transform perspective
+      if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
+        const reqCt2 = effReq.requestHeaders?.['content-type'] || '';
+        const reqModes2 = getBodyViewModes(effBody, reqCt2);
         const reqDefMode2 = reqModes2[0]?.value || 'text';
-        if (isMonacoViewMode(reqDefMode2)) {
-          initBodyMonacoEditor('reqBody-monaco', req.requestBody, reqCt2, reqDefMode2);
-        }
+        renderBodyViewer('reqBody', effBody, reqCt2, reqDefMode2, { request: effReq, section: 'request' });
       }
 
-      // Initialize Monaco editor for response body if the default view mode uses Monaco
+      // Initialize the response body viewer
       if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
         const resCt = req.responseHeaders?.['content-type'] || '';
         const resModes = getBodyViewModes(req.responseBody, resCt);
         const resDefMode = resModes[0]?.value || 'text';
-        if (isMonacoViewMode(resDefMode)) {
-          initBodyMonacoEditor('resBody-monaco', req.responseBody, resCt, resDefMode);
-        }
+        renderBodyViewer('resBody', req.responseBody, resCt, resDefMode, { request: req, section: 'response' });
       }
 
       // Generate initial export snippet
@@ -1845,14 +1866,56 @@
       const req = window._currentExportRequest;
       if (!req) return;
       const snippet = generateExportSnippet(req, format);
-      const el = document.getElementById('exportSnippetContent');
-      if (el) el.textContent = snippet;
+      const monacoId = 'exportSnippetContent-monaco';
+      const fallback = document.getElementById('exportSnippetContent-fallback');
+      if (fallback) {
+        fallback.textContent = snippet;
+        fallback.style.display = 'none';
+      }
+      disposeBodyEditor(monacoId);
+      const language = exportFormatToMonacoLanguage(format);
+      createMonacoEditor(monacoId, {
+        value: snippet,
+        language,
+        readOnly: true,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      }).then(editor => {
+        if (!editor) {
+          if (fallback) fallback.style.display = 'block';
+          return;
+        }
+        activeBodyEditors[monacoId] = editor;
+        const container = document.getElementById(monacoId);
+        const lineCount = editor.getModel().getLineCount();
+        const desiredHeight = Math.min(Math.max(lineCount * 18 + 16, 120), Math.round(window.innerHeight * 0.7));
+        if (container) container.style.height = desiredHeight + 'px';
+        editor.layout();
+      });
+    }
+
+    function exportFormatToMonacoLanguage(format) {
+      const map = {
+        curl: 'shell',
+        wget: 'shell',
+        python: 'python',
+        'javascript-fetch': 'javascript',
+        'javascript-node': 'javascript',
+        powershell: 'powershell',
+        php: 'php',
+        go: 'go'
+      };
+      return map[format] || 'plaintext';
     }
 
     function copyExportSnippet() {
-      const el = document.getElementById('exportSnippetContent');
-      if (!el) return;
-      navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+      const editor = activeBodyEditors['exportSnippetContent-monaco'];
+      const fallback = document.getElementById('exportSnippetContent-fallback');
+      const text = editor?.getValue ? editor.getValue() : (fallback?.textContent || '');
+      if (!text) return;
+      navigator.clipboard.writeText(text.trim()).then(() => {
         toast('Copied to clipboard!', 'success');
       }).catch(() => toast('Failed to copy', 'error'));
     }
@@ -1946,10 +2009,43 @@
       return esc(body);
     }
 
+    function isGrpcContentType(contentType) {
+      const ct = (contentType || '').toLowerCase();
+      return ct.includes('application/grpc') || ct.includes('application/connect+proto');
+    }
+
+    function isConnectContentType(contentType) {
+      return (contentType || '').toLowerCase().includes('application/connect+proto');
+    }
+
+    function isProtobufContentType(contentType) {
+      const ct = (contentType || '').toLowerCase();
+      return isGrpcContentType(ct) ||
+        ct.includes('protobuf') ||
+        ct.includes('x-protobuf') ||
+        ct.includes('x-protobuffer') ||
+        ct.includes('proto');
+    }
+
     // Determine available view modes based on content type and body content
     function getBodyViewModes(body, contentType) {
       const modes = [];
       const ct = (contentType || '').toLowerCase();
+
+      if (isGrpcContentType(ct)) {
+        modes.push({ value: 'grpc', label: 'gRPC' });
+        modes.push({ value: 'protobuf', label: 'Protobuf' });
+        modes.push({ value: 'hex', label: 'Hex' });
+        modes.push({ value: 'text', label: 'Text' });
+        return modes;
+      }
+
+      if (isProtobufContentType(ct)) {
+        modes.push({ value: 'protobuf', label: 'Protobuf' });
+        modes.push({ value: 'hex', label: 'Hex' });
+        modes.push({ value: 'text', label: 'Text' });
+        return modes;
+      }
 
       // Image content types get an image preview mode
       if (ct.includes('image/') && body && !body.startsWith('[Binary data:')) {
@@ -1974,6 +2070,9 @@
       } else if (ct.includes('xml') || ct.includes('html') || (body && body.trimStart().startsWith('<'))) {
         modes.push({ value: 'markup', label: ct.includes('html') ? 'HTML' : 'XML' });
         modes.push({ value: 'text', label: 'Text' });
+      } else if (ct.includes('markdown') || ct.includes('/x-markdown')) {
+        modes.push({ value: 'markdown', label: 'Markdown' });
+        modes.push({ value: 'text', label: 'Text' });
       } else if (ct.includes('yaml') || ct.includes('yml')) {
         modes.push({ value: 'yaml', label: 'YAML' });
         modes.push({ value: 'text', label: 'Text' });
@@ -1997,13 +2096,14 @@
       if (ct.includes('css')) return 'css';
       if (ct.includes('javascript') || ct.includes('ecmascript')) return 'javascript';
       if (ct.includes('typescript')) return 'typescript';
+      if (ct.includes('markdown') || ct.includes('/x-markdown')) return 'markdown';
       if (ct.includes('yaml') || ct.includes('yml')) return 'yaml';
       return 'plaintext';
     }
 
     /**
      * Map a body view mode to a Monaco language.
-     * @param {string} mode - The view mode (json, text, markup, javascript, css, yaml, raw)
+     * @param {string} mode - The view mode (json, text, markup, javascript, css, markdown, yaml, raw)
      * @param {string} contentType - The content-type header
      * @returns {string}
      */
@@ -2013,7 +2113,10 @@
         case 'markup': return (contentType || '').toLowerCase().includes('html') ? 'html' : 'xml';
         case 'javascript': return 'javascript';
         case 'css': return 'css';
+        case 'markdown': return 'markdown';
         case 'yaml': return 'yaml';
+        case 'grpc':
+        case 'protobuf':
         case 'text':
         case 'raw':
         default: return 'plaintext';
@@ -2026,7 +2129,7 @@
      * @returns {boolean}
      */
     function isMonacoViewMode(mode) {
-      return ['json', 'text', 'markup', 'javascript', 'css', 'yaml', 'raw'].includes(mode);
+      return ['json', 'text', 'markup', 'javascript', 'css', 'markdown', 'yaml', 'grpc', 'protobuf', 'raw'].includes(mode);
     }
 
     /**
@@ -2034,9 +2137,521 @@
      * @type {Object<string, object>}
      */
     const activeBodyEditors = {};
+    const standaloneBodyViewers = {};
+    const bodySchemaTypeOverrides = {};
+    const PROTOBUF_SCHEMA_STORAGE_KEY = 'http-freekit-protobuf-schemas';
 
     // Format body in a specific view mode
     // Wrap formatted HTML string in line-numbered spans
+    function updateProtobufSchemaStatus() {
+      const el = document.getElementById('protobufSchemaStatus');
+      if (!el) return;
+      if (protobufSchemaError) {
+        el.textContent = 'Error';
+        el.title = protobufSchemaError;
+        el.style.color = '#ce3939';
+        return;
+      }
+      el.style.color = '';
+      el.title = protobufSchemaFiles.map(f => f.name).join(', ');
+      el.textContent = protobufSchemaFiles.length
+        ? protobufSchemaFiles.length + ' file' + (protobufSchemaFiles.length === 1 ? '' : 's')
+        : 'None';
+    }
+
+    function rebuildProtobufRoot() {
+      protobufSchemaError = '';
+      protobufRoot = null;
+      if (!protobufSchemaFiles.length) {
+        updateProtobufSchemaStatus();
+        return;
+      }
+      if (!window.protobuf?.parse || !window.protobuf?.Root) {
+        protobufSchemaError = 'protobufjs did not load';
+        updateProtobufSchemaStatus();
+        return;
+      }
+
+      try {
+        const root = new window.protobuf.Root();
+        for (const file of protobufSchemaFiles) {
+          window.protobuf.parse(file.content, root, { keepCase: true, alternateCommentMode: true });
+        }
+        root.resolveAll();
+        protobufRoot = root;
+      } catch (err) {
+        protobufSchemaError = err.message || String(err);
+        protobufRoot = null;
+      }
+      updateProtobufSchemaStatus();
+    }
+
+    function loadProtobufSchemas() {
+      try {
+        const saved = localStorage.getItem(PROTOBUF_SCHEMA_STORAGE_KEY);
+        protobufSchemaFiles = saved ? JSON.parse(saved) : [];
+        if (!Array.isArray(protobufSchemaFiles)) protobufSchemaFiles = [];
+      } catch {
+        protobufSchemaFiles = [];
+      }
+      rebuildProtobufRoot();
+    }
+
+    function saveProtobufSchemas() {
+      localStorage.setItem(PROTOBUF_SCHEMA_STORAGE_KEY, JSON.stringify(protobufSchemaFiles));
+      rebuildProtobufRoot();
+    }
+
+    function refreshVisibleBodyViewers() {
+      const req = document.getElementById('detailPanel')?._request;
+      if (req && selectedRequestId === req.id) renderDetailCards(req);
+      const sendViewer = standaloneBodyViewers.sendResBody;
+      if (sendViewer) renderBodyViewer('sendResBody', sendViewer.body, sendViewer.contentType, sendViewer.mode || 'text', sendViewer.context || {});
+    }
+
+    async function importProtobufSchemas() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.proto,text/plain';
+      input.multiple = true;
+      input.onchange = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        try {
+          const imported = [];
+          for (const file of files) {
+            imported.push({ name: file.name, content: await file.text() });
+          }
+          const byName = new Map(protobufSchemaFiles.map(file => [file.name, file]));
+          for (const file of imported) byName.set(file.name, file);
+          protobufSchemaFiles = Array.from(byName.values());
+          saveProtobufSchemas();
+          if (protobufSchemaError) {
+            toast('Schema import failed: ' + protobufSchemaError, 'error');
+          } else {
+            toast('Imported ' + imported.length + ' protobuf schema file' + (imported.length === 1 ? '' : 's'), 'success');
+            refreshVisibleBodyViewers();
+          }
+        } catch (err) {
+          toast('Schema import failed: ' + err.message, 'error');
+        }
+      };
+      input.click();
+    }
+
+    function clearProtobufSchemas() {
+      protobufSchemaFiles = [];
+      protobufRoot = null;
+      protobufSchemaError = '';
+      for (const key of Object.keys(bodySchemaTypeOverrides)) delete bodySchemaTypeOverrides[key];
+      localStorage.removeItem(PROTOBUF_SCHEMA_STORAGE_KEY);
+      updateProtobufSchemaStatus();
+      refreshVisibleBodyViewers();
+      toast('Protobuf schemas cleared', 'success');
+    }
+
+    function updateProtobufTypeSelect(elementId, mode, context = {}) {
+      const select = document.getElementById(elementId + '-schema');
+      if (!select) return;
+      const schemaModes = mode === 'protobuf' || mode === 'grpc';
+      const typeOptions = getProtobufTypeOptions();
+      if (!schemaModes || !typeOptions.length) {
+        select.style.display = 'none';
+        select.innerHTML = '';
+        return;
+      }
+
+      const inferred = mode === 'grpc'
+        ? inferGrpcMessageType(context)
+        : inferProtobufMessageType({ ...context, manualTypeName: null });
+      const selected = bodySchemaTypeOverrides[elementId] || inferred?.fullName || '';
+      const autoLabel = inferred?.fullName ? 'Auto: ' + inferred.fullName.replace(/^\./, '') : 'Auto';
+      select.innerHTML = '<option value="">' + esc(autoLabel) + '</option>' +
+        typeOptions.map(typeName => '<option value="' + esc(typeName) + '">' + esc(typeName.replace(/^\./, '')) + '</option>').join('');
+      select.value = selected && typeOptions.includes(selected) ? selected : '';
+      select.style.display = 'block';
+    }
+
+    function setProtobufBodyType(elementId, typeName, section) {
+      if (typeName) {
+        bodySchemaTypeOverrides[elementId] = typeName;
+      } else {
+        delete bodySchemaTypeOverrides[elementId];
+      }
+
+      const standalone = standaloneBodyViewers[elementId];
+      if (standalone) {
+        standalone.context = { ...(standalone.context || {}), manualTypeName: bodySchemaTypeOverrides[elementId] || null };
+        renderBodyViewer(elementId, standalone.body, standalone.contentType, standalone.mode || 'protobuf', standalone.context);
+        return;
+      }
+
+      const req = document.getElementById('detailPanel')?._request;
+      if (!req) return;
+      const effectiveReq = section === 'request' ? getEffectiveRequest(req) : req;
+      const body = section === 'request' ? effectiveReq.requestBody : req.responseBody;
+      const ct = section === 'request'
+        ? (effectiveReq.requestHeaders?.['content-type'] || '')
+        : (req.responseHeaders?.['content-type'] || '');
+      const wrapper = document.getElementById(elementId);
+      const mode = wrapper?.dataset.viewMode || (getBodyViewModes(body, ct)[0]?.value || 'protobuf');
+      renderBodyViewer(elementId, body, ct, mode, {
+        request: effectiveReq,
+        section,
+        manualTypeName: bodySchemaTypeOverrides[elementId] || null
+      });
+    }
+
+    function collectProtobufTypes(namespace = protobufRoot, out = []) {
+      if (!namespace?.nestedArray) return out;
+      for (const child of namespace.nestedArray) {
+        if (child.fieldsArray) out.push(child);
+        collectProtobufTypes(child, out);
+      }
+      return out;
+    }
+
+    function getProtobufTypeOptions() {
+      return collectProtobufTypes()
+        .map(type => type.fullName || type.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+    }
+
+    function lookupProtobufType(typeName) {
+      if (!protobufRoot || !typeName) return null;
+      try { return protobufRoot.lookupType(typeName); } catch { return null; }
+    }
+
+    function inferGrpcMessageType(context = {}) {
+      if (!protobufRoot || !context.request) return null;
+      let pathname = context.request.path || '';
+      if (!pathname && context.request.url) {
+        try { pathname = new URL(context.request.url).pathname; } catch {}
+      }
+      const parts = String(pathname || '').replace(/^\/+/, '').split('/');
+      if (parts.length < 2) return null;
+      const serviceName = parts[0];
+      const methodName = parts[1];
+
+      try {
+        const service = protobufRoot.lookupService(serviceName);
+        const method = service?.methods?.[methodName];
+        if (!method) return null;
+        const resolved = context.section === 'request'
+          ? method.resolvedRequestType
+          : method.resolvedResponseType;
+        if (resolved) return resolved;
+        const typeName = context.section === 'request' ? method.requestType : method.responseType;
+        return typeName ? protobufRoot.lookupType(typeName) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function inferProtobufMessageType(context = {}) {
+      const manualType = lookupProtobufType(context.manualTypeName);
+      if (manualType) return manualType;
+      const grpcType = inferGrpcMessageType(context);
+      if (grpcType) return grpcType;
+      if (!protobufRoot) return null;
+      const types = collectProtobufTypes();
+      return types.length === 1 ? types[0] : null;
+    }
+
+    function decodeWithProtobufType(bytes, type) {
+      const message = type.decode(bytes);
+      const object = type.toObject(message, {
+        longs: String,
+        enums: String,
+        bytes: String,
+        defaults: false,
+        arrays: true,
+        objects: true
+      });
+      return JSON.stringify(object, null, 2);
+    }
+
+    function headerValue(headers, name) {
+      if (!headers) return '';
+      const direct = headers[name] || headers[name.toLowerCase()];
+      if (direct != null) return Array.isArray(direct) ? direct.join(', ') : String(direct);
+      const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+      if (!entry) return '';
+      return Array.isArray(entry[1]) ? entry[1].join(', ') : String(entry[1]);
+    }
+
+    function grpcEncodingForContext(context = {}) {
+      const headers = context.section === 'request'
+        ? context.request?.requestHeaders
+        : context.request?.responseHeaders;
+      const headerName = isConnectContentType(context.contentType)
+        ? 'connect-content-encoding'
+        : 'grpc-encoding';
+      return headerValue(headers, headerName).toLowerCase().trim();
+    }
+
+    function decompressGrpcMessage(bytes, encoding) {
+      if (!encoding || encoding === 'identity') return bytes;
+      if (!window.pako) throw new Error('pako is not loaded');
+      if (encoding === 'gzip') return window.pako.ungzip(bytes);
+      if (encoding === 'deflate') return window.pako.inflate(bytes);
+      throw new Error('unsupported grpc-encoding: ' + encoding);
+    }
+
+    function bodyToBytes(body) {
+      if (!body) return new Uint8Array();
+      const dataUriMatch = String(body).match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/);
+      if (dataUriMatch) {
+        const raw = atob(dataUriMatch[2].replace(/\s+/g, ''));
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        return bytes;
+      }
+      return new TextEncoder().encode(String(body));
+    }
+
+    function readProtoVarint(bytes, offset) {
+      let result = 0n;
+      let shift = 0n;
+      let pos = offset;
+      while (pos < bytes.length && shift <= 63n) {
+        const byte = bytes[pos++];
+        result |= BigInt(byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) return { value: result, next: pos };
+        shift += 7n;
+      }
+      throw new Error('Invalid varint at byte ' + offset);
+    }
+
+    function readFixed32(bytes, offset) {
+      if (offset + 4 > bytes.length) throw new Error('Truncated fixed32 at byte ' + offset);
+      return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function readFixed64(bytes, offset) {
+      if (offset + 8 > bytes.length) throw new Error('Truncated fixed64 at byte ' + offset);
+      const low = BigInt(readFixed32(bytes, offset));
+      const high = BigInt(readFixed32(bytes, offset + 4));
+      return (high << 32n) | low;
+    }
+
+    function bytesToHexPreview(bytes, max = 48) {
+      const shown = Array.from(bytes.slice(0, max)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      return shown + (bytes.length > max ? ' ...' : '');
+    }
+
+    function tryDecodeUtf8(bytes) {
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (!text) return null;
+        let printable = 0;
+        for (const ch of text) {
+          const code = ch.charCodeAt(0);
+          if (code === 9 || code === 10 || code === 13 || code >= 32) printable++;
+        }
+        return printable / text.length > 0.9 ? text : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function decodeProtobufMessage(bytes, depth = 0) {
+      const lines = [];
+      let offset = 0;
+      let fields = 0;
+      const indent = '  '.repeat(depth);
+
+      while (offset < bytes.length) {
+        if (++fields > 500) {
+          lines.push(indent + '... stopped after 500 fields');
+          break;
+        }
+
+        const fieldOffset = offset;
+        const tag = readProtoVarint(bytes, offset);
+        offset = tag.next;
+        const fieldNo = Number(tag.value >> 3n);
+        const wireType = Number(tag.value & 7n);
+        if (fieldNo <= 0) throw new Error('Invalid field number at byte ' + fieldOffset);
+
+        if (wireType === 0) {
+          const value = readProtoVarint(bytes, offset);
+          offset = value.next;
+          lines.push(`${indent}${fieldNo}: varint ${value.value.toString()}`);
+        } else if (wireType === 1) {
+          const value = readFixed64(bytes, offset);
+          offset += 8;
+          lines.push(`${indent}${fieldNo}: fixed64 ${value.toString()} (0x${value.toString(16)})`);
+        } else if (wireType === 2) {
+          const length = readProtoVarint(bytes, offset);
+          offset = length.next;
+          const size = Number(length.value);
+          if (!Number.isSafeInteger(size) || offset + size > bytes.length) {
+            throw new Error('Invalid length-delimited field at byte ' + fieldOffset);
+          }
+          const valueBytes = bytes.slice(offset, offset + size);
+          offset += size;
+
+          const text = tryDecodeUtf8(valueBytes);
+          if (text !== null && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) {
+            lines.push(`${indent}${fieldNo}: string ${JSON.stringify(text)}`);
+          } else if (depth < 4 && valueBytes.length > 1) {
+            try {
+              const nested = decodeProtobufMessage(valueBytes, depth + 1);
+              lines.push(`${indent}${fieldNo}: message (${size} bytes) {`);
+              lines.push(nested);
+              lines.push(`${indent}}`);
+            } catch {
+              lines.push(`${indent}${fieldNo}: bytes[${size}] ${bytesToHexPreview(valueBytes)}`);
+            }
+          } else {
+            lines.push(`${indent}${fieldNo}: bytes[${size}] ${bytesToHexPreview(valueBytes)}`);
+          }
+        } else if (wireType === 5) {
+          const value = readFixed32(bytes, offset);
+          offset += 4;
+          lines.push(`${indent}${fieldNo}: fixed32 ${value} (0x${value.toString(16)})`);
+        } else {
+          throw new Error('Unsupported protobuf wire type ' + wireType + ' at byte ' + fieldOffset);
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    function decodeProtobufBody(body, context = {}) {
+      const bytes = bodyToBytes(body);
+      if (!bytes.length) return '';
+      const type = inferProtobufMessageType(context);
+      if (type) {
+        try {
+          return '# schema: ' + type.fullName + '\n' + decodeWithProtobufType(bytes, type);
+        } catch (err) {
+          try {
+            return `Unable to decode with schema ${type.fullName}: ${err.message}\n\nWire format fallback:\n` + decodeProtobufMessage(bytes);
+          } catch (wireErr) {
+            return `Unable to decode with schema ${type.fullName}: ${err.message}\nUnable to decode protobuf wire format: ${wireErr.message}\n\nHex preview:\n` + bytesToHexPreview(bytes, 256);
+          }
+        }
+      }
+      try {
+        return decodeProtobufMessage(bytes);
+      } catch (err) {
+        return 'Unable to decode protobuf wire format: ' + err.message + '\n\nHex preview:\n' + bytesToHexPreview(bytes, 256);
+      }
+    }
+
+    function decodeGrpcBody(body, context = {}) {
+      const bytes = bodyToBytes(body);
+      if (!bytes.length) return '';
+      const chunks = [];
+      let offset = 0;
+      let index = 0;
+      const schemaType = inferGrpcMessageType(context);
+      const manualType = lookupProtobufType(context.manualTypeName);
+      const decodeType = manualType || schemaType;
+      const grpcEncoding = grpcEncodingForContext(context);
+      const isConnect = isConnectContentType(context.contentType);
+
+      while (offset + 5 <= bytes.length) {
+        const flags = bytes[offset];
+        const compressed = (flags & 0x01) !== 0;
+        const endStream = isConnect && (flags & 0x02) !== 0;
+        const size = ((bytes[offset + 1] << 24) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 8) | bytes[offset + 4]) >>> 0;
+        offset += 5;
+        const validFlags = isConnect ? (flags & ~0x03) === 0 : (flags === 0 || flags === 1);
+        if (offset + size > bytes.length || !validFlags) {
+          return 'Unable to decode gRPC frames. Showing as protobuf payload instead.\n\n' + decodeProtobufBody(body, context);
+        }
+
+        let message = bytes.slice(offset, offset + size);
+        offset += size;
+        if (endStream) {
+          const endStreamText = tryDecodeUtf8(message);
+          chunks.push('end stream:');
+          if (endStreamText !== null) {
+            try {
+              chunks.push(JSON.stringify(JSON.parse(endStreamText), null, 2));
+            } catch {
+              chunks.push(endStreamText);
+            }
+          } else {
+            chunks.push('  hex: ' + bytesToHexPreview(message));
+          }
+          continue;
+        }
+
+        chunks.push(`message ${++index}: ${decodeType?.fullName || 'protobuf'} compressed=${compressed}${compressed && grpcEncoding ? ' encoding=' + grpcEncoding : ''} size=${size}`);
+        if (compressed) {
+          try {
+            message = decompressGrpcMessage(message, grpcEncoding);
+            chunks.push('  decompressed-size=' + message.length);
+          } catch (err) {
+            chunks.push('  unable to decompress gRPC message: ' + err.message);
+            chunks.push('  hex: ' + bytesToHexPreview(message));
+            continue;
+          }
+        }
+
+        if (decodeType) {
+          try {
+            chunks.push(decodeWithProtobufType(message, decodeType));
+          } catch (err) {
+            chunks.push('  unable to decode with schema ' + decodeType.fullName + ': ' + err.message);
+            chunks.push('  wire format fallback:');
+            try {
+              chunks.push(decodeProtobufMessage(message, 1));
+            } catch (wireErr) {
+              chunks.push('  unable to decode protobuf message: ' + wireErr.message);
+              chunks.push('  hex: ' + bytesToHexPreview(message));
+            }
+          }
+        } else {
+          try {
+            chunks.push(decodeProtobufMessage(message, 1));
+          } catch (err) {
+            chunks.push('  unable to decode protobuf message: ' + err.message);
+            chunks.push('  hex: ' + bytesToHexPreview(message));
+          }
+        }
+      }
+
+      if (offset !== bytes.length) {
+        chunks.push(`trailing bytes[${bytes.length - offset}]: ${bytesToHexPreview(bytes.slice(offset))}`);
+      }
+
+      return chunks.join('\n');
+    }
+
+    function beautifyMarkup(code) {
+      if (!code || code.includes('\n')) return code;
+      if (/<(?:script|style)\b/i.test(code)) return code;
+
+      const voidTags = new Set([
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+        'meta', 'param', 'source', 'track', 'wbr'
+      ]);
+      const tokens = code.replace(/>\s*</g, '>\n<').split('\n').map(t => t.trim()).filter(Boolean);
+      let indent = 0;
+
+      return tokens.map(token => {
+        const closing = /^<\//.test(token);
+        const declaration = /^<!(?:--|doctype)|^<\?/i.test(token);
+        const tagMatch = token.match(/^<\/?([a-zA-Z0-9:-]+)/);
+        const tagName = tagMatch ? tagMatch[1].toLowerCase() : '';
+        const selfClosing = /\/>$/.test(token) || voidTags.has(tagName);
+        const sameLinePair = /^<([a-zA-Z0-9:-]+)\b[^>]*>.*<\/\1>$/.test(token);
+
+        if (closing) indent = Math.max(0, indent - 1);
+        const line = '  '.repeat(indent) + token;
+        if (!closing && !declaration && !selfClosing && !sameLinePair && /^<[^/!?>]/.test(token)) {
+          indent += 1;
+        }
+        return line;
+      }).join('\n');
+    }
+
     // Simple JS beautifier — adds newlines and indentation to minified code
     function beautifyJs(code) {
       if (!code || code.includes('\n')) return code; // already formatted
@@ -2226,13 +2841,19 @@
           }
         }
         case 'markup': {
-          return wrapWithLineNumbers(syntaxHighlightXml(body));
+          return wrapWithLineNumbers(syntaxHighlightXml(beautifyMarkup(body)));
         }
         case 'javascript': {
           return wrapWithLineNumbers(syntaxHighlightJs(esc(beautifyJs(body))));
         }
         case 'css': {
           return wrapWithLineNumbers(syntaxHighlightCss(esc(beautifyCss(body))));
+        }
+        case 'grpc': {
+          return wrapWithLineNumbers(esc(decodeGrpcBody(body)));
+        }
+        case 'protobuf': {
+          return wrapWithLineNumbers(esc(decodeProtobufBody(body)));
         }
         case 'hex': {
           // Hex already has its own offset column — no extra line numbers
@@ -2264,7 +2885,7 @@
      * @param {string} mode
      * @returns {string}
      */
-    function getMonacoBodyValue(body, mode) {
+    function getMonacoBodyValue(body, mode, context = {}) {
       if (mode === 'json') {
         try {
           return JSON.stringify(JSON.parse(body), null, 2);
@@ -2274,6 +2895,9 @@
       }
       if (mode === 'javascript') return beautifyJs(body);
       if (mode === 'css') return beautifyCss(body);
+      if (mode === 'markup') return beautifyMarkup(body);
+      if (mode === 'grpc') return decodeGrpcBody(body, context);
+      if (mode === 'protobuf') return decodeProtobufBody(body, context);
       return body;
     }
 
@@ -2284,14 +2908,14 @@
      * @param {string} contentType - The content-type header
      * @param {string} mode - The current view mode
      */
-    async function initBodyMonacoEditor(containerId, body, contentType, mode) {
+    async function initBodyMonacoEditor(containerId, body, contentType, mode, context = {}) {
       disposeBodyEditor(containerId);
 
       const container = document.getElementById(containerId);
       if (!container) return;
 
       const language = viewModeToMonacoLanguage(mode, contentType);
-      const value = getMonacoBodyValue(body, mode);
+      const value = getMonacoBodyValue(body, mode, { ...context, contentType });
 
       const editor = await createMonacoEditor(containerId, {
         value: value,
@@ -2317,20 +2941,16 @@
       }
     }
 
-    // Switch body view mode — re-renders the body content (Monaco for text modes, HTML for hex/decoded/image)
-    function switchBodyView(elementId, mode, section) {
+    function renderBodyViewer(elementId, body, contentType, mode, context = {}) {
       const wrapper = document.getElementById(elementId);
       if (!wrapper) return;
-      const req = document.getElementById('detailPanel')?._request;
-      if (!req) return;
-
-      const body = section === 'request' ? req.requestBody : req.responseBody;
-      const ct = section === 'request'
-        ? (req.requestHeaders?.['content-type'] || '')
-        : (req.responseHeaders?.['content-type'] || '');
+      const ct = contentType || '';
+      const renderContext = { ...context, manualTypeName: bodySchemaTypeOverrides[elementId] || context.manualTypeName || null };
+      wrapper.dataset.viewMode = mode;
 
       const monacoId = elementId + '-monaco';
       const fallbackId = elementId + '-fallback';
+      updateProtobufTypeSelect(elementId, mode, renderContext);
 
       // Both request and response body use Monaco for text-based modes
       if (isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
@@ -2340,7 +2960,7 @@
         if (monacoEl) monacoEl.style.display = 'block';
         if (fallbackEl) fallbackEl.style.display = 'none';
 
-        initBodyMonacoEditor(monacoId, body, ct, mode);
+        initBodyMonacoEditor(monacoId, body, ct, mode, renderContext);
       } else {
         // Dispose any active Monaco editor
         const monacoId2 = elementId + '-monaco';
@@ -2352,17 +2972,51 @@
 
         if (fallbackEl) {
           fallbackEl.style.display = 'block';
-          if (mode === 'image') {
-            fallbackEl.innerHTML = '<div style="text-align:center;padding:20px;"><span style="color:var(--text-watermark);font-size:13px;">[Image: ' + esc(ct) + ']</span></div>';
-          } else {
-            fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
-          }
+          fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
         } else {
           // Fallback for request body or old-style rendering
           wrapper.dataset.viewMode = mode;
           wrapper.innerHTML = formatBodyAs(body, ct, mode);
         }
       }
+    }
+
+    // Switch body view mode — re-renders the body content (Monaco for text modes, HTML for hex/decoded/image)
+    function switchBodyView(elementId, mode, section) {
+      const standalone = standaloneBodyViewers[elementId];
+      if (standalone) {
+        standalone.mode = mode;
+        renderBodyViewer(elementId, standalone.body, standalone.contentType, mode, standalone.context || {});
+        return;
+      }
+
+      const req = document.getElementById('detailPanel')?._request;
+      if (!req) return;
+
+      const effectiveReq = section === 'request' ? getEffectiveRequest(req) : req;
+      const body = section === 'request' ? effectiveReq.requestBody : req.responseBody;
+      const ct = section === 'request'
+        ? (effectiveReq.requestHeaders?.['content-type'] || '')
+        : (req.responseHeaders?.['content-type'] || '');
+
+      renderBodyViewer(elementId, body, ct, mode, { request: effectiveReq, section });
+    }
+
+    function setStandaloneBodyViewer(elementId, body, contentType, modeSelectId, selectedMode, context = {}) {
+      const modes = getBodyViewModes(body, contentType);
+      const mode = selectedMode && modes.some(m => m.value === selectedMode)
+        ? selectedMode
+        : (modes[0]?.value || 'text');
+      standaloneBodyViewers[elementId] = { body, contentType, mode, context };
+
+      const select = document.getElementById(modeSelectId);
+      if (select) {
+        select.innerHTML = modes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('');
+        select.value = mode;
+        select.style.display = modes.length > 1 ? 'block' : 'none';
+      }
+
+      renderBodyViewer(elementId, body, contentType, mode, context);
     }
 
     function syntaxHighlightJson(json) {
@@ -2539,7 +3193,7 @@
     }
 
     function textToHex(text) {
-      const bytes = new TextEncoder().encode(text);
+      const bytes = bodyToBytes(text);
       let result = '';
       for (let i = 0; i < bytes.length; i += 16) {
         const hex = [];
@@ -5619,7 +6273,7 @@
     }
 
     function formatToContentType(format) {
-      const map = { json: 'application/json', xml: 'application/xml', html: 'text/html', css: 'text/css', javascript: 'application/javascript', text: 'text/plain' };
+      const map = { json: 'application/json', xml: 'application/xml', html: 'text/html', css: 'text/css', javascript: 'application/javascript', markdown: 'text/markdown', yaml: 'application/yaml', text: 'text/plain' };
       return map[format] || 'text/plain';
     }
 
@@ -5629,7 +6283,7 @@
      * @returns {string}
      */
     function sendFormatToMonacoLanguage(format) {
-      const map = { json: 'json', xml: 'xml', html: 'html', css: 'css', javascript: 'javascript', text: 'plaintext' };
+      const map = { json: 'json', xml: 'xml', html: 'html', css: 'css', javascript: 'javascript', markdown: 'markdown', yaml: 'yaml', text: 'plaintext' };
       return map[format] || 'plaintext';
     }
 
@@ -5726,14 +6380,7 @@
           sendBodyEditor.setValue(JSON.stringify(parsed, null, 2));
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
-          // Basic XML/HTML indent formatting
-          let formatted = value
-            .replace(/>\s*</g, '>\n<')
-            .replace(/(<[^\/][^>]*[^\/]>)\s*/g, '$1\n')
-            .split('\n')
-            .filter(l => l.trim())
-            .join('\n');
-          sendBodyEditor.setValue(formatted);
+          sendBodyEditor.setValue(beautifyMarkup(value));
           toast('Formatted', 'success');
         } else {
           // Try Monaco's built-in formatter for other languages
@@ -5901,13 +6548,35 @@
         document.getElementById('sendResStatus').innerHTML = tab.response.statusHtml || '-';
         document.getElementById('sendResDuration').textContent = tab.response.duration || '-';
         document.getElementById('sendResHeaders').innerHTML = tab.response.headersHtml || '';
-        document.getElementById('sendResBody').innerHTML = tab.response.bodyHtml || esc(tab.response.bodyText || '');
+        let responsePath = '';
+        try { responsePath = new URL(tab.response.url || tab.url || '').pathname; } catch {}
+        const responseContext = {
+          request: {
+            method: tab.response.method || tab.method || 'GET',
+            url: tab.response.url || tab.url || '',
+            path: responsePath,
+            responseHeaders: tab.response.responseHeaders || {}
+          },
+          section: 'response'
+        };
+        setStandaloneBodyViewer(
+          'sendResBody',
+          tab.response.body || tab.response.bodyText || '',
+          tab.response.contentType || 'text/plain',
+          'sendResBodyMode',
+          tab.response.mode,
+          responseContext
+        );
         // Hide "View in traffic" when restoring tab (no synthetic entry linkage)
         const viewLink = document.getElementById('sendViewInTraffic');
         if (viewLink) viewLink.style.display = 'none';
       } else {
         if (resEl) resEl.style.display = 'none';
         if (emptyEl) emptyEl.style.display = 'flex';
+        disposeBodyEditor('sendResBody-monaco');
+        delete standaloneBodyViewers.sendResBody;
+        const modeSelect = document.getElementById('sendResBodyMode');
+        if (modeSelect) modeSelect.style.display = 'none';
         const viewLink = document.getElementById('sendViewInTraffic');
         if (viewLink) viewLink.style.display = 'none';
       }
@@ -6018,8 +6687,6 @@
         const resCt = data.headers?.['content-type'] || '';
         const modes = getBodyViewModes(data.body, resCt);
         const defaultMode = modes[0]?.value || 'text';
-        const bodyHtml = formatBodyAs(data.body, resCt, defaultMode);
-        const bodyText = tryPrettyJson(data.body);
         const duration = data.duration + 'ms';
 
         document.getElementById('sendResponse').style.display = 'block';
@@ -6027,7 +6694,6 @@
         document.getElementById('sendResStatus').innerHTML = statusHtml;
         document.getElementById('sendResDuration').textContent = duration;
         document.getElementById('sendResHeaders').innerHTML = headersHtml;
-        document.getElementById('sendResBody').innerHTML = bodyHtml;
 
         // Add to traffic log as synthetic entry
         const syntheticReq = {
@@ -6048,6 +6714,7 @@
           timestamp: Date.now(),
           source: 'Send'
         };
+        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, { request: syntheticReq, section: 'response' });
         addRequest(syntheticReq);
 
         // Show "View in traffic" link
@@ -6064,7 +6731,7 @@
         // Save response to current tab
         const currentTab = sendTabs.find(t => t.id === activeSendTab);
         if (currentTab) {
-          currentTab.response = { statusHtml, headersHtml, bodyHtml, bodyText, duration };
+          currentTab.response = { statusHtml, headersHtml, responseHeaders: data.headers || {}, body: data.body || '', contentType: resCt, mode: defaultMode, duration, url, method };
         }
         saveSendTabState();
         renderSendTabs();
@@ -6113,8 +6780,11 @@
         const res = await fetch(API_BASE + '/api/ui-settings');
         const data = await res.json();
         hideTunnelRequests = data.hideTunnelRequests !== false;
+        filterSafeFonts = data.filterSafeFonts === true;
         const toggle = document.getElementById('hideTunnelRequestsToggle');
         if (toggle) toggle.checked = hideTunnelRequests;
+        const fontsToggle = document.getElementById('filterSafeFontsToggle');
+        if (fontsToggle) fontsToggle.checked = filterSafeFonts;
         applyFilter();
       } catch (e) {
         console.error('[Error]', e.message);
@@ -6128,7 +6798,22 @@
         await fetch(API_BASE + '/api/ui-settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hideTunnelRequests })
+          body: JSON.stringify({ hideTunnelRequests, filterSafeFonts })
+        });
+        toast('Traffic display setting saved', 'success');
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+      }
+    }
+
+    async function saveFilterSafeFonts(enabled) {
+      filterSafeFonts = !!enabled;
+      applyFilter();
+      try {
+        await fetch(API_BASE + '/api/ui-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hideTunnelRequests, filterSafeFonts })
         });
         toast('Traffic display setting saved', 'success');
       } catch (err) {

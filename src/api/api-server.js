@@ -233,9 +233,11 @@ print(json.dumps({"providers": get_proxy_providers()}))
 
   _getHarExportTraffic() {
     const hideTunnelRequests = this.settings?.get('hideTunnelRequests', true) !== false;
+    const filterSafeFonts = this.settings?.get('filterSafeFonts', false) === true;
     return this.trafficLog.filter(req => {
       if (req?.protocol === 'ws-frame') return false;
       if (hideTunnelRequests && this._isTunnelRequest(req)) return false;
+      if (filterSafeFonts && ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase())) return false;
       return true;
     });
   }
@@ -497,15 +499,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.get('/api/ui-settings', (req, res) => {
+      const filterSafeFonts = this.settings?.get('filterSafeFonts', false) === true;
+      this.proxy.filterSafeFonts = filterSafeFonts;
       res.json({
-        hideTunnelRequests: this.settings?.get('hideTunnelRequests', true) !== false
+        hideTunnelRequests: this.settings?.get('hideTunnelRequests', true) !== false,
+        filterSafeFonts
       });
     });
 
     router.post('/api/ui-settings', (req, res) => {
-      const hideTunnelRequests = req.body?.hideTunnelRequests !== false;
+      const hideTunnelRequests = Object.prototype.hasOwnProperty.call(req.body || {}, 'hideTunnelRequests')
+        ? req.body.hideTunnelRequests !== false
+        : this.settings?.get('hideTunnelRequests', true) !== false;
+      const filterSafeFonts = Object.prototype.hasOwnProperty.call(req.body || {}, 'filterSafeFonts')
+        ? req.body.filterSafeFonts === true
+        : this.settings?.get('filterSafeFonts', false) === true;
       this.settings?.set('hideTunnelRequests', hideTunnelRequests);
-      res.json({ success: true, hideTunnelRequests });
+      this.settings?.set('filterSafeFonts', filterSafeFonts);
+      this.proxy.filterSafeFonts = filterSafeFonts;
+      res.json({ success: true, hideTunnelRequests, filterSafeFonts });
     });
 
     // Proxy stats
