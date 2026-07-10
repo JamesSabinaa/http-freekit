@@ -810,16 +810,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Move a rule into a group
     router.post('/api/mock-rules/move-to-group', (req, res) => {
       const { ruleId, groupId } = req.body;
+      if (ruleId === groupId) {
+        return res.status(400).json({ error: 'A group cannot be moved into itself' });
+      }
+      const group = this.proxy.mockRules.find(r => r.id === groupId && r.type === 'group');
+      if (!group) return res.status(404).json({ error: 'Group not found' });
+
       // Find and remove the rule from its current location
       const rule = this._removeRuleById(ruleId);
       if (!rule) return res.status(404).json({ error: 'Rule not found' });
-      // Find the group and add the rule
-      const group = this.proxy.mockRules.find(r => r.id === groupId && r.type === 'group');
-      if (!group) {
-        // Put the rule back at top level if group not found
-        this.proxy.mockRules.push(rule);
-        return res.status(404).json({ error: 'Group not found' });
-      }
       group.items.push(rule);
       this._persistMockRules();
       res.json({ success: true });
@@ -841,6 +840,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const asInt = parseInt(param);
       if (!isNaN(asInt) && String(asInt) === param && asInt >= 0) {
         // Legacy: delete by index
+        if (asInt >= this.proxy.mockRules.length) {
+          return res.status(404).json({ error: 'Rule not found' });
+        }
         this.proxy.removeMockRule(asInt);
       } else {
         // New: delete by ID
