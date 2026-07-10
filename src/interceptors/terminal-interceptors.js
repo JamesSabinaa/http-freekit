@@ -1,5 +1,25 @@
 import { spawn } from 'child_process';
 
+function spawnDetached(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    const onSpawn = () => {
+      child.removeListener('error', onError);
+      resolve(child);
+    };
+    const onError = (err) => {
+      child.removeListener('spawn', onSpawn);
+      reject(err);
+    };
+    child.once('spawn', onSpawn);
+    child.once('error', onError);
+  });
+}
+
+function isProcessRunning(proc) {
+  return proc && !proc.killed && proc.exitCode === null && proc.signalCode === null;
+}
+
 export class FreshTerminalInterceptor {
   constructor() {
     this.id = 'fresh-terminal';
@@ -14,7 +34,7 @@ export class FreshTerminalInterceptor {
   }
 
   async isActive() {
-    return this.processes.some(p => !p.killed);
+    return this.processes.some(isProcessRunning);
   }
 
   async activate(proxyPort) {
@@ -48,7 +68,7 @@ export class FreshTerminalInterceptor {
 
       for (const terminal of terminals) {
         try {
-          proc = spawn(terminal.cmd, terminal.args, {
+          proc = await spawnDetached(terminal.cmd, terminal.args, {
             detached: true,
             stdio: 'ignore',
             env
@@ -62,7 +82,7 @@ export class FreshTerminalInterceptor {
     } else if (platform === 'darwin') {
       // macOS: open Terminal.app
       const script = `tell application "Terminal" to do script "export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS='${certPath}' NODE_TLS_REJECT_UNAUTHORIZED=0; echo 'HTTP FreeKit proxy active'"`;
-      proc = spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore', env });
+      proc = await spawnDetached('osascript', ['-e', script], { detached: true, stdio: 'ignore', env });
       proc.unref();
     } else {
       // Linux: try common terminals
@@ -74,7 +94,7 @@ export class FreshTerminalInterceptor {
 
       for (const terminal of terminals) {
         try {
-          proc = spawn(terminal.cmd, terminal.args, { detached: true, stdio: 'ignore', env });
+          proc = await spawnDetached(terminal.cmd, terminal.args, { detached: true, stdio: 'ignore', env });
           proc.unref();
           break;
         } catch {
@@ -91,7 +111,13 @@ export class FreshTerminalInterceptor {
     this.active = true;
 
     proc.on('exit', () => {
-      this.processes = this.processes.filter(p => !p.killed);
+      this.processes = this.processes.filter(p => p !== proc);
+      if (this.processes.length === 0) this.active = false;
+    });
+
+    proc.on('error', (err) => {
+      console.error('[Interceptor] Fresh terminal error:', err.message);
+      this.processes = this.processes.filter(p => p !== proc);
       if (this.processes.length === 0) this.active = false;
     });
 

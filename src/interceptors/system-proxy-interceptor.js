@@ -1,4 +1,6 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+
+const INTERNET_SETTINGS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
 export class SystemProxyInterceptor {
   constructor() {
@@ -16,15 +18,69 @@ export class SystemProxyInterceptor {
     return this.active;
   }
 
+  _readCurrentSettings() {
+    let enabled = false;
+    let server = null;
+
+    try {
+      const output = execFileSync('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyEnable'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      const match = output.match(/ProxyEnable\s+REG_DWORD\s+(\S+)/i);
+      enabled = match ? parseInt(match[1], 0) !== 0 : false;
+    } catch {}
+
+    try {
+      const output = execFileSync('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      const match = output.match(/^\s*ProxyServer\s+REG_SZ\s+(.*)$/im);
+      server = match ? match[1].trim() : null;
+    } catch {}
+
+    return { enabled, server };
+  }
+
+  _setRegistryValue(name, type, value) {
+    execFileSync('reg', [
+      'add', INTERNET_SETTINGS_KEY,
+      '/v', name,
+      '/t', type,
+      '/d', String(value),
+      '/f'
+    ], { stdio: 'ignore', timeout: 5000 });
+  }
+
+  _restorePreviousSettings() {
+    const previous = this.previousSettings;
+    if (previous?.server != null) {
+      this._setRegistryValue('ProxyServer', 'REG_SZ', previous.server);
+    } else {
+      try {
+        execFileSync('reg', ['delete', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer', '/f'], {
+          stdio: 'ignore',
+          timeout: 5000
+        });
+      } catch {}
+    }
+    this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
+    this.previousSettings = null;
+  }
+
   async activate(proxyPort) {
     if (process.platform === 'win32') {
       try {
-        execSync(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f`, { stdio: 'ignore' });
-        execSync(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /t REG_SZ /d "127.0.0.1:${proxyPort}" /f`, { stdio: 'ignore' });
+        if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
+        this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
+        this._setRegistryValue('ProxyServer', 'REG_SZ', `127.0.0.1:${proxyPort}`);
         this.active = true;
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
         return { success: true };
       } catch (err) {
+        try { this._restorePreviousSettings(); } catch {}
+        this.active = false;
         throw new Error(`Failed to set system proxy: ${err.message}`);
       }
     }
@@ -33,10 +89,11 @@ export class SystemProxyInterceptor {
 
   async deactivate() {
     if (process.platform === 'win32') {
+      if (!this.active && !this.previousSettings) return;
       try {
-        execSync(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f`, { stdio: 'ignore' });
+        this._restorePreviousSettings();
         this.active = false;
-        console.log('[Interceptor] System proxy disabled');
+        console.log('[Interceptor] Previous system proxy settings restored');
       } catch (err) {
         console.error('[Interceptor] Failed to disable system proxy:', err.message);
       }
