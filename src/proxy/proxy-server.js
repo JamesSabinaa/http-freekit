@@ -3605,8 +3605,33 @@ export class ProxyServer {
       target.includes('optimizationguide')
     )) return true;
 
+    if (target === 'bam.nr-data.net' && path.startsWith('/jserrors')) return true;
+
+    if (target === 'android.clients.google.com' && (
+      path.startsWith('/c2dm/register3') ||
+      path.startsWith('/checkin')
+    )) return true;
+
+    if (target === 'clients2.googleusercontent.com' && path.startsWith('/crx/blobs')) return true;
+    if (target === 'accounts.google.com' && path.startsWith('/listaccounts')) return true;
+    if (target === 'clientservices.googleapis.com' && (
+      path.startsWith('/chrome-variations/seed') ||
+      path.startsWith('/uma/v2')
+    )) return true;
+    if (target === 'www.googleapis.com' && path.startsWith('/chromewebstore/v1.1/items/verify')) return true;
+    if (target === 'chromewebstore.googleapis.com' &&
+      path.startsWith('/v2/items/-/storemetadata:batchget')
+    ) return true;
+    if (target === 'www.gstatic.com' && path.startsWith('/images/branding/googlelogo')) return true;
+    if (target === 'play.google.com' && (path === '/log' || path.startsWith('/log?'))) return true;
+    if (target === 'ogads-pa.clients6.google.com' &&
+      path.startsWith('/$rpc/google.internal.onegoogle.asyncdata.v1.asyncdataservice/getasyncdata')
+    ) return true;
+
     if (target === 'www.google.com' && (
       path.startsWith('/async/folae') ||
+      path.startsWith('/async/ddljson') ||
+      path.startsWith('/async/newtab_ogb') ||
       path.startsWith('/complete/search') ||
       path.startsWith('/gen_204') ||
       path.startsWith('/chrome/')
