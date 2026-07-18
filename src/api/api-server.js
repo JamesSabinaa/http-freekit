@@ -141,6 +141,11 @@ print(json.dumps({"providers": get_proxy_providers()}))
     const reason = this._getAutoRotateProxyReason(data);
     if (!config.enabled || !this.proxy.upstreamProxy || !reason) return;
 
+    const currentGeneration = this.proxy.getUpstreamProxyGeneration?.();
+    if (data?.upstreamProxyGeneration !== undefined &&
+        currentGeneration !== undefined &&
+        data.upstreamProxyGeneration !== currentGeneration) return;
+
     const now = Date.now();
     if (this._autoRotateInFlight || now - this._lastAutoRotateAt < 10000) return;
 
@@ -175,9 +180,19 @@ print(json.dumps({"providers": get_proxy_providers()}))
     const config = this._getAutoRotateProxyConfig();
     if (!config.enabled || !this.proxy.upstreamProxy) return false;
 
+    const failedGeneration = event.proxyGeneration;
+    const currentGeneration = this.proxy.getUpstreamProxyGeneration?.();
+    if (failedGeneration !== undefined &&
+        currentGeneration !== undefined &&
+        failedGeneration !== currentGeneration) return true;
+
     if (this._autoRotateInFlight && this._autoRotatePromise) {
-      return await this._autoRotatePromise;
+      const rotated = await this._autoRotatePromise;
+      const latestGeneration = this.proxy.getUpstreamProxyGeneration?.();
+      return rotated || (failedGeneration !== undefined && latestGeneration !== failedGeneration);
     }
+
+    if (Date.now() - this._lastAutoRotateAt < 10000) return false;
 
     this._autoRotateInFlight = true;
     this._lastAutoRotateAt = Date.now();
@@ -222,7 +237,14 @@ print(json.dumps({"providers": get_proxy_providers()}))
     if (data?.statusCode === 410) return '410 Gone';
 
     const errorText = `${data?.error || ''}\n${data?.responseBody || ''}\n${data?.statusMessage || ''}`;
-    if (/request timeout after 30s/i.test(errorText)) return 'request timeout';
+    if (/request timeout after 30s|upstream (?:connection|response) timeout/i.test(errorText)) {
+      return 'request timeout';
+    }
+    if (['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH',
+      'ENETDOWN', 'ENETUNREACH', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN'].includes(data?.errorCode) ||
+      /client network socket disconnected before secure tls connection was established|socket hang up/i.test(errorText)) {
+      return 'proxy connection failure';
+    }
 
     return null;
   }

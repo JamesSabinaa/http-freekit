@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "node --test",
     "electron": "electron .",
     "generate-icons": "node scripts/generate-icons.js",
     "build:win": "node --no-deprecation ./node_modules/electron-builder/cli.js --win --config electron-builder.config.cjs",

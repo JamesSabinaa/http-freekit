@@ -13,6 +13,18 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { Duplex } from 'stream';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 
+const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN'
+]);
+
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
@@ -40,17 +52,26 @@ export class ProxyServer {
     this._h2Sessions = new Map();
     // Set of origins known not to support h2: Set<"host:port">
     this._h2Blacklist = new Set();
+    this._upstreamAgent = null;
+    this._upstreamAgentKey = null;
+    this._upstreamProxyGeneration = 0;
+    this._upstreamConnectTimeoutMs = options.upstreamConnectTimeoutMs ?? 15000;
+    this._upstreamIdleTimeoutMs = options.upstreamIdleTimeoutMs ?? 30000;
+    this._upstreamRetryDelayMs = options.upstreamRetryDelayMs ?? 200;
   }
 
   async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
     if (!this.upstreamProxy || context.attempt > 0) return false;
     if (proxyRes?.statusCode !== 410) return false;
     if (!this._canSafelyReplayRequest(context.method)) return false;
+    if (context.proxyGeneration !== undefined &&
+        context.proxyGeneration !== this._upstreamProxyGeneration) return true;
     try {
       return await this.onUpstreamProxyRetry({
         reason: '410 Gone',
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage,
+        proxyGeneration: context.proxyGeneration,
         url: context.url,
         method: context.method,
         host: context.host
@@ -65,6 +86,127 @@ export class ProxyServer {
     return ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(String(method || '').toUpperCase());
   }
 
+  _getUpstreamErrorCode(err) {
+    return err?.code || err?.cause?.code || null;
+  }
+
+  _getUpstreamErrorPhase(err) {
+    if (err?.upstreamPhase) return err.upstreamPhase;
+    const code = this._getUpstreamErrorCode(err);
+    const message = String(err?.message || '');
+    if (code === 'EAI_AGAIN' || code === 'ENOTFOUND') return 'dns';
+    if (/before secure tls connection|tls|ssl|handshake/i.test(message)) return 'tls-handshake';
+    if (code === 'ETIMEDOUT' || /timeout/i.test(message)) return 'timeout';
+    if (code && RETRYABLE_UPSTREAM_ERROR_CODES.has(code)) return 'connect';
+    return 'upstream';
+  }
+
+  _isRetryableUpstreamError(err) {
+    const code = this._getUpstreamErrorCode(err);
+    if (code && RETRYABLE_UPSTREAM_ERROR_CODES.has(code)) return true;
+    return /client network socket disconnected before secure tls connection was established|socket hang up|upstream (?:connection|response) (?:timeout|aborted)|request timeout after \d+(?:\.\d+)?s/i
+      .test(String(err?.message || ''));
+  }
+
+  async _shouldRetryAfterUpstreamError(err, context = {}) {
+    if (!this.upstreamProxy || context.attempt > 0) return false;
+    if (!this._canSafelyReplayRequest(context.method)) return false;
+    if (!this._isRetryableUpstreamError(err)) return false;
+
+    const failedGeneration = context.proxyGeneration;
+    if (failedGeneration !== undefined && failedGeneration !== this._upstreamProxyGeneration) {
+      return true;
+    }
+
+    try {
+      await this.onUpstreamProxyRetry({
+        reason: err?.message || 'Transient upstream proxy error',
+        errorCode: this._getUpstreamErrorCode(err),
+        errorPhase: this._getUpstreamErrorPhase(err),
+        proxyGeneration: failedGeneration,
+        url: context.url,
+        method: context.method,
+        host: context.host
+      });
+    } catch (hookErr) {
+      console.error('[Proxy] Upstream proxy retry hook failed:', hookErr.message);
+    }
+
+    if (this._upstreamRetryDelayMs > 0) {
+      const jitter = Math.floor(Math.random() * Math.max(1, this._upstreamRetryDelayMs / 2));
+      await new Promise(resolve => setTimeout(resolve, this._upstreamRetryDelayMs + jitter));
+    }
+    return true;
+  }
+
+  _configureUpstreamRequest(req) {
+    let connectTimer = null;
+    const clearConnectTimer = () => {
+      if (!connectTimer) return;
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    };
+
+    if (this._upstreamConnectTimeoutMs > 0) {
+      connectTimer = setTimeout(() => {
+        const err = new Error(`Upstream connection timeout after ${this._upstreamConnectTimeoutMs / 1000}s`);
+        err.code = 'ETIMEDOUT';
+        err.upstreamPhase = 'connect';
+        req.destroy(err);
+      }, this._upstreamConnectTimeoutMs);
+      connectTimer.unref?.();
+    }
+
+    req.once('response', clearConnectTimer);
+    req.once('upgrade', clearConnectTimer);
+    req.once('error', clearConnectTimer);
+    req.once('close', clearConnectTimer);
+    req.once('socket', (socket) => {
+      const connected = socket.encrypted ? !socket.secureConnecting : !socket.connecting;
+      if (connected) {
+        clearConnectTimer();
+      } else {
+        socket.once(socket.encrypted ? 'secureConnect' : 'connect', clearConnectTimer);
+      }
+    });
+
+    if (this._upstreamIdleTimeoutMs > 0) {
+      req.setTimeout(this._upstreamIdleTimeoutMs, () => {
+        const err = new Error(`Upstream response timeout after ${this._upstreamIdleTimeoutMs / 1000}s`);
+        err.code = 'ETIMEDOUT';
+        err.upstreamPhase = 'response';
+        req.destroy(err);
+      });
+    }
+
+    req.once('proxyConnect', (response) => {
+      req._upstreamProxyConnect = {
+        statusCode: response?.statusCode || null,
+        statusText: response?.statusText || null
+      };
+    });
+  }
+
+  _forwardUpstreamResponseErrors(response, request) {
+    response.once('aborted', () => {
+      const err = new Error('Upstream response aborted');
+      err.code = 'ECONNRESET';
+      err.upstreamPhase = 'response';
+      request.destroy(err);
+    });
+    response.once('error', (err) => request.destroy(err));
+  }
+
+  _destroyUpstreamAgent() {
+    this._upstreamAgent?.destroy?.();
+    this._upstreamAgent = null;
+    this._upstreamAgentKey = null;
+  }
+
+  getUpstreamProxyGeneration() {
+    return this._upstreamProxyGeneration;
+  }
+
   _setContentLength(headers, length) {
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase() === 'content-length') delete headers[key];
@@ -74,6 +216,8 @@ export class ProxyServer {
 
 
   setUpstreamProxy(config) {
+    this._destroyUpstreamAgent();
+    this._upstreamProxyGeneration++;
     if (!config || !config.host) {
       this.upstreamProxy = null;
       console.log('[Proxy] Upstream proxy disabled');
@@ -212,6 +356,7 @@ export class ProxyServer {
   stop() {
     return new Promise((resolve) => {
       this._closeAllH2Sessions();
+      this._destroyUpstreamAgent();
       if (!this.server) return resolve();
       for (const socket of this.activeConnections) {
         socket.destroy();
@@ -546,39 +691,85 @@ export class ProxyServer {
 
       const connectStart = Date.now();
       const sendProxyRequest = (attempt = 0) => {
-      const options = buildOptions();
-      const requestLib = this.upstreamProxy?.type === 'https' ? https : http;
-      if (requestLib === https) {
-        options.rejectUnauthorized = false;
-      }
-      const proxyReq = requestLib.request(options, (proxyRes) => {
-        const responseBody = [];
-        proxyRes.on('data', chunk => responseBody.push(chunk));
-        proxyRes.on('end', async () => {
-          const resBody = Buffer.concat(responseBody);
-          if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
-            attempt, method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname
+        const proxyGeneration = this._upstreamProxyGeneration;
+        const options = buildOptions();
+        const requestLib = this.upstreamProxy?.type === 'https' ? https : http;
+        if (requestLib === https) {
+          options.rejectUnauthorized = false;
+        }
+        const proxyReq = requestLib.request(options, (proxyRes) => {
+          this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
+          const responseBody = [];
+          proxyRes.on('data', chunk => responseBody.push(chunk));
+          proxyRes.on('end', async () => {
+            const resBody = Buffer.concat(responseBody);
+            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+              attempt, proxyGeneration, method: clientReq.method,
+              url: targetUrl.href, host: targetUrl.hostname
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+
+            const duration = Date.now() - startTime;
+            const timing = {
+              total: Date.now() - startTime,
+              waiting: Date.now() - connectStart // time waiting for response
+            };
+            const trailers = proxyRes.trailers;
+
+            // Strip proxy hop-by-hop headers from responses forwarded to the browser.
+            const resHeaders = { ...proxyRes.headers };
+            if (proxyRes.statusCode !== 407) {
+              delete resHeaders['proxy-authenticate'];
+            }
+            delete resHeaders['proxy-authorization'];
+            delete resHeaders['proxy-connection'];
+            clientRes.writeHead(proxyRes.statusCode, resHeaders);
+            clientRes.end(resBody);
+
+            this._emitRequestUpdate({
+              id: requestId,
+              protocol: 'http',
+              method: clientReq.method,
+              url: targetUrl.href,
+              host: targetUrl.hostname,
+              path: targetUrl.pathname + targetUrl.search,
+              requestHeaders: clientReq.headers,
+              requestBody: this._safeBodyString(body),
+              requestBodySize: body.length,
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage,
+              responseHeaders: proxyRes.headers,
+              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+              responseBodySize: resBody.length,
+              duration,
+              timing,
+              timestamp: startTime,
+              source: 'proxy',
+              tls: null,
+              remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
+              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
+            });
+          });
+        });
+        proxyReq._upstreamProxyGeneration = proxyGeneration;
+        this._configureUpstreamRequest(proxyReq);
+
+        proxyReq.once('error', async (err) => {
+          if (await this._shouldRetryAfterUpstreamError(err, {
+            attempt, proxyGeneration, method: clientReq.method,
+            url: targetUrl.href, host: targetUrl.hostname
           })) {
             sendProxyRequest(attempt + 1);
             return;
           }
 
           const duration = Date.now() - startTime;
-          const timing = {
-            total: Date.now() - startTime,
-            waiting: Date.now() - connectStart // time waiting for response
-          };
-          const trailers = proxyRes.trailers;
-
-          // Strip proxy hop-by-hop headers from responses forwarded to the browser.
-          const resHeaders = { ...proxyRes.headers };
-          if (proxyRes.statusCode !== 407) {
-            delete resHeaders['proxy-authenticate'];
-          }
-          delete resHeaders['proxy-authorization'];
-          delete resHeaders['proxy-connection'];
-          clientRes.writeHead(proxyRes.statusCode, resHeaders);
-          clientRes.end(resBody);
+          try {
+            clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
+            clientRes.end(`Proxy Error: ${err.message}`);
+          } catch { /* client gone */ }
 
           this._emitRequestUpdate({
             id: requestId,
@@ -590,56 +781,25 @@ export class ProxyServer {
             requestHeaders: clientReq.headers,
             requestBody: this._safeBodyString(body),
             requestBodySize: body.length,
-            statusCode: proxyRes.statusCode,
-            statusMessage: proxyRes.statusMessage,
-            responseHeaders: proxyRes.headers,
-            responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
-            responseBodySize: resBody.length,
+            statusCode: 502,
+            statusMessage: 'Bad Gateway',
+            responseHeaders: {},
+            responseBody: `Proxy Error: ${err.message}`,
+            responseBodySize: 0,
             duration,
-            timing,
             timestamp: startTime,
+            error: err.message,
+            errorCode: this._getUpstreamErrorCode(err),
+            errorPhase: this._getUpstreamErrorPhase(err),
+            upstreamProxyGeneration: proxyGeneration,
+            upstreamProxyConnect: proxyReq._upstreamProxyConnect || null,
             source: 'proxy',
             tls: null,
-            remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
-            trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
+            remote: null
           });
         });
-      });
 
-      proxyReq.setTimeout(30000, () => {
-        proxyReq.destroy(new Error('Request timeout after 30s'));
-      });
-
-      proxyReq.on('error', (err) => {
-        const duration = Date.now() - startTime;
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
-        clientRes.end(`Proxy Error: ${err.message}`);
-
-        this._emitRequestUpdate({
-          id: requestId,
-          protocol: 'http',
-          method: clientReq.method,
-          url: targetUrl.href,
-          host: targetUrl.hostname,
-          path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers,
-          requestBody: this._safeBodyString(body),
-          requestBodySize: body.length,
-          statusCode: 502,
-          statusMessage: 'Bad Gateway',
-          responseHeaders: {},
-          responseBody: `Proxy Error: ${err.message}`,
-          responseBodySize: 0,
-          duration,
-          timestamp: startTime,
-          error: err.message,
-          source: 'proxy',
-          tls: null,
-          remote: null
-        });
-      });
-
-      proxyReq.end(body);
+        proxyReq.end(body);
       };
 
       sendProxyRequest();
@@ -1306,7 +1466,7 @@ export class ProxyServer {
           });
         };
 
-        const emitError = (err) => {
+        const emitError = (err, request) => {
           const duration = Date.now() - startTime;
           this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
@@ -1314,7 +1474,12 @@ export class ProxyServer {
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
-            duration, timestamp: startTime, error: err.message, source: 'proxy',
+            duration, timestamp: startTime, error: err.message,
+            errorCode: this._getUpstreamErrorCode(err),
+            errorPhase: this._getUpstreamErrorPhase(err),
+            upstreamProxyGeneration: request?._upstreamProxyGeneration,
+            upstreamProxyConnect: request?._upstreamProxyConnect || null,
+            source: 'proxy',
             tls: tlsDetails, remote: null
           });
         };
@@ -1343,13 +1508,14 @@ export class ProxyServer {
         }
 
         // Fallback: HTTPS/1.1
-        const handleResponse = (attempt) => (proxyRes) => {
+        const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
           proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
-              attempt, method: req.method, url: fullUrl, host: hostname
+              attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
             })) {
               sendProxyRequest(attempt + 1);
               return;
@@ -1365,29 +1531,41 @@ export class ProxyServer {
           });
         };
 
-        const handleError = (err) => {
+        const handleError = (err, request) => {
           try {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
             res.end(`Proxy Error: ${err.message}`);
           } catch (e) { /* client gone */ }
-          emitError(err);
+          emitError(err, request);
         };
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          const proxyGeneration = this._upstreamProxyGeneration;
           if (this.upstreamProxy) {
             const agent = this._getUpstreamAgent();
             proxyReq = https.request({
               ...proxyOpts,
               agent,
               insecureHTTPParser: true
-            }, handleResponse(attempt));
+            }, handleResponse(attempt, proxyGeneration));
           } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt));
+            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration));
           }
 
-          proxyReq.on('error', handleError);
-          proxyReq.end(body);
+          const attemptReq = proxyReq;
+          attemptReq._upstreamProxyGeneration = proxyGeneration;
+          this._configureUpstreamRequest(attemptReq);
+          attemptReq.once('error', async (err) => {
+            if (await this._shouldRetryAfterUpstreamError(err, {
+              attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+            handleError(err, attemptReq);
+          });
+          attemptReq.end(body);
         };
 
         sendProxyRequest();
@@ -1571,7 +1749,7 @@ export class ProxyServer {
           });
         };
 
-        const emitH2Error = (err) => {
+        const emitH2Error = (err, request) => {
           const duration = Date.now() - startTime;
           this._emitRequestUpdate({
             id: requestId, protocol: 'h2', method, url: fullUrl,
@@ -1580,6 +1758,10 @@ export class ProxyServer {
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: 'Proxy Error: ' + err.message, responseBodySize: 0,
             duration, timestamp: startTime, error: err.message,
+            errorCode: this._getUpstreamErrorCode(err),
+            errorPhase: this._getUpstreamErrorPhase(err),
+            upstreamProxyGeneration: request?._upstreamProxyGeneration,
+            upstreamProxyConnect: request?._upstreamProxyConnect || null,
             source, tls: tlsDetails, remote: null
           });
         };
@@ -1621,13 +1803,14 @@ export class ProxyServer {
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
-        const handleResponse = (attempt) => (proxyRes) => {
+        const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
           proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
-              attempt, method, url: fullUrl, host: authority
+              attempt, proxyGeneration, method, url: fullUrl, host: authority
             })) {
               sendProxyRequest(attempt + 1);
               return;
@@ -1653,18 +1836,19 @@ export class ProxyServer {
           });
         };
 
-        const handleError = (err) => {
+        const handleError = (err, request) => {
           try {
             if (!stream.destroyed && !stream.closed) {
               stream.respond({ ':status': 502 });
               stream.end('Proxy Error: ' + err.message);
             }
           } catch (e) { /* stream already closed */ }
-          emitH2Error(err);
+          emitH2Error(err, request);
         };
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          const proxyGeneration = this._upstreamProxyGeneration;
           if (this.upstreamProxy) {
             try {
               const agent = this._getUpstreamAgent();
@@ -1672,20 +1856,28 @@ export class ProxyServer {
                 ...proxyOpts,
                 agent,
                 insecureHTTPParser: true
-              }, handleResponse(attempt));
+              }, handleResponse(attempt, proxyGeneration));
             } catch (err) {
-              handleError(err);
+              handleError(err, null);
               return;
             }
           } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt));
+            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration));
           }
 
-          proxyReq.on('error', handleError);
-          proxyReq.setTimeout(30000, () => {
-            proxyReq.destroy(new Error('Request timeout after 30s'));
+          const attemptReq = proxyReq;
+          attemptReq._upstreamProxyGeneration = proxyGeneration;
+          this._configureUpstreamRequest(attemptReq);
+          attemptReq.once('error', async (err) => {
+            if (await this._shouldRetryAfterUpstreamError(err, {
+              attempt, proxyGeneration, method, url: fullUrl, host: authority
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+            handleError(err, attemptReq);
           });
-          proxyReq.end(body);
+          attemptReq.end(body);
         };
 
         sendProxyRequest();
@@ -1796,7 +1988,7 @@ export class ProxyServer {
           });
         };
 
-        const emitH1Error = (err) => {
+        const emitH1Error = (err, request) => {
           const duration = Date.now() - startTime;
           this._emitRequestUpdate({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
@@ -1804,7 +1996,12 @@ export class ProxyServer {
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
-            duration, timestamp: startTime, error: err.message, source: 'proxy',
+            duration, timestamp: startTime, error: err.message,
+            errorCode: this._getUpstreamErrorCode(err),
+            errorPhase: this._getUpstreamErrorPhase(err),
+            upstreamProxyGeneration: request?._upstreamProxyGeneration,
+            upstreamProxyConnect: request?._upstreamProxyConnect || null,
+            source: 'proxy',
             tls: tlsDetails, remote: null
           });
         };
@@ -1843,13 +2040,14 @@ export class ProxyServer {
           ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
         };
 
-        const handleResponse = (attempt) => (proxyRes) => {
+        const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
           proxyRes.on('end', async () => {
             const resBody = Buffer.concat(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
-              attempt, method: req.method, url: fullUrl, host: hostname
+              attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
             })) {
               sendProxyRequest(attempt + 1);
               return;
@@ -1864,29 +2062,41 @@ export class ProxyServer {
           });
         };
 
-        const handleError = (err) => {
+        const handleError = (err, request) => {
           try {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
             res.end(`Proxy Error: ${err.message}`);
           } catch (e) { /* client gone */ }
-          emitH1Error(err);
+          emitH1Error(err, request);
         };
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          const proxyGeneration = this._upstreamProxyGeneration;
           if (this.upstreamProxy) {
             const agent = this._getUpstreamAgent();
             proxyReq = https.request({
               ...proxyOpts,
               agent,
               insecureHTTPParser: true
-            }, handleResponse(attempt));
+            }, handleResponse(attempt, proxyGeneration));
           } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt));
+            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration));
           }
 
-          proxyReq.on('error', handleError);
-          proxyReq.end(body);
+          const attemptReq = proxyReq;
+          attemptReq._upstreamProxyGeneration = proxyGeneration;
+          this._configureUpstreamRequest(attemptReq);
+          attemptReq.once('error', async (err) => {
+            if (await this._shouldRetryAfterUpstreamError(err, {
+              attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
+            })) {
+              sendProxyRequest(attempt + 1);
+              return;
+            }
+            handleError(err, attemptReq);
+          });
+          attemptReq.end(body);
         };
 
         sendProxyRequest();
@@ -2839,10 +3049,31 @@ export class ProxyServer {
   // Matches HTTP Toolkit's approach: the agent opens the CONNECT tunnel and TLS-wraps the socket.
   _getUpstreamAgent() {
     const proxyUrl = this._getUpstreamProxyUrl();
-    if (this.upstreamProxy.type?.startsWith('socks')) {
-      return new SocksProxyAgent(proxyUrl);
+    const agentKey = `${this._upstreamProxyGeneration}:${proxyUrl}`;
+    if (this._upstreamAgent && this._upstreamAgentKey === agentKey) {
+      return this._upstreamAgent;
     }
-    return new HttpsProxyAgent(proxyUrl, { rejectUnauthorized: false });
+
+    this._destroyUpstreamAgent();
+    const agentOptions = {
+      keepAlive: true,
+      maxSockets: 64,
+      maxFreeSockets: 16,
+      scheduling: 'lifo'
+    };
+    if (this.upstreamProxy.type?.startsWith('socks')) {
+      this._upstreamAgent = new SocksProxyAgent(proxyUrl, {
+        ...agentOptions,
+        timeout: this._upstreamConnectTimeoutMs
+      });
+    } else {
+      this._upstreamAgent = new HttpsProxyAgent(proxyUrl, {
+        ...agentOptions,
+        rejectUnauthorized: false
+      });
+    }
+    this._upstreamAgentKey = agentKey;
+    return this._upstreamAgent;
   }
 
   // Whether the configured upstream proxy is a SOCKS proxy
@@ -2864,6 +3095,7 @@ export class ProxyServer {
         host: hostname,
         port: targetPort,
       },
+      timeout: this._upstreamConnectTimeoutMs,
     };
     if (proxy.auth) {
       const [userId, password] = proxy.auth.split(':');
