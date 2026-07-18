@@ -930,28 +930,7 @@ export class ProxyServer {
       socketForTls = this._createCapturingSocket(clientSocket, head);
     }
 
-    try {
-      const tlsServer = new tls.TLSSocket(socketForTls, {
-        isServer: true,
-        ...tlsOptions
-      });
-
-      // After TLS handshake, extract the captured ClientHello params
-      if (socketForTls._captured !== undefined) {
-        tlsServer.once('secure', () => {
-          const parsed = socketForTls._captured;
-          if (parsed) {
-            tlsServer._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
-          }
-        });
-      }
-
-      if (useHttp2) {
-        this._handleHttp2Connection(tlsServer, hostname, targetPort);
-      } else {
-        this._handleTlsConnection(tlsServer, hostname, targetPort);
-      }
-    } catch (err) {
+    const emitTlsHandshakeFailure = (err) => {
       clientSocket.destroy();
       this._emitRequest({
         id: uuidv4(),
@@ -976,6 +955,36 @@ export class ProxyServer {
         tls: null,
         remote: null
       });
+    };
+
+    if (useHttp2) {
+      try {
+        this._handleHttp2Connection(socketForTls, hostname, targetPort, tlsOptions);
+      } catch (err) {
+        emitTlsHandshakeFailure(err);
+      }
+      return;
+    }
+
+    try {
+      const tlsServer = new tls.TLSSocket(socketForTls, {
+        isServer: true,
+        ...tlsOptions
+      });
+
+      // After TLS handshake, extract the captured ClientHello params
+      if (socketForTls._captured !== undefined) {
+        tlsServer.once('secure', () => {
+          const parsed = socketForTls._captured;
+          if (parsed) {
+            tlsServer._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
+          }
+        });
+      }
+
+      this._handleTlsConnection(tlsServer, hostname, targetPort);
+    } catch (err) {
+      emitTlsHandshakeFailure(err);
     }
   }
 
@@ -1612,12 +1621,10 @@ export class ProxyServer {
     });
   }
 
-  _handleHttp2Connection(tlsSocket, hostname, targetPort) {
+  _handleHttp2Connection(socket, hostname, targetPort, tlsOptions) {
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
-    const tlsDetails = tlsSocket.getCipher ? {
-      cipher: tlsSocket.getCipher()?.name || null,
-      version: tlsSocket.getProtocol?.() || 'TLSv1.2'
-    } : null;
+    let tlsSocket = socket;
+    let tlsDetails = null;
 
     // Track whether any HTTP request is received on this connection
     let httpRequestReceived = false;
@@ -1640,10 +1647,25 @@ export class ProxyServer {
       }
     }, 5000);
 
-    tlsSocket.on('close', () => clearTimeout(tunnelTimer));
+    socket.on('close', () => clearTimeout(tunnelTimer));
 
-    // Create an HTTP/2 server that also handles HTTP/1.1 fallback via allowHTTP1
-    const h2Server = http2.createServer({ allowHTTP1: true });
+    // Let the HTTP/2 secure server own TLS & ALPN. It can then dispatch both
+    // HTTP/2 streams and HTTP/1.1 fallback requests on the injected socket.
+    const h2Server = http2.createSecureServer({
+      ...tlsOptions,
+      allowHTTP1: this.http2Enabled !== 'h2-only'
+    });
+    h2Server.on('secureConnection', (secureSocket) => {
+      tlsSocket = secureSocket;
+      tlsDetails = {
+        cipher: secureSocket.getCipher()?.name || null,
+        version: secureSocket.getProtocol?.() || 'TLSv1.2'
+      };
+      const parsed = socket._captured;
+      if (parsed) {
+        secureSocket._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
+      }
+    });
 
     // HTTP/2 streams — each stream is a separate request
     h2Server.on('stream', (stream, headers) => {
@@ -2105,22 +2127,28 @@ export class ProxyServer {
 
     h2Server.on('sessionError', (err) => {
       if (err.code === 'ECONNRESET' || err.code === 'EPIPE') return;
+      console.error(`[Proxy] HTTP/2 session error for ${hostname}:`, err.message);
     });
 
     h2Server.on('error', (err) => {
-      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED') return;
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED' ||
+          err.code === 'ERR_STREAM_DESTROYED' || err.message?.includes('stream was destroyed')) return;
+      console.error(`[Proxy] HTTP/2 server error for ${hostname}:`, err.message);
     });
 
-    // Feed the TLS socket into the h2 server — it handles both h2 and h1.1
-    h2Server.emit('connection', tlsSocket);
+    h2Server.emit('connection', socket);
 
-    tlsSocket.on('error', (err) => {
+    let tlsErrorEmitted = false;
+    const handleTlsSocketError = (err) => {
       if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED') return;
-      if (err.message?.includes('ECONNABORTED')) return;
+      if (err.code === 'ERR_STREAM_DESTROYED' || err.message?.includes('ECONNABORTED') ||
+          err.message?.includes('stream was destroyed')) return;
       if (err.message?.includes('ssl') || err.message?.includes('SSL') ||
           err.message?.includes('handshake') || err.message?.includes('HANDSHAKE') ||
           err.code === 'ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN' ||
           err.code === 'ERR_SSL_WRONG_VERSION_NUMBER') {
+        if (tlsErrorEmitted) return;
+        tlsErrorEmitted = true;
         this._emitRequest({
           id: uuidv4(),
           protocol: 'tls-error',
@@ -2147,7 +2175,9 @@ export class ProxyServer {
         return;
       }
       console.error(`[Proxy] TLS error for ${hostname}:`, err.message);
-    });
+    };
+    h2Server.on('tlsClientError', handleTlsSocketError);
+    socket.on('error', handleTlsSocketError);
   }
 
   // Handle mock responses for HTTP/2 streams
@@ -2864,7 +2894,13 @@ export class ProxyServer {
     const wrapper = new Duplex({
       read() { socket.resume(); },
       write(chunk, enc, cb) { socket.write(chunk, enc, cb); },
-      final(cb) { socket.end(cb); },
+      final(cb) {
+        if (socket.destroyed || socket.writableEnded) {
+          cb();
+          return;
+        }
+        socket.end(cb);
+      },
       destroy(err, cb) { socket.destroy(err); cb(err); }
     });
     wrapper._captured = captured
