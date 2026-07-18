@@ -138,6 +138,20 @@ test('classifies pre-TLS disconnects as retryable and records their phase', () =
   assert.equal(proxy._getUpstreamErrorPhase(err), 'tls-handshake');
 });
 
+test('suppresses UK domain reliability uploads only when hostname and path match', () => {
+  const proxy = new ProxyServer(null);
+  const traffic = {
+    source: 'Chrome',
+    protocol: 'https',
+    host: 'www.google.co.uk',
+    path: '/domainreliability/upload'
+  };
+
+  assert.equal(proxy._shouldSuppressTrafficLog(traffic), true);
+  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, path: '/search' }), false);
+  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host: 'example.co.uk' }), false);
+});
+
 test('reuses an upstream keep-alive agent until the proxy changes', () => {
   const proxy = new ProxyServer(null);
   proxy.setUpstreamProxy({ host: 'proxy-one.test', port: 8080, type: 'http' });
