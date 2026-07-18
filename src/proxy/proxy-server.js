@@ -3637,7 +3637,7 @@ export class ProxyServer {
       path.startsWith('/chrome/')
     )) return true;
 
-    if ((target === 'google.com' || target === 'www.google.com') &&
+    if ((target === 'google.com' || target === 'www.google.com' || target === 'google.co.uk') &&
       path.startsWith('/domainreliability/upload')
     ) return true;
 
