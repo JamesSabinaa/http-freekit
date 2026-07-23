@@ -23,6 +23,7 @@ export class ApiServer {
     this.clients = new Set();
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
+    this.authToken = options.authToken || null;
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
     this._autoRotateInFlight = false;
     this._autoRotatePromise = null;
@@ -758,6 +759,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         res.json({ success: true, ...(result || {}) });
       } catch (err) {
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Open a URL in an isolated proxied browser, launching it if necessary.
+    // The Electron build protects this action with its per-session token.
+    router.post('/api/interceptors/:id/open', async (req, res) => {
+      if (this.authToken && req.get('authorization') !== `Bearer ${this.authToken}`) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      try {
+        const result = await this.interceptors.openUrl(
+          req.params.id,
+          this.proxy.port,
+          req.body?.url
+        );
+        res.json({ success: true, ...(result || {}) });
+      } catch (err) {
+        res.status(400).json({ error: err.message });
       }
     });
 

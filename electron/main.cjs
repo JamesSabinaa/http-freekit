@@ -9,12 +9,21 @@ const windowStateKeeper = require('electron-window-state');
 const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
+const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
 let apiPort = null;
 let isShuttingDown = false;
+let serverReady = false;
+let deepLinkProcessing = Promise.resolve();
+const pendingDeepLinks = [];
 const authToken = crypto.randomBytes(32).toString('hex');
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 /**
  * Find a free TCP port by temporarily binding to port 0.
@@ -108,6 +117,7 @@ async function startServer() {
     const msg = `Server exited (code=${code}, signal=${signal})`;
     logStream.write(`--- ${msg} at ${new Date().toISOString()} ---\n`);
     serverProcess = null;
+    serverReady = false;
 
     // If server exits unexpectedly, notify and quit
     if (!isShuttingDown && mainWindow) {
@@ -120,6 +130,93 @@ async function startServer() {
   });
 
   await waitForServer(apiPort, serverProcess);
+  serverReady = true;
+}
+
+function registerProtocolHandler() {
+  if (process.defaultApp && process.argv[1]) {
+    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+  } else {
+    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
+function reportDeepLinkError(err) {
+  const message = err?.message || String(err);
+  if (app.isReady()) {
+    dialog.showErrorBox('HTTP FreeKit — Could Not Open Link', message);
+  } else {
+    console.error('[Deep Link]', message);
+  }
+}
+
+function requestOpenInProxiedChrome(url) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ url });
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: apiPort,
+      path: '/api/interceptors/chrome/open',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const responseText = Buffer.concat(chunks).toString('utf8');
+        let response = {};
+        try { response = responseText ? JSON.parse(responseText) : {}; } catch {}
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(response);
+        } else {
+          reject(new Error(response.error || `Server returned HTTP ${res.statusCode}`));
+        }
+      });
+    });
+
+    req.once('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('Timed out opening the link')));
+    req.end(body);
+  });
+}
+
+function scheduleDeepLink(targetUrl) {
+  deepLinkProcessing = deepLinkProcessing
+    .then(() => requestOpenInProxiedChrome(targetUrl))
+    .catch(reportDeepLinkError);
+}
+
+function handleDeepLink(value) {
+  let targetUrl;
+  try {
+    targetUrl = parseOpenDeepLink(value);
+  } catch (err) {
+    reportDeepLinkError(err);
+    return;
+  }
+
+  if (!serverReady) {
+    pendingDeepLinks.push(targetUrl);
+    return;
+  }
+  scheduleDeepLink(targetUrl);
+}
+
+function flushPendingDeepLinks() {
+  for (const targetUrl of pendingDeepLinks.splice(0)) {
+    scheduleDeepLink(targetUrl);
+  }
 }
 
 /**
@@ -162,7 +259,7 @@ function shutdownServer() {
   });
 }
 
-function createWindow() {
+function createWindow({ showOnReady = true } = {}) {
   const windowState = windowStateKeeper({
     defaultWidth: 1366,
     defaultHeight: 768
@@ -212,9 +309,11 @@ function createWindow() {
 
   mainWindow.loadURL(`http://127.0.0.1:${apiPort}/?authToken=${authToken}`);
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-  });
+  if (showOnReady) {
+    mainWindow.once('ready-to-show', () => {
+      mainWindow.show();
+    });
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -299,10 +398,30 @@ ipcMain.handle('restart-app', (event) => {
   app.exit(0);
 });
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) app.on('second-instance', (_event, argv) => {
+  const deepLink = findDeepLinkArg(argv);
+  if (deepLink) {
+    handleDeepLink(deepLink);
+  } else {
+    showMainWindow();
+  }
+});
+
+if (hasSingleInstanceLock) app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
   try {
+    registerProtocolHandler();
     await startServer();
-    createWindow();
+
+    const startupDeepLink = findDeepLinkArg(process.argv);
+    const launchedFromDeepLink = !!startupDeepLink || pendingDeepLinks.length > 0;
+    createWindow({ showOnReady: !launchedFromDeepLink });
+    if (startupDeepLink) handleDeepLink(startupDeepLink);
+    flushPendingDeepLinks();
 
     // Set up application menu
     const appMenu = buildAppMenu(mainWindow);
@@ -319,13 +438,13 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('window-all-closed', () => {
+if (hasSingleInstanceLock) app.on('window-all-closed', () => {
   stopAutoUpdater();
   destroyTray();
   shutdownServer().then(() => app.quit());
 });
 
-app.on('activate', () => {
+if (hasSingleInstanceLock) app.on('activate', () => {
   if (mainWindow === null && apiPort) {
     createWindow();
   }

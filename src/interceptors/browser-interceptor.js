@@ -1,8 +1,13 @@
 import { spawn, execFileSync, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { findBrowserPath } from './browser-paths.js';
+import { normalizeBrowserUrl } from './browser-url.js';
+import {
+  createManagedBrowserProfile,
+  getRelatedProcessIds,
+  removeManagedBrowserProfile
+} from './browser-lifecycle.js';
 
 export class BrowserInterceptor {
   constructor(id, name, browserType) {
@@ -15,6 +20,11 @@ export class BrowserInterceptor {
     this.ca = null; // Set by InterceptorManager
     this.onStatusChange = null;
     this.statusMonitor = null;
+    this.proxyPort = null;
+    this.trackedProcessIds = new Set();
+    this.lifecycleInspectionErrorLogged = false;
+    this.lastProcessInspectionAt = 0;
+    this.lastProcessInspectionFailed = false;
   }
 
   async isActivable() {
@@ -22,34 +32,50 @@ export class BrowserInterceptor {
   }
 
   async isActive() {
-    return this.active && this.process && !this.process.killed;
+    return this.active && this._isBrowserStillRunning();
   }
 
   async activate(proxyPort, options = {}) {
+    if (await this.isActive()) {
+      throw new Error(`${this.name} is already running`);
+    }
+
     const browserPath = findBrowserPath(this.browserType);
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
     }
 
-    // Create a temporary profile directory
-    this.profileDir = path.join(os.tmpdir(), `http-freekit-${this.browserType}-${Date.now()}`);
-    fs.mkdirSync(this.profileDir, { recursive: true });
+    const launchOptions = { ...options };
+    if (launchOptions.url) {
+      launchOptions.url = normalizeBrowserUrl(launchOptions.url);
+    }
 
-    const args = this._getBrowserArgs(proxyPort, options);
+    // Create a uniquely-owned temporary profile. The marker lets a future
+    // startup distinguish abandoned profiles from another active instance.
+    this.profileDir = createManagedBrowserProfile(this.browserType);
+    this.proxyPort = proxyPort;
+    this.trackedProcessIds.clear();
+    this.lifecycleInspectionErrorLogged = false;
+    this.lastProcessInspectionAt = 0;
+    this.lastProcessInspectionFailed = false;
+
+    const args = this._getBrowserArgs(proxyPort, launchOptions);
 
     console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
-    this.process = spawn(browserPath, args, {
+    const launchedProcess = spawn(browserPath, args, {
       detached: false,
       stdio: 'ignore'
     });
+    this.process = launchedProcess;
+    if (Number.isInteger(launchedProcess.pid)) this.trackedProcessIds.add(launchedProcess.pid);
 
     this.active = true;
     this._emitStatus('active');
     this._startStatusMonitor();
 
-    this.process.on('exit', (code) => {
+    launchedProcess.on('exit', (code) => {
       console.log(`[Interceptor] ${this.name} exited with code ${code}`);
-      if (!this.active) return;
+      if (!this.active || this.process !== launchedProcess) return;
       if (this._isBrowserStillRunning()) {
         this._startStatusMonitor();
         return;
@@ -57,12 +83,47 @@ export class BrowserInterceptor {
       this._markInactive('exited', { code });
     });
 
-    this.process.on('error', (err) => {
+    launchedProcess.on('error', (err) => {
+      if (this.process !== launchedProcess) return;
       console.error(`[Interceptor] ${this.name} error:`, err.message);
       this._markInactive('error', { error: err.message });
     });
 
-    return { success: true, pid: this.process.pid, browser: this.name };
+    return { success: true, pid: launchedProcess.pid, browser: this.name };
+  }
+
+  /**
+   * Open a web URL in the already-running isolated Chromium profile. Chromium
+   * forwards this invocation to the existing profile process as a new tab.
+   */
+  async openUrl(url) {
+    const normalizedUrl = normalizeBrowserUrl(url);
+    if (!(await this.isActive())) {
+      throw new Error(`${this.name} is not running`);
+    }
+    if (this.browserType === 'firefox') {
+      throw new Error('Opening a new tab in an active isolated Firefox profile is not supported');
+    }
+
+    const browserPath = findBrowserPath(this.browserType);
+    if (!browserPath) {
+      throw new Error(`${this.name} not found on this system`);
+    }
+
+    const args = this._getChromiumArgs(this.proxyPort, { url: normalizedUrl });
+    await new Promise((resolve, reject) => {
+      const opener = spawn(browserPath, args, {
+        detached: false,
+        stdio: 'ignore'
+      });
+      opener.once('error', reject);
+      opener.once('spawn', () => {
+        opener.unref();
+        resolve();
+      });
+    });
+
+    return { success: true, browser: this.name, url: normalizedUrl };
   }
 
   _getBrowserArgs(proxyPort, options) {
@@ -165,18 +226,52 @@ export class BrowserInterceptor {
   }
 
   async deactivate() {
-    if (this.process && !this.process.killed) {
-      console.log(`[Interceptor] Stopping ${this.name}...`);
-      this.process.kill();
+    if (!this.active && !this.profileDir) return;
+
+    console.log(`[Interceptor] Stopping ${this.name} and its profile process tree...`);
+    this._stopStatusMonitor();
+    this.active = false;
+
+    const profileDir = this.profileDir;
+    const launcherPid = this.process?.pid || null;
+    const inspectedIds = this._refreshTrackedProcessIds(true);
+    const targetIds = inspectedIds === null
+      ? new Set()
+      : new Set(inspectedIds);
+    if (this._isSpawnedProcessRunning()) targetIds.add(launcherPid);
+
+    const remainingIds = await this._terminateProcessTree(targetIds);
+    let cleanupResult = { removed: false, reason: 'process state could not be verified' };
+    if (remainingIds !== null && remainingIds.size === 0) {
+      cleanupResult = this._cleanup(profileDir);
+    } else if (remainingIds?.size) {
+      console.warn(
+        `[Interceptor] Preserving profile ${profileDir}: ${remainingIds.size} browser process(es) are still running`
+      );
+    } else {
+      console.warn(`[Interceptor] Preserving profile ${profileDir}: running processes could not be inspected safely`);
     }
-    this._markInactive('inactive');
+
+    this._resetLifecycleState();
+    this._emitStatus('inactive', {
+      terminatedProcessCount: Math.max(0, targetIds.size - (remainingIds?.size || 0)),
+      remainingProcessCount: remainingIds?.size ?? null,
+      profileRemoved: cleanupResult.removed === true
+    });
   }
 
   _markInactive(reason, extra = {}) {
+    const profileDir = this.profileDir;
+    const launcherPid = this.process?.pid || null;
     this._stopStatusMonitor();
     this.active = false;
-    this._cleanup();
-    this._emitStatus(reason, extra);
+    const cleanupResult = this._cleanup(profileDir);
+    this._resetLifecycleState();
+    this._emitStatus(reason, {
+      pid: launcherPid,
+      profileRemoved: cleanupResult.removed === true,
+      ...extra
+    });
   }
 
   _startStatusMonitor() {
@@ -201,7 +296,13 @@ export class BrowserInterceptor {
   }
 
   _isBrowserStillRunning() {
-    return this._isSpawnedProcessRunning() || this._hasProfileProcess();
+    const spawnedProcessRunning = this._isSpawnedProcessRunning();
+    const relatedIds = this._refreshTrackedProcessIds();
+    // If inspection is unavailable, err on the side of preserving an active
+    // browser/profile rather than deleting files that may still be in use.
+    return relatedIds === null
+      ? spawnedProcessRunning || this.active
+      : spawnedProcessRunning || relatedIds.size > 0;
   }
 
   _isSpawnedProcessRunning() {
@@ -216,27 +317,101 @@ export class BrowserInterceptor {
     }
   }
 
-  _hasProfileProcess() {
-    if (process.platform !== 'win32' || !this.profileDir) return false;
-
-    const escapedProfileDir = String(this.profileDir).replace(/'/g, "''");
-    const script = `
-$profileDir = '${escapedProfileDir}'
-$matches = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-  Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($profileDir) }
-if ($matches) { exit 0 }
-exit 1
-`;
-    try {
-      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-        stdio: 'ignore',
-        timeout: 3000,
-        windowsHide: true
-      });
-      return true;
-    } catch {
-      return false;
+  _refreshTrackedProcessIds(force = false) {
+    if (!this.profileDir) {
+      this.trackedProcessIds.clear();
+      return new Set();
     }
+
+    const now = Date.now();
+    if (!force && now - this.lastProcessInspectionAt < 5000) {
+      return this.lastProcessInspectionFailed ? null : new Set(this.trackedProcessIds);
+    }
+
+    const rootPids = this._isSpawnedProcessRunning() ? [this.process.pid] : [];
+    try {
+      const relatedIds = getRelatedProcessIds(this.profileDir, rootPids);
+      this.trackedProcessIds = relatedIds;
+      this.lastProcessInspectionAt = now;
+      this.lastProcessInspectionFailed = false;
+      this.lifecycleInspectionErrorLogged = false;
+      return new Set(relatedIds);
+    } catch (err) {
+      this.lastProcessInspectionAt = now;
+      this.lastProcessInspectionFailed = true;
+      if (!this.lifecycleInspectionErrorLogged) {
+        console.warn(`[Interceptor] Could not inspect ${this.name} process tree: ${err.message}`);
+        this.lifecycleInspectionErrorLogged = true;
+      }
+      return null;
+    }
+  }
+
+  _signalProcesses(processIds, signal) {
+    for (const pid of processIds) {
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+      try {
+        process.kill(pid, signal);
+      } catch (err) {
+        if (err.code !== 'ESRCH') {
+          console.warn(`[Interceptor] Could not signal browser PID ${pid}: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  _forceTerminateProcesses(processIds) {
+    if (process.platform === 'win32') {
+      for (const pid of processIds) {
+        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+        try {
+          execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+            stdio: 'ignore',
+            timeout: 5000,
+            windowsHide: true
+          });
+        } catch {
+          // The process may have exited between inspection and taskkill.
+        }
+      }
+      return;
+    }
+
+    this._signalProcesses(processIds, 'SIGKILL');
+  }
+
+  async _waitForProfileProcessesToExit(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remainingIds = this._refreshTrackedProcessIds(true);
+      if (remainingIds === null || remainingIds.size === 0 || Date.now() >= deadline) {
+        return remainingIds;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  async _terminateProcessTree(initialIds) {
+    if (initialIds.size > 0) this._signalProcesses(initialIds, 'SIGTERM');
+
+    let remainingIds = await this._waitForProfileProcessesToExit(2000);
+    if (remainingIds === null || remainingIds.size === 0) return remainingIds;
+
+    console.warn(`[Interceptor] Force-stopping ${remainingIds.size} remaining ${this.name} process(es)`);
+    this._forceTerminateProcesses(remainingIds);
+    remainingIds = await this._waitForProfileProcessesToExit(2000);
+    return remainingIds;
+  }
+
+  _resetLifecycleState() {
+    this.active = false;
+    this.process = null;
+    this.profileDir = null;
+    this.proxyPort = null;
+    this.trackedProcessIds.clear();
+    this.lifecycleInspectionErrorLogged = false;
+    this.lastProcessInspectionAt = 0;
+    this.lastProcessInspectionFailed = false;
   }
 
   _emitStatus(reason, extra = {}) {
@@ -318,14 +493,13 @@ exit 1
     throw new Error(`Focusing ${this.name} is not supported on this platform`);
   }
 
-  _cleanup() {
-    if (this.profileDir) {
-      try {
-        fs.rmSync(this.profileDir, { recursive: true, force: true });
-      } catch (e) {
-        // Profile may still be locked
-      }
+  _cleanup(profileDir = this.profileDir) {
+    if (!profileDir) return { removed: true, alreadyMissing: true };
+    const result = removeManagedBrowserProfile(profileDir);
+    if (!result.removed) {
+      console.warn(`[Interceptor] Could not remove browser profile ${profileDir}: ${result.reason || 'unknown error'}`);
     }
+    return result;
   }
 
   toJSON() {

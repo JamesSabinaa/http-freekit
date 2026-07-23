@@ -95,7 +95,10 @@ async function main() {
   }
 
   // 5. Initialize API Server (with UI serving)
-  const api = new ApiServer(proxy, ca, interceptors, { port: API_PORT });
+  const api = new ApiServer(proxy, ca, interceptors, {
+    port: API_PORT,
+    authToken: process.env.AUTH_TOKEN || null
+  });
   api.settings = settings; // Give API server access to persist settings
   proxy.filterSafeFonts = settings.get('filterSafeFonts', false) === true;
 

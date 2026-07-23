@@ -6,12 +6,21 @@ import { DockerInterceptor } from './docker-interceptor.js';
 import { ElectronInterceptor } from './electron-interceptor.js';
 import { AndroidAdbInterceptor } from './android-adb-interceptor.js';
 import { JvmInterceptor } from './jvm-interceptor.js';
+import { cleanupStaleBrowserProfiles } from './browser-lifecycle.js';
 
 export class InterceptorManager {
   constructor(ca) {
     this.interceptors = new Map();
     this.ca = ca;
     this.onStatusChange = null;
+
+    const staleProfileCleanup = cleanupStaleBrowserProfiles();
+    if (staleProfileCleanup.removed.length > 0) {
+      console.log(`[Interceptor] Removed ${staleProfileCleanup.removed.length} stale browser profile(s)`);
+    }
+    for (const failure of staleProfileCleanup.failed) {
+      console.warn(`[Interceptor] Stale profile cleanup skipped ${failure.path}: ${failure.reason}`);
+    }
 
     // Register all interceptors (order matches HTTP Toolkit's sidebar)
     this._register(new BrowserInterceptor('chrome', 'Chrome', 'chrome'));
@@ -81,6 +90,20 @@ export class InterceptorManager {
       throw new Error(`${interceptor.name} cannot be focused`);
     }
     return await interceptor.focus();
+  }
+
+  async openUrl(id, proxyPort, url) {
+    const interceptor = this.interceptors.get(id);
+    if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
+    if (typeof interceptor.openUrl !== 'function') {
+      throw new Error(`${interceptor.name} cannot open browser URLs`);
+    }
+
+    if (await interceptor.isActive()) {
+      return await interceptor.openUrl(url);
+    }
+
+    return await this.activate(id, proxyPort, { url });
   }
 
   async deactivateAll() {

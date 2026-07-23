@@ -7,6 +7,13 @@ module.exports = {
   productName: 'HTTP FreeKit',
   copyright: 'Copyright © 2026 HTTP FreeKit',
 
+  protocols: [
+    {
+      name: 'HTTP FreeKit proxied browser link',
+      schemes: ['http-freekit']
+    }
+  ],
+
   directories: {
     output: 'dist',
     buildResources: 'build'

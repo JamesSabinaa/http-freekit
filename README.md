@@ -191,6 +191,34 @@ The Electron desktop app provides:
 - **Cross-platform** — Windows (.exe), macOS (.dmg), Linux (.AppImage, .deb, .rpm)
 - **Secure IPC** — context isolation enabled, preload script with contextBridge API
 
+### Open Links in Proxied Chrome
+
+The desktop app registers an `http-freekit:` URL scheme that other local apps can use:
+
+```text
+http-freekit://open?url=<percent-encoded-http-or-https-url>
+```
+
+For example, from PowerShell:
+
+```powershell
+$target = [uri]::EscapeDataString('https://example.com/path?q=test')
+Start-Process "http-freekit://open?url=$target"
+```
+
+The trigger starts HTTP FreeKit if necessary. It opens the URL in a new tab in the active isolated,
+proxied Chrome profile, or launches proxied Chrome with that URL if Chrome is not active. Only
+`http://` and `https://` targets are accepted.
+
+When running the standalone Node server instead of the desktop app, the equivalent trigger is:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:8001/api/interceptors/chrome/open' `
+  -ContentType 'application/json' `
+  -Body '{"url":"https://example.com"}'
+```
+
 ## MCP Server (AI Integration)
 
 HTTP FreeKit includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets AI assistants like Claude search, analyze, and export your captured HTTP traffic.
@@ -252,6 +280,7 @@ The management API runs on the same port as the UI (default 8001):
 | GET | `/api/interceptors` | List all interceptors |
 | POST | `/api/interceptors/:id/activate` | Activate an interceptor |
 | POST | `/api/interceptors/:id/deactivate` | Deactivate an interceptor |
+| POST | `/api/interceptors/:id/open` | Open a web URL, activating the browser if needed |
 | GET | `/api/mock-rules` | List mock rules |
 | POST | `/api/mock-rules` | Create mock rule |
 | PUT | `/api/mock-rules/:id` | Update mock rule |
