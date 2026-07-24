@@ -3600,6 +3600,58 @@
       border-color: var(--pop-color);
     }
 
+    .send-form-row {
+      display: grid;
+      grid-template-columns: auto minmax(110px, 1fr) auto minmax(140px, 2fr) auto;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .send-form-row input[type="text"],
+    .send-form-row select {
+      min-width: 0;
+      background: var(--bg-input);
+      border: 1px solid var(--text-input-border);
+      border-radius: 4px;
+      color: var(--text-main);
+      padding: 5px 8px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .send-form-row input[type="checkbox"] { cursor: pointer; }
+    .send-file-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .send-file-picker-label {
+      flex: 0 0 auto;
+      padding: 5px 8px;
+      border: 1px solid var(--text-input-border);
+      border-radius: 4px;
+      background: var(--bg-input);
+      color: var(--pop-color);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .send-file-name {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text-lowlight);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 800px) {
+      .send-form-row {
+        grid-template-columns: auto minmax(90px, 1fr) auto minmax(100px, 1fr) auto;
+      }
+    }
+
     /* ============================================================
        Send Tab Bar
        ============================================================ */

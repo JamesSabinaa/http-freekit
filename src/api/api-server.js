@@ -1125,8 +1125,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Send a test request through the proxy
     router.post('/api/send', async (req, res) => {
       try {
-        const { url, method, headers, body } = req.body;
-        const result = await this._sendRequest(url, method || 'GET', headers || {}, body || '');
+        const { url, method, headers, body, bodyEncoding } = req.body;
+        const result = await this._sendRequest(url, method || 'GET', headers || {}, body || '', bodyEncoding || 'utf8');
         res.json(result);
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1171,7 +1171,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return null;
   }
 
-  async _sendRequest(url, method, headers, body) {
+  async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8') {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(url);
       const isHttps = parsedUrl.protocol === 'https:';
@@ -1203,7 +1203,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       });
 
       req.on('error', reject);
-      if (body) req.write(body);
+      if (body) req.write(bodyEncoding === 'base64' ? Buffer.from(body, 'base64') : body);
       req.end();
     });
   }

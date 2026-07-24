@@ -38,12 +38,17 @@
     let vsRafId = null;
 
     // ============ SEND TABS STATE ============
-    let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null }];
+    let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyType: 'raw', bodyFormat: 'text', urlEncodedFields: [], multipartFields: [], multipartBoundary: '', response: null }];
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
     let currentSendAbort = null;
     /** @type {object|null} Active Monaco editor for the Send page request body */
     let sendBodyEditor = null;
+    let sendUrlEncodedFields = [];
+    let sendMultipartFields = [];
+    let sendMultipartBoundary = '';
+    let sendExportUpdateTimer = null;
+    let sendExportCreating = false;
     const breakpointEditDrafts = new Map();
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
@@ -812,10 +817,16 @@
       }
 
       // Detect body format from content-type
+      let bodyType = 'raw';
       let bodyFormat = 'text';
+      let urlEncodedFields = [];
       if (req.requestBody) {
-        const ct = (req.requestHeaders?.['content-type'] || '').toLowerCase();
-        if (ct.includes('json')) bodyFormat = 'json';
+        const contentTypeKey = findHeaderKey(req.requestHeaders || {}, 'Content-Type');
+        const ct = String(contentTypeKey ? req.requestHeaders[contentTypeKey] : '').toLowerCase();
+        if (ct.includes('application/x-www-form-urlencoded')) {
+          bodyType = 'urlencoded';
+          urlEncodedFields = Array.from(new URLSearchParams(req.requestBody), ([key, value]) => ({ key, value, enabled: true }));
+        } else if (ct.includes('json')) bodyFormat = 'json';
         else if (ct.includes('xml')) bodyFormat = 'xml';
         else if (ct.includes('html')) bodyFormat = 'html';
         else if (ct.includes('css')) bodyFormat = 'css';
@@ -832,7 +843,11 @@
         url: req.url,
         headers: newHeaders,
         body: req.requestBody || '',
+        bodyType,
         bodyFormat: bodyFormat,
+        urlEncodedFields,
+        multipartFields: [],
+        multipartBoundary: '',
         response: null
       };
       sendTabs.push(newTab);
@@ -1756,7 +1771,190 @@
       }
     }
 
+    function getExportFormFields(req) {
+      return (req.formFields || []).filter(field => field.enabled !== false && field.key);
+    }
+
+    function shellSingleQuote(value) {
+      return String(value ?? '').replace(/'/g, "'\\''");
+    }
+
+    function getExportHeaders(req, omitContentType = false) {
+      return Object.entries(req.requestHeaders || {}).filter(([key]) => {
+        const lowerKey = key.toLowerCase();
+        return lowerKey !== 'host' && lowerKey !== 'proxy-connection' && (!omitContentType || lowerKey !== 'content-type');
+      });
+    }
+
+    function generateMultipartExportSnippet(req, format) {
+      const fields = getExportFormFields(req);
+      const headers = getExportHeaders(req, true);
+      const method = req.method || 'POST';
+      const url = req.url || '';
+
+      if (format === 'curl') {
+        let cmd = `curl -X ${method} '${shellSingleQuote(url)}'`;
+        headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
+        fields.forEach((field) => {
+          const value = field.type === 'file'
+            ? `@${field.file?.name || field.fileName || 'file'}${field.fileType ? `;type=${field.fileType}` : ''}`
+            : (field.value || '');
+          cmd += ` \\\n  -F '${shellSingleQuote(field.key)}=${shellSingleQuote(value)}'`;
+        });
+        return cmd;
+      }
+
+      if (format === 'python') {
+        const textFields = fields.filter(field => field.type !== 'file');
+        const fileFields = fields.filter(field => field.type === 'file');
+        let code = 'import requests\n\n';
+        if (textFields.length) {
+          code += `data = [\n${textFields.map(field => `    (${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')})`).join(',\n')}\n]\n`;
+        }
+        if (fileFields.length) {
+          code += `files = [\n${fileFields.map(field => {
+            const filename = field.file?.name || field.fileName || 'file';
+            const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+            return `    (${JSON.stringify(field.key)}, (${JSON.stringify(filename)}, open(${JSON.stringify(filename)}, 'rb'), ${JSON.stringify(contentType)}))`;
+          }).join(',\n')}\n]\n`;
+        }
+        code += `\nresponse = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
+        if (headers.length) code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
+        if (textFields.length) code += ',\n    data=data';
+        if (fileFields.length) code += ',\n    files=files';
+        code += '\n)\n\nprint(response.status_code)\nprint(response.text)';
+        return code;
+      }
+
+      if (format === 'javascript-fetch') {
+        let code = 'const formData = new FormData();\n';
+        let fileIndex = 0;
+        fields.forEach((field) => {
+          if (field.type === 'file') {
+            const filename = field.file?.name || field.fileName || 'file';
+            const variable = `file${fileIndex++}`;
+            code += `const ${variable} = document.querySelector('input[type="file"]').files[0]; // Select ${filename.replace(/[\r\n]/g, ' ')}\n`;
+            code += `formData.append(${JSON.stringify(field.key)}, ${variable}, ${JSON.stringify(filename)});\n`;
+          } else {
+            code += `formData.append(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')});\n`;
+          }
+        });
+        code += `\nconst response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)}`;
+        if (headers.length) code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
+        code += ',\n  body: formData\n});\n\nconsole.log(response.status, await response.text());';
+        return code;
+      }
+
+      if (format === 'javascript-node') {
+        const boundary = req.multipartBoundary || '----HTTPFreeKitBoundary';
+        let code = "const fs = require('fs');\nconst http = require('http');\nconst https = require('https');\n\n";
+        code += `const boundary = ${JSON.stringify(boundary)};\nconst chunks = [];\nconst append = value => chunks.push(Buffer.from(value));\n`;
+        fields.forEach((field) => {
+          const safeName = String(field.key).replace(/["\r\n]/g, '_');
+          code += `append('--' + boundary + '\\r\\n');\n`;
+          if (field.type === 'file') {
+            const filename = field.file?.name || field.fileName || 'file';
+            const safeFilename = filename.replace(/["\r\n]/g, '_');
+            const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+            code += `append(${JSON.stringify(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`)});\n`;
+            code += `append(${JSON.stringify(`Content-Type: ${contentType}\r\n\r\n`)});\n`;
+            code += `chunks.push(fs.readFileSync(${JSON.stringify(filename)}));\nappend('\\r\\n');\n`;
+          } else {
+            code += `append(${JSON.stringify(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n${field.value || ''}\r\n`)});\n`;
+          }
+        });
+        code += `append('--' + boundary + '--\\r\\n');\nconst body = Buffer.concat(chunks);\nconst target = new URL(${JSON.stringify(url)});\n`;
+        code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  port: target.port || undefined,\n  path: target.pathname + target.search,\n  headers: {\n`;
+        headers.forEach(([key, value]) => { code += `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))},\n`; });
+        code += `    'Content-Type': 'multipart/form-data; boundary=' + boundary,\n    'Content-Length': body.length\n  }\n};\n\n`;
+        code += `const request = (target.protocol === 'https:' ? https : http).request(options, response => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\nrequest.write(body);\nrequest.end();`;
+        return code;
+      }
+
+      if (format === 'powershell') {
+        let code = '$headers = @{}\n';
+        headers.forEach(([key, value]) => { code += `$headers[${JSON.stringify(key)}] = ${JSON.stringify(String(value))}\n`; });
+        code += '\n$form = @{}\n';
+        fields.forEach((field) => {
+          const value = field.type === 'file' ? `Get-Item ${JSON.stringify(field.file?.name || field.fileName || 'file')}` : JSON.stringify(field.value || '');
+          code += `$form[${JSON.stringify(field.key)}] = ${value}\n`;
+        });
+        code += `\n$response = Invoke-WebRequest -Uri ${JSON.stringify(url)} -Method ${method} -Headers $headers -Form $form\n$response.StatusCode\n$response.Content`;
+        return code;
+      }
+
+      if (format === 'wget') {
+        const boundary = req.multipartBoundary || '----HTTPFreeKitBoundary';
+        let code = `boundary='${shellSingleQuote(boundary)}'\nbody_file=$(mktemp)\n{\n`;
+        fields.forEach((field) => {
+          const safeName = String(field.key).replace(/["\r\n]/g, '_');
+          code += `  printf '%s\\r\\n' "--$boundary"\n`;
+          if (field.type === 'file') {
+            const filename = field.file?.name || field.fileName || 'file';
+            const safeFilename = filename.replace(/["\r\n]/g, '_');
+            const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+            code += `  printf '%s\\r\\n' '${shellSingleQuote(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"`)}'\n`;
+            code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Type: ${contentType}`)}'\n  cat '${shellSingleQuote(filename)}'\n  printf '\\r\\n'\n`;
+          } else {
+            code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Disposition: form-data; name="${safeName}"`)}'\n`;
+            code += `  printf '%s\\r\\n' '${shellSingleQuote(field.value || '')}'\n`;
+          }
+        });
+        code += `  printf '%s--\\r\\n' "--$boundary"\n} > "$body_file"\n\nwget --method=${method}`;
+        headers.forEach(([key, value]) => { code += ` \\\n  --header='${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
+        code += ` \\\n  --header="Content-Type: multipart/form-data; boundary=$boundary" \\\n  --body-file="$body_file" \\\n  '${shellSingleQuote(url)}'\nrm -f "$body_file"`;
+        return code;
+      }
+
+      if (format === 'php') {
+        let code = `<?php\n$ch = curl_init(${JSON.stringify(url)});\n$postFields = [\n`;
+        fields.forEach((field) => {
+          const value = field.type === 'file'
+            ? `new CURLFile(${JSON.stringify(field.file?.name || field.fileName || 'file')}, ${JSON.stringify(field.file?.type || field.fileType || 'application/octet-stream')})`
+            : JSON.stringify(field.value || '');
+          code += `    ${JSON.stringify(field.key)} => ${value},\n`;
+        });
+        code += `];\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${JSON.stringify(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);\n`;
+        if (headers.length) code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${JSON.stringify(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
+        code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
+        return code;
+      }
+
+      if (format === 'go') {
+        const hasFiles = fields.some(field => field.type === 'file');
+        let code = 'package main\n\nimport (\n\t"bytes"\n\t"fmt"\n\t"mime/multipart"\n\t"net/http"\n';
+        if (hasFiles) code += '\t"io"\n\t"os"\n';
+        code += ')\n\nfunc main() {\n\tvar body bytes.Buffer\n\twriter := multipart.NewWriter(&body)\n';
+        let fileIndex = 0;
+        fields.forEach((field) => {
+          if (field.type === 'file') {
+            const filename = field.file?.name || field.fileName || 'file';
+            const index = fileIndex++;
+            code += `\tfile${index}, _ := os.Open(${JSON.stringify(filename)})\n\tdefer file${index}.Close()\n`;
+            code += `\tpart${index}, _ := writer.CreateFormFile(${JSON.stringify(field.key)}, ${JSON.stringify(filename)})\n\tio.Copy(part${index}, file${index})\n`;
+          } else {
+            code += `\twriter.WriteField(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')})\n`;
+          }
+        });
+        code += `\twriter.Close()\n\n\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, &body)\n`;
+        headers.forEach(([key, value]) => { code += `\treq.Header.Set(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`; });
+        code += '\treq.Header.Set("Content-Type", writer.FormDataContentType())\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tfmt.Println(resp.StatusCode)\n}';
+        return code;
+      }
+
+      return '';
+    }
+
     function generateExportSnippet(req, format) {
+      if (req.bodyType === 'urlencoded') {
+        const params = new URLSearchParams();
+        getExportFormFields(req).forEach(field => params.append(field.key, field.value || ''));
+        const headers = { ...(req.requestHeaders || {}) };
+        if (!findHeaderKey(headers, 'Content-Type')) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        return generateExportSnippet({ ...req, bodyType: 'raw', requestHeaders: headers, requestBody: params.toString() }, format);
+      }
+      if (req.bodyType === 'multipart') return generateMultipartExportSnippet(req, format);
+
       const headers = req.requestHeaders || {};
       const hasBody = req.requestBody && req.requestBody.length > 0;
 
@@ -1862,6 +2060,16 @@
       }
     }
 
+    function autoSizeExportEditor(editor, container) {
+      const resizeToContent = () => {
+        container.style.height = Math.max(Math.ceil(editor.getContentHeight()), 120) + 'px';
+      };
+      resizeToContent();
+      editor.onDidContentSizeChange((event) => {
+        if (event.contentHeightChanged) resizeToContent();
+      });
+    }
+
     function updateExportSnippet() {
       const format = document.getElementById('exportFormat')?.value || 'curl';
       const req = window._currentExportRequest;
@@ -1891,15 +2099,104 @@
         activeBodyEditors[monacoId] = editor;
         const container = document.getElementById(monacoId);
         if (!container) return;
-
-        const resizeToContent = () => {
-          container.style.height = Math.max(Math.ceil(editor.getContentHeight()), 120) + 'px';
-        };
-        resizeToContent();
-        editor.onDidContentSizeChange((event) => {
-          if (event.contentHeightChanged) resizeToContent();
-        });
+        autoSizeExportEditor(editor, container);
       });
+    }
+
+    function getCurrentSendExportRequest() {
+      syncSendHeadersToHidden();
+      let headers = {};
+      try { headers = JSON.parse(document.getElementById('sendHeaders')?.value || '{}'); } catch {}
+
+      const bodyType = getSendBodyType();
+      const bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
+      const requestBody = bodyType === 'urlencoded' ? serializeUrlEncodedFields() : (bodyType === 'raw' ? getSendBodyValue() : '');
+      if (bodyType === 'urlencoded') setDefaultHeader(headers, 'Content-Type', 'application/x-www-form-urlencoded');
+      if (bodyType === 'multipart') setDefaultHeader(headers, 'Content-Type', 'multipart/form-data');
+      if (bodyType === 'raw' && requestBody) setDefaultHeader(headers, 'Content-Type', formatToContentType(bodyFormat));
+
+      const url = document.getElementById('sendUrl')?.value.trim() || '';
+      let host = '';
+      let path = '';
+      try {
+        const parsed = new URL(url);
+        host = parsed.hostname;
+        path = parsed.pathname + parsed.search;
+      } catch {}
+
+      return {
+        method: document.getElementById('sendMethod')?.value || 'GET',
+        url,
+        host,
+        path,
+        requestHeaders: headers,
+        requestBody,
+        bodyType,
+        bodyFormat,
+        formFields: cloneSendFormFields(bodyType === 'multipart' ? sendMultipartFields : sendUrlEncodedFields),
+        multipartBoundary: sendMultipartBoundary || createMultipartBoundary()
+      };
+    }
+
+    function scheduleSendExportUpdate() {
+      clearTimeout(sendExportUpdateTimer);
+      sendExportUpdateTimer = setTimeout(updateSendExportSnippet, 100);
+    }
+
+    async function updateSendExportSnippet() {
+      const container = document.getElementById('sendExportContent-monaco');
+      const fallback = document.getElementById('sendExportContent-fallback');
+      if (!container || !fallback) return;
+
+      const format = document.getElementById('sendExportFormat')?.value || 'curl';
+      const snippet = generateExportSnippet(getCurrentSendExportRequest(), format);
+      fallback.textContent = snippet;
+
+      const existing = activeBodyEditors['sendExportContent-monaco'];
+      if (existing) {
+        existing.setValue(snippet);
+        if (monacoApi) monacoApi.editor.setModelLanguage(existing.getModel(), exportFormatToMonacoLanguage(format));
+        fallback.style.display = 'none';
+        container.style.display = 'block';
+        return;
+      }
+      if (sendExportCreating) return;
+
+      sendExportCreating = true;
+      const editor = await createMonacoEditor('sendExportContent-monaco', {
+        value: snippet,
+        language: exportFormatToMonacoLanguage(format),
+        readOnly: true,
+        minimap: false,
+        lineNumbers: true,
+        wordWrap: 'on',
+        folding: true,
+      });
+      sendExportCreating = false;
+
+      if (!editor) {
+        container.style.display = 'none';
+        fallback.style.display = 'block';
+        return;
+      }
+
+      activeBodyEditors['sendExportContent-monaco'] = editor;
+      const latestFormat = document.getElementById('sendExportFormat')?.value || 'curl';
+      const latestSnippet = generateExportSnippet(getCurrentSendExportRequest(), latestFormat);
+      editor.setValue(latestSnippet);
+      if (monacoApi) monacoApi.editor.setModelLanguage(editor.getModel(), exportFormatToMonacoLanguage(latestFormat));
+      fallback.style.display = 'none';
+      autoSizeExportEditor(editor, container);
+    }
+
+    function copySendExportSnippet() {
+      const editor = activeBodyEditors['sendExportContent-monaco'];
+      const fallback = document.getElementById('sendExportContent-fallback');
+      const text = editor?.getValue ? editor.getValue() : (fallback?.textContent || '');
+      if (!text) return;
+      navigator.clipboard.writeText(text.trim())
+        .then(() => toast('Export snippet copied', 'success'))
+        .catch(() => toast('Failed to copy', 'error'));
     }
 
     function exportFormatToMonacoLanguage(format) {
@@ -6265,7 +6562,12 @@
 
     function toggleSendCard(contentId) {
       const content = document.getElementById(contentId);
-      const arrowId = contentId === 'sendHeadersBody' ? 'sendHeadersArrow' : 'sendBodyArrow';
+      const arrowIds = {
+        sendHeadersBody: 'sendHeadersArrow',
+        sendBodyBody: 'sendBodyArrow',
+        sendExportBody: 'sendExportArrow'
+      };
+      const arrowId = arrowIds[contentId];
       const arrow = document.getElementById(arrowId);
       if (!content) return;
       const isHidden = content.style.display === 'none';
@@ -6346,6 +6648,8 @@
       if (editor) {
         sendBodyEditor = editor;
 
+        editor.onDidChangeModelContent(() => scheduleSendExportUpdate());
+
         // Ctrl+Enter sends the request
         editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
           sendRequest();
@@ -6362,10 +6666,12 @@
      * Update the Monaco editor language when send body format dropdown changes.
      */
     function updateSendBodyLanguage() {
-      if (!sendBodyEditor || !monacoApi) return;
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      const language = sendFormatToMonacoLanguage(format);
-      monacoApi.editor.setModelLanguage(sendBodyEditor.getModel(), language);
+      if (sendBodyEditor && monacoApi) {
+        const language = sendFormatToMonacoLanguage(format);
+        monacoApi.editor.setModelLanguage(sendBodyEditor.getModel(), language);
+      }
+      scheduleSendExportUpdate();
     }
 
     /** @deprecated No longer needed — kept as no-op for any stale references */
@@ -6397,6 +6703,179 @@
       }
     }
 
+    function createMultipartBoundary() {
+      const suffix = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : Math.random().toString(16).slice(2);
+      return '----HTTPFreeKitBoundary' + suffix;
+    }
+
+    function getSendBodyType() {
+      return document.getElementById('sendBodyType')?.value || 'raw';
+    }
+
+    function getActiveSendFormFields() {
+      return getSendBodyType() === 'multipart' ? sendMultipartFields : sendUrlEncodedFields;
+    }
+
+    function updateSendBodyType() {
+      const bodyType = getSendBodyType();
+      const rawEditor = document.getElementById('sendBody-monaco-container');
+      const formEditor = document.getElementById('sendFormBodyEditor');
+      const formatSelect = document.getElementById('sendBodyFormat');
+      const formatButton = document.getElementById('sendBodyFormatBtn');
+      const isRaw = bodyType === 'raw';
+
+      if (rawEditor) rawEditor.style.display = isRaw ? 'block' : 'none';
+      if (formEditor) formEditor.style.display = isRaw ? 'none' : 'block';
+      if (formatSelect) formatSelect.style.display = isRaw ? '' : 'none';
+      if (formatButton) formatButton.style.display = isRaw ? '' : 'none';
+
+      if (!isRaw) {
+        const fields = getActiveSendFormFields();
+        if (fields.length === 0) fields.push({ key: '', value: '', enabled: true, type: 'text' });
+        if (bodyType === 'multipart' && !sendMultipartBoundary) sendMultipartBoundary = createMultipartBoundary();
+        renderSendFormFields();
+      } else if (sendBodyEditor) {
+        sendBodyEditor.layout();
+      }
+
+      scheduleSendExportUpdate();
+    }
+
+    function renderSendFormFields() {
+      const container = document.getElementById('sendFormBodyRows');
+      if (!container) return;
+      const bodyType = getSendBodyType();
+      const fields = getActiveSendFormFields();
+
+      if (fields.length === 0) {
+        container.innerHTML = '<div style="padding:8px 0;color:var(--text-watermark);font-size:12px;">No form fields. Click Add field.</div>';
+        return;
+      }
+
+      container.innerHTML = fields.map((field, index) => {
+        const enabled = field.enabled !== false;
+        const typeSelect = bodyType === 'multipart'
+          ? `<select onchange="updateSendFormFieldType(${index}, this.value)" aria-label="Field type">
+              <option value="text"${field.type !== 'file' ? ' selected' : ''}>Text</option>
+              <option value="file"${field.type === 'file' ? ' selected' : ''}>File</option>
+            </select>`
+          : '<span></span>';
+        const valueEditor = bodyType === 'multipart' && field.type === 'file'
+          ? `<span class="send-file-picker">
+              <label class="send-file-picker-label">Choose file<input type="file" hidden onchange="updateSendFormFile(${index}, this.files[0])"></label>
+              <span class="send-file-name" title="${esc(field.file?.name || field.fileName || 'No file selected')}">${esc(field.file?.name || field.fileName || 'No file selected')}</span>
+            </span>`
+          : `<input type="text" value="${esc(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
+
+        return `<div class="send-form-row">
+          <input type="checkbox" ${enabled ? 'checked' : ''} onchange="updateSendFormField(${index}, 'enabled', this.checked)" title="Enable/disable field">
+          <input type="text" value="${esc(field.key || '')}" oninput="updateSendFormField(${index}, 'key', this.value)" placeholder="Field name">
+          ${typeSelect}
+          ${valueEditor}
+          <button class="btn" onclick="removeSendFormField(${index})" style="padding:2px 6px;font-size:12px;color:#ce3939;" title="Remove field">&times;</button>
+        </div>`;
+      }).join('');
+    }
+
+    function addSendFormField() {
+      getActiveSendFormFields().push({ key: '', value: '', enabled: true, type: 'text' });
+      renderSendFormFields();
+      scheduleSendExportUpdate();
+      setTimeout(() => {
+        const rows = document.querySelectorAll('.send-form-row');
+        rows[rows.length - 1]?.querySelector('input[type="text"]')?.focus();
+      }, 0);
+    }
+
+    function removeSendFormField(index) {
+      getActiveSendFormFields().splice(index, 1);
+      renderSendFormFields();
+      scheduleSendExportUpdate();
+    }
+
+    function updateSendFormField(index, property, value) {
+      const field = getActiveSendFormFields()[index];
+      if (!field) return;
+      field[property] = value;
+      scheduleSendExportUpdate();
+    }
+
+    function updateSendFormFieldType(index, type) {
+      const field = sendMultipartFields[index];
+      if (!field) return;
+      field.type = type;
+      field.file = null;
+      field.fileName = '';
+      field.fileType = '';
+      renderSendFormFields();
+      scheduleSendExportUpdate();
+    }
+
+    function updateSendFormFile(index, file) {
+      const field = sendMultipartFields[index];
+      if (!field) return;
+      field.file = file || null;
+      field.fileName = file?.name || '';
+      field.fileType = file?.type || 'application/octet-stream';
+      renderSendFormFields();
+      scheduleSendExportUpdate();
+    }
+
+    function serializeUrlEncodedFields(fields = sendUrlEncodedFields) {
+      const params = new URLSearchParams();
+      fields.forEach((field) => {
+        if (field.enabled !== false && field.key) params.append(field.key, field.value || '');
+      });
+      return params.toString();
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    async function serializeMultipartFields(fields, boundary) {
+      const encoder = new TextEncoder();
+      const chunks = [];
+      let totalLength = 0;
+      const append = (chunk) => {
+        const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+        chunks.push(bytes);
+        totalLength += bytes.length;
+      };
+
+      for (const field of fields) {
+        if (field.enabled === false || !field.key) continue;
+        const safeName = String(field.key).replace(/["\r\n]/g, '_');
+        append(`--${boundary}\r\n`);
+        if (field.type === 'file') {
+          if (!field.file) throw new Error(`Choose a file for multipart field "${field.key}"`);
+          const safeFilename = String(field.file.name).replace(/["\r\n]/g, '_');
+          append(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`);
+          append(`Content-Type: ${field.file.type || 'application/octet-stream'}\r\n\r\n`);
+          append(new Uint8Array(await field.file.arrayBuffer()));
+          append('\r\n');
+        } else {
+          append(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n`);
+          append(field.value || '');
+          append('\r\n');
+        }
+      }
+      append(`--${boundary}--\r\n`);
+
+      const result = new Uint8Array(totalLength);
+      let offset = 0;
+      chunks.forEach((chunk) => {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      });
+      return result;
+    }
+
     // ============ SEND HEADERS KEY-VALUE EDITOR ============
     let sendHeadersList = []; // [{key, value, enabled}]
 
@@ -6422,6 +6901,7 @@
     function addSendHeader(key = '', value = '') {
       sendHeadersList.push({ key, value, enabled: true });
       renderSendHeaders();
+      scheduleSendExportUpdate();
       // Focus the new key input
       setTimeout(() => {
         const rows = document.querySelectorAll('.send-header-row');
@@ -6433,21 +6913,25 @@
     function removeSendHeader(index) {
       sendHeadersList.splice(index, 1);
       renderSendHeaders();
+      scheduleSendExportUpdate();
     }
 
     function updateSendHeaderKey(index, value) {
       sendHeadersList[index].key = value;
       syncSendHeadersToHidden();
+      scheduleSendExportUpdate();
     }
 
     function updateSendHeaderVal(index, value) {
       sendHeadersList[index].value = value;
       syncSendHeadersToHidden();
+      scheduleSendExportUpdate();
     }
 
     function toggleSendHeaderEnabled(index, enabled) {
       sendHeadersList[index].enabled = enabled;
       renderSendHeaders();
+      scheduleSendExportUpdate();
     }
 
     function syncSendHeadersToHidden() {
@@ -6493,6 +6977,35 @@
       }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab" aria-label="New request tab">+</div>';
     }
 
+    function cloneSendFormFields(fields, includeFiles = true) {
+      return (fields || []).map((field) => ({
+        key: field.key || '',
+        value: field.value || '',
+        enabled: field.enabled !== false,
+        type: field.type === 'file' ? 'file' : 'text',
+        fileName: field.file?.name || field.fileName || '',
+        fileType: field.file?.type || field.fileType || '',
+        ...(includeFiles && field.file ? { file: field.file } : {})
+      }));
+    }
+
+    function createEmptySendTab() {
+      sendTabCounter++;
+      return {
+        id: 'tab-' + sendTabCounter,
+        method: 'GET',
+        url: '',
+        headers: [],
+        body: '',
+        bodyType: 'raw',
+        bodyFormat: 'text',
+        urlEncodedFields: [],
+        multipartFields: [],
+        multipartBoundary: '',
+        response: null
+      };
+    }
+
     function saveSendTabState() {
       const tab = sendTabs.find(t => t.id === activeSendTab);
       if (!tab) return;
@@ -6500,7 +7013,11 @@
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
       tab.body = getSendBodyValue();
+      tab.bodyType = getSendBodyType();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
+      tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
+      tab.multipartFields = cloneSendFormFields(sendMultipartFields);
+      tab.multipartBoundary = sendMultipartBoundary;
       // Persist tabs to localStorage
       persistSendTabs();
     }
@@ -6509,7 +7026,10 @@
       try {
         const toSave = sendTabs.map(t => ({
           id: t.id, method: t.method, url: t.url,
-          headers: t.headers, body: t.body, bodyFormat: t.bodyFormat
+          headers: t.headers, body: t.body, bodyType: t.bodyType || 'raw', bodyFormat: t.bodyFormat,
+          urlEncodedFields: cloneSendFormFields(t.urlEncodedFields, false),
+          multipartFields: cloneSendFormFields(t.multipartFields, false),
+          multipartBoundary: t.multipartBoundary || ''
         }));
         localStorage.setItem('http-freekit-send-tabs', JSON.stringify(toSave));
         localStorage.setItem('http-freekit-send-active', activeSendTab);
@@ -6522,8 +7042,15 @@
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            sendTabs = parsed.map(t => ({ ...t, response: null }));
-            sendTabCounter = sendTabs.length;
+            sendTabs = parsed.map(t => ({
+              ...t,
+              bodyType: t.bodyType || 'raw',
+              urlEncodedFields: cloneSendFormFields(t.urlEncodedFields, false),
+              multipartFields: cloneSendFormFields(t.multipartFields, false),
+              multipartBoundary: t.multipartBoundary || '',
+              response: null
+            }));
+            sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, Number(String(tab.id).replace('tab-', '')) || 0), 0);
             const savedActive = localStorage.getItem('http-freekit-send-active');
             if (savedActive && sendTabs.find(t => t.id === savedActive)) {
               activeSendTab = savedActive;
@@ -6542,8 +7069,14 @@
       renderSendHeaders();
       const fmt = document.getElementById('sendBodyFormat');
       if (fmt) fmt.value = tab.bodyFormat || 'text';
+      const bodyType = document.getElementById('sendBodyType');
+      if (bodyType) bodyType.value = tab.bodyType || 'raw';
+      sendUrlEncodedFields = cloneSendFormFields(tab.urlEncodedFields);
+      sendMultipartFields = cloneSendFormFields(tab.multipartFields);
+      sendMultipartBoundary = tab.multipartBoundary || '';
       setSendBodyValue(tab.body || '');
       updateSendBodyLanguage();
+      updateSendBodyType();
       if (typeof updateSendMethodColor === 'function') updateSendMethodColor();
       // Restore response if any
       const resEl = document.getElementById('sendResponse');
@@ -6598,8 +7131,7 @@
 
     function addSendTab() {
       saveSendTabState();
-      sendTabCounter++;
-      const newTab = { id: 'tab-' + sendTabCounter, method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null };
+      const newTab = createEmptySendTab();
       sendTabs.push(newTab);
       activeSendTab = newTab.id;
       loadSendTabState(newTab);
@@ -6611,8 +7143,7 @@
       const idx = sendTabs.findIndex(t => t.id === tabId);
       if (idx === -1) return;
       if (sendTabs.length <= 1) {
-        sendTabCounter++;
-        const newTab = { id: 'tab-' + sendTabCounter, method: 'GET', url: '', headers: [], body: '', bodyFormat: 'text', response: null };
+        const newTab = createEmptySendTab();
         sendTabs = [newTab];
         activeSendTab = newTab.id;
         loadSendTabState(newTab);
@@ -6630,16 +7161,19 @@
     }
 
     // Initialize with empty state on page load
-    setTimeout(() => {
+    setTimeout(async () => {
       renderSendHeaders();
       renderSendTabs();
       // Initialize the Send body Monaco editor
-      initSendBodyEditor('', 'text');
+      const initialTab = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
+      await initSendBodyEditor(initialTab?.body || '', initialTab?.bodyFormat || 'text');
+      if (initialTab) loadSendTabState(initialTab);
     }, 100);
 
     function prepopulateSendUrl(input) {
       if (!input.value) {
         input.value = 'https://';
+        scheduleSendExportUpdate();
       }
     }
 
@@ -6662,11 +7196,63 @@
       if (abortBtn) abortBtn.style.display = loading ? 'inline-flex' : 'none';
     }
 
+    function findHeaderKey(headers, name) {
+      const lowerName = name.toLowerCase();
+      return Object.keys(headers).find(key => key.toLowerCase() === lowerName) || null;
+    }
+
+    function setDefaultHeader(headers, name, value) {
+      if (!findHeaderKey(headers, name)) headers[name] = value;
+    }
+
+    function getMultipartDisplayBody(fields) {
+      return fields
+        .filter(field => field.enabled !== false && field.key)
+        .map(field => field.type === 'file'
+          ? `${field.key}=@${field.file?.name || field.fileName || 'file'}`
+          : `${field.key}=${field.value || ''}`)
+        .join('\n');
+    }
+
+    async function prepareSendRequestPayload(headers) {
+      const bodyType = getSendBodyType();
+      if (bodyType === 'urlencoded') {
+        const body = serializeUrlEncodedFields();
+        setDefaultHeader(headers, 'Content-Type', 'application/x-www-form-urlencoded');
+        return { body, bodyEncoding: 'utf8', displayBody: body, byteLength: new TextEncoder().encode(body).length };
+      }
+
+      if (bodyType === 'multipart') {
+        const contentTypeKey = findHeaderKey(headers, 'Content-Type');
+        const contentType = contentTypeKey ? String(headers[contentTypeKey]) : '';
+        const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
+        const boundary = boundaryMatch?.[1] || boundaryMatch?.[2] || sendMultipartBoundary || createMultipartBoundary();
+        sendMultipartBoundary = boundary;
+
+        if (!contentTypeKey) {
+          headers['Content-Type'] = `multipart/form-data; boundary=${boundary}`;
+        } else if (/^multipart\/form-data(?:\s*;.*)?$/i.test(contentType.trim()) && !boundaryMatch) {
+          headers[contentTypeKey] = `${contentType}; boundary=${boundary}`;
+        }
+
+        const bytes = await serializeMultipartFields(sendMultipartFields, boundary);
+        return {
+          body: bytesToBase64(bytes),
+          bodyEncoding: 'base64',
+          displayBody: getMultipartDisplayBody(sendMultipartFields),
+          byteLength: bytes.length
+        };
+      }
+
+      const body = getSendBodyValue();
+      if (body) setDefaultHeader(headers, 'Content-Type', formatToContentType(document.getElementById('sendBodyFormat')?.value || 'text'));
+      return { body, bodyEncoding: 'utf8', displayBody: body, byteLength: new TextEncoder().encode(body).length };
+    }
+
     async function sendRequest() {
       const method = document.getElementById('sendMethod').value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
-      const body = getSendBodyValue();
 
       if (!url) { toast('URL is required', 'error'); return; }
 
@@ -6678,10 +7264,11 @@
       setSendLoading(true);
       currentSendAbort = new AbortController();
       try {
+        const payload = await prepareSendRequestPayload(headers);
         const res = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, method, headers, body }),
+          body: JSON.stringify({ url, method, headers, body: payload.body, bodyEncoding: payload.bodyEncoding }),
           signal: currentSendAbort.signal
         });
         const data = await res.json();
@@ -6709,8 +7296,8 @@
           host: new URL(url).hostname,
           path: new URL(url).pathname + new URL(url).search,
           requestHeaders: headers,
-          requestBody: body,
-          requestBodySize: body ? body.length : 0,
+          requestBody: payload.displayBody,
+          requestBodySize: payload.byteLength,
           statusCode: data.statusCode,
           statusMessage: data.statusMessage,
           responseHeaders: data.headers,
@@ -8903,6 +9490,7 @@
           }
           saveSendTabState();
           renderSendTabs();
+          scheduleSendExportUpdate();
           toast('cURL command parsed!', 'success');
         }
       }
