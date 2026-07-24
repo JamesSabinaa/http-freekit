@@ -784,6 +784,7 @@
       if (idx !== -1) {
         const req = requests[idx];
         if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
+        if (!confirm('Are you sure you want to delete this request?')) return;
         requests.splice(idx, 1);
         closeDetail();
         applyFilter();
@@ -8208,6 +8209,14 @@
       if (e.key === 'Delete' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         clearTraffic();
+        return;
+      }
+
+      // Delete: Confirm deletion of the selected exchange
+      if (e.key === 'Delete' && !e.shiftKey && !e.altKey && !isInput && selectedRequestId) {
+        e.preventDefault();
+        deleteSelectedRequest();
+        return;
       }
 
 
