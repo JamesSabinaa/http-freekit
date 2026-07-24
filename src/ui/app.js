@@ -1527,8 +1527,8 @@
           </div>
           <div class="detail-card-body">
             <div id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">
-              <div id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
-              <pre class="body-content" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+              <div class="response-body-resizable" id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};"></div>
+              <pre class="body-content response-body-resizable" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
             </div>
           </div>
         </div>`;

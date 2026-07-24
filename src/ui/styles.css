@@ -1327,6 +1327,18 @@
       counter-reset: line;
       tab-size: 2;
     }
+
+    .response-body-resizable {
+      min-height: 80px;
+      max-height: 70vh;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+
+    div.response-body-resizable {
+      overflow: hidden;
+    }
+
     .body-line {
       display: block;
     }
