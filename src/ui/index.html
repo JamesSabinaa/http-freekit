@@ -340,10 +340,24 @@
       </div>
 
       <!-- Settings Panel -->
-      <div class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" style="overflow-y:auto;">
-        <div style="max-width:800px;margin:0 auto;padding:40px;">
-          <h1 style="font-size:38px;font-weight:bold;margin-bottom:30px;letter-spacing:-1px;">Settings</h1>
-          <div class="card" style="margin-bottom:20px;">
+      <div class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
+        <div class="settings-shell">
+          <h1 class="settings-title">Settings</h1>
+          <div class="settings-layout">
+            <nav class="settings-nav" aria-label="Settings sections">
+              <button type="button" class="settings-nav-item is-active" data-settings-nav="general" aria-current="page" onclick="switchSettingsSection('general')">General</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="traffic" onclick="switchSettingsSection('traffic')">Traffic</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="proxy" onclick="switchSettingsSection('proxy')">Proxy &amp; Network</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="tls" onclick="switchSettingsSection('tls')">TLS &amp; Certificates</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="lists" onclick="switchSettingsSection('lists')">Lists</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="schemas" onclick="switchSettingsSection('schemas')">Schemas</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="integrations" onclick="switchSettingsSection('integrations')">Integrations</button>
+              <button type="button" class="settings-nav-item" data-settings-nav="about" onclick="switchSettingsSection('about')">About</button>
+            </nav>
+            <section class="settings-content" aria-labelledby="settingsSectionTitle">
+              <h2 class="settings-content-title" id="settingsSectionTitle">General</h2>
+              <div class="settings-card-list" id="settingsSectionContent">
+          <div class="card settings-card" data-settings-section="traffic" style="margin-bottom:20px;">
             <div class="card-header">Traffic View</div>
             <div class="settings-row">
               <span class="settings-label">Hide TUNNEL / CONNECT requests</span>
@@ -360,7 +374,7 @@
               Filters browser font requests to fonts.googleapis.com and fonts.gstatic.com from the traffic list and exports.
             </p>
           </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="schemas" style="margin-bottom:20px;">
             <div class="card-header">Protobuf Schemas</div>
             <div class="settings-row">
               <span class="settings-label">Loaded Schemas</span>
@@ -374,7 +388,7 @@
               Loaded schemas are used locally to decode protobuf and gRPC bodies with field names.
             </p>
           </div>
-          <div class="card" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
+          <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;"><div class="card-header">Proxy Settings</div><div class="settings-row"><span class="settings-label">Proxy Port</span><span class="settings-value" id="settingsProxyPort">loading...</span></div><div class="settings-row"><span class="settings-label">API Port</span><span class="settings-value" id="settingsApiPort">loading...</span></div><div class="settings-row"><span class="settings-label">Status</span><span class="settings-value" id="settingsStatus" style="color:#4caf7d;">Connecting...</span></div>
 <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:12px 0;">
   <span class="settings-label">Port Range</span>
   <div style="display:flex;gap:8px;align-items:center;">
@@ -386,7 +400,7 @@
   <p style="font-size:11px;color:var(--text-lowlight);line-height:1.4;">When starting, the proxy will use the first available port in this range. Changes take effect on restart.</p>
 </div>
 <p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">The proxy listens for HTTP and HTTPS traffic. Configure your browser or application to use this address as its proxy server.</p></div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">TLS Passthrough</div>
   <p style="font-size:13px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Hostnames listed here will have their TLS connections passed through directly without interception. Useful for certificate-pinned services.
@@ -397,7 +411,7 @@
     <button class="btn" onclick="addTlsPassthrough()" style="font-size:11px;padding:4px 10px;">Add</button>
   </div>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;">
   <div class="card-header">HTTP/2</div>
   <div class="settings-row">
     <span class="settings-label">HTTP/2 Support</span>
@@ -411,7 +425,7 @@
     Controls whether the proxy advertises HTTP/2 support via ALPN during TLS negotiation.
   </p>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">TLS Fingerprint</div>
   <div class="settings-row">
     <span class="settings-label">Upstream TLS Profile</span>
@@ -431,7 +445,7 @@
     to block non-browser TLS — select a browser profile or use passthrough to bypass this.
   </p>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;">
   <div class="card-header">Connection Settings</div>
   <div class="form-group" style="margin-bottom:12px;">
     <label>Upstream Proxy</label>
@@ -474,7 +488,7 @@
     Configure how intercepted traffic is forwarded. You can route traffic through an upstream proxy for corporate networks, VPNs, or Tor.
   </p>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">Client Certificates</div>
   <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Configure client certificates to send when connecting to specific hosts. Useful for mutual TLS (mTLS) authentication.
@@ -487,7 +501,7 @@
     <button class="btn" onclick="addClientCert()" style="font-size:11px;">Add</button>
   </div>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">Trusted CA Certificates</div>
   <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Additional CA certificates to trust when connecting to upstream servers.
@@ -499,7 +513,7 @@
     <button class="btn" onclick="addTrustedCA()" style="font-size:11px;">Add</button>
   </div>
 </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">HTTPS Validation Whitelist</div>
   <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Hosts listed here will skip strict HTTPS certificate validation. Useful for self-signed certificates on internal services.
@@ -510,8 +524,8 @@
     <button class="btn" onclick="addHttpsWhitelist()" style="font-size:11px;">Add</button>
   </div>
 </div>
-          <div class="card" style="margin-bottom:20px;"><div class="card-header">Certificate Authority</div><div class="settings-row"><span class="settings-label">CA Fingerprint</span><span class="settings-value" style="font-size:10px;word-break:break-all;max-width:400px;" id="settingsCaFingerprint">--</span></div><div class="settings-row"><span class="settings-label">Download</span><button class="btn" onclick="downloadCert()">Download .pem</button></div><p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">To intercept HTTPS from manually configured clients, install this CA cert. Browsers launched from the Intercept page are configured automatically.</p></div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;"><div class="card-header">Certificate Authority</div><div class="settings-row"><span class="settings-label">CA Fingerprint</span><span class="settings-value" style="font-size:10px;word-break:break-all;max-width:400px;" id="settingsCaFingerprint">--</span></div><div class="settings-row"><span class="settings-label">Download</span><button class="btn" onclick="downloadCert()">Download .pem</button></div><p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">To intercept HTTPS from manually configured clients, install this CA cert. Browsers launched from the Intercept page are configured automatically.</p></div>
+          <div class="card settings-card is-active" data-settings-section="general" style="margin-bottom:20px;">
             <div class="card-header">Theme</div>
             <div class="settings-row">
               <span class="settings-label">Appearance</span>
@@ -537,7 +551,7 @@
               <div id="customThemeSwatches" style="display:none;margin-top:10px;"></div>
             </div>
           </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="schemas" style="margin-bottom:20px;">
             <div class="card-header">API Specifications</div>
             <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
               Upload OpenAPI or Swagger specs to get auto-documentation for matching requests in the detail view.
@@ -547,7 +561,7 @@
               <button class="btn" onclick="uploadApiSpec()" style="font-size:12px;">Upload OpenAPI/Swagger Spec</button>
             </div>
           </div>
-          <div class="card" style="margin-bottom:20px;">
+          <div class="card settings-card" data-settings-section="integrations" style="margin-bottom:20px;">
             <div class="card-header">MCP Server (AI Integration)</div>
             <div class="settings-row">
               <span class="settings-label">Status</span>
@@ -573,7 +587,10 @@
               <pre id="mcpClaudeConfig" style="margin-top:8px;background:var(--bg-input);padding:12px;border-radius:4px;font-family:var(--font-mono);font-size:11px;overflow-x:auto;white-space:pre;color:var(--text-main);"></pre>
             </details>
           </div>
-          <div class="card" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div><div class="settings-row" id="updateCheckRow" style="display:none;"><span class="settings-label">Updates</span><span class="settings-value"><button class="btn" onclick="window._checkForUpdates && window._checkForUpdates()" style="font-size:12px;">Check for Updates</button></span></div></div>
+          <div class="card settings-card" data-settings-section="about" style="margin-bottom:20px;"><div class="card-header">About</div><div class="settings-row"><span class="settings-label">Version</span><span class="settings-value">1.0.0</span></div><div class="settings-row"><span class="settings-label">Server</span><span class="settings-value">HTTP FreeKit</span></div><div class="settings-row"><span class="settings-label">License</span><span class="settings-value">MIT</span></div><div class="settings-row" id="updateCheckRow" style="display:none;"><span class="settings-label">Updates</span><span class="settings-value"><button class="btn" onclick="window._checkForUpdates && window._checkForUpdates()" style="font-size:12px;">Check for Updates</button></span></div></div>
+              </div>
+            </section>
+          </div>
         </div>
       </div>
 

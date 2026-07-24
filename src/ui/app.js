@@ -8263,6 +8263,45 @@
     }
 
     // ============ PANELS ============
+    const SETTINGS_SECTION_TITLES = Object.freeze({
+      general: 'General',
+      traffic: 'Traffic',
+      proxy: 'Proxy & Network',
+      tls: 'TLS & Certificates',
+      lists: 'Lists',
+      schemas: 'Schemas',
+      integrations: 'Integrations',
+      about: 'About'
+    });
+
+    function switchSettingsSection(sectionId, updateHash = true) {
+      const nextSection = Object.hasOwn(SETTINGS_SECTION_TITLES, sectionId) ? sectionId : 'general';
+
+      document.querySelectorAll('[data-settings-nav]').forEach(item => {
+        const isActive = item.dataset.settingsNav === nextSection;
+        item.classList.toggle('is-active', isActive);
+        if (isActive) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+      });
+
+      document.querySelectorAll('[data-settings-section]').forEach(card => {
+        card.classList.toggle('is-active', card.dataset.settingsSection === nextSection);
+      });
+
+      const title = document.getElementById('settingsSectionTitle');
+      if (title) title.textContent = SETTINGS_SECTION_TITLES[nextSection];
+
+      localStorage.setItem('settingsActiveSection', nextSection);
+      const panel = document.getElementById('panel-settings');
+      if (panel) panel.scrollTop = 0;
+
+      if (updateHash) {
+        window.location.hash = '#/settings/' + nextSection;
+      }
+
+      return nextSection;
+    }
+
     // Map from hash routes to panel IDs (and vice versa)
     const HASH_TO_PANEL = {
       'intercept': 'intercept',
@@ -8311,7 +8350,12 @@
       }
 
       // Update URL hash for bookmarkability
-      const hashRoute = PANEL_TO_HASH[panelId] || panelId;
+      let hashRoute = PANEL_TO_HASH[panelId] || panelId;
+      if (panelId === 'settings') {
+        const savedSection = localStorage.getItem('settingsActiveSection') || 'general';
+        const activeSection = switchSettingsSection(savedSection, false);
+        hashRoute += '/' + activeSection;
+      }
       window.location.hash = '#/' + hashRoute;
     }
 
@@ -8358,6 +8402,24 @@
             selectRequest(requestId);
           }
         }, 1000);
+        return;
+      }
+
+      const settingsMatch = hash.match(/^settings(?:\/([^/]+))?$/);
+      if (settingsMatch) {
+        const el = document.querySelector('.sidebar-item[data-panel="settings"]');
+        if (el) {
+          document.querySelectorAll('.sidebar-item').forEach(item => {
+            item.classList.remove('active');
+            item.setAttribute('aria-selected', 'false');
+          });
+          el.classList.add('active');
+          el.setAttribute('aria-selected', 'true');
+          document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+          document.getElementById('panel-settings')?.classList.add('active');
+        }
+        const requestedSection = settingsMatch[1] || localStorage.getItem('settingsActiveSection') || 'general';
+        switchSettingsSection(requestedSection, false);
         return;
       }
 

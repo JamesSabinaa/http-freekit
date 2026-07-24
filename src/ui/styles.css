@@ -2224,6 +2224,92 @@
     /* ============================================================
        24. Settings Section
        ============================================================ */
+    #panel-settings {
+      overflow-y: auto;
+    }
+
+    .settings-shell {
+      width: min(1120px, 100%);
+      margin: 0 auto;
+      padding: 40px;
+      box-sizing: border-box;
+    }
+
+    .settings-title {
+      margin: 0 0 30px;
+      font-size: 38px;
+      font-weight: bold;
+      letter-spacing: -1px;
+    }
+
+    .settings-layout {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 32px;
+      align-items: start;
+    }
+
+    .settings-nav {
+      position: sticky;
+      top: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .settings-nav-item {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-lowlight);
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      text-align: left;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .settings-nav-item:hover {
+      background: var(--bg-lowlight);
+      color: var(--text-main);
+    }
+
+    .settings-nav-item.is-active {
+      border-color: color-mix(in srgb, var(--pop-color) 42%, transparent);
+      background: color-mix(in srgb, var(--pop-color) 14%, transparent);
+      color: var(--pop-color);
+      font-weight: 600;
+    }
+
+    .settings-nav-item:focus-visible {
+      outline: 2px solid var(--pop-color);
+      outline-offset: 2px;
+    }
+
+    .settings-content {
+      min-width: 0;
+      min-height: 420px;
+    }
+
+    .settings-content-title {
+      margin: 2px 0 18px;
+      color: var(--text-main);
+      font-family: var(--font-heading);
+      font-size: 24px;
+      line-height: 1.2;
+    }
+
+    .settings-card {
+      display: none;
+    }
+
+    .settings-card.is-active {
+      display: block;
+    }
+
     .settings-section {
       background: var(--bg-main);
       border-radius: 4px;
@@ -2256,6 +2342,30 @@
       font-family: var(--font-mono);
       font-size: 13px;
       color: var(--pop-color);
+    }
+
+    @media (max-width: 900px) {
+      .settings-shell {
+        padding: 28px;
+      }
+
+      .settings-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 22px;
+      }
+
+      .settings-nav {
+        position: static;
+        flex-direction: row;
+        padding-bottom: 4px;
+        overflow-x: auto;
+      }
+
+      .settings-nav-item {
+        flex: 0 0 auto;
+        width: auto;
+        white-space: nowrap;
+      }
     }
 
     /* ============================================================
