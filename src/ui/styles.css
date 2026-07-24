@@ -3630,6 +3630,11 @@
     }
     .send-tab:hover { color: var(--text-main); }
     .send-tab.active { color: var(--text-main); border-bottom-color: var(--pop-color); }
+    .send-tab > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .send-tab .send-tab-close {
       align-items: center;
       background: transparent;
