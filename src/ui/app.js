@@ -1726,7 +1726,7 @@
         <div class="detail-card-body">
           <div id="exportSnippetContent" style="cursor:pointer;" onclick="copyExportSnippet()" title="Click to copy">
             <div id="exportSnippetContent-monaco" style="min-height:120px;"></div>
-            <pre class="body-content" id="exportSnippetContent-fallback" style="display:none;"></pre>
+            <pre class="body-content" id="exportSnippetContent-fallback" style="display:none;max-height:none;"></pre>
           </div>
         </div>
       </div>`;
@@ -1890,10 +1890,15 @@
         }
         activeBodyEditors[monacoId] = editor;
         const container = document.getElementById(monacoId);
-        const lineCount = editor.getModel().getLineCount();
-        const desiredHeight = Math.min(Math.max(lineCount * 18 + 16, 120), Math.round(window.innerHeight * 0.7));
-        if (container) container.style.height = desiredHeight + 'px';
-        editor.layout();
+        if (!container) return;
+
+        const resizeToContent = () => {
+          container.style.height = Math.max(Math.ceil(editor.getContentHeight()), 120) + 'px';
+        };
+        resizeToContent();
+        editor.onDidContentSizeChange((event) => {
+          if (event.contentHeightChanged) resizeToContent();
+        });
       });
     }
 
