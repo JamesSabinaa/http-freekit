@@ -2479,9 +2479,9 @@
       align-items: center;
       gap: 8px;
       user-select: none;
+      cursor: pointer;
     }
 
-    /* Only the heading label and chevron are clickable */
     .detail-card-heading {
       margin-left: auto;
       text-transform: uppercase;
@@ -2491,12 +2491,12 @@
       letter-spacing: 0.5px;
       cursor: pointer;
     }
-    .detail-card-heading:hover { color: var(--pop-color); }
+    .detail-card-header:hover .detail-card-heading { color: var(--pop-color); }
 
     .collapse-chevron {
       cursor: pointer;
     }
-    .collapse-chevron:hover { color: var(--pop-color); }
+    .detail-card-header:hover .collapse-chevron { color: var(--pop-color); }
 
     .detail-card-body { padding: 0 20px 20px; }
 
@@ -2529,7 +2529,7 @@
       padding: 4px 10px;
       cursor: pointer;
     }
-    .collapse-chevron:hover { color: var(--pop-color); }
+    .detail-card-header:hover .collapse-chevron { color: var(--pop-color); }
 
     /* Pills (method+host, status code, content-type, size) */
     .detail-pill {

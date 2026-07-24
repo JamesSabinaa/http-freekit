@@ -850,23 +850,23 @@
     // Track collapsed state per card so chevron icon updates
     const _cardCollapsed = {};
 
-    function toggleCardCollapse(cardId) {
-      const el = document.getElementById(cardId);
+    function toggleCardCollapse(cardOrId) {
+      const el = typeof cardOrId === 'string' ? document.getElementById(cardOrId) : cardOrId;
       if (!el) return;
-      _cardCollapsed[cardId] = !_cardCollapsed[cardId];
-      el.classList.toggle('collapsed');
-      el.setAttribute('aria-expanded', String(!_cardCollapsed[cardId]));
+      const isCollapsed = el.classList.toggle('collapsed');
+      if (el.id) _cardCollapsed[el.id] = isCollapsed;
+      el.setAttribute('aria-expanded', String(!isCollapsed));
       const chevron = el.querySelector('.collapse-chevron');
-      if (chevron) chevron.innerHTML = _cardCollapsed[cardId] ? '&#9660;' : '&#9650;';
+      if (chevron) chevron.innerHTML = isCollapsed ? '&#9660;' : '&#9650;';
     }
 
-    // Delegate clicks on heading/chevron to toggle their parent card
+    // Delegate clicks on the full header bar, excluding controls within it
     document.addEventListener('click', function(e) {
-      const target = e.target.closest('.detail-card-heading, .collapse-chevron');
-      if (!target) return;
-      const card = target.closest('.detail-card');
-      if (!card || !card.id) return;
-      toggleCardCollapse(card.id);
+      const header = e.target.closest('.detail-card-header');
+      if (!header || e.target.closest('button, select, input, textarea, a')) return;
+      const card = header.closest('.detail-card');
+      if (!card) return;
+      toggleCardCollapse(card);
     });
 
     // Track collapsed state for individual headers
