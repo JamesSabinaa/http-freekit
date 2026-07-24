@@ -3890,7 +3890,12 @@ export class ProxyServer {
     if (target === 'chromewebstore.googleapis.com' &&
       path.startsWith('/v2/items/-/storemetadata:batchget')
     ) return true;
-    if (target === 'www.gstatic.com' && path.startsWith('/images/branding/googlelogo')) return true;
+    if (target === 'www.gstatic.com' && (
+      path.startsWith('/og/_/js') ||
+      path.startsWith('/images/branding/googlelogo') ||
+      path === '/images/branding/searchlogo/ico/favicon.ico' ||
+      path.startsWith('/images/branding/searchlogo/ico/favicon.ico?')
+    )) return true;
     if (target === 'play.google.com' && (path === '/log' || path.startsWith('/log?'))) return true;
     if (target === 'ogads-pa.clients6.google.com' &&
       path.startsWith('/$rpc/google.internal.onegoogle.asyncdata.v1.asyncdataservice/getasyncdata')
@@ -3900,6 +3905,9 @@ export class ProxyServer {
       path.startsWith('/async/folae') ||
       path.startsWith('/async/ddljson') ||
       path.startsWith('/async/newtab_ogb') ||
+      path.startsWith('/xjs/_/js') ||
+      path === '/complete/s' ||
+      path.startsWith('/complete/s?') ||
       path.startsWith('/complete/search') ||
       path.startsWith('/gen_204') ||
       path.startsWith('/chrome/')

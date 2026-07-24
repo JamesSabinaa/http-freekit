@@ -152,6 +152,38 @@ test('suppresses UK domain reliability uploads only when hostname and path match
   assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host: 'example.co.uk' }), false);
 });
 
+test('suppresses Google view-screen noise URLs', () => {
+  const proxy = new ProxyServer(null);
+  const traffic = {
+    source: 'Chrome',
+    protocol: 'https'
+  };
+
+  const suppressed = [
+    ['www.gstatic.com', '/og/_/js/k=og.og2.en_US.example'],
+    ['www.google.com', '/xjs/_/js/k=xjs.s.en.example'],
+    ['www.google.com', '/complete/s'],
+    ['www.google.com', '/complete/s?client=chrome'],
+    ['www.gstatic.com', '/images/branding/searchlogo/ico/favicon.ico'],
+    ['www.gstatic.com', '/images/branding/searchlogo/ico/favicon.ico?cache=1']
+  ];
+
+  for (const [host, path] of suppressed) {
+    assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host, path }), true, `${host}${path}`);
+  }
+
+  assert.equal(proxy._shouldSuppressTrafficLog({
+    ...traffic,
+    host: 'www.gstatic.com',
+    path: '/images/branding/searchlogo/ico/logo.png'
+  }), false);
+  assert.equal(proxy._shouldSuppressTrafficLog({
+    ...traffic,
+    host: 'www.google.com',
+    path: '/xjs/example'
+  }), false);
+});
+
 test('reuses an upstream keep-alive agent until the proxy changes', () => {
   const proxy = new ProxyServer(null);
   proxy.setUpstreamProxy({ host: 'proxy-one.test', port: 8080, type: 'http' });
