@@ -320,18 +320,37 @@ export class AndroidAdbInterceptor {
   }
 
   /**
-   * Remove HTTP proxy from the device.
+   * Read the current global HTTP proxy so it can be restored later.
    */
-  _clearProxy(deviceId) {
+  _getProxy(deviceId) {
     try {
-      this._adb(deviceId, ['shell', 'settings', 'put', 'global', 'http_proxy', ':0'], {
+      const value = this._adb(deviceId, ['shell', 'settings', 'get', 'global', 'http_proxy'], {
+        timeout: 5000
+      });
+      return { success: true, value: String(value).trim() };
+    } catch (err) {
+      console.error(`[Interceptor] Failed to read proxy on ${deviceId}:`, err.message);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Restore the global HTTP proxy value that existed before activation.
+   */
+  _restoreProxy(deviceId, previousProxy) {
+    const wasUnset = previousProxy == null || previousProxy === '' || previousProxy === 'null';
+    const settingsArgs = wasUnset
+      ? ['shell', 'settings', 'delete', 'global', 'http_proxy']
+      : ['shell', 'settings', 'put', 'global', 'http_proxy', previousProxy];
+    try {
+      this._adb(deviceId, settingsArgs, {
         stdio: 'ignore',
         timeout: 5000
       });
-      console.log(`[Interceptor] Proxy cleared on ${deviceId}`);
+      console.log(`[Interceptor] Previous proxy restored on ${deviceId}`);
       return true;
     } catch (err) {
-      console.error(`[Interceptor] Failed to clear proxy on ${deviceId}:`, err.message);
+      console.error(`[Interceptor] Failed to restore proxy on ${deviceId}:`, err.message);
       return false;
     }
   }
@@ -425,6 +444,7 @@ export class AndroidAdbInterceptor {
     let tunnelActive = false;
     let appActivationError = null;
     let remoteCertPath = null;
+    let previousProxy = null;
 
     if (useHttpToolkitApp) {
       const appActivation = this._activateHttpToolkitApp(deviceId, proxyPort);
@@ -440,6 +460,12 @@ export class AndroidAdbInterceptor {
     }
 
     if (mode !== 'http-toolkit-app') {
+      const currentProxy = this._getProxy(deviceId);
+      if (!currentProxy.success) {
+        return { success: false, error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}` };
+      }
+      previousProxy = currentProxy.value;
+
       // Push CA certificate for the global proxy fallback.
       remoteCertPath = this._pushCaCert(deviceId);
 
@@ -460,7 +486,8 @@ export class AndroidAdbInterceptor {
       mode,
       appInstalled,
       tunnelActive,
-      appActivationError
+      appActivationError,
+      previousProxy
     });
     this.active = true;
 
@@ -503,7 +530,7 @@ export class AndroidAdbInterceptor {
       if (activeInfo?.mode === 'http-toolkit-app') {
         this._deactivateHttpToolkitApp(deviceId, activeInfo.proxyPort);
       } else {
-        this._clearProxy(deviceId);
+        this._restoreProxy(deviceId, activeInfo?.previousProxy);
         this._removeCaCert(deviceId);
       }
       this.activatedDevices.delete(deviceId);
@@ -514,7 +541,7 @@ export class AndroidAdbInterceptor {
         if (activeInfo?.mode === 'http-toolkit-app') {
           this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
         } else {
-          this._clearProxy(serial);
+          this._restoreProxy(serial, activeInfo?.previousProxy);
           this._removeCaCert(serial);
         }
       }

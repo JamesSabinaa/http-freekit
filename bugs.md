@@ -754,6 +754,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-042 — High — Android fallback destroys the device's previous global proxy
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/android-adb-interceptor.js:308-319` overwrites `global http_proxy` without reading its prior value; cleanup at `:325-335` always writes `:0`.
 - Impact: a corporate, VPN, or other debugging proxy configured before FreeKit is permanently disabled on Stop.
 - Reproduction: configure a different Android global proxy, activate the FreeKit fallback, deactivate it, and read `global http_proxy`.
