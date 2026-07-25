@@ -986,6 +986,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-124 — Medium — The JVM API rejects numeric process IDs
 
+- Status: **Fixed**.
+
 - Evidence: `_getRunningProcesses()` stores PIDs as strings at `src/interceptors/jvm-interceptor.js:46-60`; activation compares the caller's value with strict equality at `:223-249` without normalization.
 - Impact: the natural JSON body `{ "pid": 1234 }` returns process not found even though `{ "pid": "1234" }` selects the same running JVM.
 - Reproduction: submit both forms for an existing JVM and compare the results.

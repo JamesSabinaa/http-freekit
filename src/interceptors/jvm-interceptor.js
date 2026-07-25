@@ -426,7 +426,7 @@ public class AttachProxy {
   }
 
   async activate(proxyPort, options = {}) {
-    const { pid } = options;
+    const pid = options.pid == null ? null : String(options.pid);
 
     if (!pid) {
       // No specific process — return metadata with process list for UI selection
