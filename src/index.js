@@ -165,15 +165,23 @@ async function main() {
   console.log('');
 
   // Graceful shutdown
-  const shutdown = async () => {
-    console.log('\n[Shutdown] Stopping servers...');
-    await mcpBridge.stop();
-    await interceptors.deactivateAll();
-    await proxy.stop();
-    await api.stop();
-    console.log('[Shutdown] Goodbye!');
-    process.exit(0);
+  let shutdownPromise = null;
+  const shutdown = () => {
+    if (!shutdownPromise) {
+      shutdownPromise = (async () => {
+        console.log('\n[Shutdown] Stopping servers...');
+        await mcpBridge.stop();
+        await interceptors.deactivateAll();
+        await proxy.stop();
+        await api.stop();
+        console.log('[Shutdown] Goodbye!');
+        process.exit(0);
+      })();
+    }
+    return shutdownPromise;
   };
+
+  api.setShutdownHandler(shutdown);
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

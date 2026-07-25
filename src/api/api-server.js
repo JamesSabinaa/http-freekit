@@ -49,6 +49,7 @@ export class ApiServer {
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
     this.authToken = options.authToken || null;
+    this.onShutdown = options.onShutdown || null;
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
     this._autoRotateInFlight = false;
     this._autoRotatePromise = null;
@@ -1227,8 +1228,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Shutdown
     router.post('/api/shutdown', (req, res) => {
+      if (typeof this.onShutdown !== 'function') {
+        return res.status(503).json({ error: 'Graceful shutdown is not configured' });
+      }
       res.json({ success: true });
-      setTimeout(() => process.exit(0), 500);
+      setImmediate(() => {
+        Promise.resolve(this.onShutdown()).catch(err => {
+          console.error('[API] Graceful shutdown failed:', err.message);
+        });
+      });
     });
 
     // Send a test request through the proxy
@@ -1461,6 +1469,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   setMcpBridge(bridge) {
     this.mcpBridge = bridge;
+  }
+
+  setShutdownHandler(handler) {
+    this.onShutdown = handler;
   }
 
   stop() {

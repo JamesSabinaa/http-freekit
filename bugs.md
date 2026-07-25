@@ -57,6 +57,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-007 — Medium — `/api/shutdown` bypasses graceful cleanup
 
+- Status: **Fixed**.
+
 - Evidence: `src/api/api-server.js:1119-1123` calls `process.exit(0)` directly. The actual shutdown path at `src/index.js:164-172` first stops MCP, deactivates interceptors, and closes both servers.
 - Impact: the desktop shutdown request can leave interceptor processes, system/device proxy configuration, and temporary profiles behind.
 - Reproduction: activate an interceptor and call `/api/shutdown`; the centralized cleanup handler is never invoked.
