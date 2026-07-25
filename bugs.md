@@ -107,6 +107,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-010 — High — Upstream HTTPS certificates are never verified
 
+- Status: **Fixed**.
+
 - Evidence: `_getUpstreamTlsOptions()` forces `rejectUnauthorized: false` at `src/proxy/proxy-server.js:3036-3040`; H2, mock forwarding, webhooks, and Send repeat it at `:1160-1166`, `:2258-2264`, `:2561-2564`, `:3436-3442`, `:3564-3570`, and `src/api/api-server.js:1180-1187`. `httpsWhitelist` is only stored/reported at `proxy-server.js:257-259,4219-4221`.
 - Impact: invalid, expired, wrong-host, and self-signed upstream certificates are accepted for every host even when the whitelist is empty, allowing silent upstream interception.
 - Reproduction: proxy an HTTPS origin using an untrusted certificate without adding its host to the whitelist; the request succeeds.

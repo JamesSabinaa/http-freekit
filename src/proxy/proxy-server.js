@@ -258,7 +258,19 @@ export class ProxyServer {
 
   setHttpsWhitelist(hosts) {
     this.httpsWhitelist = hosts || [];
+    this._destroyUpstreamAgent();
+    this._closeAllH2Sessions();
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
+  }
+
+  _isHttpsWhitelisted(hostname) {
+    const normalize = (value) => String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^\[|\]$/g, '')
+      .replace(/\.$/, '');
+    const target = normalize(hostname);
+    return target.length > 0 && this.httpsWhitelist.some(host => normalize(host) === target);
   }
 
   setTlsFingerprint(preset) {
@@ -703,7 +715,7 @@ export class ProxyServer {
         const options = buildOptions();
         const requestLib = this.upstreamProxy?.type === 'https' ? https : http;
         if (requestLib === https) {
-          options.rejectUnauthorized = false;
+          Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
         }
         const proxyReq = requestLib.request(options, (proxyRes) => {
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
@@ -1171,7 +1183,7 @@ export class ProxyServer {
                 path: req.url,
                 method: req.method,
                 headers: reqHeaders,
-                rejectUnauthorized: false
+                ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
               }, (fwdRes) => {
                 const responseBody = [];
                 fwdRes.on('data', chunk => responseBody.push(chunk));
@@ -2269,7 +2281,7 @@ export class ProxyServer {
           path,
           method,
           headers: fwdHeaders,
-          rejectUnauthorized: false
+          ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
         }, (fwdRes) => {
           const responseBody = [];
           fwdRes.on('data', chunk => responseBody.push(chunk));
@@ -2567,7 +2579,7 @@ export class ProxyServer {
       let settled = false;
 
       const session = http2.connect(url, {
-        rejectUnauthorized: false,
+        ...this._getUpstreamTlsOptions(hostname),
         ALPNProtocols: ['h2']
       });
 
@@ -3044,7 +3056,7 @@ export class ProxyServer {
   _getUpstreamTlsOptions(hostname, clientHelloTls) {
     const base = {
       servername: net.isIP(hostname) ? undefined : hostname,
-      rejectUnauthorized: false,
+      rejectUnauthorized: !this._isHttpsWhitelisted(hostname),
     };
 
     // Passthrough mode — mirror the client's exact TLS parameters
@@ -3113,7 +3125,7 @@ export class ProxyServer {
     } else {
       this._upstreamAgent = new HttpsProxyAgent(proxyUrl, {
         ...agentOptions,
-        rejectUnauthorized: false
+        rejectUnauthorized: !this._isHttpsWhitelisted(this.upstreamProxy.host)
       });
     }
     this._upstreamAgentKey = agentKey;
@@ -3447,7 +3459,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,
           headers: reqHeaders,
-          rejectUnauthorized: false
+          ...(isHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
         }, (proxyRes) => {
           const responseBody = [];
           proxyRes.on('data', chunk => responseBody.push(chunk));
@@ -3575,7 +3587,7 @@ export class ProxyServer {
           path: webhookTarget.pathname + webhookTarget.search,
           method: 'POST',
           headers: webhookHeaders,
-          rejectUnauthorized: false
+          ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
         });
         webhookReq.on('error', (err) => {
           console.error('[Proxy] Webhook error:', err.message);

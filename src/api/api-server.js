@@ -1326,7 +1326,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         path: parsedUrl.pathname + parsedUrl.search,
         method,
         headers,
-        rejectUnauthorized: false
+        ...(isHttps ? this.proxy._getUpstreamTlsOptions(parsedUrl.hostname) : {})
       };
 
       const startTime = Date.now();
