@@ -7251,15 +7251,81 @@
     }
 
     function cloneSendFormFields(fields, includeFiles = true) {
-      return (fields || []).map((field) => ({
-        key: field.key || '',
-        value: field.value || '',
-        enabled: field.enabled !== false,
-        type: field.type === 'file' ? 'file' : 'text',
-        fileName: field.file?.name || field.fileName || '',
-        fileType: field.file?.type || field.fileType || '',
-        ...(includeFiles && field.file ? { file: field.file } : {})
-      }));
+      return (Array.isArray(fields) ? fields : [])
+        .filter(field => field && typeof field === 'object' && !Array.isArray(field))
+        .map((field) => ({
+          key: String(field.key ?? ''),
+          value: String(field.value ?? ''),
+          enabled: field.enabled !== false,
+          type: field.type === 'file' ? 'file' : 'text',
+          fileName: String(field.file?.name || field.fileName || ''),
+          fileType: String(field.file?.type || field.fileType || ''),
+          ...(includeFiles && field.file ? { file: field.file } : {})
+        }));
+    }
+
+    function normalizeSendHeaderRows(headers) {
+      const rows = [];
+      if (Array.isArray(headers)) {
+        rows.push(...headers);
+      } else if (headers && typeof headers === 'object') {
+        for (const [key, storedValue] of Object.entries(headers)) {
+          const values = Array.isArray(storedValue) ? storedValue : [storedValue];
+          values.forEach(value => rows.push({ key, value, enabled: true }));
+        }
+      }
+
+      return rows
+        .filter(row => row && typeof row === 'object' && !Array.isArray(row))
+        .map(row => ({
+          key: String(row.key ?? ''),
+          value: String(row.value ?? ''),
+          enabled: row.enabled !== false
+        }));
+    }
+
+    function normalizeStoredSendTab(tab, fallbackId, includeFiles = true) {
+      if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return null;
+      const bodyTypes = new Set(['raw', 'urlencoded', 'multipart']);
+      const bodyFormats = new Set(['text', 'json', 'xml', 'html', 'css', 'javascript', 'markdown', 'yaml']);
+      const savedId = typeof tab.id === 'string' && tab.id.trim() ? tab.id : fallbackId;
+      return {
+        id: savedId,
+        method: typeof tab.method === 'string' && tab.method ? tab.method : 'GET',
+        url: typeof tab.url === 'string' ? tab.url : '',
+        headers: normalizeSendHeaderRows(tab.headers),
+        body: typeof tab.body === 'string' ? tab.body : '',
+        bodyType: bodyTypes.has(tab.bodyType) ? tab.bodyType : 'raw',
+        bodyFormat: bodyFormats.has(tab.bodyFormat) ? tab.bodyFormat : 'text',
+        urlEncodedFields: cloneSendFormFields(tab.urlEncodedFields, includeFiles),
+        multipartFields: cloneSendFormFields(tab.multipartFields, includeFiles),
+        multipartBoundary: typeof tab.multipartBoundary === 'string' ? tab.multipartBoundary : '',
+        response: tab.response && typeof tab.response === 'object' && !Array.isArray(tab.response)
+          ? tab.response
+          : null
+      };
+    }
+
+    function normalizeStoredSendTabs(tabs) {
+      if (!Array.isArray(tabs)) return [];
+      const reservedIds = new Set(tabs
+        .filter(tab => tab && typeof tab === 'object' && !Array.isArray(tab))
+        .map(tab => typeof tab.id === 'string' && tab.id.trim() ? tab.id : null)
+        .filter(Boolean));
+      const usedIds = new Set();
+      let generatedId = 1;
+
+      return tabs.flatMap(tab => {
+        if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return [];
+        let id = typeof tab.id === 'string' && tab.id.trim() && !usedIds.has(tab.id) ? tab.id : null;
+        if (!id) {
+          do { id = `tab-${generatedId++}`; } while (reservedIds.has(id) || usedIds.has(id));
+        }
+        usedIds.add(id);
+        const normalized = normalizeStoredSendTab(tab, id, false);
+        normalized.id = id;
+        return [normalized];
+      });
     }
 
     function createEmptySendTab() {
@@ -7315,15 +7381,9 @@
         const saved = safeLocalStorageGet('http-freekit-send-tabs');
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            sendTabs = parsed.map(t => ({
-              ...t,
-              bodyType: t.bodyType || 'raw',
-              urlEncodedFields: cloneSendFormFields(t.urlEncodedFields, false),
-              multipartFields: cloneSendFormFields(t.multipartFields, false),
-              multipartBoundary: t.multipartBoundary || '',
-              response: null
-            }));
+          const restoredTabs = normalizeStoredSendTabs(parsed);
+          if (restoredTabs.length > 0) {
+            sendTabs = restoredTabs;
             sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, Number(String(tab.id).replace('tab-', '')) || 0), 0);
             const savedActive = safeLocalStorageGet('http-freekit-send-active');
             if (savedActive && sendTabs.find(t => t.id === savedActive)) {
@@ -7337,9 +7397,10 @@
     }
 
     function loadSendTabState(tab) {
+      tab = normalizeStoredSendTab(tab, activeSendTab || 'tab-1') || normalizeStoredSendTab({}, 'tab-1');
       document.getElementById('sendMethod').value = tab.method || 'GET';
       document.getElementById('sendUrl').value = tab.url || '';
-      sendHeadersList = (tab.headers || []).slice();
+      sendHeadersList = tab.headers.slice();
       renderSendHeaders();
       const fmt = document.getElementById('sendBodyFormat');
       if (fmt) fmt.value = tab.bodyFormat || 'text';

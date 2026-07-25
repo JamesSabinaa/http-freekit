@@ -1947,6 +1947,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-170 — Medium — Corrupt Send-tab storage can break Send initialization forever
 
+- Status: **Fixed**.
 - Evidence: `restoreSendTabs()` accepts any nonempty JSON array and spreads its elements without schema validation at `src/ui/app.js:7044-7067`. `loadSendTabState()` then assumes `tab.headers` is an array and calls `.slice()` at `:7070-7074`.
 - Impact: valid but stale/corrupt localStorage throws an uncaught TypeError, leaving Send partially initialized on every reload.
 - Reproduction: set `http-freekit-send-tabs` to `[{"id":"tab-1","headers":{}}]` and reload.
