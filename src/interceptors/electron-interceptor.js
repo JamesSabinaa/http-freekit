@@ -32,6 +32,10 @@ export class ElectronInterceptor {
   }
 
   async activate(proxyPort, options = {}) {
+    if (await this.isActive()) {
+      throw new Error('An Electron app is already being intercepted');
+    }
+
     const appPath = options.appPath;
     const launchArgs = this._getLaunchArgs(proxyPort);
     if (!appPath) {
@@ -52,29 +56,36 @@ export class ElectronInterceptor {
     };
 
     console.log(`[Interceptor] Launching Electron app: ${appPath}`);
-    this.process = this._spawn(appPath, launchArgs, {
+    const launchedProcess = this._spawn(appPath, launchArgs, {
       detached: false,
       stdio: 'ignore',
       env
     });
+    this.process = launchedProcess;
 
     this.active = true;
 
-    this.process.on('exit', () => {
+    launchedProcess.on('exit', () => {
+      if (this.process !== launchedProcess) return;
       this.active = false;
+      this.process = null;
     });
 
-    this.process.on('error', (err) => {
+    launchedProcess.on('error', (err) => {
+      if (this.process !== launchedProcess) return;
       console.error(`[Interceptor] Electron app error:`, err.message);
       this.active = false;
+      this.process = null;
     });
 
-    return { success: true, pid: this.process.pid };
+    return { success: true, pid: launchedProcess.pid };
   }
 
   async deactivate() {
-    if (this.process && !this.process.killed) {
-      this.process.kill();
+    const launchedProcess = this.process;
+    this.process = null;
+    if (launchedProcess && !launchedProcess.killed) {
+      launchedProcess.kill();
     }
     this.active = false;
   }

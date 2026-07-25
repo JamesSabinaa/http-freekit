@@ -790,6 +790,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-047 — High — Repeated Electron activation loses earlier child processes
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/electron-interceptor.js:23-67` has no already-active guard and overwrites `this.process`; `deactivate()` at `:70-75` kills only the newest handle. Exit/error listeners from every child unconditionally change the shared active flag.
 - Impact: activating app A then app B leaves A running after Stop, and either child exiting can make status incorrect for the other.
 - Reproduction: activate two long-running test programs sequentially and deactivate the interceptor.
