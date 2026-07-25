@@ -761,6 +761,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-043 — High — Failed Android cleanup is forgotten and cannot be retried
 
+- Status: **Fixed**.
 - Evidence: proxy clearing, app deactivation, tunnel removal, and certificate removal catch/log their own failures, but `src/interceptors/android-adb-interceptor.js:497-525` unconditionally deletes the device record or clears the whole map and reports inactive.
 - Impact: if a device disconnects during Stop, it can reconnect still pointing at FreeKit while the application has discarded the state required to retry cleanup.
 - Reproduction: activate the global fallback, disconnect the device, deactivate, reconnect it, and inspect its proxy setting.

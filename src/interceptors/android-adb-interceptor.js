@@ -137,19 +137,20 @@ export class AndroidAdbInterceptor {
   }
 
   _removeReverseTunnel(deviceId, proxyPort) {
-    if (!proxyPort) return;
+    if (!proxyPort) return true;
     const key = `${deviceId}:${proxyPort}`;
-    if (!this.reverseTunnels.has(key)) return;
+    if (!this.reverseTunnels.has(key)) return true;
 
     try {
       this._adb(deviceId, ['reverse', '--remove', `tcp:${proxyPort}`], {
         stdio: 'ignore',
         timeout: 5000
       });
+      this.reverseTunnels.delete(key);
+      return true;
     } catch (err) {
       console.warn(`[Interceptor] Failed to remove ADB reverse tunnel on ${deviceId}:`, err.message);
-    } finally {
-      this.reverseTunnels.delete(key);
+      return false;
     }
   }
 
@@ -244,27 +245,26 @@ export class AndroidAdbInterceptor {
   }
 
   _deactivateHttpToolkitApp(deviceId, proxyPort) {
-    if (!this._isHttpToolkitAppInstalled(deviceId)) return false;
-
-    this._bringHttpToolkitAppToFront(deviceId);
-
+    let appDeactivated = false;
     try {
-      this._adb(deviceId, [
-        'shell',
-        'am',
-        'start',
-        '-W',
-        '-a',
-        HTTP_TOOLKIT_ANDROID_DEACTIVATE
-      ], { timeout: 10000 });
-      console.log(`[Interceptor] HTTP Toolkit Android app deactivation intent sent to ${deviceId}`);
-      return true;
+      if (this._isHttpToolkitAppInstalled(deviceId)) {
+        this._bringHttpToolkitAppToFront(deviceId);
+        this._adb(deviceId, [
+          'shell',
+          'am',
+          'start',
+          '-W',
+          '-a',
+          HTTP_TOOLKIT_ANDROID_DEACTIVATE
+        ], { timeout: 10000 });
+        console.log(`[Interceptor] HTTP Toolkit Android app deactivation intent sent to ${deviceId}`);
+        appDeactivated = true;
+      }
     } catch (err) {
       console.warn(`[Interceptor] Failed to deactivate HTTP Toolkit Android app on ${deviceId}:`, err.message);
-      return false;
-    } finally {
-      this._removeReverseTunnel(deviceId, proxyPort);
     }
+    const tunnelRemoved = this._removeReverseTunnel(deviceId, proxyPort);
+    return appDeactivated && tunnelRemoved;
   }
 
   /**
@@ -365,8 +365,10 @@ export class AndroidAdbInterceptor {
         timeout: 5000
       });
       console.log(`[Interceptor] CA cert removed from ${deviceId}`);
+      return true;
     } catch (err) {
       console.error(`[Interceptor] Failed to remove CA cert from ${deviceId}:`, err.message);
+      return false;
     }
   }
 
@@ -523,29 +525,39 @@ export class AndroidAdbInterceptor {
 
   async deactivate(options = {}) {
     const { deviceId } = options;
+    const cleanupDevice = (serial, activeInfo) => {
+      if (activeInfo?.mode === 'http-toolkit-app') {
+        return this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
+      }
+      const proxyRestored = this._restoreProxy(serial, activeInfo?.previousProxy);
+      const certificateRemoved = this._removeCaCert(serial);
+      return proxyRestored && certificateRemoved;
+    };
 
     if (deviceId) {
       // Deactivate a specific device
       const activeInfo = this.activatedDevices.get(deviceId);
-      if (activeInfo?.mode === 'http-toolkit-app') {
-        this._deactivateHttpToolkitApp(deviceId, activeInfo.proxyPort);
-      } else {
-        this._restoreProxy(deviceId, activeInfo?.previousProxy);
-        this._removeCaCert(deviceId);
+      if (!activeInfo) return;
+      if (!cleanupDevice(deviceId, activeInfo)) {
+        this.active = this.activatedDevices.size > 0;
+        throw new Error(`Failed to clean up Android device ${deviceId}; reconnect it and retry Stop`);
       }
       this.activatedDevices.delete(deviceId);
       console.log(`[Interceptor] Android ADB interceptor deactivated for ${deviceId}`);
     } else {
       // Deactivate all devices
-      for (const [serial, activeInfo] of this.activatedDevices) {
-        if (activeInfo?.mode === 'http-toolkit-app') {
-          this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
+      const failures = [];
+      for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
+        if (cleanupDevice(serial, activeInfo)) {
+          this.activatedDevices.delete(serial);
         } else {
-          this._restoreProxy(serial, activeInfo?.previousProxy);
-          this._removeCaCert(serial);
+          failures.push(serial);
         }
       }
-      this.activatedDevices.clear();
+      if (failures.length > 0) {
+        this.active = this.activatedDevices.size > 0;
+        throw new Error(`Failed to clean up Android device(s): ${failures.join(', ')}; reconnect and retry Stop`);
+      }
       console.log('[Interceptor] Android ADB interceptor deactivated (all devices)');
     }
 
