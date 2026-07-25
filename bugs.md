@@ -811,6 +811,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-050 — High — Docker Desktop instructions use an unreachable bridge address
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/docker-interceptor.js:25-32` derives the Linux bridge gateway (default `172.17.0.1`) on every platform. On Docker Desktop for Windows/macOS this gateway is inside its VM, not the host; the supported host name is normally `host.docker.internal`.
 - Impact: containers started from the generated command cannot connect to the proxy on Windows/macOS.
 - Reproduction: use the displayed command on Docker Desktop and attempt an HTTP request from the container.

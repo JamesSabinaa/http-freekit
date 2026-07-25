@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 
 export class DockerInterceptor {
   constructor() {
@@ -22,13 +22,33 @@ export class DockerInterceptor {
     return this.active && this.interceptedContainers.size > 0;
   }
 
+  _platform() {
+    return process.platform;
+  }
+
+  _exec(command, options) {
+    return execSync(command, options);
+  }
+
+  _getDockerHost() {
+    if (this._platform() === 'win32' || this._platform() === 'darwin') {
+      return 'host.docker.internal';
+    }
+
+    let host = '172.17.0.1';
+    try {
+      const result = this._exec(
+        'docker network inspect bridge --format "{{(index .IPAM.Config 0).Gateway}}"',
+        { encoding: 'utf8', timeout: 5000 }
+      ).trim();
+      if (result) host = result.replace(/"/g, '');
+    } catch {}
+    return host;
+  }
+
   async activate(proxyPort, options = {}) {
     // Get host IP that Docker containers can reach
-    let hostIp = '172.17.0.1'; // Default Docker bridge gateway
-    try {
-      const result = execSync('docker network inspect bridge --format "{{(index .IPAM.Config 0).Gateway}}"', { encoding: 'utf8', timeout: 5000 }).trim();
-      if (result) hostIp = result.replace(/"/g, '');
-    } catch {}
+    const hostIp = this._getDockerHost();
 
     // If a specific container is specified, set its env vars
     if (options.containerId) {
