@@ -217,7 +217,7 @@
             switchPanel(viewTab2, 'traffic');
           }
           if (msg.requestId) {
-            setTimeout(() => selectRequest(msg.requestId), 200);
+            setTimeout(() => selectRequest(msg.requestId, false), 200);
           }
           toast('Request selected by AI', 'success');
           break;
@@ -664,8 +664,8 @@
       if (tbody) tbody.setAttribute('aria-activedescendant', id ? 'row-' + id : '');
     }
 
-    function selectRequest(id) {
-      if (selectedRequestId === id) {
+    function selectRequest(id, toggle = true) {
+      if (selectedRequestId === id && toggle) {
         closeDetail();
         return;
       }
