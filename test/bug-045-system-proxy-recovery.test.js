@@ -21,6 +21,7 @@ test('system proxy activation journals settings and normal stop removes the jour
   assert.equal(recovery.proxyServer, '127.0.0.1:8080');
   assert.deepEqual(recovery.previousSettings, { enabled: true, server: 'corporate.proxy:8888' });
 
+  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080' });
   await interceptor.deactivate();
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });

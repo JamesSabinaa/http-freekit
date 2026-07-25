@@ -875,6 +875,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-091 — Medium — System-proxy Stop overwrites newer external settings
 
+- Status: **Fixed**.
 - Evidence: activation snapshots settings once at `src/interceptors/system-proxy-interceptor.js:75`; deactivation at `:90-99` blindly restores that snapshot without checking whether current values still belong to FreeKit.
 - Impact: a VPN/corporate proxy change made while FreeKit is active is replaced with stale pre-activation values.
 - Reproduction: activate, change the Windows proxy externally, then Stop FreeKit.

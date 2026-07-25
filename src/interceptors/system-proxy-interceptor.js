@@ -10,6 +10,7 @@ export class SystemProxyInterceptor {
     this.name = 'System Proxy';
     this.active = false;
     this.previousSettings = null;
+    this.activeProxyServer = null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'system-proxy-recovery.json')
       : options.recoveryFile || null;
@@ -125,15 +126,26 @@ export class SystemProxyInterceptor {
     this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
     this._removeRecoveryState();
     this.previousSettings = null;
+    this.activeProxyServer = null;
+  }
+
+  _settingsBelongToActiveSession(settings) {
+    return Boolean(
+      this.activeProxyServer
+      && settings?.enabled
+      && settings.server === this.activeProxyServer
+    );
   }
 
   async activate(proxyPort) {
     if (this._isWindows()) {
       try {
         if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
-        this._persistRecoveryState(`127.0.0.1:${proxyPort}`);
+        const proxyServer = `127.0.0.1:${proxyPort}`;
+        this._persistRecoveryState(proxyServer);
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
-        this._setRegistryValue('ProxyServer', 'REG_SZ', `127.0.0.1:${proxyPort}`);
+        this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
+        this.activeProxyServer = proxyServer;
         this.active = true;
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
         return { success: true };
@@ -152,6 +164,15 @@ export class SystemProxyInterceptor {
     if (this._isWindows()) {
       if (!this.active && !this.previousSettings) return;
       try {
+        const currentSettings = this._readCurrentSettings();
+        if (!this._settingsBelongToActiveSession(currentSettings)) {
+          this._removeRecoveryState();
+          this.previousSettings = null;
+          this.activeProxyServer = null;
+          this.active = false;
+          console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
+          return;
+        }
         this._restorePreviousSettings();
         this.active = false;
         console.log('[Interceptor] Previous system proxy settings restored');

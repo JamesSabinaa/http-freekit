@@ -7,6 +7,8 @@ test('system-proxy deactivation reports restore failures and remains active', as
   interceptor._isWindows = () => true;
   interceptor.active = true;
   interceptor.previousSettings = { enabled: true, server: 'corporate.proxy:8888' };
+  interceptor.activeProxyServer = '127.0.0.1:8080';
+  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080' });
   interceptor._restorePreviousSettings = () => {
     throw new Error('registry access denied');
   };
