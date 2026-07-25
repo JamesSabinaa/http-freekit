@@ -33,6 +33,7 @@ export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
     this.port = options.port ?? 8080;
+    this.bindHost = options.bindHost || '127.0.0.1';
     this.minPort = options.minPort ?? this.port;
     this.maxPort = options.maxPort ?? this.port;
     this.onRequest = options.onRequest || (() => {});
@@ -552,7 +553,7 @@ export class ProxyServer {
           const unavailablePort = this.port;
           this.port++;
           console.log(`[Proxy] Port ${unavailablePort} is in use, trying ${this.port}...`);
-          this.server.listen(this.port, '0.0.0.0');
+          this.server.listen(this.port, this.bindHost);
         } else if (err.code === 'EADDRINUSE') {
           console.error(`[Proxy] No available port in range ${this.minPort}-${this.maxPort}`);
           reject(err);
@@ -567,8 +568,8 @@ export class ProxyServer {
         socket.on('close', () => this.activeConnections.delete(socket));
       });
 
-      this.server.listen(this.port, '0.0.0.0', () => {
-        console.log(`[Proxy] HTTP/HTTPS proxy listening on port ${this.port}`);
+      this.server.listen(this.port, this.bindHost, () => {
+        console.log(`[Proxy] HTTP/HTTPS proxy listening on ${this.bindHost}:${this.port}`);
         resolve(this.port);
       });
     });

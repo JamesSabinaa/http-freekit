@@ -373,6 +373,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-146 — High — The proxy is an unauthenticated open relay on the LAN
 
+- Status: **Fixed**.
+
 - Evidence: `ProxyServer.start()` binds `0.0.0.0` at `src/proxy/proxy-server.js:321-350`; its request, CONNECT, and upgrade handlers at `:323-333` perform no source-address restriction or proxy authentication.
 - Impact: any reachable LAN or container peer can relay traffic through the user's IP, reach private HTTP services visible to the host, and consume proxy resources.
 - Reproduction: from another machine, configure `http://<freekit-host>:8081` as the proxy and fetch an arbitrary external or private-network URL.

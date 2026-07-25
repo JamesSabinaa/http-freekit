@@ -72,12 +72,14 @@ async function main() {
 
   // 4. Initialize Proxy Server
   const proxyPortRange = resolveProxyPortRange(settings, process.env.PROXY_PORT);
+  const proxyBindHost = process.env.PROXY_BIND_HOST || settings.get('proxyBindHost', '127.0.0.1');
   const rangeLabel = proxyPortRange.minPort === proxyPortRange.maxPort
     ? String(proxyPortRange.minPort)
     : `${proxyPortRange.minPort}-${proxyPortRange.maxPort}`;
   console.log(`[Boot] Starting proxy in port range ${rangeLabel}...`);
   const proxy = new ProxyServer(ca, {
     port: proxyPortRange.minPort,
+    bindHost: proxyBindHost,
     ...proxyPortRange,
     onRequest: (data) => {
       api.onTrafficEvent(data);

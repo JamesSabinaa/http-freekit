@@ -71,10 +71,10 @@ test('port range API persists a validated range for startup', async (t) => {
 
 test('proxy startup advances to the first available port in its configured range', async (t) => {
   const blocker = http.createServer();
-  let blockedPort = await listen(blocker, 0, '0.0.0.0');
+  let blockedPort = await listen(blocker, 0, '127.0.0.1');
   while (blockedPort > 65525) {
     await close(blocker);
-    blockedPort = await listen(blocker, 0, '0.0.0.0');
+    blockedPort = await listen(blocker, 0, '127.0.0.1');
   }
   t.after(() => close(blocker));
 

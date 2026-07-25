@@ -54,6 +54,8 @@ npm run build        # All platforms
 PROXY_PORT=9090 API_PORT=9001 npm start
 ```
 
+The proxy listens only on `127.0.0.1` by default. Remote device or container access can be explicitly enabled with `PROXY_BIND_HOST=0.0.0.0`; only do this on a trusted network or with firewall restrictions.
+
 ## Architecture
 
 ```
