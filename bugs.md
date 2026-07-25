@@ -1266,6 +1266,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-031 — Medium — Send Abort does not cancel the outbound request
 
 - Status: **Fixed**.
+- Fix: `/api/send` now aborts its outbound socket when the renderer-facing request is disconnected.
 - Evidence: `src/ui/app.js:7340-7346` aborts only the renderer-to-API fetch. `src/api/api-server.js:1125-1134,1174-1208` continues its independent outbound request and never ties it to the inbound connection closing.
 - Impact: a slow or state-changing request can still reach and complete at the destination after the UI reports it aborted.
 - Reproduction: send a slow POST, abort after the destination receives headers, and observe the destination complete the request.

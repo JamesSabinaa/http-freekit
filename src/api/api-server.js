@@ -1263,12 +1263,31 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Send a test request through the proxy
     router.post('/api/send', async (req, res) => {
+      const controller = new AbortController();
+      const abortOutbound = () => {
+        if (!res.writableEnded) controller.abort();
+      };
+      req.once('aborted', abortOutbound);
+      res.once('close', abortOutbound);
+
       try {
         const { url, method, headers, body, bodyEncoding } = req.body;
-        const result = await this._sendRequest(url, method || 'GET', headers || {}, body || '', bodyEncoding || 'utf8');
-        res.json(result);
+        const result = await this._sendRequest(
+          url,
+          method || 'GET',
+          headers || {},
+          body || '',
+          bodyEncoding || 'utf8',
+          controller.signal
+        );
+        if (!res.destroyed) res.json(result);
       } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (err.name !== 'AbortError' && !res.destroyed) {
+          res.status(500).json({ error: err.message });
+        }
+      } finally {
+        req.removeListener('aborted', abortOutbound);
+        res.removeListener('close', abortOutbound);
       }
     });
 
@@ -1316,7 +1335,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return null;
   }
 
-  async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8') {
+  async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8', signal) {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(url);
       const isHttps = parsedUrl.protocol === 'https:';
@@ -1343,6 +1362,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         clearTimeout(connectTimer);
         clearTimeout(totalTimer);
         req?.setTimeout(0);
+        signal?.removeEventListener('abort', abortRequest);
       };
       const fail = (err) => {
         if (settled) return;
@@ -1357,6 +1377,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         cleanup();
         resolve(result);
       };
+      const abortRequest = () => {
+        const error = new Error('Send request aborted');
+        error.name = 'AbortError';
+        error.code = 'ABORT_ERR';
+        fail(error);
+      };
+
+      signal?.addEventListener('abort', abortRequest, { once: true });
+      if (signal?.aborted) {
+        abortRequest();
+        return;
+      }
 
       req = lib.request(options, (res) => {
         const chunks = [];
