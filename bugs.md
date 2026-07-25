@@ -51,7 +51,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-006 — Medium — HAR round trips still lose cookies, form parameters, and request protocol
 
-- Status: **Partially fixed** — binary encoding and duplicate-header preservation landed in `723cf77`; the fields below remain lossy.
+- Status: **Fixed**.
+- Resolution: Binary encoding, duplicate headers, cookies, form parameters, MIME types, and protocol metadata are all preserved.
 
 - Evidence: HAR import ignores standard request/response cookie arrays, `postData.params`, and `request.httpVersion`; export still hard-codes empty cookie arrays and derives protocol only from the internal request record (`src/api/api-server.js` HAR-import mapping and `src/api/har-converter.js:40,55`).
 - Impact: cookie metadata and form parameter structure vanish, and imported HTTP/2 requests can re-export as HTTP/1.1.

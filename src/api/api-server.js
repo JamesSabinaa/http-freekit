@@ -805,18 +805,29 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
           return {
             id: crypto.randomUUID(),
-            protocol: entry.request.url?.startsWith('https') ? 'https' : 'http',
+            protocol: /^HTTP\/2(?:\.\d+)?$/i.test(entry.request.httpVersion || '')
+              ? 'h2'
+              : entry.request.url?.toLowerCase().startsWith('https') ? 'https' : 'http',
             method: entry.request.method || 'GET',
             url: entry.request.url || '',
             host,
             path: pathname + search,
             requestHeaders: harHeadersToObject(entry.request.headers),
             requestBody: harBodyToTraffic(entry.request.postData),
+            requestCookies: Array.isArray(entry.request.cookies) ? entry.request.cookies : [],
+            requestPostDataParams: Array.isArray(entry.request.postData?.params)
+              ? entry.request.postData.params
+              : undefined,
+            requestPostDataMimeType: entry.request.postData?.mimeType || '',
+            requestHttpVersion: entry.request.httpVersion || '',
             requestBodySize: entry.request.bodySize || 0,
             statusCode: entry.response?.status || 0,
             statusMessage: entry.response?.statusText || '',
             responseHeaders: harHeadersToObject(entry.response?.headers),
             responseBody: harBodyToTraffic(entry.response?.content),
+            responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
+            responseContentMimeType: entry.response?.content?.mimeType || '',
+            responseHttpVersion: entry.response?.httpVersion || '',
             responseBodySize: entry.response?.content?.size || 0,
             duration: entry.time || 0,
             timestamp: new Date(entry.startedDateTime).getTime() || Date.now(),

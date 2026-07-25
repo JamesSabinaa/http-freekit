@@ -30,6 +30,12 @@ export function trafficToHar(requests, options = {}) {
         const requestBody = toHarBody(req.requestBody);
         const responseBody = toHarBody(req.responseBody);
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
+        const requestHttpVersion = req.requestHttpVersion || httpVersion;
+        const responseHttpVersion = req.responseHttpVersion || httpVersion;
+        const requestPostDataParams = Array.isArray(req.requestPostDataParams)
+          ? req.requestPostDataParams
+          : null;
+        const hasPostData = !!requestBody || requestPostDataParams !== null;
 
         return {
           startedDateTime: new Date(req.timestamp).toISOString(),
@@ -37,14 +43,15 @@ export function trafficToHar(requests, options = {}) {
           request: {
             method: req.method || 'GET',
             url: req.url || '',
-            httpVersion,
-            cookies: [],
+            httpVersion: requestHttpVersion,
+            cookies: Array.isArray(req.requestCookies) ? req.requestCookies : [],
             headers: reqHeaders,
             queryString: parseQueryString(req.url),
-            postData: requestBody ? {
-              mimeType: reqContentType,
-              text: requestBody.text,
-              ...(requestBody.encoding ? { encoding: requestBody.encoding } : {})
+            postData: hasPostData ? {
+              mimeType: req.requestPostDataMimeType || reqContentType,
+              ...(requestBody ? { text: requestBody.text } : {}),
+              ...(requestBody?.encoding ? { encoding: requestBody.encoding } : {}),
+              ...(requestPostDataParams !== null ? { params: requestPostDataParams } : {})
             } : undefined,
             headersSize: -1,
             bodySize: req.requestBodySize || 0
@@ -52,12 +59,12 @@ export function trafficToHar(requests, options = {}) {
           response: {
             status: req.statusCode || 0,
             statusText: req.statusMessage || '',
-            httpVersion,
-            cookies: [],
+            httpVersion: responseHttpVersion,
+            cookies: Array.isArray(req.responseCookies) ? req.responseCookies : [],
             headers: resHeaders,
             content: {
               size: req.responseBodySize || 0,
-              mimeType: resContentType,
+              mimeType: req.responseContentMimeType || resContentType,
               text: responseBody?.text || '',
               ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {})
             },
