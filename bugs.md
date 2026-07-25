@@ -365,6 +365,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-145 — High — Generated X.509 serial numbers are randomly negative
 
+- Status: **Fixed**.
+
 - Evidence: CA and leaf creation assign `_randomSerial()` at `src/proxy/certificate-authority.js:47-54,88-99`; that helper at `:160-162` returns 16 unconstrained random bytes as hex. node-forge encodes the hex directly as an ASN.1 INTEGER, so values whose first nibble is 8-f have the sign bit set, with no leading zero or masking.
 - Impact: roughly half of generated CA and leaf certificates violate the X.509 positive-serial requirement and can be rejected by strict clients, making installs and host interception fail randomly.
 - Reproduction: generate certificates until `parseInt(cert.serialNumber[0], 16) >= 8`, then parse or verify one with a strict X.509 implementation.

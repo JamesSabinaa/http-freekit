@@ -181,8 +181,12 @@ export class CertificateAuthority {
     });
   }
 
-  _randomSerial() {
-    return crypto.randomBytes(16).toString('hex');
+  _randomSerial(randomBytes = crypto.randomBytes(16)) {
+    const bytes = Buffer.from(randomBytes);
+    // X.509 serials are positive ASN.1 INTEGERs. Clear the sign bit and avoid zero.
+    bytes[0] &= 0x7f;
+    if (!bytes.some(byte => byte !== 0)) bytes[bytes.length - 1] = 1;
+    return bytes.toString('hex');
   }
 
   _getFingerprint() {
