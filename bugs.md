@@ -1737,6 +1737,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-035 — High — Production updater dependency can leak credentials across redirects
 
+- Status: **Fixed**.
 - Evidence: `package-lock.json:2150-2152` resolves `builder-util-runtime` 9.5.1, below the fixed 9.7.0. `npm audit --omit=dev --audit-level=high` reports [GHSA-p2f4-r6v6-j797](https://github.com/advisories/GHSA-p2f4-r6v6-j797) through the direct `electron-updater` dependency.
 - Impact: cross-origin updater redirects can receive protected token/authorization headers.
 - Reproduction: run `npm run audit:prod`; it exits nonzero with two high-severity dependency nodes for this advisory.

@@ -53,6 +53,22 @@ test('installed packages meet the audited safe minimums', () => {
   }
 });
 
+test('electron-updater uses a credential-safe builder runtime', () => {
+  const updaterPath = require.resolve('electron-updater/package.json');
+  const updaterRequire = createRequire(updaterPath);
+  const runtimePath = updaterRequire.resolve('builder-util-runtime/package.json');
+  const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+
+  const actual = versionParts(runtime.version);
+  const minimum = versionParts('9.7.0');
+  assert.ok(
+    actual[0] > minimum[0]
+      || (actual[0] === minimum[0] && actual[1] > minimum[1])
+      || (actual[0] === minimum[0] && actual[1] === minimum[1] && actual[2] >= minimum[2]),
+    `electron-updater resolved vulnerable builder-util-runtime ${runtime.version}`
+  );
+});
+
 test('updated Monaco and protobuf browser bundles are present', () => {
   const expectedAssets = [
     'node_modules/monaco-editor/min/vs/loader.js',
