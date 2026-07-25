@@ -17,6 +17,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 5 | 27 new bugs found; documented below | 0/2 |
 | 6 | 11 new bugs found; documented below | 0/2 |
 | 7 | 13 new bugs found; documented below | 0/2 |
+| 8 | 14 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -547,6 +548,36 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a coalesced/custom H2 request can be logged and mocked as origin B while it is actually delivered to origin A.
 - Reproduction: CONNECT to local origin A, negotiate H2, then send `:authority: b.test`; observe capture and destination disagree.
 
+### BUG-227 — High/Medium — Mock forward actions bypass the configured upstream proxy
+
+- Evidence: HTTPS H1, native H2, and plain H1 forward actions directly call `fwdLib.request()` for the destination at `src/proxy/proxy-server.js:1153-1215,2253-2323,3430-3499`, without `_getUpstreamAgent()`, SOCKS handling, or any `this.upstreamProxy` branch.
+- Impact: a forward rule leaks the host's direct network identity or fails in networks where destinations are reachable only through the configured upstream.
+- Reproduction: configure a counting upstream proxy, create a forward rule, and trigger it through H1/HTTPS/H2; the destination is contacted directly.
+
+### BUG-228 — Medium — A hard-coded Chromium filter silently hides traffic
+
+- Evidence: both pending and completed emission call `_shouldSuppressTrafficLog()` at `src/proxy/proxy-server.js:3810,3837`; for Chrome-family UAs, `:3845-3926` always drops many update, Safe Browsing, account, telemetry, Web Store, and Google requests. Only safe-font filtering is configurable.
+- Impact: forwarded authentication and failure traffic never reaches API/UI/MCP/HAR, contradicting the promise to inspect every request and providing no indication that records were removed.
+- Reproduction: send a Chrome-UA request to `accounts.google.com/ListAccounts` with font filtering off and observe no capture.
+
+### BUG-229 — Low/Medium — MCP request detail silently truncates bodies
+
+- Evidence: `get_request_detail` promises full details including body at `src/mcp/mcp-server.js:25-33`, but the handler slices request and response bodies at 50 KiB at `:198-216`.
+- Impact: MCP clients cannot retrieve or analyze the remaining captured data even though storage retains substantially more.
+- Reproduction: place a token after byte 51,200 and call `get_request_detail`.
+
+### BUG-230 — Low/Medium — MCP security scan treats header names as case-sensitive
+
+- Evidence: `src/mcp/mcp-server.js:307-338` reads only lowercase names for Set-Cookie, Content-Type, security headers, and ACAO, while JSON import accepts preserved arbitrary casing.
+- Impact: valid imported records with normally capitalized headers evade cookie, content, security-header, and CORS findings.
+- Reproduction: import `Content-Type`, `Set-Cookie`, and `Access-Control-Allow-Origin` headers, then run `security_scan`.
+
+### BUG-231 — Medium — Rewrite pre-steps behave differently across HTTPS and H2
+
+- Evidence: plain H1 mutates URL/method and forwards them at `src/proxy/proxy-server.js:3369-3377,3430+`. HTTPS `rewrite-url` changes only displayed `fullUrl`, not hostname, port, or `req.url`, at `:1092-1101,1153-1177`; native H2 pre-steps at `:2207-2221` omit URL and method rewrite entirely.
+- Impact: one advertised rule routes differently by negotiated protocol, and HTTPS can log a rewritten destination while sending the original.
+- Reproduction: rewrite `/old` to another local origin/path and compare plain H1, intercepted H1, and native H2.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -890,6 +921,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: activation and deactivation ignore `_adb()` stdout at `src/interceptors/android-adb-interceptor.js:216-234,251-261` and infer success only from exit status, although `am start -W` can print `Status: timeout` with a zero exit.
 - Impact: a timed-out launch is marked active; a timed-out stop clears local ownership and removes the reverse tunnel even though the VPN app may still be active.
 - Reproduction: make the companion activity return `Status: timeout` and observe both helpers return success.
+
+### BUG-232 — High — Failed System Proxy activation can survive graceful shutdown
+
+- Evidence: `src/interceptors/system-proxy-interceptor.js:75-84` writes ProxyEnable before ProxyServer. If the second write and rollback both fail, it reports an error with `active=false` but retains `previousSettings`; shutdown at `interceptor-manager.js:109-114` deactivates only entries whose `isActive()` is true.
+- Impact: Windows can remain pointed at a dead partial proxy even after failed activation and orderly application shutdown.
+- Reproduction: fail the ProxyServer write and rollback, then run manager shutdown and inspect registry state.
+
+### BUG-233 — Medium — Existing Terminal instructions omit advertised client support
+
+- Evidence: `src/interceptors/terminal-interceptors.js:179-181` sets only uppercase HTTP/HTTPS proxy, `NODE_EXTRA_CA_CERTS`, and Node TLS bypass. It omits lowercase proxy names plus SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE despite advertising general/Python/Docker processes.
+- Impact: curl can bypass HTTP and curl/Python HTTPS can reject FreeKit's CA on macOS/Linux; the instructions effectively support Node only.
+- Reproduction: follow Existing Terminal instructions and use curl/Python without adding variables manually.
+
+### BUG-234 — Low/Medium — Fresh Terminal is advertised on unsupported Linux systems
+
+- Evidence: `src/interceptors/terminal-interceptors.js:32-34` always returns true from `isActivable()`, while Linux activation supports only gnome-terminal, xterm, and konsole at `:88-107` and otherwise throws.
+- Impact: headless and minimal Linux installations show an available actionable interceptor that cannot activate.
+- Reproduction: run on Linux with none of the three launchers installed and refresh interceptor metadata.
 
 ## Electron, updater, and renderer
 
@@ -1264,6 +1313,42 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `README.md:13` promises a table handling 100,000+ rows, while the API caps traffic at 10,000 and the renderer independently evicts beyond 10,000 (`src/api/api-server.js:51`; `src/ui/app.js:277-278`).
 - Impact: the advertised scale is impossible because older records are discarded before the table can contain them.
 - Reproduction: capture or import more than 10,000 exchanges and observe eviction.
+
+### BUG-235 — Low/Medium — Reset rules to default restores no defaults
+
+- Evidence: the visible control promises Reset rules to default at `src/ui/index.html:202`, but `clearAllMockRules()` only deletes everything at `src/ui/app.js:4446-4453`. Default creation is startup-only and blocked by the retained `http-freekit-defaults-created` key at `:4627-4645`.
+- Impact: Reset permanently leaves an empty rule list across reloads instead of restoring the shipped defaults.
+- Reproduction: start with defaults, click Reset, and reload.
+
+### BUG-236 — Low/Medium — Saved port ranges reload as one active port
+
+- Evidence: `/api/port-config` exposes persisted min/max, but the UI never calls it. `loadConfig()` writes the currently bound `proxyPort` into both fields at `src/ui/app.js:7387-7399`.
+- Impact: opening Settings after restart displays a collapsed range, and pressing Save destroys the original range.
+- Reproduction: save 19000–19010, restart on 19000, open Settings, and save the displayed 19000–19000.
+
+### BUG-237 — Low — JSON traffic export is unreachable from the UI
+
+- Evidence: README advertises JSON and HAR export, and `exportTraffic()` implements a JSON branch at `src/ui/app.js:7546-7568`; the sole visible action is the HAR button at `src/ui/index.html:103`.
+- Impact: desktop/browser users cannot invoke the documented JSON export without using developer tools or the API directly.
+- Reproduction: inspect all Traffic controls and context menus; none calls `exportTraffic("json")`.
+
+### BUG-238 — Low — Connection timeout is documented as configurable but is not
+
+- Evidence: README calls the 30-second connection timeout configurable, while values are constructor defaults at `src/proxy/proxy-server.js:60-61`; no CLI option, API route, persisted setting, or UI control changes them.
+- Impact: users cannot tune the documented setting for slow or failure-testing environments.
+- Reproduction: search Settings, CLI help, and management routes for timeout configuration.
+
+### BUG-239 — Low/Medium — HAR export reports success before any file response
+
+- Evidence: the UI launches an authenticated navigation and immediately displays HAR file exported at `src/ui/app.js:7548-7554`, without observing the HTTP response or download result.
+- Impact: an API failure/error download is presented as a successfully produced HAR file.
+- Reproduction: force `/api/traffic/export.har` to return an error and click Export HAR.
+
+### BUG-240 — Low — Clear Traffic silently no-ops while WebSocket is disconnected
+
+- Evidence: `clearTraffic()` sends only when `ws.readyState === 1` and has no REST fallback or error state at `src/ui/app.js:7540-7544`; the button remains enabled.
+- Impact: the user believes traffic was cleared, but reconnect restores every server record without any feedback.
+- Reproduction: disconnect the management WebSocket, click Clear, and reconnect.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
