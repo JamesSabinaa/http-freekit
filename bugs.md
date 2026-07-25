@@ -482,6 +482,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-158 — Medium — Capture truncation silently corrupts HAR body exports
 
+- Status: **Fixed**.
+
 - Evidence: `_safeBodyString()` truncates text at 512 KiB and replaces binary bodies of at least 2 MiB with a textual placeholder at `src/proxy/proxy-server.js:3988-4010`; only the transformed field is stored. HAR conversion writes it as response content while reporting the original size at `src/api/har-converter.js:29-30,57-65`.
 - Impact: exported HARs cannot replay or inspect full large responses and are internally inconsistent, with no truncation flag.
 - Reproduction: proxy a 1 MiB text or larger-than-2 MiB binary response and compare HAR `content.text` with `content.size`.

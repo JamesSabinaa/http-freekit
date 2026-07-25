@@ -32,15 +32,17 @@ export function trafficToHar(requests, options = {}) {
 
         const reqContentType = getHeaderValue(req.requestHeaders, 'content-type');
         const resContentType = getHeaderValue(req.responseHeaders, 'content-type');
-        const requestBody = toHarBody(req.requestBody);
-        const responseBody = toHarBody(req.responseBody);
+        const requestBody = toHarBody(req.requestBody, req.requestBodyTruncated && req.requestBodyCapturedSize === 0);
+        const responseBody = toHarBody(req.responseBody, req.responseBodyTruncated && req.responseBodyCapturedSize === 0);
+        const requestTruncation = toHarTruncation(req, 'request', requestBody);
+        const responseTruncation = toHarTruncation(req, 'response', responseBody);
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
         const requestHttpVersion = req.requestHttpVersion || httpVersion;
         const responseHttpVersion = req.responseHttpVersion || httpVersion;
         const requestPostDataParams = Array.isArray(req.requestPostDataParams)
           ? req.requestPostDataParams
           : null;
-        const hasPostData = !!requestBody || requestPostDataParams !== null;
+        const hasPostData = !!requestBody || requestPostDataParams !== null || !!requestTruncation;
 
         return {
           startedDateTime: new Date(req.timestamp).toISOString(),
@@ -56,7 +58,8 @@ export function trafficToHar(requests, options = {}) {
               mimeType: req.requestPostDataMimeType || reqContentType,
               ...(requestBody ? { text: requestBody.text } : {}),
               ...(requestBody?.encoding ? { encoding: requestBody.encoding } : {}),
-              ...(requestPostDataParams !== null ? { params: requestPostDataParams } : {})
+              ...(requestPostDataParams !== null ? { params: requestPostDataParams } : {}),
+              ...(requestTruncation || {})
             } : undefined,
             headersSize: -1,
             bodySize: req.requestBodySize || 0
@@ -68,10 +71,11 @@ export function trafficToHar(requests, options = {}) {
             cookies: Array.isArray(req.responseCookies) ? req.responseCookies : [],
             headers: resHeaders,
             content: {
-              size: req.responseBodySize || 0,
+              size: responseTruncation?._capturedSize ?? (req.responseBodySize || 0),
               mimeType: req.responseContentMimeType || resContentType,
               text: responseBody?.text || '',
-              ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {})
+              ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {}),
+              ...(responseTruncation || {})
             },
             redirectURL: getHeaderValue(req.responseHeaders, 'location'),
             headersSize: -1,
@@ -97,7 +101,8 @@ function parseQueryString(url) {
   } catch { return []; }
 }
 
-function toHarBody(body) {
+function toHarBody(body, omitted = false) {
+  if (omitted) return null;
   if (!body) return null;
   if (typeof body !== 'string') body = String(body);
 
@@ -110,4 +115,22 @@ function toHarBody(body) {
   }
 
   return { text: body };
+}
+
+function toHarTruncation(request, side, body) {
+  if (request[`${side}BodyTruncated`] !== true) return null;
+  const capturedSize = Number.isFinite(request[`${side}BodyCapturedSize`])
+    ? request[`${side}BodyCapturedSize`]
+    : body?.encoding === 'base64'
+      ? Buffer.byteLength(body.text, 'base64')
+      : Buffer.byteLength(body?.text || '');
+  const originalSize = Number.isFinite(request[`${side}BodyDecodedSize`])
+    ? request[`${side}BodyDecodedSize`]
+    : request[`${side}BodySize`] || 0;
+  return {
+    comment: `Body capture truncated: ${capturedSize} of ${originalSize} bytes retained`,
+    _truncated: true,
+    _capturedSize: capturedSize,
+    _originalSize: originalSize
+  };
 }

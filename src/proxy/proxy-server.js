@@ -30,6 +30,14 @@ const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
 
+class TruncatedBodyString extends String {
+  constructor(value, capturedSize, decodedSize) {
+    super(value);
+    this.capturedSize = capturedSize;
+    this.decodedSize = decodedSize;
+  }
+}
+
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
@@ -3904,6 +3912,7 @@ export class ProxyServer {
       && (typeof matcher.value !== 'string' || matcher.value.trim() === '')) {
       return false;
     }
+    body = body == null ? '' : String(body);
 
     switch (matcher.type) {
       case 'wildcard':
@@ -4534,6 +4543,7 @@ export class ProxyServer {
   }
 
   _emitRequest(data) {
+    this._normalizeCapturedBodies(data);
     // Auto-detect source from User-Agent if source is 'proxy' (generic)
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
@@ -4561,6 +4571,7 @@ export class ProxyServer {
   // Emit an update that replaces an existing pending request
   _emitRequestUpdate(data) {
     data._update = true;
+    this._normalizeCapturedBodies(data);
     // Auto-detect source
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
@@ -4679,6 +4690,18 @@ export class ProxyServer {
     return 'Other';
   }
 
+  _normalizeCapturedBodies(data) {
+    for (const side of ['request', 'response']) {
+      const field = `${side}Body`;
+      const body = data[field];
+      if (!(body instanceof TruncatedBodyString)) continue;
+      data[field] = body.toString();
+      data[`${field}Truncated`] = true;
+      data[`${field}CapturedSize`] = body.capturedSize;
+      data[`${field}DecodedSize`] = body.decodedSize;
+    }
+  }
+
   _decompressBody(buffer, encoding) {
     if (!buffer || buffer.length === 0) return buffer;
     const options = { maxOutputLength: this.maxDecompressedBodyBytes };
@@ -4738,7 +4761,10 @@ export class ProxyServer {
 
     if (isText) {
       const maxSize = 512 * 1024;
-      if (decoded.length > maxSize) decoded = decoded.slice(0, maxSize);
+      if (decoded.length > maxSize) {
+        const text = decoded.subarray(0, maxSize).toString('utf8');
+        return new TruncatedBodyString(text, Buffer.byteLength(text), decoded.length);
+      }
       return decoded.toString('utf8');
     }
 
@@ -4747,7 +4773,7 @@ export class ProxyServer {
       return `data:${mimeType};base64,${decoded.toString('base64')}`;
     }
 
-    return `[Binary data: ${buffer.length} bytes]`;
+    return new TruncatedBodyString(`[Binary data: ${buffer.length} bytes]`, 0, decoded.length);
   }
 
   // ---- Breakpoint methods ----
