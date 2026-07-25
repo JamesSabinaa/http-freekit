@@ -8,6 +8,7 @@ import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
+import { validatePortRange } from '../proxy/port-range.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 
@@ -1212,9 +1213,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/port-config', (req, res) => {
       const { minPort, maxPort } = req.body;
+      const range = validatePortRange(minPort, maxPort);
+      if (!range) {
+        return res.status(400).json({ error: 'Port range must use integers from 1 to 65535 with minimum no greater than maximum' });
+      }
       // Store for next restart (can't change port while running)
-      this.proxy.minPort = parseInt(minPort) || 8000;
-      this.proxy.maxPort = parseInt(maxPort) || 65535;
+      this.settings?.set('proxyPortRange', range);
+      this.proxy.minPort = range.minPort;
+      this.proxy.maxPort = range.maxPort;
       res.json({ success: true, minPort: this.proxy.minPort, maxPort: this.proxy.maxPort, note: 'Port changes take effect on next restart' });
     });
 

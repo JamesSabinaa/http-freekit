@@ -83,6 +83,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-009 — Medium — Port-range settings are neither persisted nor used
 
+- Status: **Fixed**.
+
 - Evidence: the UI promises first-free-port selection in `src/ui/index.html:400`; `src/api/api-server.js:1095-1110` only assigns range fields to the current proxy object. Startup always selects `PROXY_PORT` or 8081 at `src/index.js:22,69`.
 - Impact: saving 9000-9010 and restarting still binds the proxy to 8081.
 - Reproduction: save a non-default range, restart, and inspect `/api/config`.

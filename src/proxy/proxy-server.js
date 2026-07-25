@@ -28,7 +28,9 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
-    this.port = options.port || 8080;
+    this.port = options.port ?? 8080;
+    this.minPort = options.minPort ?? this.port;
+    this.maxPort = options.maxPort ?? this.port;
     this.onRequest = options.onRequest || (() => {});
     this.onBreakpoint = options.onBreakpoint || (() => {});
     this.onUpstreamProxyRetry = options.onUpstreamProxyRetry || (async () => false);
@@ -333,12 +335,18 @@ export class ProxyServer {
       });
 
       this.server.on('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-          console.error(`[Proxy] Port ${this.port} is already in use. Try: PROXY_PORT=<other_port> npm start`);
+        if (err.code === 'EADDRINUSE' && this.port < this.maxPort) {
+          const unavailablePort = this.port;
+          this.port++;
+          console.log(`[Proxy] Port ${unavailablePort} is in use, trying ${this.port}...`);
+          this.server.listen(this.port, '0.0.0.0');
+        } else if (err.code === 'EADDRINUSE') {
+          console.error(`[Proxy] No available port in range ${this.minPort}-${this.maxPort}`);
+          reject(err);
         } else {
           console.error('[Proxy] Server error:', err.message);
+          reject(err);
         }
-        reject(err);
       });
 
       this.server.on('connection', (socket) => {

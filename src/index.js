@@ -9,6 +9,7 @@ import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
 import { McpServerBridge } from './mcp/mcp-server.js';
 import { Settings } from './settings.js';
+import { resolveProxyPortRange } from './proxy/port-range.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +20,6 @@ const DATA_DIR = process.env.ELECTRON
   ? path.join(process.env.APPDATA || process.env.HOME || __dirname, 'http-freekit', 'data')
   : path.join(__dirname, '..', 'data');
 const UI_DIR = path.join(__dirname, 'ui');
-const PROXY_PORT = parseInt(process.env.PROXY_PORT) || 8081;
 const API_PORT = parseInt(process.env.API_PORT) || 8001;
 const MCP_STDIO_ENABLED = process.argv.includes('--mcp-stdio');
 
@@ -71,9 +71,14 @@ async function main() {
   const interceptors = new InterceptorManager(ca);
 
   // 4. Initialize Proxy Server
-  console.log(`[Boot] Starting proxy on port ${PROXY_PORT}...`);
+  const proxyPortRange = resolveProxyPortRange(settings, process.env.PROXY_PORT);
+  const rangeLabel = proxyPortRange.minPort === proxyPortRange.maxPort
+    ? String(proxyPortRange.minPort)
+    : `${proxyPortRange.minPort}-${proxyPortRange.maxPort}`;
+  console.log(`[Boot] Starting proxy in port range ${rangeLabel}...`);
   const proxy = new ProxyServer(ca, {
-    port: PROXY_PORT,
+    port: proxyPortRange.minPort,
+    ...proxyPortRange,
     onRequest: (data) => {
       api.onTrafficEvent(data);
     }
@@ -148,7 +153,7 @@ async function main() {
 
   console.log('');
   console.log('  ┌─────────────────────────────────────┐');
-  const proxyStr = `http://127.0.0.1:${PROXY_PORT}`;
+  const proxyStr = `http://127.0.0.1:${proxy.port}`;
   const uiStr = `http://127.0.0.1:${API_PORT}`;
   const apiStr = `http://127.0.0.1:${API_PORT}/api`;
   const mcpStr = `http://127.0.0.1:${API_PORT}/mcp/sse`;
@@ -158,7 +163,7 @@ async function main() {
   console.log(`  │  MCP:    ${mcpStr.padEnd(26)}│`);
   console.log('  └─────────────────────────────────────┘');
   console.log('');
-  console.log('  Configure your browser/app to use proxy: 127.0.0.1:' + PROXY_PORT);
+  console.log('  Configure your browser/app to use proxy: 127.0.0.1:' + proxy.port);
   console.log('  Or use the Intercept tab in the UI to launch a pre-configured browser.');
   console.log('');
   console.log('  Press Ctrl+C to stop.');
