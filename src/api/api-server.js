@@ -199,7 +199,16 @@ print(json.dumps({"providers": get_proxy_providers()}))
   }
 
   async _rotateBottingToolsProxy(provider, refill = true) {
+    const startingGeneration = this.proxy.getUpstreamProxyGeneration?.();
     const proxy = await this._getBottingToolsProxy(provider, refill);
+    const currentGeneration = this.proxy.getUpstreamProxyGeneration?.();
+    if (startingGeneration !== undefined && currentGeneration !== startingGeneration) {
+      return {
+        applied: false,
+        provider: proxy.provider,
+        upstreamProxy: this.proxy.upstreamProxy
+      };
+    }
     const upstreamProxy = {
       host: proxy.host,
       port: proxy.port,
@@ -209,7 +218,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     };
     this.proxy.setUpstreamProxy(upstreamProxy);
     this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
-    return { provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy };
+    return { applied: true, provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy };
   }
 
   _maybeAutoRotateProxyOnError(data) {
@@ -231,12 +240,22 @@ print(json.dumps({"providers": get_proxy_providers()}))
 
     this._autoRotatePromise = this._rotateBottingToolsProxy(config.provider, true)
       .then(result => {
+        if (result.applied === false) {
+          this._broadcast({
+            type: 'proxy-auto-rotate',
+            status: 'cancelled',
+            provider: result.provider,
+            upstreamProxy: result.upstreamProxy
+          });
+          return false;
+        }
         this._broadcast({
           type: 'proxy-auto-rotate',
           status: 'success',
           provider: result.provider,
           upstreamProxy: result.upstreamProxy
         });
+        return true;
       })
       .catch(err => {
         this._broadcast({
@@ -282,6 +301,17 @@ print(json.dumps({"providers": get_proxy_providers()}))
 
     this._autoRotatePromise = this._rotateBottingToolsProxy(config.provider, true)
       .then(result => {
+        if (result.applied === false) {
+          this._broadcast({
+            type: 'proxy-auto-rotate',
+            status: 'cancelled',
+            provider: result.provider,
+            upstreamProxy: result.upstreamProxy,
+            transparent: true
+          });
+          const latestGeneration = this.proxy.getUpstreamProxyGeneration?.();
+          return failedGeneration !== undefined && latestGeneration !== failedGeneration;
+        }
         this._broadcast({
           type: 'proxy-auto-rotate',
           status: 'success',
@@ -1186,6 +1216,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         const provider = req.body?.provider || 'lemonprime';
         const refill = req.body?.refill !== false;
         const result = await this._rotateBottingToolsProxy(provider, refill);
+        if (result.applied === false) {
+          return res.status(409).json({
+            error: 'Upstream proxy changed while rotation was in progress',
+            upstreamProxy: result.upstreamProxy
+          });
+        }
         const autoConfig = this._getAutoRotateProxyConfig();
         this._setAutoRotateProxyConfig({ ...autoConfig, provider: result.provider });
         res.json({ success: true, ...result });

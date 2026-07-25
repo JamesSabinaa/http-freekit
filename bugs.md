@@ -417,6 +417,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-151 — Medium — A delayed proxy rotation overwrites newer manual configuration
 
+- Status: **Fixed**.
+
 - Evidence: `_rotateBottingToolsProxy()` awaits external Python and then unconditionally sets and persists its result at `src/api/api-server.js:127-137`; background callers are at `:157,208`. Manual set/delete at `:952-962` neither cancels nor generation-guards that in-flight operation.
 - Impact: a user can disable or replace a failing proxy, only for an older rotation to complete later and silently re-enable or replace it.
 - Reproduction: delay `_getBottingToolsProxy()`, start rotation, manually delete or set another upstream, then resolve the old lookup.
