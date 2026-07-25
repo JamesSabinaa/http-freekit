@@ -854,6 +854,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-088 — High — Failed isolated-browser shutdown is forgotten and cannot be retried
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/browser-interceptor.js:237-260` preserves the profile when inspection fails or processes survive termination, but then always calls `_resetLifecycleState()`, which discards the process, profile, port, and PID state at `:406-414`.
 - Impact: a surviving proxied browser remains running while the UI reports inactive; subsequent Stop/shutdown calls have no handle or profile with which to retry cleanup.
 - Reproduction: make process inspection fail or termination leave a PID alive, deactivate, and call deactivate again.

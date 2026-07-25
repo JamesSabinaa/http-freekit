@@ -28,6 +28,7 @@ export class BrowserInterceptor {
     this.lastProcessInspectionFailed = false;
     this.statusInspectionInFlight = false;
     this.statusMonitorGeneration = 0;
+    this.cleanupPending = false;
   }
 
   async isActivable() {
@@ -51,7 +52,7 @@ export class BrowserInterceptor {
   }
 
   async isActive() {
-    return this.active && this._isBrowserStillRunning();
+    return this.cleanupPending || (this.active && this._isBrowserStillRunning());
   }
 
   async activate(proxyPort, options = {}) {
@@ -294,6 +295,18 @@ export class BrowserInterceptor {
       console.warn(`[Interceptor] Preserving profile ${profileDir}: running processes could not be inspected safely`);
     }
 
+    if (remainingIds === null || remainingIds.size > 0 || cleanupResult.removed !== true) {
+      this.active = true;
+      this.cleanupPending = true;
+      this._emitStatus('cleanup-failed', {
+        remainingProcessCount: remainingIds?.size ?? null,
+        profileRemoved: false
+      });
+      throw new Error(
+        `Could not fully stop ${this.name}; its process/profile state was preserved so Stop can be retried`
+      );
+    }
+
     this._resetLifecycleState();
     this._emitStatus('inactive', {
       terminatedProcessCount: Math.max(0, targetIds.size - (remainingIds?.size || 0)),
@@ -308,6 +321,17 @@ export class BrowserInterceptor {
     this._stopStatusMonitor();
     this.active = false;
     const cleanupResult = this._cleanup(profileDir);
+    if (cleanupResult.removed !== true) {
+      this.active = true;
+      this.cleanupPending = true;
+      this._emitStatus('cleanup-failed', {
+        pid: launcherPid,
+        profileRemoved: false,
+        exitReason: reason,
+        ...extra
+      });
+      return;
+    }
     this._resetLifecycleState();
     this._emitStatus(reason, {
       pid: launcherPid,
@@ -467,6 +491,7 @@ export class BrowserInterceptor {
     this.lastProcessInspectionAt = 0;
     this.lastProcessInspectionFailed = false;
     this.statusInspectionInFlight = false;
+    this.cleanupPending = false;
   }
 
   _emitStatus(reason, extra = {}) {
