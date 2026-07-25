@@ -291,12 +291,12 @@ export class ExistingTerminalInterceptor {
   }
 
   async isActive() {
-    return this.active;
+    return false;
   }
 
   async activate(proxyPort) {
     this.proxyPort = proxyPort;
-    this.active = true;
+    this.active = false;
     const certPath = this.ca ? this.ca.getCertInfo().certificatePath : '';
     const proxyUrl = `http://127.0.0.1:${proxyPort}`;
 
@@ -306,6 +306,8 @@ export class ExistingTerminalInterceptor {
     return {
       success: true,
       metadata: {
+        instructionsOnly: true,
+        lifecycleNote: 'These variables remain active in the terminal until you unset them or close that shell.',
         proxyUrl,
         certPath,
         instructions: {
@@ -327,7 +329,7 @@ export class ExistingTerminalInterceptor {
       id: this.id,
       name: this.name,
       type: 'terminal',
-      active: this.active,
+      active: false,
       pid: null
     };
   }

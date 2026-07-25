@@ -3605,7 +3605,7 @@
       edge: ['Intercept a fresh independent Edge window.', 'Separate from your normal browser profile.'],
       brave: ['Intercept a fresh independent Brave window.', 'Uses a separate temporary profile.'],
       'fresh-terminal': ['Open a new terminal that intercepts all processes & Docker containers.', 'Sets HTTP_PROXY, HTTPS_PROXY and certificate trust environment variables.'],
-      'existing-terminal': ['Intercept launched processes from an existing terminal window.', 'Copy and paste environment variables to configure your terminal.'],
+      'existing-terminal': ['Configure future processes in an existing terminal window.', 'Instructions only: unset the variables or close that shell to stop.'],
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', 'Set proxy environment variables when running containers.'],
       'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.'],
@@ -4033,6 +4033,7 @@
       container.innerHTML = `
         <div class="config-section">
           <h3>Paste in your terminal</h3>
+          <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.lifecycleNote || 'These variables remain active until you unset them or close this shell.')}</p>
           <div class="config-tabs">
             <button class="config-tab${defaultTab === 'bash' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'bash')">Bash / Zsh</button>
             <button class="config-tab${defaultTab === 'powershell' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'powershell')">PowerShell</button>

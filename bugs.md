@@ -966,6 +966,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-121 — Medium — Existing Terminal reports a lifecycle it cannot observe or stop
 
+- Status: **Fixed**.
 - Evidence: merely expanding the card calls activation (`src/ui/app.js:3828-3841`), which immediately records an active terminal at `src/interceptors/terminal-interceptors.js:164-184` before the user pastes anything. Deactivation at `:187-190` only clears local fields and cannot unset variables in that shell.
 - Impact: closing the instructions can report a nonexistent connection, while pressing Stop after following them leaves later shell commands routed through FreeKit.
 - Reproduction: expand Existing Terminal without copying commands and inspect status; then follow the commands, Stop, and inspect the shell environment again.
