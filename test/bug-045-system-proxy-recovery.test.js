@@ -12,6 +12,7 @@ test('system proxy activation journals settings and normal stop removes the jour
   interceptor._isWindows = () => true;
   interceptor._readCurrentSettings = () => ({ enabled: true, server: 'corporate.proxy:8888' });
   interceptor._setRegistryValue = () => {};
+  interceptor._notifyWinInet = () => {};
 
   await interceptor.activate(8080);
 
@@ -41,6 +42,7 @@ test('a new process restores a stale system-proxy journal', (t) => {
   interceptor._isWindows = () => true;
   interceptor._isProcessRunning = () => false;
   interceptor._setRegistryValue = (...args) => writes.push(args);
+  interceptor._notifyWinInet = () => {};
 
   assert.equal(interceptor.recoverStaleSettings(), true);
   assert.deepEqual(writes, [

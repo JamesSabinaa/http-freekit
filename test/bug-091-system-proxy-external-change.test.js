@@ -27,6 +27,7 @@ test('system proxy Stop restores saved settings while FreeKit still owns them', 
   interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:45457' });
   const writes = [];
   interceptor._setRegistryValue = (...args) => writes.push(args);
+  interceptor._notifyWinInet = () => {};
 
   await interceptor.deactivate();
 

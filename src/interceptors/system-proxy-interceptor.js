@@ -32,6 +32,33 @@ export class SystemProxyInterceptor {
     return execFileSync('reg', args, options);
   }
 
+  _execPowerShell(script) {
+    return execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { stdio: 'ignore', timeout: 5000, windowsHide: true }
+    );
+  }
+
+  _notifyWinInet() {
+    this._execPowerShell(`
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class FreeKitWinInet {
+  [DllImport("wininet.dll", SetLastError = true)]
+  public static extern bool InternetSetOption(IntPtr handle, int option, IntPtr buffer, int bufferLength);
+}
+"@
+if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0)) {
+  throw "InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED) failed"
+}
+if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0)) {
+  throw "InternetSetOption(INTERNET_OPTION_REFRESH) failed"
+}
+`);
+  }
+
   _readCurrentSettings() {
     const output = this._execRegistry(['query', INTERNET_SETTINGS_KEY], {
       encoding: 'utf8',
@@ -124,6 +151,7 @@ export class SystemProxyInterceptor {
       } catch {}
     }
     this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
+    this._notifyWinInet();
     this._removeRecoveryState();
     this.previousSettings = null;
     this.activeProxyServer = null;
@@ -145,6 +173,7 @@ export class SystemProxyInterceptor {
         this._persistRecoveryState(proxyServer);
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
+        this._notifyWinInet();
         this.activeProxyServer = proxyServer;
         this.active = true;
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
