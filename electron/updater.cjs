@@ -20,6 +20,7 @@ let currentCheckIsManual = false;
 let isDownloading = false;
 let updatePromptOpen = false;
 let lastPromptedVersion = null;
+let validateIpcSender = () => false;
 
 /**
  * Send an updater status event to the renderer.
@@ -98,9 +99,13 @@ async function promptForUpdate(info, options = {}) {
 /**
  * Configure and start the auto-update system.
  * @param {Electron.BrowserWindow} win - The main application window
+ * @param {{validateSender?: function}} options - IPC sender validation
  */
-function initAutoUpdater(win) {
+function initAutoUpdater(win, options = {}) {
   mainWindow = win;
+  validateIpcSender = typeof options.validateSender === 'function'
+    ? options.validateSender
+    : () => false;
 
   // Allow configurable update feed URL via environment variable
   if (process.env.UPDATE_URL) {
@@ -160,13 +165,16 @@ function initAutoUpdater(win) {
 
   // --- IPC handlers ---
 
-  ipcMain.handle('updater-check-now', () => {
+  ipcMain.handle('updater-check-now', (event) => {
+    if (!validateIpcSender(event)) return null;
     return checkForUpdates(true);
   });
 
-  ipcMain.handle('updater-install', () => {
+  ipcMain.handle('updater-install', (event) => {
+    if (!validateIpcSender(event)) return null;
     // Quit and install the downloaded update
     autoUpdater.quitAndInstall(false, true);
+    return null;
   });
 
   // --- Schedule checks ---
@@ -221,6 +229,7 @@ function stopAutoUpdater() {
     checkInterval = null;
   }
   mainWindow = null;
+  validateIpcSender = () => false;
 }
 
 module.exports = { initAutoUpdater, stopAutoUpdater };

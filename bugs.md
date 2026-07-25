@@ -1165,6 +1165,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-024 — High — Updater IPC does not validate its sender
 
+- Status: **Fixed**.
 - Evidence: `electron/updater.cjs:163-171` registers `updater-check-now` and `updater-install` without accepting or checking an IPC event; both are exposed by `electron/preload.cjs:94-105`.
 - Impact: any document with that preload can trigger update checks or `quitAndInstall()`.
 - Reproduction: invoke the exposed updater methods from a non-application document loaded in the same webContents.

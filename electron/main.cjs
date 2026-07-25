@@ -460,7 +460,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     createTray(mainWindow);
 
     // Set up auto-updater
-    initAutoUpdater(mainWindow);
+    initAutoUpdater(mainWindow, { validateSender });
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);
     app.quit();
