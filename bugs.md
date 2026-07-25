@@ -354,6 +354,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-132 — Low — REST traffic pagination accepts negative values and cannot request zero
 
+- Status: **Fixed**.
+
 - Evidence: `src/api/api-server.js:558-576` parses `limit` and `offset` with `parseInt(...) || default` and passes them directly to `Array.slice()` without bounds validation.
 - Impact: `limit=-1` excludes the final record, `offset=-1` returns the final record, and `limit=0` unexpectedly returns 100 records, violating the endpoint's pagination contract.
 - Reproduction: seed three records and request `/api/traffic?offset=-1`, `?limit=-1`, and `?limit=0`.

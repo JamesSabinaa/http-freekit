@@ -676,8 +676,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Traffic log
     router.get('/api/traffic', (req, res) => {
-      const limit = parseInt(req.query.limit) || 100;
-      const offset = parseInt(req.query.offset) || 0;
+      const parsePaginationValue = (value, fallback) => {
+        if (value === undefined) return fallback;
+        if (!/^\d+$/.test(String(value))) return null;
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+      };
+      const limit = parsePaginationValue(req.query.limit, 100);
+      const offset = parsePaginationValue(req.query.offset, 0);
+      if (limit === null || offset === null) {
+        return res.status(400).json({ error: 'limit and offset must be non-negative integers' });
+      }
       const filter = req.query.filter || '';
 
       let filtered = this.trafficLog;
