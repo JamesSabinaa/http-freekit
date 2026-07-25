@@ -455,6 +455,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-155 — Medium — Plain-HTTP webhook actions report success when delivery fails
 
+- Status: **Fixed**.
+
 - Evidence: invalid URL/setup and request errors are only logged at `src/proxy/proxy-server.js:3551-3578`; the handler then unconditionally returns 200 and records `Webhook sent` at `:3579-3591` without awaiting delivery.
 - Impact: clients and traffic history claim success even though the webhook was never accepted or sent.
 - Reproduction: configure an invalid URL or refused localhost port and trigger the rule.

@@ -4274,10 +4274,14 @@ export class ProxyServer {
       return;
     }
 
-    // Webhook — send a copy of the request to a configured URL (fire-and-forget)
+    // Webhook — send a copy of the request to a configured URL
     if (action.type === 'webhook' && action.webhookUrl) {
+      let webhookError = null;
       try {
         const webhookTarget = new URL(action.webhookUrl);
+        if (webhookTarget.protocol !== 'http:' && webhookTarget.protocol !== 'https:') {
+          throw new Error(`Unsupported webhook protocol: ${webhookTarget.protocol}`);
+        }
         const isHttps = webhookTarget.protocol === 'https:';
         const lib = isHttps ? https : http;
         const webhookHeaders = {
@@ -4287,31 +4291,40 @@ export class ProxyServer {
           'x-forwarded-host': targetUrl.hostname,
           ...(action.webhookHeaders || {})
         };
-        const webhookReq = lib.request({
-          hostname: webhookTarget.hostname,
-          port: webhookTarget.port || (isHttps ? 443 : 80),
-          path: webhookTarget.pathname + webhookTarget.search,
-          method: 'POST',
-          headers: webhookHeaders,
-          ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
+        await new Promise((resolve, reject) => {
+          const webhookReq = lib.request({
+            hostname: webhookTarget.hostname,
+            port: webhookTarget.port || (isHttps ? 443 : 80),
+            path: webhookTarget.pathname + webhookTarget.search,
+            method: 'POST',
+            headers: webhookHeaders,
+            ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
+          }, (webhookRes) => {
+            webhookRes.resume();
+            resolve();
+          });
+          this._configureUpstreamRequest(webhookReq);
+          webhookReq.once('error', reject);
+          webhookReq.end(body);
         });
-        webhookReq.on('error', (err) => {
-          console.error('[Proxy] Webhook error:', err.message);
-        });
-        webhookReq.end(body);
       } catch (err) {
-        console.error('[Proxy] Webhook setup error:', err.message);
+        webhookError = err;
+        console.error('[Proxy] Webhook error:', err.message);
       }
-      // Respond 200 OK to the client
-      clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
-      clientRes.end('');
+      const statusCode = webhookError ? 502 : 200;
+      const statusMessage = webhookError ? 'Webhook delivery failed' : 'Webhook sent';
+      const responseBody = webhookError ? `Webhook Error: ${webhookError.message}` : '';
+      clientRes.writeHead(statusCode, { 'Content-Type': 'text/plain' });
+      clientRes.end(responseBody);
       this._emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, statusCode: 200, statusMessage: 'Webhook sent',
-        responseHeaders: { 'Content-Type': 'text/plain' }, responseBody: '', responseBodySize: 0,
+        requestBodySize: body.length, statusCode, statusMessage,
+        responseHeaders: { 'Content-Type': 'text/plain' }, responseBody,
+        responseBodySize: Buffer.byteLength(responseBody),
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
+        ...(webhookError ? { error: webhookError.message } : {}),
         tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
