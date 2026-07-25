@@ -246,6 +246,48 @@ export class ProxyServer {
     return err;
   }
 
+  _cleanTrailers(trailers) {
+    const clean = {};
+    for (const [name, value] of Object.entries(trailers || {})) {
+      if (!name.startsWith(':') && value !== undefined) clean[name.toLowerCase()] = value;
+    }
+    return clean;
+  }
+
+  _endH1Request(request, body, trailers) {
+    if (body?.length) request.write(body);
+    const cleanTrailers = this._cleanTrailers(trailers);
+    if (Object.keys(cleanTrailers).length > 0) request.addTrailers(cleanTrailers);
+    request.end();
+  }
+
+  _sendH1Response(response, statusCode, headers, body, trailers) {
+    const cleanTrailers = this._cleanTrailers(trailers);
+    const outgoingHeaders = { ...(headers || {}) };
+    if (Object.keys(cleanTrailers).length > 0) {
+      for (const name of Object.keys(outgoingHeaders)) {
+        if (name.toLowerCase() === 'content-length') delete outgoingHeaders[name];
+      }
+      outgoingHeaders.trailer = Object.keys(cleanTrailers).join(', ');
+    }
+    response.writeHead(statusCode, outgoingHeaders);
+    if (body?.length) response.write(body);
+    if (Object.keys(cleanTrailers).length > 0) response.addTrailers(cleanTrailers);
+    response.end();
+  }
+
+  _sendH2Response(stream, headers, body, trailers) {
+    const cleanTrailers = this._cleanTrailers(trailers);
+    const hasTrailers = Object.keys(cleanTrailers).length > 0;
+    stream.respond(headers, hasTrailers ? { waitForTrailers: true } : undefined);
+    if (hasTrailers) {
+      stream.once('wantTrailers', () => {
+        if (!stream.destroyed && !stream.closed) stream.sendTrailers(cleanTrailers);
+      });
+    }
+    stream.end(body);
+  }
+
 
   setUpstreamProxy(config) {
     this._destroyUpstreamAgent();
@@ -855,8 +897,7 @@ export class ProxyServer {
             }
             delete resHeaders['proxy-authorization'];
             delete resHeaders['proxy-connection'];
-            clientRes.writeHead(proxyRes.statusCode, resHeaders);
-            clientRes.end(resBody);
+            this._sendH1Response(clientRes, proxyRes.statusCode, resHeaders, resBody, trailers);
 
             this._emitRequestUpdate({
               id: requestId,
@@ -929,7 +970,7 @@ export class ProxyServer {
           });
         });
 
-        proxyReq.end(body);
+        this._endH1Request(proxyReq, body, clientReq.trailers);
       };
 
       sendProxyRequest();
@@ -1322,8 +1363,7 @@ export class ProxyServer {
                     }
                   }
                   try {
-                    res.writeHead(fwdRes.statusCode, resHeaders);
-                    res.end(resBody);
+                    this._sendH1Response(res, fwdRes.statusCode, resHeaders, resBody, fwdRes.trailers);
                   } catch (e) { /* client gone */ }
                   this._emitRequest({
                     id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -1356,7 +1396,7 @@ export class ProxyServer {
                   originalRequest, transformedBy
                 });
               });
-              fwdReq.end(body);
+              this._endH1Request(fwdReq, body, req.trailers);
             } catch (err) {
               try {
                 res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -1649,11 +1689,10 @@ export class ProxyServer {
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
               );
               try {
-                res.writeHead(h2Res.statusCode, h2Res.headers);
-                res.end(h2Res.body);
+                this._sendH1Response(res, h2Res.statusCode, h2Res.headers, h2Res.body, h2Res.trailers);
               } catch (e) { /* client gone */ }
               emitSuccess(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
                 { address: h2Res.remoteAddress, port: h2Res.remotePort }, null);
@@ -1685,8 +1724,7 @@ export class ProxyServer {
 
             const trailers = proxyRes.trailers;
             try {
-              res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              res.end(resBody);
+              this._sendH1Response(res, proxyRes.statusCode, proxyRes.headers, resBody, trailers);
             } catch (e) { /* client gone */ }
             emitSuccess(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
               { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }, trailers);
@@ -1727,7 +1765,7 @@ export class ProxyServer {
             }
             handleError(err, attemptReq);
           });
-          attemptReq.end(body);
+          this._endH1Request(attemptReq, body, req.trailers);
         };
 
         sendProxyRequest();
@@ -1838,7 +1876,9 @@ export class ProxyServer {
 
       // Collect request body
       const requestBody = this._createBodyCollector();
+      let requestTrailers = {};
       stream.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
+      stream.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
       stream.on('end', async () => {
         if (requestBody.exceeded) {
           if (!stream.destroyed && !stream.closed) {
@@ -1868,7 +1908,8 @@ export class ProxyServer {
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, this._safeBodyString(body));
         if (mockRule) {
           await this._handleH2MockResponse(stream, mockRule, {
-            requestId, method, fullUrl, authority, path, reqHeaders, body, startTime, tlsDetails
+            requestId, method, fullUrl, authority, path, reqHeaders, body,
+            requestTrailers, startTime, tlsDetails
           });
           return;
         }
@@ -1937,7 +1978,7 @@ export class ProxyServer {
 
         const source = this._detectSource(reqHeaders);
 
-        const emitH2Success = (statusCode, statusMessage, responseHeaders, resBody, remote) => {
+        const emitH2Success = (statusCode, statusMessage, responseHeaders, resBody, remote, trailers) => {
           const duration = Date.now() - startTime;
           this._emitRequestUpdate({
             id: requestId, protocol: 'h2', method, url: fullUrl,
@@ -1946,7 +1987,8 @@ export class ProxyServer {
             statusCode, statusMessage, responseHeaders,
             responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime,
-            source, tls: tlsDetails, remote
+            source, tls: tlsDetails, remote,
+            trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
           });
         };
 
@@ -1973,18 +2015,17 @@ export class ProxyServer {
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
             if (h2Session) {
               const h2Res = await this._makeH2Request(
-                h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body
+                h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers
               );
               // Build h2 response headers for the client stream
               const h2ResponseHeaders = this._toH2ResponseHeaders(h2Res.statusCode, h2Res.headers);
               try {
                 if (!stream.destroyed && !stream.closed) {
-                  stream.respond(h2ResponseHeaders);
-                  stream.end(h2Res.body);
+                  this._sendH2Response(stream, h2ResponseHeaders, h2Res.body, h2Res.trailers);
                 }
               } catch (e) { /* stream already closed */ }
               emitH2Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
-                { address: h2Res.remoteAddress, port: h2Res.remotePort });
+                { address: h2Res.remoteAddress, port: h2Res.remotePort }, h2Res.trailers);
               return;
             }
           } catch (err) {
@@ -2021,13 +2062,12 @@ export class ProxyServer {
 
             try {
               if (!stream.destroyed && !stream.closed) {
-                stream.respond(responseHeaders);
-                stream.end(resBody);
+                this._sendH2Response(stream, responseHeaders, resBody, proxyRes.trailers);
               }
             } catch (e) { /* stream already closed */ }
 
             emitH2Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
-              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort });
+              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }, proxyRes.trailers);
           });
         };
 
@@ -2072,7 +2112,7 @@ export class ProxyServer {
             }
             handleError(err, attemptReq);
           });
-          attemptReq.end(body);
+          this._endH1Request(attemptReq, body, requestTrailers);
         };
 
         sendProxyRequest();
@@ -2215,11 +2255,10 @@ export class ProxyServer {
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
               );
               try {
-                res.writeHead(h2Res.statusCode, h2Res.headers);
-                res.end(h2Res.body);
+                this._sendH1Response(res, h2Res.statusCode, h2Res.headers, h2Res.body, h2Res.trailers);
               } catch (e) { /* client gone */ }
               emitH1Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
                 { address: h2Res.remoteAddress, port: h2Res.remotePort });
@@ -2262,9 +2301,9 @@ export class ProxyServer {
               return;
             }
 
+            const trailers = proxyRes.trailers;
             try {
-              res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              res.end(resBody);
+              this._sendH1Response(res, proxyRes.statusCode, proxyRes.headers, resBody, trailers);
             } catch (e) { /* client gone */ }
             emitH1Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
               { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort });
@@ -2305,7 +2344,7 @@ export class ProxyServer {
             }
             handleError(err, attemptReq);
           });
-          attemptReq.end(body);
+          this._endH1Request(attemptReq, body, req.trailers);
         };
 
         sendProxyRequest();
@@ -2369,7 +2408,7 @@ export class ProxyServer {
 
   // Handle mock responses for HTTP/2 streams
   async _handleH2MockResponse(stream, mockRule, ctx) {
-    const { requestId, startTime, tlsDetails } = ctx;
+    const { requestId, requestTrailers, startTime, tlsDetails } = ctx;
     let { method, fullUrl, authority, path, reqHeaders, body } = ctx;
 
     const action = mockRule.action || {
@@ -2466,8 +2505,7 @@ export class ProxyServer {
             }
             try {
               if (!stream.destroyed && !stream.closed) {
-                stream.respond(resHeaders);
-                stream.end(resBody);
+                this._sendH2Response(stream, resHeaders, resBody, fwdRes.trailers);
               }
             } catch (e) { /* stream closed */ }
             this._emitRequest({
@@ -2502,7 +2540,7 @@ export class ProxyServer {
             originalRequest, transformedBy
           });
         });
-        fwdReq.end(body);
+        this._endH1Request(fwdReq, body, requestTrailers);
       } catch (err) {
         try {
           if (!stream.destroyed && !stream.closed) {
@@ -2798,8 +2836,8 @@ export class ProxyServer {
   }
 
   // Make an HTTP/2 request via a cached session. Returns a promise that resolves to
-  // { statusCode, headers, body: Buffer } or null if the request can't be made via h2.
-  _makeH2Request(session, method, hostname, port, path, headers, body) {
+  // { statusCode, headers, body: Buffer, trailers } or null if the request can't be made via h2.
+  _makeH2Request(session, method, hostname, port, path, headers, body, trailers = {}) {
     return new Promise((resolve, reject) => {
       // Build h2 pseudo-headers + regular headers
       const h2Headers = {
@@ -2820,10 +2858,13 @@ export class ProxyServer {
         h2Headers[lower] = v;
       }
 
-      const stream = session.request(h2Headers);
+      const requestTrailers = this._cleanTrailers(trailers);
+      const hasRequestTrailers = Object.keys(requestTrailers).length > 0;
+      const stream = session.request(h2Headers, hasRequestTrailers ? { waitForTrailers: true } : undefined);
 
       let statusCode;
       const responseHeaders = {};
+      let responseTrailers = {};
       const responseBody = this._createBodyCollector();
 
       stream.on('response', (hdrs) => {
@@ -2841,12 +2882,17 @@ export class ProxyServer {
         }
       });
 
+      stream.on('trailers', receivedTrailers => {
+        responseTrailers = this._cleanTrailers(receivedTrailers);
+      });
+
       stream.on('end', () => {
         resolve({
           statusCode,
           statusMessage: '',
           headers: responseHeaders,
           body: this._concatBody(responseBody),
+          trailers: responseTrailers,
           remoteAddress: session.socket?.remoteAddress,
           remotePort: session.socket?.remotePort
         });
@@ -2860,6 +2906,10 @@ export class ProxyServer {
         stream.close(http2.constants.NGHTTP2_CANCEL);
         reject(new Error('H2 stream timeout after 30s'));
       });
+
+      if (hasRequestTrailers) {
+        stream.once('wantTrailers', () => stream.sendTrailers(requestTrailers));
+      }
 
       // Send request body
       if (body && body.length > 0) {
@@ -3668,8 +3718,7 @@ export class ProxyServer {
                 resHeaders[k.toLowerCase()] = v;
               }
             }
-            clientRes.writeHead(proxyRes.statusCode, resHeaders);
-            clientRes.end(resBody);
+            this._sendH1Response(clientRes, proxyRes.statusCode, resHeaders, resBody, trailers);
             this._emitRequest({
               id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
               host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
@@ -3700,7 +3749,7 @@ export class ProxyServer {
             originalRequest, transformedBy
           });
         });
-        proxyReq.end(body);
+        this._endH1Request(proxyReq, body, clientReq.trailers);
       } catch (err) {
         clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
         clientRes.end(`Forward setup error: ${err.message}`);

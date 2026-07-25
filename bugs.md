@@ -155,6 +155,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-016 — Medium/High — HTTP trailers are never forwarded in either direction
 
+- Status: **Fixed**.
+
 - Evidence: H1 response forwarding reads trailers at `src/proxy/proxy-server.js:719,1533` but never calls `addTrailers`; H2 response forwarding around `:2675-2695` has no trailer listener or `sendTrailers` path. H1 request handlers at `:580-583,1035-1038,1930-1933` and H2 at `:1684-1688` consume only body data/end, never `req.trailers`, a trailer event, or `addTrailers`.
 - Impact: gRPC `grpc-status`/`grpc-message`, request digests, and integrity trailers disappear, making exchanges incomplete or invalid.
 - Reproduction: proxy a chunked request containing `Trailer: Digest` and a response containing trailers; inspect both sides after forwarding.
