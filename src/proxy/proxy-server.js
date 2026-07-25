@@ -5058,6 +5058,51 @@ export class ProxyServer {
     return rule;
   }
 
+  loadBreakpoints(rules) {
+    const input = Array.isArray(rules) ? rules : [];
+    const blockedIds = new Set(
+      input
+        .filter(rule => rule && typeof rule === 'object' && !Array.isArray(rule))
+        .map(rule => (typeof rule.id === 'string' || typeof rule.id === 'number')
+          ? String(rule.id)
+          : '')
+        .filter(Boolean)
+    );
+    const usedIds = new Set();
+    const restored = [];
+    let migrated = !Array.isArray(rules);
+    let discarded = 0;
+
+    for (const rule of input) {
+      if (this.validateBreakpointRule(rule)) {
+        migrated = true;
+        discarded++;
+        continue;
+      }
+
+      const candidate = (typeof rule.id === 'string' || typeof rule.id === 'number')
+        ? String(rule.id)
+        : '';
+      let id = candidate;
+      if (!id || usedIds.has(id)) {
+        do {
+          id = uuidv4();
+        } while (blockedIds.has(id) || usedIds.has(id));
+        blockedIds.add(id);
+      }
+      usedIds.add(id);
+      if (rule.id !== id || rule.enabled === undefined) migrated = true;
+      restored.push({
+        ...rule,
+        id,
+        enabled: rule.enabled !== false
+      });
+    }
+
+    this.breakpointRules = restored;
+    return { rules: restored, migrated, discarded };
+  }
+
   getBreakpoints() {
     return this.breakpointRules;
   }

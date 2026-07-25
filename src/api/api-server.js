@@ -1146,6 +1146,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/breakpoints', (req, res) => {
       try {
         const rule = this.proxy.addBreakpoint(req.body);
+        this._persistBreakpointRules();
         res.json({ success: true, rule });
       } catch (err) {
         res.status(400).json({ error: err.message });
@@ -1156,6 +1157,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       try {
         const updated = this.proxy.updateBreakpoint(req.params.id, req.body || {});
         if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
+        this._persistBreakpointRules();
         res.json({ success: true, rule: updated });
       } catch (err) {
         res.status(400).json({ error: err.message });
@@ -1179,6 +1181,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!this.proxy.removeBreakpoint(req.params.id)) {
         return res.status(404).json({ error: 'Breakpoint not found' });
       }
+      this._persistBreakpointRules();
       res.json({ success: true });
     });
 
@@ -1804,6 +1807,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _persistMockRules() {
     this.settings?.set('mockRules', this.proxy.mockRules);
+  }
+
+  _persistBreakpointRules() {
+    this.settings?.set('breakpointRules', this.proxy.getBreakpoints());
   }
 
   setMcpBridge(bridge) {

@@ -115,6 +115,12 @@ async function main() {
     if (restored.migrated) settings.set('mockRules', restored.rules);
     console.log(`[Boot] Restored ${restored.rules.length} mock rules from settings`);
   }
+  const savedBreakpointRules = settings.get('breakpointRules');
+  if (savedBreakpointRules !== undefined) {
+    const restored = proxy.loadBreakpoints(savedBreakpointRules);
+    if (restored.migrated) settings.set('breakpointRules', restored.rules);
+    console.log(`[Boot] Restored ${restored.rules.length} breakpoint rules from settings`);
+  }
 
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, {

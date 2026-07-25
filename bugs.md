@@ -574,7 +574,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-181 — Medium — Breakpoint rules disappear on restart
 
-- Evidence: the proxy constructor initializes `breakpointRules` to an empty array; breakpoint CRUD routes never persist it, while startup restores only mock rules (`src/proxy/proxy-server.js:38`, `src/api/api-server.js` breakpoint routes, `src/index.js:91-94`).
+- Status: **Fixed**.
+- Resolution: Successful breakpoint create, update, and delete operations now persist the complete rule set, and startup restores it through validation that discards malformed entries while repairing missing, duplicate, or non-string IDs without changing valid unique IDs.
+
+- Evidence: Breakpoint CRUD routes call the breakpoint persistence helper, startup loads `breakpointRules` before the proxy begins listening, and `loadBreakpoints()` returns the validated, identity-normalized migration result for repaired settings to be written back.
 - Impact: configured breakpoints silently vanish on every application restart.
 - Reproduction: create a breakpoint, restart the server, and GET `/api/breakpoints`.
 
