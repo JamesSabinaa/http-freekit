@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileAsync } from './command-runner.js';
 
 export class DockerInterceptor {
   constructor() {
@@ -11,7 +11,7 @@ export class DockerInterceptor {
 
   async isActivable() {
     try {
-      execSync('docker version', { stdio: 'ignore', timeout: 3000 });
+      await this._exec(['version'], { timeout: 3000 });
       return true;
     } catch {
       return false;
@@ -26,21 +26,21 @@ export class DockerInterceptor {
     return process.platform;
   }
 
-  _exec(command, options) {
-    return execSync(command, options);
+  _exec(args, options) {
+    return execFileAsync('docker', args, options);
   }
 
-  _getDockerHost() {
+  async _getDockerHost() {
     if (this._platform() === 'win32' || this._platform() === 'darwin') {
       return 'host.docker.internal';
     }
 
     let host = '172.17.0.1';
     try {
-      const result = this._exec(
-        'docker network inspect bridge --format "{{(index .IPAM.Config 0).Gateway}}"',
+      const result = (await this._exec(
+        ['network', 'inspect', 'bridge', '--format', '{{(index .IPAM.Config 0).Gateway}}'],
         { encoding: 'utf8', timeout: 5000 }
-      ).trim();
+      )).trim();
       if (result) host = result.replace(/"/g, '');
     } catch {}
     return host;
@@ -48,7 +48,7 @@ export class DockerInterceptor {
 
   async activate(proxyPort, options = {}) {
     // Get host IP that Docker containers can reach
-    const hostIp = this._getDockerHost();
+    const hostIp = await this._getDockerHost();
 
     const proxyUrl = `http://${hostIp}:${proxyPort}`;
     const certPath = this.ca?.getCertInfo?.()?.certificatePath;

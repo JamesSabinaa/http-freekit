@@ -29,7 +29,7 @@ test('Firefox activation fails when neither NSS nor OS trust can install the CA'
   assert.equal(interceptor.active, false);
 });
 
-test('Firefox may fall back only when the FreeKit CA is installed in OS trust', () => {
+test('Firefox may fall back only when the FreeKit CA is installed in OS trust', async () => {
   const interceptor = new BrowserInterceptor('firefox', 'Firefox', 'firefox');
   interceptor.profileDir = '/tmp/test-firefox-profile';
   interceptor.ca = {
@@ -41,6 +41,6 @@ test('Firefox may fall back only when the FreeKit CA is installed in OS trust', 
   };
 
   const originalProfile = interceptor.profileDir;
-  assert.equal(interceptor._importCertToFirefoxProfile(), false);
+  assert.equal(await interceptor._importCertToFirefoxProfile(), false);
   assert.equal(interceptor.profileDir, originalProfile);
 });

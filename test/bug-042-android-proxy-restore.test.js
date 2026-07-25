@@ -34,12 +34,12 @@ test('Android fallback restores the proxy that existed before activation', async
   assert.ok(adbCalls.some(args => args.join(' ') === 'shell settings put global http_proxy corporate.proxy:8888'));
 });
 
-test('Android fallback restores an originally unset proxy by deleting the setting', () => {
+test('Android fallback restores an originally unset proxy by deleting the setting', async () => {
   const interceptor = new AndroidAdbInterceptor();
   const calls = [];
   interceptor._adb = (_deviceId, args) => calls.push(args);
 
-  assert.equal(interceptor._restoreProxy('device-1', 'null'), true);
+  assert.equal(await interceptor._restoreProxy('device-1', 'null'), true);
   assert.deepEqual(calls, [['shell', 'settings', 'delete', 'global', 'http_proxy']]);
 });
 

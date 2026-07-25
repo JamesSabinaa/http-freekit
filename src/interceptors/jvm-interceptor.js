@@ -1,7 +1,7 @@
-import { execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { execFileAsync } from './command-runner.js';
 
 export class JvmInterceptor {
   constructor() {
@@ -14,9 +14,9 @@ export class JvmInterceptor {
 
   async isActivable() {
     try {
-      execSync('java -version', { stdio: 'ignore', timeout: 5000 });
+      await execFileAsync('java', ['-version'], { timeout: 5000 });
       // Check if jps is available (comes with JDK)
-      execSync('jps -h', { stdio: 'ignore', timeout: 3000 });
+      await execFileAsync('jps', ['-h'], { timeout: 3000 });
       return true;
     } catch {
       return false;
@@ -31,9 +31,9 @@ export class JvmInterceptor {
    * Parse `jps -v` output into a list of running JVM processes.
    * jps -v outputs: <pid> <mainClass> <jvmArgs...>
    */
-  _getRunningProcesses() {
+  async _getRunningProcesses() {
     try {
-      const output = execSync('jps -v', { encoding: 'utf8', timeout: 5000 });
+      const output = await execFileAsync('jps', ['-v'], { encoding: 'utf8', timeout: 5000 });
       const lines = output.split('\n');
       const processes = [];
 
@@ -85,7 +85,7 @@ export class JvmInterceptor {
   }
 
   async getMetadata() {
-    const processes = this._getRunningProcesses();
+    const processes = await this._getRunningProcesses();
     return {
       processes,
       activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([pid, info]) => ({
@@ -275,7 +275,7 @@ public class ProxyAgent {
     return args.join(',');
   }
 
-  _getAgentJarPath() {
+  async _getAgentJarPath() {
     const agentDir = path.join(process.cwd(), '.http-freekit-jvm-agent');
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
     const javaPath = path.join(agentDir, 'ProxyAgent.java');
@@ -296,12 +296,11 @@ public class ProxyAgent {
       fs.writeFileSync(manifestPath, manifest);
 
       // Compile
-      execSync(`javac "${javaPath}"`, { cwd: agentDir, stdio: 'ignore', timeout: 15000 });
+      await execFileAsync('javac', [javaPath], { cwd: agentDir, timeout: 15000 });
 
       // Package into JAR
-      execSync(`jar cfm "${jarPath}" "${manifestPath}" ProxyAgent.class`, {
+      await execFileAsync('jar', ['cfm', jarPath, manifestPath, 'ProxyAgent.class'], {
         cwd: agentDir,
-        stdio: 'ignore',
         timeout: 10000
       });
       fs.writeFileSync(stampPath, sourceHash);
@@ -317,8 +316,8 @@ public class ProxyAgent {
   /**
    * Attach the agent to a running JVM process using the Attach API.
    */
-  _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
-    const agentJar = this._getAgentJarPath();
+  async _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
+    const agentJar = await this._getAgentJarPath();
     if (!agentJar) {
       return { success: false, error: 'Failed to build proxy agent JAR' };
     }
@@ -356,16 +355,17 @@ public class AttachProxy {
         fs.writeFileSync(attachJavaPath, attachSource);
         // Compile with tools.jar on classpath (needed for com.sun.tools.attach)
         try {
-          execSync(`javac "${attachJavaPath}"`, { cwd: attachDir, stdio: 'ignore', timeout: 15000 });
+          await execFileAsync('javac', [attachJavaPath], { cwd: attachDir, timeout: 15000 });
         } catch {
           // On JDK 9+, com.sun.tools.attach is in jdk.attach module — no tools.jar needed
-          execSync(`javac "${attachJavaPath}"`, { cwd: attachDir, stdio: 'ignore', timeout: 15000 });
+          await execFileAsync('javac', [attachJavaPath], { cwd: attachDir, timeout: 15000 });
         }
       }
 
       // Run the attach program
-      const result = execSync(
-        `java -cp "${attachDir}" AttachProxy ${pid} "${agentJar}" "${agentArgs}"`,
+      const result = await execFileAsync(
+        'java',
+        ['-cp', attachDir, 'AttachProxy', String(pid), agentJar, agentArgs],
         { encoding: 'utf8', timeout: 15000, cwd: attachDir }
       );
       console.log('[Interceptor] JVM attach result:', result.trim());
@@ -381,7 +381,7 @@ public class AttachProxy {
 
     if (!pid) {
       // No specific process — return metadata with process list for UI selection
-      const processes = this._getRunningProcesses();
+      const processes = await this._getRunningProcesses();
       this.active = true;
       return {
         success: true,
@@ -397,7 +397,7 @@ public class AttachProxy {
     }
 
     // Verify process exists
-    const processes = this._getRunningProcesses();
+    const processes = await this._getRunningProcesses();
     const process_ = processes.find(p => p.pid === pid);
 
     if (!process_) {
@@ -406,7 +406,7 @@ public class AttachProxy {
 
     // Attempt to attach the agent
     const proxyHost = '127.0.0.1';
-    const attachResult = this._attachAgent(pid, proxyHost, proxyPort);
+    const attachResult = await this._attachAgent(pid, proxyHost, proxyPort);
 
     if (!attachResult.success) {
       // Even if agent attach fails, we can note the process as targeted
@@ -416,7 +416,7 @@ public class AttachProxy {
         error: `Could not attach to PID ${pid}: ${attachResult.error}. Try launching the JVM with: -Dhttp.proxyHost=${proxyHost} -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=${proxyHost} -Dhttps.proxyPort=${proxyPort}`,
         metadata: {
           fallbackCommand: `-Dhttp.proxyHost=${proxyHost} -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=${proxyHost} -Dhttps.proxyPort=${proxyPort}`,
-          processes: this._getRunningProcesses(),
+          processes: await this._getRunningProcesses(),
           activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
             pid: p,
             ...info
@@ -440,7 +440,7 @@ public class AttachProxy {
         name: process_.name,
         mainClass: process_.mainClass,
         proxyUrl: `http://${proxyHost}:${proxyPort}`,
-        processes: this._getRunningProcesses(),
+        processes: await this._getRunningProcesses(),
         activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
           pid: p,
           ...info
@@ -451,8 +451,8 @@ public class AttachProxy {
 
   async deactivate(options = {}) {
     const { pid } = options;
-    const deactivatePid = processId => {
-      const result = this._attachAgent(processId, null, null, 'deactivate');
+    const deactivatePid = async processId => {
+      const result = await this._attachAgent(processId, null, null, 'deactivate');
       if (!result.success) {
         return `PID ${processId}: ${result.error}`;
       }
@@ -463,13 +463,13 @@ public class AttachProxy {
 
     if (pid) {
       if (!this.activatedProcesses.has(pid)) return;
-      const error = deactivatePid(pid);
+      const error = await deactivatePid(pid);
       this.active = this.activatedProcesses.size > 0;
       if (error) throw new Error(`Could not deactivate JVM interceptor: ${error}`);
     } else {
       const errors = [];
       for (const processId of Array.from(this.activatedProcesses.keys())) {
-        const error = deactivatePid(processId);
+        const error = await deactivatePid(processId);
         if (error) errors.push(error);
       }
       this.active = this.activatedProcesses.size > 0;

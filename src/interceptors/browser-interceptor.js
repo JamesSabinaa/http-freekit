@@ -1,13 +1,14 @@
-import { spawn, execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 import {
   createManagedBrowserProfile,
-  getRelatedProcessIds,
+  getRelatedProcessIdsAsync,
   removeManagedBrowserProfile
 } from './browser-lifecycle.js';
+import { execFileAsync } from './command-runner.js';
 
 export class BrowserInterceptor {
   constructor(id, name, browserType) {
@@ -25,6 +26,8 @@ export class BrowserInterceptor {
     this.lifecycleInspectionErrorLogged = false;
     this.lastProcessInspectionAt = 0;
     this.lastProcessInspectionFailed = false;
+    this.statusInspectionInFlight = false;
+    this.statusMonitorGeneration = 0;
   }
 
   async isActivable() {
@@ -78,7 +81,7 @@ export class BrowserInterceptor {
     let args;
     let launchedProcess;
     try {
-      args = this._getBrowserArgs(proxyPort, launchOptions);
+      args = await this._getBrowserArgs(proxyPort, launchOptions);
       console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
       launchedProcess = spawn(browserPath, args, {
         detached: false,
@@ -97,10 +100,12 @@ export class BrowserInterceptor {
     this._emitStatus('active');
     this._startStatusMonitor();
 
-    launchedProcess.on('exit', (code) => {
+    launchedProcess.on('exit', async (code) => {
       console.log(`[Interceptor] ${this.name} exited with code ${code}`);
       if (!this.active || this.process !== launchedProcess) return;
-      if (this._isBrowserStillRunning()) {
+      const browserStillRunning = await this._isBrowserStillRunning();
+      if (!this.active || this.process !== launchedProcess) return;
+      if (browserStillRunning) {
         this._startStatusMonitor();
         return;
       }
@@ -150,9 +155,9 @@ export class BrowserInterceptor {
     return { success: true, browser: this.name, url: normalizedUrl };
   }
 
-  _getBrowserArgs(proxyPort, options) {
+  async _getBrowserArgs(proxyPort, options) {
     if (this.browserType === 'firefox') {
-      return this._getFirefoxArgs(proxyPort, options);
+      return await this._getFirefoxArgs(proxyPort, options);
     }
     return this._getChromiumArgs(proxyPort, options);
   }
@@ -184,7 +189,7 @@ export class BrowserInterceptor {
     return args;
   }
 
-  _getFirefoxArgs(proxyPort, options) {
+  async _getFirefoxArgs(proxyPort, options) {
     // Create Firefox profile with proxy settings
     const prefsPath = path.join(this.profileDir, 'user.js');
     const prefs = [
@@ -211,7 +216,7 @@ export class BrowserInterceptor {
     fs.writeFileSync(prefsPath, prefs);
 
     // Import our CA cert into Firefox's cert store using certutil if available
-    this._importCertToFirefoxProfile();
+    await this._importCertToFirefoxProfile();
 
     const args = [
       '-profile', this.profileDir,
@@ -226,10 +231,10 @@ export class BrowserInterceptor {
   }
 
   _runCertutil(args) {
-    execFileSync('certutil', args, { stdio: 'ignore', timeout: 5000 });
+    return execFileAsync('certutil', args, { timeout: 5000 });
   }
 
-  _importCertToFirefoxProfile() {
+  async _importCertToFirefoxProfile() {
     if (!this.ca) {
       throw new Error('FreeKit CA certificate is not available for Firefox interception');
     }
@@ -238,10 +243,10 @@ export class BrowserInterceptor {
 
     try {
       // Initialize the cert DB for the profile
-      this._runCertutil(['-d', `sql:${this.profileDir}`, '-N', '--empty-password']);
+      await this._runCertutil(['-d', `sql:${this.profileDir}`, '-N', '--empty-password']);
 
       // Import CA cert as trusted (C = trusted for SSL, T = trusted for email, u = trusted for code signing)
-      this._runCertutil([
+      await this._runCertutil([
         '-d', `sql:${this.profileDir}`,
         '-A',
         '-t', 'CT,,',
@@ -271,7 +276,7 @@ export class BrowserInterceptor {
 
     const profileDir = this.profileDir;
     const launcherPid = this.process?.pid || null;
-    const inspectedIds = this._refreshTrackedProcessIds(true);
+    const inspectedIds = await this._refreshTrackedProcessIds(true);
     const targetIds = inspectedIds === null
       ? new Set()
       : new Set(inspectedIds);
@@ -313,28 +318,40 @@ export class BrowserInterceptor {
 
   _startStatusMonitor() {
     this._stopStatusMonitor();
+    const generation = this.statusMonitorGeneration;
     this.statusMonitor = setInterval(() => {
       if (!this.active) {
         this._stopStatusMonitor();
         return;
       }
-      if (!this._isBrowserStillRunning()) {
-        this._markInactive('closed');
-      }
+      if (this.statusInspectionInFlight) return;
+      this.statusInspectionInFlight = true;
+      Promise.resolve(this._isBrowserStillRunning())
+        .then(running => {
+          if (generation === this.statusMonitorGeneration && this.active && !running) {
+            this._markInactive('closed');
+          }
+        })
+        .catch(err => console.warn(`[Interceptor] Could not monitor ${this.name}: ${err.message}`))
+        .finally(() => {
+          if (generation === this.statusMonitorGeneration) this.statusInspectionInFlight = false;
+        });
     }, 1500);
     this.statusMonitor.unref?.();
   }
 
   _stopStatusMonitor() {
+    this.statusMonitorGeneration += 1;
+    this.statusInspectionInFlight = false;
     if (this.statusMonitor) {
       clearInterval(this.statusMonitor);
       this.statusMonitor = null;
     }
   }
 
-  _isBrowserStillRunning() {
+  async _isBrowserStillRunning() {
     const spawnedProcessRunning = this._isSpawnedProcessRunning();
-    const relatedIds = this._refreshTrackedProcessIds();
+    const relatedIds = await this._refreshTrackedProcessIds();
     // If inspection is unavailable, err on the side of preserving an active
     // browser/profile rather than deleting files that may still be in use.
     return relatedIds === null
@@ -354,7 +371,7 @@ export class BrowserInterceptor {
     }
   }
 
-  _refreshTrackedProcessIds(force = false) {
+  async _refreshTrackedProcessIds(force = false) {
     if (!this.profileDir) {
       this.trackedProcessIds.clear();
       return new Set();
@@ -367,7 +384,7 @@ export class BrowserInterceptor {
 
     const rootPids = this._isSpawnedProcessRunning() ? [this.process.pid] : [];
     try {
-      const relatedIds = getRelatedProcessIds(this.profileDir, rootPids);
+      const relatedIds = await getRelatedProcessIdsAsync(this.profileDir, rootPids);
       this.trackedProcessIds = relatedIds;
       this.lastProcessInspectionAt = now;
       this.lastProcessInspectionFailed = false;
@@ -397,12 +414,12 @@ export class BrowserInterceptor {
     }
   }
 
-  _forceTerminateProcesses(processIds) {
+  async _forceTerminateProcesses(processIds) {
     if (this._platform() === 'win32') {
       for (const pid of processIds) {
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
         try {
-          execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+          await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
             stdio: 'ignore',
             timeout: 5000,
             windowsHide: true
@@ -420,7 +437,7 @@ export class BrowserInterceptor {
   async _waitForProfileProcessesToExit(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      const remainingIds = this._refreshTrackedProcessIds(true);
+      const remainingIds = await this._refreshTrackedProcessIds(true);
       if (remainingIds === null || remainingIds.size === 0 || Date.now() >= deadline) {
         return remainingIds;
       }
@@ -435,7 +452,7 @@ export class BrowserInterceptor {
     if (remainingIds === null || remainingIds.size === 0) return remainingIds;
 
     console.warn(`[Interceptor] Force-stopping ${remainingIds.size} remaining ${this.name} process(es)`);
-    this._forceTerminateProcesses(remainingIds);
+    await this._forceTerminateProcesses(remainingIds);
     remainingIds = await this._waitForProfileProcessesToExit(2000);
     return remainingIds;
   }
@@ -449,6 +466,7 @@ export class BrowserInterceptor {
     this.lifecycleInspectionErrorLogged = false;
     this.lastProcessInspectionAt = 0;
     this.lastProcessInspectionFailed = false;
+    this.statusInspectionInFlight = false;
   }
 
   _emitStatus(reason, extra = {}) {
@@ -506,7 +524,7 @@ foreach ($pidValue in $candidatePids) {
 
 exit 1
 `;
-      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -520,7 +538,7 @@ exit 1
         edge: 'Microsoft Edge',
         brave: 'Brave Browser'
       };
-      execFileSync('osascript', ['-e', `tell application "${appNames[this.browserType] || this.name}" to activate`], {
+      await execFileAsync('osascript', ['-e', `tell application "${appNames[this.browserType] || this.name}" to activate`], {
         stdio: 'ignore',
         timeout: 5000
       });

@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileAsync } from './command-runner.js';
 
 const PROFILE_MARKER = '.http-freekit-profile.json';
 const MANAGED_PROFILE_PATTERN = /^http-freekit-(?:chrome|firefox|edge|brave)-[A-Za-z0-9._-]+$/;
@@ -131,6 +132,44 @@ export function getProcessSnapshot() {
   return process.platform === 'win32' ? getWindowsProcessSnapshot() : getPosixProcessSnapshot();
 }
 
+export async function getProcessSnapshotAsync() {
+  if (process.platform === 'win32') {
+    const script = `
+$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+  [pscustomobject]@{
+    pid = [int]$_.ProcessId
+    ppid = [int]$_.ParentProcessId
+    command = [string]$_.CommandLine
+  }
+})
+[Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
+`;
+    const output = String(await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 5 * 1024 * 1024 }
+    )).trim();
+    if (!output) return [];
+    const parsed = JSON.parse(output);
+    return (Array.isArray(parsed) ? parsed : [parsed]).map(item => ({
+      pid: Number(item.pid),
+      ppid: Number(item.ppid),
+      command: String(item.command || '')
+    }));
+  }
+
+  const output = String(await execFileAsync('ps', ['-eo', 'pid=,ppid=,args='], {
+    encoding: 'utf8',
+    timeout: 5000,
+    maxBuffer: 5 * 1024 * 1024
+  }));
+  return output.split(/\r?\n/).flatMap(line => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s*(.*)$/);
+    if (!match) return [];
+    return [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] || '' }];
+  });
+}
+
 /**
  * Find every process using a profile and all descendants of those processes.
  * Descendant tracking catches Chromium subprocesses that omit --user-data-dir.
@@ -170,6 +209,10 @@ export function collectRelatedProcessIds(processes, profileDir, rootPids = []) {
 
 export function getRelatedProcessIds(profileDir, rootPids = [], snapshot) {
   return collectRelatedProcessIds(snapshot || getProcessSnapshot(), profileDir, rootPids);
+}
+
+export async function getRelatedProcessIdsAsync(profileDir, rootPids = [], snapshot) {
+  return collectRelatedProcessIds(snapshot || await getProcessSnapshotAsync(), profileDir, rootPids);
 }
 
 /** Remove one verified managed profile, with built-in retries for Windows locks. */

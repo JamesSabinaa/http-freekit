@@ -1,7 +1,7 @@
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import QRCode from 'qrcode';
+import { execFileAsync } from './command-runner.js';
 
 const HTTP_TOOLKIT_ANDROID_PACKAGE = 'tech.httptoolkit.android.v1';
 const HTTP_TOOLKIT_ANDROID_ACTIVATE = 'tech.httptoolkit.android.ACTIVATE';
@@ -30,9 +30,9 @@ export class AndroidAdbInterceptor {
   /**
    * Parse `adb devices -l` output into a list of connected devices.
    */
-  _getConnectedDevices() {
+  async _getConnectedDevices() {
     try {
-      const output = execFileSync('adb', ['devices', '-l'], { encoding: 'utf8', timeout: 5000 });
+      const output = await execFileAsync('adb', ['devices', '-l'], { encoding: 'utf8', timeout: 5000 });
       const lines = output.split('\n').slice(1); // skip header "List of devices attached"
       const devices = [];
 
@@ -72,7 +72,7 @@ export class AndroidAdbInterceptor {
   }
 
   async getMetadata() {
-    const devices = this._getConnectedDevices();
+    const devices = await this._getConnectedDevices();
     return {
       devices,
       activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
@@ -84,9 +84,9 @@ export class AndroidAdbInterceptor {
     };
   }
 
-  _isAdbAvailable() {
+  async _isAdbAvailable() {
     try {
-      execFileSync('adb', ['version'], { stdio: 'ignore', timeout: 3000 });
+      await execFileAsync('adb', ['version'], { timeout: 3000 });
       return true;
     } catch {
       return false;
@@ -94,25 +94,24 @@ export class AndroidAdbInterceptor {
   }
 
   _adb(deviceId, args, options = {}) {
-    return execFileSync('adb', ['-s', deviceId, ...args], {
+    return execFileAsync('adb', ['-s', deviceId, ...args], {
       encoding: options.encoding || 'utf8',
-      stdio: options.stdio || 'pipe',
       timeout: options.timeout || 10000
     });
   }
 
-  _isHttpToolkitAppInstalled(deviceId) {
+  async _isHttpToolkitAppInstalled(deviceId) {
     try {
-      this._adb(deviceId, ['shell', 'pm', 'path', HTTP_TOOLKIT_ANDROID_PACKAGE], { timeout: 5000 });
+      await this._adb(deviceId, ['shell', 'pm', 'path', HTTP_TOOLKIT_ANDROID_PACKAGE], { timeout: 5000 });
       return true;
     } catch {
       return false;
     }
   }
 
-  _bringHttpToolkitAppToFront(deviceId) {
+  async _bringHttpToolkitAppToFront(deviceId) {
     try {
-      this._adb(deviceId, ['shell', 'monkey', '-p', HTTP_TOOLKIT_ANDROID_PACKAGE, '1'], {
+      await this._adb(deviceId, ['shell', 'monkey', '-p', HTTP_TOOLKIT_ANDROID_PACKAGE, '1'], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -121,9 +120,9 @@ export class AndroidAdbInterceptor {
     }
   }
 
-  _createReverseTunnel(deviceId, proxyPort) {
+  async _createReverseTunnel(deviceId, proxyPort) {
     try {
-      this._adb(deviceId, ['reverse', `tcp:${proxyPort}`, `tcp:${proxyPort}`], {
+      await this._adb(deviceId, ['reverse', `tcp:${proxyPort}`, `tcp:${proxyPort}`], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -136,13 +135,13 @@ export class AndroidAdbInterceptor {
     }
   }
 
-  _removeReverseTunnel(deviceId, proxyPort) {
+  async _removeReverseTunnel(deviceId, proxyPort) {
     if (!proxyPort) return true;
     const key = `${deviceId}:${proxyPort}`;
     if (!this.reverseTunnels.has(key)) return true;
 
     try {
-      this._adb(deviceId, ['reverse', '--remove', `tcp:${proxyPort}`], {
+      await this._adb(deviceId, ['reverse', '--remove', `tcp:${proxyPort}`], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -196,12 +195,12 @@ export class AndroidAdbInterceptor {
     };
   }
 
-  _activateHttpToolkitApp(deviceId, proxyPort) {
+  async _activateHttpToolkitApp(deviceId, proxyPort) {
     if (!this.ca?.getCertInfo?.()?.certificateSpkiFingerprint) {
       return { success: false, error: 'CA certificate is not available for HTTP Toolkit Android app setup' };
     }
 
-    if (!this._isHttpToolkitAppInstalled(deviceId)) {
+    if (!await this._isHttpToolkitAppInstalled(deviceId)) {
       return {
         success: false,
         error: `HTTP Toolkit Android app is not installed (${HTTP_TOOLKIT_ANDROID_PACKAGE})`,
@@ -209,13 +208,13 @@ export class AndroidAdbInterceptor {
       };
     }
 
-    const tunnelActive = this._createReverseTunnel(deviceId, proxyPort);
+    const tunnelActive = await this._createReverseTunnel(deviceId, proxyPort);
     const connectUrl = this._buildHttpToolkitConnectUrl(proxyPort);
 
-    this._bringHttpToolkitAppToFront(deviceId);
+    await this._bringHttpToolkitAppToFront(deviceId);
 
     try {
-      this._adb(deviceId, [
+      await this._adb(deviceId, [
         'shell',
         'am',
         'start',
@@ -234,7 +233,7 @@ export class AndroidAdbInterceptor {
         connectUrl
       };
     } catch (err) {
-      this._removeReverseTunnel(deviceId, proxyPort);
+      await this._removeReverseTunnel(deviceId, proxyPort);
       return {
         success: false,
         error: err.message,
@@ -244,12 +243,12 @@ export class AndroidAdbInterceptor {
     }
   }
 
-  _deactivateHttpToolkitApp(deviceId, proxyPort) {
+  async _deactivateHttpToolkitApp(deviceId, proxyPort) {
     let appDeactivated = false;
     try {
-      if (this._isHttpToolkitAppInstalled(deviceId)) {
-        this._bringHttpToolkitAppToFront(deviceId);
-        this._adb(deviceId, [
+      if (await this._isHttpToolkitAppInstalled(deviceId)) {
+        await this._bringHttpToolkitAppToFront(deviceId);
+        await this._adb(deviceId, [
           'shell',
           'am',
           'start',
@@ -263,7 +262,7 @@ export class AndroidAdbInterceptor {
     } catch (err) {
       console.warn(`[Interceptor] Failed to deactivate HTTP Toolkit Android app on ${deviceId}:`, err.message);
     }
-    const tunnelRemoved = this._removeReverseTunnel(deviceId, proxyPort);
+    const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
     return appDeactivated && tunnelRemoved;
   }
 
@@ -271,7 +270,7 @@ export class AndroidAdbInterceptor {
    * Push the CA certificate to the device's user certificate store.
    * Returns the remote cert path on the device.
    */
-  _pushCaCert(deviceId) {
+  async _pushCaCert(deviceId) {
     if (!this.ca) {
       console.warn('[Interceptor] No CA available for ADB interceptor');
       return null;
@@ -290,7 +289,7 @@ export class AndroidAdbInterceptor {
     const remotePath = '/data/local/tmp/http-freekit-ca.pem';
 
     try {
-      this._adb(deviceId, ['push', certPath, remotePath], {
+      await this._adb(deviceId, ['push', certPath, remotePath], {
         stdio: 'ignore',
         timeout: 10000
       });
@@ -305,9 +304,9 @@ export class AndroidAdbInterceptor {
   /**
    * Set HTTP proxy on the device via ADB shell.
    */
-  _setProxy(deviceId, proxyHost, proxyPort) {
+  async _setProxy(deviceId, proxyHost, proxyPort) {
     try {
-      this._adb(deviceId, ['shell', 'settings', 'put', 'global', 'http_proxy', `${proxyHost}:${proxyPort}`], {
+      await this._adb(deviceId, ['shell', 'settings', 'put', 'global', 'http_proxy', `${proxyHost}:${proxyPort}`], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -322,9 +321,9 @@ export class AndroidAdbInterceptor {
   /**
    * Read the current global HTTP proxy so it can be restored later.
    */
-  _getProxy(deviceId) {
+  async _getProxy(deviceId) {
     try {
-      const value = this._adb(deviceId, ['shell', 'settings', 'get', 'global', 'http_proxy'], {
+      const value = await this._adb(deviceId, ['shell', 'settings', 'get', 'global', 'http_proxy'], {
         timeout: 5000
       });
       return { success: true, value: String(value).trim() };
@@ -337,13 +336,13 @@ export class AndroidAdbInterceptor {
   /**
    * Restore the global HTTP proxy value that existed before activation.
    */
-  _restoreProxy(deviceId, previousProxy) {
+  async _restoreProxy(deviceId, previousProxy) {
     const wasUnset = previousProxy == null || previousProxy === '' || previousProxy === 'null';
     const settingsArgs = wasUnset
       ? ['shell', 'settings', 'delete', 'global', 'http_proxy']
       : ['shell', 'settings', 'put', 'global', 'http_proxy', previousProxy];
     try {
-      this._adb(deviceId, settingsArgs, {
+      await this._adb(deviceId, settingsArgs, {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -358,9 +357,9 @@ export class AndroidAdbInterceptor {
   /**
    * Remove the pushed CA certificate from the device.
    */
-  _removeCaCert(deviceId) {
+  async _removeCaCert(deviceId) {
     try {
-      this._adb(deviceId, ['shell', 'rm', '-f', '/data/local/tmp/http-freekit-ca.pem'], {
+      await this._adb(deviceId, ['shell', 'rm', '-f', '/data/local/tmp/http-freekit-ca.pem'], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -406,7 +405,7 @@ export class AndroidAdbInterceptor {
 
     if (!deviceId) {
       // No specific device — return metadata with device list for UI selection
-      const devices = this._getConnectedDevices();
+      const devices = await this._getConnectedDevices();
       const qrMetadata = await this._getQrMetadata(proxyPort);
       return {
         success: true,
@@ -416,7 +415,7 @@ export class AndroidAdbInterceptor {
             serial,
             ...info
           })),
-          adbAvailable: this._isAdbAvailable(),
+          adbAvailable: await this._isAdbAvailable(),
           httpToolkitAppPackage: HTTP_TOOLKIT_ANDROID_PACKAGE,
           prefersHttpToolkitApp: true,
           ...qrMetadata,
@@ -426,7 +425,7 @@ export class AndroidAdbInterceptor {
     }
 
     // Verify device is connected and authorized
-    const devices = this._getConnectedDevices();
+    const devices = await this._getConnectedDevices();
     const device = devices.find(d => d.serial === deviceId);
 
     if (!device) {
@@ -449,7 +448,7 @@ export class AndroidAdbInterceptor {
     let previousProxy = null;
 
     if (useHttpToolkitApp) {
-      const appActivation = this._activateHttpToolkitApp(deviceId, proxyPort);
+      const appActivation = await this._activateHttpToolkitApp(deviceId, proxyPort);
       appInstalled = appActivation.appInstalled === true;
       tunnelActive = appActivation.tunnelActive === true;
 
@@ -462,17 +461,17 @@ export class AndroidAdbInterceptor {
     }
 
     if (mode !== 'http-toolkit-app') {
-      const currentProxy = this._getProxy(deviceId);
+      const currentProxy = await this._getProxy(deviceId);
       if (!currentProxy.success) {
         return { success: false, error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}` };
       }
       previousProxy = currentProxy.value;
 
       // Push CA certificate for the global proxy fallback.
-      remoteCertPath = this._pushCaCert(deviceId);
+      remoteCertPath = await this._pushCaCert(deviceId);
 
       // Set proxy
-      const proxySet = this._setProxy(deviceId, hostIp, proxyPort);
+      const proxySet = await this._setProxy(deviceId, hostIp, proxyPort);
 
       if (!proxySet) {
         return { success: false, error: `Failed to set proxy on ${deviceId}` };
@@ -514,7 +513,7 @@ export class AndroidAdbInterceptor {
           : remoteCertPath
           ? 'CA certificate pushed to device. Install it via Settings > Security > Install from storage > /data/local/tmp/http-freekit-ca.pem'
           : 'No CA certificate available. HTTPS interception will show certificate warnings.',
-        devices: this._getConnectedDevices(),
+        devices: await this._getConnectedDevices(),
         activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
           serial,
           ...info
@@ -525,12 +524,12 @@ export class AndroidAdbInterceptor {
 
   async deactivate(options = {}) {
     const { deviceId } = options;
-    const cleanupDevice = (serial, activeInfo) => {
+    const cleanupDevice = async (serial, activeInfo) => {
       if (activeInfo?.mode === 'http-toolkit-app') {
-        return this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
+        return await this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
       }
-      const proxyRestored = this._restoreProxy(serial, activeInfo?.previousProxy);
-      const certificateRemoved = this._removeCaCert(serial);
+      const proxyRestored = await this._restoreProxy(serial, activeInfo?.previousProxy);
+      const certificateRemoved = await this._removeCaCert(serial);
       return proxyRestored && certificateRemoved;
     };
 
@@ -538,7 +537,7 @@ export class AndroidAdbInterceptor {
       // Deactivate a specific device
       const activeInfo = this.activatedDevices.get(deviceId);
       if (!activeInfo) return;
-      if (!cleanupDevice(deviceId, activeInfo)) {
+      if (!await cleanupDevice(deviceId, activeInfo)) {
         this.active = this.activatedDevices.size > 0;
         throw new Error(`Failed to clean up Android device ${deviceId}; reconnect it and retry Stop`);
       }
@@ -548,7 +547,7 @@ export class AndroidAdbInterceptor {
       // Deactivate all devices
       const failures = [];
       for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
-        if (cleanupDevice(serial, activeInfo)) {
+        if (await cleanupDevice(serial, activeInfo)) {
           this.activatedDevices.delete(serial);
         } else {
           failures.push(serial);

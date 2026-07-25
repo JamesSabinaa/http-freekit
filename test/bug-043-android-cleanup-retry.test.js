@@ -46,7 +46,7 @@ test('bulk Android cleanup removes successes and retains failures', async () => 
   assert.equal(interceptor.active, true);
 });
 
-test('failed reverse-tunnel removal remains tracked for retry', () => {
+test('failed reverse-tunnel removal remains tracked for retry', async () => {
   const interceptor = new AndroidAdbInterceptor();
   interceptor.reverseTunnels.add('device-1:8080');
   let succeeds = false;
@@ -54,10 +54,10 @@ test('failed reverse-tunnel removal remains tracked for retry', () => {
     if (!succeeds) throw new Error('device offline');
   };
 
-  assert.equal(interceptor._removeReverseTunnel('device-1', 8080), false);
+  assert.equal(await interceptor._removeReverseTunnel('device-1', 8080), false);
   assert.equal(interceptor.reverseTunnels.has('device-1:8080'), true);
 
   succeeds = true;
-  assert.equal(interceptor._removeReverseTunnel('device-1', 8080), true);
+  assert.equal(await interceptor._removeReverseTunnel('device-1', 8080), true);
   assert.equal(interceptor.reverseTunnels.has('device-1:8080'), false);
 });
