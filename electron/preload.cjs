@@ -18,6 +18,7 @@ const ALLOWED_INVOKE_CHANNELS = [
   'open-context-menu',
   'restart-app',
   'updater-check-now',
+  'updater-get-status',
   'updater-install'
 ];
 
@@ -92,6 +93,12 @@ contextBridge.exposeInMainWorld('electronApi', {
    * @returns {Promise<void>}
    */
   checkForUpdates: () => safeInvoke('updater-check-now'),
+
+  /**
+   * Returns the latest updater state so renderer reloads can replay it.
+   * @returns {Promise<{status: string, version?: string, url?: string, percent?: number, error?: string}|null>}
+   */
+  getUpdaterStatus: () => safeInvoke('updater-get-status'),
 
   /**
    * Quit and install a downloaded update.

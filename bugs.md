@@ -1688,6 +1688,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-143 — Medium — Reloading during an update download can lose the install control
 
+- Status: **Fixed**.
+
 - Evidence: updater state is emitted only as transient IPC events at `electron/updater.cjs:142-152`. The renderer registers its listener at `src/ui/app.js:9454-9478` and creates Restart to install only upon `update-downloaded` at `:9492-9507`; preload/updater exposes no current-status query or replay.
 - Impact: if completion occurs while the renderer reloads, the event is dropped and that session never offers installation even though the package is ready.
 - Reproduction: begin an update download, reload the renderer, and have completion occur before the status listener is reattached.

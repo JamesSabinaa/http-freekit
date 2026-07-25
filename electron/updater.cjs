@@ -22,11 +22,13 @@ let isDownloading = false;
 let updatePromptOpen = false;
 let lastPromptedVersion = null;
 let validateIpcSender = () => false;
+let currentStatus = { status: 'idle' };
 
 /**
  * Send an updater status event to the renderer.
  */
 function sendStatus(data) {
+  currentStatus = { ...data };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('updater-status', data);
   }
@@ -176,6 +178,11 @@ function initAutoUpdater(win, options = {}) {
   ipcMain.handle('updater-check-now', (event) => {
     if (!validateIpcSender(event)) return null;
     return checkForUpdates(true);
+  });
+
+  ipcMain.handle('updater-get-status', (event) => {
+    if (!validateIpcSender(event)) return null;
+    return { ...currentStatus };
   });
 
   ipcMain.handle('updater-install', (event) => {

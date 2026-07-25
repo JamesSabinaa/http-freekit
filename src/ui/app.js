@@ -9797,8 +9797,13 @@
       if (!window.electronApi || !window.electronApi.onUpdaterStatus) return;
 
       let updateVersion = null;
+      let lastUpdaterStatusKey = null;
 
-      window.electronApi.onUpdaterStatus(function(data) {
+      function handleUpdaterStatus(data) {
+        if (!data || typeof data.status !== 'string') return;
+        const statusKey = JSON.stringify(data);
+        if (statusKey === lastUpdaterStatusKey) return;
+        lastUpdaterStatusKey = statusKey;
         switch (data.status) {
           case 'checking':
             if (data.manual) toast('Checking for updates...', 'success');
@@ -9830,9 +9835,17 @@
             if (data.manual) toast('Update check failed: ' + (data.error || 'unknown error'), 'error');
             break;
         }
-      });
+      }
+
+      window.electronApi.onUpdaterStatus(handleUpdaterStatus);
+      if (window.electronApi.getUpdaterStatus) {
+        window.electronApi.getUpdaterStatus()
+          .then(handleUpdaterStatus)
+          .catch(function(err) { console.error('[Updater]', err.message); });
+      }
 
       function showUpdateReadyToast(version) {
+        if (document.getElementById('installUpdateBtn')) return;
         var container = document.getElementById('toastContainer');
         var t = document.createElement('div');
         t.className = 'toast toast-success';
