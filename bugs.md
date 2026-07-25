@@ -433,6 +433,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-153 — Medium — Disconnected breakpoint clients leave ghost pending state
 
+- Status: **Fixed**.
+
 - Evidence: each pause inserts a retained resolver into `pendingBreakpoints` (representative path `src/proxy/proxy-server.js:613-620`); entries are removed only by resume or the fixed five-minute timer at `:4045-4068`. No client request/socket/stream close handler resolves and deletes the entry.
 - Impact: aborted clients leave ghost controls, captured bodies, closures, and timers; repeated breakpoint-hit-and-disconnect traffic accumulates memory for five minutes.
 - Reproduction: trigger a breakpoint, disconnect before resume, and query `/api/breakpoints/pending`.

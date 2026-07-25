@@ -904,7 +904,7 @@ export class ProxyServer {
             path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
             body: this._safeBodyString(body), timestamp: Date.now(), resolve
           });
-          this._setBreakpointTimeout(requestId);
+          this._setBreakpointTimeout(requestId, clientRes);
         });
         // Apply modifications if provided
         if (modifications.url) {
@@ -1045,7 +1045,8 @@ export class ProxyServer {
                 trailers,
                 startTime,
                 tlsDetails: null,
-                remote
+                remote,
+                abortTarget: clientRes
               });
             }
             const duration = Date.now() - startTime;
@@ -1663,7 +1664,7 @@ export class ProxyServer {
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), timestamp: Date.now(), resolve
               });
-              this._setBreakpointTimeout(requestId);
+              this._setBreakpointTimeout(requestId, res);
             });
             if (modifications.url) {
               try {
@@ -1711,7 +1712,7 @@ export class ProxyServer {
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
               });
-              this._setBreakpointTimeout(requestId);
+              this._setBreakpointTimeout(requestId, res);
             });
             if (modifications.status) {
               try {
@@ -1784,7 +1785,7 @@ export class ProxyServer {
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId);
+            this._setBreakpointTimeout(requestId, res);
           });
           // Apply modifications if provided
           if (modifications.url) {
@@ -1882,7 +1883,7 @@ export class ProxyServer {
                   host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
-                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: res
                 });
               }
               try {
@@ -1939,7 +1940,7 @@ export class ProxyServer {
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
-                trailers, startTime, tlsDetails, remote
+                trailers, startTime, tlsDetails, remote, abortTarget: res
               });
             }
             try {
@@ -2183,7 +2184,7 @@ export class ProxyServer {
               path, headers: reqHeaders,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId);
+            this._setBreakpointTimeout(requestId, stream);
           });
           if (modifications.url) {
             try {
@@ -2275,7 +2276,7 @@ export class ProxyServer {
                   requestHeaders: reqHeaders, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
-                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: stream
                 });
               }
               const h2ResponseHeaders = this._toH2ResponseHeaders(
@@ -2339,7 +2340,7 @@ export class ProxyServer {
                 requestHeaders: reqHeaders, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
-                trailers: proxyRes.trailers, startTime, tlsDetails, remote
+                trailers: proxyRes.trailers, startTime, tlsDetails, remote, abortTarget: stream
               });
             }
             const responseHeaders = this._toH2ResponseHeaders(
@@ -2490,7 +2491,7 @@ export class ProxyServer {
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId);
+            this._setBreakpointTimeout(requestId, res);
           });
           if (modifications.url) {
             try {
@@ -2568,7 +2569,7 @@ export class ProxyServer {
                   host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
-                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: res
                 });
               }
               try {
@@ -2638,7 +2639,7 @@ export class ProxyServer {
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
-                trailers, startTime, tlsDetails, remote
+                trailers, startTime, tlsDetails, remote, abortTarget: res
               });
             }
             try {
@@ -2972,7 +2973,7 @@ export class ProxyServer {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), timestamp: Date.now(), resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, stream);
       });
       if (modifications.url) {
         try {
@@ -3016,7 +3017,7 @@ export class ProxyServer {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, stream);
       });
       if (modifications.status) {
         try {
@@ -4301,7 +4302,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, clientRes);
       });
       // Apply modifications and continue as normal proxy request
       if (modifications.url) {
@@ -4344,7 +4345,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, clientRes);
       });
       // Apply modifications to the response
       if (modifications.status) {
@@ -4385,7 +4386,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'request', resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, clientRes);
       });
       // Apply request modifications
       if (reqModifications.url) {
@@ -4424,7 +4425,7 @@ export class ProxyServer {
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId);
+        this._setBreakpointTimeout(requestId, clientRes);
       });
       // Apply response modifications
       if (resModifications.status) {
@@ -4804,7 +4805,7 @@ export class ProxyServer {
     const {
       requestId, protocol, method, url, host, path, requestHeaders, requestBody,
       statusCode, statusMessage, responseHeaders, responseBody, trailers,
-      startTime, tlsDetails, remote
+      startTime, tlsDetails, remote, abortTarget
     } = context;
     const displayBody = this._safeBodyString(
       responseBody,
@@ -4854,7 +4855,7 @@ export class ProxyServer {
         timestamp: Date.now(),
         resolve
       });
-      this._setBreakpointTimeout(requestId);
+      this._setBreakpointTimeout(requestId, abortTarget);
     });
     const requestedStatus = Number(modifications.status ?? modifications.statusCode);
     const bodyModified = Object.prototype.hasOwnProperty.call(modifications, 'body');
@@ -4895,17 +4896,37 @@ export class ProxyServer {
     return true;
   }
 
-  _setBreakpointTimeout(requestId) {
+  _setBreakpointTimeout(requestId, abortTarget = null) {
+    const bp = this.pendingBreakpoints.get(requestId);
+    if (!bp) return;
+    let onClientClose = null;
     const timeout = setTimeout(() => {
-      if (this.pendingBreakpoints.has(requestId)) {
-        this.pendingBreakpoints.get(requestId).resolve({});
+      if (this.pendingBreakpoints.get(requestId) === bp) {
+        bp.resolve({});
         this.pendingBreakpoints.delete(requestId);
       }
     }, 5 * 60 * 1000); // 5 min timeout
-    // Wrap the resolve so we clear the timer when manually resumed
-    const bp = this.pendingBreakpoints.get(requestId);
     const origResolve = bp.resolve;
-    bp.resolve = (val) => { clearTimeout(timeout); origResolve(val); };
+    bp.resolve = (val) => {
+      clearTimeout(timeout);
+      if (onClientClose) abortTarget.removeListener('close', onClientClose);
+      origResolve(val);
+    };
+
+    if (abortTarget?.once) {
+      onClientClose = () => {
+        if (this.pendingBreakpoints.get(requestId) !== bp) return;
+        bp.resolve({});
+        this.pendingBreakpoints.delete(requestId);
+        try {
+          this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });
+        } catch (err) {
+          console.error('[Proxy] Error in breakpoint handler:', err.message);
+        }
+      };
+      abortTarget.once('close', onClientClose);
+      if (abortTarget.destroyed || abortTarget.closed) queueMicrotask(onClientClose);
+    }
   }
 
   _checkBreakpoint(method, url, headers) {
