@@ -265,6 +265,51 @@ print(json.dumps({"providers": get_proxy_providers()}))
     });
   }
 
+  _getTrafficImportValidationError(requests) {
+    if (!Array.isArray(requests)) return 'requests must be an array';
+    const textFields = [
+      'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
+      'statusMessage', 'protocol', 'source'
+    ];
+    const numberFields = ['statusCode', 'duration', 'requestBodySize', 'responseBodySize'];
+
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
+      if (!request || typeof request !== 'object' || Array.isArray(request)) {
+        return `requests[${index}] must be an object`;
+      }
+      if (typeof request.id !== 'string' || !request.id) {
+        return `requests[${index}].id must be a non-empty string`;
+      }
+      if (request.timestamp === undefined || !Number.isFinite(new Date(request.timestamp).getTime())) {
+        return `requests[${index}].timestamp must be a valid date`;
+      }
+      for (const field of textFields) {
+        if (request[field] !== undefined && request[field] !== null && typeof request[field] !== 'string') {
+          return `requests[${index}].${field} must be a string`;
+        }
+      }
+      for (const field of numberFields) {
+        if (request[field] !== undefined && request[field] !== null && !Number.isFinite(request[field])) {
+          return `requests[${index}].${field} must be a finite number`;
+        }
+      }
+      for (const field of ['requestHeaders', 'responseHeaders']) {
+        const headers = request[field];
+        if (headers === undefined || headers === null) continue;
+        if (typeof headers !== 'object' || Array.isArray(headers)) {
+          return `requests[${index}].${field} must be an object`;
+        }
+        for (const value of Object.values(headers)) {
+          const valid = typeof value === 'string' ||
+            (Array.isArray(value) && value.every(item => typeof item === 'string'));
+          if (!valid) return `requests[${index}].${field} values must be strings or string arrays`;
+        }
+      }
+    }
+    return null;
+  }
+
   _sanitizeGeneratorSessionName(value) {
     const sanitized = String(value || '')
       .trim()
@@ -694,17 +739,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/traffic/import', (req, res) => {
       try {
         const { requests } = req.body;
-        if (Array.isArray(requests)) {
-          this.trafficLog.push(...requests);
-          // Enforce max traffic log size after import
-          while (this.trafficLog.length > this.maxTrafficLog) {
-            this.trafficLog.shift();
-          }
-          this._broadcast({ type: 'traffic-imported', count: requests.length });
-          res.json({ success: true, imported: requests.length });
-        } else {
-          res.status(400).json({ error: 'Invalid import format' });
+        const validationError = this._getTrafficImportValidationError(requests);
+        if (validationError) {
+          return res.status(400).json({ error: `Invalid import format: ${validationError}` });
         }
+        this.trafficLog.push(...requests);
+        // Enforce max traffic log size after import
+        while (this.trafficLog.length > this.maxTrafficLog) {
+          this.trafficLog.shift();
+        }
+        this._broadcast({ type: 'traffic-imported', count: requests.length });
+        res.json({ success: true, imported: requests.length });
       } catch (err) {
         res.status(400).json({ error: err.message });
       }

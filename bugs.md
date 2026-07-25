@@ -43,6 +43,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-005 — Medium — Minimally malformed imports poison HAR and MCP consumers
 
+- Status: **Fixed**.
+
 - Evidence: `/api/traffic/import` accepts arbitrary array elements at `src/api/api-server.js:651-660`. `src/api/har-converter.js:33` and MCP detail/search at `src/mcp/mcp-server.js:157,214` unconditionally format timestamps; MCP search also calls `.toLowerCase()` on imported body fields at `:156-157` without type validation.
 - Impact: data the API accepts can make HAR export or MCP tools throw `RangeError`/`TypeError` until the traffic log is cleared.
 - Reproduction: import `{"requests":[{"id":"x"}]}`, then export HAR or search traffic through MCP.
