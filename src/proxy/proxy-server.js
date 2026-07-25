@@ -1488,42 +1488,64 @@ export class ProxyServer {
       const startTime = Date.now();
       let clientBytes = head.length;
       let serverBytes = 0;
+      let clientClosed = false;
+      let tunnelEstablished = false;
       let tunnelEmitted = false;
 
-      const emitTunnel = () => {
+      const emitTunnel = ({ statusCode, statusMessage, error = null }) => {
         if (tunnelEmitted) return;
         tunnelEmitted = true;
+        const errorMessage = error ? (error.message || String(error)) : '';
         this._emitRequest({
           id: tunnelId, protocol: 'tunnel', method: 'CONNECT',
           url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
           requestHeaders: {}, requestBody: '', requestBodySize: clientBytes,
-          statusCode: 200, statusMessage: 'Tunnel Established',
-          responseHeaders: {}, responseBody: '', responseBodySize: serverBytes,
+          statusCode, statusMessage,
+          responseHeaders: {}, responseBody: errorMessage,
+          responseBodySize: error ? 0 : serverBytes,
           duration: Date.now() - startTime, timestamp: startTime,
           source: 'tunnel', tls: null,
-          remote: { address: hostname, port: targetPort }
+          remote: { address: hostname, port: targetPort },
+          ...(error ? {
+            error: errorMessage,
+            errorCode: error.code || null,
+            errorPhase: this._getUpstreamErrorPhase(error)
+          } : {})
         });
+      };
+      const emitSuccessfulTunnel = () => {
+        if (!tunnelEstablished) return;
+        emitTunnel({ statusCode: 200, statusMessage: 'Tunnel Established' });
       };
 
       let target = null;
       this._connectTcp(hostname, targetPort).then((connectedTarget) => {
+        if (clientClosed || clientSocket.destroyed) {
+          connectedTarget.destroy();
+          return;
+        }
         target = connectedTarget;
+        tunnelEstablished = true;
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         target.write(head);
         clientSocket.on('data', chunk => { clientBytes += chunk.length; });
         target.on('data', chunk => { serverBytes += chunk.length; });
         target.pipe(clientSocket);
         clientSocket.pipe(target);
-        target.on('close', emitTunnel);
-        target.on('error', () => clientSocket.destroy());
-      }).catch(() => {
-        clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        target.once('close', emitSuccessfulTunnel);
+        target.once('error', () => clientSocket.destroy());
+      }).catch((error) => {
+        emitTunnel({ statusCode: 502, statusMessage: 'Bad Gateway', error });
+        if (!clientClosed && !clientSocket.destroyed) {
+          clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        }
       });
-      clientSocket.on('close', () => {
+      clientSocket.once('close', () => {
+        clientClosed = true;
         target?.destroy();
-        emitTunnel();
+        emitSuccessfulTunnel();
       });
-      clientSocket.on('error', () => target?.destroy());
+      clientSocket.once('error', () => target?.destroy());
       return;
     }
 

@@ -618,6 +618,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-186 — Medium — Failed TLS passthrough is logged as a successful 200 tunnel
 
+- Status: **Fixed**.
+- Resolution: TLS-passthrough traffic now records an explicit tunnel outcome. Upstream TCP failures emit one 502 event with error details, successful 200 events require an established upstream connection, and shared error/close paths are idempotent. A downstream client that closes while connection setup is pending can no longer create a successful tunnel record.
 - Evidence: `emitTunnel()` hard-codes status 200 at `src/proxy/proxy-server.js:864-876`; the wire 200 is written only in the successful `net.connect()` callback, but target close still invokes `emitTunnel` and target error only destroys the client at `:879-890`.
 - Impact: refused or unreachable destinations appear as established tunnels in logs and stats despite sending no success response.
 - Reproduction: enable passthrough for localhost and CONNECT to a closed port.
