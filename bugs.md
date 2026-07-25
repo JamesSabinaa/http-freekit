@@ -1205,6 +1205,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-166 — Low/Medium — Failed interceptor activations return HTTP 200
 
+- Status: **Fixed**.
 - Evidence: Android returns `{ success: false, error }` at `src/interceptors/android-adb-interceptor.js:411-419,449-450`, and JVM does the same at `jvm-interceptor.js:247-269`. `interceptor-manager.js:70-78` passes these through while `src/api/api-server.js:738-744` always uses `res.json()` with the default success status.
 - Impact: API clients that rely on `response.ok` treat a rejected device or process activation as successful.
 - Reproduction: POST activation for a nonexistent Android serial or JVM PID and observe HTTP 200 with `success: false`.

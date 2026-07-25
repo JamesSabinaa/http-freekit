@@ -938,7 +938,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/interceptors/:id/activate', async (req, res) => {
       try {
         const result = await this.interceptors.activate(req.params.id, this.proxy.port, req.body);
-        res.json(result);
+        res.status(result?.success === false ? 422 : 200).json(result);
       } catch (err) {
         res.status(err.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS' ? 409 : 500).json({ error: err.message });
       }
