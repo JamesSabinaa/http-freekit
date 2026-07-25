@@ -18,6 +18,7 @@
     const mockDraftRules = new Map();
     /** @type {Set<string>} IDs of rules that are new (not yet on server) */
     const mockNewDraftIds = new Set();
+    let mockSaveInProgress = false;
     let autoScroll = true;
     let requestCounter = 0;
     let filterDebounceTimer = null;
@@ -6255,7 +6256,9 @@
 
     /** Send ALL draft rules to the server */
     async function saveAllMockRules() {
-      if (!hasUnsavedMockChanges()) return;
+      if (!hasUnsavedMockChanges() || mockSaveInProgress) return;
+      mockSaveInProgress = true;
+      updateMockSaveButtons();
       try {
         const entries = Array.from(mockDraftRules.entries());
         for (const [draftId, draft] of entries) {
@@ -6268,7 +6271,7 @@
               body: JSON.stringify(payload)
             });
             const data = await res.json();
-            if (data.error) throw new Error(data.error);
+            if (!res.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
           } else {
             const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
               method: 'PUT',
@@ -6276,18 +6279,24 @@
               body: JSON.stringify(payload)
             });
             const data = await res.json();
-            if (data.error) throw new Error(data.error);
+            if (!res.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
           }
+          // Clear each completed entry immediately so retrying a later failure is idempotent.
+          mockDraftRules.delete(draftId);
+          mockNewDraftIds.delete(draftId);
         }
-        mockDraftRules.clear();
-        mockNewDraftIds.clear();
         mockEditingRule = null;
         mockEditDraft = null;
         toast('All changes saved', 'success');
         // Reload from server to get real IDs for all rules
         await loadMockRules();
       } catch (err) {
+        // Refresh completed entries while preserving the drafts that still need saving.
+        await loadMockRules();
         toast('Error saving rules: ' + err.message, 'error');
+      } finally {
+        mockSaveInProgress = false;
+        updateMockSaveButtons();
       }
     }
 
@@ -6342,6 +6351,7 @@
       const unsavedBadge = document.getElementById('mockUnsavedBadge');
       const hasDrafts = hasUnsavedMockChanges();
       if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
+      if (saveAllBtn) saveAllBtn.disabled = mockSaveInProgress;
       if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
       if (unsavedBadge) {
         unsavedBadge.style.display = hasDrafts ? '' : 'none';

@@ -1632,6 +1632,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-136 — Medium — Concurrent or retried Save All duplicates new mock rules
 
+- Status: **Fixed**.
+
 - Evidence: the button invokes `saveAllMockRules()` without being disabled at `src/ui/index.html:184-185`. Every invocation snapshots all drafts and POSTs new ones without IDs at `src/ui/app.js:6117-6148`; drafts clear only after the whole batch succeeds.
 - Impact: double-clicking creates equivalent rules with different IDs, and retrying after a later batch item fails duplicates every earlier successful new rule.
 - Reproduction: throttle the API, create one new draft, and double-click Save All.
