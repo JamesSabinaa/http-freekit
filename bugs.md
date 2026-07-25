@@ -35,6 +35,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 23 | 6 new bugs found; documented below | 0/2 |
 | 24 | 3 new bugs found; documented below | 0/2 |
 | 25 | 8 new bugs found; documented below | 0/2 |
+| 26 | 3 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -89,7 +90,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-057 — Medium — Settings write failures are reported as successful saves
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Settings now roll back and return an error when persistence fails, but renderer save handlers that ignore unsuccessful HTTP responses can still report the failed change as saved.
 
 - Evidence: `src/settings.js:25-31` catches write errors, logs them, and returns no failure. `set()`/`setAll()` at `:39-47` therefore complete normally, and API setting routes return success regardless of whether disk persistence worked.
 - Impact: on a read-only/full filesystem the UI says settings were saved, the in-memory value works temporarily, and every change disappears on restart.
@@ -391,7 +393,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-147 — High — Malformed breakpoint state can crash the proxy process
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Non-array matcher state and invalid resume methods/headers are rejected. Matcher objects still receive no field-level type validation, and response resume bodies are not validated, so accepted state can still throw during matcher evaluation or response writes.
 
 - Evidence: breakpoint create/update accepts raw JSON at `src/api/api-server.js:921-929`; `_checkBreakpoint()` calls `.every()` on `matchers` at `src/proxy/proxy-server.js:4071-4075` without validating it is an array. Resume at `api-server.js:937-939` likewise accepts arbitrary method/headers that are merged at `proxy-server.js:625-629` and passed to Node request construction, where invalid tokens throw in an async EventEmitter handler without a rejection boundary.
 - Impact: one malformed persisted breakpoint can crash processing on every request, and one invalid resume payload can terminate the Node server.
@@ -523,9 +526,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-180 — Medium — Client cancellation is not propagated upstream
 
-- Evidence: H1 forwarding creates and buffers the upstream response at `src/proxy/proxy-server.js:700-754` without an aborted/close handler that destroys `proxyReq`. `_makeH2Request()` at `:2648-2704` has no downstream cancellation input and buffers independently.
+- Evidence: H1 forwarding creates and buffers the upstream response without an aborted/close handler that destroys `proxyReq`, while `_makeH2Request()` has no downstream cancellation input. The breakpoint disconnect handler additionally resolves a paused request with empty modifications, so its await continues into normal upstream forwarding after the client has gone.
 - Impact: after a client disconnects, origins continue streaming and FreeKit continues consuming bandwidth and allocating body buffers; abandoned unsafe requests can still execute.
-- Reproduction: close the client early during a slow response and observe the origin continue sending.
+- Reproduction: close the client early during a slow response and observe the origin continue sending, or disconnect while a request breakpoint is paused and observe the request reach the origin after the pause is released.
 
 ### BUG-181 — Medium — Breakpoint rules disappear on restart
 
@@ -599,6 +602,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-203 — High/Medium — Malformed persisted network settings crash later connections
 
+- Status: **Partially fixed**.
+- Resolution: TLS-passthrough entries are now string-normalized before matching, removing the original non-string crash. Upstream proxy port and type remain insufficiently validated and can still fail later request construction.
 - Evidence: `/api/upstream-proxy` accepts arbitrary port/type and persists it; `setUpstreamProxy()` accepts any truthy parsed port, after which the async H1 path calls `http.request()` without a synchronous exception boundary (`src/api/api-server.js` upstream route; `src/proxy/proxy-server.js:220-235,590-810`). TLS passthrough validates only the outer array, then CONNECT calls `.startsWith()` on each element at `proxy-server.js:863-865`.
 - Impact: accepted persisted values such as port 70000 or passthrough host `1` throw in later request handlers, and the crash repeats after restart.
 - Reproduction: persist upstream `{ "host":"127.0.0.1", "port":70000 }` and proxy a request, or store passthrough `{ "hosts":[1] }` and issue CONNECT.
@@ -862,6 +867,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `ProxyServer.getStats()` returns the complete `upstreamProxy` object, including `auth`, and `_handleGetLiveSummary()` copies it directly into tool output at `src/mcp/mcp-server.js:389-405`.
 - Impact: invoking a status-summary tool sends plaintext upstream-proxy usernames and passwords into MCP client/model context although the summary needs only connection metadata.
 - Reproduction: configure upstream auth as `user:secret` and invoke `get_live_summary`; its JSON contains `"auth": "user:secret"`.
+
+### BUG-361 — Low/Medium — Cleared pending-request IDs are retained indefinitely
+
+- Evidence: `_clearTraffic()` copies every live pending ID into `_clearedPendingTrafficIds`. Entries are deleted only if a later event reuses or completes the same ID; the set has no size limit, expiry, or other cleanup path.
+- Impact: pending requests that never produce a completion leave permanent tombstones. Repeated pending-and-clear cycles can grow backend memory even while the bounded traffic log stays small.
+- Reproduction: emit unique pending traffic events and clear after each without emitting their completions; `_clearedPendingTrafficIds` grows once per cycle while `trafficLog` remains empty.
 
 ## Interceptors and cleanup
 
@@ -1859,6 +1870,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `safeLocalStorageSet()` and `safeLocalStorageRemove()` return `false` on blocked or quota-exceeded storage, but every caller ignores the result. Protobuf schema and custom-theme actions still show success or apply in memory; Send tabs, active tab, settings section, theme, and Traffic scroll state likewise continue without reporting that persistence failed.
 - Impact: users believe state was saved or cleared, but reload restores the previous state or discards the apparent change without any warning.
 - Reproduction: make `Storage.prototype.setItem` and `removeItem` throw, import or clear a protobuf schema or save/remove a custom theme, observe the success/applied UI, then reload and see the change disappear or the removed data return.
+
+### BUG-362 — Low/Medium — Cancelled automatic proxy rotation leaves the interface stale
+
+- Evidence: the server broadcasts `proxy-auto-rotate` with status `cancelled` and the current proxy, but `handleProxyAutoRotateEvent()` handles only `started`, `success`, and `error`.
+- Impact: the interface announces that rotation started but never confirms cancellation or refreshes to the current proxy configuration. A window that did not originate the intervening manual change can display the old proxy until reload.
+- Reproduction: start automatic rotation, change the proxy before lookup finishes, and let the rotation cancel; the backend retains and broadcasts the new manual proxy, but the renderer performs no cancellation update.
+
+### BUG-363 — Low/Medium — Breakpoint timeout leaves an outdated pause banner
+
+- Evidence: `_setBreakpointTimeout()` resolves and removes an expired breakpoint without publishing a resumed event, while the renderer refreshes its banner only for breakpoint-hit and breakpoint-resumed messages or manual resume actions.
+- Impact: the interface continues showing a paused request after it resumed automatically, and a later Resume attempt fails because the pending breakpoint no longer exists.
+- Reproduction: leave a paused request untouched until its five-minute timeout expires; the server removes it but the pause banner remains visible.
 
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
