@@ -290,7 +290,8 @@ export class McpServerBridge {
       if (!r.statusCode || r.source === 'mock') continue;
 
       // Missing HTTPS (excluding localhost)
-      if (r.protocol === 'http' && r.host && !r.host.match(/^(localhost|127\.0\.0\.1|::1)/)) {
+      const isLocalhost = /^(?:localhost|127\.0\.0\.1)(?::\d+)?$|^(?:::1|\[::1\](?::\d+)?)$/i.test(r.host || '');
+      if (r.protocol === 'http' && r.host && !isLocalhost) {
         issues.push({ severity: 'high', category: 'Missing HTTPS', url: r.url, requestId: r.id,
           description: `Unencrypted HTTP request to ${r.host}` });
       }
