@@ -825,6 +825,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-052 — Medium — Firefox CA fallback is ineffective on macOS/Linux
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/browser-interceptor.js:204-225` ignores `certutil` failures and claims `security.enterprise_roots.enabled` is sufficient. `src/index.js:43-57` installs the CA into the OS store only on Windows, leaving no enterprise root for Firefox to import on macOS/Linux.
 - Impact: Firefox interception works for HTTP but HTTPS is untrusted when NSS `certutil` is unavailable.
 - Reproduction: launch isolated Firefox on macOS/Linux without `certutil` and browse to an HTTPS site.

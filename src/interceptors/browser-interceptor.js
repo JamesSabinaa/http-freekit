@@ -1,4 +1,4 @@
-import { spawn, execFileSync, execSync } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
@@ -217,27 +217,40 @@ export class BrowserInterceptor {
     return args;
   }
 
+  _runCertutil(args) {
+    execFileSync('certutil', args, { stdio: 'ignore', timeout: 5000 });
+  }
+
   _importCertToFirefoxProfile() {
-    if (!this.ca) return;
+    if (!this.ca) {
+      throw new Error('FreeKit CA certificate is not available for Firefox interception');
+    }
     const certInfo = this.ca.getCertInfo();
     const certPath = certInfo.certificatePath;
 
     try {
       // Initialize the cert DB for the profile
-      execSync(`certutil -d sql:${this.profileDir} -N --empty-password`, {
-        stdio: 'ignore', timeout: 5000
-      });
+      this._runCertutil(['-d', `sql:${this.profileDir}`, '-N', '--empty-password']);
 
       // Import CA cert as trusted (C = trusted for SSL, T = trusted for email, u = trusted for code signing)
-      execSync(`certutil -d sql:${this.profileDir} -A -t "CT,," -n "HTTP FreeKit CA" -i "${certPath}"`, {
-        stdio: 'ignore', timeout: 5000
-      });
+      this._runCertutil([
+        '-d', `sql:${this.profileDir}`,
+        '-A',
+        '-t', 'CT,,',
+        '-n', 'HTTP FreeKit CA',
+        '-i', certPath
+      ]);
 
       console.log(`[Interceptor] Imported CA cert into Firefox profile`);
-    } catch {
-      // certutil not available — Firefox will still work via enterprise_roots pref
-      // On Windows, we can try the NSS certutil bundled with HTTP Toolkit if available
-      console.log('[Interceptor] certutil not found, relying on enterprise_roots pref for Firefox');
+      return true;
+    } catch (err) {
+      if (this.ca.systemTrustInstalled) {
+        console.log('[Interceptor] Firefox will use the FreeKit CA from the operating-system trust store');
+        return false;
+      }
+      throw new Error(
+        `Could not import the FreeKit CA into the Firefox profile. Install Mozilla NSS certutil and retry: ${err.message}`
+      );
     }
   }
 
