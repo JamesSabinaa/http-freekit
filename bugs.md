@@ -485,6 +485,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-159 — Low/Medium — MCP HAR export includes non-HTTP pseudo-events
 
+- Status: **Fixed**.
+
 - Evidence: REST filters WebSocket frames and optional CONNECT tunnels through `_getHarExportTraffic()` at `src/api/api-server.js:257-265,613-617`; MCP filters the raw `trafficLog` only by user criteria and passes everything else to `trafficToHar()` at `src/mcp/mcp-server.js:358-373`.
 - Impact: MCP exports contain empty-URL WebSocket-frame or tunnel entries and disagree with UI export settings.
 - Reproduction: capture a WebSocket frame, invoke MCP `export_traffic`, and inspect the pseudo-entry in the HAR.

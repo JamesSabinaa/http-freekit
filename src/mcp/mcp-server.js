@@ -356,7 +356,7 @@ export class McpServerBridge {
   }
 
   _handleExportTraffic({ method, host, status }) {
-    let filtered = this.apiServer.trafficLog;
+    let filtered = this.apiServer._getHarExportTraffic();
 
     if (method) filtered = filtered.filter(r => r.method?.toUpperCase() === method.toUpperCase());
     if (host) filtered = filtered.filter(r => r.host?.toLowerCase().includes(host.toLowerCase()));
