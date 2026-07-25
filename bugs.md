@@ -19,6 +19,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 7 | 13 new bugs found; documented below | 0/2 |
 | 8 | 14 new bugs found; documented below | 0/2 |
 | 9 | 12 new bugs found; documented below | 0/2 |
+| 10 | 13 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -617,6 +618,30 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: frames inflate request totals and bandwidth, create undefined methods and other statuses, and appear in tools whose contracts describe HTTP requests.
 - Reproduction: capture one WebSocket handshake plus frames, then call search, stats, and live summary.
 
+### BUG-262 — Medium — HTTPS/H2 mocks and breakpoints create duplicate traffic IDs
+
+- Evidence: intercepted HTTPS H1 emits a pending record before rule evaluation at `src/proxy/proxy-server.js:1103`, then mock/breakpoint paths emit ordinary records with the same ID at `:1171-1464`. Native H2 and H1-on-H2 repeat this pattern at `:1762,1781,2219-2545` and `:2001,2018,2590`. `ApiServer.onTrafficEvent()` appends every event without `_update`.
+- Impact: totals, exports, MCP results, and detail lookup contain pending plus completed rows sharing one ID; first-match consumers can return stale data.
+- Reproduction: trigger an HTTPS fixed-response mock and inspect `/api/traffic` for duplicate IDs.
+
+### BUG-263 — Medium — HAR export mistakes literal data-URI text for binary
+
+- Evidence: `toHarBody()` at `src/api/har-converter.js:95-107` treats every string matching `data:...;base64,...` as internal binary representation and exports only the suffix with base64 encoding, without separate encoding metadata or content-type context.
+- Impact: a legitimate text body equal to a data URI changes semantically on export/replay from that literal string to its decoded bytes.
+- Reproduction: capture `text/plain` body `data:text/plain;base64,SGVsbG8=` and inspect the HAR text/encoding.
+
+### BUG-264 — Medium — Generated certificates are not backdated for clock skew
+
+- Evidence: CA and leaf `notBefore` values are set to the exact generation time at `src/proxy/certificate-authority.js:55-57,100-102`.
+- Impact: devices, VMs, containers, or remote clients whose clocks trail the proxy by a small amount reject newly generated interception certificates as not yet valid.
+- Reproduction: set a client clock five minutes behind and request a previously unseen HTTPS hostname.
+
+### BUG-265 — Low/Medium — Send drops credentials embedded in URLs
+
+- Evidence: `_sendRequest()` parses the URL at `src/api/api-server.js:1319`, but options at `:1323-1329` copy host, port, path, method, and headers while omitting username/password or auth.
+- Impact: standard credentialed URLs reach Basic-auth endpoints without Authorization and unexpectedly return 401.
+- Reproduction: Send `http://user:pass@127.0.0.1:<port>/` to an origin that echoes Authorization.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1002,6 +1027,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: global activation writes persistent `settings global http_proxy` at `src/interceptors/android-adb-interceptor.js:308-319`, but ownership exists only in constructor maps and activation records. Startup performs browser cleanup only and never detects/adopts Android proxy/VPN state.
 - Impact: after a crash/hard restart, the device remains proxied while FreeKit reports Android inactive and Stop cannot restore it.
 - Reproduction: activate global Android interception, hard-kill the server, restart, and inspect status/device proxy.
+
+### BUG-253 — High/Medium — System Proxy activates without working HTTPS trust
+
+- Evidence: Windows CA installation failures are treated as non-critical at `src/index.js:49-60`, leaving system trust false. `SystemProxyInterceptor.isActivable()` and activation check only the platform and registry writes at `src/interceptors/system-proxy-interceptor.js:13-15,72-80`.
+- Impact: the UI reports active system interception while HTTPS clients reject every generated certificate.
+- Reproduction: force Windows CA installation to fail, then activate System Proxy and browse HTTPS.
+
+### BUG-254 — Medium — Fresh Terminal preserves inherited proxy bypass rules
+
+- Evidence: the environment spreads all of `process.env` and overrides proxy variables at `src/interceptors/terminal-interceptors.js:44-56`, but never clears or replaces NO_PROXY/no_proxy.
+- Impact: `NO_PROXY=*` makes activation a complete no-op for compliant clients, and common exclusions silently bypass capture despite the all-processes promise.
+- Reproduction: launch FreeKit with `NO_PROXY=*`, activate Fresh Terminal, and make a request with curl.
+
+### BUG-255 — Medium — Fresh Terminal cannot intercept Docker as advertised
+
+- Evidence: the UI promises all processes and Docker containers, but Fresh Terminal only gives the host shell loopback proxy variables at `src/ui/app.js:3592` and `src/interceptors/terminal-interceptors.js:40-56`; it neither configures Docker client proxies nor adds container environment flags.
+- Impact: normal docker run/Compose workloads launched from that shell bypass FreeKit, and propagating 127.0.0.1 would point at the container itself.
+- Reproduction: activate Fresh Terminal, launch a container that makes HTTP requests, and inspect FreeKit traffic.
 
 ## Electron, updater, and renderer
 
@@ -1430,6 +1473,42 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: README calls `npm run build` an all-platform command, while `package.json` always requests win, mac, and linux; electron-builder rejects macOS targets when running on Windows.
 - Impact: the documented aggregate release command cannot complete on the project's Windows development platform.
 - Reproduction: run `npm run build` on Windows and observe the macOS-target rejection.
+
+### BUG-256 — Medium — Failed Revert destroys mock draft ownership
+
+- Evidence: `revertMockRules()` clears every draft before asynchronously calling `loadMockRules()` at `src/ui/app.js:6226-6234`. Existing drafts have already mutated local `mockRules`; if GET fails, the loader only logs at `:4604-4625`.
+- Impact: unsaved changes remain displayed as if clean, Save/Revert controls disappear, and the recoverable draft is lost while the server retains old data.
+- Reproduction: edit a rule into a draft, fail the rules GET, and click Revert.
+
+### BUG-257 — Low/Medium — Existing mock groups cannot receive or release rules in the UI
+
+- Evidence: empty groups instruct users to drag or use a move option at `src/ui/app.js:4937`, but group markup has no drop handler and no move/ungroup controls are rendered. `moveRuleToGroup()` and `ungroupRule()` exist only as unreachable definitions at `:6354-6378`.
+- Impact: toolbar groups stay empty, and rules in imported/combined groups cannot move to another group or back to top level.
+- Reproduction: create a group and try every visible action to move an existing rule into it.
+
+### BUG-258 — Low — Documented pane-focus shortcuts are no-ops
+
+- Evidence: the list shortcut searches for nonexistent `#trafficList`/`.traffic-list` at `src/ui/app.js:8965-8970`; the actual container is `#trafficTableWrapper`. The detail shortcut focuses a non-focusable div without tabindex at `:8973-8979`.
+- Impact: Ctrl+[ and Ctrl+] do not move keyboard focus as documented.
+- Reproduction: press both and inspect `document.activeElement`.
+
+### BUG-259 — Low/Medium — Resume All stops at the first stale breakpoint
+
+- Evidence: `resumeAllBreakpoints()` processes entries sequentially and throws on the first failed response at `src/ui/app.js:8687-8704`; later entries are skipped and banner refresh occurs only on total success.
+- Impact: one concurrently removed breakpoint prevents every later request from resuming and leaves the displayed count stale.
+- Reproduction: return pending A/B, make A resume return 404, and click Resume All.
+
+### BUG-260 — Medium — Visible HAR import still discards standard metadata
+
+- Evidence: the UI uses its own mapping at `src/ui/app.js:7498-7534` rather than the corrected server importer. `Object.fromEntries()` collapses repeated headers, while cookies, form params, HTTP versions, MIME metadata, and base64 encoding are omitted.
+- Impact: importing through the visible control loses cookies, repeated Set-Cookie, structured forms, protocol information, and binary body encoding.
+- Reproduction: import a HAR containing all of those fields through Traffic and inspect/re-export it.
+
+### BUG-261 — Medium — Server-log write failures can crash Electron
+
+- Evidence: `startServer()` creates a WriteStream and pipes/writes to it at `electron/main.cjs:90-112` and later process handlers, but never registers a log-stream error handler; asynchronous stream errors escape the startup catch.
+- Impact: an unwritable or full log destination can terminate the desktop shell instead of showing a startup failure.
+- Reproduction: make the logs path unwritable or simulate ENOSPC and launch Electron.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
