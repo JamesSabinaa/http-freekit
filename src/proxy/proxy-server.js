@@ -2035,7 +2035,9 @@ export class ProxyServer {
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
         if (mockRule) {
-          this._serveMockResponseH1OnH2(requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails);
+          await this._serveMockResponseH1OnH2(
+            requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails
+          );
           return;
         }
 
@@ -2583,45 +2585,13 @@ export class ProxyServer {
   }
 
   // Helper for HTTP/1.1 mock responses on the h2 fallback server
-  _serveMockResponseH1OnH2(requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails) {
-    // Delegate to the standard mock response handler — it uses h1 res.writeHead/end which works
-    // because allowHTTP1 gives us a standard http.ServerResponse for h1.1 clients
-    const action = mockRule.action || {
-      type: 'fixed-response',
-      status: mockRule.response?.status || 200,
-      headers: mockRule.response?.headers || { 'Content-Type': 'application/json' },
-      body: mockRule.response?.body || '',
-      delay: 0
-    };
-
-    const mockHeaders = action.headers || { 'Content-Type': 'application/json' };
-    const mockBody = action.body || '';
-    const mockStatus = action.status || 200;
-
-    // Prevent browser caching of mocked responses
-    if (!mockHeaders['cache-control'] && !mockHeaders['Cache-Control']) {
-      mockHeaders['cache-control'] = 'no-store, no-cache, must-revalidate';
-    }
-
-    if (action.addResponseHeaders) {
-      for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-        mockHeaders[k.toLowerCase()] = v;
-      }
-    }
-
-    try {
-      res.writeHead(mockStatus, mockHeaders);
-      res.end(mockBody);
-    } catch (e) { /* client gone */ }
-
-    this._emitRequest({
-      id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-      host: hostname, path: req.url, requestHeaders: req.headers,
-      requestBody: this._safeBodyString(body), requestBodySize: body.length,
-      statusCode: mockStatus, statusMessage: 'Mocked', responseHeaders: mockHeaders,
-      responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
-      duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-      tls: tlsDetails, remote: null
+  async _serveMockResponseH1OnH2(requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails) {
+    // allowHTTP1 provides normal IncomingMessage/ServerResponse objects, so the
+    // complete H1 mock engine can preserve every action and pre-step.
+    const targetUrl = new URL(fullUrl);
+    await this._serveMockResponse(requestId, req, res, targetUrl, body, mockRule, startTime, {
+      protocol: 'https',
+      tls: tlsDetails
     });
   }
 
@@ -3469,7 +3439,9 @@ export class ProxyServer {
     }
   }
 
-  async _serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime) {
+  async _serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, capture = {}) {
+    const captureProtocol = capture.protocol || 'http';
+    const captureTls = capture.tls || null;
     // Determine action — support both new format (action) and legacy format (response)
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -3530,13 +3502,13 @@ export class ProxyServer {
     if (action.type === 'close') {
       clientRes.destroy();
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Closed',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       return;
@@ -3546,13 +3518,13 @@ export class ProxyServer {
     if (action.type === 'reset') {
       clientRes.socket?.destroy();
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Reset',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       return;
@@ -3601,7 +3573,7 @@ export class ProxyServer {
             clientRes.writeHead(proxyRes.statusCode, resHeaders);
             clientRes.end(resBody);
             this._emitRequest({
-              id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+              id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
               host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
               requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
               requestBodySize: body.length, statusCode: proxyRes.statusCode,
@@ -3609,7 +3581,7 @@ export class ProxyServer {
               responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
               responseBodySize: resBody.length, duration: Date.now() - startTime,
               timestamp: startTime, source: 'mock',
-              tls: null, remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
+              tls: captureTls, remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
               trailers: Object.keys(trailers || {}).length > 0 ? trailers : null,
               originalRequest, transformedBy
             });
@@ -3619,14 +3591,14 @@ export class ProxyServer {
           clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
           clientRes.end(`Forward Error: ${err.message}`);
           this._emitRequest({
-            id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+            id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
             host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
             requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
             requestBodySize: body.length, statusCode: 502, statusMessage: 'Bad Gateway',
             responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
             responseBodySize: 0, duration: Date.now() - startTime,
             timestamp: startTime, source: 'mock', error: err.message,
-            tls: null, remote: null,
+            tls: captureTls, remote: null,
             originalRequest, transformedBy
           });
         });
@@ -3645,14 +3617,14 @@ export class ProxyServer {
         clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
         clientRes.end('Mock error: no filePath configured');
         this._emitRequest({
-          id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
           requestBodySize: body.length, statusCode: 500, statusMessage: 'Mock Error',
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          tls: null, remote: null,
+          tls: captureTls, remote: null,
           originalRequest, transformedBy
         });
         return;
@@ -3664,7 +3636,7 @@ export class ProxyServer {
         clientRes.writeHead(fileStatus, { 'Content-Type': mime });
         clientRes.end(content);
         this._emitRequest({
-          id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
           requestBodySize: body.length, statusCode: fileStatus, statusMessage: 'Mocked (file)',
@@ -3672,21 +3644,21 @@ export class ProxyServer {
           responseBody: this._safeBodyString(content),
           responseBodySize: content.length,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          tls: null, remote: null,
+          tls: captureTls, remote: null,
           originalRequest, transformedBy
         });
       } catch (err) {
         clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
         clientRes.end('File not found: ' + filePath);
         this._emitRequest({
-          id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
           requestBodySize: body.length, statusCode: 500, statusMessage: 'File Error',
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'File not found: ' + filePath, responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          error: err.message, tls: null, remote: null,
+          error: err.message, tls: captureTls, remote: null,
           originalRequest, transformedBy
         });
       }
@@ -3725,13 +3697,13 @@ export class ProxyServer {
       clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
       clientRes.end('');
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 200, statusMessage: 'Webhook sent',
         responseHeaders: { 'Content-Type': 'text/plain' }, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       return;
@@ -3740,13 +3712,13 @@ export class ProxyServer {
     // Breakpoint on request (pause for manual editing)
     if (action.type === 'breakpoint-request') {
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       try {
@@ -3782,13 +3754,13 @@ export class ProxyServer {
     if (action.type === 'breakpoint-response') {
       // Mark this request so the response will be paused
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       try {
@@ -3823,13 +3795,13 @@ export class ProxyServer {
     if (action.type === 'breakpoint-request-response') {
       // Phase 1: Pause on the request
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (request)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       try {
@@ -3862,13 +3834,13 @@ export class ProxyServer {
 
       // Phase 2: Pause on the response
       this._emitRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
-        tls: null, remote: null,
+        tls: captureTls, remote: null,
         originalRequest, transformedBy
       });
       try {
@@ -3916,7 +3888,7 @@ export class ProxyServer {
 
     this._emitRequest({
       id: requestId,
-      protocol: 'http',
+      protocol: captureProtocol,
       method: clientReq.method,
       url: targetUrl.href,
       host: targetUrl.hostname,
@@ -3932,7 +3904,7 @@ export class ProxyServer {
       duration: Date.now() - startTime,
       timestamp: startTime,
       source: 'mock',
-      tls: null,
+      tls: captureTls,
       remote: null,
       originalRequest,
       transformedBy

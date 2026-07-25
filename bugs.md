@@ -146,6 +146,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-015 — High — HTTP/1.1 clients in H2 `all` mode lose almost every mock action
 
+- Status: **Fixed**.
+
 - Evidence: `_serveMockResponseH1OnH2()` at `src/proxy/proxy-server.js:2492-2531` reduces every action to status, headers, and body. It omits close/reset, forward, serve-file, delay/pre-steps, webhook, and breakpoint behavior.
 - Impact: identical rules behave differently solely because the client negotiated HTTP/1.1 rather than H2.
 - Reproduction: in `http2Enabled: "all"`, apply a `close` rule to an HTTP/1.1 request; it receives an ordinary empty 200 instead of a closed connection.
