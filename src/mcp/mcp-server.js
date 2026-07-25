@@ -83,6 +83,7 @@ export class McpServerBridge {
     this.sseSessions = new Map();
     this.sseRoutesRegistered = false;
     this.stdioTransport = null;
+    this.launchConfig = options.launchConfig || null;
 
     if (this.enabled) {
       this._createServer();
@@ -528,7 +529,8 @@ export class McpServerBridge {
       enabled: this.enabled,
       sseEndpoint: this.enabled ? `/mcp/sse` : null,
       connectedClients: this.sseSessions.size,
-      stdioActive: !!this.stdioTransport
+      stdioActive: !!this.stdioTransport,
+      claudeDesktopConfig: this.launchConfig
     };
   }
 }

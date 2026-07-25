@@ -11,6 +11,7 @@ const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
+const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -105,7 +106,9 @@ async function startServer() {
       ELECTRON_RUN_AS_NODE: '1',
       API_PORT: String(apiPort),
       AUTH_TOKEN: authToken,
-      ELECTRON: '1'
+      ELECTRON: '1',
+      HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
+      HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: path.dirname(serverScript)

@@ -246,19 +246,7 @@ SSE Endpoint: http://127.0.0.1:8001/mcp/sse
 
 ### Connecting via Claude Desktop
 
-Add this to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "http-freekit": {
-      "command": "node",
-      "args": ["path/to/http-freekit/src/index.js", "--mcp-stdio"],
-      "env": { "API_PORT": "8001" }
-    }
-  }
-}
-```
+Keep HTTP FreeKit running, then open **Settings > MCP Server (AI Integration)** and copy the generated Claude Desktop configuration into `claude_desktop_config.json`. The generated absolute command starts a lightweight stdio bridge to the active FreeKit session, so Claude sees the same captured traffic as the UI.
 
 ### Enable/Disable
 

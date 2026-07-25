@@ -8551,15 +8551,9 @@
         if (toggleEl) toggleEl.checked = data.enabled;
         const configEl = document.getElementById('mcpClaudeConfig');
         if (configEl) {
-          configEl.textContent = JSON.stringify({
-            mcpServers: {
-              'http-freekit': {
-                command: 'node',
-                args: ['src/index.js', '--mcp-stdio'],
-                env: { API_PORT: String(config.apiPort || 8001) }
-              }
-            }
-          }, null, 2);
+          configEl.textContent = data.claudeDesktopConfig
+            ? JSON.stringify({ mcpServers: { 'http-freekit': data.claudeDesktopConfig } }, null, 2)
+            : 'Launch configuration is unavailable in this runtime.';
         }
       } catch (e) {
         console.error('[Error]', e.message);

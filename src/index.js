@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import express from 'express';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -8,6 +9,11 @@ import { ProxyServer } from './proxy/proxy-server.js';
 import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
 import { McpServerBridge } from './mcp/mcp-server.js';
+import {
+  createMcpLaunchConfig,
+  removeMcpRuntimeDescriptor,
+  writeMcpRuntimeDescriptor
+} from './mcp/launch-config.js';
 import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
 
@@ -22,6 +28,8 @@ const DATA_DIR = process.env.ELECTRON
 const UI_DIR = path.join(__dirname, 'ui');
 const API_PORT = parseInt(process.env.API_PORT) || 8001;
 const MCP_STDIO_ENABLED = process.argv.includes('--mcp-stdio');
+const MCP_RUNTIME_DESCRIPTOR_PATH = process.env.HTTP_FREEKIT_MCP_DESCRIPTOR_PATH
+  || path.join(DATA_DIR, 'mcp-runtime.json');
 
 // Stdio MCP reserves stdout for JSON-RPC framing. Redirect before any startup logs.
 if (MCP_STDIO_ENABLED) {
@@ -144,10 +152,29 @@ async function main() {
     apiServer: api,
     proxyServer: proxy,
     interceptorManager: interceptors,
-    options: { enabled: true }
+    options: {
+      enabled: true,
+      launchConfig: createMcpLaunchConfig({
+        executablePath: process.env.HTTP_FREEKIT_MCP_EXECUTABLE || process.execPath,
+        bridgeScript: path.join(__dirname, 'mcp', 'stdio-bridge.js'),
+        descriptorPath: MCP_RUNTIME_DESCRIPTOR_PATH,
+        electronRuntime: process.env.ELECTRON === '1'
+      })
+    }
   });
   api.setMcpBridge(mcpBridge);
   mcpBridge.startSse(api.app);
+  const mcpRuntimeInstanceId = crypto.randomUUID();
+  writeMcpRuntimeDescriptor({
+    descriptorPath: MCP_RUNTIME_DESCRIPTOR_PATH,
+    sseUrl: `http://127.0.0.1:${API_PORT}/mcp/sse`,
+    authToken: process.env.AUTH_TOKEN || null,
+    instanceId: mcpRuntimeInstanceId
+  });
+  const removeOwnMcpRuntimeDescriptor = () => {
+    removeMcpRuntimeDescriptor(MCP_RUNTIME_DESCRIPTOR_PATH, mcpRuntimeInstanceId);
+  };
+  process.once('exit', removeOwnMcpRuntimeDescriptor);
 
   // If launched with --mcp-stdio, enable stdio transport for Claude Desktop
   if (MCP_STDIO_ENABLED) {
@@ -178,6 +205,7 @@ async function main() {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
         console.log('\n[Shutdown] Stopping servers...');
+        removeOwnMcpRuntimeDescriptor();
         await mcpBridge.stop();
         await interceptors.deactivateAll();
         await proxy.stop();

@@ -1984,6 +1984,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-173 — Medium — Displayed Claude Desktop configuration cannot launch a packaged server
 
+- Status: **Fixed**.
 - Evidence: Settings generates `command: "node"` with relative `args: ["src/index.js", "--mcp-stdio"]` at `src/ui/app.js:8124-8133`. Claude resolves the path from its own working directory, and an installed desktop build cannot assume a system Node executable.
 - Impact: copying the application-provided MCP configuration yields module-not-found or node-not-found instead of a connection.
 - Reproduction: use the displayed configuration from any working directory other than the source root, or from an installed build.
