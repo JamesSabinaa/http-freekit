@@ -40,6 +40,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 28 | 1 new bug found; documented below | 0/2 |
 | 29 | 2 new bugs found; documented below | 0/2 |
 | 30 | 2 new bugs found; documented below | 0/2 |
+| 31 | 2 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -511,12 +512,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-176 — Medium — Unsupported outbound URL schemes are silently sent as HTTP
 
-- Status: **Fixed**.
-- Resolution: Send, absolute-form proxy requests, mock forwards, and webhooks now reject schemes other than HTTP and HTTPS before opening an outbound connection. Absolute-form HTTPS requests are forwarded with TLS instead of being downgraded to plaintext.
+- Status: **Partially fixed**.
+- Resolution: Send, ordinary absolute-form proxy requests, mock forwards, and webhooks now reject schemes other than HTTP and HTTPS before opening an outbound connection. Absolute-form HTTPS requests are forwarded with TLS instead of being downgraded to plaintext. The HTTP Upgrade path still accepts every absolute scheme and treats anything other than HTTPS/WSS as plain HTTP.
 
 - Evidence: `src/api/api-server.js` validates Send URLs before selecting a transport. `src/proxy/proxy-server.js` applies the same HTTP(S)-only validation to absolute-form requests and all mock-forward implementations, and selects HTTPS plus the target's TLS settings for absolute-form HTTPS. Focused socket-level regressions cover each affected route.
 - Impact: `ftp:`, `ws:`, and other unsupported URLs send HTTP bytes to unintended endpoints; an absolute-form `https://` request accepted on the plain proxy path can be downgraded to plaintext.
-- Reproduction: Send `ftp://127.0.0.1:<listener>/` and observe an HTTP request, then submit absolute-form HTTPS to the plain proxy.
+- Reproduction: submit an absolute-form `ftp://127.0.0.1:<listener>/` request with Upgrade headers to the proxy; `_handleHttpUpgrade()` opens a plain HTTP connection to the listener.
+
+### BUG-372 — Medium — Claude MCP bridge survives stdio client disconnects
+
+- Evidence: `startStdioBridge()` wires message/error paths and `remote.onclose` at `src/mcp/stdio-bridge.js:22-45`, but never observes the input stream's `end` or `close`. The installed SDK `StdioServerTransport` listens only for stdin `data` and `error`; its `onclose` fires only when its own `close()` is explicitly called.
+- Impact: when Claude stops or restarts and closes stdin normally, the bridge process and its authenticated SSE session remain alive indefinitely. Repeated restarts can accumulate orphan processes and server sessions until FreeKit itself shuts down.
+- Reproduction: launch the generated bridge against a live MCP SSE endpoint, wait for its session to connect, call `child.stdin.end()`, and wait; the child has no exit code and the SSE session remains connected until the child is explicitly killed.
+
+### BUG-373 — Low/Medium — MCP runtime descriptor publication and cleanup are racy
+
+- Evidence: `writeMcpRuntimeDescriptor()` writes directly to the final path with a truncating `writeFileSync()` at `src/mcp/launch-config.js:34-36`, so a concurrently launched bridge can read empty or partial JSON. `removeMcpRuntimeDescriptor()` separately reads, checks the instance ID, and unlinks at `:40-44`, leaving a time-of-check/time-of-use window in which an older instance can delete a newer instance's replacement descriptor.
+- Impact: a concurrent Claude launch can fail transiently while FreeKit is publishing the credential-bearing descriptor, and a restart or multi-instance cleanup race can remove the live instance's descriptor so all future bridge launches fail.
+- Reproduction: pause publication after truncating the final file and call `readRuntimeDescriptor()` to receive `Unexpected end of JSON input`; separately pause old-instance cleanup after its ownership read, replace the descriptor with a new instance's record, then resume cleanup and observe the new record deleted.
 
 ### BUG-177 — Medium — Rule IDs are mutable, non-unique, and ambiguous with indexes
 
@@ -1997,10 +2010,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-173 — Medium — Displayed Claude Desktop configuration cannot launch a packaged server
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: The generated command is absolute and launches a lightweight bridge without requiring a system Node installation. A packaged Linux AppImage still embeds the current ephemeral mount directory in the bridge-script argument, so the copied configuration becomes stale after the AppImage exits and remounts at a different path.
 - Evidence: Settings generates `command: "node"` with relative `args: ["src/index.js", "--mcp-stdio"]` at `src/ui/app.js:8124-8133`. Claude resolves the path from its own working directory, and an installed desktop build cannot assume a system Node executable.
 - Impact: copying the application-provided MCP configuration yields module-not-found or node-not-found instead of a connection.
-- Reproduction: use the displayed configuration from any working directory other than the source root, or from an installed build.
+- Reproduction: copy the generated configuration from a running AppImage, exit it, restart the AppImage so it receives a different `/tmp/.mount_*` directory, and let Claude launch the saved bridge-script argument; that old mounted path no longer exists.
 
 ### BUG-174 — Medium — Ctrl+Delete clears traffic while editing text
 
