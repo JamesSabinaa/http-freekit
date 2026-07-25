@@ -393,6 +393,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-148 — Medium/High — Absolute-form forwarding trusts a conflicting Host header
 
+- Status: **Fixed**.
+
 - Evidence: the HTTP destination is parsed from the absolute request target at `src/proxy/proxy-server.js:566-568`, but outbound headers preserve the original Host at `:638-640` while the TCP destination comes from `targetUrl.hostname` and port at `:642-680`.
 - Impact: connection routing and virtual-host routing disagree, enabling misrouting and Host-header/cache confusion at the selected origin.
 - Reproduction: send `GET http://127.0.0.1:<port>/ HTTP/1.1` with `Host: other.example`; the local origin receives the conflicting host.

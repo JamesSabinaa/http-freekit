@@ -519,6 +519,15 @@ export class ProxyServer {
     return clean;
   }
 
+  _setTargetHostHeader(headers, authority) {
+    const existingKey = Object.keys(headers).find(name => name.toLowerCase() === 'host') || 'Host';
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'host') delete headers[name];
+    }
+    headers[existingKey] = authority;
+    return headers;
+  }
+
   _toH2ResponseHeaders(statusCode, headers) {
     const converted = { ':status': statusCode };
     for (const [name, value] of Object.entries(headers || {})) {
@@ -618,6 +627,7 @@ export class ProxyServer {
       headers: this._rawHeadersToObject(req.rawHeaders),
       method: 'GET'
     };
+    this._setTargetHostHeader(options.headers, targetUrl.host);
     let requestLib = secureOrigin ? https : http;
     if (secureOrigin) Object.assign(options, this._getUpstreamTlsOptions(targetUrl.hostname));
     const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
@@ -909,6 +919,7 @@ export class ProxyServer {
           ...this._rawHeadersToObject(clientReq.rawHeaders),
           ...clientReq.headers
         });
+        this._setTargetHostHeader(headers, targetUrl.host);
         if (breakpointBodyModified) this._setContentLength(headers, body.length);
 
         const useUpstreamProxy = this._shouldUseUpstreamProxy(
@@ -1798,6 +1809,7 @@ export class ProxyServer {
               ...this._rawHeadersToObject(req.rawHeaders),
               ...req.headers
             });
+            this._setTargetHostHeader(headers, new URL(fullUrl).host);
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),
@@ -2579,6 +2591,7 @@ export class ProxyServer {
               ...this._rawHeadersToObject(req.rawHeaders),
               ...req.headers
             });
+            this._setTargetHostHeader(headers, new URL(fullUrl).host);
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),
