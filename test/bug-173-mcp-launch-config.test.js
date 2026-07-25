@@ -17,8 +17,14 @@ import { McpServerBridge } from '../src/mcp/mcp-server.js';
 import { readRuntimeDescriptor } from '../src/mcp/stdio-bridge.js';
 
 const require = createRequire(import.meta.url);
-const { resolveDesktopMcpExecutable } = require('../electron/mcp-launch.cjs');
+const {
+  MCP_STDIO_BRIDGE_FLAG,
+  findMcpStdioDescriptor,
+  resolveBundledMcpBridgeScript,
+  resolveDesktopMcpExecutable
+} = require('../electron/mcp-launch.cjs');
 const builderConfig = require('../electron-builder.config.cjs');
+const packageJson = require('../package.json');
 const repoRoot = process.cwd();
 
 function jsonLineReader(stream) {
@@ -70,10 +76,25 @@ test('source MCP config uses an absolute Node bridge command from any working di
   assert.equal(config.env, undefined);
 });
 
-test('packaged MCP config uses Electron as Node with an unpacked bridge script', () => {
+test('development Electron keeps direct bridge-script Node mode', () => {
+  const bridgeScript = path.join(repoRoot, 'src', 'mcp', 'stdio-bridge.js');
+  const descriptorPath = path.join(repoRoot, 'data', 'mcp-runtime.json');
+  const config = createMcpLaunchConfig({
+    executablePath: process.execPath,
+    bridgeScript,
+    descriptorPath,
+    electronRuntime: true
+  });
+
+  assert.deepEqual(config.args, [bridgeScript, descriptorPath]);
+  assert.deepEqual(config.env, { ELECTRON_RUN_AS_NODE: '1' });
+});
+
+test('packaged MCP config re-enters the stable application across AppImage remounts', () => {
   const installedAppImage = path.join(repoRoot, 'fixtures', 'HTTP-FreeKit.AppImage');
-  const mountedElectron = path.join(repoRoot, 'fixtures', '.mount', 'http-freekit');
-  const bridgeScript = path.join(repoRoot, 'resources', 'app.asar.unpacked', 'src', 'mcp', 'stdio-bridge.js');
+  const firstMount = path.join(repoRoot, 'fixtures', '.mount-first');
+  const secondMount = path.join(repoRoot, 'fixtures', '.mount-second');
+  const mountedElectron = path.join(firstMount, 'http-freekit');
   const descriptorPath = path.join(repoRoot, 'user-data', 'mcp-runtime.json');
   const executablePath = resolveDesktopMcpExecutable({
     platform: 'linux',
@@ -81,18 +102,48 @@ test('packaged MCP config uses Electron as Node with an unpacked bridge script',
     appImage: installedAppImage,
     isPackaged: true
   });
-  const config = createMcpLaunchConfig({
+  const firstConfig = createMcpLaunchConfig({
     executablePath,
-    bridgeScript,
+    bridgeScript: path.join(firstMount, 'resources', 'app.asar.unpacked', 'src', 'mcp', 'stdio-bridge.js'),
     descriptorPath,
-    electronRuntime: true
+    electronRuntime: true,
+    packagedAppRuntime: true
+  });
+  const secondConfig = createMcpLaunchConfig({
+    executablePath,
+    bridgeScript: path.join(secondMount, 'resources', 'app.asar.unpacked', 'src', 'mcp', 'stdio-bridge.js'),
+    descriptorPath,
+    electronRuntime: true,
+    packagedAppRuntime: true
   });
 
-  assert.equal(config.command, installedAppImage);
-  assert.deepEqual(config.args, [bridgeScript, descriptorPath]);
-  assert.deepEqual(config.env, { ELECTRON_RUN_AS_NODE: '1' });
+  assert.deepEqual(firstConfig, secondConfig);
+  assert.equal(firstConfig.command, installedAppImage);
+  assert.deepEqual(firstConfig.args, [MCP_STDIO_BRIDGE_FLAG, descriptorPath]);
+  assert.equal(firstConfig.env, undefined);
+  assert.doesNotMatch(JSON.stringify(firstConfig), /\.mount-(?:first|second)/);
+  assert.equal(packageJson.main, 'electron/bootstrap.cjs');
   assert.ok(builderConfig.asarUnpack.includes('src/**/*'));
   assert.ok(builderConfig.asarUnpack.includes('node_modules/**/*'));
+
+  const mainSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.cjs'), 'utf8');
+  const indexSource = fs.readFileSync(path.join(repoRoot, 'src', 'index.js'), 'utf8');
+  assert.match(mainSource, /HTTP_FREEKIT_MCP_PACKAGED_APP: app\.isPackaged \? '1' : '0'/);
+  assert.match(indexSource, /packagedAppRuntime: process\.env\.HTTP_FREEKIT_MCP_PACKAGED_APP === '1'/);
+});
+
+test('application bootstrap resolves the bridge from each current package mount', () => {
+  const firstAppDir = path.join(repoRoot, 'fixtures', '.mount-first', 'resources', 'app.asar', 'electron');
+  const secondAppDir = path.join(repoRoot, 'fixtures', '.mount-second', 'resources', 'app.asar', 'electron');
+
+  const firstBridge = resolveBundledMcpBridgeScript(firstAppDir);
+  const secondBridge = resolveBundledMcpBridgeScript(secondAppDir);
+  assert.match(firstBridge, /\.mount-first/);
+  assert.match(secondBridge, /\.mount-second/);
+  assert.match(firstBridge, /app\.asar\.unpacked[\\/]src[\\/]mcp[\\/]stdio-bridge\.js$/);
+  assert.match(secondBridge, /app\.asar\.unpacked[\\/]src[\\/]mcp[\\/]stdio-bridge\.js$/);
+  assert.equal(findMcpStdioDescriptor(['app', MCP_STDIO_BRIDGE_FLAG, '/stable/runtime.json']), '/stable/runtime.json');
+  assert.equal(findMcpStdioDescriptor(['app']), null);
 });
 
 test('runtime descriptor keeps authentication outside the displayed config and cleans up by owner', t => {
@@ -120,7 +171,7 @@ test('runtime descriptor keeps authentication outside the displayed config and c
   assert.equal(fs.existsSync(descriptorPath), false);
 });
 
-test('stdio bridge relays Claude requests to the active authenticated traffic server', async t => {
+test('application bootstrap relays Claude requests to the active authenticated traffic server', async t => {
   const authToken = 'runtime-only-secret';
   const apiServer = {
     trafficLog: [],
@@ -156,7 +207,11 @@ test('stdio bridge relays Claude requests to the active authenticated traffic se
     descriptorPath
   });
   assert.doesNotMatch(JSON.stringify(launchConfig), new RegExp(authToken));
-  const child = spawn(launchConfig.command, launchConfig.args, {
+  const child = spawn(process.execPath, [
+    path.join(repoRoot, 'electron', 'bootstrap.cjs'),
+    MCP_STDIO_BRIDGE_FLAG,
+    descriptorPath
+  ], {
     cwd: os.tmpdir(),
     env: { ...process.env, ...(launchConfig.env || {}) },
     stdio: ['pipe', 'pipe', 'pipe']

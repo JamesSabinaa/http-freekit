@@ -158,7 +158,8 @@ async function main() {
         executablePath: process.env.HTTP_FREEKIT_MCP_EXECUTABLE || process.execPath,
         bridgeScript: path.join(__dirname, 'mcp', 'stdio-bridge.js'),
         descriptorPath: MCP_RUNTIME_DESCRIPTOR_PATH,
-        electronRuntime: process.env.ELECTRON === '1'
+        electronRuntime: process.env.ELECTRON === '1',
+        packagedAppRuntime: process.env.HTTP_FREEKIT_MCP_PACKAGED_APP === '1'
       })
     }
   });

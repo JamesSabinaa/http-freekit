@@ -4,7 +4,7 @@
   "description": "Free HTTP(S) debugging, interception & testing toolkit",
   "author": "HTTP FreeKit",
   "type": "module",
-  "main": "electron/main.cjs",
+  "main": "electron/bootstrap.cjs",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",

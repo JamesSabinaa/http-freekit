@@ -2010,8 +2010,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-173 — Medium — Displayed Claude Desktop configuration cannot launch a packaged server
 
-- Status: **Partially fixed**.
-- Resolution: The generated command is absolute and launches a lightweight bridge without requiring a system Node installation. A packaged Linux AppImage still embeds the current ephemeral mount directory in the bridge-script argument, so the copied configuration becomes stale after the AppImage exits and remounts at a different path.
+- Status: **Fixed**.
+- Resolution: Packaged configurations invoke the stable installed application with a dedicated MCP bridge flag and the persistent runtime-descriptor path. The application bootstrap resolves the unpacked bridge from its current mount on every launch, so AppImage remounts cannot stale the copied configuration; Electron supplies the Node runtime and the descriptor supplies the active server endpoint and authentication without exposing its token.
 - Evidence: Settings generates `command: "node"` with relative `args: ["src/index.js", "--mcp-stdio"]` at `src/ui/app.js:8124-8133`. Claude resolves the path from its own working directory, and an installed desktop build cannot assume a system Node executable.
 - Impact: copying the application-provided MCP configuration yields module-not-found or node-not-found instead of a connection.
 - Reproduction: copy the generated configuration from a running AppImage, exit it, restart the AppImage so it receives a different `/tmp/.mount_*` directory, and let Claude launch the saved bridge-script argument; that old mounted path no longer exists.
