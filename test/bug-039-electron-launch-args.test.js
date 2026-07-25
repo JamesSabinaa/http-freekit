@@ -13,6 +13,7 @@ test('Electron interception passes Chromium proxy switches as process arguments'
   interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
   interceptor._spawn = (appPath, args, options) => {
     spawned = { appPath, args, options };
+    queueMicrotask(() => child.emit('spawn'));
     return child;
   };
 

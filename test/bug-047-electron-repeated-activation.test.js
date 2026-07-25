@@ -21,6 +21,7 @@ test('a second Electron activation is rejected while the first child is active',
   let spawnCount = 0;
   interceptor._spawn = () => {
     spawnCount += 1;
+    queueMicrotask(() => first.emit('spawn'));
     return first;
   };
 
@@ -41,7 +42,11 @@ test('events from a stopped Electron child cannot deactivate its replacement', a
   const first = fakeChild(1001);
   const second = fakeChild(1002);
   const children = [first, second];
-  interceptor._spawn = () => children.shift();
+  interceptor._spawn = () => {
+    const child = children.shift();
+    queueMicrotask(() => child.emit('spawn'));
+    return child;
+  };
 
   await interceptor.activate(8080, { appPath: 'first-app' });
   await interceptor.deactivate();

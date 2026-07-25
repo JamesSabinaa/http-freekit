@@ -797,6 +797,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-048 — Medium — Electron activation reports success before spawn is confirmed
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/electron-interceptor.js:50-67` installs an asynchronous error listener but immediately sets active and returns success, without awaiting the `spawn` event.
 - Impact: missing, invalid, or non-executable paths briefly produce a successful API/UI result before later flipping inactive.
 - Reproduction: activate a nonexistent executable; the call returns success before the `ENOENT` event.

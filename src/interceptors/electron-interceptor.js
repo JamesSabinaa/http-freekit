@@ -7,6 +7,7 @@ export class ElectronInterceptor {
     this.active = false;
     this.ca = null;
     this.process = null;
+    this.activating = false;
   }
 
   async isActivable() {
@@ -15,6 +16,10 @@ export class ElectronInterceptor {
   }
 
   async isActive() {
+    return this._hasActiveProcess();
+  }
+
+  _hasActiveProcess() {
     return this.active && this.process && !this.process.killed;
   }
 
@@ -31,8 +36,30 @@ export class ElectronInterceptor {
     return spawn(appPath, args, options);
   }
 
+  _spawnConfirmed(appPath, args, options) {
+    return new Promise((resolve, reject) => {
+      let child;
+      try {
+        child = this._spawn(appPath, args, options);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      const onSpawn = () => {
+        child.removeListener('error', onError);
+        resolve(child);
+      };
+      const onError = err => {
+        child.removeListener('spawn', onSpawn);
+        reject(err);
+      };
+      child.once('spawn', onSpawn);
+      child.once('error', onError);
+    });
+  }
+
   async activate(proxyPort, options = {}) {
-    if (await this.isActive()) {
+    if (this.activating || this._hasActiveProcess()) {
       throw new Error('An Electron app is already being intercepted');
     }
 
@@ -56,11 +83,19 @@ export class ElectronInterceptor {
     };
 
     console.log(`[Interceptor] Launching Electron app: ${appPath}`);
-    const launchedProcess = this._spawn(appPath, launchArgs, {
-      detached: false,
-      stdio: 'ignore',
-      env
-    });
+    this.activating = true;
+    let launchedProcess;
+    try {
+      launchedProcess = await this._spawnConfirmed(appPath, launchArgs, {
+        detached: false,
+        stdio: 'ignore',
+        env
+      });
+    } catch (err) {
+      throw new Error(`Failed to launch Electron app: ${err.message}`);
+    } finally {
+      this.activating = false;
+    }
     this.process = launchedProcess;
 
     this.active = true;
