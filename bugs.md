@@ -1,6 +1,6 @@
 # Bug audit
 
-This file records reproducible defects found during a repository-wide audit. Findings are grouped by subsystem, not by discovery order. Line numbers refer to the audited `main` revision. All findings were still open at the time of the audit.
+This file records reproducible defects found during a repository-wide audit. Findings are grouped by subsystem, not by discovery order. Line numbers refer to the `main` revision current when each finding was recorded and may shift as concurrent fixes land. Findings without a status are open at the latest completed audit pass; explicit Fixed or Partially fixed statuses preserve changes made during the audit.
 
 ## Audit completion gate
 
@@ -49,11 +49,13 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: data the API accepts can make HAR export or MCP tools throw `RangeError`/`TypeError` until the traffic log is cleared.
 - Reproduction: import `{"requests":[{"id":"x"}]}`, then export HAR or search traffic through MCP.
 
-### BUG-006 — Medium — HAR round trips lose binary encodings and duplicate headers
+### BUG-006 — Medium — HAR round trips still lose cookies, form parameters, and request protocol
 
-- Evidence: `src/api/api-server.js:671-714` copies HAR body text without honoring `encoding: "base64"` and converts header arrays with `Object.fromEntries`, which overwrites duplicate names. `src/api/har-converter.js:7-12` joins array headers into one comma-separated value, and `:86-95` recognizes base64 only through a custom data-URI form.
-- Impact: binary payloads become literal base64 text and headers such as multiple `Set-Cookie` fields are reduced to one value, so import/export is not faithful.
-- Reproduction: import a HAR entry with base64 content and two same-name headers, then inspect or re-export it.
+- Status: **Partially fixed** — binary encoding and duplicate-header preservation landed in `723cf77`; the fields below remain lossy.
+
+- Evidence: HAR import ignores standard request/response cookie arrays, `postData.params`, and `request.httpVersion`; export still hard-codes empty cookie arrays and derives protocol only from the internal request record (`src/api/api-server.js` HAR-import mapping and `src/api/har-converter.js:40,55`).
+- Impact: cookie metadata and form parameter structure vanish, and imported HTTP/2 requests can re-export as HTTP/1.1.
+- Reproduction: import a HAR entry containing cookies, form params, and `httpVersion: "HTTP/2"`, then re-export and compare those fields.
 
 ### BUG-007 — Medium — `/api/shutdown` bypasses graceful cleanup
 
@@ -257,9 +259,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-115 — Low/Medium — Valid multipart, cookie, and JSON matchers fail
 
-- Evidence: multipart parsing retains quotes around `boundary="abc"` at `src/proxy/proxy-server.js:3293-3309`; cookie parsing splits on every `=` at `:3277-3283`; JSON exact matching compares property-order-sensitive `JSON.stringify()` output at `:3256-3261`.
-- Impact: standard quoted boundaries, base64/padded cookie values, and semantically equal JSON objects with different key order do not match their rules.
-- Reproduction: test a quoted multipart boundary, `Cookie: token=abc=def`, and `{ "a":1,"b":2 }` against reversed-order expected JSON.
+- Evidence: multipart parsing retains quotes around `boundary="abc"` at `src/proxy/proxy-server.js:3293-3309`; cookie parsing splits on every `=` at `:3277-3283`; JSON exact matching compares property-order-sensitive `JSON.stringify()` output at `:3256-3261`. Host/hostname matchers compare normalized URL hosts to raw case-sensitive values at `:3206-3220`, and header wildcard conversion leaves regex metacharacters unescaped at `:3224-3233`.
+- Impact: quoted multipart boundaries, padded cookie values, semantically equal reordered JSON, uppercase DNS matchers, and literal punctuation in wildcard header values can all produce false results.
+- Reproduction: test a quoted boundary, `Cookie: token=abc=def`, reversed-key JSON, matcher `EXAMPLE.COM`, and header wildcard `a.b*` against `axb`.
 
 ### BUG-127 — Medium — Nested mock groups make their rules unmanageable
 
@@ -398,6 +400,102 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: URL parsing succeeds at `src/api/api-server.js:678-688`, but protocol is derived separately with case-sensitive `entry.request.url?.startsWith("https")` at `:691-695`.
 - Impact: a valid `HTTPS://` record is labeled insecure HTTP, affecting display, security scans, and later exports.
 - Reproduction: import a minimal HAR containing `HTTPS://example.com/` and inspect the resulting protocol.
+
+### BUG-176 — Medium — Unsupported outbound URL schemes are silently sent as HTTP
+
+- Evidence: Send treats only exact `https:` as HTTPS and routes every other parsed scheme through `http` (`src/api/api-server.js` `_sendRequest`). Plain absolute-form forwarding similarly selects HTTP/default port 80 for non-HTTPS paths at `src/proxy/proxy-server.js:566-568,674-700`; mock forward and webhook paths repeat the boolean scheme choice at `:3424-3442,3554-3570`.
+- Impact: `ftp:`, `ws:`, and other unsupported URLs send HTTP bytes to unintended endpoints; an absolute-form `https://` request accepted on the plain proxy path can be downgraded to plaintext.
+- Reproduction: Send `ftp://127.0.0.1:<listener>/` and observe an HTTP request, then submit absolute-form HTTPS to the plain proxy.
+
+### BUG-177 — Medium — Rule IDs are mutable, non-unique, and ambiguous with indexes
+
+- Evidence: mock creation preserves client `id`, PUT accepts arbitrary ID changes, and add/update performs no uniqueness check (`src/api/api-server.js` mock CRUD; `src/proxy/proxy-server.js:4078-4134`). Breakpoint CRUD likewise honors mutable duplicate IDs at `proxy-server.js:4015-4030`. Numeric DELETE parameters are interpreted as legacy indexes before IDs.
+- Impact: duplicate IDs make later rules unreachable, breakpoint delete can remove every duplicate, and a rule with ID `1` can cause index 1 to be deleted instead.
+- Reproduction: create two mocks with `id: "dup"` and try to manage the second, then create a rule whose literal ID is `1` and delete it by ID.
+
+### BUG-178 — Medium — Body matchers inspect truncated encoded display text
+
+- Evidence: request paths call `_findMockRule()` with `_safeBodyString(body)` and no request encoding/type metadata (`src/proxy/proxy-server.js:587,1050,1706,1945`). Body/JSON matchers consume that string at `:3246-3269`, while `_safeBodyString()` truncates text and substitutes large binary at `:3965-4010`.
+- Impact: tokens after 512 KiB never match, and compressed JSON/body matchers see gzip bytes instead of the request payload.
+- Reproduction: place a searched token after byte 524,288 in a POST, or send gzip JSON, and apply the corresponding matcher.
+
+### BUG-179 — Low/Medium — Response decompression rejects coding case and stacks
+
+- Evidence: `_decompressBody()` switches on one exact raw `Content-Encoding` string at `src/proxy/proxy-server.js:3943-3959`; callers pass the header unchanged.
+- Impact: valid values such as `GZip` and stacked codings such as `gzip, br` remain compressed and are captured/exported as opaque or corrupt-looking data.
+- Reproduction: return a gzipped body with `Content-Encoding: GZip` and inspect its capture.
+
+### BUG-180 — Medium — Client cancellation is not propagated upstream
+
+- Evidence: H1 forwarding creates and buffers the upstream response at `src/proxy/proxy-server.js:700-754` without an aborted/close handler that destroys `proxyReq`. `_makeH2Request()` at `:2648-2704` has no downstream cancellation input and buffers independently.
+- Impact: after a client disconnects, origins continue streaming and FreeKit continues consuming bandwidth and allocating body buffers; abandoned unsafe requests can still execute.
+- Reproduction: close the client early during a slow response and observe the origin continue sending.
+
+### BUG-181 — Medium — Breakpoint rules disappear on restart
+
+- Evidence: the proxy constructor initializes `breakpointRules` to an empty array; breakpoint CRUD routes never persist it, while startup restores only mock rules (`src/proxy/proxy-server.js:38`, `src/api/api-server.js` breakpoint routes, `src/index.js:91-94`).
+- Impact: configured breakpoints silently vanish on every application restart.
+- Reproduction: create a breakpoint, restart the server, and GET `/api/breakpoints`.
+
+### BUG-182 — Medium — Automatic CA renewal breaks non-Windows trust
+
+- Evidence: startup regenerates an expiring CA and overwrites its files at `src/proxy/certificate-authority.js:19-36,47-85`. Boot installs/replaces trust only on Windows and does nothing equivalent on macOS/Linux at `src/index.js:43-58`.
+- Impact: after the one-year renewal, previously configured macOS, Linux, browser, and device clients reject all interception without a warning or re-trust migration.
+- Reproduction: trust a near-expiry CA on macOS/Linux, restart inside its renewal window, and make an HTTPS request.
+
+### BUG-183 — Medium — Raw WebSocket relay ignores socket backpressure
+
+- Evidence: both data directions unconditionally call `.write(chunk)` at `src/proxy/proxy-server.js:433-445`, never checking a false return or pausing until drain; initial buffered head writes at `:423-430` are handled the same way.
+- Impact: a fast peer and slow or non-reading peer can grow Node writable queues and process memory without bound.
+- Reproduction: stop reading the downstream socket while the WebSocket origin floods data and monitor `writableLength`/RSS.
+
+### BUG-184 — Medium — WebSocket and TLS-passthrough setup have no timeout
+
+- Evidence: plain WebSocket `http.request()` runs without the normal upstream timeout configuration at `src/proxy/proxy-server.js:372-497`; TLS passthrough uses bare `net.connect()` with no timer at `:879-890`.
+- Impact: an accept-but-never-answer WebSocket origin or stalled passthrough connect holds client sockets and closures until long OS-level timeouts.
+- Reproduction: point either path at a TCP server that accepts and sends nothing.
+
+### BUG-185 — Medium — Failed WebSocket handshakes are omitted from traffic
+
+- Evidence: non-101 responses are merely reconstructed/piped and errors write 502 at `src/proxy/proxy-server.js:480-495`; only the successful upgrade branch emits a captured request at `:391-478`.
+- Impact: the failed authentication and routing handshakes users need to debug never appear in the UI, API, HAR, or MCP.
+- Reproduction: have a WebSocket origin return 401 and compare the client response with the empty traffic log.
+
+### BUG-186 — Medium — Failed TLS passthrough is logged as a successful 200 tunnel
+
+- Evidence: `emitTunnel()` hard-codes status 200 at `src/proxy/proxy-server.js:864-876`; the wire 200 is written only in the successful `net.connect()` callback, but target close still invokes `emitTunnel` and target error only destroys the client at `:879-890`.
+- Impact: refused or unreachable destinations appear as established tunnels in logs and stats despite sending no success response.
+- Reproduction: enable passthrough for localhost and CONNECT to a closed port.
+
+### BUG-187 — Medium — Upstream WebSocket EOF is not propagated downstream
+
+- Evidence: `proxySocket.on("end", cleanup)` at `src/proxy/proxy-server.js:474-477` records the session but never calls `socket.end()`; the reverse direction does close the upstream socket.
+- Impact: when the origin closes transport, the client TCP connection remains open and hangs after capture is marked complete.
+- Reproduction: have an origin send 101 and then end its socket; the proxied client receives neither end nor close.
+
+### BUG-188 — Low/Medium — Informational HTTP responses are dropped
+
+- Evidence: H1 forwarding listens only for the final response at `src/proxy/proxy-server.js:700-754` and analogous HTTPS paths, with no `information` listener. H2 listens for `response` but not interim `headers` at `:2675-2682`.
+- Impact: 100 Continue metadata and 103 Early Hints do not reach clients, defeating preload behavior and observability.
+- Reproduction: have an origin call `writeEarlyHints()` before its 200; the direct client sees 103 while the proxied client does not.
+
+### BUG-189 — Medium — Concurrent generator exports collide on one file
+
+- Evidence: `_exportToGenerator()` derives a session name only to whole-second precision and writes a deterministic directory/HAR path; the POST route has no lock or unique suffix (`src/api/api-server.js` generator export helpers and route).
+- Impact: two exports in one second race on the same file and launch generator processes against a shared session, with the last writer winning.
+- Reproduction: issue two export-generator requests concurrently around a traffic-log change and compare returned session/path values.
+
+### BUG-190 — Low/Medium — HAR unknown-size sentinels corrupt MCP bandwidth stats
+
+- Evidence: HAR import preserves the standard `bodySize: -1` sentinel because it is truthy; MCP adds it directly to bandwidth and `formatBytes()` applies `Math.log(bytes)` without a negative guard (`src/api/api-server.js` HAR import; `src/mcp/mcp-server.js:253-274,518-523`).
+- Impact: a valid unknown size produces negative totals, `NaN undefined`, or undercounting when combined with other traffic.
+- Reproduction: import a HAR with `request.bodySize: -1` and invoke MCP `get_traffic_stats`.
+
+### BUG-191 — Low — Unix-epoch HAR timestamps are replaced with import time
+
+- Evidence: HAR import uses `new Date(entry.startedDateTime).getTime() || Date.now()`, so the valid numeric timestamp zero triggers the fallback (`src/api/api-server.js` HAR mapping).
+- Impact: epoch captures receive false current dates and ordering.
+- Reproduction: import `startedDateTime: "1970-01-01T00:00:00.000Z"` and inspect the record timestamp.
 
 ## Interceptors and cleanup
 
