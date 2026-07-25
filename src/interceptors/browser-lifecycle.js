@@ -6,20 +6,11 @@ import { execFileAsync } from './command-runner.js';
 
 const PROFILE_MARKER = '.http-freekit-profile.json';
 const MANAGED_PROFILE_PATTERN = /^http-freekit-(?:chrome|firefox|edge|brave)-[A-Za-z0-9._-]+$/;
+const PROCESS_START_TOLERANCE_MS = 2000;
 
 function normalizePathForComparison(value) {
   const resolved = path.resolve(value);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
-function isPidRunning(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM';
-  }
 }
 
 /** Verify that a recursive-delete target is one of our direct temp children. */
@@ -68,6 +59,7 @@ export function createManagedBrowserProfile(browserType, tempDir = os.tmpdir()) 
   try {
     fs.writeFileSync(path.join(profileDir, PROFILE_MARKER), JSON.stringify({
       ownerPid: process.pid,
+      ownerStartedAt: new Date(Date.now() - (process.uptime() * 1000)).toISOString(),
       browserType,
       createdAt: new Date().toISOString()
     }, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
@@ -84,10 +76,45 @@ function readProfileOwner(profileDir) {
     const stats = fs.lstatSync(markerPath);
     if (!stats.isFile() || stats.isSymbolicLink()) return null;
     const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    return Number.isInteger(marker.ownerPid) && marker.ownerPid > 0 ? marker.ownerPid : null;
+    const createdAt = Date.parse(marker.createdAt);
+    const startedAt = Date.parse(marker.ownerStartedAt);
+    return Number.isInteger(marker.ownerPid) && marker.ownerPid > 0 && Number.isFinite(createdAt)
+      ? {
+          pid: marker.ownerPid,
+          createdAt,
+          startedAt: Number.isFinite(startedAt) ? startedAt : null
+        }
+      : null;
   } catch {
     return null;
   }
+}
+
+function isProfileOwnerActive(owner, processes) {
+  if (!owner) return false;
+  const ownerProcess = processes.find(row => row.pid === owner.pid);
+  const startedAt = typeof ownerProcess?.startedAt === 'number'
+    ? ownerProcess.startedAt
+    : Date.parse(ownerProcess?.startedAt);
+  if (!Number.isFinite(startedAt)) return false;
+  if (Number.isFinite(owner.startedAt)) {
+    return Math.abs(startedAt - owner.startedAt) <= PROCESS_START_TOLERANCE_MS;
+  }
+  return startedAt <= owner.createdAt;
+}
+
+function parsePosixProcessSnapshot(output) {
+  return output.split(/\r?\n/).flatMap(line => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*(.*)$/);
+    if (!match) return [];
+    const startedAt = Date.parse(match[3]);
+    return [{
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      startedAt: Number.isFinite(startedAt) ? startedAt : null,
+      command: match[4] || ''
+    }];
+  });
 }
 
 function getWindowsProcessSnapshot() {
@@ -97,6 +124,7 @@ $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
     pid = [int]$_.ProcessId
     ppid = [int]$_.ParentProcessId
     command = [string]$_.CommandLine
+    startedAt = if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
   }
 })
 [Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
@@ -111,21 +139,19 @@ $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
   return (Array.isArray(parsed) ? parsed : [parsed]).map(item => ({
     pid: Number(item.pid),
     ppid: Number(item.ppid),
+    startedAt: Date.parse(item.startedAt),
     command: String(item.command || '')
   }));
 }
 
 function getPosixProcessSnapshot() {
-  const output = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], {
+  const output = execFileSync('ps', ['-eo', 'pid=,ppid=,lstart=,args='], {
     encoding: 'utf8',
     timeout: 5000,
-    maxBuffer: 5 * 1024 * 1024
+    maxBuffer: 5 * 1024 * 1024,
+    env: { ...process.env, LC_ALL: 'C' }
   });
-  return output.split(/\r?\n/).flatMap(line => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s*(.*)$/);
-    if (!match) return [];
-    return [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] || '' }];
-  });
+  return parsePosixProcessSnapshot(output);
 }
 
 export function getProcessSnapshot() {
@@ -140,6 +166,7 @@ $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
     pid = [int]$_.ProcessId
     ppid = [int]$_.ParentProcessId
     command = [string]$_.CommandLine
+    startedAt = if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
   }
 })
 [Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
@@ -154,20 +181,18 @@ $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
     return (Array.isArray(parsed) ? parsed : [parsed]).map(item => ({
       pid: Number(item.pid),
       ppid: Number(item.ppid),
+      startedAt: Date.parse(item.startedAt),
       command: String(item.command || '')
     }));
   }
 
-  const output = String(await execFileAsync('ps', ['-eo', 'pid=,ppid=,args='], {
+  const output = String(await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart=,args='], {
     encoding: 'utf8',
     timeout: 5000,
-    maxBuffer: 5 * 1024 * 1024
+    maxBuffer: 5 * 1024 * 1024,
+    env: { ...process.env, LC_ALL: 'C' }
   }));
-  return output.split(/\r?\n/).flatMap(line => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s*(.*)$/);
-    if (!match) return [];
-    return [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] || '' }];
-  });
+  return parsePosixProcessSnapshot(output);
 }
 
 /**
@@ -266,9 +291,9 @@ export function cleanupStaleBrowserProfiles(options = {}) {
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !MANAGED_PROFILE_PATTERN.test(entry.name)) continue;
     const profileDir = path.join(tempDir, entry.name);
-    const ownerPid = readProfileOwner(profileDir);
+    const owner = readProfileOwner(profileDir);
     const relatedPids = collectRelatedProcessIds(snapshot, profileDir);
-    if ((ownerPid && isPidRunning(ownerPid)) || relatedPids.size > 0) {
+    if (isProfileOwnerActive(owner, snapshot) || relatedPids.size > 0) {
       result.skippedActive.push(profileDir);
       continue;
     }

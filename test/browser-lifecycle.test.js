@@ -50,6 +50,10 @@ test('startup cleanup removes abandoned profiles and preserves active or unrelat
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
 
   const liveOwnerProfile = createManagedBrowserProfile('chrome', tempRoot);
+  const liveOwnerMarker = JSON.parse(fs.readFileSync(
+    path.join(liveOwnerProfile, '.http-freekit-profile.json'),
+    'utf8'
+  ));
   const staleOwnedProfile = createManagedBrowserProfile('firefox', tempRoot);
   fs.writeFileSync(
     path.join(staleOwnedProfile, '.http-freekit-profile.json'),
@@ -65,8 +69,14 @@ test('startup cleanup removes abandoned profiles and preserves active or unrelat
   const result = cleanupStaleBrowserProfiles({
     tempDir: tempRoot,
     processSnapshot: [{
+      pid: process.pid,
+      ppid: 1,
+      startedAt: Date.parse(liveOwnerMarker.ownerStartedAt),
+      command: process.execPath
+    }, {
       pid: 4242,
       ppid: 1,
+      startedAt: Date.now(),
       command: `brave --user-data-dir=${activeBrowserProfile}`
     }]
   });
@@ -80,6 +90,36 @@ test('startup cleanup removes abandoned profiles and preserves active or unrelat
   assert.equal(fs.existsSync(liveOwnerProfile), true);
   assert.equal(fs.existsSync(activeBrowserProfile), true);
   assert.equal(fs.existsSync(unrelated), true);
+});
+
+test('startup cleanup does not trust an owner PID reused after profile creation', async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-reused-pid-test-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+
+  const profileDir = createManagedBrowserProfile('chrome', tempRoot);
+  fs.writeFileSync(
+    path.join(profileDir, '.http-freekit-profile.json'),
+    JSON.stringify({
+      ownerPid: process.pid,
+      ownerStartedAt: '1999-12-31T23:59:00.000Z',
+      browserType: 'chrome',
+      createdAt: '2000-01-01T00:00:00.000Z'
+    })
+  );
+
+  const result = cleanupStaleBrowserProfiles({
+    tempDir: tempRoot,
+    processSnapshot: [{
+      pid: process.pid,
+      ppid: 1,
+      startedAt: Date.now(),
+      command: 'unrelated-process'
+    }]
+  });
+
+  assert.deepEqual(result.skippedActive, []);
+  assert.deepEqual(result.removed, [profileDir]);
+  assert.equal(fs.existsSync(profileDir), false);
 });
 
 test('managed profile removal is recursive and refuses an unowned target', async (t) => {

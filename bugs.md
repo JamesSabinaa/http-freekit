@@ -1236,6 +1236,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-167 — Low — Stale browser cleanup trusts reused PIDs indefinitely
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/browser-lifecycle.js:68-72` stores only the FreeKit process PID in the profile marker; `:80-89,226-230` preserves the profile whenever any current process has that PID, without checking executable identity or process start time.
 - Impact: after a crash and PID reuse, large abandoned profiles can survive every startup because an unrelated process is mistaken for their owner.
 - Reproduction: leave a managed profile marker containing an unrelated live PID and run startup cleanup; the directory is classified as active.
