@@ -73,6 +73,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-058 — Medium — Settings persistence is non-atomic and can destroy all configuration
 
+- Status: **Fixed**.
+
 - Evidence: `src/settings.js:27` writes JSON directly to the sole `settings.json` path with `writeFileSync`, which truncates the existing file before the replacement is complete. `_load()` resets all settings to `{}` after any parse/read failure at `:12-21`.
 - Impact: a crash, disk-full condition, or interrupted write can leave a partial file; the next start silently discards every saved proxy, TLS, rule, and UI setting.
 - Reproduction: interrupt/truncate `settings.json` during a save and restart; loading logs a parse error and initializes empty settings.

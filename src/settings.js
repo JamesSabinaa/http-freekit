@@ -29,9 +29,15 @@ export class Settings {
   }
 
   _save() {
+    const tempPath = path.join(
+      path.dirname(this.filePath),
+      `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`
+    );
     try {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+      fs.writeFileSync(tempPath, JSON.stringify(this.data, null, 2), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tempPath, this.filePath);
     } catch (err) {
+      try { fs.unlinkSync(tempPath); } catch {}
       console.error('[Settings] Failed to save settings:', err.message);
       throw err;
     }
