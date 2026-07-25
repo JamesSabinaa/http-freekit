@@ -10,8 +10,12 @@ export class SystemProxyInterceptor {
     this.previousSettings = null;
   }
 
-  async isActivable() {
+  _isWindows() {
     return process.platform === 'win32';
+  }
+
+  async isActivable() {
+    return this._isWindows();
   }
 
   async isActive() {
@@ -70,7 +74,7 @@ export class SystemProxyInterceptor {
   }
 
   async activate(proxyPort) {
-    if (process.platform === 'win32') {
+    if (this._isWindows()) {
       try {
         if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
@@ -88,7 +92,7 @@ export class SystemProxyInterceptor {
   }
 
   async deactivate() {
-    if (process.platform === 'win32') {
+    if (this._isWindows()) {
       if (!this.active && !this.previousSettings) return;
       try {
         this._restorePreviousSettings();
@@ -96,6 +100,7 @@ export class SystemProxyInterceptor {
         console.log('[Interceptor] Previous system proxy settings restored');
       } catch (err) {
         console.error('[Interceptor] Failed to disable system proxy:', err.message);
+        throw new Error(`Failed to restore system proxy settings: ${err.message}`);
       }
     }
   }

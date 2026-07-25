@@ -768,6 +768,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-044 — High — System-proxy restore failures are reported as success
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:90-100` catches registry restoration failures and returns normally; the API interprets that fulfilled call as a successful deactivation.
 - Impact: Windows can remain routed through FreeKit while the UI says the interceptor stopped.
 - Reproduction: force the registry restore command to fail, deactivate, and inspect the API response and registry values.
