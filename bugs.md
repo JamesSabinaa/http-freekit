@@ -26,6 +26,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 14 | No new bugs found | 1/2 |
 | 15 | 4 new bugs found; documented below | 0/2 |
 | 16 | 4 new bugs found; documented below | 0/2 |
+| 17 | 3 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -716,6 +717,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: one malformed peer frame can terminate the server abruptly and bypass graceful interceptor/proxy cleanup.
 - Reproduction: complete an authenticated `/ws` upgrade and send an unmasked client text frame such as bytes `81 01 61`.
 
+### BUG-293 — Medium — Bypassed direct traffic triggers upstream-proxy rotation and retry
+
+- Evidence: `_shouldRetryAfterUpstreamResponse()` and `_shouldRetryAfterUpstreamError()` at `src/proxy/proxy-server.js:69-145` gate on the global `upstreamProxy`, but their call sites do not pass whether `_shouldUseUpstreamProxy()` selected that proxy for the request.
+- Impact: a response or transient failure from an intentionally direct destination can rotate or consume the proxy provider and replay the request unnecessarily.
+- Reproduction: configure an upstream proxy with `example.com` in `noProxy`, make a direct GET to that host return 410, and observe the upstream retry hook and a second request.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1179,6 +1186,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `src/interceptors/electron-interceptor.js:35-47` injects `NODE_TLS_REJECT_UNAUTHORIZED=0` into the launched application.
 - Impact: main-process HTTPS clients accept expired, self-signed, and wrong-host certificates for direct/bypassed destinations unrelated to FreeKit.
 - Reproduction: activate an Electron test app and have its main process request a wrong-host/self-signed endpoint.
+
+### BUG-294 — Medium — Global Chrome Stop reports inactive before the browser exits
+
+- Evidence: `ExistingBrowserInterceptor.deactivate()` at `src/interceptors/existing-browser-interceptor.js:73-79` sends one signal, immediately marks the interceptor inactive, and does not wait for exit. Node marks `child.killed` when the signal is sent, so a later Stop will not retry a process that ignored the signal.
+- Impact: FreeKit reports Global Chrome stopped while the tracked browser and its proxy configuration can remain running, with no further cleanup attempt available through the UI.
+- Reproduction: suspend the tracked Chrome process so it cannot handle termination, click Stop, and observe that the interceptor becomes inactive while the PID remains alive.
 
 ## Electron, updater, and renderer
 
@@ -1702,6 +1715,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: collapsing a card clears shared metadata at `src/ui/app.js:3916-3919`, but reopening an already-active Existing Terminal skips activation/metadata fetch at `:3874-3913`. Terminal rendering then falls back to an empty certPath at `:3952-3960`.
 - Impact: copied commands contain a blank NODE_EXTRA_CA_CERTS path after the card is reopened.
 - Reproduction: expand Existing Terminal, collapse it, reopen it, and inspect the generated command.
+
+### BUG-295 — Low — Add Rule is keyboard-inaccessible
+
+- Evidence: the sole `addNewMockRule()` trigger is a clickable `div` at `src/ui/index.html:214` with no button role, tabindex, or keyboard handler.
+- Impact: keyboard-only users cannot create a mock rule through the visible interface.
+- Reproduction: navigate the Mock panel using only Tab and Enter/Space; the Add Rule control never receives focus and cannot be invoked.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
