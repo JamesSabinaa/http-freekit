@@ -1640,6 +1640,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-137 — Medium — Opening another mock editor silently discards the current edit
 
+- Status: **Fixed**.
+
 - Evidence: `addNewMockRule()` overwrites `mockEditingRule` and `mockEditDraft` at `src/ui/app.js:5617-5635`; `editMockRule()` repeats this at `:5642-5649`. The previous edit becomes a saved draft only when that same rule is collapsed at `:5658-5667`.
 - Impact: switching directly from rule A's editor to rule B or Add Rule loses A's changes, and the unsaved-changes warning cannot see them.
 - Reproduction: edit rule A, then click Edit on rule B without collapsing or saving A.

@@ -5755,7 +5755,14 @@
       return html;
     }
 
+    function preserveOpenMockEdit(nextRuleId) {
+      if (!mockEditingRule || !mockEditDraft) return true;
+      if (mockEditingRule === nextRuleId && nextRuleId !== '__new__') return true;
+      return saveMockRule(mockEditingRule);
+    }
+
     function addNewMockRule() {
+      if (!preserveOpenMockEdit('__new__')) return;
       mockEditingRule = '__new__';
       mockEditDraft = {
         enabled: true,
@@ -5781,6 +5788,7 @@
     }
 
     function editMockRule(ruleId) {
+      if (!preserveOpenMockEdit(ruleId)) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       const nr = normalizeMockRule(rule);
@@ -6165,7 +6173,7 @@
 
     /** Save current editor state to draft (local only, not to server) */
     function saveMockRule(ruleId) {
-      if (!mockEditDraft) return;
+      if (!mockEditDraft) return false;
 
       const hasContent = mockEditDraft.matchers.some(m => {
         if (m.type === 'method') return true;
@@ -6173,7 +6181,7 @@
       });
       if (!hasContent && mockEditDraft.matchers.length === 0) {
         toast('Add at least one matching condition', 'error');
-        return;
+        return false;
       }
 
       const preSteps = (mockEditDraft.preSteps || []).filter(s => s && s.type);
@@ -6234,6 +6242,7 @@
       }
       updateMockSaveButtons();
       renderMockRules();
+      return true;
     }
 
     /** Apply a draft's data onto the local mockRules array for rendering */
