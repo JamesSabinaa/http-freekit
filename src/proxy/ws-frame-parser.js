@@ -24,14 +24,19 @@ export const WS_OPCODE_NAMES = {
   [WS_OPCODE.PONG]: 'pong'
 };
 
+export const DEFAULT_MAX_WS_FRAME_PAYLOAD = 16 * 1024 * 1024;
+
 export class WsFrameParser {
   /**
    * @param {function} onFrame - Called with each parsed frame object:
    *   { fin, opcode, masked, payload: Buffer, timestamp }
    */
-  constructor(onFrame) {
+  constructor(onFrame, options = {}) {
     this.onFrame = onFrame;
-    this._buffer = Buffer.alloc(0);
+    this.maxPayloadLength = options.maxPayloadLength ?? DEFAULT_MAX_WS_FRAME_PAYLOAD;
+    this._chunks = [];
+    this._bufferedLength = 0;
+    this._disabled = false;
   }
 
   /**
@@ -40,12 +45,14 @@ export class WsFrameParser {
    * @param {Buffer} chunk
    */
   push(chunk) {
-    this._buffer = Buffer.concat([this._buffer, chunk]);
+    if (this._disabled || !chunk || chunk.length === 0) return;
+    this._chunks.push(chunk);
+    this._bufferedLength += chunk.length;
     this._drain();
   }
 
   _drain() {
-    while (this._buffer.length >= 2) {
+    while (this._bufferedLength >= 2) {
       const frame = this._tryParseFrame();
       if (!frame) break; // not enough data yet
       this.onFrame(frame);
@@ -57,7 +64,8 @@ export class WsFrameParser {
    * Returns the frame object and consumes the bytes, or returns null if incomplete.
    */
   _tryParseFrame() {
-    const buf = this._buffer;
+    const headerLength = Math.min(this._bufferedLength, 14);
+    const buf = this._peek(headerLength);
     let offset = 0;
 
     if (buf.length < 2) return null;
@@ -79,12 +87,16 @@ export class WsFrameParser {
       offset += 2;
     } else if (payloadLength === 127) {
       if (buf.length < offset + 8) return null;
-      // Read as two 32-bit values (JS doesn't support 64-bit ints natively)
-      const high = buf.readUInt32BE(offset);
-      const low = buf.readUInt32BE(offset + 4);
-      // For practical purposes, limit to Number.MAX_SAFE_INTEGER
-      payloadLength = high * 0x100000000 + low;
+      const payloadLengthBigInt = buf.readBigUInt64BE(offset);
+      if (payloadLengthBigInt > BigInt(this.maxPayloadLength)) {
+        this._rejectOversizedFrame(payloadLengthBigInt);
+      }
+      payloadLength = Number(payloadLengthBigInt);
       offset += 8;
+    }
+
+    if (payloadLength > this.maxPayloadLength) {
+      this._rejectOversizedFrame(payloadLength);
     }
 
     // Masking key (4 bytes if masked)
@@ -96,10 +108,11 @@ export class WsFrameParser {
     }
 
     // Payload data
-    if (buf.length < offset + payloadLength) return null;
+    const frameLength = offset + payloadLength;
+    if (this._bufferedLength < frameLength) return null;
 
-    const payload = Buffer.from(buf.subarray(offset, offset + payloadLength));
-    offset += payloadLength;
+    const frameBytes = this._consume(frameLength);
+    const payload = frameBytes.subarray(offset, frameLength);
 
     // Unmask payload if masked
     if (masked && maskingKey) {
@@ -108,9 +121,6 @@ export class WsFrameParser {
       }
     }
 
-    // Consume parsed bytes from buffer
-    this._buffer = Buffer.from(buf.subarray(offset));
-
     return {
       fin,
       opcode,
@@ -118,6 +128,47 @@ export class WsFrameParser {
       payload,
       timestamp: Date.now()
     };
+  }
+
+  _peek(length) {
+    const prefix = Buffer.allocUnsafe(length);
+    let copied = 0;
+    for (const chunk of this._chunks) {
+      const copyLength = Math.min(chunk.length, length - copied);
+      chunk.copy(prefix, copied, 0, copyLength);
+      copied += copyLength;
+      if (copied === length) break;
+    }
+    return prefix;
+  }
+
+  _consume(length) {
+    const result = Buffer.allocUnsafe(length);
+    let copied = 0;
+    while (copied < length) {
+      const chunk = this._chunks[0];
+      const copyLength = Math.min(chunk.length, length - copied);
+      chunk.copy(result, copied, 0, copyLength);
+      copied += copyLength;
+      this._bufferedLength -= copyLength;
+      if (copyLength === chunk.length) {
+        this._chunks.shift();
+      } else {
+        this._chunks[0] = chunk.subarray(copyLength);
+      }
+    }
+    return result;
+  }
+
+  _rejectOversizedFrame(payloadLength) {
+    this._chunks = [];
+    this._bufferedLength = 0;
+    this._disabled = true;
+    const error = new RangeError(
+      `WebSocket frame payload ${payloadLength} exceeds the ${this.maxPayloadLength} byte capture limit`
+    );
+    error.code = 'ERR_WS_FRAME_TOO_LARGE';
+    throw error;
   }
 }
 
