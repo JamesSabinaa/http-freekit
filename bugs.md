@@ -24,6 +24,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 12 | 8 new bugs found; documented below | 0/2 |
 | 13 | 4 new bugs found; documented below | 0/2 |
 | 14 | No new bugs found | 1/2 |
+| 15 | 4 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -1148,6 +1149,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: these browsers accept expired, self-signed, hostname-invalid, and passthrough/direct certificates unrelated to FreeKit; Global Chrome can apply this to the user's normal session.
 - Reproduction: activate on macOS/Linux and visit an invalid-certificate origin through passthrough/direct access.
 
+### BUG-286 — Medium — Terminal interceptors disable all Node TLS verification
+
+- Evidence: Fresh Terminal injects `NODE_TLS_REJECT_UNAUTHORIZED=0` at `src/interceptors/terminal-interceptors.js:55,84`; Existing Terminal instructions and UI fallback repeat it at `:179-181` and `src/ui/app.js:3957-3959`.
+- Impact: Node programs accept expired, self-signed, and wrong-host certificates for bypassed, direct, and passthrough destinations unrelated to FreeKit.
+- Reproduction: activate/paste terminal setup and request a self-signed wrong-host HTTPS endpoint with Node.
+
+### BUG-287 — High — Electron force-kill can interrupt proxy restoration
+
+- Evidence: `shutdownServer()` force-kills the child after three seconds at `electron/main.cjs:225-264`, while one isolated-browser shutdown can wait two seconds after SIGTERM plus two after SIGKILL at `src/interceptors/browser-interceptor.js:383-404` before later System Proxy/Android cleanup runs.
+- Impact: closing the desktop with a resistant browser can terminate graceful cleanup before registry/device proxy restoration, leaving clients pointed at a dead proxy.
+- Reproduction: activate a resistant isolated browser plus System Proxy, close the desktop window, and inspect registry state after the child is killed.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1649,6 +1662,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: the two resizers are plain divs without separator role, tabindex, or value ARIA at `src/ui/index.html:118,317`; handlers at `src/ui/app.js:8817-8840,9596-9624` listen only for mouse events.
 - Impact: keyboard users cannot resize Traffic detail or Send response panes.
 - Reproduction: attempt to focus and resize either separator with the keyboard.
+
+### BUG-285 — Medium — Use system settings actually connects directly
+
+- Evidence: the setting is advertised as using OS proxy configuration, but the UI implements it by deleting `/api/upstream-proxy`; the API sets `upstreamProxy` to null, which the proxy treats as direct. No backend/Electron path reads OS proxy settings.
+- Impact: users behind corporate/VPN system proxies are told the mode is active while traffic bypasses it or fails directly.
+- Reproduction: configure a counting OS proxy, choose Use system settings, and make a proxied request; upstream configuration is null and the OS proxy receives nothing.
+
+### BUG-288 — Low — Android/JVM Refresh ignores API failures
+
+- Evidence: `refreshAndroidDevices()` and `refreshJvmProcesses()` at `src/ui/app.js:4143-4165,4285-4307` parse JSON without testing `res.ok` or `data.error`, then always toast refreshed.
+- Impact: a 500/network-shape error retains stale device/process data while reporting success.
+- Reproduction: force the metadata endpoint to return 500 with `{ "error": "failed" }` and click Refresh.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
