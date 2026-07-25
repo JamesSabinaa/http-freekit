@@ -1586,6 +1586,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-134 — High — Generated request snippets permit shell and code injection
 
+- Status: **Fixed**.
+
 - Evidence: `generateExportSnippet()` interpolates captured URLs and headers directly into single-quoted cURL at `src/ui/app.js:1962-1968` despite the safe `shellSingleQuote()` helper at `:1778-1780`. Python, JavaScript, PowerShell, wget, PHP, and Go output similarly interpolates values without language-specific escaping at `:1971-2055`; the context menu copies these snippets at `:8498-8503`.
 - Impact: running a snippet copied from an untrusted captured request can execute attacker-controlled shell commands or source code.
 - Reproduction: capture a URL containing `' ; touch /tmp/freekit-pwn ; '` and inspect Copy as cURL before running it.

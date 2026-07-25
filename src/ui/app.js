@@ -1832,6 +1832,14 @@
       return String(value ?? '').replace(/'/g, "'\\''");
     }
 
+    function powerShellStringLiteral(value) {
+      return `'${String(value ?? '').replace(/'/g, "''")}'`;
+    }
+
+    function phpStringLiteral(value) {
+      return `'${String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+    }
+
     function getExportHeaders(req, omitContentType = false) {
       return Object.entries(req.requestHeaders || {}).filter(([key]) => {
         const lowerKey = key.toLowerCase();
@@ -1842,11 +1850,11 @@
     function generateMultipartExportSnippet(req, format) {
       const fields = getExportFormFields(req);
       const headers = getExportHeaders(req, true);
-      const method = req.method || 'POST';
-      const url = req.url || '';
+      const method = String(req.method || 'POST');
+      const url = String(req.url || '');
 
       if (format === 'curl') {
-        let cmd = `curl -X ${method} '${shellSingleQuote(url)}'`;
+        let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
         headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
         fields.forEach((field) => {
           const value = field.type === 'file'
@@ -1926,13 +1934,15 @@
 
       if (format === 'powershell') {
         let code = '$headers = @{}\n';
-        headers.forEach(([key, value]) => { code += `$headers[${JSON.stringify(key)}] = ${JSON.stringify(String(value))}\n`; });
+        headers.forEach(([key, value]) => { code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`; });
         code += '\n$form = @{}\n';
         fields.forEach((field) => {
-          const value = field.type === 'file' ? `Get-Item ${JSON.stringify(field.file?.name || field.fileName || 'file')}` : JSON.stringify(field.value || '');
-          code += `$form[${JSON.stringify(field.key)}] = ${value}\n`;
+          const value = field.type === 'file'
+            ? `Get-Item -LiteralPath ${powerShellStringLiteral(field.file?.name || field.fileName || 'file')}`
+            : powerShellStringLiteral(field.value || '');
+          code += `$form[${powerShellStringLiteral(field.key)}] = ${value}\n`;
         });
-        code += `\n$response = Invoke-WebRequest -Uri ${JSON.stringify(url)} -Method ${method} -Headers $headers -Form $form\n$response.StatusCode\n$response.Content`;
+        code += `\n$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers -Form $form\n$response.StatusCode\n$response.Content`;
         return code;
       }
 
@@ -1953,22 +1963,22 @@
             code += `  printf '%s\\r\\n' '${shellSingleQuote(field.value || '')}'\n`;
           }
         });
-        code += `  printf '%s--\\r\\n' "--$boundary"\n} > "$body_file"\n\nwget --method=${method}`;
+        code += `  printf '%s--\\r\\n' "--$boundary"\n} > "$body_file"\n\nwget --method='${shellSingleQuote(method)}'`;
         headers.forEach(([key, value]) => { code += ` \\\n  --header='${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
         code += ` \\\n  --header="Content-Type: multipart/form-data; boundary=$boundary" \\\n  --body-file="$body_file" \\\n  '${shellSingleQuote(url)}'\nrm -f "$body_file"`;
         return code;
       }
 
       if (format === 'php') {
-        let code = `<?php\n$ch = curl_init(${JSON.stringify(url)});\n$postFields = [\n`;
+        let code = `<?php\n$ch = curl_init(${phpStringLiteral(url)});\n$postFields = [\n`;
         fields.forEach((field) => {
           const value = field.type === 'file'
-            ? `new CURLFile(${JSON.stringify(field.file?.name || field.fileName || 'file')}, ${JSON.stringify(field.file?.type || field.fileType || 'application/octet-stream')})`
-            : JSON.stringify(field.value || '');
-          code += `    ${JSON.stringify(field.key)} => ${value},\n`;
+            ? `new CURLFile(${phpStringLiteral(field.file?.name || field.fileName || 'file')}, ${phpStringLiteral(field.file?.type || field.fileType || 'application/octet-stream')})`
+            : phpStringLiteral(field.value || '');
+          code += `    ${phpStringLiteral(field.key)} => ${value},\n`;
         });
-        code += `];\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${JSON.stringify(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);\n`;
-        if (headers.length) code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${JSON.stringify(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
+        code += `];\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);\n`;
+        if (headers.length) code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
         code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
         return code;
       }
@@ -2008,86 +2018,77 @@
       }
       if (req.bodyType === 'multipart') return generateMultipartExportSnippet(req, format);
 
-      const headers = req.requestHeaders || {};
-      const hasBody = req.requestBody && req.requestBody.length > 0;
+      const method = String(req.method || 'GET');
+      const url = String(req.url || '');
+      const body = String(req.requestBody ?? '');
+      const headers = getExportHeaders(req);
+      const hasBody = body.length > 0;
 
       switch (format) {
         case 'curl': {
-          let cmd = `curl -X ${req.method} '${req.url}'`;
-          for (const [k, v] of Object.entries(headers)) {
-            if (k === 'host' || k === 'proxy-connection') continue;
-            cmd += ` \\\n  -H '${k}: ${v}'`;
+          let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
+          for (const [key, value] of headers) {
+            cmd += ` \\\n  -H '${shellSingleQuote(`${key}: ${value}`)}'`;
           }
-          if (hasBody) cmd += ` \\\n  -d '${req.requestBody.replace(/'/g, "'\\''")}'`;
+          if (hasBody) cmd += ` \\\n  -d '${shellSingleQuote(body)}'`;
           return cmd;
         }
         case 'python': {
           let code = `import requests\n\n`;
-          code += `response = requests.${req.method.toLowerCase()}(\n    '${req.url}'`;
-          const h = Object.entries(headers).filter(([k]) => k !== 'host' && k !== 'proxy-connection');
-          if (h.length) {
-            code += `,\n    headers={\n${h.map(([k,v]) => `        '${k}': '${v}'`).join(',\n')}\n    }`;
+          code += `response = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
+          if (headers.length) {
+            code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
           }
-          if (hasBody) code += `,\n    data='${req.requestBody.replace(/'/g, "\\'")}'`;
+          if (hasBody) code += `,\n    data=${JSON.stringify(body)}`;
           code += `\n)\n\nprint(response.status_code)\nprint(response.text)`;
           return code;
         }
         case 'javascript-fetch': {
-          const h = Object.entries(headers).filter(([k]) => k !== 'host' && k !== 'proxy-connection');
-          let code = `const response = await fetch('${req.url}', {\n  method: '${req.method}'`;
-          if (h.length) {
-            code += `,\n  headers: {\n${h.map(([k,v]) => `    '${k}': '${v}'`).join(',\n')}\n  }`;
+          let code = `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)}`;
+          if (headers.length) {
+            code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
           }
-          if (hasBody) code += `,\n  body: ${JSON.stringify(req.requestBody)}`;
+          if (hasBody) code += `,\n  body: ${JSON.stringify(body)}`;
           code += `\n});\n\nconst data = await response.text();\nconsole.log(response.status, data);`;
           return code;
         }
         case 'javascript-node': {
           let code = `const https = require('https');\nconst http = require('http');\n\n`;
-          const isHttps = req.url.startsWith('https');
-          code += `const options = {\n  method: '${req.method}',\n  hostname: '${req.host}'`;
-          try {
-            const u = new URL(req.url);
-            code += `,\n  path: '${u.pathname}${u.search}'`;
-            if (u.port) code += `,\n  port: ${u.port}`;
-          } catch (e) { console.error('[Error]', e.message); }
-          const h = Object.entries(headers).filter(([k]) => k !== 'host' && k !== 'proxy-connection');
-          if (h.length) {
-            code += `,\n  headers: {\n${h.map(([k,v]) => `    '${k}': '${v}'`).join(',\n')}\n  }`;
+          code += `const target = new URL(${JSON.stringify(url)});\n`;
+          code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  path: target.pathname + target.search,\n  port: target.port || undefined`;
+          if (headers.length) {
+            code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
           }
-          code += `\n};\n\nconst req = ${isHttps ? 'https' : 'http'}.request(options, (res) => {\n  let data = '';\n  res.on('data', chunk => data += chunk);\n  res.on('end', () => console.log(res.statusCode, data));\n});\n`;
-          if (hasBody) code += `req.write(${JSON.stringify(req.requestBody)});\n`;
-          code += `req.end();`;
+          code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
+          if (hasBody) code += `request.write(${JSON.stringify(body)});\n`;
+          code += `request.end();`;
           return code;
         }
         case 'powershell': {
           let code = `$headers = @{}\n`;
-          for (const [k, v] of Object.entries(headers)) {
-            if (k === 'host' || k === 'proxy-connection') continue;
-            code += `$headers.Add("${k}", "${v}")\n`;
+          for (const [key, value] of headers) {
+            code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`;
           }
-          code += `\n$response = Invoke-WebRequest -Uri '${req.url}' -Method ${req.method} -Headers $headers`;
-          if (hasBody) code += ` -Body '${req.requestBody}'`;
+          code += `\n$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers`;
+          if (hasBody) code += ` -Body ${powerShellStringLiteral(body)}`;
           code += `\n$response.StatusCode\n$response.Content`;
           return code;
         }
         case 'wget': {
-          let cmd = `wget --method=${req.method}`;
-          for (const [k, v] of Object.entries(headers)) {
-            if (k === 'host' || k === 'proxy-connection') continue;
-            cmd += ` \\\n  --header='${k}: ${v}'`;
+          let cmd = `wget --method='${shellSingleQuote(method)}'`;
+          for (const [key, value] of headers) {
+            cmd += ` \\\n  --header='${shellSingleQuote(`${key}: ${value}`)}'`;
           }
-          if (hasBody) cmd += ` \\\n  --body-data='${req.requestBody}'`;
-          cmd += ` \\\n  '${req.url}'`;
+          if (hasBody) cmd += ` \\\n  --body-data='${shellSingleQuote(body)}'`;
+          cmd += ` \\\n  '${shellSingleQuote(url)}'`;
           return cmd;
         }
         case 'php': {
-          let code = `<?php\n$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, '${req.url}');\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, '${req.method}');\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
-          const h = Object.entries(headers).filter(([k]) => k !== 'host' && k !== 'proxy-connection');
-          if (h.length) {
-            code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${h.map(([k,v]) => `    '${k}: ${v}'`).join(',\n')}\n]);\n`;
+          let code = `<?php\n$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, ${phpStringLiteral(url)});\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
+          if (headers.length) {
+            code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
           }
-          if (hasBody) code += `curl_setopt($ch, CURLOPT_POSTFIELDS, '${req.requestBody}');\n`;
+          if (hasBody) code += `curl_setopt($ch, CURLOPT_POSTFIELDS, ${phpStringLiteral(body)});\n`;
           code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
           return code;
         }
@@ -2096,14 +2097,13 @@
           if (hasBody) code += `\t"strings"\n`;
           code += `)\n\nfunc main() {\n`;
           if (hasBody) {
-            code += `\tbody := strings.NewReader(${JSON.stringify(req.requestBody)})\n`;
-            code += `\treq, _ := http.NewRequest("${req.method}", "${req.url}", body)\n`;
+            code += `\tbody := strings.NewReader(${JSON.stringify(body)})\n`;
+            code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, body)\n`;
           } else {
-            code += `\treq, _ := http.NewRequest("${req.method}", "${req.url}", nil)\n`;
+            code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, nil)\n`;
           }
-          for (const [k, v] of Object.entries(headers)) {
-            if (k === 'host' || k === 'proxy-connection') continue;
-            code += `\treq.Header.Set("${k}", "${v}")\n`;
+          for (const [key, value] of headers) {
+            code += `\treq.Header.Set(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`;
           }
           code += `\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tdata, _ := io.ReadAll(resp.Body)\n\tfmt.Println(resp.StatusCode, string(data))\n}`;
           return code;
