@@ -868,6 +868,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-090 — High — Failed Windows proxy reads are saved as real disabled settings
 
+- Status: **Fixed**.
 - Evidence: both registry reads suppress every error and return defaults at `src/interceptors/system-proxy-interceptor.js:21-43`; activation stores that result at `:75`, and Stop later deletes `ProxyServer`/disables the proxy at `:56-69`.
 - Impact: a transient query timeout or parse failure followed by successful writes permanently destroys the user's prior proxy configuration.
 - Reproduction: force `reg query` to fail while `reg add/delete` succeed, activate, then Stop.

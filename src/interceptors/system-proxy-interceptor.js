@@ -27,33 +27,25 @@ export class SystemProxyInterceptor {
     return this.active;
   }
 
+  _execRegistry(args, options) {
+    return execFileSync('reg', args, options);
+  }
+
   _readCurrentSettings() {
-    let enabled = false;
-    let server = null;
-
-    try {
-      const output = execFileSync('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyEnable'], {
-        encoding: 'utf8',
-        timeout: 5000
-      });
-      const match = output.match(/ProxyEnable\s+REG_DWORD\s+(\S+)/i);
-      enabled = match ? parseInt(match[1], 0) !== 0 : false;
-    } catch {}
-
-    try {
-      const output = execFileSync('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer'], {
-        encoding: 'utf8',
-        timeout: 5000
-      });
-      const match = output.match(/^\s*ProxyServer\s+REG_SZ\s+(.*)$/im);
-      server = match ? match[1].trim() : null;
-    } catch {}
-
-    return { enabled, server };
+    const output = this._execRegistry(['query', INTERNET_SETTINGS_KEY], {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    const enabledMatch = output.match(/^\s*ProxyEnable\s+REG_DWORD\s+(\S+)/im);
+    const serverMatch = output.match(/^\s*ProxyServer\s+REG_SZ\s+(.*)$/im);
+    return {
+      enabled: enabledMatch ? parseInt(enabledMatch[1], 0) !== 0 : false,
+      server: serverMatch ? serverMatch[1].trim() : null
+    };
   }
 
   _setRegistryValue(name, type, value) {
-    execFileSync('reg', [
+    this._execRegistry([
       'add', INTERNET_SETTINGS_KEY,
       '/v', name,
       '/t', type,
@@ -119,11 +111,12 @@ export class SystemProxyInterceptor {
 
   _restorePreviousSettings() {
     const previous = this.previousSettings;
+    if (!previous) throw new Error('No saved system proxy settings are available to restore');
     if (previous?.server != null) {
       this._setRegistryValue('ProxyServer', 'REG_SZ', previous.server);
     } else {
       try {
-        execFileSync('reg', ['delete', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer', '/f'], {
+        this._execRegistry(['delete', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer', '/f'], {
           stdio: 'ignore',
           timeout: 5000
         });
@@ -145,7 +138,9 @@ export class SystemProxyInterceptor {
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
         return { success: true };
       } catch (err) {
-        try { this._restorePreviousSettings(); } catch {}
+        if (this.previousSettings) {
+          try { this._restorePreviousSettings(); } catch {}
+        }
         this.active = false;
         throw new Error(`Failed to set system proxy: ${err.message}`);
       }
