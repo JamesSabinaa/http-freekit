@@ -16,6 +16,11 @@ export function trafficToHar(requests, options = {}) {
   });
 
   const firstHeaderValue = value => Array.isArray(value) ? (value[0] || '') : (value || '');
+  const getHeaderValue = (headers, name) => {
+    const normalizedName = name.toLowerCase();
+    const entry = Object.entries(headers || {}).find(([headerName]) => headerName.toLowerCase() === normalizedName);
+    return firstHeaderValue(entry?.[1]);
+  };
 
   return {
     log: {
@@ -25,8 +30,8 @@ export function trafficToHar(requests, options = {}) {
         const reqHeaders = toHarHeaders(req.requestHeaders);
         const resHeaders = toHarHeaders(req.responseHeaders);
 
-        const reqContentType = firstHeaderValue(req.requestHeaders?.['content-type']);
-        const resContentType = firstHeaderValue(req.responseHeaders?.['content-type']);
+        const reqContentType = getHeaderValue(req.requestHeaders, 'content-type');
+        const resContentType = getHeaderValue(req.responseHeaders, 'content-type');
         const requestBody = toHarBody(req.requestBody);
         const responseBody = toHarBody(req.responseBody);
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
@@ -68,7 +73,7 @@ export function trafficToHar(requests, options = {}) {
               text: responseBody?.text || '',
               ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {})
             },
-            redirectURL: firstHeaderValue(req.responseHeaders?.location),
+            redirectURL: getHeaderValue(req.responseHeaders, 'location'),
             headersSize: -1,
             bodySize: req.responseBodySize || 0
           },

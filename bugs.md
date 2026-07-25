@@ -469,6 +469,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-157 — Low/Medium — HAR metadata lookup treats header names as case-sensitive
 
+- Status: **Fixed**.
+
 - Evidence: `src/api/har-converter.js:27-28,63` reads only lowercase `content-type` and `location`, although captured and mock header objects can preserve arbitrary case; fixed-response defaults use `Content-Type` at `src/proxy/proxy-server.js:3330-3333`.
 - Impact: valid responses export with blank `content.mimeType` and `redirectURL` despite containing those headers.
 - Reproduction: mock `Content-Type: application/json` and `Location: /next`, export HAR, and inspect both metadata fields.
