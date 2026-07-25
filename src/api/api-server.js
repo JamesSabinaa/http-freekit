@@ -55,6 +55,9 @@ export class ApiServer {
     this._autoRotateInFlight = false;
     this._autoRotatePromise = null;
     this._lastAutoRotateAt = 0;
+    this.sendConnectTimeoutMs = options.sendConnectTimeoutMs ?? 10000;
+    this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
+    this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
 
     // Wire up breakpoint broadcast so the UI gets real-time breakpoint events
     this.proxy.onBreakpoint = (event) => {
@@ -1327,12 +1330,40 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       };
 
       const startTime = Date.now();
-      const req = lib.request(options, (res) => {
+      const connectTimeoutMs = this.sendConnectTimeoutMs ?? 10000;
+      const idleTimeoutMs = this.sendIdleTimeoutMs ?? 30000;
+      const totalTimeoutMs = this.sendTotalTimeoutMs ?? 60000;
+      let settled = false;
+      let connectTimer;
+      let totalTimer;
+      let req;
+      const cleanup = () => {
+        clearTimeout(connectTimer);
+        clearTimeout(totalTimer);
+        req?.setTimeout(0);
+      };
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        req?.destroy();
+        reject(err);
+      };
+      const succeed = (result) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      req = lib.request(options, (res) => {
         const chunks = [];
         res.on('data', chunk => chunks.push(chunk));
+        res.once('aborted', () => fail(new Error('Send response aborted before completion')));
+        res.once('error', fail);
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks);
-          resolve({
+          succeed({
             statusCode: res.statusCode,
             statusMessage: res.statusMessage,
             headers: res.headers,
@@ -1342,7 +1373,24 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         });
       });
 
-      req.on('error', reject);
+      connectTimer = setTimeout(() => {
+        fail(new Error(`Send connection timeout after ${connectTimeoutMs}ms`));
+      }, connectTimeoutMs);
+      totalTimer = setTimeout(() => {
+        fail(new Error(`Send request timeout after ${totalTimeoutMs}ms`));
+      }, totalTimeoutMs);
+      req.once('socket', socket => {
+        const connectedEvent = isHttps ? 'secureConnect' : 'connect';
+        if (!socket.connecting && (!isHttps || socket.encrypted)) {
+          clearTimeout(connectTimer);
+        } else {
+          socket.once(connectedEvent, () => clearTimeout(connectTimer));
+        }
+      });
+      req.setTimeout(idleTimeoutMs, () => {
+        fail(new Error(`Send idle timeout after ${idleTimeoutMs}ms`));
+      });
+      req.once('error', fail);
       if (body) req.write(bodyEncoding === 'base64' ? Buffer.from(body, 'base64') : body);
       req.end();
     });

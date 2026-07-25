@@ -93,6 +93,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-064 — Medium — Send requests can hang forever
 
+- Status: **Fixed**.
+
 - Evidence: `src/api/api-server.js:1174-1208` creates the outbound request without a connection, idle, or total timeout. The middleware's `req.setTimeout()` at `:495-499` applies to the inbound management request, not this outbound socket.
 - Impact: an origin that accepts a connection but never responds leaves the API handler and socket pending indefinitely; repeated requests accumulate resources.
 - Reproduction: Send a request to a test server that accepts the request and never sends response headers.
