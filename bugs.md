@@ -15,6 +15,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 3 | 29 new bugs found; documented below | 0/2 |
 | 4 | 31 new bugs found; documented below | 0/2 |
 | 5 | 27 new bugs found; documented below | 0/2 |
+| 6 | 11 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -461,11 +462,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: an accept-but-never-answer WebSocket origin or stalled passthrough connect holds client sockets and closures until long OS-level timeouts.
 - Reproduction: point either path at a TCP server that accepts and sends nothing.
 
-### BUG-185 — Medium — Failed WebSocket handshakes are omitted from traffic
+### BUG-185 — Medium — WebSocket handshakes are hidden until a successful connection closes
 
-- Evidence: non-101 responses are merely reconstructed/piped and errors write 502 at `src/proxy/proxy-server.js:480-495`; only the successful upgrade branch emits a captured request at `:391-478`.
-- Impact: the failed authentication and routing handshakes users need to debug never appear in the UI, API, HAR, or MCP.
-- Reproduction: have a WebSocket origin return 401 and compare the client response with the empty traffic log.
+- Evidence: non-101 responses are reconstructed/piped and errors write 502 at `src/proxy/proxy-server.js:480-495` without emitting a parent exchange. During a successful connection, only frame events are emitted at `:417-452`; the parent `protocol: "ws"` request is emitted by cleanup only after end/error at `:455-485`.
+- Impact: failed handshakes never appear, while long-lived successful connections show orphan frames whose parent ID cannot be inspected until the socket closes.
+- Reproduction: return 401 and observe no record; then keep a 101 connection open after one frame and observe only a `ws-frame` child.
 
 ### BUG-186 — Medium — Failed TLS passthrough is logged as a successful 200 tunnel
 
@@ -502,6 +503,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: HAR import uses `new Date(entry.startedDateTime).getTime() || Date.now()`, so the valid numeric timestamp zero triggers the fallback (`src/api/api-server.js` HAR mapping).
 - Impact: epoch captures receive false current dates and ordering.
 - Reproduction: import `startedDateTime: "1970-01-01T00:00:00.000Z"` and inspect the record timestamp.
+
+### BUG-203 — High/Medium — Malformed persisted network settings crash later connections
+
+- Evidence: `/api/upstream-proxy` accepts arbitrary port/type and persists it; `setUpstreamProxy()` accepts any truthy parsed port, after which the async H1 path calls `http.request()` without a synchronous exception boundary (`src/api/api-server.js` upstream route; `src/proxy/proxy-server.js:220-235,590-810`). TLS passthrough validates only the outer array, then CONNECT calls `.startsWith()` on each element at `proxy-server.js:863-865`.
+- Impact: accepted persisted values such as port 70000 or passthrough host `1` throw in later request handlers, and the crash repeats after restart.
+- Reproduction: persist upstream `{ "host":"127.0.0.1", "port":70000 }` and proxy a request, or store passthrough `{ "hosts":[1] }` and issue CONNECT.
+
+### BUG-204 — Medium — Malformed OpenAPI documents can suppress traffic capture
+
+- Evidence: the API accepts any truthy spec and arbitrary baseUrl; `matchApiSpec()` assumes baseUrl is a string and every path entry is an object (`src/api/api-server.js` spec route; `src/proxy/proxy-server.js:4188-4208`). `onTrafficEvent()` calls it before inserting/broadcasting the exchange, and the proxy emitter only logs callback exceptions.
+- Impact: one accepted spec can blind UI/API/MCP capture for every request or a matching path while traffic still forwards normally.
+- Reproduction: POST a spec with `baseUrl: {}` or a matching `paths` value of null, then proxy traffic.
+
+### BUG-205 — Low/Medium — Client-aborted uploads vanish from traffic
+
+- Evidence: plain H1, intercepted H1, H2, and H1-on-H2 collect request bodies using only data/end at `src/proxy/proxy-server.js:588-590,1043-1045,1692-1695,1938-1940`; pending emission and forwarding occur only inside end, with no aborted/pre-end close completion.
+- Impact: partial uploads and client resets are absent from capture despite incrementing request counters, defeating diagnosis and leaving no terminal record.
+- Reproduction: declare a large Content-Length, send a short prefix, and close the client socket.
 
 ## Interceptors and cleanup
 
@@ -823,6 +842,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: valid data paths containing `&`, `$`, backticks, or apostrophes create truncated or invalid commands, leaving HTTPS trust unconfigured.
 - Reproduction: use an APPDATA path under `C:\Temp\A&B`, choose CMD in Existing Terminal, and paste the generated command.
 
+### BUG-206 — Medium — Android activation can fail after committing active state
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:454-465` records the device and sets active after configuring proxy/VPN, but response construction still awaits `_getQrMetadata()` at `:481`; QR generation can reject at `:181-189`. The API then returns an error without rollback.
+- Impact: UI/API reports failure while the device proxy, VPN/reverse tunnel, and in-memory activation remain active.
+- Reproduction: force `QRCode.toDataURL()` to reject during a valid activation and inspect `isActive()` and `activatedDevices` afterward.
+
+### BUG-207 — Medium — Non-browser interceptor transitions are never broadcast
+
+- Evidence: `src/interceptors/interceptor-manager.js:47-52` installs `onStatusChange`, and the API broadcasts only callbacks it receives. Android, JVM, System Proxy, Docker, Electron, and terminal implementations do not invoke normal activate/deactivate status callbacks, and their API routes do not publish after success.
+- Impact: other open UI sessions remain indefinitely stale after one client starts or stops these interceptors and can offer invalid actions against outdated state.
+- Reproduction: open two UI sessions, activate System Proxy or Android in one, and observe no connected-source change in the other until reload.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1118,6 +1149,42 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: each settings toggle submits both locally cached values at `src/ui/app.js:7419-7442`; the server persists both supplied fields at `src/api/api-server.js:647-656`.
 - Impact: changing one setting in a stale tab reverts a different setting that another tab changed later.
 - Reproduction: change Filter Safe Fonts in tab A, then change Hide Tunnel Requests in stale tab B.
+
+### BUG-208 — Medium — Failed mock reorder leaves renderer and proxy priority inconsistent
+
+- Evidence: `mockDrop()` mutates the local `mockRules` order before posting at `src/ui/app.js:4493-4508`. A rejected reorder is only logged; the old order is neither restored nor reloaded.
+- Impact: the UI displays one priority order while proxy matching continues with the server's previous order.
+- Reproduction: make `/api/mock-rules/reorder` fail and drag a rule.
+
+### BUG-209 — Medium — Shift-combine leaves hidden partial server mutations
+
+- Evidence: `combineRulesAsGroup()` creates a group and moves two rules through three independent requests at `src/ui/app.js:4512-4540`; the API persists each step separately, and the catch path does not reload.
+- Impact: failure after one move leaves a persisted partial group while the UI keeps showing the old layout until reload.
+- Reproduction: delay the operation and delete the second rule before its move completes.
+
+### BUG-210 — Medium — Failed mock deletion discards unsaved edits first
+
+- Evidence: `deleteMockRule()` removes the draft and clears editor state at `src/ui/app.js:6244-6252` before awaiting server deletion at `:6262-6266`; failure only shows a toast.
+- Impact: when DELETE fails, the server rule remains but the user's unsaved draft is irrecoverably erased.
+- Reproduction: edit a saved rule, force DELETE to fail, and click Delete.
+
+### BUG-211 — Medium — Browser tabs overwrite the shared Send workspace
+
+- Evidence: each renderer owns an independent `sendTabs` array, while `persistSendTabs()` replaces the shared localStorage value wholesale at `src/ui/app.js:7047-7074`. Switching, creating, closing, and sending all trigger writes without storage-event synchronization or merging.
+- Impact: any stale UI tab can overwrite another tab's complete Send workspace, losing requests on reload.
+- Reproduction: create different Send requests in two browser tabs, then switch or send from the stale tab and reload both.
+
+### BUG-212 — Low/Medium — Truncated deep-link responses block every later link
+
+- Evidence: `requestOpenInProxiedChrome()` listens only for response data/end at `electron/main.cjs:161-193`, with no response aborted, error, or close rejection. Later links serialize behind that promise at `:196-199`.
+- Impact: a partial local API response that closes early leaves the first promise pending forever and permanently queues subsequent desktop links.
+- Reproduction: return headers plus partial JSON and destroy the response, then open a second `http-freekit:` link.
+
+### BUG-213 — Low — Deep-link launch failures leave the desktop window hidden
+
+- Evidence: any startup deep-link sets `showOnReady: false` at `electron/main.cjs:425-429`. Parse/request failure paths at `:152-159,196-208` report the error but never call `showMainWindow()`.
+- Impact: after dismissing a failed startup link, the main window remains hidden and must be recovered from the tray.
+- Reproduction: launch the stopped app with an invalid target or force proxied-Chrome opening to fail.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
