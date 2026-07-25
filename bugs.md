@@ -776,6 +776,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-045 — High — Abnormal exit leaves Windows using a dead system proxy
 
+- Status: **Fixed**.
 - Evidence: original values are held only in the in-memory `previousSettings` field and captured at `src/interceptors/system-proxy-interceptor.js:72-78`; restoration occurs only through a normal `deactivate()` call.
 - Impact: a crash, force-quit, or power loss can persist `127.0.0.1:<old-port>` as the enabled Windows proxy across application restarts.
 - Reproduction: activate the system interceptor, terminate the process without its shutdown handler, and read the Internet Settings registry key.

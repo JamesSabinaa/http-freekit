@@ -68,7 +68,7 @@ async function main() {
   console.log(`[Boot] Settings loaded from ${DATA_DIR}/settings.json`);
 
   // 3. Initialize Interceptor Manager (pass CA for SPKI fingerprints)
-  const interceptors = new InterceptorManager(ca);
+  const interceptors = new InterceptorManager(ca, { dataDir: DATA_DIR });
 
   // 4. Initialize Proxy Server
   const proxyPortRange = resolveProxyPortRange(settings, process.env.PROXY_PORT);

@@ -9,7 +9,7 @@ import { JvmInterceptor } from './jvm-interceptor.js';
 import { cleanupStaleBrowserProfiles } from './browser-lifecycle.js';
 
 export class InterceptorManager {
-  constructor(ca) {
+  constructor(ca, options = {}) {
     this.interceptors = new Map();
     this.ca = ca;
     this.onStatusChange = null;
@@ -30,7 +30,9 @@ export class InterceptorManager {
     this._register(new BrowserInterceptor('brave', 'Brave', 'brave'));
     this._register(new FreshTerminalInterceptor());
     this._register(new ExistingTerminalInterceptor());
-    this._register(new SystemProxyInterceptor());
+    const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir });
+    systemProxy.recoverStaleSettings();
+    this._register(systemProxy);
     this._register(new DockerInterceptor());
     this._register(new ElectronInterceptor());
     this._register(new AndroidAdbInterceptor());
