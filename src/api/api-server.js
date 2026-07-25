@@ -876,7 +876,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         const result = await this.interceptors.activate(req.params.id, this.proxy.port, req.body);
         res.json(result);
       } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(err.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS' ? 409 : 500).json({ error: err.message });
       }
     });
 
@@ -885,7 +885,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         await this.interceptors.deactivate(req.params.id, req.body || {});
         res.json({ success: true });
       } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(err.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS' ? 409 : 500).json({ error: err.message });
       }
     });
 

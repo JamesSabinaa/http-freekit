@@ -11,6 +11,7 @@ import { cleanupStaleBrowserProfiles } from './browser-lifecycle.js';
 export class InterceptorManager {
   constructor(ca, options = {}) {
     this.interceptors = new Map();
+    this.operationsInProgress = new Map();
     this.ca = ca;
     this.onStatusChange = null;
 
@@ -73,16 +74,37 @@ export class InterceptorManager {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
 
-    const activable = await interceptor.isActivable();
-    if (!activable) throw new Error(`${interceptor.name} is not available on this system`);
+    return await this._runExclusive(id, interceptor, async () => {
+      const activable = await interceptor.isActivable();
+      if (!activable) throw new Error(`${interceptor.name} is not available on this system`);
 
-    return await interceptor.activate(proxyPort, options);
+      return await interceptor.activate(proxyPort, options);
+    });
   }
 
   async deactivate(id, options = {}) {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
-    await interceptor.deactivate(options);
+    return await this._runExclusive(id, interceptor, () => interceptor.deactivate(options));
+  }
+
+  async _runExclusive(id, interceptor, operation) {
+    this.operationsInProgress ||= new Map();
+    if (this.operationsInProgress.has(id)) {
+      const error = new Error(`${interceptor.name} already has an operation in progress`);
+      error.code = 'INTERCEPTOR_OPERATION_IN_PROGRESS';
+      throw error;
+    }
+
+    const pending = Promise.resolve().then(operation);
+    this.operationsInProgress.set(id, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.operationsInProgress.get(id) === pending) {
+        this.operationsInProgress.delete(id);
+      }
+    }
   }
 
   async focus(id) {
@@ -111,8 +133,9 @@ export class InterceptorManager {
   async deactivateAll() {
     for (const interceptor of this.interceptors.values()) {
       try {
+        await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});
         if (await interceptor.isActive()) {
-          await interceptor.deactivate();
+          await this.deactivate(interceptor.id);
         }
       } catch (err) {
         console.error(`[Interceptor] Error deactivating ${interceptor.name}:`, err.message);
