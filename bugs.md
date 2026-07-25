@@ -832,6 +832,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-053 — Medium — Browser focus is offered on Linux but cannot succeed
 
+- Status: **Fixed**.
 - Evidence: `src/ui/app.js:3622-3636` treats active isolated browsers as focusable on every platform; `src/interceptors/browser-interceptor.js:430-493` implements focus only for Windows/macOS and always throws on Linux.
 - Impact: clicking an active browser source on Linux consistently returns an error.
 - Reproduction: activate Chrome/Firefox on Linux and use the UI focus action.

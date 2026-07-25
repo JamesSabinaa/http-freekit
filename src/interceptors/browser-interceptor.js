@@ -35,6 +35,14 @@ export class BrowserInterceptor {
     return findBrowserPath(this.browserType);
   }
 
+  _platform() {
+    return process.platform;
+  }
+
+  canFocus() {
+    return this._platform() === 'win32' || this._platform() === 'darwin';
+  }
+
   _createManagedProfile() {
     return createManagedBrowserProfile(this.browserType);
   }
@@ -390,7 +398,7 @@ export class BrowserInterceptor {
   }
 
   _forceTerminateProcesses(processIds) {
-    if (process.platform === 'win32') {
+    if (this._platform() === 'win32') {
       for (const pid of processIds) {
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
         try {
@@ -505,7 +513,7 @@ exit 1
       return { success: true };
     }
 
-    if (process.platform === 'darwin') {
+    if (this._platform() === 'darwin') {
       const appNames = {
         chrome: 'Google Chrome',
         firefox: 'Firefox',
@@ -537,7 +545,8 @@ exit 1
       name: this.name,
       type: this.browserType,
       active: this.active,
-      pid: this.process?.pid || null
+      pid: this.process?.pid || null,
+      focusable: this.canFocus()
     };
   }
 }

@@ -3672,8 +3672,6 @@
 
     // Interceptors that have expandable config components
     const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb', 'jvm']);
-    const FOCUSABLE_INTERCEPTORS = new Set(['chrome', 'firefox', 'edge', 'brave']);
-
     function renderConnectedSources(interceptors = allInterceptors) {
       const active = interceptors.filter(i => i.active);
       const sourcesList = document.getElementById('connectedSourcesList');
@@ -3685,7 +3683,7 @@
       }
 
       sourcesList.innerHTML = active.map(i => {
-        const canFocus = FOCUSABLE_INTERCEPTORS.has(i.id);
+        const canFocus = i.focusable === true;
         return `<div class="connected-source-item${canFocus ? ' focusable' : ''}" ${canFocus ? `onclick="focusInterceptor('${i.id}')"` : ''}>
             ${INTERCEPTOR_ICONS[i.id] || ''}
             <span>${esc(i.name)}</span>
@@ -3813,7 +3811,7 @@
           card.setAttribute('role', 'button');
           if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
             card.onclick = () => handleExpandableCardClick(i.id, i.active);
-          } else if (i.active && FOCUSABLE_INTERCEPTORS.has(i.id)) {
+          } else if (i.active && i.focusable === true) {
             card.onclick = () => focusInterceptor(i.id, i.name);
           } else {
             card.onclick = () => toggleInterceptor(i.id, i.active);
