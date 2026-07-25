@@ -831,9 +831,47 @@ export class ProxyServer {
       }
     }
 
+    const captureProtocol = secureOrigin ? 'wss' : 'ws';
+    const captureUrl = targetUrl.href.replace(/^https?/, captureProtocol);
+    const requestRecord = {
+      id: requestId,
+      protocol: captureProtocol,
+      method: 'WS',
+      url: captureUrl,
+      host: targetUrl.hostname,
+      path: targetUrl.pathname + targetUrl.search,
+      requestHeaders: req.headers,
+      requestBody: '',
+      requestBodySize: 0,
+      timestamp: startTime,
+      source: this._detectSource(req.headers),
+      tls: context.tlsDetails || null,
+      remote: null
+    };
+    this._emitPendingRequest({ ...requestRecord });
+
+    let handshakeState = 'pending';
     const proxyReq = requestLib.request(options);
     this._configureUpstreamRequest(proxyReq);
     proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+      handshakeState = 'upgraded';
+      const remote = { address: proxySocket.remoteAddress, port: proxySocket.remotePort };
+
+      // Resolve the pending parent before parsing any buffered WebSocket frames.
+      // This guarantees that every frame references an existing, inspectable
+      // connection record even while the connection remains open.
+      this._emitRequestUpdate({
+        ...requestRecord,
+        requestBody: 'WebSocket: 0 sent, 0 received',
+        statusCode: proxyRes.statusCode,
+        statusMessage: proxyRes.statusMessage || 'Switching Protocols',
+        responseHeaders: proxyRes.headers,
+        responseBody: 'WebSocket connection open',
+        responseBodySize: 0,
+        duration: Date.now() - startTime,
+        remote
+      });
+
       // Send upgrade response back to client
       let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
       for (const [key, value] of Object.entries(proxyRes.headers)) {
@@ -882,26 +920,17 @@ export class ProxyServer {
         cleanedUp = true;
         stopRelays();
         const duration = Date.now() - startTime;
-        this._emitRequest({
-          id: requestId,
-          protocol: secureOrigin ? 'wss' : 'ws',
-          method: 'WS',
-          url: targetUrl.href.replace(/^https?/, secureOrigin ? 'wss' : 'ws'),
-          host: targetUrl.hostname,
-          path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: req.headers,
+        this._emitRequestUpdate({
+          ...requestRecord,
           requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
           requestBodySize: clientBytes,
           statusCode: proxyRes.statusCode,
-          statusMessage: 'WebSocket',
+          statusMessage: proxyRes.statusMessage || 'Switching Protocols',
           responseHeaders: proxyRes.headers,
           responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
           responseBodySize: serverBytes,
           duration,
-          timestamp: startTime,
-          source: this._detectSource(req.headers),
-          tls: context.tlsDetails || null,
-          remote: { address: proxySocket.remoteAddress, port: proxySocket.remotePort }
+          remote
         });
       };
 
@@ -912,11 +941,49 @@ export class ProxyServer {
       proxySocket.on('error', () => { socket.destroy(); cleanup(); });
       socket.on('end', () => proxySocket.end());
       socket.on('error', () => { proxySocket.destroy(); cleanup(); });
+      proxySocket.on('close', cleanup);
+      socket.on('close', cleanup);
     });
 
     // A server may reject an upgrade with a normal HTTP response (for example
     // 401 or 404). In that case Node emits `response`, not `upgrade`.
     proxyReq.on('response', (proxyRes) => {
+      handshakeState = 'response';
+      const responseBody = this._createBodyCollector();
+      let responseBodySize = 0;
+      let finalized = false;
+      const finalize = (err = null) => {
+        if (finalized) return;
+        finalized = true;
+        const body = this._concatBody(responseBody);
+        this._emitRequestUpdate({
+          ...requestRecord,
+          statusCode: proxyRes.statusCode,
+          statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
+          responseHeaders: proxyRes.headers,
+          responseBody: responseBody.exceeded
+            ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
+            : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+          responseBodySize,
+          duration: Date.now() - startTime,
+          remote: proxyRes.socket
+            ? { address: proxyRes.socket.remoteAddress, port: proxyRes.socket.remotePort }
+            : null,
+          ...(err ? {
+            error: err.message,
+            errorCode: this._getUpstreamErrorCode(err),
+            errorPhase: this._getUpstreamErrorPhase(err)
+          } : {})
+        });
+      };
+      proxyRes.on('data', chunk => {
+        responseBodySize += chunk.length;
+        this._appendBodyChunk(responseBody, chunk);
+      });
+      proxyRes.once('end', () => finalize());
+      proxyRes.once('aborted', () => finalize(new Error('Upstream WebSocket handshake response aborted')));
+      proxyRes.once('error', finalize);
+
       let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}\r\n`;
       for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
         responseStr += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
@@ -927,9 +994,22 @@ export class ProxyServer {
     });
 
     proxyReq.on('error', (err) => {
+      if (handshakeState !== 'pending') return;
+      handshakeState = 'error';
       console.error('[Proxy] WebSocket upstream error:', err.message);
-      socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-      socket.destroy();
+      this._emitRequestUpdate({
+        ...requestRecord,
+        statusCode: 502,
+        statusMessage: 'Bad Gateway',
+        responseHeaders: {},
+        responseBody: `Proxy Error: ${err.message}`,
+        responseBodySize: 0,
+        duration: Date.now() - startTime,
+        error: err.message,
+        errorCode: this._getUpstreamErrorCode(err),
+        errorPhase: this._getUpstreamErrorPhase(err)
+      });
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
     });
 
     proxyReq.end();

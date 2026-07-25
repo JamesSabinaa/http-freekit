@@ -609,7 +609,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-185 — Medium — WebSocket handshakes are hidden until a successful connection closes
 
-- Evidence: non-101 responses are reconstructed/piped and errors write 502 at `src/proxy/proxy-server.js:480-495` without emitting a parent exchange. During a successful connection, only frame events are emitted at `:417-452`; the parent `protocol: "ws"` request is emitted by cleanup only after end/error at `:455-485`.
+- Status: **Fixed**.
+- Resolution: Every supported WebSocket handshake now emits a pending parent before connecting upstream. Rejected responses and upstream failures complete that parent, successful upgrades update it to 101 before buffered frames are parsed, and connection close updates the same parent with final message and byte totals.
+
+- Evidence: `_handleHttpUpgrade()` uses pending and update traffic events throughout the handshake and connection lifecycle, while preserving the existing response and frame forwarding paths.
 - Impact: failed handshakes never appear, while long-lived successful connections show orphan frames whose parent ID cannot be inspected until the socket closes.
 - Reproduction: return 401 and observe no record; then keep a 101 connection open after one frame and observe only a `ws-frame` child.
 
