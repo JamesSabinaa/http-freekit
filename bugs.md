@@ -14,6 +14,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 2 | New bugs found; documented below | 0/2 |
 | 3 | 29 new bugs found; documented below | 0/2 |
 | 4 | 31 new bugs found; documented below | 0/2 |
+| 5 | 27 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -784,6 +785,42 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: after a crash and PID reuse, large abandoned profiles can survive every startup because an unrelated process is mistaken for their owner.
 - Reproduction: leave a managed profile marker containing an unrelated live PID and run startup cleanup; the directory is classified as active.
 
+### BUG-197 — Medium — Android remains active after interception disappears
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:26-27` checks only the in-memory activation map. Entries added at `:454-465` are never reconciled with connected devices, Android's global proxy, the VPN app, or reverse-tunnel state.
+- Impact: unplugging a device, stopping the VPN, or changing its proxy leaves FreeKit reporting it active; reconnecting the same serial can suppress activation even though no interception exists.
+- Reproduction: activate a device, unplug it or reset `settings global http_proxy`, then refresh interceptor status.
+
+### BUG-198 — Medium — Existing Windows proxy bypasses remain active
+
+- Evidence: `src/interceptors/system-proxy-interceptor.js:21-43` reads only `ProxyEnable` and `ProxyServer`; activation at `:72-80` changes only those values and never snapshots or clears `ProxyOverride`.
+- Impact: every host in the user's existing bypass list continues connecting directly while the UI promises all machine HTTP traffic is intercepted.
+- Reproduction: set `ProxyOverride` to `example.com`, activate System Proxy, and request that host from a WinINet client.
+
+### BUG-199 — Medium — Windows Fresh Terminal can open an unproxied tab
+
+- Evidence: `src/interceptors/terminal-interceptors.js:44-56,64,69-77` supplies transient proxy variables to `wt.exe` but invokes only `new-tab`, without `--inheritEnvironment` or an explicit shell command.
+- Impact: Windows Terminal can create the shell from a freshly loaded environment, dropping FreeKit's proxy/CA variables while activation reports success and skips later fallbacks.
+- Reproduction: use an existing Windows Terminal window, activate Fresh Terminal, and inspect `HTTP_PROXY` in the new tab.
+
+### BUG-200 — Medium — Concurrent interceptor-card responses restore the wrong card
+
+- Evidence: `src/ui/app.js:3853-3892` uses one shared `expandedInterceptorMetadata` and `expandedInterceptorId`; every asynchronous response overwrites both without verifying that its card is still the latest selection, and earlier requests are not aborted.
+- Impact: a slow earlier activation/metadata response can replace the user's newer expanded card and contents.
+- Reproduction: delay Android's response, click Android and then JVM; when Android finishes, it switches the UI back.
+
+### BUG-201 — Low/Medium — macOS browser Focus can raise the wrong profile
+
+- Evidence: `src/interceptors/browser-interceptor.js:479-490` only runs `tell application "<browser>" to activate`; it does not identify the managed profile directory, process, or window. Windows uses profile-specific selection at `:435-476`.
+- Impact: when normal and isolated windows coexist, Focus can raise the unproxied normal profile instead of FreeKit's browser.
+- Reproduction: run normal and isolated Chrome windows on macOS and invoke Focus with the normal window foremost inside Chrome.
+
+### BUG-202 — Low/Medium — Terminal setup commands do not escape certificate paths
+
+- Evidence: `src/interceptors/terminal-interceptors.js:84,179-181` interpolates the path directly into AppleScript, Bash, PowerShell, and CMD commands; CMD is unquoted and the others do not escape their shell's interpolation characters. UI fallback commands repeat this at `src/ui/app.js:3936-3938`.
+- Impact: valid data paths containing `&`, `$`, backticks, or apostrophes create truncated or invalid commands, leaving HTTPS trust unconfigured.
+- Reproduction: use an APPDATA path under `C:\Temp\A&B`, choose CMD in Existing Terminal, and paste the generated command.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1049,6 +1086,36 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: Send collapsible headers use `role="button"` with click handlers but no `tabindex` or keyboard handler at `src/ui/index.html:246,259,292`; Traffic sortable column headers likewise expose only `onclick` at `:73-77`.
 - Impact: keyboard-only users cannot focus, expand/collapse, or sort these controls despite their advertised semantic roles.
 - Reproduction: Tab through Send and Traffic and try Enter/Space on the relevant headers.
+
+### BUG-192 — Medium — Header filtering crashes on multi-valued headers
+
+- Evidence: `matchesFilter()` calls `.toLowerCase()` directly on header values at `src/ui/app.js:383-387`, although fields such as `set-cookie` can be arrays. It also chooses a same-named request header before the response header.
+- Impact: a valid multi-cookie response can make `header:` filtering throw, and a request header can mask a matching response value.
+- Reproduction: capture multiple Set-Cookie values and filter with `header:set-cookie=value`.
+
+### BUG-193 — Low/Medium — Completing a pending request removes its pin
+
+- Evidence: pin state is renderer-only at `src/ui/app.js:802-809`, but `request-update` replaces the complete object with server data at `:178-188` rather than preserving that local property.
+- Impact: pinning a slow exchange before its response arrives provides no protection once completion replaces it.
+- Reproduction: pin a pending exchange and let its response complete.
+
+### BUG-194 — Low/Medium — Plain search omits headers and bodies despite its all-fields contract
+
+- Evidence: README promises all-field search at `README.md:180`, while `src/ui/app.js:391-399` searches only URL, method, host, status, path, and source unless a scoped filter is used.
+- Impact: a unique token present only in a header or body is invisible to ordinary search.
+- Reproduction: capture a token only in a response body; plain search misses it while `body:<token>` finds it.
+
+### BUG-195 — Low — Traffic eviction leaves orphaned selected details
+
+- Evidence: `addRequest()` evicts the oldest of 10,000 rows with unconditional `requests.shift()` at `src/ui/app.js:260-273`, without clearing `selectedRequestId` or closing the detail panel.
+- Impact: the evicted row disappears while stale details remain selected and later actions cannot resolve it in the request array.
+- Reproduction: select the oldest record at capacity and capture one more exchange.
+
+### BUG-196 — Low/Medium — UI tabs overwrite unrelated display settings
+
+- Evidence: each settings toggle submits both locally cached values at `src/ui/app.js:7419-7442`; the server persists both supplied fields at `src/api/api-server.js:647-656`.
+- Impact: changing one setting in a stale tab reverts a different setting that another tab changed later.
+- Reproduction: change Filter Safe Fonts in tab A, then change Hide Tunnel Requests in stale tab B.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
