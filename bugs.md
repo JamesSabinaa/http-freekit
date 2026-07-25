@@ -42,6 +42,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 30 | 2 new bugs found; documented below | 0/2 |
 | 31 | 2 new bugs found; documented below | 0/2 |
 | 32 | 1 new bug found; documented below | 0/2 |
+| 33 | 1 new bug found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -63,11 +64,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-003 — High — `--mcp-stdio` writes non-protocol logs to stdout
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: The direct Node stdio mode redirects application logs before startup. The packaged Electron bridge emits a bare CRLF on stdout before any JSON-RPC response; the SDK attempts to parse the empty line and rejects the transport.
 
 - Evidence: `src/index.js:25-136` prints the banner plus CA, proxy, and API startup logs before `console.log` is redirected to stderr at `:138`.
 - Impact: stdio MCP clients receive plain text before JSON-RPC framing and can reject the server as an invalid MCP process.
-- Reproduction: run `node src/index.js --mcp-stdio` and inspect stdout; the banner precedes MCP messages.
+- Reproduction: launch the generated bridge through Electron and inspect raw stdout before sending JSON-RPC; it begins with bytes `0d0a`, which the SDK reports as `Unexpected end of JSON input`. The direct Node `--mcp-stdio` path remains clean.
 
 ### BUG-005 — Medium — Minimally malformed imports poison HAR and MCP consumers
 
@@ -531,6 +533,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `writeMcpRuntimeDescriptor()` writes directly to the final path with a truncating `writeFileSync()` at `src/mcp/launch-config.js:34-36`, so a concurrently launched bridge can read empty or partial JSON. `removeMcpRuntimeDescriptor()` separately reads, checks the instance ID, and unlinks at `:40-44`, leaving a time-of-check/time-of-use window in which an older instance can delete a newer instance's replacement descriptor.
 - Impact: a concurrent Claude launch can fail transiently while FreeKit is publishing the credential-bearing descriptor, and a restart or multi-instance cleanup race can remove the live instance's descriptor so all future bridge launches fail.
 - Reproduction: pause publication after truncating the final file and call `readRuntimeDescriptor()` to receive `Unexpected end of JSON input`; separately pause old-instance cleanup after its ownership read, replace the descriptor with a new instance's record, then resume cleanup and observe the new record deleted.
+
+### BUG-375 — Medium — Electron-hosted MCP bridge remains alive after transport closure
+
+- Evidence: `electron/bootstrap.cjs` starts the bridge but never terminates Electron after a missing descriptor, a bridge failure, or normal transport cleanup. `startStdioBridge()` closes its SSE and stdio transports when `remote.onclose` fires, but that cannot stop Electron's application event loop.
+- Impact: after FreeKit shuts down, restarts, or loses the MCP transport, Claude's child remains alive but permanently disconnected and may prevent the client from spawning a replacement. Invalid invocations without a descriptor likewise hang instead of exiting with their recorded failure status.
+- Reproduction: launch the bridge through Electron, establish an authenticated SSE session, then stop the MCP server. One second after the remote-close handler runs, the transports are closed but the Electron child still has no exit code and must be killed explicitly. Launching the flag without a descriptor similarly remains alive after setting `process.exitCode = 1`.
 
 ### BUG-177 — Medium — Rule IDs are mutable, non-unique, and ambiguous with indexes
 
@@ -2011,11 +2019,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-173 — Medium — Displayed Claude Desktop configuration cannot launch a packaged server
 
-- Status: **Fixed**.
-- Resolution: Packaged configurations invoke the stable installed application with a dedicated MCP bridge flag and the persistent runtime-descriptor path. The application bootstrap resolves the unpacked bridge from its current mount on every launch, so AppImage remounts cannot stale the copied configuration; Electron supplies the Node runtime and the descriptor supplies the active server endpoint and authentication without exposing its token.
+- Status: **Partially fixed**.
+- Resolution: Packaged configurations now invoke the stable installed application with a dedicated MCP bridge flag, and the bootstrap resolves the unpacked bridge from each current AppImage mount. In an actual Windows Electron runtime, the bridge establishes its authenticated SSE session but does not consume and relay piped JSON-RPC input; the Node-based integration test does not exercise that runtime.
 - Evidence: Settings generates `command: "node"` with relative `args: ["src/index.js", "--mcp-stdio"]` at `src/ui/app.js:8124-8133`. Claude resolves the path from its own working directory, and an installed desktop build cannot assume a system Node executable.
 - Impact: copying the application-provided MCP configuration yields module-not-found or node-not-found instead of a connection.
-- Reproduction: copy the generated configuration from a running AppImage, exit it, restart the AppImage so it receives a different `/tmp/.mount_*` directory, and let Claude launch the saved bridge-script argument; that old mounted path no longer exists.
+- Reproduction: launch the generated configuration with the Electron executable, wait for its authenticated SSE session, then write a valid initialize request to stdin. The write succeeds, but no JSON-RPC response is returned; the equivalent test launched with `process.execPath` returns one.
 
 ### BUG-174 — Medium — Ctrl+Delete clears traffic while editing text
 
