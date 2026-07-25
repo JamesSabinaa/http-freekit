@@ -28,6 +28,7 @@ export function trafficToHar(requests, options = {}) {
         const resContentType = req.responseHeaders?.['content-type'] || '';
         const requestBody = toHarBody(req.requestBody);
         const responseBody = toHarBody(req.responseBody);
+        const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
 
         return {
           startedDateTime: new Date(req.timestamp).toISOString(),
@@ -35,7 +36,7 @@ export function trafficToHar(requests, options = {}) {
           request: {
             method: req.method || 'GET',
             url: req.url || '',
-            httpVersion: 'HTTP/1.1',
+            httpVersion,
             cookies: [],
             headers: reqHeaders,
             queryString: parseQueryString(req.url),
@@ -50,7 +51,7 @@ export function trafficToHar(requests, options = {}) {
           response: {
             status: req.statusCode || 0,
             statusText: req.statusMessage || '',
-            httpVersion: 'HTTP/1.1',
+            httpVersion,
             cookies: [],
             headers: resHeaders,
             content: {
