@@ -873,7 +873,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/interceptors/:id/deactivate', async (req, res) => {
       try {
-        await this.interceptors.deactivate(req.params.id);
+        await this.interceptors.deactivate(req.params.id, req.body || {});
         res.json({ success: true });
       } catch (err) {
         res.status(500).json({ error: err.message });

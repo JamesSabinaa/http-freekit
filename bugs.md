@@ -861,6 +861,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-089 — Medium — Per-device/per-process deactivation options are dropped
 
+- Status: **Fixed**.
 - Evidence: `src/api/api-server.js:747-750` ignores the request body, and `src/interceptors/interceptor-manager.js:80-84` calls `deactivate()` with no options. This makes the targeted Android (`android-adb-interceptor.js:497-525`) and JVM (`jvm-interceptor.js:296-307`) branches unreachable through the API.
 - Impact: with multiple devices/JVMs active, asking to stop one silently stops all tracked targets.
 - Reproduction: activate A and B, POST deactivation with `{deviceId: "A"}` or `{pid: "A"}`, and inspect both states.

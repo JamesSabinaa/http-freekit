@@ -79,10 +79,10 @@ export class InterceptorManager {
     return await interceptor.activate(proxyPort, options);
   }
 
-  async deactivate(id) {
+  async deactivate(id, options = {}) {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
-    await interceptor.deactivate();
+    await interceptor.deactivate(options);
   }
 
   async focus(id) {
