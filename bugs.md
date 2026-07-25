@@ -1,0 +1,993 @@
+# Bug audit
+
+This file records reproducible defects found during a repository-wide audit. Findings are grouped by subsystem, not by discovery order. Line numbers refer to the audited `main` revision. All findings were still open at the time of the audit.
+
+## Audit completion gate
+
+The requested stopping rule is two consecutive complete repository-wide audit loops with no new findings. A complete loop covers application startup/settings, API/MCP, proxy protocols and mocking, interceptors, Electron/packaging, UI state/rendering, dependencies, and tests.
+
+During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresponding resolved entries (BUG-004, BUG-008, BUG-032, BUG-033, BUG-034, BUG-055, BUG-068, BUG-077, BUG-086, and BUG-103) were removed, and Loop 4 restarted against the rebased result at `6ecbfec` rather than treating stale findings as open.
+
+| Loop | Result | Clean-loop streak |
+| --- | --- | --- |
+| 1 | New bugs found; documented below | 0/2 |
+| 2 | New bugs found; documented below | 0/2 |
+| 3 | 29 new bugs found; documented below | 0/2 |
+| 4 | 31 new bugs found; documented below | 0/2 |
+
+## API, MCP, and persistence
+
+### BUG-001 — Critical — Management API and WebSocket ignore the Electron session token
+
+- Evidence: `src/api/api-server.js:482-490` allows every cross-origin caller with `Access-Control-Allow-Origin: *`. The token is checked only by the browser-open route at `:768-770`; traffic, settings, rules, Send, shutdown, WebSocket upgrade, and WebSocket messages have no equivalent check (`:558-577`, `:784-914`, `:1119-1128`, `:1261-1315`).
+- Impact: a web page can read captured credentials and bodies, alter proxy behavior, issue requests, clear data, or stop the server. WebSockets are independently exposed because their upgrade path validates neither token nor `Origin`.
+- Reproduction: start an `ApiServer` with `authToken: "secret"`, seed a traffic record, and request `/api/traffic` with a foreign `Origin` and no authorization. It returns `200`, `Access-Control-Allow-Origin: *`, and the full record. The current auth test covers only `/api/interceptors/:id/open`.
+
+### BUG-002 — High — MCP SSE exposes captured traffic without authentication
+
+- Evidence: `src/mcp/mcp-server.js:436-470` registers the SSE and message routes without token, `Origin`, or host validation. `get_request_detail` returns full headers and bodies at `:197-216`; the global wildcard CORS middleware applies.
+- Impact: an untrusted local or browser client can create an MCP session and read cookies, authorization headers, request bodies, and response bodies.
+- Reproduction: connect to `/mcp/sse`, post an MCP `get_request_detail` call to its session, and observe the complete seeded traffic record without credentials.
+
+### BUG-003 — High — `--mcp-stdio` writes non-protocol logs to stdout
+
+- Evidence: `src/index.js:25-136` prints the banner plus CA, proxy, and API startup logs before `console.log` is redirected to stderr at `:138`.
+- Impact: stdio MCP clients receive plain text before JSON-RPC framing and can reject the server as an invalid MCP process.
+- Reproduction: run `node src/index.js --mcp-stdio` and inspect stdout; the banner precedes MCP messages.
+
+### BUG-005 — Medium — Minimally malformed imports poison HAR and MCP consumers
+
+- Evidence: `/api/traffic/import` accepts arbitrary array elements at `src/api/api-server.js:651-660`. `src/api/har-converter.js:33` and MCP detail/search at `src/mcp/mcp-server.js:157,214` unconditionally format timestamps; MCP search also calls `.toLowerCase()` on imported body fields at `:156-157` without type validation.
+- Impact: data the API accepts can make HAR export or MCP tools throw `RangeError`/`TypeError` until the traffic log is cleared.
+- Reproduction: import `{"requests":[{"id":"x"}]}`, then export HAR or search traffic through MCP.
+
+### BUG-006 — Medium — HAR round trips lose binary encodings and duplicate headers
+
+- Evidence: `src/api/api-server.js:671-714` copies HAR body text without honoring `encoding: "base64"` and converts header arrays with `Object.fromEntries`, which overwrites duplicate names. `src/api/har-converter.js:7-12` joins array headers into one comma-separated value, and `:86-95` recognizes base64 only through a custom data-URI form.
+- Impact: binary payloads become literal base64 text and headers such as multiple `Set-Cookie` fields are reduced to one value, so import/export is not faithful.
+- Reproduction: import a HAR entry with base64 content and two same-name headers, then inspect or re-export it.
+
+### BUG-007 — Medium — `/api/shutdown` bypasses graceful cleanup
+
+- Evidence: `src/api/api-server.js:1119-1123` calls `process.exit(0)` directly. The actual shutdown path at `src/index.js:164-172` first stops MCP, deactivates interceptors, and closes both servers.
+- Impact: the desktop shutdown request can leave interceptor processes, system/device proxy configuration, and temporary profiles behind.
+- Reproduction: activate an interceptor and call `/api/shutdown`; the centralized cleanup handler is never invoked.
+
+### BUG-057 — Medium — Settings write failures are reported as successful saves
+
+- Evidence: `src/settings.js:25-31` catches write errors, logs them, and returns no failure. `set()`/`setAll()` at `:39-47` therefore complete normally, and API setting routes return success regardless of whether disk persistence worked.
+- Impact: on a read-only/full filesystem the UI says settings were saved, the in-memory value works temporarily, and every change disappears on restart.
+- Reproduction: make `settings.json` unwritable, change a setting through the API, observe a success response, then restart and observe the old value.
+
+### BUG-058 — Medium — Settings persistence is non-atomic and can destroy all configuration
+
+- Evidence: `src/settings.js:27` writes JSON directly to the sole `settings.json` path with `writeFileSync`, which truncates the existing file before the replacement is complete. `_load()` resets all settings to `{}` after any parse/read failure at `:12-21`.
+- Impact: a crash, disk-full condition, or interrupted write can leave a partial file; the next start silently discards every saved proxy, TLS, rule, and UI setting.
+- Reproduction: interrupt/truncate `settings.json` during a save and restart; loading logs a parse error and initializes empty settings.
+
+### BUG-009 — Medium — Port-range settings are neither persisted nor used
+
+- Evidence: the UI promises first-free-port selection in `src/ui/index.html:400`; `src/api/api-server.js:1095-1110` only assigns range fields to the current proxy object. Startup always selects `PROXY_PORT` or 8081 at `src/index.js:22,69`.
+- Impact: saving 9000-9010 and restarting still binds the proxy to 8081.
+- Reproduction: save a non-default range, restart, and inspect `/api/config`.
+
+### BUG-064 — Medium — Send requests can hang forever
+
+- Evidence: `src/api/api-server.js:1174-1208` creates the outbound request without a connection, idle, or total timeout. The middleware's `req.setTimeout()` at `:495-499` applies to the inbound management request, not this outbound socket.
+- Impact: an origin that accepts a connection but never responds leaves the API handler and socket pending indefinitely; repeated requests accumulate resources.
+- Reproduction: Send a request to a test server that accepts the request and never sends response headers.
+
+## Proxy, TLS, protocols, and mock rules
+
+### BUG-010 — High — Upstream HTTPS certificates are never verified
+
+- Evidence: `_getUpstreamTlsOptions()` forces `rejectUnauthorized: false` at `src/proxy/proxy-server.js:3036-3040`; H2, mock forwarding, webhooks, and Send repeat it at `:1160-1166`, `:2258-2264`, `:2561-2564`, `:3436-3442`, `:3564-3570`, and `src/api/api-server.js:1180-1187`. `httpsWhitelist` is only stored/reported at `proxy-server.js:257-259,4219-4221`.
+- Impact: invalid, expired, wrong-host, and self-signed upstream certificates are accepted for every host even when the whitelist is empty, allowing silent upstream interception.
+- Reproduction: proxy an HTTPS origin using an untrusted certificate without adding its host to the whitelist; the request succeeds.
+
+### BUG-011 — High — Client certificates and additional trusted CAs are no-ops
+
+- Evidence: `src/proxy/proxy-server.js:247-255` assigns `clientCertificates` and `trustedCAs`, but no outbound connection path reads either collection; they appear again only in status output at `:4219-4221`.
+- Impact: configured mTLS credentials are never sent and private-CA endpoints do not gain trust.
+- Reproduction: configure a client certificate for an mTLS origin or a CA for a private-PKI origin and connect; behavior is unchanged.
+
+### BUG-012 — High — Filtered proxy credentials and spoofing headers are reintroduced
+
+- Evidence: `_rawHeadersToObject()` removes `proxy-authorization`, `proxy-connection`, `x-forwarded-for`, and related fields at `src/proxy/proxy-server.js:270-309`, but forwarding then merges the unfiltered `clientReq.headers` over that result at `:638-640`, with the same pattern in HTTPS H1 paths around `:1455` and `:2058`.
+- Impact: proxy-only credentials can be disclosed to origins and client-supplied forwarding headers can bypass the intended normalization.
+- Reproduction: send `Proxy-Authorization` and `X-Forwarded-For` through the proxy to a recording HTTP origin; both arrive unchanged.
+
+### BUG-013 — High — TLS passthrough and plain WebSockets bypass the upstream proxy
+
+- Evidence: passthrough CONNECT uses direct `net.connect()` at `src/proxy/proxy-server.js:855-890`; `ws://` upgrade uses direct `http.request()` at `:382-390`. Neither path checks `this.upstreamProxy`.
+- Impact: traffic leaks the user's direct network identity or fails when the destination is reachable only through the configured upstream proxy.
+- Reproduction: configure a counting upstream proxy, then open a passthrough TLS or plain WebSocket target; the target is hit and the upstream receives nothing.
+
+### BUG-014 — High — Breakpoint mock actions never perform the real upstream exchange
+
+- Evidence: in plain HTTP, `breakpoint-request` resumes into the default synthetic response and `breakpoint-response` pauses before any upstream request at `src/proxy/proxy-server.js:3596-3770`. Equivalent branches exist for HTTPS at `:1282-1397` and H2 at `:2374-2475`.
+- Impact: “resume without changes” can return an empty or `Breakpoint released` synthetic 200, while response breakpoints cannot inspect the actual response.
+- Reproduction: attach request/response breakpoint rules in front of a counting origin, resume unchanged, and observe a 200 synthetic body with zero origin hits.
+
+### BUG-015 — High — HTTP/1.1 clients in H2 `all` mode lose almost every mock action
+
+- Evidence: `_serveMockResponseH1OnH2()` at `src/proxy/proxy-server.js:2492-2531` reduces every action to status, headers, and body. It omits close/reset, forward, serve-file, delay/pre-steps, webhook, and breakpoint behavior.
+- Impact: identical rules behave differently solely because the client negotiated HTTP/1.1 rather than H2.
+- Reproduction: in `http2Enabled: "all"`, apply a `close` rule to an HTTP/1.1 request; it receives an ordinary empty 200 instead of a closed connection.
+
+### BUG-016 — Medium/High — HTTP trailers are never forwarded in either direction
+
+- Evidence: H1 response forwarding reads trailers at `src/proxy/proxy-server.js:719,1533` but never calls `addTrailers`; H2 response forwarding around `:2675-2695` has no trailer listener or `sendTrailers` path. H1 request handlers at `:580-583,1035-1038,1930-1933` and H2 at `:1684-1688` consume only body data/end, never `req.trailers`, a trailer event, or `addTrailers`.
+- Impact: gRPC `grpc-status`/`grpc-message`, request digests, and integrity trailers disappear, making exchanges incomplete or invalid.
+- Reproduction: proxy a chunked request containing `Trailer: Digest` and a response containing trailers; inspect both sides after forwarding.
+
+### BUG-017 — Medium — HTTP/2 forwarding corrupts multiple `Set-Cookie` fields
+
+- Evidence: `src/proxy/proxy-server.js:1801-1805,1843-1847` joins every array-valued response header with `", "`, including `Set-Cookie`, whose values cannot be safely comma-combined.
+- Impact: clients can fail to store one or both cookies, especially when an `Expires` attribute itself contains a comma.
+- Reproduction: return two `Set-Cookie` headers over the H2 forwarding path and inspect the forwarded field.
+
+### BUG-018 — Medium — Captured bodies and decompression are unbounded
+
+- Evidence: request and response chunks are accumulated without a cap in multiple H1/H2 paths (`src/proxy/proxy-server.js:580-583`, `:702-705`, `:1035-1038`, `:1522-1525`, `:1684-1688`, `:1830-1833`, `:1930-1933`, `:2067-2070`, `:2673-2691`) and by Send at `src/api/api-server.js:1189-1192`. `_decompressBody()` synchronously expands compressed data at `proxy-server.js:3943-3961` before any display truncation.
+- Impact: large transfers or highly expanding compressed bodies can exhaust memory and block the event loop.
+- Reproduction: proxy a large/chunked upload or a small, high-ratio compressed response while monitoring process memory and responsiveness.
+
+### BUG-019 — Medium — H2 breakpoint URL and method edits are ignored
+
+- Evidence: `src/proxy/proxy-server.js:1742-1749` explicitly does nothing for method changes and never processes URL changes; forwarding later uses the original method, hostname, and path at `:1794-1825`.
+- Impact: the UI reports an edited resumed request while the original request is sent.
+- Reproduction: pause an H2 request, change method and URL, resume, and inspect the origin request.
+
+### BUG-020 — Medium — H1 forward actions ignore header pre-steps
+
+- Evidence: plain-HTTP pre-steps mutate `clientReq.headers` at `src/proxy/proxy-server.js:3351-3359`, but `forward` reconstructs headers only from unchanged `clientReq.rawHeaders` at `:3427`. The HTTPS mock-forward path repeats the mismatch at `:1074-1082,1150`; H2 uses the mutated header object.
+- Impact: add/remove-header transformations appear in logged data but never reach the forwarded origin.
+- Reproduction: create an add-header pre-step plus a forward action and inspect headers at the destination.
+
+### BUG-021 — Medium — WebSocket frame parsing has unbounded quadratic buffering
+
+- Evidence: `src/proxy/ws-frame-parser.js:43` concatenates the complete retained buffer for every incoming chunk; `:75-99` accepts arbitrary 64-bit advertised lengths with no cap. Peer-controlled bytes enter this parser from `src/proxy/proxy-server.js:423-444`.
+- Impact: a huge declared frame delivered slowly causes repeated copies of all retained bytes, consuming increasing memory and CPU.
+- Reproduction: advertise a very large frame length and trickle payload chunks through a proxied WebSocket.
+
+### BUG-063 — Medium — Corrupt or mismatched CA files are never recovered
+
+- Evidence: `src/proxy/certificate-authority.js:20-38` assumes that any existing `ca.pem` and `ca.key` parse and belong together. Parse failures are not caught, and no public/private key match is verified before the pair is used to sign host certificates.
+- Impact: a partial/corrupt file prevents startup entirely; a valid but mismatched key lets startup succeed but produces host certificates clients cannot validate against the advertised CA.
+- Reproduction: replace `ca.key` with invalid text to get a fatal startup error, or with a different valid RSA key and verify a generated leaf against `ca.pem`.
+
+### BUG-100 — High — H2 failure fallback replays non-idempotent requests
+
+- Evidence: all upstream-H2 paths catch any `_makeH2Request()` error and fall through to a second H1 request without `_canSafelyReplayRequest()` checks at `src/proxy/proxy-server.js:1496-1519`, `:1791-1822`, and `:2031-2055`.
+- Impact: payments, mutations, and uploads can execute twice if the H2 origin processes a POST and resets before responding.
+- Reproduction: have an H2 origin count/process a POST then reset its stream; FreeKit sends the same POST again over H1.
+
+### BUG-101 — High — Malformed mock rules are accepted and later crash evaluation
+
+- Evidence: `src/api/api-server.js:789-804` accepts any truthy `matchers`; `_findMockRule()` assumes an array and calls `.every()` at `src/proxy/proxy-server.js:3174-3177`, while individual matchers assume fields such as `value` exist. Evaluation runs in async request handlers without a containing validation boundary.
+- Impact: one invalid persisted rule can throw on every matching request and may terminate the Node process through an unhandled rejection.
+- Reproduction: create a rule with `matchers` as an object; creation returns 200 and the next request throws `rule.matchers.every is not a function`.
+
+### BUG-102 — High/Medium — Transform and timeout actions silently become fixed 200s
+
+- Evidence: plain action dispatch implements selected types at `src/proxy/proxy-server.js:3384-3755` then treats every unknown type as a fixed response at `:3757-3794`; no path implements `transform-request`, `transform-response`, or `timeout`. HTTPS/H2 dispatch at `:1107-1397,2223-2488` omits the same actions and additionally lacks some webhook/combined-breakpoint variants.
+- Impact: valid rules displayed as transforming or timing out instead synthesize an empty successful response.
+- Reproduction: save each advertised action type and request a matching URL; each returns an empty 200.
+
+### BUG-104 — Medium — Send/mock-forward hang when a response aborts mid-body
+
+- Evidence: Send listens only for response `data`/`end` at `src/api/api-server.js:1190-1203`; request `error` does not receive response-stream aborts. Mock-forward repeats this at `src/proxy/proxy-server.js:1167-1195`, `:2265-2300`, and `:3443-3472`, with no response abort/error forwarding or timeout.
+- Impact: a common upstream partial-response disconnect leaves clients, API handlers, and sockets unsettled indefinitely.
+- Reproduction: send headers and a partial body from an origin, destroy its socket, and observe neither rejection nor a 502.
+
+### BUG-105 — Medium — Breakpoint header editing cannot delete headers
+
+- Evidence: resume paths merge edited headers with `Object.assign()` instead of replacing the original set (`src/proxy/proxy-server.js:628-630`, `:1320`, `:1441-1443`, `:1744`, `:1989`, `:2410`, `:3628`, `:3712`).
+- Impact: removing Authorization or another problematic header in the editor has no effect at the origin.
+- Reproduction: delete a header from the resume JSON and inspect the forwarded request.
+
+### BUG-106 — Medium — H1 breakpoint URL rewrites retain Host and the old transport
+
+- Evidence: plain H1 changes `targetUrl` at `src/proxy/proxy-server.js:622-624,3624-3626` but builds headers from the old Host at `:638-680`. Request-library selection around `:696` and HTTPS paths at `:1554-1563,2097-2107` does not follow an HTTP↔HTTPS rewrite.
+- Impact: rewritten requests reach the wrong virtual host or use TLS/plaintext against the wrong scheme.
+- Reproduction: rewrite a request to a second local origin and inspect the Host header; then try a cross-scheme rewrite.
+
+### BUG-107 — Medium — Editing a chunked breakpoint body sends illegal framing
+
+- Evidence: `_setContentLength()` at `src/proxy/proxy-server.js:210-215` removes only old Content-Length and leaves Transfer-Encoding. Body-edit paths then add Content-Length at `:631-634`, `:1321-1324`, `:1444-1447`, `:1745-1748`, `:1990-1993`, `:2411-2414`, `:3629-3632`, and `:3713-3715`.
+- Impact: the origin receives both `Content-Length` and `Transfer-Encoding`, commonly rejects the request, and may trigger request-smuggling defenses.
+- Reproduction: edit a chunked POST body at a breakpoint; Node origin parsing fails before its handler.
+
+### BUG-108 — Medium — H2 upstreams ignore the selected TLS fingerprint
+
+- Evidence: H1 upstreams spread `_getUpstreamTlsOptions()` at `src/proxy/proxy-server.js:1459,1825,2062`; `_getH2Session()` uses only verification/ALPN options at `:2556-2564` and never applies the selected fingerprint/ClientHello behavior.
+- Impact: Chrome/Safari/Firefox/passthrough fingerprint settings silently do nothing for H2-capable origins.
+- Reproduction: select different fingerprint presets, connect to an H2 fingerprint recorder, and compare ClientHello data.
+
+### BUG-109 — Medium — One transient H2 failure blacklists an origin until restart
+
+- Evidence: `_getH2Session()` immediately rejects blacklisted origins at `src/proxy/proxy-server.js:2541`; any initial error or five-second timeout adds the origin at `:2575-2581,2596-2605`. The set clears only during full shutdown at `:2635-2644`.
+- Impact: after a temporary outage, an H2-only origin stays unreachable for the rest of the process because every request tries H1.
+- Reproduction: fail the first H2 connection, restore the origin, and retry without restarting FreeKit.
+
+### BUG-110 — Medium — H1 forwarding leaks hop-by-hop headers across connections
+
+- Evidence: `_shouldStripUpstreamHeader()` at `src/proxy/proxy-server.js:289-309` does not remove standard hop-by-hop fields or names nominated by `Connection`; H1 forwarding passes them at `:638-680`, `:1451-1460`, and `:2054-2063`.
+- Impact: connection-specific metadata crosses hops and can break pooling/framing or trigger proxy inconsistencies.
+- Reproduction: send `Connection: X-Remove` plus `X-Remove: value`; both reach the origin.
+
+### BUG-111 — Medium — Send irreversibly decodes binary responses as UTF-8
+
+- Evidence: `src/api/api-server.js:1194-1200` always calls `responseBody.toString("utf8")` and returns no response encoding metadata.
+- Impact: images, archives, protobuf, and arbitrary binary responses gain replacement characters and cannot be inspected/replayed faithfully.
+- Reproduction: return bytes `00 ff 80 01`; re-encoding the Send body yields different bytes.
+
+### BUG-112 — Medium — Compressed WebSocket messages are displayed as corrupt text
+
+- Evidence: `src/proxy/ws-frame-parser.js:65-68` discards RSV bits and exposes no compression state. `src/proxy/proxy-server.js:507-526` directly UTF-8 decodes text frames even though the forwarded upgrade can negotiate `permessage-deflate`.
+- Impact: common compressed text messages appear as gibberish/replacement characters.
+- Reproduction: negotiate per-message deflate and send a compressed text frame through the proxy.
+
+### BUG-113 — Medium — BottingTools hard-codes a non-portable Python command
+
+- Evidence: `src/api/api-server.js:48-50` always executes `python3`, while the same file handles Windows candidates (`py -3`, `python`, `python3`) for generator integration at `:290-306`.
+- Impact: provider listing/rotation fails with `ENOENT` on normal Windows Python installs that expose only `py.exe` or `python.exe`.
+- Reproduction: use the integration on Windows with only the standard Python launcher installed.
+
+### BUG-114 — Low/Medium — SOCKS passwords containing colons are truncated
+
+- Evidence: `_connectViaSocks()` uses `proxy.auth.split(":")` at `src/proxy/proxy-server.js:3136-3139`, so only the segment before the second colon becomes the password.
+- Impact: valid SOCKS credentials such as `user:pa:ss` fail on the plain-HTTP SOCKS path.
+- Reproduction: configure that credential and inspect authentication delivered to a test SOCKS server.
+
+### BUG-115 — Low/Medium — Valid multipart, cookie, and JSON matchers fail
+
+- Evidence: multipart parsing retains quotes around `boundary="abc"` at `src/proxy/proxy-server.js:3293-3309`; cookie parsing splits on every `=` at `:3277-3283`; JSON exact matching compares property-order-sensitive `JSON.stringify()` output at `:3256-3261`.
+- Impact: standard quoted boundaries, base64/padded cookie values, and semantically equal JSON objects with different key order do not match their rules.
+- Reproduction: test a quoted multipart boundary, `Cookie: token=abc=def`, and `{ "a":1,"b":2 }` against reversed-order expected JSON.
+
+### BUG-127 — Medium — Nested mock groups make their rules unmanageable
+
+- Evidence: `/api/mock-rules/move-to-group` accepts a group as `ruleId` and permits one-level group nesting at `src/api/api-server.js:865-878`. Matching recurses through arbitrary depth at `src/proxy/proxy-server.js:3145-3153`, but lookup, update, toggle, delete, and ungroup search only one group level at `src/api/api-server.js:1157-1170` and `src/proxy/proxy-server.js:4099-4127`.
+- Impact: rules inside a nested group still affect traffic but return not found from management operations, leaving persisted behavior that the UI/API cannot edit, disable, ungroup, or delete individually.
+- Reproduction: create groups A and B, move a rule into A, then move A into B and try to toggle or delete the rule by ID.
+
+### BUG-116 — High — Ordinary proxy traffic is buffered until the whole message ends
+
+- Evidence: normal H1/H2 request and response paths accumulate all chunks and only create/write the upstream or client response after `end` (representative paths: `src/proxy/proxy-server.js:580-705`, `:1522-1539`, `:1684-1839`, `:1930-2076`, `:2673-2695`). No tee/streaming path forwards chunks while retaining a bounded capture.
+- Impact: SSE, streaming downloads, long-lived H2/gRPC streams, and streaming uploads do not work: the other side sees no headers/data until the stream finishes, and infinite streams appear hung forever.
+- Reproduction: proxy an SSE endpoint that writes headers and one event but remains open; the client receives neither before the origin closes.
+
+### BUG-128 — High — Secure WebSockets cannot traverse TLS interception
+
+- Evidence: only the outer plain proxy registers an upgrade listener at `src/proxy/proxy-server.js:321-333`, and `_handleHttpUpgrade()` at `:371-390` always creates a plain HTTP origin request. The HTTPS MITM virtual server at `:1025-1027,1584-1585` and the H2/allowHTTP1 server at `:1654-1672,1918-1924` register no upgrade handler.
+- Impact: ordinary `wss://` clients fail unless the hostname is placed in raw TLS passthrough, which also disables WebSocket inspection.
+- Reproduction: connect a WebSocket client to a working secure origin through FreeKit with default TLS interception; the handshake closes before the origin receives a connection.
+
+### BUG-129 — Medium — New HTTPS hosts freeze the process during RSA key generation
+
+- Evidence: every uncached CONNECT calls `generateCertForHost()` at `src/proxy/proxy-server.js:894-895`; `src/proxy/certificate-authority.js:88-95` synchronously runs `pki.rsa.generateKeyPair(2048)` on the main event loop and caches only afterward at `:150-155`.
+- Impact: each new hostname blocks proxy traffic, the management API, MCP, and UI updates for the full key-generation time; high host churn repeatedly stalls the application.
+- Reproduction: request an uncached HTTPS hostname while timing a parallel `/api/version` request; the management request cannot complete until certificate generation returns.
+
+### BUG-130 — Low/Medium — Captured HTTPS records contain pre-handshake TLS metadata
+
+- Evidence: `_handleConnect()` constructs a `TLSSocket` at `src/proxy/proxy-server.js:969-973` and immediately calls `_handleTlsConnection()` at `:985`. That method synchronously reads `getCipher()` and `getProtocol()` at `:991-997`; the later secure listener at `:975-982` never refreshes the stored `tlsDetails`.
+- Impact: intercepted H1 records report a null cipher and can claim the fallback TLS 1.2 even when the completed connection negotiated TLS 1.3.
+- Reproduction: force a TLS-1.3 request with H2 disabled and inspect the captured `tls` object.
+
+### BUG-131 — Medium — A fragmented ClientHello disables passthrough fingerprinting
+
+- Evidence: `_parseClientHello()` returns null until an entire TLS record is available at `src/proxy/proxy-server.js:2717-2724`, but `_createCapturingSocket()` at `:2892-2917` marks capture complete after the first socket chunk without appending data or retrying. `_getUpstreamTlsOptions()` at `:3042-3052` mirrors the client only when the first parse succeeded.
+- Impact: clients whose ClientHello spans TCP reads silently use Node's default upstream TLS fingerprint despite selecting passthrough mode.
+- Reproduction: send a valid ClientHello in two writes through CONNECT with `tlsFingerprint=passthrough` and compare the upstream fingerprint.
+
+### BUG-132 — Low — REST traffic pagination accepts negative values and cannot request zero
+
+- Evidence: `src/api/api-server.js:558-576` parses `limit` and `offset` with `parseInt(...) || default` and passes them directly to `Array.slice()` without bounds validation.
+- Impact: `limit=-1` excludes the final record, `offset=-1` returns the final record, and `limit=0` unexpectedly returns 100 records, violating the endpoint's pagination contract.
+- Reproduction: seed three records and request `/api/traffic?offset=-1`, `?limit=-1`, and `?limit=0`.
+
+### BUG-145 — High — Generated X.509 serial numbers are randomly negative
+
+- Evidence: CA and leaf creation assign `_randomSerial()` at `src/proxy/certificate-authority.js:47-54,88-99`; that helper at `:160-162` returns 16 unconstrained random bytes as hex. node-forge encodes the hex directly as an ASN.1 INTEGER, so values whose first nibble is 8-f have the sign bit set, with no leading zero or masking.
+- Impact: roughly half of generated CA and leaf certificates violate the X.509 positive-serial requirement and can be rejected by strict clients, making installs and host interception fail randomly.
+- Reproduction: generate certificates until `parseInt(cert.serialNumber[0], 16) >= 8`, then parse or verify one with a strict X.509 implementation.
+
+### BUG-146 — High — The proxy is an unauthenticated open relay on the LAN
+
+- Evidence: `ProxyServer.start()` binds `0.0.0.0` at `src/proxy/proxy-server.js:321-350`; its request, CONNECT, and upgrade handlers at `:323-333` perform no source-address restriction or proxy authentication.
+- Impact: any reachable LAN or container peer can relay traffic through the user's IP, reach private HTTP services visible to the host, and consume proxy resources.
+- Reproduction: from another machine, configure `http://<freekit-host>:8081` as the proxy and fetch an arbitrary external or private-network URL.
+
+### BUG-147 — High — Malformed breakpoint state can crash the proxy process
+
+- Evidence: breakpoint create/update accepts raw JSON at `src/api/api-server.js:921-929`; `_checkBreakpoint()` calls `.every()` on `matchers` at `src/proxy/proxy-server.js:4071-4075` without validating it is an array. Resume at `api-server.js:937-939` likewise accepts arbitrary method/headers that are merged at `proxy-server.js:625-629` and passed to Node request construction, where invalid tokens throw in an async EventEmitter handler without a rejection boundary.
+- Impact: one malformed persisted breakpoint can crash processing on every request, and one invalid resume payload can terminate the Node server.
+- Reproduction: POST a breakpoint with `matchers: {}` and proxy a request, or resume with a method containing CRLF.
+
+### BUG-148 — Medium/High — Absolute-form forwarding trusts a conflicting Host header
+
+- Evidence: the HTTP destination is parsed from the absolute request target at `src/proxy/proxy-server.js:566-568`, but outbound headers preserve the original Host at `:638-640` while the TCP destination comes from `targetUrl.hostname` and port at `:642-680`.
+- Impact: connection routing and virtual-host routing disagree, enabling misrouting and Host-header/cache confusion at the selected origin.
+- Reproduction: send `GET http://127.0.0.1:<port>/ HTTP/1.1` with `Host: other.example`; the local origin receives the conflicting host.
+
+### BUG-149 — Medium — Large valid traffic imports fail or block during trimming
+
+- Evidence: JSON and HAR import spread all entries into the array and repeatedly call `shift()` down to the limit at `src/api/api-server.js:650-659,670-719`.
+- Impact: sufficiently large arrays exceed the JavaScript call-argument limit and return 400, while smaller large arrays perform tens of thousands of O(n) shifts synchronously and freeze the API/proxy event loop.
+- Reproduction: import about 125,000 empty records to trigger `RangeError`, or 100,000 records and time the synchronous trim.
+
+### BUG-150 — Medium — Completing a pending request undoes Clear Traffic
+
+- Evidence: Clear replaces the log with an empty array at `src/api/api-server.js:581-584`; a later `_update` whose original ID is now absent is pushed back into the log at `:1216-1227`.
+- Impact: exchanges started before Clear unexpectedly reappear in backend search and exports after their origins respond, while renderer state can diverge.
+- Reproduction: start a slow request, clear after its pending event, let it finish, then GET `/api/traffic`.
+
+### BUG-151 — Medium — A delayed proxy rotation overwrites newer manual configuration
+
+- Evidence: `_rotateBottingToolsProxy()` awaits external Python and then unconditionally sets and persists its result at `src/api/api-server.js:127-137`; background callers are at `:157,208`. Manual set/delete at `:952-962` neither cancels nor generation-guards that in-flight operation.
+- Impact: a user can disable or replace a failing proxy, only for an older rotation to complete later and silently re-enable or replace it.
+- Reproduction: delay `_getBottingToolsProxy()`, start rotation, manually delete or set another upstream, then resolve the old lookup.
+
+### BUG-152 — Medium — TLS-passthrough hostname matching is case-sensitive
+
+- Evidence: passthrough settings are stored verbatim at `src/proxy/proxy-server.js:237-239`, while CONNECT parses a normalized lowercase URL hostname and compares it with case-sensitive `includes()`/`endsWith()` at `:840-857`.
+- Impact: uppercase DNS names and wildcards silently fail to bypass MITM, breaking pinned-certificate applications.
+- Reproduction: configure `EXAMPLE.COM` or `*.EXAMPLE.COM`, connect to `example.com`, and observe a generated MITM certificate.
+
+### BUG-153 — Medium — Disconnected breakpoint clients leave ghost pending state
+
+- Evidence: each pause inserts a retained resolver into `pendingBreakpoints` (representative path `src/proxy/proxy-server.js:613-620`); entries are removed only by resume or the fixed five-minute timer at `:4045-4068`. No client request/socket/stream close handler resolves and deletes the entry.
+- Impact: aborted clients leave ghost controls, captured bodies, closures, and timers; repeated breakpoint-hit-and-disconnect traffic accumulates memory for five minutes.
+- Reproduction: trigger a breakpoint, disconnect before resume, and query `/api/breakpoints/pending`.
+
+### BUG-154 — Medium — Serve-file rules synchronously read whole files on the event loop
+
+- Evidence: HTTP, HTTPS, and H2 serve-file paths use `fs.readFileSync()` at `src/proxy/proxy-server.js:1249,2344,3516`, retain the complete Buffer, and copy/inspect it for capture.
+- Impact: large files freeze all proxy/API/MCP work and can exhaust memory instead of streaming with backpressure.
+- Reproduction: point a serve-file rule at a multi-gigabyte or sparse file and time an unrelated API request while it matches.
+
+### BUG-155 — Medium — Plain-HTTP webhook actions report success when delivery fails
+
+- Evidence: invalid URL/setup and request errors are only logged at `src/proxy/proxy-server.js:3551-3578`; the handler then unconditionally returns 200 and records `Webhook sent` at `:3579-3591` without awaiting delivery.
+- Impact: clients and traffic history claim success even though the webhook was never accepted or sent.
+- Reproduction: configure an invalid URL or refused localhost port and trigger the rule.
+
+### BUG-156 — Medium — IPv6 literal upstream proxies produce invalid URLs
+
+- Evidence: upstream hosts are stored raw at `src/proxy/proxy-server.js:218-234`; `_getUpstreamProxyUrl()` interpolates `${p.host}:${p.port}` without IPv6 brackets at `:3070-3082`, and HTTPS/SOCKS agent creation consumes it at `:3086-3112`.
+- Impact: an otherwise valid upstream at `::1` or another IPv6 address fails HTTPS/SOCKS forwarding with Invalid URL.
+- Reproduction: configure upstream host `::1`; the generated URL is `http://::1:8080` rather than `http://[::1]:8080`.
+
+### BUG-157 — Low/Medium — HAR metadata lookup treats header names as case-sensitive
+
+- Evidence: `src/api/har-converter.js:27-28,63` reads only lowercase `content-type` and `location`, although captured and mock header objects can preserve arbitrary case; fixed-response defaults use `Content-Type` at `src/proxy/proxy-server.js:3330-3333`.
+- Impact: valid responses export with blank `content.mimeType` and `redirectURL` despite containing those headers.
+- Reproduction: mock `Content-Type: application/json` and `Location: /next`, export HAR, and inspect both metadata fields.
+
+### BUG-158 — Medium — Capture truncation silently corrupts HAR body exports
+
+- Evidence: `_safeBodyString()` truncates text at 512 KiB and replaces binary bodies of at least 2 MiB with a textual placeholder at `src/proxy/proxy-server.js:3988-4010`; only the transformed field is stored. HAR conversion writes it as response content while reporting the original size at `src/api/har-converter.js:29-30,57-65`.
+- Impact: exported HARs cannot replay or inspect full large responses and are internally inconsistent, with no truncation flag.
+- Reproduction: proxy a 1 MiB text or larger-than-2 MiB binary response and compare HAR `content.text` with `content.size`.
+
+### BUG-159 — Low/Medium — MCP HAR export includes non-HTTP pseudo-events
+
+- Evidence: REST filters WebSocket frames and optional CONNECT tunnels through `_getHarExportTraffic()` at `src/api/api-server.js:257-265,613-617`; MCP filters the raw `trafficLog` only by user criteria and passes everything else to `trafficToHar()` at `src/mcp/mcp-server.js:358-373`.
+- Impact: MCP exports contain empty-URL WebSocket-frame or tunnel entries and disagree with UI export settings.
+- Reproduction: capture a WebSocket frame, invoke MCP `export_traffic`, and inspect the pseudo-entry in the HAR.
+
+### BUG-160 — Low — HAR import misclassifies uppercase HTTPS schemes
+
+- Evidence: URL parsing succeeds at `src/api/api-server.js:678-688`, but protocol is derived separately with case-sensitive `entry.request.url?.startsWith("https")` at `:691-695`.
+- Impact: a valid `HTTPS://` record is labeled insecure HTTP, affecting display, security scans, and later exports.
+- Reproduction: import a minimal HAR containing `HTTPS://example.com/` and inspect the resulting protocol.
+
+## Interceptors and cleanup
+
+### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
+
+- Evidence: `src/api/api-server.js:738-745` passes the request body as interceptor activation options; `src/interceptors/interceptor-manager.js:62-70` forwards it unchanged. `src/interceptors/electron-interceptor.js:23-24,49-54` treats `appPath` as an executable and calls `spawn()` without an allowlist or user confirmation. BUG-001 makes the route cross-origin accessible.
+- Impact: a browser page can request that an executable already present on the machine be launched with the user's privileges.
+- Reproduction: POST an Electron interceptor activation containing the path to a harmless test executable and observe the new process without any desktop confirmation.
+
+### BUG-039 — High — Electron interception never passes Chromium proxy switches
+
+- Evidence: `src/interceptors/electron-interceptor.js:37-46` places Chromium switches in a nonstandard `ELECTRON_EXTRA_LAUNCH_ARGS` environment variable, then spawns the application with an empty argument array at `:50`. The displayed manual instructions at `:27-31` use the same ineffective variable.
+- Impact: Chromium renderer traffic in a normal packaged Electron application continues using its existing network configuration even though activation reports success.
+- Reproduction: activate a basic Electron application that makes a renderer request; the request does not arrive at FreeKit.
+
+### BUG-040 — High — JVM HTTPS interception does not trust the FreeKit CA
+
+- Evidence: the comment at `src/interceptors/jvm-interceptor.js:98-101` claims CA trust, but the generated agent at `:112-133` only calls `System.setProperty` for proxy properties; it never updates a trust store or SSL context.
+- Impact: attached JVM applications commonly fail intercepted HTTPS with a PKIX/certificate-path error.
+- Reproduction: attach to a JVM using the default `HttpsURLConnection` trust manager and request an HTTPS URL.
+
+### BUG-041 — High — JVM deactivation changes only FreeKit's bookkeeping
+
+- Evidence: activation changes global properties inside the target through `System.setProperty` at `src/interceptors/jvm-interceptor.js:123-130`. Deactivation at `:296-310` only deletes local map entries and never clears the target properties.
+- Impact: the target JVM continues sending traffic to a stopped proxy for the rest of its lifetime.
+- Reproduction: activate a JVM, deactivate FreeKit, and make another request from the JVM.
+
+### BUG-042 — High — Android fallback destroys the device's previous global proxy
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:308-319` overwrites `global http_proxy` without reading its prior value; cleanup at `:325-335` always writes `:0`.
+- Impact: a corporate, VPN, or other debugging proxy configured before FreeKit is permanently disabled on Stop.
+- Reproduction: configure a different Android global proxy, activate the FreeKit fallback, deactivate it, and read `global http_proxy`.
+
+### BUG-043 — High — Failed Android cleanup is forgotten and cannot be retried
+
+- Evidence: proxy clearing, app deactivation, tunnel removal, and certificate removal catch/log their own failures, but `src/interceptors/android-adb-interceptor.js:497-525` unconditionally deletes the device record or clears the whole map and reports inactive.
+- Impact: if a device disconnects during Stop, it can reconnect still pointing at FreeKit while the application has discarded the state required to retry cleanup.
+- Reproduction: activate the global fallback, disconnect the device, deactivate, reconnect it, and inspect its proxy setting.
+
+### BUG-044 — High — System-proxy restore failures are reported as success
+
+- Evidence: `src/interceptors/system-proxy-interceptor.js:90-100` catches registry restoration failures and returns normally; the API interprets that fulfilled call as a successful deactivation.
+- Impact: Windows can remain routed through FreeKit while the UI says the interceptor stopped.
+- Reproduction: force the registry restore command to fail, deactivate, and inspect the API response and registry values.
+
+### BUG-045 — High — Abnormal exit leaves Windows using a dead system proxy
+
+- Evidence: original values are held only in the in-memory `previousSettings` field and captured at `src/interceptors/system-proxy-interceptor.js:72-78`; restoration occurs only through a normal `deactivate()` call.
+- Impact: a crash, force-quit, or power loss can persist `127.0.0.1:<old-port>` as the enabled Windows proxy across application restarts.
+- Reproduction: activate the system interceptor, terminate the process without its shutdown handler, and read the Internet Settings registry key.
+
+### BUG-046 — High — Browser activation failures leak managed profiles
+
+- Evidence: `src/interceptors/browser-interceptor.js:53-62` creates and stores a managed profile before later argument/CA operations, without failure cleanup. `src/interceptors/interceptor-manager.js:109-117` deactivates only interceptors whose `isActive()` returns true.
+- Impact: a launch-time exception leaves the profile directory behind for the remainder of the run.
+- Reproduction: make `ca.getSpkiFingerprint()` throw; activation rejects with `active=false`, and `deactivateAll()` leaves the created profile in place.
+
+### BUG-047 — High — Repeated Electron activation loses earlier child processes
+
+- Evidence: `src/interceptors/electron-interceptor.js:23-67` has no already-active guard and overwrites `this.process`; `deactivate()` at `:70-75` kills only the newest handle. Exit/error listeners from every child unconditionally change the shared active flag.
+- Impact: activating app A then app B leaves A running after Stop, and either child exiting can make status incorrect for the other.
+- Reproduction: activate two long-running test programs sequentially and deactivate the interceptor.
+
+### BUG-048 — Medium — Electron activation reports success before spawn is confirmed
+
+- Evidence: `src/interceptors/electron-interceptor.js:50-67` installs an asynchronous error listener but immediately sets active and returns success, without awaiting the `spawn` event.
+- Impact: missing, invalid, or non-executable paths briefly produce a successful API/UI result before later flipping inactive.
+- Reproduction: activate a nonexistent executable; the call returns success before the `ENOENT` event.
+
+### BUG-049 — High — Fresh-terminal lifecycle tracks launcher helpers, not shells
+
+- Evidence: macOS tracks `osascript` at `src/interceptors/terminal-interceptors.js:83-86`; Linux often tracks the short-lived `gnome-terminal` client at `:88-99`. Their exit handlers mark the interceptor inactive at `:113-122`, and Stop can kill only stored handles at `:128-133`.
+- Impact: FreeKit reports inactive while the terminal session remains open and cannot close or otherwise clean up that session during Stop/shutdown.
+- Reproduction: activate on macOS; `osascript` exits after opening Terminal.app while the shell remains running.
+
+### BUG-050 — High — Docker Desktop instructions use an unreachable bridge address
+
+- Evidence: `src/interceptors/docker-interceptor.js:25-32` derives the Linux bridge gateway (default `172.17.0.1`) on every platform. On Docker Desktop for Windows/macOS this gateway is inside its VM, not the host; the supported host name is normally `host.docker.internal`.
+- Impact: containers started from the generated command cannot connect to the proxy on Windows/macOS.
+- Reproduction: use the displayed command on Docker Desktop and attempt an HTTP request from the container.
+
+### BUG-051 — Medium — Docker HTTPS setup supports only Node with validation disabled
+
+- Evidence: `src/interceptors/docker-interceptor.js:46-54` does not mount or install the FreeKit CA and only adds `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+- Impact: curl, Python, Java, Go, and other validating clients reject intercepted HTTPS even when proxy routing works.
+- Reproduction: run the generated command with curl or Python and request an HTTPS URL.
+
+### BUG-052 — Medium — Firefox CA fallback is ineffective on macOS/Linux
+
+- Evidence: `src/interceptors/browser-interceptor.js:204-225` ignores `certutil` failures and claims `security.enterprise_roots.enabled` is sufficient. `src/index.js:43-57` installs the CA into the OS store only on Windows, leaving no enterprise root for Firefox to import on macOS/Linux.
+- Impact: Firefox interception works for HTTP but HTTPS is untrusted when NSS `certutil` is unavailable.
+- Reproduction: launch isolated Firefox on macOS/Linux without `certutil` and browse to an HTTPS site.
+
+### BUG-053 — Medium — Browser focus is offered on Linux but cannot succeed
+
+- Evidence: `src/ui/app.js:3622-3636` treats active isolated browsers as focusable on every platform; `src/interceptors/browser-interceptor.js:430-493` implements focus only for Windows/macOS and always throws on Linux.
+- Impact: clicking an active browser source on Linux consistently returns an error.
+- Reproduction: activate Chrome/Firefox on Linux and use the UI focus action.
+
+### BUG-054 — Medium — Synchronous interceptor discovery can stall all proxy traffic
+
+- Evidence: browser monitoring invokes synchronous process snapshots with five-second timeouts (`src/interceptors/browser-lifecycle.js:92-131`) from a recurring monitor. Docker, JVM, and ADB discovery/activation also use multi-second `execSync`/`execFileSync` calls on the proxy's single Node event loop.
+- Impact: slow WMI, `ps`, Docker, ADB, or JDK commands freeze proxy forwarding and the management UI until completion/timeout.
+- Reproduction: delay one of the external discovery commands while proxying traffic and observe the event-loop pause.
+
+### BUG-061 — High — “Global Chrome” does not intercept an already-running Chrome
+
+- Evidence: `src/interceptors/existing-browser-interceptor.js:27-45` launches Chrome with proxy flags but no separate profile. Chromium forwards such a launch to the existing single-instance process, which retains the flags it started with; the source comment at `:47` acknowledges it works only when Chrome is fully closed. The short-lived launcher exiting then marks the interceptor inactive at `:56-59`.
+- Impact: the normal “existing browser” scenario reports activation briefly but the user's running Chrome continues direct, un-intercepted traffic.
+- Reproduction: leave Chrome running, activate Global Chrome, and request a page in either the old or newly opened window; no request reaches FreeKit and the interceptor soon becomes inactive.
+
+### BUG-088 — High — Failed isolated-browser shutdown is forgotten and cannot be retried
+
+- Evidence: `src/interceptors/browser-interceptor.js:237-260` preserves the profile when inspection fails or processes survive termination, but then always calls `_resetLifecycleState()`, which discards the process, profile, port, and PID state at `:406-414`.
+- Impact: a surviving proxied browser remains running while the UI reports inactive; subsequent Stop/shutdown calls have no handle or profile with which to retry cleanup.
+- Reproduction: make process inspection fail or termination leave a PID alive, deactivate, and call deactivate again.
+
+### BUG-089 — Medium — Per-device/per-process deactivation options are dropped
+
+- Evidence: `src/api/api-server.js:747-750` ignores the request body, and `src/interceptors/interceptor-manager.js:80-84` calls `deactivate()` with no options. This makes the targeted Android (`android-adb-interceptor.js:497-525`) and JVM (`jvm-interceptor.js:296-307`) branches unreachable through the API.
+- Impact: with multiple devices/JVMs active, asking to stop one silently stops all tracked targets.
+- Reproduction: activate A and B, POST deactivation with `{deviceId: "A"}` or `{pid: "A"}`, and inspect both states.
+
+### BUG-090 — High — Failed Windows proxy reads are saved as real disabled settings
+
+- Evidence: both registry reads suppress every error and return defaults at `src/interceptors/system-proxy-interceptor.js:21-43`; activation stores that result at `:75`, and Stop later deletes `ProxyServer`/disables the proxy at `:56-69`.
+- Impact: a transient query timeout or parse failure followed by successful writes permanently destroys the user's prior proxy configuration.
+- Reproduction: force `reg query` to fail while `reg add/delete` succeed, activate, then Stop.
+
+### BUG-091 — Medium — System-proxy Stop overwrites newer external settings
+
+- Evidence: activation snapshots settings once at `src/interceptors/system-proxy-interceptor.js:75`; deactivation at `:90-99` blindly restores that snapshot without checking whether current values still belong to FreeKit.
+- Impact: a VPN/corporate proxy change made while FreeKit is active is replaced with stale pre-activation values.
+- Reproduction: activate, change the Windows proxy externally, then Stop FreeKit.
+
+### BUG-092 — High — JVM helper artifacts are written inside packaged app resources
+
+- Evidence: `src/interceptors/jvm-interceptor.js:103-109,175` builds under `process.cwd()`. Electron starts the child with cwd set to the unpacked `src` resources at `electron/main.cjs:92-106`; packaged application/AppImage resources are commonly not writable.
+- Impact: Java/JDK discovery succeeds, but every attach fails when it tries to create `.http-freekit-jvm-agent` under `/Applications`, `/opt`, or a read-only AppImage mount.
+- Reproduction: run a packaged install from a non-writable application directory and attempt JVM attach.
+
+### BUG-093 — Medium — Failed JVM helper compilation poisons all retries
+
+- Evidence: `src/interceptors/jvm-interceptor.js:198-208` writes `AttachProxy.java` but recompiles only if the source does not exist; `:106` similarly trusts any existing `proxy-agent.jar`. A timeout/failure after creation leaves partial/stale artifacts that every later call reuses.
+- Impact: one transient compiler/disk failure makes JVM attach permanently fail until the hidden directory is manually deleted.
+- Reproduction: fail `javac` after the source write, restore it, and retry without deleting the artifact directory.
+
+### BUG-094 — Medium — Exited JVMs remain marked active forever
+
+- Evidence: `src/interceptors/jvm-interceptor.js:25-27` checks only the in-memory map; PIDs inserted at `:272-276` are never pruned by process/metadata refresh.
+- Impact: a closed JVM leaves the interceptor active indefinitely, and PID reuse can label a different, unproxied JVM as already activated.
+- Reproduction: attach successfully, exit the target JVM, and refresh interceptor metadata.
+
+### BUG-095 — Medium — Android fallback selects an arbitrary host adapter
+
+- Evidence: `_getHostIps()` includes every non-loopback IPv4 in OS enumeration order at `src/interceptors/android-adb-interceptor.js:368-380`; `_getHostIp()` chooses only the first or device-local `127.0.0.1` at `:359-366` and installs it at `:422,447`.
+- Impact: VPN/Hyper-V/Docker addresses can be chosen instead of Wi-Fi/Ethernet; a physical device then cannot reach the reported proxy although activation succeeds.
+- Reproduction: make a non-device-reachable virtual adapter enumerate first and activate the global fallback.
+
+### BUG-096 — Medium — Electron/terminal exits are not broadcast to the UI
+
+- Evidence: status reaches clients only through interceptor `onStatusChange` callbacks (`src/interceptors/interceptor-manager.js:47-52`, `src/api/api-server.js:38-41`). Electron changes only local state at `electron-interceptor.js:58-65`, and Fresh Terminal does the same at `terminal-interceptors.js:113-122`.
+- Impact: cards/sources remain shown as Activated after the child/launcher exits until an unrelated full refresh.
+- Reproduction: activate either interceptor, close its tracked process, and watch the connected UI.
+
+### BUG-097 — Medium — macOS Fresh Terminal omits most promised environment
+
+- Evidence: the full environment at `src/interceptors/terminal-interceptors.js:44-56` is passed only to short-lived `osascript`. The actual Terminal command at `:82-86` exports only uppercase HTTP/HTTPS proxy, `NODE_EXTRA_CA_CERTS`, and Node TLS disable, omitting lowercase proxy variables and the curl/Python CA variables.
+- Impact: tools such as curl can bypass the HTTP proxy or reject HTTPS even though the terminal is labeled intercepted.
+- Reproduction: open Fresh Terminal on macOS and inspect relevant variables/use curl.
+
+### BUG-098 — Medium — Selecting a running Docker container is a no-op
+
+- Evidence: `src/interceptors/docker-interceptor.js:33-40` merely adds `containerId` to a Set; it executes no Docker command and changes no container state. `isActive()` and activation then report success at `:21-23,46-56`.
+- Impact: a user selecting a running container sees Active while that container's network environment is unchanged.
+- Reproduction: activate with a running container ID and inspect its environment/traffic.
+
+### BUG-099 — Medium — Android CA file is leaked when fallback proxy setup fails
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:442-451` pushes the CA before setting the proxy, but the `_setProxy()` failure return does not call `_removeCaCert()` or store the device for later cleanup.
+- Impact: a disconnect/failure between the two ADB operations leaves an untracked certificate file in `/data/local/tmp`.
+- Reproduction: allow the push to succeed, fail the settings command, and inspect the device file afterward.
+
+### BUG-117 — High — The Electron interceptor cannot be configured from the desktop UI
+
+- Evidence: `src/interceptors/electron-interceptor.js:23-32` returns manual instructions when `appPath` is absent, but Electron is not one of the expandable interceptors at `src/ui/app.js:3621`. Its card therefore posts an empty options object at `:3758-3766,4297-4301`, discards the response metadata, and unconditionally shows a Launched toast at `:4302-4308`.
+- Impact: clicking Electron App launches nothing and offers no application picker or instructions; only a direct API caller can supply the required path.
+- Reproduction: click Electron App in the desktop UI, then refresh interceptor status and observe that it is still inactive.
+
+### BUG-118 — High — Windows proxy changes are not published to running WinINet clients
+
+- Evidence: `src/interceptors/system-proxy-interceptor.js:46-53,72-80,90-99` changes registry values only and never sends the WinINet settings-changed and refresh notifications required after a global configuration change ([Microsoft option flags](https://learn.microsoft.com/en-us/windows/win32/wininet/option-flags)).
+- Impact: already-running WinINet clients can continue using cached direct/proxy settings after both Start and Stop even though FreeKit reports success.
+- Reproduction: keep a WinINet client open, activate System Proxy, and make another request without restarting the client.
+
+### BUG-119 — High — Windows per-machine proxy policy makes System Proxy a silent no-op
+
+- Evidence: the registry key is hard-coded to HKCU at `src/interceptors/system-proxy-interceptor.js:3,46-53,72-80,90-99`; the interceptor neither checks `ProxySettingsPerUser` nor changes the machine-wide configuration ([Microsoft per-machine proxy documentation](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-ie-clientnetworkprotocolimplementation-hklmproxyenable)).
+- Impact: on managed systems configured for per-machine proxy settings, FreeKit returns success while changing an ineffective user key.
+- Reproduction: enable the per-machine proxy policy, activate FreeKit, and compare the effective proxy with the modified HKCU values.
+
+### BUG-120 — High — Repeated Global Chrome activation loses the real browser handle
+
+- Evidence: `src/interceptors/existing-browser-interceptor.js:23-70` has no active guard, replaces `this.process` on every activation, and lets each child's exit listener mutate shared state. `deactivate()` at `:73-78` can kill only the newest handle.
+- Impact: a second short-lived Chromium launcher can replace the original proxied-browser handle, mark the interceptor inactive on exit, and leave the real browser running after Stop.
+- Reproduction: activate Global Chrome while Chrome is closed, activate it again, then Stop; the original proxied browser remains.
+
+### BUG-121 — Medium — Existing Terminal reports a lifecycle it cannot observe or stop
+
+- Evidence: merely expanding the card calls activation (`src/ui/app.js:3828-3841`), which immediately records an active terminal at `src/interceptors/terminal-interceptors.js:164-184` before the user pastes anything. Deactivation at `:187-190` only clears local fields and cannot unset variables in that shell.
+- Impact: closing the instructions can report a nonexistent connection, while pressing Stop after following them leaves later shell commands routed through FreeKit.
+- Reproduction: expand Existing Terminal without copying commands and inspect status; then follow the commands, Stop, and inspect the shell environment again.
+
+### BUG-122 — High — Switching Android activation modes strands the old mode
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:383-465` never cleans an existing `activatedDevices` entry before replacing it. Stop at `:497-525` consults only the last stored mode.
+- Impact: switching between global-proxy and companion-app modes can leave the prior global proxy/CA or VPN app/reverse tunnel active, while Stop cleans only the newer half.
+- Reproduction: activate a device in global mode, make the companion app available, activate the same serial again, then Stop and inspect the global proxy.
+
+### BUG-123 — Medium — Android Stop leaves the user-installed CA trusted
+
+- Evidence: fallback activation instructs the user to install `/data/local/tmp/http-freekit-ca.pem` into Android's credential store at `src/interceptors/android-adb-interceptor.js:483-487`. `_removeCaCert()` at `:342-351` deletes only the staging file, and Stop supplies no credential-removal step.
+- Impact: a user who follows the setup instructions retains the FreeKit root CA after the interceptor is reported stopped.
+- Reproduction: install the fallback CA as instructed, Stop the interceptor, and inspect Android's user credentials.
+
+### BUG-124 — Medium — The JVM API rejects numeric process IDs
+
+- Evidence: `_getRunningProcesses()` stores PIDs as strings at `src/interceptors/jvm-interceptor.js:46-60`; activation compares the caller's value with strict equality at `:223-249` without normalization.
+- Impact: the natural JSON body `{ "pid": 1234 }` returns process not found even though `{ "pid": "1234" }` selects the same running JVM.
+- Reproduction: submit both forms for an existing JVM and compare the results.
+
+### BUG-125 — Medium — The UI permits duplicate concurrent interceptor activations
+
+- Evidence: `interceptorsInProgress` adds only a visual overlay at `src/ui/app.js:3779-3786,4294-4311`; neither activation click handler exits when the ID is already present. The overlay accepts pointer events at `src/ui/styles.css:1692-1704`, allowing another click to reach the card.
+- Impact: rapid clicks start concurrent activation work, spawning duplicate terminals or triggering lost-handle and inconsistent-state defects in process-based interceptors.
+- Reproduction: rapidly double-click Fresh Terminal and observe two detached spawn attempts.
+
+### BUG-126 — Low/Medium — Browser discovery ignores PATH and user-local installations
+
+- Evidence: `src/interceptors/browser-paths.js:5-46` tests only a small fixed list of absolute paths and never searches PATH or macOS `~/Applications`.
+- Impact: valid installations such as Linux `chromium`/`chromium-browser`, PATH-managed browsers, and user-local macOS application bundles are shown as unavailable.
+- Reproduction: install Chromium only on PATH at a location outside the hard-coded list and refresh interceptor metadata.
+
+### BUG-161 — High — Android companion setup destroys an existing ADB reverse mapping
+
+- Evidence: `src/interceptors/android-adb-interceptor.js:124-136` creates `adb reverse tcp:<proxyPort> tcp:<proxyPort>` without checking `adb reverse --list` or using `--no-rebind`; Stop at `:139-153` removes the port instead of restoring a prior destination.
+- Impact: FreeKit can overwrite and then delete another Android development workflow's reverse tunnel.
+- Reproduction: create `adb reverse tcp:8080 tcp:9000`, activate companion interception on FreeKit port 8080, then Stop; the original mapping is gone.
+
+### BUG-162 — Medium — Browser interceptors report success before spawn is confirmed
+
+- Evidence: `src/interceptors/browser-paths.js:41-47` verifies only that the path exists. Isolated browsers at `browser-interceptor.js:65-92` and Global Chrome at `existing-browser-interceptor.js:51-70` mark active and return immediately after `spawn()`, while launch failure is handled only by a later error listener.
+- Impact: API/UI confirms activation for a non-executable or corrupt browser binary and only silently changes state afterward.
+- Reproduction: leave a non-executable file at a detected browser path and activate its interceptor.
+
+### BUG-163 — Medium — Electron Stop marks inactive before the application exits
+
+- Evidence: `src/interceptors/electron-interceptor.js:19-20,70-75` sends one signal and immediately clears active state; later `process.killed` is treated as proof of exit even though Node defines it only as successful signal delivery.
+- Impact: an Electron app that delays or handles SIGTERM remains alive and proxy-configured while FreeKit reports it stopped, and a second Stop will not retry.
+- Reproduction: intercept an app with a SIGTERM handler that stays alive, then click Stop and inspect its PID/status.
+
+### BUG-164 — Medium — Fresh Terminal never falls back after an early launcher failure
+
+- Evidence: the spawn helper resolves on the child's spawn event at `src/interceptors/terminal-interceptors.js:3-16`; candidate loops at `:69-81,95-103` stop at that point without checking for an immediate nonzero exit, and `:110-125` reports success.
+- Impact: an installed but unusable first-choice terminal prevents later working candidates from being attempted.
+- Reproduction: make `gnome-terminal` spawn but immediately fail for lack of a display while `xterm` works, then activate Fresh Terminal.
+
+### BUG-165 — Medium — System Proxy omits WinHTTP despite claiming all machine traffic
+
+- Evidence: `src/interceptors/system-proxy-interceptor.js:3,46-53,72-80` changes only current-user Internet Settings. The UI promises “Intercept all HTTP traffic on this machine” at `src/ui/app.js:3561`, but no WinHTTP proxy is configured.
+- Impact: Windows services and machine clients using WinHTTP continue bypassing FreeKit while the interceptor reports active.
+- Reproduction: activate System Proxy and run `netsh winhttp show proxy`; its setting remains unchanged.
+
+### BUG-166 — Low/Medium — Failed interceptor activations return HTTP 200
+
+- Evidence: Android returns `{ success: false, error }` at `src/interceptors/android-adb-interceptor.js:411-419,449-450`, and JVM does the same at `jvm-interceptor.js:247-269`. `interceptor-manager.js:70-78` passes these through while `src/api/api-server.js:738-744` always uses `res.json()` with the default success status.
+- Impact: API clients that rely on `response.ok` treat a rejected device or process activation as successful.
+- Reproduction: POST activation for a nonexistent Android serial or JVM PID and observe HTTP 200 with `success: false`.
+
+### BUG-167 — Low — Stale browser cleanup trusts reused PIDs indefinitely
+
+- Evidence: `src/interceptors/browser-lifecycle.js:68-72` stores only the FreeKit process PID in the profile marker; `:80-89,226-230` preserves the profile whenever any current process has that PID, without checking executable identity or process start time.
+- Impact: after a crash and PID reuse, large abandoned profiles can survive every startup because an unrelated process is mistaken for their owner.
+- Reproduction: leave a managed profile marker containing an unrelated live PID and run startup cleanup; the directory is classified as active.
+
+## Electron, updater, and renderer
+
+### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
+
+- Evidence: `electron/main.cjs:327-330` uses a string `startsWith()` check. A URL shaped as `http://127.0.0.1:<port>@remote-host/` passes the prefix check even though URL parsing identifies `remote-host` as the hostname. Privileged handlers at `:333-399` rely on this check.
+- Impact: remote content loaded in the renderer can obtain the API token, invoke native file dialogs/context menus, or restart the application.
+- Reproduction: evaluate the predicate against the user-info URL and compare `new URL(value).hostname`; the predicate is true while the hostname is remote.
+
+### BUG-023 — High — The Electron window permits unrestricted navigation and popups
+
+- Evidence: the BrowserWindow installs the privileged preload at `electron/main.cjs:291-310`, but no `will-navigate` handler or `setWindowOpenHandler` exists. UI actions open URLs at `src/ui/app.js:3587,8235`.
+- Impact: renderer injection or an unsafe link can navigate/open remote content in Electron with the preload bridge present, enabling chains with the IPC validation defects.
+- Reproduction: navigate the main webContents or open a target URL; Electron does not deny it or route it exclusively through `shell.openExternal`.
+
+### BUG-024 — High — Updater IPC does not validate its sender
+
+- Evidence: `electron/updater.cjs:163-171` registers `updater-check-now` and `updater-install` without accepting or checking an IPC event; both are exposed by `electron/preload.cjs:94-105`.
+- Impact: any document with that preload can trigger update checks or `quitAndInstall()`.
+- Reproduction: invoke the exposed updater methods from a non-application document loaded in the same webContents.
+
+### BUG-059 — High — “Restart app” abandons the server child without cleanup
+
+- Evidence: the `restart-app` IPC handler at `electron/main.cjs:395-399` calls `app.relaunch()` followed by immediate `app.exit(0)`. It does not call `shutdownServer()` (`:226-260`), and immediate exit does not run the later `window-all-closed` cleanup path at `:441-445`.
+- Impact: the original proxy/API child and any active interceptors can survive the desktop shell restart; the relaunched app starts a second server/proxy and loses ownership of the first.
+- Reproduction: note the server PID, invoke the exposed restart action, and observe the original child after the new desktop process launches.
+
+### BUG-060 — Low — The advertised minimize-to-tray behavior is not implemented
+
+- Evidence: `README.md:188` promises minimize to tray. `electron/main.cjs:291-321` creates the window without `minimize` or `close` interception, while `:441-445` shuts down when the window closes. `electron/tray.cjs:91-105` can hide the window only when the user explicitly selects Hide from the tray menu.
+- Impact: minimizing leaves a taskbar window, and closing quits the server instead of moving the application to the tray as documented.
+- Reproduction: minimize or close the desktop window and inspect its taskbar/tray and process state.
+
+### BUG-062 — Low — README advertises an unsupported Node.js baseline
+
+- Evidence: `package.json:38-39` declares `node >=22.12.0`, while `README.md:315` advertises “Runtime: Node.js 18+”.
+- Impact: users following the README can install/run with a runtime the package explicitly rejects, leading to engine warnings or dependency/runtime failures.
+- Reproduction: follow Quick Start on Node 18 and compare the npm engine check with the documented requirement.
+
+### BUG-025 — High — Multiple persisted/server values reach `innerHTML` unescaped
+
+- Evidence: Send status text incorporates upstream `statusMessage` and is assigned with `innerHTML` at `src/ui/app.js:7278-7289`; the value originates at `src/api/api-server.js:1197`. Certificate, CA, whitelist, and passthrough settings are interpolated at `app.js:7798`, `:7908`, `:8000`, and `:8061`. Send tab labels derived from arbitrary URLs are interpolated at `:6966-6977`. Custom-theme preview names and color values from uploaded JSON are concatenated into markup at `:9275-9283,9302-9314`; the upload validation at `:9340-9354` requires one recognized key but preserves and previews arbitrary extra keys. There is no restrictive application CSP.
+- Impact: crafted response metadata or persisted settings can execute script in the UI origin; in Electron this can reach the preload bridge.
+- Reproduction: store markup containing an event handler in one of the unescaped settings, or upload a theme containing one valid key plus an extra markup-bearing key whose value begins with `#`; observe it being parsed as DOM instead of displayed as text.
+
+### BUG-026 — High — macOS releases omit the ZIP required by `MacUpdater`
+
+- Evidence: `electron-builder.config.cjs:70-75` builds only DMG targets. The installed `electron-updater/out/MacUpdater.js:77-80` searches for a ZIP and throws `ERR_UPDATER_ZIP_FILE_NOT_FOUND` when one is absent.
+- Impact: macOS users can be notified of an update but accepting the download fails.
+- Reproduction: publish the configured mac artifacts and call `downloadUpdate()` on macOS.
+
+### BUG-027 — Medium — Update checks are inactive in DEB/RPM installations
+
+- Evidence: `electron-builder.config.cjs:85-91` publishes AppImage, DEB, and RPM, while all Linux checks go through `electron-updater` (`electron/updater.cjs:33`). Its installed `AppImageUpdater.isUpdaterActive()` returns false when the `APPIMAGE` environment variable is absent.
+- Impact: DEB/RPM users do not reach the Linux update notification flow, including manual checks.
+- Reproduction: install the DEB/RPM and trigger Check for Updates in an environment without `APPIMAGE`.
+
+### BUG-028 — Medium — Certificate pickers persist only a basename
+
+- Evidence: `src/ui/app.js:7916-7942` displays `file.name` and puts a possible full path only in `dataset.fullPath`; `addClientCert()` and `addTrustedCA()` later read `.value` and ignore that dataset at `:7946-7957,8008-8019`. A native absolute-path picker already exists in `electron/preload.cjs:65-81` but is unused.
+- Impact: selecting an absolute certificate path persists a basename the child server cannot resolve.
+- Reproduction: select a certificate outside the server working directory and inspect the saved configuration.
+
+### BUG-029 — Medium — “Use system proxy settings” leaves the custom proxy enabled
+
+- Evidence: `src/ui/app.js:7593-7596` changes status text and returns without deleting the current upstream proxy or its persisted setting.
+- Impact: traffic continues through the prior custom proxy, including after restart, despite the UI claiming system settings are active.
+- Reproduction: configure a custom proxy, choose the system option, and query `/api/upstream-proxy`.
+
+### BUG-030 — Medium — “Non-proxied hosts” is never saved or enforced
+
+- Evidence: the input is rendered at `src/ui/index.html:469`, but `src/ui/app.js:7619-7625` submits only host, port, auth, and type. No backend forwarding path implements a bypass list.
+- Impact: hosts listed by the user still traverse the upstream proxy.
+- Reproduction: enter a bypass host, save, and request that host through the proxy.
+
+### BUG-031 — Medium — Send Abort does not cancel the outbound request
+
+- Evidence: `src/ui/app.js:7340-7346` aborts only the renderer-to-API fetch. `src/api/api-server.js:1125-1134,1174-1208` continues its independent outbound request and never ties it to the inbound connection closing.
+- Impact: a slow or state-changing request can still reach and complete at the destination after the UI reports it aborted.
+- Reproduction: send a slow POST, abort after the destination receives headers, and observe the destination complete the request.
+
+### BUG-075 — Medium — Deleting an exchange removes only the renderer copy
+
+- Evidence: `src/ui/app.js:786-797` splices the selected item from local arrays and reports success without sending an API/WebSocket mutation. Server detail, search, and export continue reading `trafficLog` (`src/api/api-server.js:613-647`).
+- Impact: a record the user deleted remains available in API/MCP results and exports and returns after any future full synchronization.
+- Reproduction: delete a captured exchange in View, then request `/api/traffic/:id` or export HAR.
+
+### BUG-076 — Medium — Pinned rows become backend-less ghosts after Clear
+
+- Evidence: the `traffic-cleared` handler preserves locally pinned entries at `src/ui/app.js:167-175`, but the server replaces its entire log with `[]` at `src/api/api-server.js:1314-1316`. Pin state itself is changed only in the renderer at `app.js:770-777`.
+- Impact: the UI retains a row that detail API, MCP, search, stats, and HAR export no longer know about; it disappears on reload.
+- Reproduction: pin an exchange, Clear traffic, and compare the visible pinned row with `/api/traffic`.
+
+### BUG-078 — Medium — Slow Send responses are written into whichever tab is active later
+
+- Evidence: `sendRequest()` does not capture the initiating tab before awaiting fetch at `src/ui/app.js:7252-7274`; after completion, it updates the current DOM and finds the then-current `activeSendTab` at `:7285-7330`.
+- Impact: switching from tab A to B while A is in flight displays and saves A's response against B.
+- Reproduction: start a slow request in A, switch to B, and wait for A to finish.
+
+### BUG-079 — Medium — Current Send edits are lost on reload/exit
+
+- Evidence: URL/body edits update only current DOM/editor state (`src/ui/index.html:230-235`, `src/ui/app.js:6651,6780-6821`). `saveSendTabState()` persists only during selected tab operations, sending, or cURL paste (`app.js:7009-7036,7124-7160,7329,9553`); there is no unload save.
+- Impact: unsent edits in the active tab silently revert after Reload, New Session, or application exit.
+- Reproduction: edit the active URL/body without switching or sending, reload, and reopen the tab.
+
+### BUG-080 — Low/Medium — Restored multipart tabs display files they no longer contain
+
+- Evidence: persistence deliberately strips `File` objects but retains filenames at `src/ui/app.js:6980-6989,7025-7033`. Restore renders the old name at `:7039-7051,6763-6767`, while serialization requires `field.file` at `:6851-6857`.
+- Impact: the tab looks ready to send but fails with “Choose a file”.
+- Reproduction: choose a multipart file, persist by switching tabs, reload, return, and Send.
+
+### BUG-081 — Medium — Reload/New Session discards mock drafts without warning
+
+- Evidence: draft state is memory-only (`src/ui/app.js:17-20,6020-6023`). The unsaved-change warning runs only in `switchPanel()` at `:8321-8328`; Electron's New Session and Reload commands directly reload at `electron/menu.cjs:24-31,56-60`, and no `beforeunload` guard exists.
+- Impact: users can lose an entire unsaved rule edit despite the application having a warning mechanism.
+- Reproduction: create an unsaved draft and choose Reload or New Session.
+
+### BUG-082 — Medium — MCP enabled state always resets to enabled
+
+- Evidence: the toggle routes at `src/ui/app.js:8137-8145` and `src/api/api-server.js:1144-1151` never write settings. Startup hard-codes `{ enabled: true }` at `src/index.js:128-136`.
+- Impact: users who disable the network MCP server find it enabled again after every restart.
+- Reproduction: disable MCP, restart, and query `/api/mcp/status`.
+
+### BUG-083 — Medium — Re-enabling MCP cannot restore stdio transport
+
+- Evidence: disabling closes the server and clears `stdioTransport` at `src/mcp/mcp-server.js:482-493`; enabling creates only a server at `:496-503`, and the API restarts only SSE (`src/api/api-server.js:1147-1149`). `startStdio()` is called only during process startup (`src/index.js:138-143`).
+- Impact: in `--mcp-stdio` mode, an off/on toggle permanently disconnects the stdio client until the entire process restarts.
+- Reproduction: launch with `--mcp-stdio`, disable and re-enable, then inspect `stdioActive` and the original client connection.
+
+### BUG-084 — Medium — Concurrent MCP disable/enable can end disabled after enable succeeds
+
+- Evidence: `setEnabled(false)` awaits transport/server closure before nulling state (`src/mcp/mcp-server.js:482-493`). An overlapping `setEnabled(true)` sees the still-present server and does nothing at `:496-503`, but the API immediately reports the requested enabled value at `src/api/api-server.js:1144-1151`.
+- Impact: rapid toggles or two clients can receive a successful enable response while final bridge state is disabled/null.
+- Reproduction: hold an SSE close pending, issue disable and immediate enable requests, then inspect final status.
+
+### BUG-085 — Medium — Overlapping update checks lose manual/automatic attribution
+
+- Evidence: every check writes one global `currentCheckIsManual` at `electron/updater.cjs:33-40`; result handlers consume that shared flag at `:120-140,154-159`. Scheduled checks at `:174-182` can overlap, and installed `AppUpdater` coalesces concurrent calls to its existing promise.
+- Impact: a scheduled check can relabel an in-progress manual check as automatic, suppressing the result/error feedback the user requested.
+- Reproduction: begin a slow manual check just before the scheduled launch check fires.
+
+### BUG-087 — Low — Sidebar and Send tabs are missing keyboard focus behavior
+
+- Evidence: sidebar controls are clickable `<div role="tab">` nodes without `tabindex` at `src/ui/index.html:29-50`; generated Send tabs/add control repeat the pattern at `src/ui/app.js:6973-6977` and provide no Enter/Space handler.
+- Impact: keyboard-only users cannot reach or activate the application's primary tab navigation using normal focus controls.
+- Reproduction: traverse with Tab/Shift+Tab and attempt to activate sidebar/Send tabs with Enter or Space.
+
+### BUG-133 — High — Normal desktop Quit paths bypass server cleanup
+
+- Evidence: `shutdownServer()` exists at `electron/main.cjs:226-260` but is called for window closure only from `window-all-closed` at `:441-445`. File/App Quit uses the Electron quit role at `electron/menu.cjs:20,35-37`, tray Quit calls `app.quit()` at `electron/tray.cjs:97-101`, the updater quits at `electron/updater.cjs:167-170`, and startup failure quits at `electron/main.cjs:435-437`; those flows do not first close every window and invoke the handler.
+- Impact: the child server can survive normal Quit or restart-to-install, leaving interceptor processes and system/device proxy settings active.
+- Reproduction: activate an interceptor, choose File or tray Quit, and inspect the server child PID and proxy settings.
+
+### BUG-134 — High — Generated request snippets permit shell and code injection
+
+- Evidence: `generateExportSnippet()` interpolates captured URLs and headers directly into single-quoted cURL at `src/ui/app.js:1962-1968` despite the safe `shellSingleQuote()` helper at `:1778-1780`. Python, JavaScript, PowerShell, wget, PHP, and Go output similarly interpolates values without language-specific escaping at `:1971-2055`; the context menu copies these snippets at `:8498-8503`.
+- Impact: running a snippet copied from an untrusted captured request can execute attacker-controlled shell commands or source code.
+- Reproduction: capture a URL containing `' ; touch /tmp/freekit-pwn ; '` and inspect Copy as cURL before running it.
+
+### BUG-135 — High — Replace import can erase every mock while reporting success
+
+- Evidence: `src/ui/app.js:6374-6381` deletes all current rules before validating the imported rules. POST responses at `:6383-6388` are not checked, and `:6390` always shows success; the API rejects an empty object at `src/api/api-server.js:789-810`.
+- Impact: a malformed or partially incompatible import destroys existing rules, creates none or only some replacements, and still claims the full replacement succeeded.
+- Reproduction: create rules, import `{ "rules": [{}] }`, choose Replace, and observe an empty rule list plus a success toast.
+
+### BUG-136 — Medium — Concurrent or retried Save All duplicates new mock rules
+
+- Evidence: the button invokes `saveAllMockRules()` without being disabled at `src/ui/index.html:184-185`. Every invocation snapshots all drafts and POSTs new ones without IDs at `src/ui/app.js:6117-6148`; drafts clear only after the whole batch succeeds.
+- Impact: double-clicking creates equivalent rules with different IDs, and retrying after a later batch item fails duplicates every earlier successful new rule.
+- Reproduction: throttle the API, create one new draft, and double-click Save All.
+
+### BUG-137 — Medium — Opening another mock editor silently discards the current edit
+
+- Evidence: `addNewMockRule()` overwrites `mockEditingRule` and `mockEditDraft` at `src/ui/app.js:5617-5635`; `editMockRule()` repeats this at `:5642-5649`. The previous edit becomes a saved draft only when that same rule is collapsed at `:5658-5667`.
+- Impact: switching directly from rule A's editor to rule B or Add Rule loses A's changes, and the unsaved-changes warning cannot see them.
+- Reproduction: edit rule A, then click Edit on rule B without collapsing or saving A.
+
+### BUG-138 — Medium — A blank matcher creates a match-everything mock
+
+- Evidence: `saveMockRule()` rejects blank conditions only if the matcher array is also empty at `src/ui/app.js:6026-6036`; a nonempty blank matcher passes. URL Contains then evaluates `url.includes("")` at `src/proxy/proxy-server.js:3222-3223`, which is true for every URL.
+- Impact: a visually blank rule can unexpectedly return its mock response for all traffic.
+- Reproduction: add a URL Contains condition, leave it blank, select a fixed response, save, and request an unrelated URL.
+
+### BUG-139 — Medium — List-setting read/modify/write races lose or mis-delete entries
+
+- Evidence: TLS passthrough (`src/ui/app.js:7806-7836`), client certificates (`:7946-7977`), trusted CAs (`:8008-8038`), and HTTPS whitelist (`:8069-8099`) each GET the entire array and POST a replacement. Remove handlers apply a stale rendered index to the newly fetched array.
+- Impact: concurrent windows or rapid operations overwrite one another, and a stale Remove action can delete a different entry after another client changes the list.
+- Reproduction: let two tabs read the same list and concurrently add different entries; only the last POST survives.
+
+### BUG-140 — Medium — Electron menu accelerators override documented renderer shortcuts
+
+- Evidence: File New Session registers `CmdOrCtrl+Shift+N` to reload at `electron/menu.cjs:25-31`, while the renderer maps the same chord to New Send Tab at `src/ui/app.js:8877-8881`. The View reload role at `electron/menu.cjs:55-60` conflicts with renderer resend on `CmdOrCtrl+R` at `app.js:8916-8920`; on macOS, File close conflicts with close-tab on `Cmd+W` at `:8901-8906`. README documents the renderer meanings at `README.md:147,154-155`.
+- Impact: packaged desktop shortcuts reload or close the application window instead of performing the advertised Send/Traffic action, losing unsaved UI state.
+- Reproduction: press Ctrl/Cmd+Shift+N in the packaged app and observe a session reload instead of a new Send tab.
+
+### BUG-141 — Medium — Send editor startup can mix one tab's form with another active ID
+
+- Evidence: startup captures `initialTab`, awaits Monaco initialization, then unconditionally reloads the captured tab at `src/ui/app.js:7163-7171`. During the await, `switchSendTab()` or `addSendTab()` can change `activeSendTab` at `:7124-7138`, while body loading before the editor exists is ineffective at `:6613-6617`.
+- Impact: the active tab ID and visible form diverge; later save/send actions can write the first tab's request into the newly active tab.
+- Reproduction: delay Monaco loading and switch or add a tab before it resolves.
+
+### BUG-142 — Medium — cURL paste corrupts valid multi-data commands
+
+- Evidence: every `-d`, `--data`, `--data-raw`, or `--data-binary` overwrites `result.body` at `src/ui/app.js:6511-6513`, although cURL joins repeated data options with `&`. `--data-urlencode` is copied without encoding at `:6514-6519`; the tokenizer strips backslashes inside single quotes at `:6487-6492`, and Unicode basic-auth values can throw through `btoa()` at `:6524-6525`.
+- Impact: the Send request differs from the pasted command, and some valid cURL input aborts paste handling entirely.
+- Reproduction: paste `curl https://example.test -d 'a=1' -d 'b=2'`; the body becomes only `b=2` instead of `a=1&b=2`.
+
+### BUG-143 — Medium — Reloading during an update download can lose the install control
+
+- Evidence: updater state is emitted only as transient IPC events at `electron/updater.cjs:142-152`. The renderer registers its listener at `src/ui/app.js:9454-9478` and creates Restart to install only upon `update-downloaded` at `:9492-9507`; preload/updater exposes no current-status query or replay.
+- Impact: if completion occurs while the renderer reloads, the event is dropped and that session never offers installation even though the package is ready.
+- Reproduction: begin an update download, reload the renderer, and have completion occur before the status listener is reattached.
+
+### BUG-144 — Low — Storage quota errors can abort navigation and startup
+
+- Evidence: `switchPanel()` writes traffic state before changing panels at `src/ui/app.js:8321-8345`, `switchSettingsSection()` writes at `:8294`, and `setTheme()` writes at `:9403-9404`; none catches storage exceptions. Theme loading calls `setTheme()` before `connectWebSocket()` at `:9449-9450`.
+- Impact: full or blocked localStorage can prevent leaving Traffic, break theme changes, and throw during startup before live traffic initialization.
+- Reproduction: make `Storage.prototype.setItem` throw, then navigate away from Traffic or reload the app.
+
+### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
+
+- Evidence: `sendRequest()` has no in-flight guard and replaces the one global `currentSendAbort` on each invocation at `src/ui/app.js:7257-7277`. Every request's `finally` clears the same global at `:7340`, while `abortSendRequest()` at `:7345-7349` aborts only its current value; Ctrl+Enter can invoke the disabled button's function again.
+- Impact: starting B while A is pending loses A's controller, and A finishing can clear B's controller so neither later Escape nor the abort UI can stop the correct request.
+- Reproduction: send twice rapidly to a slow origin, let the first invocation finish, then press Escape.
+
+### BUG-169 — Medium — Send silently drops repeated request headers
+
+- Evidence: the editor stores header rows as an array at `src/ui/app.js:6880-6896`, but `syncSendHeadersToHidden()` converts them to an object at `:6942-6949`; each `obj[h.key.trim()]` assignment overwrites an earlier row with the same name.
+- Impact: valid repeated headers cannot be sent, and the displayed request differs from the wire request.
+- Reproduction: add two `X-Test` rows with values `one` and `two`, send to an echo origin, and observe only the second.
+
+### BUG-170 — Medium — Corrupt Send-tab storage can break Send initialization forever
+
+- Evidence: `restoreSendTabs()` accepts any nonempty JSON array and spreads its elements without schema validation at `src/ui/app.js:7044-7067`. `loadSendTabState()` then assumes `tab.headers` is an array and calls `.slice()` at `:7070-7074`.
+- Impact: valid but stale/corrupt localStorage throws an uncaught TypeError, leaving Send partially initialized on every reload.
+- Reproduction: set `http-freekit-send-tabs` to `[{"id":"tab-1","headers":{}}]` and reload.
+
+### BUG-171 — Medium — Monaco disposal leaks observers and editor instances
+
+- Evidence: `disposeBodyEditor()` only disposes the editor and deletes the map entry at `src/ui/app.js:3182-3188`. Each `createMonacoEditor()` creates a ResizeObserver, records an instance, and creates a document-wide MutationObserver at `:9139-9159`; observers disconnect only if the persistent container leaves the DOM. The Send editor is also disposed directly at `:6634-6638`.
+- Impact: switching body modes, tabs, or details accumulates live observers and retained disposed editors, multiplying callbacks on every DOM mutation and resize.
+- Reproduction: repeatedly alternate text body modes and inspect retained Monaco instances and observers in a heap profile.
+
+### BUG-172 — Low/Medium — WebSocket restoration silently removes every pin
+
+- Evidence: pin state exists only on renderer request objects and is toggled at `src/ui/app.js:775-783`. A restored `traffic-dump` replaces the complete array with server objects at `:182-185`, which have no renderer-only `pinned` property.
+- Impact: any transient WebSocket reconnect unpins all exchanges, so a later Clear removes records the user believed were protected.
+- Reproduction: pin an exchange, interrupt and restore the UI WebSocket, and inspect its pin after the traffic dump.
+
+### BUG-173 — Medium — Displayed Claude Desktop configuration cannot launch a packaged server
+
+- Evidence: Settings generates `command: "node"` with relative `args: ["src/index.js", "--mcp-stdio"]` at `src/ui/app.js:8124-8133`. Claude resolves the path from its own working directory, and an installed desktop build cannot assume a system Node executable.
+- Impact: copying the application-provided MCP configuration yields module-not-found or node-not-found instead of a connection.
+- Reproduction: use the displayed configuration from any working directory other than the source root, or from an installed build.
+
+### BUG-174 — Medium — Ctrl+Delete clears traffic while editing text
+
+- Evidence: the document-wide shortcut at `src/ui/app.js:8864-8869` does not test input focus or the active panel. It invokes `clearTraffic()`, which sends `clear-traffic` without confirmation at `:7507-7511`.
+- Impact: the normal Windows shortcut for deleting the next word destroys the complete server traffic log when used in a Send or settings input.
+- Reproduction: focus the Send URL between path words and press Ctrl+Delete.
+
+### BUG-175 — Low — Collapsible and sortable controls remain mouse-only
+
+- Evidence: Send collapsible headers use `role="button"` with click handlers but no `tabindex` or keyboard handler at `src/ui/index.html:246,259,292`; Traffic sortable column headers likewise expose only `onclick` at `:73-77`.
+- Impact: keyboard-only users cannot focus, expand/collapse, or sort these controls despite their advertised semantic roles.
+- Reproduction: Tab through Send and Traffic and try Enter/Space on the relevant headers.
+
+### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
+
+- Evidence: `src/ui/app.js:8218-8232` only flips a local boolean and button state. Incoming `request` events are discarded locally at `:142-146`; no API/proxy pause is sent, so `src/api/api-server.js:1212-1235` continues recording and broadcasting all traffic.
+- Impact: while the UI says capture is paused, sensitive/large traffic continues accumulating and remains available to exports/API/MCP. The UI never backfills those discarded events when resuming.
+- Reproduction: click Pause, send traffic, verify the table stays unchanged, then query `/api/traffic` and observe the supposedly paused requests.
+
+### BUG-065 — Medium — The OpenAPI picker offers YAML files that it always rejects
+
+- Evidence: `src/ui/app.js:8180-8191` sets the picker to `.json,.yaml,.yml`, then uses only `JSON.parse()` and immediately rejects any parse failure with “Please use JSON format”.
+- Impact: valid YAML OpenAPI/Swagger documents exposed as supported choices cannot be loaded.
+- Reproduction: select a valid `.yaml` OpenAPI 3 document in Settings.
+
+### BUG-066 — Medium — Uploaded API specifications disappear on restart
+
+- Evidence: API specs live only in `ProxyServer.apiSpecs` and are added/removed through `src/proxy/proxy-server.js:4159-4172`. Unlike mock/TLS settings, `src/index.js:77-105` has no spec restore and the API routes at `src/api/api-server.js:1042-1057` never persist them.
+- Impact: every configured OpenAPI/Swagger document must be re-uploaded after each application restart.
+- Reproduction: upload a spec, verify it in `/api/specs`, restart, and query the list again.
+
+### BUG-067 — Medium — OpenAPI host/path matching interprets literals as substrings and regex
+
+- Evidence: `src/proxy/proxy-server.js:4175-4189` accepts a host when `host.includes(configuredHost)` and builds a regex by replacing only `{parameters}`; it does not escape regex metacharacters in literal path text.
+- Impact: a spec for `api.example.com` can annotate `api.example.com.evil` traffic, and paths containing `.`, `+`, `(`, or similar characters match the wrong requests or fail to match their literal paths.
+- Reproduction: configure base URL `https://api.example.com` with path `/v1/a.b`; test a lookalike host or `/v1/aXb`.
+
+### BUG-069 — High — Imported and Send traffic exists only in one browser tab
+
+- Evidence: the HAR picker at `src/ui/app.js:7459-7493` parses entries and calls local `addRequest()` instead of the existing `/api/traffic/import-har` route. Send similarly creates a synthetic object and calls only `addRequest()` at `:7291-7330`; `src/api/api-server.js:1125-1134,1174-1208` sends directly with Node HTTP/HTTPS instead of using the proxy or adding to `trafficLog`.
+- Impact: these requests appear in the table but are absent from server HAR export, API search/stats, MCP tools, and every other UI client; they also vanish on reload. Send additionally bypasses configured upstream routing and all matching mock rules.
+- Reproduction: import a HAR or complete a Send request, confirm it in the table, then query `/api/traffic` or export HAR. A Send request matching a fixed-response mock reaches the real origin instead.
+
+## Dependency and build-chain vulnerabilities
+
+### BUG-035 — High — Production updater dependency can leak credentials across redirects
+
+- Evidence: `package-lock.json:2150-2152` resolves `builder-util-runtime` 9.5.1, below the fixed 9.7.0. `npm audit --omit=dev --audit-level=high` reports [GHSA-p2f4-r6v6-j797](https://github.com/advisories/GHSA-p2f4-r6v6-j797) through the direct `electron-updater` dependency.
+- Impact: cross-origin updater redirects can receive protected token/authorization headers.
+- Reproduction: run `npm run audit:prod`; it exits nonzero with two high-severity dependency nodes for this advisory.
+
+### BUG-036 — High — Built AppImages contain a vulnerable updater search path
+
+- Evidence: `package-lock.json:1753-1755` resolves `app-builder-lib` 26.8.1, below the fixed 26.15.0. Full `npm audit` reports [GHSA-7g7r-gx96-252g](https://github.com/advisories/GHSA-7g7r-gx96-252g).
+- Impact: the configured AppImage artifact is affected by uncontrolled executable search-path elements, enabling local code execution in the updater context.
+- Reproduction: run `npm audit --audit-level=high` and inspect the `app-builder-lib` advisory.
+
+### BUG-037 — High — Build dependencies contain an unbounded brace-expansion DoS
+
+- Evidence: `package-lock.json:2070-2072` resolves `brace-expansion` 5.0.7, within the affected `<=5.0.7` range. Full `npm audit` reports [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) through multiple builder paths.
+- Impact: attacker-controlled or accidentally extreme patterns processed by the build dependency graph can exhaust memory.
+- Reproduction: run `npm audit --audit-level=high`; the full audit exits nonzero and reports this advisory.
+
+## Existing test evidence
+
+- `npm test`: 32 passed, 0 failed. The passing suite does not exercise the findings above.
+- `npm run audit:prod`: fails with 2 high-severity vulnerable dependency nodes.
+- `npm audit --audit-level=high`: fails with 24 high-severity dependency nodes representing the three root advisories documented above.
+- `node --check` passed for all 35 JavaScript/CJS files under `src`, `electron`, `scripts`, and `test`.
