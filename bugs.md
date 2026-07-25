@@ -18,6 +18,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 6 | 11 new bugs found; documented below | 0/2 |
 | 7 | 13 new bugs found; documented below | 0/2 |
 | 8 | 14 new bugs found; documented below | 0/2 |
+| 9 | 12 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -578,6 +579,36 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: one advertised rule routes differently by negotiated protocol, and HTTPS can log a rewritten destination while sending the original.
 - Reproduction: rewrite `/old` to another local origin/path and compare plain H1, intercepted H1, and native H2.
 
+### BUG-241 — Medium — Ordinary upstream HTTP/2 requests can hang forever
+
+- Evidence: `_makeH2Request()` at `src/proxy/proxy-server.js:2656-2711` handles response, body end, and error but configures no connect/response timeout and no settlement for aborted or premature close. All normal intercepted H2 paths use it, while H1 fallbacks receive configured timeouts.
+- Impact: an origin that accepts an H2 stream without response headers, or closes it without error/end, leaves the downstream request pending indefinitely.
+- Reproduction: accept an H2 stream and send no response headers.
+
+### BUG-242 — Medium — HAR import bypasses traffic type validation
+
+- Evidence: `/api/traffic/import-har` maps method, sizes, duration, and other fields verbatim at `src/api/api-server.js:796-835` and never calls the validator used by JSON import. REST/MCP later call string/number methods on them.
+- Impact: a HAR accepted with object-valued method/time/bodySize can make traffic search and MCP tools throw until cleared.
+- Reproduction: import a HAR with `request.method: {}` and then search by method.
+
+### BUG-243 — Low/Medium — Repeated header arrays crash traffic detail rendering
+
+- Evidence: traffic validation explicitly accepts string-array header values, but the renderer calls `.toLowerCase()` on response Content-Type and `.split(",")` on Cache-Control at `src/ui/app.js:1657,1686`.
+- Impact: a valid imported record with repeated forms of either header throws when selected, preventing detail rendering.
+- Reproduction: import `"cache-control": ["public","max-age=60"]` and open the exchange.
+
+### BUG-244 — Low/Medium — Plain HTTP collapses SOCKS local/remote DNS variants
+
+- Evidence: `_connectViaSocks()` at `src/proxy/proxy-server.js:3129-3150` maps socks4/socks4a to one type and socks5/socks5h to one type, then always passes the unresolved hostname. HTTPS uses an agent that distinguishes local-DNS and remote-DNS schemes.
+- Impact: SOCKS4 effectively behaves as SOCKS4a and SOCKS5 delegates DNS remotely, violating configured semantics and cross-protocol parity.
+- Reproduction: use hostname-only targets with socks4 versus socks4a and compare DNS behavior for HTTP and HTTPS.
+
+### BUG-245 — Low/Medium — MCP request tools count WebSocket frames as HTTP requests
+
+- Evidence: MCP search, stats, and live summary start from the raw traffic log without protocol filtering (`src/mcp/mcp-server.js:132-133,220-221` and live-summary handler).
+- Impact: frames inflate request totals and bandwidth, create undefined methods and other statuses, and appear in tools whose contracts describe HTTP requests.
+- Reproduction: capture one WebSocket handshake plus frames, then call search, stats, and live summary.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -939,6 +970,30 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `src/interceptors/terminal-interceptors.js:32-34` always returns true from `isActivable()`, while Linux activation supports only gnome-terminal, xterm, and konsole at `:88-107` and otherwise throws.
 - Impact: headless and minimal Linux installations show an available actionable interceptor that cannot activate.
 - Reproduction: run on Linux with none of the three launchers installed and refresh interceptor metadata.
+
+### BUG-246 — High — Chromium interceptors silently bypass localhost traffic
+
+- Evidence: isolated Chromium arguments at `src/interceptors/browser-interceptor.js:136-160` and Global Chrome at `existing-browser-interceptor.js:31-47` set proxy-server but omit Chromium's `--proxy-bypass-list=<-loopback>` override.
+- Impact: Chrome, Edge, Brave, and Global Chrome bypass common localhost and link-local development traffic while reporting successful interception.
+- Reproduction: activate an affected browser and request a localhost service.
+
+### BUG-247 — High/Medium — Startup cleanup deletes markerless lookalike directories
+
+- Evidence: `src/interceptors/browser-lifecycle.js:80-89` yields no owner for a missing/malformed marker, but cleanup at `:223-235` recursively deletes any direct temp child matching the FreeKit browser-profile name pattern without requiring ownership proof.
+- Impact: a renamed backup or unrelated colliding directory can be recursively erased at startup.
+- Reproduction: create a markerless direct temp child named `http-freekit-chrome-backup` and run startup cleanup.
+
+### BUG-248 — High/Medium — Browser shutdown can kill unrelated substring matches
+
+- Evidence: `collectRelatedProcessIds()` at `src/interceptors/browser-lifecycle.js:138-168` treats any command containing the profile path substring as owned and recursively includes descendants; shutdown kills every returned PID.
+- Impact: backup, indexing, or diagnostic commands mentioning `<profile>-backup` can be terminated with their process trees.
+- Reproduction: run an unrelated process whose argument contains the managed profile path plus a suffix, then stop the browser interceptor.
+
+### BUG-249 — High — Restart loses ownership of persistent Android interception
+
+- Evidence: global activation writes persistent `settings global http_proxy` at `src/interceptors/android-adb-interceptor.js:308-319`, but ownership exists only in constructor maps and activation records. Startup performs browser cleanup only and never detects/adopts Android proxy/VPN state.
+- Impact: after a crash/hard restart, the device remains proxied while FreeKit reports Android inactive and Stop cannot restore it.
+- Reproduction: activate global Android interception, hard-kill the server, restart, and inspect status/device proxy.
 
 ## Electron, updater, and renderer
 
@@ -1349,6 +1404,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `clearTraffic()` sends only when `ws.readyState === 1` and has no REST fallback or error state at `src/ui/app.js:7540-7544`; the button remains enabled.
 - Impact: the user believes traffic was cleared, but reconnect restores every server record without any feedback.
 - Reproduction: disconnect the management WebSocket, click Clear, and reconnect.
+
+### BUG-250 — Low/Medium — Malformed HAR primitives poison renderer search
+
+- Evidence: `importHar()` checks only for a truthy entries value and preserves fields such as method without type validation at `src/ui/app.js:7498-7534`; filtering later calls `req.method?.toLowerCase()` at `:374,400`, which still throws when method is a number.
+- Impact: a HAR reported as successfully imported can make Traffic search fail on every keystroke until the row is removed or cleared.
+- Reproduction: import a complete entry with `request.method: 1`, then type a method/plain filter.
+
+### BUG-251 — Low/Medium — Failed MCP toggles leave the switch inverted
+
+- Evidence: the checkbox passes its new state directly to `toggleMcp()`; success reloads authoritative status, but the failure branch at `src/ui/app.js:8175-8187` only shows a toast and never restores the control.
+- Impact: Settings can show Running with an unchecked switch or Stopped with a checked switch after a rejected request.
+- Reproduction: force the MCP toggle POST to fail and click the switch.
+
+### BUG-252 — Low/Medium — The all-platform build always fails on Windows
+
+- Evidence: README calls `npm run build` an all-platform command, while `package.json` always requests win, mac, and linux; electron-builder rejects macOS targets when running on Windows.
+- Impact: the documented aggregate release command cannot complete on the project's Windows development platform.
+- Reproduction: run `npm run build` on Windows and observe the macOS-target rejection.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
