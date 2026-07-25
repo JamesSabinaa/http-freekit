@@ -128,21 +128,28 @@
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
 
+    function mergeServerTrafficRequest(currentRequest, serverRequest) {
+      const restoredRequest = { ...serverRequest };
+      delete restoredRequest.pinned;
+      delete restoredRequest._rendererOnly;
+      if (currentRequest?.pinned) restoredRequest.pinned = true;
+      return restoredRequest;
+    }
+
     function mergeTrafficDumpPins(currentRequests, serverRequests) {
-      const pinnedIds = new Set(
-        currentRequests
-          .filter(request => request.pinned && request.id !== null && request.id !== undefined)
-          .map(request => request.id)
+      const existingRequests = Array.isArray(currentRequests) ? currentRequests : [];
+      const currentById = new Map(
+        existingRequests
+          .filter(request => request?.id !== null && request?.id !== undefined)
+          .map(request => [request.id, request])
       );
-      return (Array.isArray(serverRequests) ? serverRequests : []).map(request => {
-        const restoredRequest = { ...request };
-        if (pinnedIds.has(request?.id)) {
-          restoredRequest.pinned = true;
-        } else {
-          delete restoredRequest.pinned;
-        }
-        return restoredRequest;
-      });
+      const restoredServerRequests = (Array.isArray(serverRequests) ? serverRequests : [])
+        .map(request => mergeServerTrafficRequest(currentById.get(request?.id), request));
+      const serverIds = new Set(restoredServerRequests.map(request => request.id));
+      const rendererOnlyPins = existingRequests.filter(request =>
+        request?.pinned && request._rendererOnly === true && !serverIds.has(request.id)
+      );
+      return [...restoredServerRequests, ...rendererOnlyPins];
     }
 
     function restoreTrafficDump(serverRequests) {
@@ -257,6 +264,7 @@
           if (msg.data?.id) {
             const idx = requests.findIndex(r => r.id === msg.data.id);
             if (idx !== -1) {
+              msg.data = mergeServerTrafficRequest(requests[idx], msg.data);
               requests[idx] = msg.data;
               applyFilter();
               // If this request is currently selected, refresh the detail view
@@ -7712,7 +7720,8 @@
           responseBodySize: data.body ? data.body.length : 0,
           duration: data.duration,
           timestamp: Date.now(),
-          source: 'Send'
+          source: 'Send',
+          _rendererOnly: true
         };
         setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, { request: syntheticReq, section: 'response' });
         addRequest(syntheticReq);
@@ -7905,7 +7914,8 @@
             responseBodySize: entry.response.content?.size || 0,
             duration: entry.time || 0,
             timestamp: new Date(entry.startedDateTime).getTime(),
-            source: 'import'
+            source: 'import',
+            _rendererOnly: true
           }));
 
           imported.forEach(r => addRequest(r));

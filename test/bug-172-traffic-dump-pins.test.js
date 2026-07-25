@@ -4,9 +4,10 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+
 function createRestoreHarness(currentRequests, selectedRequestId) {
-  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-  const start = source.indexOf('function mergeTrafficDumpPins(');
+  const start = source.indexOf('function mergeServerTrafficRequest(');
   const end = source.indexOf('function connectWebSocket()', start);
   assert.ok(start >= 0 && end > start, 'traffic dump restoration functions must be present');
 
@@ -40,6 +41,40 @@ function createRestoreHarness(currentRequests, selectedRequestId) {
     pinStates,
     get filterCalls() { return filterCalls; },
     get closeCalls() { return closeCalls; }
+  };
+}
+
+function createUpdateHarness(currentRequests, selectedRequestId) {
+  const start = source.indexOf('function mergeServerTrafficRequest(');
+  const end = source.indexOf('// ============ TRAFFIC ============', start);
+  assert.ok(start >= 0 && end > start, 'traffic update functions must be present');
+
+  const detailPanel = {};
+  const rendered = [];
+  let filterCalls = 0;
+  const context = {
+    requests: currentRequests,
+    selectedRequestId,
+    applyFilter: () => { filterCalls++; },
+    document: {
+      getElementById(id) {
+        if (id === 'detailPanel') return detailPanel;
+        return null;
+      }
+    },
+    renderDetailCards: request => { rendered.push(request); }
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${source.slice(start, end)}
+    globalThis.callHandleWsMessage = handleWsMessage;
+  `, context);
+
+  return {
+    context,
+    detailPanel,
+    rendered,
+    get filterCalls() { return filterCalls; }
   };
 }
 
@@ -83,4 +118,52 @@ test('traffic dump removes missing pinned requests and closes their selection', 
   assert.equal(harness.closeCalls, 1);
   assert.equal(harness.detailPanel._request, undefined);
   assert.deepEqual(harness.rendered, []);
+});
+
+test('request updates preserve renderer pin membership and rebind selected details', () => {
+  const harness = createUpdateHarness([
+    { id: 'selected', method: 'GET', stale: 'remove-me', pinned: true },
+    { id: 'unpinned', method: 'GET' }
+  ], 'selected');
+
+  harness.context.callHandleWsMessage({
+    type: 'request-update',
+    data: { id: 'selected', method: 'POST', statusCode: 201, pinned: false, _rendererOnly: true }
+  });
+  harness.context.callHandleWsMessage({
+    type: 'request-update',
+    data: { id: 'unpinned', method: 'PATCH', statusCode: 204, pinned: true }
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
+    { id: 'selected', method: 'POST', statusCode: 201, pinned: true },
+    { id: 'unpinned', method: 'PATCH', statusCode: 204 }
+  ]);
+  assert.equal(harness.filterCalls, 2);
+  assert.equal(harness.detailPanel._request, harness.context.requests[0]);
+  assert.equal(harness.rendered[0], harness.context.requests[0]);
+});
+
+test('traffic dump retains pinned renderer-only records after authoritative server rows', () => {
+  const harness = createRestoreHarness([
+    { id: 'send', source: 'Send', _rendererOnly: true, pinned: true },
+    { id: 'import', source: 'import', _rendererOnly: true, pinned: true },
+    { id: 'local-unpinned', source: 'Send', _rendererOnly: true },
+    { id: 'missing-server-pin', source: 'Chrome', pinned: true }
+  ], 'import');
+
+  harness.context.callRestoreTrafficDump([
+    { id: 'server-b', method: 'POST', pinned: true, _rendererOnly: true },
+    { id: 'server-a', method: 'GET' }
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
+    { id: 'server-b', method: 'POST' },
+    { id: 'server-a', method: 'GET' },
+    { id: 'send', source: 'Send', _rendererOnly: true, pinned: true },
+    { id: 'import', source: 'import', _rendererOnly: true, pinned: true }
+  ]);
+  assert.equal(harness.closeCalls, 0);
+  assert.equal(harness.detailPanel._request, harness.context.requests[3]);
+  assert.equal(harness.rendered[0], harness.context.requests[3]);
 });

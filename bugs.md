@@ -1990,8 +1990,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-172 — Low/Medium — WebSocket restoration silently removes every pin
 
-- Status: **Partially fixed**.
-- Resolution: Traffic dumps now preserve pins for IDs present in both the renderer and server arrays. A normal `request-update` still replaces and unpins a pending row, while a reconnect dump still deletes pinned renderer-only Send or UI-import records because those IDs do not exist on the server.
+- Status: **Fixed**.
 
 - Evidence: pin state exists only on renderer request objects and is toggled at `src/ui/app.js:775-783`. A restored `traffic-dump` replaces the complete array with server objects at `:182-185`, which have no renderer-only `pinned` property.
 - Impact: any transient WebSocket reconnect unpins all exchanges, so a later Clear removes records the user believed were protected.
