@@ -3165,11 +3165,8 @@ export class ProxyServer {
       return 0;
     });
 
-    return sorted.find(rule => {
+    const matchedRule = sorted.find(rule => {
       if (!rule.enabled) return false;
-
-      // Passthrough rules mean "don't mock" — skip them so the request proceeds normally
-      if (rule.action?.type === 'passthrough') return false;
 
       // New format: matchers + action
       if (rule.matchers && rule.action) {
@@ -3186,6 +3183,9 @@ export class ProxyServer {
       }
       return false;
     });
+
+    // A matching passthrough rule stops evaluation while allowing normal forwarding.
+    return matchedRule?.action?.type === 'passthrough' ? undefined : matchedRule;
   }
 
   _evaluateMatcher(matcher, method, url, headers, body) {

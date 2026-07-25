@@ -201,6 +201,26 @@ test('reuses an upstream keep-alive agent until the proxy changes', () => {
   proxy._destroyUpstreamAgent();
 });
 
+test('a matching passthrough rule prevents lower mock rules from winning', () => {
+  const proxy = new ProxyServer(null);
+  const fallbackRule = {
+    enabled: true,
+    matchers: [{ type: 'wildcard' }],
+    action: { type: 'fixed-response', status: 200 }
+  };
+  proxy.mockRules = [
+    {
+      enabled: true,
+      matchers: [{ type: 'path', matchType: 'exact', value: '/allowed' }],
+      action: { type: 'passthrough' }
+    },
+    fallbackRule
+  ];
+
+  assert.equal(proxy._findMockRule('GET', 'http://example.test/allowed', {}, ''), undefined);
+  assert.equal(proxy._findMockRule('GET', 'http://example.test/blocked', {}, ''), fallbackRule);
+});
+
 test('coalesces concurrent rotations and ignores failures from an old proxy generation', async () => {
   let generation = 4;
   let rotations = 0;
