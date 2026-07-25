@@ -35,6 +35,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-003 — High — `--mcp-stdio` writes non-protocol logs to stdout
 
+- Status: **Fixed**.
+
 - Evidence: `src/index.js:25-136` prints the banner plus CA, proxy, and API startup logs before `console.log` is redirected to stderr at `:138`.
 - Impact: stdio MCP clients receive plain text before JSON-RPC framing and can reject the server as an invalid MCP process.
 - Reproduction: run `node src/index.js --mcp-stdio` and inspect stdout; the banner precedes MCP messages.

@@ -21,6 +21,12 @@ const DATA_DIR = process.env.ELECTRON
 const UI_DIR = path.join(__dirname, 'ui');
 const PROXY_PORT = parseInt(process.env.PROXY_PORT) || 8081;
 const API_PORT = parseInt(process.env.API_PORT) || 8001;
+const MCP_STDIO_ENABLED = process.argv.includes('--mcp-stdio');
+
+// Stdio MCP reserves stdout for JSON-RPC framing. Redirect before any startup logs.
+if (MCP_STDIO_ENABLED) {
+  console.log = (...args) => console.error(...args);
+}
 
 async function main() {
   console.log('');
@@ -136,10 +142,7 @@ async function main() {
   mcpBridge.startSse(api.app);
 
   // If launched with --mcp-stdio, enable stdio transport for Claude Desktop
-  if (process.argv.includes('--mcp-stdio')) {
-    // Redirect console to stderr so stdout is reserved for MCP protocol
-    const origLog = console.log;
-    console.log = (...args) => process.stderr.write(args.join(' ') + '\n');
+  if (MCP_STDIO_ENABLED) {
     await mcpBridge.startStdio();
   }
 
