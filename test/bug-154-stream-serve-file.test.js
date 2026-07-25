@@ -24,6 +24,19 @@ function requestThroughProxy(port, target) {
   });
 }
 
+function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      const value = predicate();
+      if (value) return resolve(value);
+      if (Date.now() >= deadline) return reject(new Error('Timed out waiting for condition'));
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
+
 test('serve-file streams its response and records small file content', async t => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'http-freekit-serve-file-'));
   const filePath = path.join(tempDir, 'response.txt');
@@ -47,7 +60,7 @@ test('serve-file streams its response and records small file content', async t =
   assert.equal(response.statusCode, 202);
   assert.equal(response.headers['content-type'], 'text/plain');
   assert.equal(response.body.toString(), 'streamed mock response');
-  const record = captured.find(request => request.statusMessage === 'Mocked (file)');
+  const record = await waitFor(() => captured.find(request => request.statusMessage === 'Mocked (file)'));
   assert.equal(record.responseBody, 'streamed mock response');
   assert.equal(record.responseBodySize, response.body.length);
   assert.equal(record.responseBodyTruncated, false);
