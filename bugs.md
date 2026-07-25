@@ -1183,6 +1183,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-163 — Medium — Electron Stop marks inactive before the application exits
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/electron-interceptor.js:19-20,70-75` sends one signal and immediately clears active state; later `process.killed` is treated as proof of exit even though Node defines it only as successful signal delivery.
 - Impact: an Electron app that delays or handles SIGTERM remains alive and proxy-configured while FreeKit reports it stopped, and a second Stop will not retry.
 - Reproduction: intercept an app with a SIGTERM handler that stays alive, then click Stop and inspect its PID/status.

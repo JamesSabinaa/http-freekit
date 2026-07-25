@@ -8,6 +8,7 @@ export class ElectronInterceptor {
     this.ca = null;
     this.process = null;
     this.activating = false;
+    this.deactivationTimeoutMs = 3000;
     this.onStatusChange = null;
   }
 
@@ -21,7 +22,43 @@ export class ElectronInterceptor {
   }
 
   _hasActiveProcess() {
-    return this.active && this.process && !this.process.killed;
+    return Boolean(this.active && this.process);
+  }
+
+  _hasExited(launchedProcess) {
+    return launchedProcess.exitCode != null || launchedProcess.signalCode != null;
+  }
+
+  _requestProcessExit(launchedProcess) {
+    if (this._hasExited(launchedProcess)) return Promise.resolve(true);
+
+    return new Promise((resolve, reject) => {
+      let timeout;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        launchedProcess.removeListener('exit', onExit);
+      };
+      const onExit = () => {
+        cleanup();
+        resolve(true);
+      };
+
+      launchedProcess.once('exit', onExit);
+      timeout = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, this.deactivationTimeoutMs);
+
+      try {
+        if (!launchedProcess.kill() && !this._hasExited(launchedProcess)) {
+          cleanup();
+          resolve(false);
+        }
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
+    });
   }
 
   _getLaunchArgs(proxyPort) {
@@ -122,12 +159,30 @@ export class ElectronInterceptor {
 
   async deactivate() {
     const launchedProcess = this.process;
-    this.process = null;
-    if (launchedProcess && !launchedProcess.killed) {
-      launchedProcess.kill();
+    if (!launchedProcess) {
+      this.active = false;
+      this._emitStatus('inactive', { pid: null });
+      return;
     }
+
+    let exited;
+    try {
+      exited = await this._requestProcessExit(launchedProcess);
+    } catch (err) {
+      this.active = true;
+      this._emitStatus('stop-failed', { pid: launchedProcess.pid, error: err.message });
+      throw new Error(`Failed to stop Electron app: ${err.message}. Stop can be retried`);
+    }
+
+    if (!exited) {
+      this.active = true;
+      this._emitStatus('stop-failed', { pid: launchedProcess.pid });
+      throw new Error('Electron app did not exit; its process state was preserved so Stop can be retried');
+    }
+
+    if (this.process === launchedProcess) this.process = null;
     this.active = false;
-    this._emitStatus('inactive', { pid: launchedProcess?.pid || null });
+    this._emitStatus('inactive', { pid: launchedProcess.pid });
   }
 
   _emitStatus(reason, extra = {}) {

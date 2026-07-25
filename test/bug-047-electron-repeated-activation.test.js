@@ -9,6 +9,7 @@ function fakeChild(pid) {
   child.killed = false;
   child.kill = () => {
     child.killed = true;
+    queueMicrotask(() => child.emit('exit', 0));
     return true;
   };
   return child;
