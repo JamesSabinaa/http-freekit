@@ -11,6 +11,31 @@ import { trafficToHar } from './har-converter.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 
+function harHeadersToObject(headers = []) {
+  const result = {};
+  for (const header of headers) {
+    const name = String(header?.name || '').toLowerCase();
+    if (!name) continue;
+    const value = String(header?.value ?? '');
+    if (result[name] === undefined) {
+      result[name] = value;
+    } else if (Array.isArray(result[name])) {
+      result[name].push(value);
+    } else {
+      result[name] = [result[name], value];
+    }
+  }
+  return result;
+}
+
+function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
+  if (!body || body.text === undefined || body.text === null) return '';
+  const text = String(body.text);
+  if (String(body.encoding || '').toLowerCase() !== 'base64') return text;
+  const mimeType = String(body.mimeType || fallbackMimeType).replace(/[\r\n,]/g, '') || fallbackMimeType;
+  return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
+}
+
 export class ApiServer {
   constructor(proxyServer, certificateAuthority, interceptorManager, options = {}) {
     this.proxy = proxyServer;
@@ -783,17 +808,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             url: entry.request.url || '',
             host,
             path: pathname + search,
-            requestHeaders: Object.fromEntries(
-              (entry.request.headers || []).map(h => [h.name.toLowerCase(), h.value])
-            ),
-            requestBody: entry.request.postData?.text || '',
+            requestHeaders: harHeadersToObject(entry.request.headers),
+            requestBody: harBodyToTraffic(entry.request.postData),
             requestBodySize: entry.request.bodySize || 0,
             statusCode: entry.response?.status || 0,
             statusMessage: entry.response?.statusText || '',
-            responseHeaders: Object.fromEntries(
-              (entry.response?.headers || []).map(h => [h.name.toLowerCase(), h.value])
-            ),
-            responseBody: entry.response?.content?.text || '',
+            responseHeaders: harHeadersToObject(entry.response?.headers),
+            responseBody: harBodyToTraffic(entry.response?.content),
             responseBodySize: entry.response?.content?.size || 0,
             duration: entry.time || 0,
             timestamp: new Date(entry.startedDateTime).getTime() || Date.now(),

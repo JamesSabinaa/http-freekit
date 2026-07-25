@@ -7,25 +7,26 @@ export function trafficToHar(requests, options = {}) {
     if (maskSensitive && SENSITIVE_HEADERS.includes(name.toLowerCase())) {
       return '[REDACTED]';
     }
-    return Array.isArray(value) ? value.join(', ') : String(value);
+    return String(value);
   };
+
+  const toHarHeaders = headers => Object.entries(headers || {}).flatMap(([name, value]) => {
+    const values = Array.isArray(value) ? value : [value];
+    return values.map(item => ({ name, value: maskHeaderValue(name, item) }));
+  });
+
+  const firstHeaderValue = value => Array.isArray(value) ? (value[0] || '') : (value || '');
 
   return {
     log: {
       version: '1.2',
       creator: { name: 'HTTP FreeKit', version: '1.0.0' },
       entries: requests.map(req => {
-        const reqHeaders = Object.entries(req.requestHeaders || {}).map(([name, value]) => ({
-          name,
-          value: maskHeaderValue(name, value)
-        }));
-        const resHeaders = Object.entries(req.responseHeaders || {}).map(([name, value]) => ({
-          name,
-          value: maskHeaderValue(name, value)
-        }));
+        const reqHeaders = toHarHeaders(req.requestHeaders);
+        const resHeaders = toHarHeaders(req.responseHeaders);
 
-        const reqContentType = req.requestHeaders?.['content-type'] || '';
-        const resContentType = req.responseHeaders?.['content-type'] || '';
+        const reqContentType = firstHeaderValue(req.requestHeaders?.['content-type']);
+        const resContentType = firstHeaderValue(req.responseHeaders?.['content-type']);
         const requestBody = toHarBody(req.requestBody);
         const responseBody = toHarBody(req.responseBody);
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
@@ -60,7 +61,7 @@ export function trafficToHar(requests, options = {}) {
               text: responseBody?.text || '',
               ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {})
             },
-            redirectURL: req.responseHeaders?.location || '',
+            redirectURL: firstHeaderValue(req.responseHeaders?.location),
             headersSize: -1,
             bodySize: req.responseBodySize || 0
           },
@@ -88,7 +89,7 @@ function toHarBody(body) {
   if (!body) return null;
   if (typeof body !== 'string') body = String(body);
 
-  const dataUriMatch = body.match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/);
+  const dataUriMatch = body.match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]*)$/);
   if (dataUriMatch) {
     return {
       text: dataUriMatch[2].replace(/\s+/g, ''),
