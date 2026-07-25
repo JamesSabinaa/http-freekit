@@ -3707,6 +3707,8 @@ export class ProxyServer {
   _getUpstreamProxyUrl() {
     const p = this.upstreamProxy;
     const scheme = p.type?.startsWith('socks') ? p.type : (p.type === 'https' ? 'https' : 'http');
+    const unwrappedHost = String(p.host).replace(/^\[|\]$/g, '');
+    const urlHost = net.isIP(unwrappedHost) === 6 ? `[${unwrappedHost}]` : p.host;
     let auth = '';
     if (p.auth) {
       const colonIdx = p.auth.indexOf(':');
@@ -3714,7 +3716,7 @@ export class ProxyServer {
       const pass = colonIdx === -1 ? '' : p.auth.slice(colonIdx + 1);
       auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
     }
-    return `${scheme}://${auth}${p.host}:${p.port}`;
+    return `${scheme}://${auth}${urlHost}:${p.port}`;
   }
 
   // Return an https-proxy-agent or socks-proxy-agent that handles CONNECT tunneling + TLS automatically.

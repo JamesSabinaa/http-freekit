@@ -461,6 +461,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-156 — Medium — IPv6 literal upstream proxies produce invalid URLs
 
+- Status: **Fixed**.
+
 - Evidence: upstream hosts are stored raw at `src/proxy/proxy-server.js:218-234`; `_getUpstreamProxyUrl()` interpolates `${p.host}:${p.port}` without IPv6 brackets at `:3070-3082`, and HTTPS/SOCKS agent creation consumes it at `:3086-3112`.
 - Impact: an otherwise valid upstream at `::1` or another IPv6 address fails HTTPS/SOCKS forwarding with Invalid URL.
 - Reproduction: configure upstream host `::1`; the generated URL is `http://::1:8080` rather than `http://[::1]:8080`.
