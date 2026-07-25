@@ -22,6 +22,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 10 | 13 new bugs found; documented below | 0/2 |
 | 11 | 7 new bugs found; documented below | 0/2 |
 | 12 | 8 new bugs found; documented below | 0/2 |
+| 13 | 4 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -197,6 +198,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-021 — Medium — WebSocket frame parsing has unbounded quadratic buffering
 
+- Status: **Fixed**.
 - Evidence: `src/proxy/ws-frame-parser.js:43` concatenates the complete retained buffer for every incoming chunk; `:75-99` accepts arbitrary 64-bit advertised lengths with no cap. Peer-controlled bytes enter this parser from `src/proxy/proxy-server.js:423-444`.
 - Impact: a huge declared frame delivered slowly causes repeated copies of all retained bytes, consuming increasing memory and CPU.
 - Reproduction: advertise a very large frame length and trickle payload chunks through a proxied WebSocket.
@@ -693,6 +695,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a slow or incomplete authenticated upload can hold a connection far beyond the advertised 30 seconds.
 - Reproduction: send part of a declared JSON body and hold the socket open beyond 30 seconds.
 
+### BUG-281 — Medium — Fragmented WebSocket messages are captured as separate frames
+
+- Evidence: `src/proxy/ws-frame-parser.js:47-121` parses individual frames but never assembles continuation frames or retains the initial opcode. Proxy capture increments message counters and emits each parsed frame independently.
+- Impact: one logical fragmented text/binary message appears as multiple incomplete messages with incorrect counts and no inspectable reconstructed payload.
+- Reproduction: send TEXT FIN=0 `hel`, then CONTINUATION FIN=1 `lo`; capture shows two records instead of `hello`.
+
+### BUG-282 — Medium — Sensitive HAR masking leaks structured cookies
+
+- Evidence: `src/api/har-converter.js:1-16` masks Cookie/Set-Cookie header values, but structured requestCookies/responseCookies are copied verbatim at `:47,63`. MCP export enables masking by default and HAR import preserves these arrays.
+- Impact: default masked MCP HAR exports expose secret structured cookie values in cleartext.
+- Reproduction: import a cookie array containing a secret and call MCP `export_traffic` with default masking.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1120,6 +1134,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: isolated browsers normalize activation URLs, but `src/interceptors/existing-browser-interceptor.js:45-46` appends arbitrary `options.url` directly to Chromium arguments.
 - Impact: activation accepts strings beginning with `--` as switches and accepts local/custom schemes rejected by the browser-open path.
 - Reproduction: activate Global Chrome with URL `--incognito` or a file URL.
+
+### BUG-283 — Medium — Java 8 JDKs are falsely reported unavailable
+
+- Evidence: `src/interceptors/jvm-interceptor.js:14-22` probes with `jps -h`; OpenJDK 8 supports `-?`/`-help` but rejects `-h` nonzero, which `isActivable()` converts to false.
+- Impact: a normal Java 8 JDK on PATH cannot use JVM interception despite providing Java and jps.
+- Reproduction: put JDK 8 first on PATH, run `jps -h`, and refresh interceptor status.
+
+### BUG-284 — Medium — Chromium interceptors disable all certificate validation
+
+- Evidence: isolated and Global Chrome argument construction adds the scoped SPKI trust flag plus unconditional `--ignore-certificate-errors`; macOS/Linux commonly use this path because system CA installation is Windows-only.
+- Impact: these browsers accept expired, self-signed, hostname-invalid, and passthrough/direct certificates unrelated to FreeKit; Global Chrome can apply this to the user's normal session.
+- Reproduction: activate on macOS/Linux and visit an invalid-certificate origin through passthrough/direct access.
 
 ## Electron, updater, and renderer
 
