@@ -190,6 +190,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-020 — Medium — H1 forward actions ignore header pre-steps
 
+- Status: **Fixed**.
 - Evidence: plain-HTTP pre-steps mutate `clientReq.headers` at `src/proxy/proxy-server.js:3351-3359`, but `forward` reconstructs headers only from unchanged `clientReq.rawHeaders` at `:3427`. The HTTPS mock-forward path repeats the mismatch at `:1074-1082,1150`; H2 uses the mutated header object.
 - Impact: add/remove-header transformations appear in logged data but never reach the forwarded origin.
 - Reproduction: create an add-header pre-step plus a forward action and inspect headers at the destination.

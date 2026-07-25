@@ -408,6 +408,28 @@ export class ProxyServer {
     return headers;
   }
 
+  // Preserve original header casing while treating req.headers as the source of
+  // truth after mock steps or breakpoints have added, changed, or removed fields.
+  _currentHeadersWithRawCase(rawHeaders, currentHeaders) {
+    const pending = new Map();
+    for (const [name, value] of Object.entries(this._stripUpstreamHeaders(currentHeaders || {}))) {
+      pending.set(name.toLowerCase(), { name, value });
+    }
+
+    const headers = {};
+    for (const rawName of Object.keys(this._rawHeadersToObject(rawHeaders || []))) {
+      const lower = rawName.toLowerCase();
+      const current = pending.get(lower);
+      if (!current) continue;
+      headers[rawName] = current.value;
+      pending.delete(lower);
+    }
+    for (const { name, value } of pending.values()) {
+      headers[name] = value;
+    }
+    return headers;
+  }
+
   _shouldStripUpstreamHeader(name) {
     const lower = String(name || '').toLowerCase();
     return [
@@ -1369,7 +1391,7 @@ export class ProxyServer {
               const forwardUrl = new URL(action.forwardTo);
               const isForwardHttps = forwardUrl.protocol === 'https:';
               const fwdLib = isForwardHttps ? https : http;
-              const reqHeaders = this._rawHeadersToObject(req.rawHeaders);
+              const reqHeaders = this._currentHeadersWithRawCase(req.rawHeaders, req.headers);
               if (action.addRequestHeaders) {
                 for (const [k, v] of Object.entries(action.addRequestHeaders)) {
                   reqHeaders[k] = v;
@@ -3881,7 +3903,7 @@ export class ProxyServer {
         const forwardUrl = new URL(action.forwardTo);
         const isHttps = forwardUrl.protocol === 'https:';
         const lib = isHttps ? https : http;
-        const reqHeaders = this._rawHeadersToObject(clientReq.rawHeaders);
+        const reqHeaders = this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers);
         if (action.addRequestHeaders) {
           for (const [k, v] of Object.entries(action.addRequestHeaders)) {
             reqHeaders[k] = v;
