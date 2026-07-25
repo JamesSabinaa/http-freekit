@@ -1980,10 +1980,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-171 — Medium — Monaco disposal leaks observers and editor instances
 
-- Status: **Partially fixed**.
-- Resolution: Centralized disposal removes registered editors and their observers idempotently. Concurrent initialization before `monacoReady` resolves can still create two editors for one persistent container; the later editor overwrites the active map entry while the first editor and its observers remain retained.
+- Status: **Fixed**.
+- Resolution: Centralized disposal remains idempotent, and each container now has generation-based initialization ownership. A newer create or explicit disposal invalidates pending work, replaces any current owner through the same cleanup path, and prevents stale work or a replaced DOM container from creating retained editors and observers after Monaco loads.
 
-- Evidence: `disposeBodyEditor()` only disposes the editor and deletes the map entry at `src/ui/app.js:3182-3188`. Each `createMonacoEditor()` creates a ResizeObserver, records an instance, and creates a document-wide MutationObserver at `:9139-9159`; observers disconnect only if the persistent container leaves the DOM. The Send editor is also disposed directly at `:6634-6638`.
+- Evidence: `createMonacoEditor()` claims a unique generation before awaiting `monacoReady`, validates both generation and container identity before creation, and centrally disposes the prior owner. `disposeMonacoContainer()` invalidates pending work and routes every registered editor through `disposeMonacoEditor()`, which disconnects both observers and disposes the editor once.
 - Impact: switching body modes, tabs, or details accumulates live observers and retained disposed editors, multiplying callbacks on every DOM mutation and resize.
 - Reproduction: repeatedly alternate text body modes and inspect retained Monaco instances and observers in a heap profile.
 

@@ -2222,11 +2222,13 @@
         wordWrap: 'on',
         folding: true,
       }).then(editor => {
-        if (!editor) {
+        if (!editor || !isMonacoEditorCurrent(monacoId, editor)) {
+          disposeMonacoEditor(editor);
           if (fallback) fallback.style.display = 'block';
           return;
         }
         activeBodyEditors[monacoId] = editor;
+        if (fallback) fallback.style.display = 'none';
         const container = document.getElementById(monacoId);
         if (!container) return;
         autoSizeExportEditor(editor, container);
@@ -2304,7 +2306,8 @@
       });
       sendExportCreating = false;
 
-      if (!editor) {
+      if (!editor || !isMonacoEditorCurrent('sendExportContent-monaco', editor)) {
+        disposeMonacoEditor(editor);
         container.style.display = 'none';
         fallback.style.display = 'block';
         return;
@@ -3305,10 +3308,7 @@
      * @param {string} containerId
      */
     function disposeBodyEditor(containerId) {
-      const existing = activeBodyEditors[containerId];
-      if (existing) {
-        disposeMonacoEditor(existing);
-      }
+      disposeMonacoContainer(containerId);
     }
 
     /**
@@ -3359,18 +3359,21 @@
         folding: true,
       });
 
-      if (editor) {
-        activeBodyEditors[containerId] = editor;
-
-        // Auto-size editor height based on content (capped at 70vh)
-        const lineCount = editor.getModel().getLineCount();
-        const lineHeight = 18;
-        const padding = 16;
-        const maxHeight = Math.round(window.innerHeight * 0.7);
-        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), maxHeight);
-        container.style.height = desiredHeight + 'px';
-        editor.layout();
+      if (!editor) return;
+      if (!isMonacoEditorCurrent(containerId, editor)) {
+        disposeMonacoEditor(editor);
+        return;
       }
+      activeBodyEditors[containerId] = editor;
+
+      // Auto-size editor height based on content (capped at 70vh)
+      const lineCount = editor.getModel().getLineCount();
+      const lineHeight = 18;
+      const padding = 16;
+      const maxHeight = Math.round(window.innerHeight * 0.7);
+      const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), maxHeight);
+      container.style.height = desiredHeight + 'px';
+      editor.layout();
     }
 
     function renderBodyViewer(elementId, body, contentType, mode, context = {}) {
@@ -6946,21 +6949,24 @@
         folding: true,
       });
 
-      if (editor) {
-        sendBodyEditor = editor;
-
-        editor.onDidChangeModelContent(() => scheduleSendExportUpdate());
-
-        // Ctrl+Enter sends the request
-        editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
-          sendRequest();
-        });
-
-        // Escape aborts the request
-        editor.addCommand(monacoApi.KeyCode.Escape, function () {
-          abortSendRequest();
-        });
+      if (!editor) return;
+      if (!isMonacoEditorCurrent(containerId, editor)) {
+        disposeMonacoEditor(editor);
+        return;
       }
+      sendBodyEditor = editor;
+
+      editor.onDidChangeModelContent(() => scheduleSendExportUpdate());
+
+      // Ctrl+Enter sends the request
+      editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
+        sendRequest();
+      });
+
+      // Escape aborts the request
+      editor.addCommand(monacoApi.KeyCode.Escape, function () {
+        abortSendRequest();
+      });
     }
 
     /**
@@ -9602,10 +9608,45 @@
 
     /**
      * Track all active Monaco editor instances for theme switching.
-     * @type {Array<{editor: object, container: HTMLElement}>}
+     * @type {Array<{editor: object, container: HTMLElement, containerId: string,
+     * generation: number, resizeObserver: ResizeObserver, mutationObserver: MutationObserver|null}>}
      */
     const monacoInstances = [];
     const disposedMonacoEditors = new WeakSet();
+    const monacoContainerGenerations = new Map();
+    let nextMonacoContainerGeneration = 0;
+
+    function claimMonacoContainer(containerId) {
+      const generation = ++nextMonacoContainerGeneration;
+      monacoContainerGenerations.set(containerId, generation);
+      return generation;
+    }
+
+    /**
+     * Invalidate pending initialization and dispose every editor owned by a container.
+     * @param {string} containerId
+     */
+    function disposeMonacoContainer(containerId) {
+      claimMonacoContainer(containerId);
+      const editors = new Set(
+        monacoInstances
+          .filter(instance => instance.containerId === containerId)
+          .map(instance => instance.editor)
+      );
+      const activeBodyEditor = activeBodyEditors[containerId];
+      if (activeBodyEditor) editors.add(activeBodyEditor);
+      for (const editor of editors) disposeMonacoEditor(editor);
+    }
+
+    function isMonacoEditorCurrent(containerId, editor) {
+      if (!editor) return false;
+      const instance = monacoInstances.find(candidate => candidate.editor === editor);
+      return Boolean(instance &&
+        instance.containerId === containerId &&
+        monacoContainerGenerations.get(containerId) === instance.generation &&
+        document.getElementById(containerId) === instance.container &&
+        document.body.contains(instance.container));
+    }
 
     /**
      * Dispose an editor and every resource retained for its lifecycle.
@@ -9648,14 +9689,30 @@
      * @returns {Promise<object|null>} The Monaco editor instance, or null if Monaco failed to load.
      */
     async function createMonacoEditor(containerId, options = {}) {
-      const monaco = await monacoReady;
-      if (!monaco) return null;
-
+      const generation = claimMonacoContainer(containerId);
       const container = document.getElementById(containerId);
       if (!container) {
         console.warn('[Monaco] Container not found:', containerId);
         return null;
       }
+
+      const monaco = await monacoReady;
+      if (!monaco) return null;
+      if (monacoContainerGenerations.get(containerId) !== generation ||
+          document.getElementById(containerId) !== container ||
+          !document.body.contains(container)) {
+        const detachedEditors = monacoInstances
+          .filter(instance => instance.containerId === containerId &&
+            !document.body.contains(instance.container))
+          .map(instance => instance.editor);
+        for (const editor of detachedEditors) disposeMonacoEditor(editor);
+        return null;
+      }
+
+      const replacedEditors = monacoInstances
+        .filter(instance => instance.containerId === containerId)
+        .map(instance => instance.editor);
+      for (const editor of replacedEditors) disposeMonacoEditor(editor);
 
       // Determine current theme
       const resolvedTheme = options.theme || getMonacoTheme();
@@ -9694,7 +9751,14 @@
       resizeObserver.observe(container);
 
       // Track instance for theme switching and cleanup
-      const instance = { editor, container, resizeObserver, mutationObserver: null };
+      const instance = {
+        editor,
+        container,
+        containerId,
+        generation,
+        resizeObserver,
+        mutationObserver: null
+      };
       monacoInstances.push(instance);
 
       // Cleanup when container is removed from DOM
