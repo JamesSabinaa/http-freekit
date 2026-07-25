@@ -1197,6 +1197,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-026 — High — macOS releases omit the ZIP required by `MacUpdater`
 
+- Status: **Fixed**.
 - Evidence: `electron-builder.config.cjs:70-75` builds only DMG targets. The installed `electron-updater/out/MacUpdater.js:77-80` searches for a ZIP and throws `ERR_UPDATER_ZIP_FILE_NOT_FOUND` when one is absent.
 - Impact: macOS users can be notified of an update but accepting the download fails.
 - Reproduction: publish the configured mac artifacts and call `downloadUpdate()` on macOS.
