@@ -710,6 +710,63 @@ export class ProxyServer {
     });
   }
 
+  _createWebSocketRelay(source, destination, onChunk) {
+    let active = true;
+    let waitingForDrain = false;
+
+    const handleDrain = () => {
+      if (!active) return;
+      waitingForDrain = false;
+      source.resume();
+    };
+
+    const forward = (chunk) => {
+      if (!active) return;
+      onChunk(chunk);
+      if (!destination.write(chunk) && !waitingForDrain) {
+        waitingForDrain = true;
+        source.pause();
+        destination.once('drain', handleDrain);
+      }
+    };
+
+    const stop = () => {
+      if (!active) return;
+      active = false;
+      if (waitingForDrain) {
+        waitingForDrain = false;
+        source.resume();
+      }
+      source.removeListener('data', forward);
+      destination.removeListener('drain', handleDrain);
+      source.removeListener('close', stop);
+      source.removeListener('error', stop);
+      destination.removeListener('close', stop);
+      destination.removeListener('error', stop);
+    };
+
+    source.on('data', forward);
+    source.once('close', stop);
+    source.once('error', stop);
+    destination.once('close', stop);
+    destination.once('error', stop);
+
+    return { forward, stop };
+  }
+
+  _startWebSocketRelay(clientSocket, proxySocket, head, proxyHead, onClientChunk, onServerChunk) {
+    const clientRelay = this._createWebSocketRelay(clientSocket, proxySocket, onClientChunk);
+    const serverRelay = this._createWebSocketRelay(proxySocket, clientSocket, onServerChunk);
+
+    if (head.length) clientRelay.forward(head);
+    if (proxyHead.length) serverRelay.forward(proxyHead);
+
+    return () => {
+      clientRelay.stop();
+      serverRelay.stop();
+    };
+  }
+
   // Handle HTTP upgrade requests (WebSocket passthrough)
   _handleHttpUpgrade(req, socket, head, context = {}) {
     const startTime = Date.now();
@@ -784,7 +841,6 @@ export class ProxyServer {
       }
       responseStr += '\r\n';
       socket.write(responseStr);
-      if (proxyHead.length) socket.write(proxyHead);
 
       // Track message counts and bytes
       let clientMessages = 0;
@@ -806,35 +862,25 @@ export class ProxyServer {
         this._emitWsFrame(frame, 'server', requestId, ++frameSequence);
       });
 
-      // `head`/`proxyHead` contain bytes already read beyond the HTTP upgrade
-      // headers. They are part of the WebSocket stream and must not be dropped.
-      if (head.length) {
-        clientBytes += head.length;
-        try { clientParser.push(head); } catch { /* forward even if parse fails */ }
-        proxySocket.write(head);
-      }
-      if (proxyHead.length) {
-        serverBytes += proxyHead.length;
-        try { serverParser.push(proxyHead); } catch { /* already forwarded above */ }
-      }
-
-      // Client -> Server: parse frames, forward raw bytes
-      socket.on('data', (chunk) => {
-        clientBytes += chunk.length;
-        try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
-        proxySocket.write(chunk);
-      });
-
-      // Server -> Client: parse frames, forward raw bytes
-      proxySocket.on('data', (chunk) => {
-        serverBytes += chunk.length;
-        try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
-        socket.write(chunk);
-      });
+      const stopRelays = this._startWebSocketRelay(
+        socket,
+        proxySocket,
+        head,
+        proxyHead,
+        (chunk) => {
+          clientBytes += chunk.length;
+          try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
+        },
+        (chunk) => {
+          serverBytes += chunk.length;
+          try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
+        }
+      );
 
       const cleanup = () => {
         if (cleanedUp) return;
         cleanedUp = true;
+        stopRelays();
         const duration = Date.now() - startTime;
         this._emitRequest({
           id: requestId,

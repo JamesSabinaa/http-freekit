@@ -592,6 +592,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-183 — Medium — Raw WebSocket relay ignores socket backpressure
 
+- Status: **Fixed**.
+- Resolution: Both raw WebSocket directions now pause their readable peer when the destination applies backpressure, resume only after `drain`, apply the same flow control to buffered upgrade heads, and remove relay and pending drain listeners on close or error without changing frame parsing or byte accounting.
+
 - Evidence: both data directions unconditionally call `.write(chunk)` at `src/proxy/proxy-server.js:433-445`, never checking a false return or pausing until drain; initial buffered head writes at `:423-430` are handled the same way.
 - Impact: a fast peer and slow or non-reading peer can grow Node writable queues and process memory without bound.
 - Reproduction: stop reading the downstream socket while the WebSocket origin floods data and monitor `writableLength`/RSS.
