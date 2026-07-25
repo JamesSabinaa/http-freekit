@@ -32,6 +32,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 20 | 15 new bugs found; documented below | 0/2 |
 | 21 | 5 new bugs found; documented below | 0/2 |
 | 22 | 8 new bugs found; documented below | 0/2 |
+| 23 | 6 new bugs found; documented below | 0/2 |
+| 24 | 3 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -226,9 +228,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-101 — High — Malformed mock rules are accepted and later crash evaluation
 
-- Evidence: `src/api/api-server.js:789-804` accepts any truthy `matchers`; `_findMockRule()` assumes an array and calls `.every()` at `src/proxy/proxy-server.js:3174-3177`, while individual matchers assume fields such as `value` exist. Evaluation runs in async request handlers without a containing validation boundary.
+- Status: **Partially fixed**.
+- Resolution: Ordinary create/import validation now rejects several malformed rule shapes, but malformed persisted rules and rules nested in groups can still reach runtime matcher evaluation.
+- Evidence: API create and replacement-import paths now call `hasCompleteMockMatchers()`, but `loadMockRules()` assigns persisted non-group rule objects without validating them. `_findMockRule()` still assumes `rule.matchers` is an array and calls `.every()`, while individual evaluators call string methods such as `.toLowerCase()` and `.startsWith()` on unvalidated fields.
 - Impact: one invalid persisted rule can throw on every matching request and may terminate the Node process through an unhandled rejection.
-- Reproduction: create a rule with `matchers` as an object; creation returns 200 and the next request throws `rule.matchers.every is not a function`.
+- Reproduction: persist or otherwise load an enabled rule with `matchers: {}` and an action, then send a request; evaluation throws `rule.matchers.every is not a function`.
 
 ### BUG-102 — High/Medium — Transform and timeout actions silently become fixed 200s
 
@@ -747,15 +751,47 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-334 — Medium — Rule-group exports cannot be imported back
 
-- Evidence: `exportMockRules()` serializes the complete top-level `mockRules` array, including group objects, at `src/ui/app.js:6483-6491`. `importMockRules()` posts every object to the ordinary `/api/mock-rules` endpoint, ignores non-success responses, and always toasts success at `:6501-6530`; that route rejects groups without ordinary rule matchers and actions at `src/api/api-server.js:916-937`.
-- Impact: a valid `.htkrules` backup containing flat groups silently loses each group and all of its children on restore while the UI claims every exported item was imported.
-- Reproduction: create a group containing a rule, export it, remove the rules, and import the file; the group request returns 400, no grouped rules are restored, and the success toast still appears.
+- Evidence: `exportMockRules()` includes top-level groups. Replacement import now accepts them through the atomic PUT route, but `importMockRules()` selects Replace only when a mock already exists; an empty app necessarily uses append mode, which posts each group to the ordinary `/api/mock-rules` route and receives 400.
+- Impact: a valid `.htkrules` group backup still cannot restore into the normal empty-state destination. The failure is now reported instead of falsely toasted as success, but the group and all of its children remain absent.
+- Reproduction: export a group containing a rule, clear every mock, and import the file; append POST rejects the group and nothing is restored. Add an unrelated mock first, choose Replace, and the same file succeeds.
 
 ### BUG-339 — Medium — Stale HTTP/2 session events evict a valid replacement
 
 - Evidence: `_getH2Session()` registers each session's close and post-connect error listeners to call `_evictH2Session(origin)` at `src/proxy/proxy-server.js:3099-3118`. Eviction at `:3148-3156` closes and deletes whichever session is currently cached for that origin without checking that it is the session that emitted the event.
 - Impact: after session A receives GOAWAY and session B replaces it, A's delayed close event destroys B. Requests on the healthy replacement fail or fall back unnecessarily and can interact with replay-sensitive request handling.
 - Reproduction: cache session A, evict it on GOAWAY, cache connected replacement B, then emit A's delayed close; B is closed and removed from the cache.
+
+### BUG-344 — Medium — WebSocket upgrades merge repeated response headers
+
+- Evidence: `_handleHttpUpgrade()` rebuilds the upstream 101 response by iterating `proxyRes.headers` and string-interpolating each value at `src/proxy/proxy-server.js:643-648`. Node represents repeated headers such as `set-cookie` as arrays, which interpolation joins with commas into one field line.
+- Impact: handshake metadata loses field boundaries; multiple cookies become a single potentially invalid cookie, especially when an `Expires` attribute itself contains a comma.
+- Reproduction: return two `Set-Cookie` fields from a WebSocket origin and inspect the raw proxied 101 response; it contains one comma-joined `set-cookie` line.
+
+### BUG-345 — Low/Medium — Legacy-rule migration write failure aborts startup
+
+- Evidence: startup successfully flattens saved nested groups with `proxy.loadMockRules()`, then immediately calls `settings.set('mockRules', restored.rules)` when migration occurred at `src/index.js:101-106`. A read-only/full settings directory makes that persistence call throw into `main().catch`, even though the usable normalized rules are already loaded in memory.
+- Impact: an installation that previously started with readable legacy rules now exits before proxy/API startup solely because it cannot persist the optional migration result.
+- Reproduction: save a nested legacy group, make settings replacement fail, and start FreeKit; migration succeeds in memory but the process terminates on the write error.
+
+### BUG-350 — Medium — Matcher hardening disables legacy match-all rules
+
+- Status: **Fixed**.
+- Resolution: Runtime matching once again preserves the historical `matchers: []` match-all behavior for persisted rules, while API and UI validation continue to reject new blank rules.
+- Evidence: the BUG-138 hardening in `4b1ef28` made `_findMockRule()` reject an empty matcher array, although previously created and persisted rules relied on JavaScript's empty-array `.every()` semantics. Breakpoint, forward, HTTP/1 TLS, and HTTP/2 tests all stopped matching their explicit match-all rules.
+- Impact: existing saved match-all mocks silently stopped applying after upgrade, disabling responses, breakpoints, and forwarding behavior.
+- Reproduction: load a persisted rule with `matchers: []` on `4b1ef28` and send an otherwise matching request; `_findMockRule()` returns no rule. Commit `809eb87` restores the rule's prior behavior.
+
+### BUG-351 — Medium — Adding a replacement client certificate leaves the old one active
+
+- Evidence: the item route deduplicates only the exact `{host,pfxPath}` pair and appends a different path for the same host. `_getClientCertificateOptions()` then uses the first normalized-host match, so the older entry wins indefinitely.
+- Impact: the API and UI report that the new certificate was added, but mTLS connections keep presenting the superseded certificate and continue to fail after certificate rotation.
+- Reproduction: add two different PFX paths for the same host, with the old certificate first, then connect to that host; FreeKit loads the first PFX rather than the newly added one.
+
+### BUG-352 — Medium — Client-certificate item workflow cannot configure encrypted PFX files
+
+- Evidence: the client-certificate UI has no passphrase input, and the item POST route stores only `host` and `pfxPath`, silently discarding a supplied `passphrase`. The proxy loader supports a passphrase and the legacy bulk route can retain one, but the normal item workflow cannot provide it.
+- Impact: adding a password-protected PKCS#12 file appears to succeed, but every matching mTLS connection fails when Node attempts to load the encrypted PFX without its password.
+- Reproduction: add an encrypted PFX through the UI, or include `passphrase` in the item POST, then connect to its host; the saved entry has no passphrase and TLS setup fails.
 
 ## Interceptors and cleanup
 
@@ -997,7 +1033,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-120 — High — Repeated Global Chrome activation loses the real browser handle
 
-- Status: **Partially fixed**. Sequential repeat activation is rejected, but the guard is set before an awaited process scan and does not reserve an in-progress activation, so overlapping Starts can still overwrite the first handle.
+- Status: **Fixed**.
+- Resolution: The interceptor rejects sequential repeats, while the manager now reserves the interceptor ID across discovery and activation so overlapping Starts cannot replace its handle.
 - Evidence: `src/interceptors/existing-browser-interceptor.js:23-70` has no active guard, replaces `this.process` on every activation, and lets each child's exit listener mutate shared state. `deactivate()` at `:73-78` can kill only the newest handle.
 - Impact: a second short-lived Chromium launcher can replace the original proxied-browser handle, mark the interceptor inactive on exit, and leave the real browser running after Stop.
 - Reproduction: activate Global Chrome while Chrome is closed, activate it again, then Stop; the original proxied browser remains.
@@ -1011,7 +1048,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-122 — High — Switching Android activation modes strands the old mode
 
-- Status: **Partially fixed**. A normal replacement cleans the recorded mode first, but concurrent replacements can both pass that cleanup point and last-writer-win the device map, stranding the losing mode.
+- Status: **Fixed**.
+- Resolution: Normal replacement cleans the recorded mode first, and manager-level serialization now prevents concurrent replacements from racing that cleanup and overwriting device ownership.
 - Evidence: `src/interceptors/android-adb-interceptor.js:383-465` never cleans an existing `activatedDevices` entry before replacing it. Stop at `:497-525` consults only the last stored mode.
 - Impact: switching between global-proxy and companion-app modes can leave the prior global proxy/CA or VPN app/reverse tunnel active, while Stop cleans only the newer half.
 - Reproduction: activate a device in global mode, make the companion app available, activate the same serial again, then Stop and inspect the global proxy.
@@ -1259,6 +1297,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-290 — High/Medium — Browser activation can race Stop and lose the new browser
 
+- Status: **Fixed**.
+- Resolution: Manager-level per-interceptor serialization prevents activation and Stop from overlapping through application APIs.
+
 - Evidence: `BrowserInterceptor.deactivate()` sets active false before its awaited termination loop at `src/interceptors/browser-interceptor.js:230-259`. Concurrent activation then passes the guard and overwrites process/profile/tracked state at `:35-72`; the old deactivation continues through mutable fields and finally resets them.
 - Impact: the old Stop can kill or forget a newly reported-successful isolated browser.
 - Reproduction: keep the old browser alive, begin Stop, then activate again before Stop resolves.
@@ -1325,6 +1366,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-306 — High/Medium — Electron activation can outlive Stop or shutdown
 
+- Status: **Fixed**.
+- Resolution: Direct Stop now returns an operation conflict while spawn is pending, and bulk shutdown waits for pre-existing activation before deactivating the resulting child.
+
 - Evidence: `ElectronInterceptor.activate()` at `src/interceptors/electron-interceptor.js:86-101` marks `activating`, awaits spawn confirmation, and only then stores the process and active state. `deactivate()` at `:119-125` sees no process during that wait, while `InterceptorManager.deactivateAll()` skips it because `isActive()` is false.
 - Impact: stopping or quitting during spawn can complete successfully before a newly launched Electron app becomes active and remains orphaned with proxy and TLS-bypass configuration.
 - Reproduction: delay a fake child's `spawn` event, start activation, await Stop, then emit `spawn`; activation finishes active with a live, un-killed child.
@@ -1361,6 +1405,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-312 — High/Medium — Pending device and JVM activations can commit after Stop
 
+- Status: **Fixed**.
+- Resolution: Direct Stop rejects overlap and bulk shutdown awaits each pre-existing manager operation before checking and deactivating its resulting state.
+
 - Evidence: Android activation awaits discovery and configuration before recording ownership at `src/interceptors/android-adb-interceptor.js:428-493`, while Stop returns when no record exists at `:536-544`. JVM activation similarly awaits discovery/attach at `src/interceptors/jvm-interceptor.js:400-409`, records at `:428-432`, and Stop returns for an unrecorded PID at `:464-468`. Docker has the same bookkeeping race at `src/interceptors/docker-interceptor.js:49-74,94-97`.
 - Impact: Stop or graceful shutdown can report completion, after which a pending operation modifies an Android proxy or attaches a JVM agent and only then records itself active.
 - Reproduction: delay the first discovery call, start activation, complete Stop while no target is recorded, then release discovery; activation finishes active and externally configured after Stop returned.
@@ -1391,6 +1438,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-320 — High/Medium — Fresh Terminal activation can outlive Stop or shutdown
 
+- Status: **Fixed**.
+- Resolution: Manager serialization makes direct Stop conflict with a pending launch and makes bulk shutdown await it before terminating the recorded shell.
+
 - Evidence: POSIX activation holds its launched process and shell PID only in local variables while awaiting terminal launch, then records them at `src/interceptors/terminal-interceptors.js:214-218`. `deactivate()` at `:233-245` sees empty arrays during that wait and returns without canceling activation.
 - Impact: Stop or graceful shutdown can finish before a pending launch records itself, after which a new terminal opens and remains proxy-configured and active.
 - Reproduction: delay `_launchTrackedPosixTerminal()`, start activation, await Stop, then resolve the launch; the interceptor changes from inactive/empty to active with a live process and session PID.
@@ -1402,6 +1452,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: make the ADB settings command apply FreeKit's proxy and then time out so `_setProxy()` returns false; activation fails, the map stays empty, and Stop leaves the changed device proxy in place.
 
 ### BUG-326 — High/Medium — Global Chrome activation can outlive Stop
+
+- Status: **Fixed**.
+- Resolution: Manager serialization prevents Stop from completing during the pending browser scan and bulk shutdown waits before cleaning the resulting activation.
 
 - Evidence: `ExistingBrowserInterceptor.activate()` checks `active`/`process` before awaiting `_isBrowserRunning()` and records no `activating` reservation. `deactivate()` can therefore complete while the scan is pending, after which activation resumes and spawns the browser.
 - Impact: Stop or graceful shutdown can report success before Global Chrome launches and remains active with the user's normal profile and proxy flags.
@@ -1448,6 +1501,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: when proxy setup and staged-CA removal both fail, the interceptor records `mode: 'staging-cleanup'` and sets itself active at `src/interceptors/android-adb-interceptor.js:554-568`. The renderer maps every non-companion mode to “Global proxy” and displays “Activated” at `src/ui/app.js:4126-4143`.
 - Impact: an activation that explicitly failed without configuring a proxy appears as a successful global interception; the only retained state is a cleanup retry for a staged certificate.
 - Reproduction: fail `_setProxy()` and `_removeCaCert()`, refresh Android metadata, and inspect the device row; it shows an activated Global proxy despite having no proxy configured.
+
+### BUG-346 — High/Medium — Shutdown accepts activations after their cleanup turn
+
+- Evidence: `deactivateAll()` walks interceptors sequentially and waits only for the operation already registered for the current ID at `src/interceptors/interceptor-manager.js:133-145`. It sets no global closing flag, and `_runExclusive()` at `:87-105` continues admitting new work for IDs whose turn has passed while the API remains available.
+- Impact: graceful shutdown can finish with a newly activated browser, terminal, device proxy, or attached process still active and unowned by the exiting server.
+- Reproduction: let shutdown finish the first interceptor and block on a later one, then start activation for the first ID; release the blocker and observe shutdown complete without deactivating the new state.
+
+### BUG-347 — High/Medium — Browser open actions bypass lifecycle serialization
+
+- Evidence: `InterceptorManager.openUrl()` calls an active browser's `openUrl()` outside `_runExclusive()` at `src/interceptors/interceptor-manager.js:115-127`; `focus()` bypasses the lock similarly at `:107-113`. Stop can clear the browser's process, profile, and proxy state while the open path is between its active checks and launch.
+- Impact: a URL action can finish after Stop and spawn an untracked browser using cleared `profileDir` or `proxyPort` values. Focus can likewise target stale or already terminated process state.
+- Reproduction: pause the browser's second active check, complete manager Stop, then release the open; it reports success and launches after Stop with null lifecycle configuration while no manager operation was tracked.
 
 ## Electron, updater, and renderer
 
@@ -1620,7 +1685,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-134 — High — Generated request snippets permit shell and code injection
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Language and shell literals are now escaped. cURL raw-body snippets still use `-d`, so a body beginning with `@` reads a local file, and multipart text fields still use `-F`, where `name=@path` has the same file-upload semantics; literal values require `--data-raw` and `--form-string`.
 
 - Evidence: `generateExportSnippet()` interpolates captured URLs and headers directly into single-quoted cURL at `src/ui/app.js:1962-1968` despite the safe `shellSingleQuote()` helper at `:1778-1780`. Python, JavaScript, PowerShell, wget, PHP, and Go output similarly interpolates values without language-specific escaping at `:1971-2055`; the context menu copies these snippets at `:8498-8503`.
 - Impact: running a snippet copied from an untrusted captured request can execute attacker-controlled shell commands or source code.
@@ -1636,7 +1702,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-136 — Medium — Concurrent or retried Save All duplicates new mock rules
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Save All itself is serialized, but per-rule Save controls share no lock with it or with each other; overlapping Save-to-server actions can still POST the same new draft twice, and revert/delete remain enabled during the snapshot.
 
 - Evidence: the button invokes `saveAllMockRules()` without being disabled at `src/ui/index.html:184-185`. Every invocation snapshots all drafts and POSTs new ones without IDs at `src/ui/app.js:6117-6148`; drafts clear only after the whole batch succeeds.
 - Impact: double-clicking creates equivalent rules with different IDs, and retrying after a later batch item fails duplicates every earlier successful new rule.
@@ -1644,7 +1711,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-137 — Medium — Opening another mock editor silently discards the current edit
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Direct editor switching now preserves valid edits. Collapse All still clears the live editor without saving, and a single-rule collapse ignores a failed validation result before clearing the invalid edit.
 
 - Evidence: `addNewMockRule()` overwrites `mockEditingRule` and `mockEditDraft` at `src/ui/app.js:5617-5635`; `editMockRule()` repeats this at `:5642-5649`. The previous edit becomes a saved draft only when that same rule is collapsed at `:5658-5667`.
 - Impact: switching directly from rule A's editor to rule B or Add Rule loses A's changes, and the unsaved-changes warning cannot see them.
@@ -1652,7 +1720,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-138 — Medium — A blank matcher creates a match-everything mock
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Blank broad matchers and new empty matcher arrays are rejected, while legacy explicit match-all arrays remain compatible. `raw-body-exact` and `exact-query` are still accepted without a `value`; the runtime distinguishes a missing value from the intended empty string, leaving the visually blank exact rule inert.
 
 - Evidence: `saveMockRule()` rejects blank conditions only if the matcher array is also empty at `src/ui/app.js:6026-6036`; a nonempty blank matcher passes. URL Contains then evaluates `url.includes("")` at `src/proxy/proxy-server.js:3222-3223`, which is true for every URL.
 - Impact: a visually blank rule can unexpectedly return its mock response for all traffic.
@@ -1676,7 +1745,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-141 — Medium — Send editor startup can mix one tab's form with another active ID
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Active-tab changes during Monaco startup are reconciled, but startup still renders a usable form before awaiting Monaco and then reloads the stored tab. Edits made during a slow load are overwritten when initialization finishes.
 
 - Evidence: startup captures `initialTab`, awaits Monaco initialization, then unconditionally reloads the captured tab at `src/ui/app.js:7163-7171`. During the await, `switchSendTab()` or `addSendTab()` can change `activeSendTab` at `:7124-7138`, while body loading before the editor exists is ineffective at `:6613-6617`.
 - Impact: the active tab ID and visible form diverge; later save/send actions can write the first tab's request into the newly active tab.
@@ -1684,7 +1754,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-142 — Medium — cURL paste corrupts valid multi-data commands
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Repeated data, single-quoted backslashes, and Unicode Basic auth are improved. Quoted Windows paths still lose backslashes, an empty data argument consumes the following option, lowercase content-type can gain a conflicting default, `--data-urlencode` is not curl-compatible, and `@file` modes are treated as literal text.
 
 - Evidence: every `-d`, `--data`, `--data-raw`, or `--data-binary` overwrites `result.body` at `src/ui/app.js:6511-6513`, although cURL joins repeated data options with `&`. `--data-urlencode` is copied without encoding at `:6514-6519`; the tokenizer strips backslashes inside single quotes at `:6487-6492`, and Unicode basic-auth values can throw through `btoa()` at `:6524-6525`.
 - Impact: the Send request differs from the pasted command, and some valid cURL input aborts paste handling entirely.
@@ -2109,6 +2180,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: custom and manual interceptor cards declare `role="button"` and `tabindex="0"`, but their key handlers activate only for Enter at `src/ui/app.js:3808-3826,3854-3862`.
 - Impact: the controls violate expected button keyboard behavior; pressing Space scrolls or does nothing instead of expanding or activating the focused card.
 - Reproduction: focus a collapsed interceptor card with Tab and press Space; the advertised button does not activate.
+
+### BUG-348 — Medium — Request snippets replay display text instead of original bytes
+
+- Evidence: `_safeBodyString()` converts binary bodies to data URIs, truncates large text, substitutes large-binary placeholders, and decompresses encoded bodies for display at `src/proxy/proxy-server.js:4620-4669`. All eight raw snippet generators use `requestBody` literally while retaining the original request headers at `src/ui/app.js:2014-2110`.
+- Impact: copied replays send data-URI text, truncated text, or a placeholder rather than the captured bytes. Compressed request bytes are normally represented as display text while the original `Content-Encoding` header remains, so the destination cannot decode the replay correctly.
+- Reproduction: capture bytes `00 ff 41 80 0a` and generate any raw snippet; its body is the literal `data:application/octet-stream;base64,AP9BgAo=` string. A compressed request likewise replays the display representation with its encoding header intact.
+
+### BUG-349 — Medium — Append import partially commits and duplicates on retry
+
+- Evidence: the append branch of `importMockRules()` posts rules sequentially at `src/ui/app.js:6528-6541`. A later rejection throws only after every earlier POST has already mutated runtime and persisted; rules without IDs receive fresh UUIDs from the API on each attempt.
+- Impact: one invalid or unsupported item leaves a partial import despite the overall error. Retrying the same file creates another copy of the successful prefix and can compound the rule set on every attempt.
+- Reproduction: append `[validRule, {}]`; the valid rule persists before the second request fails. Retry and observe another UUID-backed copy of that rule.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
