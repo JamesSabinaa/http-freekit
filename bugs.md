@@ -65,6 +65,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-057 — Medium — Settings write failures are reported as successful saves
 
+- Status: **Fixed**.
+
 - Evidence: `src/settings.js:25-31` catches write errors, logs them, and returns no failure. `set()`/`setAll()` at `:39-47` therefore complete normally, and API setting routes return success regardless of whether disk persistence worked.
 - Impact: on a read-only/full filesystem the UI says settings were saved, the in-memory value works temporarily, and every change disappears on restart.
 - Reproduction: make `settings.json` unwritable, change a setting through the API, observe a success response, then restart and observe the old value.

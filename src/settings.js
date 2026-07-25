@@ -33,6 +33,7 @@ export class Settings {
       fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
     } catch (err) {
       console.error('[Settings] Failed to save settings:', err.message);
+      throw err;
     }
   }
 
@@ -41,8 +42,14 @@ export class Settings {
   }
 
   set(key, value) {
-    this.data[key] = value;
-    this._save();
+    const previousData = this.data;
+    this.data = { ...this.data, [key]: value };
+    try {
+      this._save();
+    } catch (err) {
+      this.data = previousData;
+      throw err;
+    }
   }
 
   getAll() {
@@ -50,7 +57,13 @@ export class Settings {
   }
 
   setAll(obj) {
-    Object.assign(this.data, obj);
-    this._save();
+    const previousData = this.data;
+    this.data = { ...this.data, ...obj };
+    try {
+      this._save();
+    } catch (err) {
+      this.data = previousData;
+      throw err;
+    }
   }
 }

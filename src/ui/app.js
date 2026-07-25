@@ -74,6 +74,18 @@
       return nativeFetch(resource, { ...options, headers });
     };
 
+    const authenticatedFetch = window.fetch.bind(window);
+    window.fetch = async (resource, options = {}) => {
+      const requestUrl = new URL(typeof resource === 'string' ? resource : resource.url, window.location.href);
+      const isManagementApi = requestUrl.origin === window.location.origin && requestUrl.pathname.startsWith('/api/');
+      const response = await authenticatedFetch(resource, options);
+      if (isManagementApi && !response.ok) {
+        const payload = await response.clone().json().catch(() => ({}));
+        throw new Error(payload.error || `Management API returned HTTP ${response.status}`);
+      }
+      return response;
+    };
+
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
 
