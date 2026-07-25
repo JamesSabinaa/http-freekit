@@ -9,9 +9,17 @@ import { ApiServer } from '../src/api/api-server.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const editorStart = rendererSource.indexOf('let sendHeadersList = []');
-const editorEnd = rendererSource.indexOf('// Load headers from JSON string', editorStart);
+const editorEnd = rendererSource.indexOf('// ============ SEND TAB MANAGEMENT', editorStart);
+const normalizeStart = rendererSource.indexOf('function normalizeSendHeaderRows(');
+const normalizeEnd = rendererSource.indexOf('function normalizeStoredSendTab(', normalizeStart);
+const curlStart = rendererSource.indexOf('function encodeCurlDataUrlValue(');
+const curlEnd = rendererSource.indexOf('// ============ SEND REQUEST', curlStart);
 assert.notEqual(editorStart, -1);
 assert.notEqual(editorEnd, -1);
+assert.notEqual(normalizeStart, -1);
+assert.notEqual(normalizeEnd, -1);
+assert.notEqual(curlStart, -1);
+assert.notEqual(curlEnd, -1);
 
 function serializeHeaderRows(rows) {
   const hidden = { value: '' };
@@ -25,6 +33,39 @@ function serializeHeaderRows(rows) {
     context
   );
   return JSON.parse(hidden.value);
+}
+
+function loadHeaderRows(headers) {
+  const hidden = { value: '' };
+  const rows = { innerHTML: '' };
+  const context = {
+    document: {
+      getElementById(id) {
+        if (id === 'sendHeaders') return hidden;
+        if (id === 'sendHeaderRows') return rows;
+        return null;
+      }
+    },
+    esc: value => String(value)
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${rendererSource.slice(normalizeStart, normalizeEnd)}
+    ${rendererSource.slice(editorStart, editorEnd)}
+    loadSendHeadersFromJson(${JSON.stringify(JSON.stringify(headers))});
+    __rows = sendHeadersList;
+  `, context);
+  return JSON.parse(JSON.stringify(context.__rows));
+}
+
+function parseCurl(command) {
+  const context = {
+    TextEncoder,
+    btoa: value => Buffer.from(value, 'binary').toString('base64')
+  };
+  vm.createContext(context);
+  vm.runInContext(rendererSource.slice(curlStart, curlEnd), context);
+  return JSON.parse(JSON.stringify(context.parseCurlCommand(command)));
 }
 
 test('Send serializes repeated enabled header rows into ordered arrays', () => {
@@ -74,4 +115,76 @@ test('Send backend emits serialized arrays as repeated request headers', async t
 
   assert.deepEqual(values, ['one', 'two']);
   assert.equal((await response).statusCode, 200);
+});
+
+test('cURL import keeps repeated headers ordered through editor loading', () => {
+  const parsed = parseCurl(
+    "curl https://example.test -H 'X-Test: one' -H 'X-Test: two' -H 'x-single: only'"
+  );
+
+  assert.deepEqual(parsed.headers, {
+    'X-Test': ['one', 'two'],
+    'x-single': 'only'
+  });
+  const rows = loadHeaderRows(parsed.headers);
+  assert.deepEqual(rows, [
+    { key: 'X-Test', value: 'one', enabled: true },
+    { key: 'X-Test', value: 'two', enabled: true },
+    { key: 'x-single', value: 'only', enabled: true }
+  ]);
+  assert.deepEqual(serializeHeaderRows(rows), parsed.headers);
+
+  const explicitContentType = parseCurl(
+    "curl https://example.test -d '{}' -H 'content-type: application/json'"
+  );
+  assert.equal(explicitContentType.headers['content-type'], 'application/json');
+  assert.equal(Object.keys(explicitContentType.headers).length, 1);
+
+  assert.equal(
+    parseCurl("curl https://example.test -A option -H 'User-Agent: explicit'").headers['User-Agent'],
+    'explicit'
+  );
+  assert.equal(
+    parseCurl("curl https://example.test -H 'User-Agent: explicit' -A option").headers['User-Agent'],
+    'option'
+  );
+});
+
+test('resend expands captured header arrays into repeated editor rows', () => {
+  const resendStart = rendererSource.indexOf('function resendSelectedRequest(');
+  const resendEnd = rendererSource.indexOf('// Track collapsed state', resendStart);
+  let loadedTab;
+  const context = {
+    selectedRequestId: 'request-1',
+    requests: [{
+      id: 'request-1',
+      method: 'GET',
+      url: 'https://example.test/',
+      requestHeaders: {
+        Host: 'example.test',
+        'X-Test': ['one', 'two'],
+        'X-Single': 'only'
+      },
+      requestBody: ''
+    }],
+    sendTabs: [],
+    sendTabCounter: 1,
+    activeSendTab: 'tab-1',
+    saveSendTabState() {},
+    document: { querySelector: () => null },
+    loadSendTabState: tab => { loadedTab = tab; },
+    renderSendTabs() {},
+    toast() {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${rendererSource.slice(resendStart, resendEnd)}
+    resendSelectedRequest();
+  `, context);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(loadedTab.headers)), [
+    { key: 'X-Test', value: 'one', enabled: true },
+    { key: 'X-Test', value: 'two', enabled: true },
+    { key: 'X-Single', value: 'only', enabled: true }
+  ]);
 });

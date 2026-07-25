@@ -918,7 +918,8 @@
         const skip = ['host', 'proxy-connection', 'content-length', 'connection', 'accept-encoding'];
         for (const [k, v] of Object.entries(req.requestHeaders)) {
           if (!skip.includes(k.toLowerCase())) {
-            newHeaders.push({ key: k, value: Array.isArray(v) ? v.join(', ') : String(v), enabled: true });
+            const values = Array.isArray(v) ? v : [v];
+            values.forEach(value => newHeaders.push({ key: k, value: String(value), enabled: true }));
           }
         }
       }
@@ -6729,9 +6730,30 @@
       return btoa(binary);
     }
 
+    function findCurlHeaderKey(headers, name) {
+      const lowerName = name.toLowerCase();
+      return Object.keys(headers).find(key => key.toLowerCase() === lowerName) || null;
+    }
+
+    function appendCurlHeader(headers, name, value) {
+      const existingKey = findCurlHeaderKey(headers, name);
+      if (!existingKey) {
+        headers[name] = value;
+      } else if (Array.isArray(headers[existingKey])) {
+        headers[existingKey].push(value);
+      } else {
+        headers[existingKey] = [headers[existingKey], value];
+      }
+    }
+
+    function setCurlHeader(headers, name, value) {
+      headers[findCurlHeaderKey(headers, name) || name] = value;
+    }
+
     function parseCurlCommand(curlStr) {
       const result = { method: 'GET', url: '', headers: {}, body: '' };
       const dataParts = [];
+      const explicitHeaderNames = new Set();
       
       // Normalize: remove line continuations and extra whitespace
       let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
@@ -6766,29 +6788,36 @@
           const header = tokens[++i] || '';
           const colonIdx = header.indexOf(':');
           if (colonIdx > 0) {
-            result.headers[header.slice(0, colonIdx).trim()] = header.slice(colonIdx + 1).trim();
+            const name = header.slice(0, colonIdx).trim();
+            const value = header.slice(colonIdx + 1).trim();
+            if (explicitHeaderNames.has(name.toLowerCase())) {
+              appendCurlHeader(result.headers, name, value);
+            } else {
+              setCurlHeader(result.headers, name, value);
+              explicitHeaderNames.add(name.toLowerCase());
+            }
           }
         } else if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary') {
           dataParts.push(tokens[++i] || '');
           if (result.method === 'GET') result.method = 'POST';
-          if (!result.headers['Content-Type']) {
-            result.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-          }
         } else if (t === '--data-urlencode') {
           dataParts.push(encodeCurlDataUrlValue(tokens[++i] || ''));
           if (result.method === 'GET') result.method = 'POST';
-          if (!result.headers['Content-Type']) {
-            result.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-          }
         } else if (t === '-A' || t === '--user-agent') {
-          result.headers['User-Agent'] = tokens[++i] || '';
+          setCurlHeader(result.headers, 'User-Agent', tokens[++i] || '');
+          explicitHeaderNames.delete('user-agent');
         } else if (t === '-b' || t === '--cookie') {
-          result.headers['Cookie'] = tokens[++i] || '';
+          setCurlHeader(result.headers, 'Cookie', tokens[++i] || '');
+          explicitHeaderNames.delete('cookie');
         } else if (t === '-u' || t === '--user') {
-          result.headers['Authorization'] = 'Basic ' + encodeBasicAuthorization(tokens[++i] || '');
+          setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(tokens[++i] || ''));
+          explicitHeaderNames.delete('authorization');
         } else if (!t.startsWith('-') && !result.url) {
           result.url = t;
         }
+      }
+      if (dataParts.length && !findCurlHeaderKey(result.headers, 'Content-Type')) {
+        setCurlHeader(result.headers, 'Content-Type', 'application/x-www-form-urlencoded');
       }
       result.body = dataParts.join('&');
       
@@ -7223,9 +7252,7 @@
       sendHeadersList = [];
       try {
         const obj = JSON.parse(jsonStr);
-        for (const [k, v] of Object.entries(obj)) {
-          sendHeadersList.push({ key: k, value: String(v), enabled: true });
-        }
+        sendHeadersList = normalizeSendHeaderRows(obj);
       } catch (e) { console.error('[Error]', e.message); }
       renderSendHeaders();
     }
