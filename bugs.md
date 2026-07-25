@@ -1932,6 +1932,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
+- Status: **Fixed**.
+
 - Evidence: `sendRequest()` has no in-flight guard and replaces the one global `currentSendAbort` on each invocation at `src/ui/app.js:7257-7277`. Every request's `finally` clears the same global at `:7340`, while `abortSendRequest()` at `:7345-7349` aborts only its current value; Ctrl+Enter can invoke the disabled button's function again.
 - Impact: starting B while A is pending loses A's controller, and A finishing can clear B's controller so neither later Escape nor the abort UI can stop the correct request.
 - Reproduction: send twice rapidly to a slow origin, let the first invocation finish, then press Escape.

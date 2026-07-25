@@ -7529,6 +7529,8 @@
     }
 
     async function sendRequest() {
+      if (currentSendAbort) return;
+
       const method = document.getElementById('sendMethod').value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
@@ -7541,14 +7543,15 @@
       }
 
       setSendLoading(true);
-      currentSendAbort = new AbortController();
+      const sendAbort = new AbortController();
+      currentSendAbort = sendAbort;
       try {
         const payload = await prepareSendRequestPayload(headers);
         const res = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url, method, headers, body: payload.body, bodyEncoding: payload.bodyEncoding }),
-          signal: currentSendAbort.signal
+          signal: sendAbort.signal
         });
         const data = await res.json();
 
@@ -7621,15 +7624,16 @@
         if (err.name === 'AbortError') return; // handled by abortSendRequest
         toast(`Error: ${err.message}`, 'error');
       } finally {
-        currentSendAbort = null;
-        setSendLoading(false);
+        if (currentSendAbort === sendAbort) {
+          currentSendAbort = null;
+          setSendLoading(false);
+        }
       }
     }
 
     function abortSendRequest() {
-      if (currentSendAbort) {
+      if (currentSendAbort && !currentSendAbort.signal.aborted) {
         currentSendAbort.abort();
-        currentSendAbort = null;
         toast('Request aborted', 'success');
       }
     }
