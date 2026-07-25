@@ -8,6 +8,7 @@ export class ElectronInterceptor {
     this.ca = null;
     this.process = null;
     this.activating = false;
+    this.onStatusChange = null;
   }
 
   async isActivable() {
@@ -99,11 +100,13 @@ export class ElectronInterceptor {
     this.process = launchedProcess;
 
     this.active = true;
+    this._emitStatus('active');
 
     launchedProcess.on('exit', () => {
       if (this.process !== launchedProcess) return;
       this.active = false;
       this.process = null;
+      this._emitStatus('exited', { pid: launchedProcess.pid });
     });
 
     launchedProcess.on('error', (err) => {
@@ -111,6 +114,7 @@ export class ElectronInterceptor {
       console.error(`[Interceptor] Electron app error:`, err.message);
       this.active = false;
       this.process = null;
+      this._emitStatus('error', { pid: launchedProcess.pid, error: err.message });
     });
 
     return { success: true, pid: launchedProcess.pid };
@@ -123,6 +127,20 @@ export class ElectronInterceptor {
       launchedProcess.kill();
     }
     this.active = false;
+    this._emitStatus('inactive', { pid: launchedProcess?.pid || null });
+  }
+
+  _emitStatus(reason, extra = {}) {
+    if (typeof this.onStatusChange !== 'function') return;
+    this.onStatusChange({
+      id: this.id,
+      name: this.name,
+      type: 'electron',
+      active: this.active,
+      pid: this.process?.pid || null,
+      reason,
+      ...extra
+    });
   }
 
   toJSON() {

@@ -35,6 +35,8 @@ export class FreshTerminalInterceptor {
     this.processes = [];
     this.sessionPids = new Set();
     this.ca = null;
+    this.onStatusChange = null;
+    this.statusMonitor = null;
   }
 
   _platform() {
@@ -74,12 +76,30 @@ export class FreshTerminalInterceptor {
     process.kill(pid, 'SIGTERM');
   }
 
-  _refreshActiveState() {
+  _refreshActiveState(reason = 'exited', extra = {}) {
+    const wasActive = this.active;
     for (const pid of this.sessionPids) {
       if (!this._isSessionRunning(pid)) this.sessionPids.delete(pid);
     }
     this.active = this.sessionPids.size > 0 || this.processes.some(isProcessRunning);
+    if (wasActive && !this.active) {
+      this._stopStatusMonitor();
+      this._emitStatus(reason, extra);
+    }
     return this.active;
+  }
+
+  _startStatusMonitor() {
+    this._stopStatusMonitor();
+    this.statusMonitor = setInterval(() => this._refreshActiveState(), 1000);
+    this.statusMonitor.unref?.();
+  }
+
+  _stopStatusMonitor() {
+    if (this.statusMonitor) {
+      clearInterval(this.statusMonitor);
+      this.statusMonitor = null;
+    }
   }
 
   _buildPosixShellCommand(proxyUrl, certPath, pidFile) {
@@ -194,16 +214,18 @@ export class FreshTerminalInterceptor {
     this.processes.push(proc);
     if (shellPid) this.sessionPids.add(shellPid);
     this.active = true;
+    this._emitStatus('active');
+    this._startStatusMonitor();
 
     proc.on('exit', () => {
       this.processes = this.processes.filter(p => p !== proc);
-      this._refreshActiveState();
+      this._refreshActiveState('exited', { pid: shellPid || proc.pid });
     });
 
     proc.on('error', (err) => {
       console.error('[Interceptor] Fresh terminal error:', err.message);
       this.processes = this.processes.filter(p => p !== proc);
-      this._refreshActiveState();
+      this._refreshActiveState('error', { pid: shellPid || proc.pid, error: err.message });
     });
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
@@ -211,6 +233,7 @@ export class FreshTerminalInterceptor {
   }
 
   async deactivate() {
+    this._stopStatusMonitor();
     for (const pid of this.sessionPids) {
       try { this._killSession(pid); } catch {}
     }
@@ -220,6 +243,21 @@ export class FreshTerminalInterceptor {
     this.sessionPids.clear();
     this.processes = [];
     this.active = false;
+    this._emitStatus('inactive');
+  }
+
+  _emitStatus(reason, extra = {}) {
+    if (typeof this.onStatusChange !== 'function') return;
+    const sessionPid = this.sessionPids.values().next().value;
+    this.onStatusChange({
+      id: this.id,
+      name: this.name,
+      type: 'terminal',
+      active: this.active,
+      pid: sessionPid || this.processes[0]?.pid || null,
+      reason,
+      ...extra
+    });
   }
 
   toJSON() {

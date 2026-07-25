@@ -910,6 +910,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-096 — Medium — Electron/terminal exits are not broadcast to the UI
 
+- Status: **Fixed**.
 - Evidence: status reaches clients only through interceptor `onStatusChange` callbacks (`src/interceptors/interceptor-manager.js:47-52`, `src/api/api-server.js:38-41`). Electron changes only local state at `electron-interceptor.js:58-65`, and Fresh Terminal does the same at `terminal-interceptors.js:113-122`.
 - Impact: cards/sources remain shown as Activated after the child/launcher exits until an unrelated full refresh.
 - Reproduction: activate either interceptor, close its tracked process, and watch the connected UI.
