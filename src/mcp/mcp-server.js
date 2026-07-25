@@ -435,15 +435,33 @@ export class McpServerBridge {
 
   // ========== Transports ==========
 
+  _authenticateSseRequest(req, res, next) {
+    if (typeof this.apiServer?._isAllowedBrowserOrigin === 'function' &&
+        !this.apiServer._isAllowedBrowserOrigin(req.headers.origin)) {
+      return res.status(403).json({ error: 'Forbidden origin' });
+    }
+    if (typeof this.apiServer?._isAuthorizedRequest === 'function' &&
+        !this.apiServer._isAuthorizedRequest(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  }
+
   startSse(expressApp) {
     if (!this.server || this.sseRoutesRegistered) return;
     this.sseRoutesRegistered = true;
 
-    expressApp.get('/mcp/sse', (req, res) => {
+    const authenticate = this._authenticateSseRequest.bind(this);
+
+    expressApp.get('/mcp/sse', authenticate, (req, res) => {
       if (!this.enabled || !this.server) {
         return res.status(503).json({ error: 'MCP server is disabled' });
       }
-      const transport = new SSEServerTransport('/mcp/messages', res);
+      const authToken = new URL(req.url, 'http://127.0.0.1').searchParams.get('authToken');
+      const messageEndpoint = authToken
+        ? `/mcp/messages?authToken=${encodeURIComponent(authToken)}`
+        : '/mcp/messages';
+      const transport = new SSEServerTransport(messageEndpoint, res);
       const server = this._buildServer();
       const sessionId = transport.sessionId;
       this.sseSessions.set(sessionId, { transport, server });
@@ -458,7 +476,7 @@ export class McpServerBridge {
       });
     });
 
-    expressApp.post('/mcp/messages', (req, res) => {
+    expressApp.post('/mcp/messages', authenticate, (req, res) => {
       if (!this.enabled || !this.server) {
         return res.status(503).json({ error: 'MCP server is disabled' });
       }

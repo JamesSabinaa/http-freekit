@@ -27,6 +27,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-002 — High — MCP SSE exposes captured traffic without authentication
 
+- Status: **Fixed**.
+
 - Evidence: `src/mcp/mcp-server.js:436-470` registers the SSE and message routes without token, `Origin`, or host validation. `get_request_detail` returns full headers and bodies at `:197-216`; the global wildcard CORS middleware applies.
 - Impact: an untrusted local or browser client can create an MCP session and read cookies, authorization headers, request bodies, and response bodies.
 - Reproduction: connect to `/mcp/sse`, post an MCP `get_request_detail` call to its session, and observe the complete seeded traffic record without credentials.

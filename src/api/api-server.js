@@ -1180,7 +1180,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.get('/api/mcp/status', (req, res) => {
       if (!this.mcpBridge) return res.json({ enabled: false, sseEndpoint: null, connectedClients: 0 });
       const status = this.mcpBridge.getStatus();
-      status.sseEndpoint = status.enabled ? `http://127.0.0.1:${this.port}/mcp/sse` : null;
+      if (status.enabled) {
+        const endpoint = new URL(`http://127.0.0.1:${this.port}/mcp/sse`);
+        if (this.authToken) endpoint.searchParams.set('authToken', this.authToken);
+        status.sseEndpoint = endpoint.toString();
+      } else {
+        status.sseEndpoint = null;
+      }
       res.json(status);
     });
 
