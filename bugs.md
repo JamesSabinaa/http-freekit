@@ -338,6 +338,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-130 — Low/Medium — Captured HTTPS records contain pre-handshake TLS metadata
 
+- Status: **Fixed**.
+
 - Evidence: `_handleConnect()` constructs a `TLSSocket` at `src/proxy/proxy-server.js:969-973` and immediately calls `_handleTlsConnection()` at `:985`. That method synchronously reads `getCipher()` and `getProtocol()` at `:991-997`; the later secure listener at `:975-982` never refreshes the stored `tlsDetails`.
 - Impact: intercepted H1 records report a null cipher and can claim the fallback TLS 1.2 even when the completed connection negotiated TLS 1.3.
 - Reproduction: force a TLS-1.3 request with H2 disabled and inspect the captured `tls` object.

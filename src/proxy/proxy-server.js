@@ -1309,11 +1309,16 @@ export class ProxyServer {
 
   _handleTlsConnection(tlsSocket, hostname, targetPort) {
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
-    // Capture TLS session details from the MITM socket
-    const tlsDetails = tlsSocket.getCipher ? {
-      cipher: tlsSocket.getCipher()?.name || null,
-      version: tlsSocket.getProtocol?.() || 'TLSv1.2'
-    } : null;
+    // TLS details are unavailable until the server-side handshake completes.
+    let tlsDetails = null;
+    const captureTlsDetails = () => {
+      tlsDetails = tlsSocket.getCipher ? {
+        cipher: tlsSocket.getCipher()?.name || null,
+        version: tlsSocket.getProtocol?.() || null
+      } : null;
+    };
+    if (tlsSocket.getProtocol?.()) captureTlsDetails();
+    else tlsSocket.once('secure', captureTlsDetails);
 
     // Track whether any HTTP request is received on this connection
     let httpRequestReceived = false;
@@ -1344,6 +1349,7 @@ export class ProxyServer {
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
     const virtualServer = http.createServer((req, res) => {
+      captureTlsDetails();
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
       const startTime = Date.now();
@@ -1969,6 +1975,7 @@ export class ProxyServer {
     });
 
     virtualServer.on('upgrade', (req, socket, head) => {
+      captureTlsDetails();
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
       this._handleHttpUpgrade(req, socket, head, {
