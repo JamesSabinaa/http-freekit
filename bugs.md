@@ -1696,6 +1696,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-144 — Low — Storage quota errors can abort navigation and startup
 
+- Status: **Fixed**.
+
 - Evidence: `switchPanel()` writes traffic state before changing panels at `src/ui/app.js:8321-8345`, `switchSettingsSection()` writes at `:8294`, and `setTheme()` writes at `:9403-9404`; none catches storage exceptions. Theme loading calls `setTheme()` before `connectWebSocket()` at `:9449-9450`.
 - Impact: full or blocked localStorage can prevent leaving Traffic, break theme changes, and throw during startup before live traffic initialization.
 - Reproduction: make `Storage.prototype.setItem` throw, then navigate away from Traffic or reload the app.

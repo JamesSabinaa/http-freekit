@@ -23,6 +23,36 @@
     let requestCounter = 0;
     let filterDebounceTimer = null;
 
+    function safeLocalStorageGet(key, fallback = null) {
+      try {
+        const value = window.localStorage.getItem(key);
+        return value === null ? fallback : value;
+      } catch (err) {
+        console.warn('[Storage] Could not read ' + key + ': ' + err.message);
+        return fallback;
+      }
+    }
+
+    function safeLocalStorageSet(key, value) {
+      try {
+        window.localStorage.setItem(key, value);
+        return true;
+      } catch (err) {
+        console.warn('[Storage] Could not save ' + key + ': ' + err.message);
+        return false;
+      }
+    }
+
+    function safeLocalStorageRemove(key) {
+      try {
+        window.localStorage.removeItem(key);
+        return true;
+      } catch (err) {
+        console.warn('[Storage] Could not remove ' + key + ': ' + err.message);
+        return false;
+      }
+    }
+
     // ============ WEBSOCKET FRAMES STATE ============
     /** Map of parentId -> [frame request objects] for WS frame sub-rows */
     let wsFramesByParent = {};
@@ -2545,7 +2575,7 @@
 
     function loadProtobufSchemas() {
       try {
-        const saved = localStorage.getItem(PROTOBUF_SCHEMA_STORAGE_KEY);
+        const saved = safeLocalStorageGet(PROTOBUF_SCHEMA_STORAGE_KEY);
         protobufSchemaFiles = saved ? JSON.parse(saved) : [];
         if (!Array.isArray(protobufSchemaFiles)) protobufSchemaFiles = [];
       } catch {
@@ -2555,7 +2585,7 @@
     }
 
     function saveProtobufSchemas() {
-      localStorage.setItem(PROTOBUF_SCHEMA_STORAGE_KEY, JSON.stringify(protobufSchemaFiles));
+      safeLocalStorageSet(PROTOBUF_SCHEMA_STORAGE_KEY, JSON.stringify(protobufSchemaFiles));
       rebuildProtobufRoot();
     }
 
@@ -2601,7 +2631,7 @@
       protobufRoot = null;
       protobufSchemaError = '';
       for (const key of Object.keys(bodySchemaTypeOverrides)) delete bodySchemaTypeOverrides[key];
-      localStorage.removeItem(PROTOBUF_SCHEMA_STORAGE_KEY);
+      safeLocalStorageRemove(PROTOBUF_SCHEMA_STORAGE_KEY);
       updateProtobufSchemaStatus();
       refreshVisibleBodyViewers();
       toast('Protobuf schemas cleared', 'success');
@@ -4728,7 +4758,7 @@
     }
 
     async function ensureDefaultMockRules() {
-      if (mockRules.length > 0 || localStorage.getItem('http-freekit-defaults-created')) return;
+      if (mockRules.length > 0 || safeLocalStorageGet('http-freekit-defaults-created')) return;
 
       // Create a default passthrough rule
       try {
@@ -4743,7 +4773,7 @@
             action: { type: 'passthrough' }
           })
         });
-        localStorage.setItem('http-freekit-defaults-created', 'true');
+        safeLocalStorageSet('http-freekit-defaults-created', 'true');
         await loadMockRules();
       } catch (e) { console.error('[Error]', e.message); }
     }
@@ -7267,14 +7297,14 @@
           multipartFields: cloneSendFormFields(t.multipartFields, false),
           multipartBoundary: t.multipartBoundary || ''
         }));
-        localStorage.setItem('http-freekit-send-tabs', JSON.stringify(toSave));
-        localStorage.setItem('http-freekit-send-active', activeSendTab);
+        safeLocalStorageSet('http-freekit-send-tabs', JSON.stringify(toSave));
+        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
       } catch {}
     }
 
     function restoreSendTabs() {
       try {
-        const saved = localStorage.getItem('http-freekit-send-tabs');
+        const saved = safeLocalStorageGet('http-freekit-send-tabs');
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
@@ -7287,7 +7317,7 @@
               response: null
             }));
             sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, Number(String(tab.id).replace('tab-', '')) || 0), 0);
-            const savedActive = localStorage.getItem('http-freekit-send-active');
+            const savedActive = safeLocalStorageGet('http-freekit-send-active');
             if (savedActive && sendTabs.find(t => t.id === savedActive)) {
               activeSendTab = savedActive;
             } else {
@@ -8583,7 +8613,7 @@
       const title = document.getElementById('settingsSectionTitle');
       if (title) title.textContent = SETTINGS_SECTION_TITLES[nextSection];
 
-      localStorage.setItem('settingsActiveSection', nextSection);
+      safeLocalStorageSet('settingsActiveSection', nextSection);
       const panel = document.getElementById('panel-settings');
       if (panel) panel.scrollTop = 0;
 
@@ -8631,8 +8661,8 @@
       if (currentPanel === 'traffic') {
         const wrapper = document.getElementById('trafficTableWrapper');
         if (wrapper) {
-          localStorage.setItem('trafficScrollTop', String(wrapper.scrollTop));
-          localStorage.setItem('trafficAutoScroll', String(autoScroll));
+          safeLocalStorageSet('trafficScrollTop', String(wrapper.scrollTop));
+          safeLocalStorageSet('trafficAutoScroll', String(autoScroll));
         }
       }
 
@@ -8648,7 +8678,7 @@
       // Update URL hash for bookmarkability
       let hashRoute = PANEL_TO_HASH[panelId] || panelId;
       if (panelId === 'settings') {
-        const savedSection = localStorage.getItem('settingsActiveSection') || 'general';
+        const savedSection = safeLocalStorageGet('settingsActiveSection', 'general');
         const activeSection = switchSettingsSection(savedSection, false);
         hashRoute += '/' + activeSection;
       }
@@ -8660,12 +8690,12 @@
       requestAnimationFrame(() => {
         const wrapper = document.getElementById('trafficTableWrapper');
         if (!wrapper) return;
-        const savedAutoScroll = localStorage.getItem('trafficAutoScroll');
+        const savedAutoScroll = safeLocalStorageGet('trafficAutoScroll');
         if (savedAutoScroll === 'true') {
           autoScroll = true;
           wrapper.scrollTop = wrapper.scrollHeight;
         } else {
-          const savedScrollTop = localStorage.getItem('trafficScrollTop');
+          const savedScrollTop = safeLocalStorageGet('trafficScrollTop');
           if (savedScrollTop !== null) {
             autoScroll = false;
             wrapper.scrollTop = parseFloat(savedScrollTop);
@@ -8708,7 +8738,7 @@
           document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
           document.getElementById('panel-settings')?.classList.add('active');
         }
-        const requestedSection = settingsMatch[1] || localStorage.getItem('settingsActiveSection') || 'general';
+        const requestedSection = settingsMatch[1] || safeLocalStorageGet('settingsActiveSection', 'general');
         switchSettingsSection(requestedSection, false);
         return;
       }
@@ -9692,7 +9722,7 @@
             return;
           }
           // Save and apply
-          localStorage.setItem('http-freekit-custom-theme', JSON.stringify(sanitizedTheme));
+          safeLocalStorageSet('http-freekit-custom-theme', JSON.stringify(sanitizedTheme));
           applyCustomThemeData(sanitizedTheme);
           renderCustomThemeSwatches(sanitizedTheme);
           setTheme('custom');
@@ -9710,7 +9740,7 @@
      * Remove the current custom theme and revert to dark.
      */
     function removeCustomTheme() {
-      localStorage.removeItem('http-freekit-custom-theme');
+      safeLocalStorageRemove('http-freekit-custom-theme');
       if (_customThemeStyleEl) {
         _customThemeStyleEl.remove();
         _customThemeStyleEl = null;
@@ -9731,7 +9761,7 @@
       if (!section) return;
       section.style.display = (theme === 'custom') ? 'block' : 'none';
       if (theme === 'custom') {
-        var saved = localStorage.getItem('http-freekit-custom-theme');
+        var saved = safeLocalStorageGet('http-freekit-custom-theme');
         if (saved) {
           try {
             var data = JSON.parse(saved);
@@ -9744,7 +9774,7 @@
     }
 
     function setTheme(theme) {
-      localStorage.setItem('http-freekit-theme', theme);
+      safeLocalStorageSet('http-freekit-theme', theme);
       var resolved = theme;
       if (theme === 'auto') {
         resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -9752,7 +9782,7 @@
       if (theme === 'custom') {
         resolved = 'custom';
         // Ensure custom theme CSS is injected
-        var savedCustom = localStorage.getItem('http-freekit-custom-theme');
+        var savedCustom = safeLocalStorageGet('http-freekit-custom-theme');
         if (savedCustom) {
           try { applyCustomThemeData(JSON.parse(savedCustom)); } catch (e) { /* ignore */ }
         }
@@ -9775,9 +9805,9 @@
     }
 
     function loadTheme() {
-      var saved = localStorage.getItem('http-freekit-theme') || 'dark';
+      var saved = safeLocalStorageGet('http-freekit-theme', 'dark');
       // If custom was saved but no theme data exists, fall back to dark
-      if (saved === 'custom' && !localStorage.getItem('http-freekit-custom-theme')) {
+      if (saved === 'custom' && !safeLocalStorageGet('http-freekit-custom-theme')) {
         saved = 'dark';
       }
       setTheme(saved);
@@ -9785,7 +9815,7 @@
 
     // Re-apply theme when OS color scheme changes (for "auto" mode)
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function() {
-      var saved = localStorage.getItem('http-freekit-theme') || 'dark';
+      var saved = safeLocalStorageGet('http-freekit-theme', 'dark');
       if (saved === 'auto') setTheme('auto');
     });
 
