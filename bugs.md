@@ -1003,6 +1003,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-126 — Low/Medium — Browser discovery ignores PATH and user-local installations
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/browser-paths.js:5-46` tests only a small fixed list of absolute paths and never searches PATH or macOS `~/Applications`.
 - Impact: valid installations such as Linux `chromium`/`chromium-browser`, PATH-managed browsers, and user-local macOS application bundles are shown as unavailable.
 - Reproduction: install Chromium only on PATH at a location outside the hard-coded list and refresh interceptor metadata.
