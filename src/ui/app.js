@@ -7226,7 +7226,8 @@
       tab.method = document.getElementById('sendMethod')?.value || 'GET';
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
-      tab.body = getSendBodyValue();
+      // Monaco loads asynchronously; preserve the stored body until an editor exists.
+      if (sendBodyEditor) tab.body = getSendBodyValue();
       tab.bodyType = getSendBodyType();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
       tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
@@ -7374,15 +7375,20 @@
       persistSendTabs();
     }
 
-    // Initialize with empty state on page load
-    setTimeout(async () => {
+    function initializeSendTabs() {
       renderSendHeaders();
       renderSendTabs();
-      // Initialize the Send body Monaco editor
-      const initialTab = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
-      await initSendBodyEditor(initialTab?.body || '', initialTab?.bodyFormat || 'text');
-      if (initialTab) loadSendTabState(initialTab);
-    }, 100);
+      const startupTab = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
+      if (startupTab) loadSendTabState(startupTab);
+
+      setTimeout(async () => {
+        const tabBeforeEditor = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
+        await initSendBodyEditor(tabBeforeEditor?.body || '', tabBeforeEditor?.bodyFormat || 'text');
+        // Tab selection can change while Monaco is loading; always reconcile with current state.
+        const currentTab = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
+        if (currentTab) loadSendTabState(currentTab);
+      }, 100);
+    }
 
     function prepopulateSendUrl(input) {
       if (!input.value) {
@@ -9466,6 +9472,7 @@
     // ============ INIT ============
     // Restore send tabs from localStorage
     restoreSendTabs();
+    initializeSendTabs();
 
     // Apply hash-based routing on initial page load
     if (window.location.hash) {

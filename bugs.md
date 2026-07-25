@@ -1672,6 +1672,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-141 — Medium — Send editor startup can mix one tab's form with another active ID
 
+- Status: **Fixed**.
+
 - Evidence: startup captures `initialTab`, awaits Monaco initialization, then unconditionally reloads the captured tab at `src/ui/app.js:7163-7171`. During the await, `switchSendTab()` or `addSendTab()` can change `activeSendTab` at `:7124-7138`, while body loading before the editor exists is ineffective at `:6613-6617`.
 - Impact: the active tab ID and visible form diverge; later save/send actions can write the first tab's request into the newly active tab.
 - Reproduction: delay Monaco loading and switch or add a tab before it resolves.
