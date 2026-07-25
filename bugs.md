@@ -1191,6 +1191,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-164 — Medium — Fresh Terminal never falls back after an early launcher failure
 
+- Status: **Fixed**.
+
 - Evidence: the spawn helper resolves on the child's spawn event at `src/interceptors/terminal-interceptors.js:3-16`; candidate loops at `:69-81,95-103` stop at that point without checking for an immediate nonzero exit, and `:110-125` reports success.
 - Impact: an installed but unusable first-choice terminal prevents later working candidates from being attempted.
 - Reproduction: make `gnome-terminal` spawn but immediately fail for lack of a display while `xterm` works, then activate Fresh Terminal.

@@ -47,6 +47,51 @@ export class FreshTerminalInterceptor {
     return spawnDetached(command, args, options);
   }
 
+  _launcherStartupGraceMs() {
+    return 100;
+  }
+
+  _confirmLauncherStartup(proc, graceMs = this._launcherStartupGraceMs()) {
+    const failure = (code, signal) => {
+      const detail = signal ? `signal ${signal}` : `exit code ${code}`;
+      return new Error(`Terminal launcher failed during startup (${detail})`);
+    };
+
+    if (proc.signalCode !== null) {
+      return Promise.reject(failure(proc.exitCode, proc.signalCode));
+    }
+    if (proc.exitCode !== null) {
+      return proc.exitCode === 0
+        ? Promise.resolve()
+        : Promise.reject(failure(proc.exitCode, null));
+    }
+
+    return new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => {
+        clearTimeout(timer);
+        proc.removeListener('exit', onExit);
+        proc.removeListener('error', onError);
+      };
+      const finish = (callback, value) => {
+        cleanup();
+        callback(value);
+      };
+      const onExit = (code, signal) => {
+        if (code === 0 && !signal) {
+          finish(resolve);
+        } else {
+          finish(reject, failure(code, signal));
+        }
+      };
+      const onError = (err) => finish(reject, err);
+
+      proc.once('exit', onExit);
+      proc.once('error', onError);
+      timer = setTimeout(() => finish(resolve), graceMs);
+    });
+  }
+
   _createPidFilePath() {
     return path.join(os.tmpdir(), `http-freekit-terminal-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.pid`);
   }
@@ -121,8 +166,9 @@ export class FreshTerminalInterceptor {
 
   async _launchTrackedPosixTerminal(command, args, env, pidFile) {
     const proc = await this._spawnDetached(command, args, { detached: true, stdio: 'ignore', env });
-    proc.unref();
     try {
+      await this._confirmLauncherStartup(proc);
+      proc.unref();
       const shellPid = await this._waitForShellPid(pidFile);
       return { proc, shellPid };
     } catch (err) {
@@ -172,15 +218,19 @@ export class FreshTerminalInterceptor {
       ];
 
       for (const terminal of terminals) {
+        let candidateProc;
         try {
-          proc = await this._spawnDetached(terminal.cmd, terminal.args, {
+          candidateProc = await this._spawnDetached(terminal.cmd, terminal.args, {
             detached: true,
             stdio: 'ignore',
             env
           });
+          await this._confirmLauncherStartup(candidateProc);
+          proc = candidateProc;
           proc.unref();
           break;
         } catch {
+          try { candidateProc?.kill(); } catch {}
           continue;
         }
       }
