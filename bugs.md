@@ -30,6 +30,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 18 | 9 new bugs found; documented below | 0/2 |
 | 19 | 11 new bugs found; documented below | 0/2 |
 | 20 | 15 new bugs found; documented below | 0/2 |
+| 21 | 5 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -308,7 +309,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-127 — Medium — Nested mock groups make their rules unmanageable
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: New nesting is rejected and backend lookup, removal, and legacy matching recurse safely. Persisted legacy nested groups are not migrated or flattened, while renderer group rendering and counting still assume every child is an ordinary rule.
 
 - Evidence: `/api/mock-rules/move-to-group` accepts a group as `ruleId` and permits one-level group nesting at `src/api/api-server.js:865-878`. Matching recurses through arbitrary depth at `src/proxy/proxy-server.js:3145-3153`, but lookup, update, toggle, delete, and ungroup search only one group level at `src/api/api-server.js:1157-1170` and `src/proxy/proxy-server.js:4099-4127`.
 - Impact: rules inside a nested group still affect traffic but return not found from management operations, leaving persisted behavior that the UI/API cannot edit, disable, ungroup, or delete individually.
@@ -738,6 +740,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a response or transient failure from an intentionally direct destination can rotate or consume the proxy provider and replay the request unnecessarily.
 - Reproduction: configure an upstream proxy with `example.com` in `noProxy`, make a direct GET to that host return 410, and observe the upstream retry hook and a second request.
 
+### BUG-334 — Medium — Rule-group exports cannot be imported back
+
+- Evidence: `exportMockRules()` serializes the complete top-level `mockRules` array, including group objects, at `src/ui/app.js:6483-6491`. `importMockRules()` posts every object to the ordinary `/api/mock-rules` endpoint, ignores non-success responses, and always toasts success at `:6501-6530`; that route rejects groups without ordinary rule matchers and actions at `src/api/api-server.js:916-937`.
+- Impact: a valid `.htkrules` backup containing flat groups silently loses each group and all of its children on restore while the UI claims every exported item was imported.
+- Reproduction: create a group containing a rule, export it, remove the rules, and import the file; the group request returns 400, no grouped rules are restored, and the success toast still appears.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -783,7 +791,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-044 — High — System-proxy restore failures are reported as success
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Restore failures are now propagated and retained for retry, except failure to delete an originally absent `ProxyServer` value is still swallowed and the recovery state is then cleared.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:90-100` catches registry restoration failures and returns normally; the API interprets that fulfilled call as a successful deactivation.
 - Impact: Windows can remain routed through FreeKit while the UI says the interceptor stopped.
 - Reproduction: force the registry restore command to fail, deactivate, and inspect the API response and registry values.
@@ -818,7 +827,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-049 — High — Fresh-terminal lifecycle tracks launcher helpers, not shells
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: macOS and Linux now wait for and monitor the interactive shell PID. Windows still records the short-lived `wt.exe` client rather than the terminal tab or shell it creates.
 - Evidence: macOS tracks `osascript` at `src/interceptors/terminal-interceptors.js:83-86`; Linux often tracks the short-lived `gnome-terminal` client at `:88-99`. Their exit handlers mark the interceptor inactive at `:113-122`, and Stop can kill only stored handles at `:128-133`.
 - Impact: FreeKit reports inactive while the terminal session remains open and cannot close or otherwise clean up that session during Stop/shutdown.
 - Reproduction: activate on macOS; `osascript` exits after opening Terminal.app while the shell remains running.
@@ -853,7 +863,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-054 — Medium — Synchronous interceptor discovery can stall all proxy traffic
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Runtime browser, Docker, JVM, and ADB discovery moved off the event loop. Windows System Proxy activation, discovery, recovery, notification, and restoration still use synchronous registry and PowerShell calls with multi-second timeouts.
 - Evidence: browser monitoring invokes synchronous process snapshots with five-second timeouts (`src/interceptors/browser-lifecycle.js:92-131`) from a recurring monitor. Docker, JVM, and ADB discovery/activation also use multi-second `execSync`/`execFileSync` calls on the proxy's single Node event loop.
 - Impact: slow WMI, `ps`, Docker, ADB, or JDK commands freeze proxy forwarding and the management UI until completion/timeout.
 - Reproduction: delay one of the external discovery commands while proxying traffic and observe the event-loop pause.
@@ -888,7 +899,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-091 — Medium — System-proxy Stop overwrites newer external settings
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Normal Stop now verifies that the current settings still belong to FreeKit. Startup recovery restores a stale journal without comparing its saved `proxyServer` to the current registry state, so it can still overwrite a newer post-crash change.
 - Evidence: activation snapshots settings once at `src/interceptors/system-proxy-interceptor.js:75`; deactivation at `:90-99` blindly restores that snapshot without checking whether current values still belong to FreeKit.
 - Impact: a VPN/corporate proxy change made while FreeKit is active is replaced with stale pre-activation values.
 - Reproduction: activate, change the Windows proxy externally, then Stop FreeKit.
@@ -909,7 +921,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-094 — Medium — Exited JVMs remain marked active forever
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Refresh now removes missing PIDs and PIDs whose reported main class changed. PID reuse by another JVM with the same main class is indistinguishable and remains falsely marked active.
 - Evidence: `src/interceptors/jvm-interceptor.js:25-27` checks only the in-memory map; PIDs inserted at `:272-276` are never pruned by process/metadata refresh.
 - Impact: a closed JVM leaves the interceptor active indefinitely, and PID reuse can label a different, unproxied JVM as already activated.
 - Reproduction: attach successfully, exit the target JVM, and refresh interceptor metadata.
@@ -1007,7 +1020,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-125 — Medium — The UI permits duplicate concurrent interceptor activations
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Each renderer now blocks a second local operation while its first request is pending. The lock is not enforced by the API or interceptor manager, so two renderer sessions or direct API clients can still overlap activation for interceptors without their own reservation.
 
 - Evidence: `interceptorsInProgress` adds only a visual overlay at `src/ui/app.js:3779-3786,4294-4311`; neither activation click handler exits when the ID is already present. The overlay accepts pointer events at `src/ui/styles.css:1692-1704`, allowing another click to reach the card.
 - Impact: rapid clicks start concurrent activation work, spawning duplicate terminals or triggering lost-handle and inconsistent-state defects in process-based interceptors.
@@ -1386,6 +1400,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: Android replacement cleans and deletes the current activation at `src/interceptors/android-adb-interceptor.js:509-518` before validating the new mode's host selection and prerequisites later in `activate()`.
 - Impact: a typo, ambiguous/unreachable adapter, missing companion prerequisite, or other replacement error stops a working interception even though the requested replacement reports failure.
 - Reproduction: activate the companion mode, request global replacement with an invalid `hostIp`, and observe that activation throws after the companion was stopped and its ownership removed.
+
+### BUG-331 — High/Medium — A timed-out JVM attach can leave an untracked interception
+
+- Evidence: `_runAttachHelper()` kills the helper after 15 seconds at `src/interceptors/jvm-interceptor.js:396-403`, even though the target's `agentmain()` may already have applied proxy and SSL changes before the helper exits. `_attachAgent()` converts that timeout into failure at `:407-425`, and `activate()` records the PID only after a successful result at `:458-481`.
+- Impact: activation reports failure and FreeKit retains no ownership, but the live target can remain routed through FreeKit with its default SSL state replaced; Stop performs no detach and cannot restore it.
+- Reproduction: make the attach helper apply the agent and then exceed its host timeout; activation returns false with an empty `activatedProcesses` map, while the target is configured and Stop issues no deactivate attach.
+
+### BUG-332 — Medium — JVM interception ownership is lost across a FreeKit restart
+
+- Evidence: the Java agent's proxy properties and SSL defaults persist inside the target JVM, but a new `JvmInterceptor` constructs an empty in-memory `activatedProcesses` map at `src/interceptors/jvm-interceptor.js:8-15`. `isActive()` and `deactivate()` consult only that map at `:32-36,501-531`; there is no journal or target-side adoption handshake.
+- Impact: after FreeKit restarts while the target JVM survives, the UI reports it inactive and Stop cannot restore the target's original proxy and trust state.
+- Reproduction: attach to a JVM, terminate and restart only FreeKit, then refresh and Stop; the target remains configured while the new interceptor has no tracked PID to detach.
+
+### BUG-333 — Medium — Electron child ownership is lost across a FreeKit restart
+
+- Evidence: Electron applications are spawned with `detached: false` but no exit-time kill guarantee or recovery record at `src/interceptors/electron-interceptor.js:90-100`. A new interceptor starts with `process = null` at `:4-11`, and `deactivate()` can kill only that stored handle at `:123-131`.
+- Impact: a child that survives a server crash or restart continues using FreeKit proxy and certificate-bypass switches, while the new instance reports inactive and Stop leaves it running.
+- Reproduction: launch a long-lived child, terminate only the FreeKit Node process, construct a fresh interceptor, and call Stop; the child remains alive and the new interceptor never adopts it.
 
 ## Electron, updater, and renderer
 
@@ -1991,6 +2023,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: the generic picker at `electron/main.cjs:382-391` returns a selected `.app` bundle path, while `ElectronInterceptor` passes that directory verbatim to `spawn()` at `src/interceptors/electron-interceptor.js:36-44` instead of resolving `Contents/MacOS/<executable>` or using a macOS application launcher.
 - Impact: the normal Browse workflow on macOS selects `/Applications/Foo.app` but Launch fails, unless the user manually discovers and types the inner executable path.
 - Reproduction: on macOS, Browse to an Electron `.app` bundle and click Launch; spawning the bundle directory fails.
+
+### BUG-335 — Low/Medium — Enter inside interceptor controls activates the parent card
+
+- Evidence: every activable card installs a bubbling keydown handler that calls `card.click()` for Enter without checking the event target at `src/ui/app.js:3818`. Expanded Electron, Android, and JVM cards insert inputs and buttons inside that card at `:3935-3949,4111-4155,4267-4304`; their click-only propagation guards do not stop the earlier keydown from bubbling.
+- Impact: pressing Enter in a path field or on Browse, Launch, Refresh, or process/device actions instead invokes the expanded parent, collapses it, and destroys the current configuration before the intended control behavior completes.
+- Reproduction: expand Electron, enter an application path, focus the input or Launch button, and press Enter; the card collapses and the path/control is removed.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
