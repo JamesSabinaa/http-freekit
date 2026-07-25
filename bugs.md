@@ -1925,6 +1925,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-169 — Medium — Send silently drops repeated request headers
 
+- Status: **Fixed**.
 - Evidence: the editor stores header rows as an array at `src/ui/app.js:6880-6896`, but `syncSendHeadersToHidden()` converts them to an object at `:6942-6949`; each `obj[h.key.trim()]` assignment overwrites an earlier row with the same name.
 - Impact: valid repeated headers cannot be sent, and the displayed request differs from the wire request.
 - Reproduction: add two `X-Test` rows with values `one` and `two`, send to an echo origin, and observe only the second.

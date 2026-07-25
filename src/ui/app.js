@@ -7165,7 +7165,15 @@
       const obj = {};
       sendHeadersList.forEach(h => {
         if (h.enabled !== false && h.key.trim()) {
-          obj[h.key.trim()] = h.value;
+          const key = h.key.trim();
+          const existingKey = Object.keys(obj).find(candidate => candidate.toLowerCase() === key.toLowerCase());
+          if (!existingKey) {
+            obj[key] = h.value;
+          } else if (Array.isArray(obj[existingKey])) {
+            obj[existingKey].push(h.value);
+          } else {
+            obj[existingKey] = [obj[existingKey], h.value];
+          }
         }
       });
       const hidden = document.getElementById('sendHeaders');
