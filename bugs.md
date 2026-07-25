@@ -38,6 +38,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 26 | 3 new bugs found; documented below | 0/2 |
 | 27 | 3 new bugs found; documented below | 0/2 |
 | 28 | 1 new bug found; documented below | 0/2 |
+| 29 | 2 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -1930,6 +1931,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: screen-reader users hear only generic control roles and current values, without the purpose of essential request and configuration controls.
 - Reproduction: inspect `hideTunnelRequestsToggle.labels.length` and its ARIA attributes, or navigate Send and Settings with a screen reader; the control purpose is not announced.
 
+### BUG-368 — Medium — Request snippets merge repeated header fields
+
+- Evidence: `getExportHeaders()` returns each array-valued header as one `[name, array]` pair at `src/ui/app.js:1874-1878`; all eight raw request snippet generators interpolate or stringify that array at `:2058-2139`, producing one comma-delimited scalar instead of repeated fields.
+- Impact: copied cURL, Python, JavaScript, PowerShell, wget, PHP, and Go replays differ from the request shown and sent by FreeKit. Headers that are not safely comma-combinable can change meaning or become invalid.
+- Reproduction: add two `X-Test` rows with values `one` and `two`, open the request snippet exporter, and inspect every format; each contains one `X-Test: one,two` value instead of two fields.
+
+### BUG-369 — Low/Medium — Send silently drops the valid header name `__proto__`
+
+- Evidence: `syncSendHeadersToHidden()` builds a normal object and assigns each user header with `obj[key] = value` at `src/ui/app.js:7164-7180`. Assigning `__proto__` invokes the inherited legacy setter rather than creating an own property, so `JSON.stringify()` omits the visible row.
+- Impact: a syntactically valid request header disappears before `/api/send`, making the editor and actual wire request disagree without an error.
+- Reproduction: add an enabled `__proto__: kept` row and send to a raw-header echo server; the row remains visible but is absent on the wire.
+
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
 - Status: **Fixed**.
@@ -1940,7 +1953,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-169 — Medium — Send silently drops repeated request headers
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Manually entered repeated rows now serialize to ordered arrays and reach the wire. cURL paste still stores headers in a normal object and overwrites same-cased repeated `-H` fields before loading the editor; resend also flattens header arrays into one comma-joined value.
 - Evidence: the editor stores header rows as an array at `src/ui/app.js:6880-6896`, but `syncSendHeadersToHidden()` converts them to an object at `:6942-6949`; each `obj[h.key.trim()]` assignment overwrites an earlier row with the same name.
 - Impact: valid repeated headers cannot be sent, and the displayed request differs from the wire request.
 - Reproduction: add two `X-Test` rows with values `one` and `two`, send to an echo origin, and observe only the second.
