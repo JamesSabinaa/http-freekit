@@ -7700,8 +7700,14 @@
       }
 
       if (type === 'system') {
-        setSettingsStatus(statusEl, 'Using system proxy settings', 'var(--text-lowlight)');
-        toast('Using system proxy settings', 'success');
+        try {
+          const res = await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          setSettingsStatus(statusEl, 'Using system proxy settings', 'var(--text-lowlight)');
+          toast('Using system proxy settings', 'success');
+        } catch (err) {
+          toast('Could not disable the custom proxy: ' + err.message, 'error');
+        }
         return;
       }
 

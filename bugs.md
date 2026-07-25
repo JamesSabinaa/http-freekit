@@ -1219,6 +1219,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-029 — Medium — “Use system proxy settings” leaves the custom proxy enabled
 
+- Status: **Fixed**.
 - Evidence: `src/ui/app.js:7593-7596` changes status text and returns without deleting the current upstream proxy or its persisted setting.
 - Impact: traffic continues through the prior custom proxy, including after restart, despite the UI claiming system settings are active.
 - Reproduction: configure a custom proxy, choose the system option, and query `/api/upstream-proxy`.
