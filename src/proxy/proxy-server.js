@@ -750,13 +750,17 @@ export class ProxyServer {
 
       // Check mock rules
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, this._safeBodyString(body));
-      if (mockRule) {
+      const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
+      if (mockRule && !mockBreakpointPhase) {
         this._serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime);
         return;
       }
 
       // Check breakpoint rules
-      const breakpoint = this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers);
+      const breakpoint = mockBreakpointPhase === 'request'
+        ? mockRule
+        : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers);
+      const responseBreakpoint = mockBreakpointPhase === 'response';
       if (breakpoint) {
         this._emitRequest({
           id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
@@ -883,21 +887,51 @@ export class ProxyServer {
               return;
             }
 
+            const trailers = proxyRes.trailers;
+            const resHeaders = { ...proxyRes.headers };
+            if (proxyRes.statusCode !== 407) delete resHeaders['proxy-authenticate'];
+            delete resHeaders['proxy-authorization'];
+            delete resHeaders['proxy-connection'];
+            let finalResponse = {
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage,
+              headers: resHeaders,
+              body: resBody,
+              trailers
+            };
+            const remote = { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort };
+            if (responseBreakpoint) {
+              finalResponse = await this._pauseResponseBreakpoint({
+                requestId,
+                protocol: 'http',
+                method: clientReq.method,
+                url: targetUrl.href,
+                host: targetUrl.hostname,
+                path: targetUrl.pathname + targetUrl.search,
+                requestHeaders: clientReq.headers,
+                requestBody: body,
+                statusCode: proxyRes.statusCode,
+                statusMessage: proxyRes.statusMessage,
+                responseHeaders: resHeaders,
+                responseBody: resBody,
+                trailers,
+                startTime,
+                tlsDetails: null,
+                remote
+              });
+            }
             const duration = Date.now() - startTime;
             const timing = {
               total: Date.now() - startTime,
               waiting: Date.now() - connectStart // time waiting for response
             };
-            const trailers = proxyRes.trailers;
-
-            // Strip proxy hop-by-hop headers from responses forwarded to the browser.
-            const resHeaders = { ...proxyRes.headers };
-            if (proxyRes.statusCode !== 407) {
-              delete resHeaders['proxy-authenticate'];
-            }
-            delete resHeaders['proxy-authorization'];
-            delete resHeaders['proxy-connection'];
-            this._sendH1Response(clientRes, proxyRes.statusCode, resHeaders, resBody, trailers);
+            this._sendH1Response(
+              clientRes,
+              finalResponse.statusCode,
+              finalResponse.headers,
+              finalResponse.body,
+              finalResponse.trailers
+            );
 
             this._emitRequestUpdate({
               id: requestId,
@@ -909,18 +943,22 @@ export class ProxyServer {
               requestHeaders: clientReq.headers,
               requestBody: this._safeBodyString(body),
               requestBodySize: body.length,
-              statusCode: proxyRes.statusCode,
-              statusMessage: proxyRes.statusMessage,
-              responseHeaders: proxyRes.headers,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
-              responseBodySize: resBody.length,
+              statusCode: finalResponse.statusCode,
+              statusMessage: finalResponse.statusMessage,
+              responseHeaders: finalResponse.headers,
+              responseBody: this._safeBodyString(
+                finalResponse.body,
+                finalResponse.headers['content-encoding'],
+                finalResponse.headers['content-type']
+              ),
+              responseBodySize: finalResponse.body.length,
               duration,
               timing,
               timestamp: startTime,
               source: 'proxy',
               tls: null,
-              remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
-              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
+              remote,
+              trailers: Object.keys(finalResponse.trailers || {}).length > 0 ? finalResponse.trailers : null
             });
           });
         });
@@ -1231,7 +1269,8 @@ export class ProxyServer {
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
-        if (mockRule) {
+        const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
+        if (mockRule && !mockBreakpointPhase) {
           const action = mockRule.action || {
             type: 'fixed-response',
             status: mockRule.response?.status || 200,
@@ -1584,7 +1623,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = this._checkBreakpoint(req.method, fullUrl, req.headers);
+        const breakpointRule = mockBreakpointPhase === 'request'
+          ? mockRule
+          : this._checkBreakpoint(req.method, fullUrl, req.headers);
+        const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -1691,11 +1733,36 @@ export class ProxyServer {
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
               );
+              let finalResponse = {
+                statusCode: h2Res.statusCode,
+                statusMessage: h2Res.statusMessage,
+                headers: h2Res.headers,
+                body: h2Res.body,
+                trailers: h2Res.trailers
+              };
+              const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
+              if (responseBreakpoint) {
+                finalResponse = await this._pauseResponseBreakpoint({
+                  requestId, protocol: 'https', method: req.method, url: fullUrl,
+                  host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
+                  statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
+                  responseHeaders: h2Res.headers, responseBody: h2Res.body,
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                });
+              }
               try {
-                this._sendH1Response(res, h2Res.statusCode, h2Res.headers, h2Res.body, h2Res.trailers);
+                this._sendH1Response(
+                  res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
+                );
               } catch (e) { /* client gone */ }
-              emitSuccess(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
-                { address: h2Res.remoteAddress, port: h2Res.remotePort }, null);
+              emitSuccess(
+                finalResponse.statusCode,
+                finalResponse.statusMessage,
+                finalResponse.headers,
+                finalResponse.body,
+                remote,
+                finalResponse.trailers
+              );
               return;
             }
           } catch (err) {
@@ -1723,11 +1790,36 @@ export class ProxyServer {
             }
 
             const trailers = proxyRes.trailers;
+            const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
+            let finalResponse = {
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage,
+              headers: proxyRes.headers,
+              body: resBody,
+              trailers
+            };
+            if (responseBreakpoint) {
+              finalResponse = await this._pauseResponseBreakpoint({
+                requestId, protocol: 'https', method: req.method, url: fullUrl,
+                host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
+                statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
+                responseHeaders: proxyRes.headers, responseBody: resBody,
+                trailers, startTime, tlsDetails, remote
+              });
+            }
             try {
-              this._sendH1Response(res, proxyRes.statusCode, proxyRes.headers, resBody, trailers);
+              this._sendH1Response(
+                res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
+              );
             } catch (e) { /* client gone */ }
-            emitSuccess(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
-              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }, trailers);
+            emitSuccess(
+              finalResponse.statusCode,
+              finalResponse.statusMessage,
+              finalResponse.headers,
+              finalResponse.body,
+              remote,
+              finalResponse.trailers
+            );
           });
         };
 
@@ -1906,7 +1998,8 @@ export class ProxyServer {
 
         // Check mock rules
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, this._safeBodyString(body));
-        if (mockRule) {
+        const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
+        if (mockRule && !mockBreakpointPhase) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
             requestTrailers, startTime, tlsDetails
@@ -1915,7 +2008,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = this._checkBreakpoint(method, fullUrl, reqHeaders);
+        const breakpointRule = mockBreakpointPhase === 'request'
+          ? mockRule
+          : this._checkBreakpoint(method, fullUrl, reqHeaders);
+        const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
@@ -2017,15 +2113,39 @@ export class ProxyServer {
               const h2Res = await this._makeH2Request(
                 h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers
               );
-              // Build h2 response headers for the client stream
-              const h2ResponseHeaders = this._toH2ResponseHeaders(h2Res.statusCode, h2Res.headers);
+              const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
+              let finalResponse = {
+                statusCode: h2Res.statusCode,
+                statusMessage: h2Res.statusMessage,
+                headers: h2Res.headers,
+                body: h2Res.body,
+                trailers: h2Res.trailers
+              };
+              if (responseBreakpoint) {
+                finalResponse = await this._pauseResponseBreakpoint({
+                  requestId, protocol: 'h2', method, url: fullUrl, host: authority, path,
+                  requestHeaders: reqHeaders, requestBody: body,
+                  statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
+                  responseHeaders: h2Res.headers, responseBody: h2Res.body,
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                });
+              }
+              const h2ResponseHeaders = this._toH2ResponseHeaders(
+                finalResponse.statusCode, finalResponse.headers
+              );
               try {
                 if (!stream.destroyed && !stream.closed) {
-                  this._sendH2Response(stream, h2ResponseHeaders, h2Res.body, h2Res.trailers);
+                  this._sendH2Response(stream, h2ResponseHeaders, finalResponse.body, finalResponse.trailers);
                 }
               } catch (e) { /* stream already closed */ }
-              emitH2Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
-                { address: h2Res.remoteAddress, port: h2Res.remotePort }, h2Res.trailers);
+              emitH2Success(
+                finalResponse.statusCode,
+                finalResponse.statusMessage,
+                finalResponse.headers,
+                finalResponse.body,
+                remote,
+                finalResponse.trailers
+              );
               return;
             }
           } catch (err) {
@@ -2057,17 +2177,41 @@ export class ProxyServer {
               return;
             }
 
-            // Build h2 response headers, filtering out h1-specific ones
-            const responseHeaders = this._toH2ResponseHeaders(proxyRes.statusCode, proxyRes.headers);
+            const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
+            let finalResponse = {
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage,
+              headers: proxyRes.headers,
+              body: resBody,
+              trailers: proxyRes.trailers
+            };
+            if (responseBreakpoint) {
+              finalResponse = await this._pauseResponseBreakpoint({
+                requestId, protocol: 'h2', method, url: fullUrl, host: authority, path,
+                requestHeaders: reqHeaders, requestBody: body,
+                statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
+                responseHeaders: proxyRes.headers, responseBody: resBody,
+                trailers: proxyRes.trailers, startTime, tlsDetails, remote
+              });
+            }
+            const responseHeaders = this._toH2ResponseHeaders(
+              finalResponse.statusCode, finalResponse.headers
+            );
 
             try {
               if (!stream.destroyed && !stream.closed) {
-                this._sendH2Response(stream, responseHeaders, resBody, proxyRes.trailers);
+                this._sendH2Response(stream, responseHeaders, finalResponse.body, finalResponse.trailers);
               }
             } catch (e) { /* stream already closed */ }
 
-            emitH2Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
-              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort }, proxyRes.trailers);
+            emitH2Success(
+              finalResponse.statusCode,
+              finalResponse.statusMessage,
+              finalResponse.headers,
+              finalResponse.body,
+              remote,
+              finalResponse.trailers
+            );
           });
         };
 
@@ -2161,7 +2305,8 @@ export class ProxyServer {
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
-        if (mockRule) {
+        const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
+        if (mockRule && !mockBreakpointPhase) {
           await this._serveMockResponseH1OnH2(
             requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails
           );
@@ -2169,7 +2314,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = this._checkBreakpoint(req.method, fullUrl, req.headers);
+        const breakpointRule = mockBreakpointPhase === 'request'
+          ? mockRule
+          : this._checkBreakpoint(req.method, fullUrl, req.headers);
+        const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -2257,11 +2405,35 @@ export class ProxyServer {
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
               );
+              const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
+              let finalResponse = {
+                statusCode: h2Res.statusCode,
+                statusMessage: h2Res.statusMessage,
+                headers: h2Res.headers,
+                body: h2Res.body,
+                trailers: h2Res.trailers
+              };
+              if (responseBreakpoint) {
+                finalResponse = await this._pauseResponseBreakpoint({
+                  requestId, protocol: 'https', method: req.method, url: fullUrl,
+                  host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
+                  statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
+                  responseHeaders: h2Res.headers, responseBody: h2Res.body,
+                  trailers: h2Res.trailers, startTime, tlsDetails, remote
+                });
+              }
               try {
-                this._sendH1Response(res, h2Res.statusCode, h2Res.headers, h2Res.body, h2Res.trailers);
+                this._sendH1Response(
+                  res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
+                );
               } catch (e) { /* client gone */ }
-              emitH1Success(h2Res.statusCode, h2Res.statusMessage, h2Res.headers, h2Res.body,
-                { address: h2Res.remoteAddress, port: h2Res.remotePort });
+              emitH1Success(
+                finalResponse.statusCode,
+                finalResponse.statusMessage,
+                finalResponse.headers,
+                finalResponse.body,
+                remote
+              );
               return;
             }
           } catch (err) {
@@ -2302,11 +2474,35 @@ export class ProxyServer {
             }
 
             const trailers = proxyRes.trailers;
+            const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
+            let finalResponse = {
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage,
+              headers: proxyRes.headers,
+              body: resBody,
+              trailers
+            };
+            if (responseBreakpoint) {
+              finalResponse = await this._pauseResponseBreakpoint({
+                requestId, protocol: 'https', method: req.method, url: fullUrl,
+                host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
+                statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
+                responseHeaders: proxyRes.headers, responseBody: resBody,
+                trailers, startTime, tlsDetails, remote
+              });
+            }
             try {
-              this._sendH1Response(res, proxyRes.statusCode, proxyRes.headers, resBody, trailers);
+              this._sendH1Response(
+                res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
+              );
             } catch (e) { /* client gone */ }
-            emitH1Success(proxyRes.statusCode, proxyRes.statusMessage, proxyRes.headers, resBody,
-              { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort });
+            emitH1Success(
+              finalResponse.statusCode,
+              finalResponse.statusMessage,
+              finalResponse.headers,
+              finalResponse.body,
+              remote
+            );
           });
         };
 
@@ -4302,9 +4498,104 @@ export class ProxyServer {
   getPendingBreakpoints() {
     const pending = [];
     for (const [id, bp] of this.pendingBreakpoints) {
-      pending.push({ id, method: bp.method, url: bp.url, host: bp.host, timestamp: bp.timestamp });
+      pending.push({
+        id,
+        method: bp.method,
+        url: bp.url,
+        host: bp.host,
+        phase: bp.phase || 'request',
+        timestamp: bp.timestamp
+      });
     }
     return pending;
+  }
+
+  _getMockBreakpointPhase(mockRule) {
+    const type = mockRule?.action?.type;
+    if (type === 'breakpoint-request') return 'request';
+    if (type === 'breakpoint-response') return 'response';
+    return null;
+  }
+
+  async _pauseResponseBreakpoint(context) {
+    const {
+      requestId, protocol, method, url, host, path, requestHeaders, requestBody,
+      statusCode, statusMessage, responseHeaders, responseBody, trailers,
+      startTime, tlsDetails, remote
+    } = context;
+    const displayBody = this._safeBodyString(
+      responseBody,
+      responseHeaders?.['content-encoding'],
+      responseHeaders?.['content-type']
+    );
+    this._emitRequestUpdate({
+      id: requestId,
+      protocol,
+      method,
+      url,
+      host,
+      path,
+      requestHeaders,
+      requestBody: this._safeBodyString(requestBody),
+      requestBodySize: requestBody.length,
+      statusCode: 0,
+      statusMessage: 'Breakpoint (response)',
+      responseHeaders,
+      responseBody: displayBody,
+      responseBodySize: responseBody.length,
+      upstreamStatusCode: statusCode,
+      upstreamStatusMessage: statusMessage,
+      breakpointPhase: 'response',
+      duration: Date.now() - startTime,
+      timestamp: startTime,
+      source: 'breakpoint',
+      tls: tlsDetails || null,
+      remote,
+      trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
+    });
+    try {
+      this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url, host, phase: 'response' });
+    } catch (err) {
+      console.error('[Proxy] Error in breakpoint handler:', err.message);
+    }
+    const modifications = await new Promise((resolve) => {
+      this.pendingBreakpoints.set(requestId, {
+        method,
+        url,
+        host,
+        path,
+        headers: responseHeaders,
+        body: displayBody,
+        status: statusCode,
+        phase: 'response',
+        timestamp: Date.now(),
+        resolve
+      });
+      this._setBreakpointTimeout(requestId);
+    });
+    const requestedStatus = Number(modifications.status ?? modifications.statusCode);
+    const bodyModified = Object.prototype.hasOwnProperty.call(modifications, 'body');
+    const finalBody = bodyModified
+      ? Buffer.from(String(modifications.body ?? ''))
+      : responseBody;
+    const finalHeaders = modifications.headers && typeof modifications.headers === 'object'
+      ? { ...modifications.headers }
+      : { ...responseHeaders };
+    if (bodyModified) {
+      for (const name of Object.keys(finalHeaders)) {
+        if (name.toLowerCase() === 'transfer-encoding') delete finalHeaders[name];
+      }
+      this._setContentLength(finalHeaders, finalBody.length);
+    }
+    return {
+      statusCode: Number.isInteger(requestedStatus) && requestedStatus >= 100 && requestedStatus <= 599
+        ? requestedStatus
+        : statusCode,
+      statusMessage,
+      headers: finalHeaders,
+      body: finalBody,
+      trailers
+    };
   }
 
   resumeBreakpoint(requestId, modifications = {}) {

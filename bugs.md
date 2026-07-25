@@ -141,6 +141,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-014 — High — Breakpoint mock actions never perform the real upstream exchange
 
+- Status: **Fixed**.
+
 - Evidence: in plain HTTP, `breakpoint-request` resumes into the default synthetic response and `breakpoint-response` pauses before any upstream request at `src/proxy/proxy-server.js:3596-3770`. Equivalent branches exist for HTTPS at `:1282-1397` and H2 at `:2374-2475`.
 - Impact: “resume without changes” can return an empty or `Breakpoint released` synthetic 200, while response breakpoints cannot inspect the actual response.
 - Reproduction: attach request/response breakpoint rules in front of a counting origin, resume unchanged, and observe a 200 synthetic body with zero origin hits.

@@ -1086,19 +1086,20 @@
       // ---- Breakpoint Card (if paused) ----
       if (req.source === 'breakpoint' && req.statusCode === 0) {
         const draft = getBreakpointEditDraft(req);
-        html += `<div class="detail-card" style="border-left:4px solid #f1971f;background:#f1971f11;">
-          <div class="detail-card-body" style="padding:16px 20px;">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-              <span style="font-size:20px;">&#9208;</span>
-              <div style="flex:1;">
-                <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">Request Paused at Breakpoint</div>
-                <div style="font-size:12px;color:var(--text-lowlight);">Double-click a field to edit it before resuming.</div>
+        const responsePhase = draft._phase === 'response';
+        const breakpointFields = responsePhase ? `
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Status</span>
+                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'status')">${draft.status}</span>
               </div>
-              <button class="btn btn-primary" onclick="resumeBreakpointRequest('${req.id}')" style="padding:8px 20px;">
-                Resume
-              </button>
-            </div>
-            <div class="breakpoint-edit-grid">
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Headers</span>
+                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+              </div>
+              <div class="breakpoint-edit-row">
+                <span class="breakpoint-edit-label">Body</span>
+                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'body')">${esc(draft.body || '')}</pre>
+              </div>` : `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Method</span>
                 <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'method')">${esc(draft.method)}</span>
@@ -1114,7 +1115,21 @@
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Body</span>
                 <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'body')">${esc(draft.body || '')}</pre>
+              </div>`;
+        html += `<div class="detail-card" style="border-left:4px solid #f1971f;background:#f1971f11;">
+          <div class="detail-card-body" style="padding:16px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+              <span style="font-size:20px;">&#9208;</span>
+              <div style="flex:1;">
+                <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">${responsePhase ? 'Response' : 'Request'} Paused at Breakpoint</div>
+                <div style="font-size:12px;color:var(--text-lowlight);">Double-click a field to edit it before resuming.</div>
               </div>
+              <button class="btn btn-primary" onclick="resumeBreakpointRequest('${req.id}')" style="padding:8px 20px;">
+                Resume
+              </button>
+            </div>
+            <div class="breakpoint-edit-grid">
+              ${breakpointFields}
             </div>
           </div>
         </div>`;
@@ -8705,7 +8720,15 @@
 
     function getBreakpointEditDraft(req) {
       if (!breakpointEditDrafts.has(req.id)) {
-        breakpointEditDrafts.set(req.id, {
+        const responsePhase = req.breakpointPhase === 'response';
+        breakpointEditDrafts.set(req.id, responsePhase ? {
+          _phase: 'response',
+          status: req.upstreamStatusCode || 200,
+          headers: { ...(req.responseHeaders || {}) },
+          body: req.responseBody || '',
+          _dirty: {}
+        } : {
+          _phase: 'request',
           method: req.method || 'GET',
           url: req.url || '',
           headers: { ...(req.requestHeaders || {}) },
@@ -8723,7 +8746,17 @@
       if (!req) return;
       const draft = getBreakpointEditDraft(req);
 
-      if (field === 'method') {
+      if (field === 'status') {
+        const value = prompt('Response status:', String(draft.status || 200));
+        if (value === null) return;
+        const status = Number(value);
+        if (!Number.isInteger(status) || status < 100 || status > 599) {
+          toast('Status must be an integer from 100 to 599', 'error');
+          return;
+        }
+        draft.status = status;
+        draft._dirty.status = true;
+      } else if (field === 'method') {
         const value = prompt('Request method:', draft.method || 'GET');
         if (value === null) return;
         draft.method = value.trim().toUpperCase() || draft.method;
@@ -8734,7 +8767,8 @@
         draft.url = value.trim() || draft.url;
         draft._dirty.url = true;
       } else if (field === 'headers') {
-        const value = prompt('Request headers as JSON:', JSON.stringify(draft.headers || {}, null, 2));
+        const label = draft._phase === 'response' ? 'Response headers as JSON:' : 'Request headers as JSON:';
+        const value = prompt(label, JSON.stringify(draft.headers || {}, null, 2));
         if (value === null) return;
         try {
           const parsed = JSON.parse(value);
@@ -8746,7 +8780,7 @@
         }
         draft._dirty.headers = true;
       } else if (field === 'body') {
-        const value = prompt('Request body:', draft.body || '');
+        const value = prompt(draft._phase === 'response' ? 'Response body:' : 'Request body:', draft.body || '');
         if (value === null) return;
         draft.body = value;
         draft._dirty.body = true;
@@ -8760,7 +8794,10 @@
         const draft = breakpointEditDrafts.get(requestId) || {};
         const dirty = draft._dirty || {};
         const modifications = {};
-        for (const field of ['method', 'url', 'headers', 'body']) {
+        const editableFields = draft._phase === 'response'
+          ? ['status', 'headers', 'body']
+          : ['method', 'url', 'headers', 'body'];
+        for (const field of editableFields) {
           if (dirty[field]) modifications[field] = draft[field];
         }
         const res = await fetch(API_BASE + '/api/breakpoints/pending/' + requestId + '/resume', {
