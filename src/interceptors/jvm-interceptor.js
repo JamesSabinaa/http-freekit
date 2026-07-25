@@ -112,22 +112,34 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 public class ProxyAgent {
+    private static final String[] PROXY_PROPERTIES = {
+        "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort"
+    };
+    private static final Map<String, String> originalProperties = new HashMap<String, String>();
+    private static SSLContext originalSslContext;
+    private static SSLSocketFactory originalSslSocketFactory;
+    private static boolean configured;
+
     public static void premain(String args, Instrumentation inst) {
         configure(args);
     }
     public static void agentmain(String args, Instrumentation inst) {
         configure(args);
     }
-    private static void configure(String args) {
+    private static synchronized void configure(String args) {
         if (args == null || args.isEmpty()) return;
         String caPath = null;
+        Map<String, String> values = new HashMap<String, String>();
         String[] parts = args.split(",");
         for (String part : parts) {
             String[] kv = part.split("=", 2);
@@ -135,17 +147,58 @@ public class ProxyAgent {
             if (kv[0].equals("freekit.caPathBase64")) {
                 caPath = new String(Base64.getDecoder().decode(kv[1]), StandardCharsets.UTF_8);
             } else {
-                System.setProperty(kv[0], kv[1]);
+                values.put(kv[0], kv[1]);
             }
+        }
+        if ("deactivate".equals(values.get("freekit.action"))) {
+            restore();
+            System.out.println("[HTTP FreeKit] Proxy agent deactivated");
+            return;
+        }
+        if (!configured) {
+            for (String property : PROXY_PROPERTIES) {
+                originalProperties.put(property, System.getProperty(property));
+            }
+            try {
+                originalSslContext = SSLContext.getDefault();
+            } catch (Exception error) {
+                throw new IllegalStateException("Unable to capture the JVM SSL context", error);
+            }
+            originalSslSocketFactory = HttpsURLConnection.getDefaultSSLSocketFactory();
+            configured = true;
+        }
+        for (String property : PROXY_PROPERTIES) {
+            String value = values.get(property);
+            if (value != null) System.setProperty(property, value);
         }
         if (caPath != null && !caPath.isEmpty()) {
             try {
                 installCa(caPath);
             } catch (Exception error) {
+                restore();
                 throw new IllegalStateException("Unable to trust the HTTP FreeKit CA", error);
             }
         }
         System.out.println("[HTTP FreeKit] Proxy agent loaded: " + args);
+    }
+    private static void restore() {
+        if (!configured) return;
+        for (String property : PROXY_PROPERTIES) {
+            String originalValue = originalProperties.get(property);
+            if (originalValue == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, originalValue);
+            }
+        }
+        if (originalSslContext != null) SSLContext.setDefault(originalSslContext);
+        if (originalSslSocketFactory != null) {
+            HttpsURLConnection.setDefaultSSLSocketFactory(originalSslSocketFactory);
+        }
+        originalProperties.clear();
+        originalSslContext = null;
+        originalSslSocketFactory = null;
+        configured = false;
     }
     private static X509TrustManager findX509TrustManager(TrustManager[] managers) {
         for (TrustManager manager : managers) {
@@ -205,13 +258,16 @@ public class ProxyAgent {
 `;
   }
 
-  _getAgentArgs(proxyHost, proxyPort) {
-    const args = [
+  _getAgentArgs(proxyHost, proxyPort, action = 'activate') {
+    const args = [`freekit.action=${action}`];
+    if (action === 'deactivate') return args.join(',');
+
+    args.push(
       `http.proxyHost=${proxyHost}`,
       `http.proxyPort=${proxyPort}`,
       `https.proxyHost=${proxyHost}`,
       `https.proxyPort=${proxyPort}`
-    ];
+    );
     const caPath = this.ca?.getCertInfo()?.certificatePath;
     if (caPath) {
       args.push(`freekit.caPathBase64=${Buffer.from(caPath, 'utf8').toString('base64')}`);
@@ -261,13 +317,13 @@ public class ProxyAgent {
   /**
    * Attach the agent to a running JVM process using the Attach API.
    */
-  _attachAgent(pid, proxyHost, proxyPort) {
+  _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
     const agentJar = this._getAgentJarPath();
     if (!agentJar) {
       return { success: false, error: 'Failed to build proxy agent JAR' };
     }
 
-    const agentArgs = this._getAgentArgs(proxyHost, proxyPort);
+    const agentArgs = this._getAgentArgs(proxyHost, proxyPort, action);
 
     try {
       // Use jattach-style approach: com.sun.tools.attach
@@ -395,12 +451,31 @@ public class AttachProxy {
 
   async deactivate(options = {}) {
     const { pid } = options;
+    const deactivatePid = processId => {
+      const result = this._attachAgent(processId, null, null, 'deactivate');
+      if (!result.success) {
+        return `PID ${processId}: ${result.error}`;
+      }
+      this.activatedProcesses.delete(processId);
+      console.log(`[Interceptor] JVM interceptor deactivated for PID ${processId}`);
+      return null;
+    };
 
     if (pid) {
-      this.activatedProcesses.delete(pid);
-      console.log(`[Interceptor] JVM interceptor deactivated for PID ${pid}`);
+      if (!this.activatedProcesses.has(pid)) return;
+      const error = deactivatePid(pid);
+      this.active = this.activatedProcesses.size > 0;
+      if (error) throw new Error(`Could not deactivate JVM interceptor: ${error}`);
     } else {
-      this.activatedProcesses.clear();
+      const errors = [];
+      for (const processId of Array.from(this.activatedProcesses.keys())) {
+        const error = deactivatePid(processId);
+        if (error) errors.push(error);
+      }
+      this.active = this.activatedProcesses.size > 0;
+      if (errors.length > 0) {
+        throw new Error(`Could not deactivate JVM interceptor: ${errors.join('; ')}`);
+      }
       console.log('[Interceptor] JVM interceptor deactivated (all processes)');
     }
 

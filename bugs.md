@@ -747,6 +747,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-041 — High — JVM deactivation changes only FreeKit's bookkeeping
 
+- Status: **Fixed**.
 - Evidence: activation changes global properties inside the target through `System.setProperty` at `src/interceptors/jvm-interceptor.js:123-130`. Deactivation at `:296-310` only deletes local map entries and never clears the target properties.
 - Impact: the target JVM continues sending traffic to a stopped proxy for the rest of its lifetime.
 - Reproduction: activate a JVM, deactivate FreeKit, and make another request from the JVM.
