@@ -4310,7 +4310,12 @@ export class ProxyServer {
             ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
           }, (webhookRes) => {
             webhookRes.resume();
-            resolve();
+            const webhookStatus = webhookRes.statusCode || 0;
+            if (webhookStatus >= 200 && webhookStatus < 300) {
+              resolve();
+              return;
+            }
+            reject(new Error(`Webhook endpoint responded with HTTP ${webhookStatus}`));
           });
           this._configureUpstreamRequest(webhookReq);
           webhookReq.once('error', reject);

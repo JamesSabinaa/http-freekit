@@ -94,6 +94,31 @@ test('plain HTTP webhook success is recorded only after the endpoint responds', 
   assert.equal(events[0].error, undefined);
 });
 
+test('non-2xx webhook responses return and record delivery failures', async t => {
+  const webhook = http.createServer((request, response) => {
+    response.writeHead(Number(request.url.slice(1)));
+    response.end();
+  });
+  await listen(webhook);
+  t.after(() => close(webhook));
+
+  for (const webhookStatus of [302, 404, 503]) {
+    const events = [];
+    const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+    const response = await serveWebhook(
+      proxy,
+      `http://127.0.0.1:${webhook.address().port}/${webhookStatus}`
+    );
+
+    assert.equal(response.statusCode, 502);
+    assert.equal(response.body, `Webhook Error: Webhook endpoint responded with HTTP ${webhookStatus}`);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].statusCode, 502);
+    assert.equal(events[0].statusMessage, 'Webhook delivery failed');
+    assert.equal(events[0].error, `Webhook endpoint responded with HTTP ${webhookStatus}`);
+  }
+});
+
 test('invalid webhook URLs do not report success', async () => {
   const events = [];
   const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
