@@ -51,14 +51,15 @@ function hasCompleteMockMatchers(matchers) {
 
 function normalizeImportedMockRule(rule, allowGroup = true) {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
+  const normalizedRule = { ...rule };
+  delete normalizedRule.id;
 
   if (rule.type === 'group') {
     if (!allowGroup || !Array.isArray(rule.items)) return null;
     const items = rule.items.map(item => normalizeImportedMockRule(item, false));
     if (items.some(item => !item)) return null;
     return {
-      ...rule,
-      id: rule.id || crypto.randomUUID(),
+      ...normalizedRule,
       enabled: rule.enabled !== false,
       items
     };
@@ -71,8 +72,7 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
   if (!hasNewFormat && !hasLegacyFormat) return null;
 
   return {
-    ...rule,
-    id: rule.id || crypto.randomUUID(),
+    ...normalizedRule,
     enabled: rule.enabled !== false,
     priority: rule.priority || 'normal'
   };
@@ -996,7 +996,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }
         // New format
         const rule = this.proxy.addMockRule({
-          id: body.id || undefined,
           enabled: body.enabled !== undefined ? body.enabled : true,
           priority: body.priority || 'normal',
           matchers: body.matchers,
@@ -1073,15 +1072,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (items.some(item => item?.type === 'group')) {
         return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
       }
-      const group = {
-        id: crypto.randomUUID(),
+      const group = this.proxy.addMockRule({
         type: 'group',
         title: req.body.title || 'New Group',
         enabled: true,
         items,
         collapsed: false
-      };
-      this.proxy.mockRules.push(group);
+      });
       this._persistMockRules();
       res.json({ success: true, group });
     });
@@ -1118,19 +1115,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.delete('/api/mock-rules/:id', (req, res) => {
-      // Support both index (legacy) and UUID
+      // IDs take precedence; fall back to an index only for legacy clients.
       const param = req.params.id;
-      const asInt = parseInt(param);
-      if (!isNaN(asInt) && String(asInt) === param && asInt >= 0) {
-        // Legacy: delete by index
+      const removedById = this.proxy.removeMockRuleById(param);
+      if (!removedById) {
+        const asInt = Number(param);
+        if (!Number.isInteger(asInt) || String(asInt) !== param || asInt < 0) {
+          return res.status(404).json({ error: 'Rule not found' });
+        }
         if (asInt >= this.proxy.mockRules.length) {
           return res.status(404).json({ error: 'Rule not found' });
         }
         this.proxy.removeMockRule(asInt);
-      } else {
-        // New: delete by ID
-        const removed = this.proxy.removeMockRuleById(param);
-        if (!removed) return res.status(404).json({ error: 'Rule not found' });
       }
       this._persistMockRules();
       res.json({ success: true });
@@ -1180,7 +1176,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.delete('/api/breakpoints/:id', (req, res) => {
-      this.proxy.removeBreakpoint(req.params.id);
+      if (!this.proxy.removeBreakpoint(req.params.id)) {
+        return res.status(404).json({ error: 'Breakpoint not found' });
+      }
       res.json({ success: true });
     });
 

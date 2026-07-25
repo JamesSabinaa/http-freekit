@@ -3901,6 +3901,95 @@ export class ProxyServer {
     });
   }
 
+  _generateUniqueRuleId(usedIds) {
+    let id;
+    do {
+      id = uuidv4();
+    } while (usedIds.has(id));
+    return id;
+  }
+
+  _collectMockRuleIds(rules = this.mockRules, ids = new Set()) {
+    for (const rule of Array.isArray(rules) ? rules : []) {
+      if (!rule || typeof rule !== 'object') continue;
+      if ((typeof rule.id === 'string' || typeof rule.id === 'number') && String(rule.id)) {
+        ids.add(String(rule.id));
+      }
+      if (rule.type === 'group') this._collectMockRuleIds(rule.items, ids);
+    }
+    return ids;
+  }
+
+  _withServerOwnedMockIds(rule, usedIds) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return rule;
+    const id = this._generateUniqueRuleId(usedIds);
+    usedIds.add(id);
+    const storedRule = { ...rule, id };
+    if (storedRule.type === 'group' && Array.isArray(storedRule.items)) {
+      storedRule.items = storedRule.items.map(item => this._withServerOwnedMockIds(item, usedIds));
+    }
+    return storedRule;
+  }
+
+  _withReconciledMockItemIds(existingItems, incomingItems, usedIds) {
+    const existingById = new Map(
+      (Array.isArray(existingItems) ? existingItems : [])
+        .filter(item => item && typeof item === 'object' && item.id !== undefined)
+        .map(item => [String(item.id), item])
+    );
+    const reusedIds = new Set();
+    return incomingItems.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const candidate = (typeof item.id === 'string' || typeof item.id === 'number')
+        ? String(item.id)
+        : '';
+      const existing = candidate && !reusedIds.has(candidate)
+        ? existingById.get(candidate)
+        : null;
+      const id = existing
+        ? String(existing.id)
+        : this._generateUniqueRuleId(usedIds);
+      reusedIds.add(id);
+      usedIds.add(id);
+      const reconciled = { ...item, id };
+      if (reconciled.type === 'group' && Array.isArray(reconciled.items)) {
+        reconciled.items = this._withReconciledMockItemIds(
+          existing?.type === 'group' ? existing.items : [],
+          reconciled.items,
+          usedIds
+        );
+      }
+      return reconciled;
+    });
+  }
+
+  _normalizeMockRuleIds(rules) {
+    const blockedIds = this._collectMockRuleIds(rules);
+    const claimedIds = new Set();
+    let migrated = false;
+    const visit = (rule) => {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return;
+      const candidate = (typeof rule.id === 'string' || typeof rule.id === 'number')
+        ? String(rule.id)
+        : '';
+      let id = candidate;
+      if (!id || claimedIds.has(id)) {
+        id = this._generateUniqueRuleId(new Set([...blockedIds, ...claimedIds]));
+        blockedIds.add(id);
+      }
+      claimedIds.add(id);
+      if (rule.id !== id) {
+        rule.id = id;
+        migrated = true;
+      }
+      if (rule.type === 'group') {
+        for (const item of Array.isArray(rule.items) ? rule.items : []) visit(item);
+      }
+    };
+    for (const rule of Array.isArray(rules) ? rules : []) visit(rule);
+    return migrated;
+  }
+
   _flattenMockRules(rules) {
     const flat = [];
     for (const item of rules) {
@@ -3937,6 +4026,7 @@ export class ProxyServer {
       const items = flattenGroupItems(item.items);
       return migrated ? { ...item, items } : item;
     });
+    if (this._normalizeMockRuleIds(normalized)) migrated = true;
     this.mockRules = normalized;
     return { rules: normalized, migrated };
   }
@@ -4940,14 +5030,21 @@ export class ProxyServer {
   addBreakpoint(rule) {
     const validationError = this.validateBreakpointRule(rule);
     if (validationError) throw new TypeError(validationError);
-    rule.id = rule.id || uuidv4();
-    rule.enabled = rule.enabled !== false;
-    this.breakpointRules.push(rule);
-    return rule;
+    const usedIds = new Set(this.breakpointRules.map(existing => String(existing.id)));
+    const storedRule = {
+      ...rule,
+      id: this._generateUniqueRuleId(usedIds),
+      enabled: rule.enabled !== false
+    };
+    this.breakpointRules.push(storedRule);
+    return storedRule;
   }
 
   removeBreakpoint(id) {
-    this.breakpointRules = this.breakpointRules.filter(r => r.id !== id);
+    const index = this.breakpointRules.findIndex(rule => rule.id === id);
+    if (index === -1) return false;
+    this.breakpointRules.splice(index, 1);
+    return true;
   }
 
   updateBreakpoint(id, patch = {}) {
@@ -4955,7 +5052,9 @@ export class ProxyServer {
     if (validationError) throw new TypeError(validationError);
     const rule = this.breakpointRules.find(r => r.id === id);
     if (!rule) return null;
-    Object.assign(rule, patch);
+    const mutablePatch = { ...patch };
+    delete mutablePatch.id;
+    Object.assign(rule, mutablePatch);
     return rule;
   }
 
@@ -5122,20 +5221,20 @@ export class ProxyServer {
   }
 
   addMockRule(rule) {
-    // Ensure rule has an id and enabled flag
-    if (!rule.id) rule.id = uuidv4();
-    if (rule.enabled === undefined) rule.enabled = true;
-    if (!rule.priority) rule.priority = 'normal';
+    const usedIds = this._collectMockRuleIds();
+    const storedRule = this._withServerOwnedMockIds(rule, usedIds);
+    if (storedRule.enabled === undefined) storedRule.enabled = true;
+    if (storedRule.type !== 'group' && !storedRule.priority) storedRule.priority = 'normal';
     // Insert before any wildcard/passthrough rules so new rules take priority
     const passthroughIdx = this.mockRules.findIndex(r =>
       r.action?.type === 'passthrough' && r.matchers?.some(m => m.type === 'method' && m.value === '*')
     );
-    if (passthroughIdx !== -1) {
-      this.mockRules.splice(passthroughIdx, 0, rule);
+    if (storedRule.type !== 'group' && passthroughIdx !== -1) {
+      this.mockRules.splice(passthroughIdx, 0, storedRule);
     } else {
-      this.mockRules.push(rule);
+      this.mockRules.push(storedRule);
     }
-    return rule;
+    return storedRule;
   }
 
   removeMockRule(index) {
@@ -5171,7 +5270,16 @@ export class ProxyServer {
   updateMockRule(id, updates) {
     const rule = this._findMockRuleById(id);
     if (!rule) return null;
-    Object.assign(rule, updates);
+    const mutableUpdates = { ...updates };
+    delete mutableUpdates.id;
+    if (Array.isArray(mutableUpdates.items)) {
+      mutableUpdates.items = this._withReconciledMockItemIds(
+        rule.items,
+        mutableUpdates.items,
+        this._collectMockRuleIds()
+      );
+    }
+    Object.assign(rule, mutableUpdates);
     return rule;
   }
 

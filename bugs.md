@@ -542,7 +542,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-177 — Medium — Rule IDs are mutable, non-unique, and ambiguous with indexes
 
-- Evidence: mock creation preserves client `id`, PUT accepts arbitrary ID changes, and add/update performs no uniqueness check (`src/api/api-server.js` mock CRUD; `src/proxy/proxy-server.js:4078-4134`). Breakpoint CRUD likewise honors mutable duplicate IDs at `proxy-server.js:4015-4030`. Numeric DELETE parameters are interpreted as legacy indexes before IDs.
+- Status: **Fixed**.
+- Resolution: Mock and breakpoint IDs are now generated uniquely by the server and ignored in create, import, and update payloads. Persisted mock IDs are repaired without changing valid unique legacy IDs, breakpoint deletion removes one exact ID, and numeric mock deletion checks a literal ID before falling back to the legacy top-level index behavior.
+
+- Evidence: Mock creation and group insertion recursively assign fresh IDs, import strips submitted IDs before runtime normalization, and updates reconcile nested rule identities while ignoring mutation of the selected rule's ID. Breakpoint create/update/delete apply the same ownership and one-ID semantics, while numeric mock deletion attempts exact recursive ID removal first.
 - Impact: duplicate IDs make later rules unreachable, breakpoint delete can remove every duplicate, and a rule with ID `1` can cause index 1 to be deleted instead.
 - Reproduction: create two mocks with `id: "dup"` and try to manage the second, then create a rule whose literal ID is `1` and delete it by ID.
 
