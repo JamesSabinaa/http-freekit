@@ -6,6 +6,7 @@ import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { ApiServer } from '../src/api/api-server.js';
@@ -43,12 +44,18 @@ function requestThroughProxy(proxyPort, targetUrl) {
 
 async function createSocketTrap(t) {
   let connections = 0;
+  const sockets = new Set();
   const server = net.createServer(socket => {
     connections++;
-    socket.end('HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n');
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.end('HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
   });
   const port = await listen(server);
-  t.after(() => close(server));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    return close(server);
+  });
   return { port, get connections() { return connections; } };
 }
 
@@ -84,6 +91,32 @@ test('plain proxy rejects unsupported absolute-form schemes before opening a soc
 
   assert.equal(response.statusCode, 400);
   assert.match(response.body, /Unsupported request URL protocol: ftp:/);
+  assert.equal(trap.connections, 0);
+});
+
+test('proxy Upgrade rejects unsupported absolute-form schemes before opening a socket', async t => {
+  const trap = await createSocketTrap(t);
+  const proxy = new ProxyServer(null, { port: 0 });
+  const socket = new PassThrough();
+  const chunks = [];
+  socket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  const ended = once(socket, 'end');
+
+  proxy._handleHttpUpgrade({
+    url: `ftp://127.0.0.1:${trap.port}/socket`,
+    rawHeaders: [
+      'Host', `127.0.0.1:${trap.port}`,
+      'Connection', 'Upgrade',
+      'Upgrade', 'websocket'
+    ],
+    headers: { connection: 'Upgrade', upgrade: 'websocket' }
+  }, socket, Buffer.alloc(0));
+  await ended;
+  await new Promise(resolve => setImmediate(resolve));
+
+  const response = Buffer.concat(chunks).toString('latin1');
+  assert.match(response, /^HTTP\/1\.1 400 Bad Request/);
+  assert.match(response, /Unsupported upgrade URL protocol: ftp:/);
   assert.equal(trap.connections, 0);
 });
 

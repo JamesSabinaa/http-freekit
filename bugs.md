@@ -513,8 +513,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-176 — Medium — Unsupported outbound URL schemes are silently sent as HTTP
 
-- Status: **Partially fixed**.
-- Resolution: Send, ordinary absolute-form proxy requests, mock forwards, and webhooks now reject schemes other than HTTP and HTTPS before opening an outbound connection. Absolute-form HTTPS requests are forwarded with TLS instead of being downgraded to plaintext. The HTTP Upgrade path still accepts every absolute scheme and treats anything other than HTTPS/WSS as plain HTTP.
+- Status: **Fixed**.
+- Resolution: Send, absolute-form proxy requests, mock forwards, and webhooks now reject schemes other than HTTP and HTTPS before opening an outbound connection. Absolute-form Upgrade requests explicitly allow HTTP, HTTPS, WS, and WSS while rejecting every other scheme before opening a socket. Absolute-form HTTPS requests are forwarded with TLS instead of being downgraded to plaintext.
 
 - Evidence: `src/api/api-server.js` validates Send URLs before selecting a transport. `src/proxy/proxy-server.js` applies the same HTTP(S)-only validation to absolute-form requests and all mock-forward implementations, and selects HTTPS plus the target's TLS settings for absolute-form HTTPS. Focused socket-level regressions cover each affected route.
 - Impact: `ftp:`, `ws:`, and other unsupported URLs send HTTP bytes to unintended endpoints; an absolute-form `https://` request accepted on the plain proxy path can be downgraded to plaintext.

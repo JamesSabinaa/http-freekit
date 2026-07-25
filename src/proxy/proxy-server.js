@@ -29,6 +29,7 @@ const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
 const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
+const SUPPORTED_UPGRADE_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
 class TruncatedBodyString extends String {
   constructor(value, capturedSize, decodedSize) {
@@ -674,6 +675,17 @@ export class ProxyServer {
         : context.hostname;
       const authority = `${urlHostname}${context.targetPort && context.targetPort !== 443 ? `:${context.targetPort}` : ''}`;
       targetUrl = new URL(req.url, `https://${authority}`);
+    }
+    if (!SUPPORTED_UPGRADE_PROTOCOLS.has(targetUrl.protocol)) {
+      const message = `Unsupported upgrade URL protocol: ${targetUrl.protocol}`;
+      socket.end(
+        'HTTP/1.1 400 Bad Request\r\n' +
+        'Content-Type: text/plain\r\n' +
+        `Content-Length: ${Buffer.byteLength(message)}\r\n` +
+        'Connection: close\r\n\r\n' +
+        message
+      );
+      return;
     }
     const secureOrigin = context.secure === true ||
       targetUrl.protocol === 'https:' || targetUrl.protocol === 'wss:';
