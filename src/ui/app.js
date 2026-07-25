@@ -8026,34 +8026,47 @@
       ).join('');
     }
 
-    function browseClientCert() {
+    async function selectCertificatePath(targetId, title, extensions) {
+      const pathInput = document.getElementById(targetId);
+      if (!pathInput) return;
+
+      if (window.electronApi?.selectFilePath) {
+        try {
+          const selectedPath = await window.electronApi.selectFilePath({
+            title,
+            filters: [{ name: 'Certificate files', extensions }]
+          });
+          if (selectedPath) pathInput.value = selectedPath;
+        } catch (err) {
+          toast('Could not select certificate: ' + err.message, 'error');
+        }
+        return;
+      }
+
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.pfx,.p12,.pem,.crt,.cert';
-      input.onchange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          document.getElementById('clientCertPath').value = file.name;
-          // Store the file path — on Electron we'd get the real path via webkitRelativePath
-          // In browser mode we just use the filename
-          document.getElementById('clientCertPath').dataset.fullPath = file.path || file.name;
-        }
+      input.accept = extensions.map(ext => '.' + ext).join(',');
+      input.onchange = (event) => {
+        const file = event.target.files[0];
+        if (file) pathInput.value = file.path || file.name;
       };
       input.click();
     }
 
+    function browseClientCert() {
+      return selectCertificatePath(
+        'clientCertPath',
+        'Select client certificate',
+        ['pfx', 'p12', 'pem', 'crt', 'cert']
+      );
+    }
+
     function browseTrustedCA() {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.pem,.crt,.cert,.der';
-      input.onchange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          document.getElementById('trustedCAPath').value = file.name;
-          document.getElementById('trustedCAPath').dataset.fullPath = file.path || file.name;
-        }
-      };
-      input.click();
+      return selectCertificatePath(
+        'trustedCAPath',
+        'Select trusted CA certificate',
+        ['pem', 'crt', 'cert', 'der']
+      );
     }
 
     async function addClientCert() {

@@ -1212,6 +1212,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-028 — Medium — Certificate pickers persist only a basename
 
+- Status: **Fixed**.
 - Evidence: `src/ui/app.js:7916-7942` displays `file.name` and puts a possible full path only in `dataset.fullPath`; `addClientCert()` and `addTrustedCA()` later read `.value` and ignore that dataset at `:7946-7957,8008-8019`. A native absolute-path picker already exists in `electron/preload.cjs:65-81` but is unused.
 - Impact: selecting an absolute certificate path persists a basename the child server cannot resolve.
 - Reproduction: select a certificate outside the server working directory and inspect the saved configuration.
