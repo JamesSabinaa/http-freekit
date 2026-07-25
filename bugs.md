@@ -174,6 +174,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-019 — Medium — H2 breakpoint URL and method edits are ignored
 
+- Status: **Fixed**.
+
 - Evidence: `src/proxy/proxy-server.js:1742-1749` explicitly does nothing for method changes and never processes URL changes; forwarding later uses the original method, hostname, and path at `:1794-1825`.
 - Impact: the UI reports an edited resumed request while the original request is sent.
 - Reproduction: pause an H2 request, change method and URL, resume, and inspect the origin request.

@@ -1778,11 +1778,13 @@ export class ProxyServer {
       const requestId = uuidv4();
       this.requestCount++;
 
-      const method = headers[':method'];
-      const path = headers[':path'];
-      const authority = headers[':authority'] || hostname;
+      let method = headers[':method'];
+      let path = headers[':path'];
+      let authority = headers[':authority'] || hostname;
       const scheme = headers[':scheme'] || 'https';
-      const fullUrl = `${scheme}://${authority}${path}`;
+      let fullUrl = `${scheme}://${authority}${path}`;
+      let upstreamHostname = hostname;
+      let upstreamPort = targetPort;
 
       // Collect request body
       const requestBody = [];
@@ -1842,8 +1844,22 @@ export class ProxyServer {
             });
             this._setBreakpointTimeout(requestId);
           });
-          // Apply modifications if provided (note: can't change pseudo-headers on existing stream)
-          if (modifications.method) { /* method is fixed for this stream */ }
+          if (modifications.url) {
+            try {
+              const nextUrl = new URL(modifications.url);
+              if (nextUrl.protocol === 'https:') {
+                fullUrl = nextUrl.href;
+                authority = nextUrl.host;
+                path = nextUrl.pathname + nextUrl.search;
+                upstreamHostname = nextUrl.hostname;
+                upstreamPort = parseInt(nextUrl.port, 10) || 443;
+                reqHeaders.host = nextUrl.host;
+              }
+            } catch { /* keep original */ }
+          }
+          if (modifications.method) {
+            method = String(modifications.method).trim().toUpperCase() || method;
+          }
           if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
@@ -1856,7 +1872,10 @@ export class ProxyServer {
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
         if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
         if (!upstreamHeaders.host) {
-          upstreamHeaders.host = targetPort === 443 ? urlHostname : `${urlHostname}:${targetPort}`;
+          const upstreamUrlHostname = net.isIP(upstreamHostname) === 6 ? `[${upstreamHostname}]` : upstreamHostname;
+          upstreamHeaders.host = upstreamPort === 443
+            ? upstreamUrlHostname
+            : `${upstreamUrlHostname}:${upstreamPort}`;
         }
 
         const source = this._detectSource(reqHeaders);
@@ -1894,10 +1913,10 @@ export class ProxyServer {
         // Try HTTP/2 upstream (skip if upstream proxy is configured)
         if (!this.upstreamProxy) {
           try {
-            const h2Session = await this._getH2Session(hostname, targetPort);
+            const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
             if (h2Session) {
               const h2Res = await this._makeH2Request(
-                h2Session, method, hostname, targetPort, path, upstreamHeaders, body
+                h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body
               );
               // Build h2 response headers for the client stream
               const h2ResponseHeaders = this._toH2ResponseHeaders(h2Res.statusCode, h2Res.headers);
@@ -1918,9 +1937,9 @@ export class ProxyServer {
 
         // Fallback: HTTPS/1.1 upstream with Firefox TLS fingerprint
         const proxyOpts = {
-          hostname, port: targetPort, path, method,
+          hostname: upstreamHostname, port: upstreamPort, path, method,
           headers: upstreamHeaders,
-          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
+          ...this._getUpstreamTlsOptions(upstreamHostname, tlsSocket._clientHelloTls)
         };
 
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
