@@ -4772,22 +4772,38 @@ export class ProxyServer {
 
   _decompressBody(buffer, encoding) {
     if (!buffer || buffer.length === 0) return buffer;
+    const codings = (Array.isArray(encoding) ? encoding : [encoding])
+      .flatMap(value => String(value || '').split(','))
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean);
+    if (codings.length === 0) return buffer;
+
     const options = { maxOutputLength: this.maxDecompressedBodyBytes };
     try {
-      switch (encoding) {
-        case 'gzip':
-        case 'x-gzip':
-          return zlib.gunzipSync(buffer, options);
-        case 'deflate':
-          return zlib.inflateSync(buffer, options);
-        case 'br':
-          return zlib.brotliDecompressSync(buffer, options);
-        case 'zstd':
-          if (zlib.zstdDecompressSync) return zlib.zstdDecompressSync(buffer, options);
-          return buffer;
-        default:
-          return buffer;
+      let decoded = buffer;
+      for (let index = codings.length - 1; index >= 0; index--) {
+        switch (codings[index]) {
+          case 'identity':
+            break;
+          case 'gzip':
+          case 'x-gzip':
+            decoded = zlib.gunzipSync(decoded, options);
+            break;
+          case 'deflate':
+            decoded = zlib.inflateSync(decoded, options);
+            break;
+          case 'br':
+            decoded = zlib.brotliDecompressSync(decoded, options);
+            break;
+          case 'zstd':
+            if (!zlib.zstdDecompressSync) return buffer;
+            decoded = zlib.zstdDecompressSync(decoded, options);
+            break;
+          default:
+            return buffer;
+        }
       }
+      return decoded;
     } catch {
       return buffer; // If decompression fails, return raw
     }

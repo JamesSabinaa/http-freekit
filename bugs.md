@@ -554,6 +554,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-179 — Low/Medium — Response decompression rejects coding case and stacks
 
+- Status: **Fixed**.
+- Resolution: Response capture now normalizes content-coding tokens case-insensitively and decodes comma-separated stacks in reverse application order. Every decompression stage retains the configured output ceiling, and unsupported or failed stacks preserve the original bytes.
+
 - Evidence: `_decompressBody()` switches on one exact raw `Content-Encoding` string at `src/proxy/proxy-server.js:3943-3959`; callers pass the header unchanged.
 - Impact: valid values such as `GZip` and stacked codings such as `gzip, br` remain compressed and are captured/exported as opaque or corrupt-looking data.
 - Reproduction: return a gzipped body with `Content-Encoding: GZip` and inspect its capture.
