@@ -39,6 +39,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 27 | 3 new bugs found; documented below | 0/2 |
 | 28 | 1 new bug found; documented below | 0/2 |
 | 29 | 2 new bugs found; documented below | 0/2 |
+| 30 | 2 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -1637,6 +1638,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: default Docker bridge/Desktop and physical-device global/QR interception appear activated but cannot connect to FreeKit. The Android companion path remains viable through ADB reverse, and an undocumented-in-UI environment override can make the other paths reachable.
 - Reproduction: start with the default bind, activate Docker or Android global interception, and connect to the advertised gateway/LAN address; the loopback listener refuses or times out while `127.0.0.1` succeeds. Starting with `PROXY_BIND_HOST=0.0.0.0` makes the same advertised address reachable.
 
+### BUG-370 — Medium — Startup cleanup can delete a concurrently created live browser profile
+
+- Evidence: `cleanupStaleBrowserProfiles()` captures one process snapshot before enumerating profile directories at `src/interceptors/browser-lifecycle.js:272-296`; owner verification and related-process detection for every later directory use only that earlier snapshot.
+- Impact: another FreeKit instance that starts and creates a marked browser profile after the snapshot can have its live profile deleted as stale, disrupting activation or leaving its browser on a recreated markerless profile.
+- Reproduction: capture the cleanup process snapshot, start a live FreeKit child that creates a managed profile, then let cleanup enumerate; the child is absent from the snapshot and its live profile is removed.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1943,6 +1950,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a syntactically valid request header disappears before `/api/send`, making the editor and actual wire request disagree without an error.
 - Reproduction: add an enabled `__proto__: kept` row and send to a raw-header echo server; the row remains visible but is absent on the wire.
 
+### BUG-371 — Low/Medium — Send Abort cannot cancel multipart preparation
+
+- Evidence: `sendRequest()` installs the single-flight controller before awaiting `prepareSendRequestPayload()` at `src/ui/app.js:7623-7639`, but multipart serialization reads every file and copies/encodes the complete payload at `:7096-7132` without receiving that signal. Abort affects only the later fetch, and the controller is retained until preparation settles at `:7717-7728`.
+- Impact: aborting a slow or large multipart request still reads and assembles its local files, keeps the loading state active, and silently blocks Send in every tab until preparation finishes.
+- Reproduction: hold a multipart file's `arrayBuffer()` promise pending, start Send, then Abort and try another Send; no fetch occurs, the first call and loading state remain pending, and the second call is ignored until the file promise resolves.
+
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
 - Status: **Fixed**.
@@ -1960,14 +1973,16 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-170 — Medium — Corrupt Send-tab storage can break Send initialization forever
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Stored tab, header, and form-field collections are now normalized. Arbitrary object-valued `response` data is retained and trusted by string-only/HTML renderers, and IDs such as `tab-Infinity` poison the new-tab counter, so corrupt storage can still inject markup, throw during restoration, or create duplicate IDs on every reload.
 - Evidence: `restoreSendTabs()` accepts any nonempty JSON array and spreads its elements without schema validation at `src/ui/app.js:7044-7067`. `loadSendTabState()` then assumes `tab.headers` is an array and calls `.slice()` at `:7070-7074`.
 - Impact: valid but stale/corrupt localStorage throws an uncaught TypeError, leaving Send partially initialized on every reload.
 - Reproduction: set `http-freekit-send-tabs` to `[{"id":"tab-1","headers":{}}]` and reload.
 
 ### BUG-171 — Medium — Monaco disposal leaks observers and editor instances
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Centralized disposal removes registered editors and their observers idempotently. Concurrent initialization before `monacoReady` resolves can still create two editors for one persistent container; the later editor overwrites the active map entry while the first editor and its observers remain retained.
 
 - Evidence: `disposeBodyEditor()` only disposes the editor and deletes the map entry at `src/ui/app.js:3182-3188`. Each `createMonacoEditor()` creates a ResizeObserver, records an instance, and creates a document-wide MutationObserver at `:9139-9159`; observers disconnect only if the persistent container leaves the DOM. The Send editor is also disposed directly at `:6634-6638`.
 - Impact: switching body modes, tabs, or details accumulates live observers and retained disposed editors, multiplying callbacks on every DOM mutation and resize.
@@ -1975,7 +1990,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-172 — Low/Medium — WebSocket restoration silently removes every pin
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Traffic dumps now preserve pins for IDs present in both the renderer and server arrays. A normal `request-update` still replaces and unpins a pending row, while a reconnect dump still deletes pinned renderer-only Send or UI-import records because those IDs do not exist on the server.
 
 - Evidence: pin state exists only on renderer request objects and is toggled at `src/ui/app.js:775-783`. A restored `traffic-dump` replaces the complete array with server objects at `:182-185`, which have no renderer-only `pinned` property.
 - Impact: any transient WebSocket reconnect unpins all exchanges, so a later Clear removes records the user believed were protected.
