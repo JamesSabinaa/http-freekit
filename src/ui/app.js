@@ -6514,18 +6514,29 @@
           const shouldReplace = mockRules.length > 0 && confirm('Replace existing rules? Click OK to replace, Cancel to append.');
 
           if (shouldReplace) {
-            // Delete all existing rules first
-            await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+            const response = await fetch(API_BASE + '/api/mock-rules', {
+              method: 'PUT',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ rules })
+            });
+            if (!response.ok) {
+              const result = await response.json().catch(() => ({}));
+              throw new Error(result.error || 'Server rejected imported rules');
+            }
             mockDraftRules.clear();
             mockNewDraftIds.clear();
-          }
-
-          for (const rule of rules) {
-            await fetch(API_BASE + '/api/mock-rules', {
-              method: 'POST',
-              headers: {'Content-Type':'application/json'},
-              body: JSON.stringify(rule)
-            });
+          } else {
+            for (const rule of rules) {
+              const response = await fetch(API_BASE + '/api/mock-rules', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(rule)
+              });
+              if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || 'Server rejected an imported rule');
+              }
+            }
           }
           toast((shouldReplace ? 'Replaced with ' : 'Imported ') + rules.length + ' rules', 'success');
           loadMockRules();

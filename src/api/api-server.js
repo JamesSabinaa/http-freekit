@@ -37,6 +37,35 @@ function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
   return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
 }
 
+function normalizeImportedMockRule(rule, allowGroup = true) {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
+
+  if (rule.type === 'group') {
+    if (!allowGroup || !Array.isArray(rule.items)) return null;
+    const items = rule.items.map(item => normalizeImportedMockRule(item, false));
+    if (items.some(item => !item)) return null;
+    return {
+      ...rule,
+      id: rule.id || crypto.randomUUID(),
+      enabled: rule.enabled !== false,
+      items
+    };
+  }
+
+  const hasNewFormat = Array.isArray(rule.matchers)
+    && rule.action && typeof rule.action === 'object' && !Array.isArray(rule.action);
+  const hasLegacyFormat = typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0
+    && rule.response && typeof rule.response === 'object' && !Array.isArray(rule.response);
+  if (!hasNewFormat && !hasLegacyFormat) return null;
+
+  return {
+    ...rule,
+    id: rule.id || crypto.randomUUID(),
+    enabled: rule.enabled !== false,
+    priority: rule.priority || 'normal'
+  };
+}
+
 export class ApiServer {
   constructor(proxyServer, certificateAuthority, interceptorManager, options = {}) {
     this.proxy = proxyServer;
@@ -958,6 +987,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       });
       this._persistMockRules();
       res.json({ success: true, rule });
+    });
+
+    router.put('/api/mock-rules', (req, res) => {
+      if (!Array.isArray(req.body?.rules)) {
+        return res.status(400).json({ error: 'rules array is required' });
+      }
+
+      const rules = req.body.rules.map(rule => normalizeImportedMockRule(rule));
+      if (rules.some(rule => !rule)) {
+        return res.status(400).json({ error: 'Every imported mock rule must be valid' });
+      }
+
+      this.proxy.loadMockRules(rules);
+      this._persistMockRules();
+      res.json({ success: true, rules: this.proxy.mockRules });
     });
 
     router.put('/api/mock-rules/:id', (req, res) => {

@@ -1592,6 +1592,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-135 — High — Replace import can erase every mock while reporting success
 
+- Status: **Fixed**.
+
 - Evidence: `src/ui/app.js:6374-6381` deletes all current rules before validating the imported rules. POST responses at `:6383-6388` are not checked, and `:6390` always shows success; the API rejects an empty object at `src/api/api-server.js:789-810`.
 - Impact: a malformed or partially incompatible import destroys existing rules, creates none or only some replacements, and still claims the full replacement succeeded.
 - Reproduction: create rules, import `{ "rules": [{}] }`, choose Replace, and observe an empty rule list plus a success toast.
