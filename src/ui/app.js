@@ -952,9 +952,8 @@
       }
 
       // Create a new send tab with the request data
-      sendTabCounter++;
       const newTab = {
-        id: 'tab-' + sendTabCounter,
+        id: allocateSendTabId(),
         method: req.method,
         url: req.url,
         headers: newHeaders,
@@ -7357,11 +7356,21 @@
         }));
     }
 
-    function normalizeStoredSendTab(tab, fallbackId, includeFiles = true) {
+    function parseSendTabId(id) {
+      if (typeof id !== 'string') return null;
+      const match = /^tab-([1-9]\d*)$/.exec(id);
+      if (!match) return null;
+      const numericId = Number(match[1]);
+      return Number.isSafeInteger(numericId) ? numericId : null;
+    }
+
+    function normalizeSendTab(tab, fallbackId, { includeFiles = true, includeResponse = true } = {}) {
       if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return null;
       const bodyTypes = new Set(['raw', 'urlencoded', 'multipart']);
       const bodyFormats = new Set(['text', 'json', 'xml', 'html', 'css', 'javascript', 'markdown', 'yaml']);
-      const savedId = typeof tab.id === 'string' && tab.id.trim() ? tab.id : fallbackId;
+      const savedId = parseSendTabId(tab.id) !== null
+        ? tab.id
+        : (parseSendTabId(fallbackId) !== null ? fallbackId : 'tab-1');
       return {
         id: savedId,
         method: typeof tab.method === 'string' && tab.method ? tab.method : 'GET',
@@ -7373,7 +7382,7 @@
         urlEncodedFields: cloneSendFormFields(tab.urlEncodedFields, includeFiles),
         multipartFields: cloneSendFormFields(tab.multipartFields, includeFiles),
         multipartBoundary: typeof tab.multipartBoundary === 'string' ? tab.multipartBoundary : '',
-        response: tab.response && typeof tab.response === 'object' && !Array.isArray(tab.response)
+        response: includeResponse && tab.response && typeof tab.response === 'object' && !Array.isArray(tab.response)
           ? tab.response
           : null
       };
@@ -7383,28 +7392,46 @@
       if (!Array.isArray(tabs)) return [];
       const reservedIds = new Set(tabs
         .filter(tab => tab && typeof tab === 'object' && !Array.isArray(tab))
-        .map(tab => typeof tab.id === 'string' && tab.id.trim() ? tab.id : null)
+        .map(tab => parseSendTabId(tab.id) !== null ? tab.id : null)
         .filter(Boolean));
       const usedIds = new Set();
       let generatedId = 1;
 
       return tabs.flatMap(tab => {
         if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return [];
-        let id = typeof tab.id === 'string' && tab.id.trim() && !usedIds.has(tab.id) ? tab.id : null;
+        let id = parseSendTabId(tab.id) !== null && !usedIds.has(tab.id) ? tab.id : null;
         if (!id) {
           do { id = `tab-${generatedId++}`; } while (reservedIds.has(id) || usedIds.has(id));
         }
         usedIds.add(id);
-        const normalized = normalizeStoredSendTab(tab, id, false);
+        const normalized = normalizeSendTab(tab, id, { includeFiles: false, includeResponse: false });
         normalized.id = id;
         return [normalized];
       });
     }
 
+    function allocateSendTabId() {
+      const usedIds = new Set(sendTabs.map(tab => tab.id));
+      let candidate = Number.isSafeInteger(sendTabCounter) && sendTabCounter >= 0
+        ? sendTabCounter + 1
+        : 1;
+      if (!Number.isSafeInteger(candidate)) candidate = 1;
+
+      for (let attempts = 0; attempts <= usedIds.size; attempts++) {
+        const id = `tab-${candidate}`;
+        if (!usedIds.has(id)) {
+          sendTabCounter = candidate;
+          return id;
+        }
+        candidate++;
+        if (!Number.isSafeInteger(candidate)) candidate = 1;
+      }
+      throw new Error('Could not allocate a unique Send tab ID');
+    }
+
     function createEmptySendTab() {
-      sendTabCounter++;
       return {
-        id: 'tab-' + sendTabCounter,
+        id: allocateSendTabId(),
         method: 'GET',
         url: '',
         headers: [],
@@ -7457,7 +7484,7 @@
           const restoredTabs = normalizeStoredSendTabs(parsed);
           if (restoredTabs.length > 0) {
             sendTabs = restoredTabs;
-            sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, Number(String(tab.id).replace('tab-', '')) || 0), 0);
+            sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, parseSendTabId(tab.id) || 0), 0);
             const savedActive = safeLocalStorageGet('http-freekit-send-active');
             if (savedActive && sendTabs.find(t => t.id === savedActive)) {
               activeSendTab = savedActive;
@@ -7470,7 +7497,7 @@
     }
 
     function loadSendTabState(tab) {
-      tab = normalizeStoredSendTab(tab, activeSendTab || 'tab-1') || normalizeStoredSendTab({}, 'tab-1');
+      tab = normalizeSendTab(tab, activeSendTab || 'tab-1') || normalizeSendTab({}, 'tab-1');
       document.getElementById('sendMethod').value = tab.method || 'GET';
       document.getElementById('sendUrl').value = tab.url || '';
       sendHeadersList = tab.headers.slice();

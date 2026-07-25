@@ -19,8 +19,9 @@ function loadNormalizationContext() {
   return context;
 }
 
-function restoreTabs(savedTabs, savedActive = null) {
+function restoreTabs(savedTabs, savedActive = null, addTab = false) {
   const context = {
+    __addTab: addTab,
     safeLocalStorageGet(key) {
       if (key === 'http-freekit-send-tabs') return savedTabs;
       if (key === 'http-freekit-send-active') return savedActive;
@@ -34,7 +35,8 @@ function restoreTabs(savedTabs, savedActive = null) {
     let sendTabCounter = 1;
     ${source.slice(helpersStart, restoreEnd)}
     restoreSendTabs();
-    __result = { sendTabs, activeSendTab, sendTabCounter };
+    const createdTab = __addTab ? createEmptySendTab() : null;
+    __result = { sendTabs, activeSendTab, sendTabCounter, createdTab };
   `, context);
   return JSON.parse(JSON.stringify(context.__result));
 }
@@ -98,15 +100,71 @@ test('restore repairs the reported object-shaped headers and preserves active se
   assert.equal(result.sendTabCounter, 2);
 });
 
-test('live tab normalization retains selected multipart files', () => {
+test('live tab normalization retains selected multipart files and response state', () => {
   const context = loadNormalizationContext();
   const file = { name: 'payload.bin', type: 'application/octet-stream', arrayBuffer() {} };
-  const normalized = context.normalizeStoredSendTab({
+  const response = { statusCode: 200, headersHtml: '<span>trusted live render</span>' };
+  const normalized = context.normalizeSendTab({
     id: 'tab-1',
-    multipartFields: [{ key: 'upload', type: 'file', file }]
+    multipartFields: [{ key: 'upload', type: 'file', file }],
+    response
   }, 'tab-1');
 
   assert.equal(normalized.multipartFields[0].file, file);
+  assert.equal(normalized.response, response);
+});
+
+test('stored tabs discard untrusted response markup and object payloads', () => {
+  const storedResponse = {
+    statusMessage: { toString: '<img src=x onerror=alert(1)>' },
+    headersHtml: '<img src=x onerror=alert(1)>',
+    body: { nested: true },
+    responseHeaders: { '__proto__': { polluted: true } }
+  };
+  const result = restoreTabs(JSON.stringify([{
+    id: 'tab-1',
+    method: 'POST',
+    body: 'valid request body',
+    response: storedResponse
+  }]));
+
+  assert.equal(result.sendTabs[0].response, null);
+  assert.equal(result.sendTabs[0].method, 'POST');
+  assert.equal(result.sendTabs[0].body, 'valid request body');
+});
+
+test('unsafe and duplicate IDs normalize to finite unique IDs and cannot poison new tabs', () => {
+  const unsafeNumericId = `tab-${Number.MAX_SAFE_INTEGER + 1}`;
+  const result = restoreTabs(JSON.stringify([
+    { id: 'tab-Infinity', body: 'infinity' },
+    { id: unsafeNumericId, body: 'unsafe integer' },
+    { id: 'tab-01', body: 'noncanonical' },
+    { id: `tab-${Number.MAX_SAFE_INTEGER}`, body: 'largest safe integer' },
+    { id: 'tab-7', body: 'valid' },
+    { id: 'tab-7', body: 'duplicate' },
+    { id: '<img src=x>', body: 'markup' }
+  ]), 'tab-Infinity', true);
+
+  const ids = result.sendTabs.map(tab => tab.id);
+  assert.equal(new Set(ids).size, ids.length);
+  ids.forEach(id => assert.match(id, /^tab-[1-9]\d*$/));
+  assert.equal(Number.isSafeInteger(result.sendTabCounter), true);
+  assert.match(result.createdTab.id, /^tab-[1-9]\d*$/);
+  assert.equal(ids.includes(result.createdTab.id), false);
+  assert.equal(result.activeSendTab, result.sendTabs[0].id);
+});
+
+test('normalized IDs and tab content remain stable across repeated reloads', () => {
+  const first = restoreTabs(JSON.stringify([
+    { id: 'tab-Infinity', method: 'PATCH', url: 'https://one.example' },
+    { id: 'tab-4', body: 'kept' },
+    { id: 'tab-4', headers: { 'X-Test': 'value' } }
+  ]));
+  const second = restoreTabs(JSON.stringify(first.sendTabs), first.activeSendTab);
+
+  assert.deepEqual(second.sendTabs, first.sendTabs);
+  assert.equal(second.activeSendTab, first.activeSendTab);
+  assert.equal(second.sendTabCounter, first.sendTabCounter);
 });
 
 test('restore falls back to the default tab for corrupt or unusable storage', () => {

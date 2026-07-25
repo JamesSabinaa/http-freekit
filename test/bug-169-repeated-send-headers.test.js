@@ -11,7 +11,7 @@ const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'ap
 const editorStart = rendererSource.indexOf('let sendHeadersList = []');
 const editorEnd = rendererSource.indexOf('// ============ SEND TAB MANAGEMENT', editorStart);
 const normalizeStart = rendererSource.indexOf('function normalizeSendHeaderRows(');
-const normalizeEnd = rendererSource.indexOf('function normalizeStoredSendTab(', normalizeStart);
+const normalizeEnd = rendererSource.indexOf('function parseSendTabId(', normalizeStart);
 const curlStart = rendererSource.indexOf('function encodeCurlDataUrlValue(');
 const curlEnd = rendererSource.indexOf('// ============ SEND REQUEST', curlStart);
 assert.notEqual(editorStart, -1);
@@ -153,6 +153,10 @@ test('cURL import keeps repeated headers ordered through editor loading', () => 
 test('resend expands captured header arrays into repeated editor rows', () => {
   const resendStart = rendererSource.indexOf('function resendSelectedRequest(');
   const resendEnd = rendererSource.indexOf('// Track collapsed state', resendStart);
+  const allocatorStart = rendererSource.indexOf('function parseSendTabId(');
+  const allocatorEnd = rendererSource.indexOf('function createEmptySendTab(', allocatorStart);
+  assert.notEqual(allocatorStart, -1);
+  assert.notEqual(allocatorEnd, -1);
   let loadedTab;
   const context = {
     selectedRequestId: 'request-1',
@@ -178,6 +182,7 @@ test('resend expands captured header arrays into repeated editor rows', () => {
   };
   vm.createContext(context);
   vm.runInContext(`
+    ${rendererSource.slice(allocatorStart, allocatorEnd)}
     ${rendererSource.slice(resendStart, resendEnd)}
     resendSelectedRequest();
   `, context);
