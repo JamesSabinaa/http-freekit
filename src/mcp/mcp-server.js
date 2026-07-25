@@ -18,7 +18,7 @@ const TOOL_DEFINITIONS = [
         method: { type: 'string', description: 'HTTP method filter (GET, POST, etc.)' },
         status: { type: 'string', description: 'Status code or range (200, 4xx, 5xx)' },
         host: { type: 'string', description: 'Hostname substring filter' },
-        limit: { type: 'number', description: 'Max results (default 50, max 500)' }
+        limit: { type: 'number', minimum: 1, maximum: 500, description: 'Max results (default 50, max 500)' }
       }
     }
   },
@@ -131,7 +131,8 @@ export class McpServerBridge {
 
   _handleSearchTraffic({ query, method, status, host, limit }) {
     let results = this.apiServer.trafficLog;
-    const max = Math.min(limit || 50, 500);
+    const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 50;
+    const max = Math.min(Math.max(requestedLimit, 1), 500);
 
     if (method) {
       const m = method.toUpperCase();
