@@ -401,6 +401,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-149 — Medium — Large valid traffic imports fail or block during trimming
 
+- Status: **Fixed**.
+
 - Evidence: JSON and HAR import spread all entries into the array and repeatedly call `shift()` down to the limit at `src/api/api-server.js:650-659,670-719`.
 - Impact: sufficiently large arrays exceed the JavaScript call-argument limit and return 400, while smaller large arrays perform tens of thousands of O(n) shifts synchronously and freeze the API/proxy event loop.
 - Reproduction: import about 125,000 empty records to trigger `RangeError`, or 100,000 records and time the synchronous trim.

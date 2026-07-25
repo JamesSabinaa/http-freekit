@@ -825,11 +825,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (validationError) {
           return res.status(400).json({ error: `Invalid import format: ${validationError}` });
         }
-        this.trafficLog.push(...requests);
-        // Enforce max traffic log size after import
-        while (this.trafficLog.length > this.maxTrafficLog) {
-          this.trafficLog.shift();
-        }
+        this._appendImportedTraffic(requests);
         this._broadcast({ type: 'traffic-imported', count: requests.length });
         res.json({ success: true, imported: requests.length });
       } catch (err) {
@@ -890,11 +886,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           };
         });
 
-        this.trafficLog.push(...imported);
-        // Enforce max traffic log size after import
-        while (this.trafficLog.length > this.maxTrafficLog) {
-          this.trafficLog.shift();
-        }
+        this._appendImportedTraffic(imported);
         this._broadcast({ type: 'traffic-imported', count: imported.length });
         res.json({ success: true, imported: imported.length });
       } catch (err) {
@@ -1496,6 +1488,20 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
     }
     return null;
+  }
+
+  _appendImportedTraffic(requests) {
+    const limit = Math.max(0, this.maxTrafficLog);
+    const incomingStart = Math.max(0, requests.length - limit);
+    const incomingCount = requests.length - incomingStart;
+    const existingCount = Math.min(this.trafficLog.length, limit - incomingCount);
+
+    if (this.trafficLog.length > existingCount) {
+      this.trafficLog.splice(0, this.trafficLog.length - existingCount);
+    }
+    for (let index = incomingStart; index < requests.length; index++) {
+      this.trafficLog.push(requests[index]);
+    }
   }
 
   _removeRuleById(ruleId, rules = this.proxy.mockRules) {
