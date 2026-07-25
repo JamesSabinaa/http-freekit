@@ -120,6 +120,38 @@
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
 
+    function mergeTrafficDumpPins(currentRequests, serverRequests) {
+      const pinnedIds = new Set(
+        currentRequests
+          .filter(request => request.pinned && request.id !== null && request.id !== undefined)
+          .map(request => request.id)
+      );
+      return (Array.isArray(serverRequests) ? serverRequests : []).map(request => {
+        const restoredRequest = { ...request };
+        if (pinnedIds.has(request?.id)) {
+          restoredRequest.pinned = true;
+        } else {
+          delete restoredRequest.pinned;
+        }
+        return restoredRequest;
+      });
+    }
+
+    function restoreTrafficDump(serverRequests) {
+      requests = mergeTrafficDumpPins(requests, serverRequests);
+      requestCounter = requests.length;
+      applyFilter();
+
+      if (!selectedRequestId) return;
+      const selectedRequest = requests.find(request => request.id === selectedRequestId);
+      if (!selectedRequest) {
+        closeDetail();
+        return;
+      }
+
+      showDetail(selectedRequest);
+    }
+
     function connectWebSocket() {
       const wsUrl = authenticatedApiUrl(`ws://${window.location.hostname}:${window.location.port}/ws`);
       ws = new WebSocket(wsUrl);
@@ -244,9 +276,7 @@
           if (!requests.find(r => r.id === selectedRequestId)) closeDetail();
           break;
         case 'traffic-dump':
-          requests = msg.requests;
-          requestCounter = requests.length;
-          applyFilter();
+          restoreTrafficDump(msg.requests);
           break;
         case 'traffic-imported':
           toast(`Imported ${msg.count} requests`, 'success');

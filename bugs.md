@@ -1962,6 +1962,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-172 — Low/Medium — WebSocket restoration silently removes every pin
 
+- Status: **Fixed**.
+
 - Evidence: pin state exists only on renderer request objects and is toggled at `src/ui/app.js:775-783`. A restored `traffic-dump` replaces the complete array with server objects at `:182-185`, which have no renderer-only `pinned` property.
 - Impact: any transient WebSocket reconnect unpins all exchanges, so a later Clear removes records the user believed were protected.
 - Reproduction: pin an exchange, interrupt and restore the UI WebSocket, and inspect its pin after the traffic dump.
