@@ -444,8 +444,28 @@ export class ProxyServer {
       headers: this._rawHeadersToObject(req.rawHeaders),
       method: 'GET'
     };
+    let requestLib = http;
+    if (this.upstreamProxy && this._isSocksProxy()) {
+      options.createConnection = (connectOptions, oncreate) => {
+        this._connectViaSocks(targetUrl.hostname, targetUrl.port || 80)
+          .then(upstreamSocket => oncreate(null, upstreamSocket))
+          .catch(err => oncreate(err));
+      };
+    } else if (this.upstreamProxy) {
+      options.hostname = this.upstreamProxy.host;
+      options.port = this.upstreamProxy.port;
+      options.path = targetUrl.href;
+      if (this.upstreamProxy.auth) {
+        options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+      }
+      requestLib = this.upstreamProxy.type === 'https' ? https : http;
+      if (requestLib === https) {
+        Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+      }
+    }
 
-    const proxyReq = http.request(options);
+    const proxyReq = requestLib.request(options);
+    this._configureUpstreamRequest(proxyReq);
     proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
       // Send upgrade response back to client
       let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
@@ -937,18 +957,25 @@ export class ProxyServer {
         });
       };
 
-      const target = net.connect(targetPort, hostname, () => {
+      let target = null;
+      this._connectTcp(hostname, targetPort).then((connectedTarget) => {
+        target = connectedTarget;
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         target.write(head);
         clientSocket.on('data', chunk => { clientBytes += chunk.length; });
         target.on('data', chunk => { serverBytes += chunk.length; });
         target.pipe(clientSocket);
         clientSocket.pipe(target);
+        target.on('close', emitTunnel);
+        target.on('error', () => clientSocket.destroy());
+      }).catch(() => {
+        clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       });
-      target.on('close', emitTunnel);
-      clientSocket.on('close', emitTunnel);
-      target.on('error', () => clientSocket.destroy());
-      clientSocket.on('error', () => target.destroy());
+      clientSocket.on('close', () => {
+        target?.destroy();
+        emitTunnel();
+      });
+      clientSocket.on('error', () => target?.destroy());
       return;
     }
 
@@ -3212,6 +3239,52 @@ export class ProxyServer {
     }
     const { socket } = await SocksClient.createConnection(socksOptions);
     return socket;
+  }
+
+  _connectTcp(hostname, targetPort) {
+    if (!this.upstreamProxy) {
+      return new Promise((resolve, reject) => {
+        const socket = net.connect(targetPort, hostname);
+        socket.once('connect', () => resolve(socket));
+        socket.once('error', reject);
+      });
+    }
+    if (this._isSocksProxy()) {
+      return this._connectViaSocks(hostname, targetPort);
+    }
+
+    return new Promise((resolve, reject) => {
+      const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
+      const authority = `${urlHostname}:${targetPort}`;
+      const headers = { host: authority };
+      if (this.upstreamProxy.auth) {
+        headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+      }
+      const requestLib = this.upstreamProxy.type === 'https' ? https : http;
+      const options = {
+        hostname: this.upstreamProxy.host,
+        port: this.upstreamProxy.port,
+        method: 'CONNECT',
+        path: authority,
+        headers
+      };
+      if (requestLib === https) {
+        Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+      }
+      const request = requestLib.request(options);
+      this._configureUpstreamRequest(request);
+      request.once('connect', (response, socket, proxyHead) => {
+        if (response.statusCode !== 200) {
+          socket.destroy();
+          reject(new Error(`Upstream proxy CONNECT returned HTTP ${response.statusCode}`));
+          return;
+        }
+        if (proxyHead.length > 0) socket.unshift(proxyHead);
+        resolve(socket);
+      });
+      request.once('error', reject);
+      request.end();
+    });
   }
 
   _flattenMockRules(rules) {

@@ -131,6 +131,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-013 — High — TLS passthrough and plain WebSockets bypass the upstream proxy
 
+- Status: **Fixed**.
+
 - Evidence: passthrough CONNECT uses direct `net.connect()` at `src/proxy/proxy-server.js:855-890`; `ws://` upgrade uses direct `http.request()` at `:382-390`. Neither path checks `this.upstreamProxy`.
 - Impact: traffic leaks the user's direct network identity or fails when the destination is reachable only through the configured upstream proxy.
 - Reproduction: configure a counting upstream proxy, then open a passthrough TLS or plain WebSocket target; the target is hit and the upstream receives nothing.
