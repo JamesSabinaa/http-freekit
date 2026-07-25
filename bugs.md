@@ -733,6 +733,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-039 — High — Electron interception never passes Chromium proxy switches
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/electron-interceptor.js:37-46` places Chromium switches in a nonstandard `ELECTRON_EXTRA_LAUNCH_ARGS` environment variable, then spawns the application with an empty argument array at `:50`. The displayed manual instructions at `:27-31` use the same ineffective variable.
 - Impact: Chromium renderer traffic in a normal packaged Electron application continues using its existing network configuration even though activation reports success.
 - Reproduction: activate a basic Electron application that makes a renderer request; the request does not arrive at FreeKit.

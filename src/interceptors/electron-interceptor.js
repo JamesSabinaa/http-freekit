@@ -1,6 +1,4 @@
 import { spawn } from 'child_process';
-import path from 'path';
-import os from 'os';
 
 export class ElectronInterceptor {
   constructor() {
@@ -20,34 +18,41 @@ export class ElectronInterceptor {
     return this.active && this.process && !this.process.killed;
   }
 
+  _getLaunchArgs(proxyPort) {
+    const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
+    return [
+      `--proxy-server=http://127.0.0.1:${proxyPort}`,
+      '--ignore-certificate-errors',
+      `--ignore-certificate-errors-spki-list=${spkiFingerprint}`
+    ];
+  }
+
+  _spawn(appPath, args, options) {
+    return spawn(appPath, args, options);
+  }
+
   async activate(proxyPort, options = {}) {
     const appPath = options.appPath;
+    const launchArgs = this._getLaunchArgs(proxyPort);
     if (!appPath) {
       // Return instructions for manual setup
       return {
         success: true,
         metadata: {
-          instructions: `Launch your Electron app with:\n  ELECTRON_EXTRA_LAUNCH_ARGS="--proxy-server=http://127.0.0.1:${proxyPort} --ignore-certificate-errors" your-app`
+          instructions: `Launch your Electron app with:\n  your-app ${launchArgs.join(' ')}`
         }
       };
     }
 
-    const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-
     const env = {
       ...process.env,
-      ELECTRON_EXTRA_LAUNCH_ARGS: [
-        `--proxy-server=http://127.0.0.1:${proxyPort}`,
-        '--ignore-certificate-errors',
-        `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
-      ].join(' '),
       HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
       HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
       NODE_TLS_REJECT_UNAUTHORIZED: '0',
     };
 
     console.log(`[Interceptor] Launching Electron app: ${appPath}`);
-    this.process = spawn(appPath, [], {
+    this.process = this._spawn(appPath, launchArgs, {
       detached: false,
       stdio: 'ignore',
       env
