@@ -1,4 +1,7 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 function spawnDetached(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -20,13 +23,89 @@ function isProcessRunning(proc) {
   return proc && !proc.killed && proc.exitCode === null && proc.signalCode === null;
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
 export class FreshTerminalInterceptor {
   constructor() {
     this.id = 'fresh-terminal';
     this.name = 'Fresh Terminal';
     this.active = false;
     this.processes = [];
+    this.sessionPids = new Set();
     this.ca = null;
+  }
+
+  _platform() {
+    return process.platform;
+  }
+
+  _spawnDetached(command, args, options) {
+    return spawnDetached(command, args, options);
+  }
+
+  _createPidFilePath() {
+    return path.join(os.tmpdir(), `http-freekit-terminal-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.pid`);
+  }
+
+  async _waitForShellPid(pidFile, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+        if (Number.isInteger(pid) && pid > 0) return pid;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('Terminal shell did not report its process ID');
+  }
+
+  _isSessionRunning(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _killSession(pid) {
+    process.kill(pid, 'SIGTERM');
+  }
+
+  _refreshActiveState() {
+    for (const pid of this.sessionPids) {
+      if (!this._isSessionRunning(pid)) this.sessionPids.delete(pid);
+    }
+    this.active = this.sessionPids.size > 0 || this.processes.some(isProcessRunning);
+    return this.active;
+  }
+
+  _buildPosixShellCommand(proxyUrl, certPath, pidFile) {
+    return [
+      `printf '%s' "$$" > ${shellQuote(pidFile)}`,
+      `export HTTP_PROXY=${shellQuote(proxyUrl)}`,
+      `export HTTPS_PROXY=${shellQuote(proxyUrl)}`,
+      `export NODE_EXTRA_CA_CERTS=${shellQuote(certPath)}`,
+      'export NODE_TLS_REJECT_UNAUTHORIZED=0',
+      `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`,
+      'exec "${SHELL:-/bin/sh}" -l'
+    ].join('; ');
+  }
+
+  async _launchTrackedPosixTerminal(command, args, env, pidFile) {
+    const proc = await this._spawnDetached(command, args, { detached: true, stdio: 'ignore', env });
+    proc.unref();
+    try {
+      const shellPid = await this._waitForShellPid(pidFile);
+      return { proc, shellPid };
+    } catch (err) {
+      try { proc.kill(); } catch {}
+      throw err;
+    } finally {
+      try { fs.unlinkSync(pidFile); } catch {}
+    }
   }
 
   async isActivable() {
@@ -34,7 +113,7 @@ export class FreshTerminalInterceptor {
   }
 
   async isActive() {
-    return this.processes.some(isProcessRunning);
+    return this._refreshActiveState();
   }
 
   async activate(proxyPort) {
@@ -56,7 +135,8 @@ export class FreshTerminalInterceptor {
     };
 
     let proc;
-    const platform = process.platform;
+    const platform = this._platform();
+    let shellPid = null;
 
     if (platform === 'win32') {
       // Open Windows Terminal, PowerShell, or cmd
@@ -68,7 +148,7 @@ export class FreshTerminalInterceptor {
 
       for (const terminal of terminals) {
         try {
-          proc = await spawnDetached(terminal.cmd, terminal.args, {
+          proc = await this._spawnDetached(terminal.cmd, terminal.args, {
             detached: true,
             stdio: 'ignore',
             env
@@ -81,21 +161,25 @@ export class FreshTerminalInterceptor {
       }
     } else if (platform === 'darwin') {
       // macOS: open Terminal.app
-      const script = `tell application "Terminal" to do script "export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS='${certPath}' NODE_TLS_REJECT_UNAUTHORIZED=0; echo 'HTTP FreeKit proxy active'"`;
-      proc = await spawnDetached('osascript', ['-e', script], { detached: true, stdio: 'ignore', env });
-      proc.unref();
+      const pidFile = this._createPidFilePath();
+      const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, pidFile);
+      const escapedCommand = shellCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `tell application "Terminal" to do script "${escapedCommand}"`;
+      ({ proc, shellPid } = await this._launchTrackedPosixTerminal('osascript', ['-e', script], env, pidFile));
     } else {
       // Linux: try common terminals
-      const terminals = [
-        { cmd: 'gnome-terminal', args: ['--'] },
-        { cmd: 'xterm', args: ['-e', 'bash'] },
-        { cmd: 'konsole', args: [] },
-      ];
+      const terminals = ['gnome-terminal', 'xterm', 'konsole'];
 
       for (const terminal of terminals) {
+        const pidFile = this._createPidFilePath();
+        const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, pidFile);
+        const args = terminal === 'gnome-terminal'
+          ? ['--wait', '--', 'sh', '-c', shellCommand]
+          : terminal === 'xterm'
+            ? ['-e', 'sh', '-c', shellCommand]
+            : ['--separate', '--nofork', '-e', 'sh', '-c', shellCommand];
         try {
-          proc = await spawnDetached(terminal.cmd, terminal.args, { detached: true, stdio: 'ignore', env });
-          proc.unref();
+          ({ proc, shellPid } = await this._launchTrackedPosixTerminal(terminal, args, env, pidFile));
           break;
         } catch {
           continue;
@@ -108,38 +192,44 @@ export class FreshTerminalInterceptor {
     }
 
     this.processes.push(proc);
+    if (shellPid) this.sessionPids.add(shellPid);
     this.active = true;
 
     proc.on('exit', () => {
       this.processes = this.processes.filter(p => p !== proc);
-      if (this.processes.length === 0) this.active = false;
+      this._refreshActiveState();
     });
 
     proc.on('error', (err) => {
       console.error('[Interceptor] Fresh terminal error:', err.message);
       this.processes = this.processes.filter(p => p !== proc);
-      if (this.processes.length === 0) this.active = false;
+      this._refreshActiveState();
     });
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
-    return { success: true, pid: proc.pid };
+    return { success: true, pid: shellPid || proc.pid };
   }
 
   async deactivate() {
+    for (const pid of this.sessionPids) {
+      try { this._killSession(pid); } catch {}
+    }
     for (const proc of this.processes) {
       try { proc.kill(); } catch {}
     }
+    this.sessionPids.clear();
     this.processes = [];
     this.active = false;
   }
 
   toJSON() {
+    const sessionPid = this.sessionPids.values().next().value;
     return {
       id: this.id,
       name: this.name,
       type: 'terminal',
       active: this.active,
-      pid: this.processes[0]?.pid || null
+      pid: sessionPid || this.processes[0]?.pid || null
     };
   }
 }

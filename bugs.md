@@ -804,6 +804,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-049 — High — Fresh-terminal lifecycle tracks launcher helpers, not shells
 
+- Status: **Fixed**.
 - Evidence: macOS tracks `osascript` at `src/interceptors/terminal-interceptors.js:83-86`; Linux often tracks the short-lived `gnome-terminal` client at `:88-99`. Their exit handlers mark the interceptor inactive at `:113-122`, and Stop can kill only stored handles at `:128-133`.
 - Impact: FreeKit reports inactive while the terminal session remains open and cannot close or otherwise clean up that session during Stop/shutdown.
 - Reproduction: activate on macOS; `osascript` exits after opening Terminal.app while the shell remains running.
