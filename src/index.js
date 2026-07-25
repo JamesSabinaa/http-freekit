@@ -101,8 +101,9 @@ async function main() {
   if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
   const savedMockRules = settings.get('mockRules');
   if (savedMockRules && Array.isArray(savedMockRules) && savedMockRules.length > 0) {
-    proxy.mockRules = savedMockRules;
-    console.log(`[Boot] Restored ${savedMockRules.length} mock rules from settings`);
+    const restored = proxy.loadMockRules(savedMockRules);
+    if (restored.migrated) settings.set('mockRules', restored.rules);
+    console.log(`[Boot] Restored ${restored.rules.length} mock rules from settings`);
   }
 
   // 5. Initialize API Server (with UI serving)

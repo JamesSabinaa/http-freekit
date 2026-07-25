@@ -309,8 +309,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-127 — Medium — Nested mock groups make their rules unmanageable
 
-- Status: **Partially fixed**.
-- Resolution: New nesting is rejected and backend lookup, removal, and legacy matching recurse safely. Persisted legacy nested groups are not migrated or flattened, while renderer group rendering and counting still assume every child is an ordinary rule.
+- Status: **Fixed**.
 
 - Evidence: `/api/mock-rules/move-to-group` accepts a group as `ruleId` and permits one-level group nesting at `src/api/api-server.js:865-878`. Matching recurses through arbitrary depth at `src/proxy/proxy-server.js:3145-3153`, but lookup, update, toggle, delete, and ungroup search only one group level at `src/api/api-server.js:1157-1170` and `src/proxy/proxy-server.js:4099-4127`.
 - Impact: rules inside a nested group still affect traffic but return not found from management operations, leaving persisted behavior that the UI/API cannot edit, disable, ungroup, or delete individually.

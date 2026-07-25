@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import test from 'node:test';
 
 import { ApiServer } from '../src/api/api-server.js';
@@ -84,4 +86,43 @@ test('legacy deeply nested rules remain editable and removable', () => {
   assert.equal(proxy.toggleMockRule('leaf').enabled, false);
   assert.equal(proxy.removeMockRuleById('leaf'), true);
   assert.equal(proxy._findMockRuleById('leaf'), null);
+});
+
+test('loading persisted rules flattens nested groups for the renderer', () => {
+  const proxy = new ProxyServer(null);
+  const result = proxy.loadMockRules([{
+    id: 'outer',
+    type: 'group',
+    enabled: true,
+    items: [
+      { id: 'first', enabled: true },
+      {
+        id: 'inner',
+        type: 'group',
+        enabled: true,
+        items: [
+          { id: 'second', enabled: true },
+          {
+            id: 'disabled-group',
+            type: 'group',
+            enabled: false,
+            items: [{ id: 'disabled-child', enabled: true }]
+          }
+        ]
+      }
+    ]
+  }]);
+
+  assert.equal(result.migrated, true);
+  assert.deepEqual(result.rules[0].items.map(rule => rule.id), [
+    'first', 'second', 'disabled-child'
+  ]);
+  assert.equal(result.rules[0].items.some(rule => rule.type === 'group'), false);
+  assert.equal(result.rules[0].items[2].enabled, false);
+});
+
+test('startup persists the flattened legacy group migration', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'index.js'), 'utf8');
+  assert.match(source, /proxy\.loadMockRules\(savedMockRules\)/);
+  assert.match(source, /if \(restored\.migrated\) settings\.set\('mockRules', restored\.rules\)/);
 });

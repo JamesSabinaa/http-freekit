@@ -3778,6 +3778,32 @@ export class ProxyServer {
     return flat;
   }
 
+  loadMockRules(rules) {
+    let migrated = false;
+    const flattenGroupItems = (items, parentEnabled = true) => {
+      const flattened = [];
+      for (const item of Array.isArray(items) ? items : []) {
+        if (item?.type === 'group') {
+          migrated = true;
+          flattened.push(...flattenGroupItems(item.items, parentEnabled && item.enabled !== false));
+        } else if (item && typeof item === 'object') {
+          flattened.push(parentEnabled || item.enabled === false
+            ? item
+            : { ...item, enabled: false });
+        }
+      }
+      return flattened;
+    };
+
+    const normalized = (Array.isArray(rules) ? rules : []).map(item => {
+      if (item?.type !== 'group') return item;
+      const items = flattenGroupItems(item.items);
+      return migrated ? { ...item, items } : item;
+    });
+    this.mockRules = normalized;
+    return { rules: normalized, migrated };
+  }
+
   _findMockRule(method, url, headers, body) {
     const flatRules = this._flattenMockRules(this.mockRules);
     // Sort: high-priority first, then by original order
