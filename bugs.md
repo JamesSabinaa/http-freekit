@@ -447,6 +447,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-154 — Medium — Serve-file rules synchronously read whole files on the event loop
 
+- Status: **Fixed**.
+
 - Evidence: HTTP, HTTPS, and H2 serve-file paths use `fs.readFileSync()` at `src/proxy/proxy-server.js:1249,2344,3516`, retain the complete Buffer, and copy/inspect it for capture.
 - Impact: large files freeze all proxy/API/MCP work and can exhaust memory instead of streaming with backpressure.
 - Reproduction: point a serve-file rule at a multi-gigabyte or sparse file and time an unrelated API request while it matches.
