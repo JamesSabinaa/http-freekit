@@ -694,7 +694,10 @@ export class ProxyServer {
       }
 
       const buildOptions = () => {
-        const headers = { ...this._rawHeadersToObject(clientReq.rawHeaders), ...clientReq.headers };
+        const headers = this._stripUpstreamHeaders({
+          ...this._rawHeadersToObject(clientReq.rawHeaders),
+          ...clientReq.headers
+        });
         if (breakpointBodyModified) this._setContentLength(headers, body.length);
 
         if (this.upstreamProxy && this._isSocksProxy()) {
@@ -1510,7 +1513,10 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: (() => {
-            const headers = { ...this._rawHeadersToObject(req.rawHeaders), ...req.headers };
+            const headers = this._stripUpstreamHeaders({
+              ...this._rawHeadersToObject(req.rawHeaders),
+              ...req.headers
+            });
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),
@@ -2113,7 +2119,10 @@ export class ProxyServer {
         const proxyOpts = {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: (() => {
-            const headers = { ...this._rawHeadersToObject(req.rawHeaders), ...req.headers };
+            const headers = this._stripUpstreamHeaders({
+              ...this._rawHeadersToObject(req.rawHeaders),
+              ...req.headers
+            });
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),

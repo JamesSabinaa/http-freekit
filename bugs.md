@@ -123,6 +123,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-012 — High — Filtered proxy credentials and spoofing headers are reintroduced
 
+- Status: **Fixed**.
+
 - Evidence: `_rawHeadersToObject()` removes `proxy-authorization`, `proxy-connection`, `x-forwarded-for`, and related fields at `src/proxy/proxy-server.js:270-309`, but forwarding then merges the unfiltered `clientReq.headers` over that result at `:638-640`, with the same pattern in HTTPS H1 paths around `:1455` and `:2058`.
 - Impact: proxy-only credentials can be disclosed to origins and client-supplied forwarding headers can bypass the intended normalization.
 - Reproduction: send `Proxy-Authorization` and `X-Forwarded-For` through the proxy to a recording HTTP origin; both arrive unchanged.
