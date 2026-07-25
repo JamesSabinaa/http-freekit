@@ -37,6 +37,18 @@ function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
   return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
 }
 
+function hasCompleteMockMatchers(matchers) {
+  if (!Array.isArray(matchers) || matchers.length === 0) return false;
+  const nameMatchers = new Set(['header', 'query', 'cookie', 'form-data', 'multipart-form-data']);
+  const valueOptionalMatchers = new Set(['wildcard', 'raw-body-exact', 'exact-query']);
+  return matchers.every(matcher => {
+    if (!matcher || typeof matcher.type !== 'string') return false;
+    if (nameMatchers.has(matcher.type)) return typeof matcher.name === 'string' && matcher.name.trim().length > 0;
+    if (valueOptionalMatchers.has(matcher.type)) return true;
+    return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
+  });
+}
+
 function normalizeImportedMockRule(rule, allowGroup = true) {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
 
@@ -52,7 +64,7 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
     };
   }
 
-  const hasNewFormat = Array.isArray(rule.matchers)
+  const hasNewFormat = hasCompleteMockMatchers(rule.matchers)
     && rule.action && typeof rule.action === 'object' && !Array.isArray(rule.action);
   const hasLegacyFormat = typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0
     && rule.response && typeof rule.response === 'object' && !Array.isArray(rule.response);
@@ -956,6 +968,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const body = req.body;
 
       if (body.matchers && body.action) {
+        if (!hasCompleteMockMatchers(body.matchers)) {
+          return res.status(400).json({ error: 'At least one complete matcher is required' });
+        }
         // New format
         const rule = this.proxy.addMockRule({
           id: body.id || undefined,
@@ -1005,6 +1020,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.put('/api/mock-rules/:id', (req, res) => {
+      if (req.body?.matchers && !hasCompleteMockMatchers(req.body.matchers)) {
+        return res.status(400).json({ error: 'At least one complete matcher is required' });
+      }
       const updated = this.proxy.updateMockRule(req.params.id, req.body);
       if (!updated) return res.status(404).json({ error: 'Rule not found' });
       this._persistMockRules();

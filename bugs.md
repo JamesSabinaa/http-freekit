@@ -1648,6 +1648,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-138 — Medium — A blank matcher creates a match-everything mock
 
+- Status: **Fixed**.
+
 - Evidence: `saveMockRule()` rejects blank conditions only if the matcher array is also empty at `src/ui/app.js:6026-6036`; a nonempty blank matcher passes. URL Contains then evaluates `url.includes("")` at `src/proxy/proxy-server.js:3222-3223`, which is true for every URL.
 - Impact: a visually blank rule can unexpectedly return its mock response for all traffic.
 - Reproduction: add a URL Contains condition, leave it blank, select a fixed response, save, and request an unrelated URL.

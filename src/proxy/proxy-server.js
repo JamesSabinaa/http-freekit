@@ -25,6 +25,9 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'EAI_AGAIN'
 ]);
 const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
+const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
+  'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
+]);
 
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
@@ -3818,6 +3821,7 @@ export class ProxyServer {
 
       // New format: matchers + action
       if (rule.matchers && rule.action) {
+        if (!Array.isArray(rule.matchers) || rule.matchers.length === 0) return false;
         return rule.matchers.every(m => this._evaluateMatcher(m, method, url, headers, body));
       }
 
@@ -3837,6 +3841,11 @@ export class ProxyServer {
   }
 
   _evaluateMatcher(matcher, method, url, headers, body) {
+    if (BLANK_VALUE_MATCH_ALL_TYPES.has(matcher?.type)
+      && (typeof matcher.value !== 'string' || matcher.value.trim() === '')) {
+      return false;
+    }
+
     switch (matcher.type) {
       case 'wildcard':
         return true;

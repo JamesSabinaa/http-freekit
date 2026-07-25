@@ -6172,15 +6172,21 @@
     }
 
     /** Save current editor state to draft (local only, not to server) */
+    function isMockMatcherComplete(matcher) {
+      if (!matcher || typeof matcher.type !== 'string') return false;
+      if (['header', 'query', 'cookie', 'form-data', 'multipart-form-data'].includes(matcher.type)) {
+        return typeof matcher.name === 'string' && matcher.name.trim().length > 0;
+      }
+      if (['wildcard', 'raw-body-exact', 'exact-query'].includes(matcher.type)) return true;
+      return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
+    }
+
     function saveMockRule(ruleId) {
       if (!mockEditDraft) return false;
 
-      const hasContent = mockEditDraft.matchers.some(m => {
-        if (m.type === 'method') return true;
-        return m.value || m.name;
-      });
-      if (!hasContent && mockEditDraft.matchers.length === 0) {
-        toast('Add at least one matching condition', 'error');
+      if (!Array.isArray(mockEditDraft.matchers) || mockEditDraft.matchers.length === 0
+        || !mockEditDraft.matchers.every(isMockMatcherComplete)) {
+        toast('Complete every matching condition before saving', 'error');
         return false;
       }
 
