@@ -47,6 +47,12 @@ export class DockerInterceptor {
   }
 
   async activate(proxyPort, options = {}) {
+    if (options.containerId) {
+      throw new Error(
+        'Running Docker containers cannot have proxy or CA environment added; recreate the container with the generated settings'
+      );
+    }
+
     // Get host IP that Docker containers can reach
     const hostIp = await this._getDockerHost();
 
@@ -68,9 +74,6 @@ export class DockerInterceptor {
     const composeMount = JSON.stringify(`${certPath}:${containerCertPath}:ro`);
     const runInstruction = `docker run ${certMount} -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} ${runEnvironment} <image>`;
     const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n${composeEnvironment}`;
-    // Running container environments cannot be changed, but retain the selected
-    // container so the UI can represent the requested interception state.
-    if (options.containerId) this.interceptedContainers.add(options.containerId);
     this.active = true;
 
     console.log(`[Interceptor] Docker interceptor active. Proxy: ${proxyUrl}`);

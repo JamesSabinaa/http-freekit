@@ -924,6 +924,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-098 — Medium — Selecting a running Docker container is a no-op
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/docker-interceptor.js:33-40` merely adds `containerId` to a Set; it executes no Docker command and changes no container state. `isActive()` and activation then report success at `:21-23,46-56`.
 - Impact: a user selecting a running container sees Active while that container's network environment is unchanged.
 - Reproduction: activate with a running container ID and inspect its environment/traffic.
