@@ -8036,7 +8036,10 @@
       }
     }
 
+    let renderedTlsPassthroughHosts = [];
+
     function renderTlsPassthrough(hosts) {
+      renderedTlsPassthroughHosts = [...hosts];
       const list = document.getElementById('tlsPassthroughList');
       if (!list) return;
       if (hosts.length === 0) {
@@ -8056,14 +8059,12 @@
       const host = input.value.trim();
       if (!host) return;
       try {
-        const res = await fetch(API_BASE + '/api/tls-passthrough');
-        const data = await res.json();
-        const hosts = [...(data.hosts || []), host];
-        await fetch(API_BASE + '/api/tls-passthrough', {
+        const response = await fetch(API_BASE + '/api/tls-passthrough/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hosts })
+          body: JSON.stringify({ host })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not add host');
         input.value = '';
         loadTlsPassthrough();
         toast('Added ' + host, 'success');
@@ -8071,15 +8072,15 @@
     }
 
     async function removeTlsPassthrough(index) {
+      const host = renderedTlsPassthroughHosts[index];
+      if (host === undefined) return;
       try {
-        const res = await fetch(API_BASE + '/api/tls-passthrough');
-        const data = await res.json();
-        const hosts = (data.hosts || []).filter((_, i) => i !== index);
-        await fetch(API_BASE + '/api/tls-passthrough', {
-          method: 'POST',
+        const response = await fetch(API_BASE + '/api/tls-passthrough/items', {
+          method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hosts })
+          body: JSON.stringify({ host })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove host');
         loadTlsPassthrough();
         toast('Removed', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
@@ -8146,7 +8147,10 @@
       }
     }
 
+    let renderedClientCertificates = [];
+
     function renderClientCerts(certs) {
+      renderedClientCertificates = certs.map(cert => ({ ...cert }));
       const el = document.getElementById('clientCertList');
       if (!el) return;
       if (!certs.length) {
@@ -8209,14 +8213,12 @@
       const path = document.getElementById('clientCertPath')?.value?.trim();
       if (!host || !path) { toast('Both host and path required', 'error'); return; }
       try {
-        const res = await fetch(API_BASE + '/api/client-certificates');
-        const data = await res.json();
-        const certs = [...(data.certificates || []), { host, pfxPath: path }];
-        await fetch(API_BASE + '/api/client-certificates', {
+        const response = await fetch(API_BASE + '/api/client-certificates/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ certificates: certs })
+          body: JSON.stringify({ host, pfxPath: path })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not add certificate');
         document.getElementById('clientCertHost').value = '';
         document.getElementById('clientCertPath').value = '';
         loadClientCerts();
@@ -8225,15 +8227,15 @@
     }
 
     async function removeClientCert(idx) {
+      const certificate = renderedClientCertificates[idx];
+      if (!certificate) return;
       try {
-        const res = await fetch(API_BASE + '/api/client-certificates');
-        const data = await res.json();
-        const certs = (data.certificates || []).filter((_, i) => i !== idx);
-        await fetch(API_BASE + '/api/client-certificates', {
-          method: 'POST',
+        const response = await fetch(API_BASE + '/api/client-certificates/items', {
+          method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ certificates: certs })
+          body: JSON.stringify(certificate)
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove certificate');
         loadClientCerts();
         toast('Removed', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
@@ -8251,7 +8253,10 @@
       }
     }
 
+    let renderedTrustedCAs = [];
+
     function renderTrustedCAs(cas) {
+      renderedTrustedCAs = [...cas];
       const el = document.getElementById('trustedCAList');
       if (!el) return;
       if (!cas.length) {
@@ -8271,14 +8276,12 @@
       const path = input?.value?.trim();
       if (!path) { toast('Path required', 'error'); return; }
       try {
-        const res = await fetch(API_BASE + '/api/trusted-cas');
-        const data = await res.json();
-        const cas = [...(data.cas || []), path];
-        await fetch(API_BASE + '/api/trusted-cas', {
+        const response = await fetch(API_BASE + '/api/trusted-cas/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cas })
+          body: JSON.stringify({ ca: path })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not add CA');
         input.value = '';
         loadTrustedCAs();
         toast('Trusted CA added', 'success');
@@ -8286,15 +8289,15 @@
     }
 
     async function removeTrustedCA(idx) {
+      const ca = renderedTrustedCAs[idx];
+      if (ca === undefined) return;
       try {
-        const res = await fetch(API_BASE + '/api/trusted-cas');
-        const data = await res.json();
-        const cas = (data.cas || []).filter((_, i) => i !== idx);
-        await fetch(API_BASE + '/api/trusted-cas', {
-          method: 'POST',
+        const response = await fetch(API_BASE + '/api/trusted-cas/items', {
+          method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cas })
+          body: JSON.stringify({ ca })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove CA');
         loadTrustedCAs();
         toast('Removed', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
@@ -8312,7 +8315,10 @@
       }
     }
 
+    let renderedHttpsWhitelistHosts = [];
+
     function renderHttpsWhitelist(hosts) {
+      renderedHttpsWhitelistHosts = [...hosts];
       const el = document.getElementById('httpsWhitelistList');
       if (!el) return;
       if (!hosts.length) {
@@ -8332,14 +8338,12 @@
       const host = input?.value?.trim();
       if (!host) { toast('Hostname required', 'error'); return; }
       try {
-        const res = await fetch(API_BASE + '/api/https-whitelist');
-        const data = await res.json();
-        const hosts = [...(data.hosts || []), host];
-        await fetch(API_BASE + '/api/https-whitelist', {
+        const response = await fetch(API_BASE + '/api/https-whitelist/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hosts })
+          body: JSON.stringify({ host })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not add host');
         input.value = '';
         loadHttpsWhitelist();
         toast('Host added to whitelist', 'success');
@@ -8347,15 +8351,15 @@
     }
 
     async function removeHttpsWhitelist(idx) {
+      const host = renderedHttpsWhitelistHosts[idx];
+      if (host === undefined) return;
       try {
-        const res = await fetch(API_BASE + '/api/https-whitelist');
-        const data = await res.json();
-        const hosts = (data.hosts || []).filter((_, i) => i !== idx);
-        await fetch(API_BASE + '/api/https-whitelist', {
-          method: 'POST',
+        const response = await fetch(API_BASE + '/api/https-whitelist/items', {
+          method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hosts })
+          body: JSON.stringify({ host })
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove host');
         loadHttpsWhitelist();
         toast('Removed', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }

@@ -1656,6 +1656,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-139 — Medium — List-setting read/modify/write races lose or mis-delete entries
 
+- Status: **Fixed**.
+
 - Evidence: TLS passthrough (`src/ui/app.js:7806-7836`), client certificates (`:7946-7977`), trusted CAs (`:8008-8038`), and HTTPS whitelist (`:8069-8099`) each GET the entire array and POST a replacement. Remove handlers apply a stale rendered index to the newly fetched array.
 - Impact: concurrent windows or rapid operations overwrite one another, and a stale Remove action can delete a different entry after another client changes the list.
 - Reproduction: let two tabs read the same list and concurrently add different entries; only the last POST survives.

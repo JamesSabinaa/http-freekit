@@ -1213,6 +1213,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
+    router.post('/api/tls-passthrough/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      if (!host) return res.status(400).json({ error: 'host is required' });
+      if (!this.proxy.tlsPassthrough.includes(host)) {
+        this.proxy.setTlsPassthrough([...this.proxy.tlsPassthrough, host]);
+        this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
+      }
+      res.json({ success: true, hosts: this.proxy.tlsPassthrough });
+    });
+    router.delete('/api/tls-passthrough/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      const hosts = this.proxy.tlsPassthrough.filter(item => item !== host);
+      if (!host || hosts.length === this.proxy.tlsPassthrough.length) {
+        return res.status(404).json({ error: 'Host not found' });
+      }
+      this.proxy.setTlsPassthrough(hosts);
+      this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
+      res.json({ success: true, hosts: this.proxy.tlsPassthrough });
+    });
 
     // Client certificates
     router.get('/api/client-certificates', (req, res) => {
@@ -1222,6 +1241,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.proxy.setClientCertificates(req.body.certificates || []);
       this.settings?.set('clientCertificates', this.proxy.clientCertificates);
       res.json({ success: true });
+    });
+    router.post('/api/client-certificates/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      const pfxPath = String(req.body?.pfxPath || '').trim();
+      if (!host || !pfxPath) return res.status(400).json({ error: 'host and pfxPath are required' });
+      const exists = this.proxy.clientCertificates.some(cert => cert.host === host && cert.pfxPath === pfxPath);
+      if (!exists) {
+        this.proxy.setClientCertificates([...this.proxy.clientCertificates, { host, pfxPath }]);
+        this.settings?.set('clientCertificates', this.proxy.clientCertificates);
+      }
+      res.json({ success: true, certificates: this.proxy.clientCertificates });
+    });
+    router.delete('/api/client-certificates/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      const pfxPath = String(req.body?.pfxPath || '').trim();
+      const certificates = this.proxy.clientCertificates.filter(cert => cert.host !== host || cert.pfxPath !== pfxPath);
+      if (!host || !pfxPath || certificates.length === this.proxy.clientCertificates.length) {
+        return res.status(404).json({ error: 'Client certificate not found' });
+      }
+      this.proxy.setClientCertificates(certificates);
+      this.settings?.set('clientCertificates', this.proxy.clientCertificates);
+      res.json({ success: true, certificates: this.proxy.clientCertificates });
     });
 
     // Trusted CAs
@@ -1233,6 +1274,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.settings?.set('trustedCAs', this.proxy.trustedCAs);
       res.json({ success: true });
     });
+    router.post('/api/trusted-cas/items', (req, res) => {
+      const ca = String(req.body?.ca || '').trim();
+      if (!ca) return res.status(400).json({ error: 'ca is required' });
+      if (!this.proxy.trustedCAs.includes(ca)) {
+        this.proxy.setTrustedCAs([...this.proxy.trustedCAs, ca]);
+        this.settings?.set('trustedCAs', this.proxy.trustedCAs);
+      }
+      res.json({ success: true, cas: this.proxy.trustedCAs });
+    });
+    router.delete('/api/trusted-cas/items', (req, res) => {
+      const ca = String(req.body?.ca || '').trim();
+      const cas = this.proxy.trustedCAs.filter(item => item !== ca);
+      if (!ca || cas.length === this.proxy.trustedCAs.length) {
+        return res.status(404).json({ error: 'Trusted CA not found' });
+      }
+      this.proxy.setTrustedCAs(cas);
+      this.settings?.set('trustedCAs', this.proxy.trustedCAs);
+      res.json({ success: true, cas: this.proxy.trustedCAs });
+    });
 
     // HTTPS whitelist
     router.get('/api/https-whitelist', (req, res) => {
@@ -1242,6 +1302,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.proxy.setHttpsWhitelist(req.body.hosts || []);
       this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
       res.json({ success: true });
+    });
+    router.post('/api/https-whitelist/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      if (!host) return res.status(400).json({ error: 'host is required' });
+      if (!this.proxy.httpsWhitelist.includes(host)) {
+        this.proxy.setHttpsWhitelist([...this.proxy.httpsWhitelist, host]);
+        this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
+      }
+      res.json({ success: true, hosts: this.proxy.httpsWhitelist });
+    });
+    router.delete('/api/https-whitelist/items', (req, res) => {
+      const host = String(req.body?.host || '').trim();
+      const hosts = this.proxy.httpsWhitelist.filter(item => item !== host);
+      if (!host || hosts.length === this.proxy.httpsWhitelist.length) {
+        return res.status(404).json({ error: 'Host not found' });
+      }
+      this.proxy.setHttpsWhitelist(hosts);
+      this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
+      res.json({ success: true, hosts: this.proxy.httpsWhitelist });
     });
 
     // API Specs
