@@ -32,7 +32,7 @@ test(`secure WebSocket upgrades traverse TLS interception in ${http2Mode} mode`,
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-wss-'));
   const ca = new CertificateAuthority(dataDir);
   await ca.initialize();
-  const originCert = ca.generateCertForHost('127.0.0.1');
+  const originCert = await ca.generateCertForHost('127.0.0.1');
   let originUpgrades = 0;
   const origin = https.createServer({ key: originCert.key, cert: originCert.cert });
   origin.on('upgrade', (request, socket) => {

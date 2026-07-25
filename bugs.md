@@ -330,6 +330,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-129 — Medium — New HTTPS hosts freeze the process during RSA key generation
 
+- Status: **Fixed**.
+
 - Evidence: every uncached CONNECT calls `generateCertForHost()` at `src/proxy/proxy-server.js:894-895`; `src/proxy/certificate-authority.js:88-95` synchronously runs `pki.rsa.generateKeyPair(2048)` on the main event loop and caches only afterward at `:150-155`.
 - Impact: each new hostname blocks proxy traffic, the management API, MCP, and UI updates for the full key-generation time; high host churn repeatedly stalls the application.
 - Reproduction: request an uncached HTTPS hostname while timing a parallel `/api/version` request; the management request cannot complete until certificate generation returns.

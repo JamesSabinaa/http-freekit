@@ -14,6 +14,7 @@ export class CertificateAuthority {
     this.caKey = null;
     this.caCert = null;
     this.certCache = new Map();
+    this.certPromises = new Map();
   }
 
   async initialize() {
@@ -46,7 +47,7 @@ export class CertificateAuthority {
 
   async _generateCA() {
     console.log('[CA] Generating new CA certificate...');
-    const keys = pki.rsa.generateKeyPair(2048);
+    const keys = await this._generateKeyPair();
     const cert = pki.createCertificate();
 
     cert.publicKey = keys.publicKey;
@@ -85,13 +86,27 @@ export class CertificateAuthority {
     console.log('[CA] CA certificate generated and saved');
   }
 
-  generateCertForHost(hostname) {
+  async generateCertForHost(hostname) {
     // Return cached cert if available
     if (this.certCache.has(hostname)) {
       return this.certCache.get(hostname);
     }
 
-    const keys = pki.rsa.generateKeyPair(2048);
+    if (this.certPromises.has(hostname)) {
+      return this.certPromises.get(hostname);
+    }
+
+    const pending = this._generateCertForHost(hostname);
+    this.certPromises.set(hostname, pending);
+    try {
+      return await pending;
+    } finally {
+      this.certPromises.delete(hostname);
+    }
+  }
+
+  async _generateCertForHost(hostname) {
+    const keys = await this._generateKeyPair();
     const cert = pki.createCertificate();
 
     cert.publicKey = keys.publicKey;
@@ -155,6 +170,15 @@ export class CertificateAuthority {
     this.certCache.set(hostname, result);
 
     return result;
+  }
+
+  _generateKeyPair() {
+    return new Promise((resolve, reject) => {
+      pki.rsa.generateKeyPair({ bits: 2048 }, (error, keys) => {
+        if (error) reject(error);
+        else resolve(keys);
+      });
+    });
   }
 
   _randomSerial() {

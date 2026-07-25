@@ -533,7 +533,10 @@ export class ProxyServer {
       });
 
       this.server.on('connect', (req, clientSocket, head) => {
-        this._handleConnect(req, clientSocket, head);
+        this._handleConnect(req, clientSocket, head).catch(err => {
+          console.error('[Proxy] CONNECT handling failed:', err.message);
+          clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        });
       });
 
       this.server.on('upgrade', (req, socket, head) => {
@@ -1147,7 +1150,7 @@ export class ProxyServer {
   }
 
   // Handle CONNECT method for HTTPS tunneling + MITM
-  _handleConnect(req, clientSocket, head) {
+  async _handleConnect(req, clientSocket, head) {
     let connectTarget;
     try {
       connectTarget = new URL(`https://${req.url}`);
@@ -1208,7 +1211,7 @@ export class ProxyServer {
     }
 
     // Generate a certificate for this host
-    const hostCert = this.ca.generateCertForHost(hostname);
+    const hostCert = await this.ca.generateCertForHost(hostname);
 
     // Determine which ALPN protocols to advertise based on http2Enabled setting
     const useHttp2 = this.http2Enabled === 'all' || this.http2Enabled === 'h2-only';

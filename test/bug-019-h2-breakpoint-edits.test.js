@@ -33,7 +33,7 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-edit-'));
   const ca = new CertificateAuthority(dataDir);
   await ca.initialize();
-  const originCert = ca.generateCertForHost('127.0.0.1');
+  const originCert = await ca.generateCertForHost('127.0.0.1');
   const origin = https.createServer({ key: originCert.key, cert: originCert.cert }, (req, res) => {
     res.end(`${req.method} ${req.url}`);
   });
