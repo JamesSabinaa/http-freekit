@@ -366,8 +366,17 @@ export class ProxyServer {
   }
 
   setTlsPassthrough(hostnames) {
-    this.tlsPassthrough = Array.isArray(hostnames) ? hostnames : [];
+    this.tlsPassthrough = Array.isArray(hostnames)
+      ? [...new Set(hostnames.map(host => this._normalizeTlsHostname(host)).filter(Boolean))]
+      : [];
     console.log(`[Proxy] TLS passthrough: ${this.tlsPassthrough.length} hosts`);
+  }
+
+  _isTlsPassthrough(hostname) {
+    const target = this._normalizeTlsHostname(hostname);
+    return this.tlsPassthrough.some(pattern =>
+      pattern === target || (pattern.startsWith('*.') && target.endsWith(pattern.slice(1)))
+    );
   }
 
   setHttp2Config(mode) {
@@ -1181,8 +1190,7 @@ export class ProxyServer {
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // TLS passthrough — no MITM, no certificate generation
-    if (this.tlsPassthrough.includes(hostname) ||
-        this.tlsPassthrough.some(p => p.startsWith('*.') && hostname.endsWith(p.slice(1)))) {
+    if (this._isTlsPassthrough(hostname)) {
       const tunnelId = uuidv4();
       const startTime = Date.now();
       let clientBytes = head.length;

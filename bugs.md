@@ -425,6 +425,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-152 — Medium — TLS-passthrough hostname matching is case-sensitive
 
+- Status: **Fixed**.
+
 - Evidence: passthrough settings are stored verbatim at `src/proxy/proxy-server.js:237-239`, while CONNECT parses a normalized lowercase URL hostname and compares it with case-sensitive `includes()`/`endsWith()` at `:840-857`.
 - Impact: uppercase DNS names and wildcards silently fail to bypass MITM, breaking pinned-certificate applications.
 - Reproduction: configure `EXAMPLE.COM` or `*.EXAMPLE.COM`, connect to `example.com`, and observe a generated MITM certificate.
