@@ -3261,8 +3261,7 @@
     function disposeBodyEditor(containerId) {
       const existing = activeBodyEditors[containerId];
       if (existing) {
-        existing.dispose();
-        delete activeBodyEditors[containerId];
+        disposeMonacoEditor(existing);
       }
     }
 
@@ -6855,8 +6854,7 @@
 
       // Dispose previous instance if any
       if (sendBodyEditor) {
-        sendBodyEditor.dispose();
-        sendBodyEditor = null;
+        disposeMonacoEditor(sendBodyEditor);
       }
       container.innerHTML = '';
 
@@ -9493,6 +9491,33 @@
      * @type {Array<{editor: object, container: HTMLElement}>}
      */
     const monacoInstances = [];
+    const disposedMonacoEditors = new WeakSet();
+
+    /**
+     * Dispose an editor and every resource retained for its lifecycle.
+     * Safe to call repeatedly or from a container-removal observer.
+     * @param {object|null} editor
+     */
+    function disposeMonacoEditor(editor) {
+      if (!editor) return;
+
+      const instanceIndex = monacoInstances.findIndex(instance => instance.editor === editor);
+      if (instanceIndex !== -1) {
+        const [instance] = monacoInstances.splice(instanceIndex, 1);
+        instance.resizeObserver.disconnect();
+        instance.mutationObserver?.disconnect();
+      }
+
+      for (const [containerId, activeEditor] of Object.entries(activeBodyEditors)) {
+        if (activeEditor === editor) delete activeBodyEditors[containerId];
+      }
+      if (sendBodyEditor === editor) sendBodyEditor = null;
+
+      if (!disposedMonacoEditors.has(editor)) {
+        disposedMonacoEditors.add(editor);
+        editor.dispose();
+      }
+    }
 
     /**
      * Creates a Monaco Editor instance inside the given container element.
@@ -9550,24 +9575,21 @@
 
       // Auto-resize when container resizes
       const resizeObserver = new ResizeObserver(() => {
-        editor.layout();
+        if (!disposedMonacoEditors.has(editor)) editor.layout();
       });
       resizeObserver.observe(container);
 
       // Track instance for theme switching and cleanup
-      const instance = { editor, container, resizeObserver };
+      const instance = { editor, container, resizeObserver, mutationObserver: null };
       monacoInstances.push(instance);
 
       // Cleanup when container is removed from DOM
       const mutationObserver = new MutationObserver(() => {
         if (!document.body.contains(container)) {
-          editor.dispose();
-          resizeObserver.disconnect();
-          mutationObserver.disconnect();
-          const idx = monacoInstances.indexOf(instance);
-          if (idx !== -1) monacoInstances.splice(idx, 1);
+          disposeMonacoEditor(editor);
         }
       });
+      instance.mutationObserver = mutationObserver;
       mutationObserver.observe(document.body, { childList: true, subtree: true });
 
       return editor;

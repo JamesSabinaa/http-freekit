@@ -1954,6 +1954,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-171 — Medium — Monaco disposal leaks observers and editor instances
 
+- Status: **Fixed**.
+
 - Evidence: `disposeBodyEditor()` only disposes the editor and deletes the map entry at `src/ui/app.js:3182-3188`. Each `createMonacoEditor()` creates a ResizeObserver, records an instance, and creates a document-wide MutationObserver at `:9139-9159`; observers disconnect only if the persistent container leaves the DOM. The Send editor is also disposed directly at `:6634-6638`.
 - Impact: switching body modes, tabs, or details accumulates live observers and retained disposed editors, multiplying callbacks on every DOM mutation and resize.
 - Reproduction: repeatedly alternate text body modes and inspect retained Monaco instances and observers in a heap profile.
