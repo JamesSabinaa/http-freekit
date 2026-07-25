@@ -38,6 +38,7 @@ export class AndroidAdbInterceptor {
     this.ca = null;
     this.activatedDevices = new Map(); // deviceId -> { serial, model }
     this.reverseTunnels = new Set(); // `${deviceId}:${proxyPort}`
+    this.previousReverseMappings = new Map(); // `${deviceId}:${proxyPort}` -> prior remote endpoint or null
   }
 
   async isActivable() {
@@ -142,13 +143,32 @@ export class AndroidAdbInterceptor {
   }
 
   async _createReverseTunnel(deviceId, proxyPort) {
+    const localEndpoint = `tcp:${proxyPort}`;
+    const key = `${deviceId}:${proxyPort}`;
+
+    if (this.reverseTunnels.has(key)) return true;
+
     try {
-      await this._adb(deviceId, ['reverse', `tcp:${proxyPort}`, `tcp:${proxyPort}`], {
-        stdio: 'ignore',
-        timeout: 5000
-      });
-      this.reverseTunnels.add(`${deviceId}:${proxyPort}`);
-      console.log(`[Interceptor] ADB reverse tunnel active on ${deviceId}: tcp:${proxyPort} -> tcp:${proxyPort}`);
+      const reverseList = await this._adb(deviceId, ['reverse', '--list'], { timeout: 5000 });
+      const previousMapping = String(reverseList || '')
+        .split(/\r?\n/)
+        .map(line => line.trim().split(/\s+/))
+        .find(parts => parts.length >= 2 && parts.at(-2) === localEndpoint)
+        ?.at(-1) || null;
+
+      if (previousMapping !== localEndpoint) {
+        const createArgs = previousMapping === null
+          ? ['reverse', '--no-rebind', localEndpoint, localEndpoint]
+          : ['reverse', localEndpoint, localEndpoint];
+        await this._adb(deviceId, createArgs, {
+          stdio: 'ignore',
+          timeout: 5000
+        });
+      }
+
+      this.previousReverseMappings.set(key, previousMapping);
+      this.reverseTunnels.add(key);
+      console.log(`[Interceptor] ADB reverse tunnel active on ${deviceId}: ${localEndpoint} -> ${localEndpoint}`);
       return true;
     } catch (err) {
       console.warn(`[Interceptor] ADB reverse tunnel failed on ${deviceId}:`, err.message);
@@ -162,10 +182,20 @@ export class AndroidAdbInterceptor {
     if (!this.reverseTunnels.has(key)) return true;
 
     try {
-      await this._adb(deviceId, ['reverse', '--remove', `tcp:${proxyPort}`], {
-        stdio: 'ignore',
-        timeout: 5000
-      });
+      const localEndpoint = `tcp:${proxyPort}`;
+      const previousMapping = this.previousReverseMappings.get(key) ?? null;
+
+      if (previousMapping !== localEndpoint) {
+        const restoreArgs = previousMapping === null
+          ? ['reverse', '--remove', localEndpoint]
+          : ['reverse', localEndpoint, previousMapping];
+        await this._adb(deviceId, restoreArgs, {
+          stdio: 'ignore',
+          timeout: 5000
+        });
+      }
+
+      this.previousReverseMappings.delete(key);
       this.reverseTunnels.delete(key);
       return true;
     } catch (err) {

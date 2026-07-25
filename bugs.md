@@ -1167,6 +1167,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-161 — High — Android companion setup destroys an existing ADB reverse mapping
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/android-adb-interceptor.js:124-136` creates `adb reverse tcp:<proxyPort> tcp:<proxyPort>` without checking `adb reverse --list` or using `--no-rebind`; Stop at `:139-153` removes the port instead of restoring a prior destination.
 - Impact: FreeKit can overwrite and then delete another Android development workflow's reverse tunnel.
 - Reproduction: create `adb reverse tcp:8080 tcp:9000`, activate companion interception on FreeKit port 8080, then Stop; the original mapping is gone.
