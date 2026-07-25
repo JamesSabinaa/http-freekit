@@ -995,6 +995,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-125 — Medium — The UI permits duplicate concurrent interceptor activations
 
+- Status: **Fixed**.
+
 - Evidence: `interceptorsInProgress` adds only a visual overlay at `src/ui/app.js:3779-3786,4294-4311`; neither activation click handler exits when the ID is already present. The overlay accepts pointer events at `src/ui/styles.css:1692-1704`, allowing another click to reach the card.
 - Impact: rapid clicks start concurrent activation work, spawning duplicate terminals or triggering lost-handle and inconsistent-state defects in process-based interceptors.
 - Reproduction: rapidly double-click Fresh Terminal and observe two detached spawn attempts.

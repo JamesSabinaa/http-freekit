@@ -3720,7 +3720,6 @@
         active: !!event.active,
         pid: event.pid || null
       };
-      interceptorsInProgress.delete(event.id);
       if (!event.active && expandedInterceptorId === event.id) {
         collapseInterceptorCard();
         return;
@@ -3870,6 +3869,8 @@
     }
 
     async function handleExpandableCardClick(id, isActive) {
+      if (interceptorsInProgress.has(id)) return;
+
       if (expandedInterceptorId === id) {
         // Already expanded — collapse
         collapseInterceptorCard();
@@ -3971,6 +3972,7 @@
         toast('Select an Electron application first', 'error');
         return;
       }
+      if (interceptorsInProgress.has('electron')) return;
 
       try {
         interceptorsInProgress.add('electron');
@@ -4158,6 +4160,10 @@
     }
 
     async function activateAndroidDevice(deviceId) {
+      if (interceptorsInProgress.has('android-adb')) return;
+      interceptorsInProgress.add('android-adb');
+      filterInterceptors();
+
       const item = document.querySelector(`[data-device-id="${deviceId}"]`);
       const btn = item?.querySelector('.android-device-activate');
       if (btn) {
@@ -4204,6 +4210,9 @@
           btn.disabled = false;
           btn.innerHTML = 'Activate';
         }
+      } finally {
+        interceptorsInProgress.delete('android-adb');
+        filterInterceptors();
       }
     }
 
@@ -4300,6 +4309,10 @@
     }
 
     async function activateJvmProcess(pid) {
+      if (interceptorsInProgress.has('jvm')) return;
+      interceptorsInProgress.add('jvm');
+      filterInterceptors();
+
       const item = document.querySelector(`[data-jvm-pid="${pid}"]`);
       const btn = item?.querySelector('.jvm-process-activate');
       if (btn) {
@@ -4346,6 +4359,9 @@
           btn.disabled = false;
           btn.innerHTML = 'Attach';
         }
+      } finally {
+        interceptorsInProgress.delete('jvm');
+        filterInterceptors();
       }
     }
 
@@ -4388,6 +4404,8 @@
     }
 
     async function deactivateInterceptor(id) {
+      if (interceptorsInProgress.has(id)) return;
+
       const interceptor = allInterceptors.find(i => i.id === id);
       const name = interceptor?.name || id;
       try {
@@ -4407,6 +4425,8 @@
     }
 
     async function toggleInterceptor(id, isActive) {
+      if (interceptorsInProgress.has(id)) return;
+
       try {
         if (isActive) {
           await deactivateInterceptor(id);
