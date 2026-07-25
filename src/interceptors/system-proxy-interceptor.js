@@ -32,12 +32,25 @@ export class SystemProxyInterceptor {
     return execFileSync('reg', args, options);
   }
 
-  _execPowerShell(script) {
+  _execPowerShell(script, options = {}) {
     return execFileSync(
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { stdio: 'ignore', timeout: 5000, windowsHide: true }
+      { timeout: 5000, windowsHide: true, ...options }
     );
+  }
+
+  _usesPerMachineProxyPolicy() {
+    const output = this._execPowerShell(`
+$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\Internet Settings')
+try {
+  $value = if ($null -eq $key) { 1 } else { $key.GetValue('ProxySettingsPerUser', 1) }
+  [Console]::Out.Write([string]$value)
+} finally {
+  if ($null -ne $key) { $key.Dispose() }
+}
+`, { encoding: 'utf8' });
+    return String(output).trim() === '0';
   }
 
   _notifyWinInet() {
@@ -168,6 +181,9 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
   async activate(proxyPort) {
     if (this._isWindows()) {
       try {
+        if (this._usesPerMachineProxyPolicy()) {
+          throw new Error('System Proxy cannot change a machine-wide proxy policy; ask an administrator to enable per-user proxy settings');
+        }
         if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
         const proxyServer = `127.0.0.1:${proxyPort}`;
         this._persistRecoveryState(proxyServer);

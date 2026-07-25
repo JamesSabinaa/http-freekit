@@ -10,6 +10,7 @@ test('system proxy activation journals settings and normal stop removes the jour
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const interceptor = new SystemProxyInterceptor({ dataDir });
   interceptor._isWindows = () => true;
+  interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ enabled: true, server: 'corporate.proxy:8888' });
   interceptor._setRegistryValue = () => {};
   interceptor._notifyWinInet = () => {};

@@ -5,6 +5,7 @@ import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interce
 test('system proxy activation and restoration notify WinINet clients', async () => {
   const interceptor = new SystemProxyInterceptor();
   interceptor._isWindows = () => true;
+  interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ enabled: false, server: null });
   interceptor._persistRecoveryState = () => {};
   interceptor._removeRecoveryState = () => {};

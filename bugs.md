@@ -952,6 +952,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-119 — High — Windows per-machine proxy policy makes System Proxy a silent no-op
 
+- Status: **Fixed**.
 - Evidence: the registry key is hard-coded to HKCU at `src/interceptors/system-proxy-interceptor.js:3,46-53,72-80,90-99`; the interceptor neither checks `ProxySettingsPerUser` nor changes the machine-wide configuration ([Microsoft per-machine proxy documentation](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-ie-clientnetworkprotocolimplementation-hklmproxyenable)).
 - Impact: on managed systems configured for per-machine proxy settings, FreeKit returns success while changing an ineffective user key.
 - Reproduction: enable the per-machine proxy policy, activate FreeKit, and compare the effective proxy with the modified HKCU values.

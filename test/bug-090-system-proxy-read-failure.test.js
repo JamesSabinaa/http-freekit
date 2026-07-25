@@ -5,6 +5,7 @@ import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interce
 test('system proxy activation does not mutate settings after a failed snapshot', async () => {
   const interceptor = new SystemProxyInterceptor();
   interceptor._isWindows = () => true;
+  interceptor._usesPerMachineProxyPolicy = () => false;
   const commands = [];
   interceptor._execRegistry = args => {
     commands.push(args);
