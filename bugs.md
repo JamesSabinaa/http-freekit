@@ -847,6 +847,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-061 — High — “Global Chrome” does not intercept an already-running Chrome
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/existing-browser-interceptor.js:27-45` launches Chrome with proxy flags but no separate profile. Chromium forwards such a launch to the existing single-instance process, which retains the flags it started with; the source comment at `:47` acknowledges it works only when Chrome is fully closed. The short-lived launcher exiting then marks the interceptor inactive at `:56-59`.
 - Impact: the normal “existing browser” scenario reports activation briefly but the user's running Chrome continues direct, un-intercepted traffic.
 - Reproduction: leave Chrome running, activate Global Chrome, and request a page in either the old or newly opened window; no request reaches FreeKit and the interceptor soon becomes inactive.

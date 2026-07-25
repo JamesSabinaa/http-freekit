@@ -1,5 +1,7 @@
 import { spawn } from 'child_process';
+import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
+import { getProcessSnapshotAsync } from './browser-lifecycle.js';
 
 export class ExistingBrowserInterceptor {
   constructor(id, name, browserType) {
@@ -13,17 +15,40 @@ export class ExistingBrowserInterceptor {
   }
 
   async isActivable() {
-    return findBrowserPath(this.browserType) !== null;
+    return this._findBrowserPath() !== null;
   }
 
   async isActive() {
     return this.active;
   }
 
+  _findBrowserPath() {
+    return findBrowserPath(this.browserType);
+  }
+
+  _getProcessSnapshot() {
+    return getProcessSnapshotAsync();
+  }
+
+  async _isBrowserRunning(browserPath) {
+    const normalizedPath = String(browserPath).replace(/\\/g, '/').toLowerCase();
+    const executableName = path.basename(browserPath).toLowerCase();
+    const escapedName = executableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const executablePattern = new RegExp(`(^|[\\s/\\\\"])${escapedName}(?=$|\\s|\")`, 'i');
+    const processes = await this._getProcessSnapshot();
+    return processes.some(({ command }) => {
+      const normalizedCommand = String(command || '').replace(/\\/g, '/').toLowerCase();
+      return normalizedCommand.includes(normalizedPath) || executablePattern.test(normalizedCommand);
+    });
+  }
+
   async activate(proxyPort, options = {}) {
-    const browserPath = findBrowserPath(this.browserType);
+    const browserPath = this._findBrowserPath();
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
+    }
+    if (await this._isBrowserRunning(browserPath)) {
+      throw new Error(`Close every ${this.name.replace(/^Global\s+/, '')} window before activating ${this.name}`);
     }
 
     // For "Global" mode, we re-launch the browser with proxy flags but using
@@ -47,7 +72,6 @@ export class ExistingBrowserInterceptor {
     }
 
     console.log(`[Interceptor] Launching ${this.name} (existing profile) with proxy on port ${proxyPort}`);
-    // Note: this will only work if Chrome is fully closed first, or will open a new window in the existing instance
     this.process = spawn(browserPath, args, {
       detached: false,
       stdio: 'ignore'
