@@ -28,6 +28,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 16 | 4 new bugs found; documented below | 0/2 |
 | 17 | 3 new bugs found; documented below | 0/2 |
 | 18 | 9 new bugs found; documented below | 0/2 |
+| 19 | 11 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -1252,6 +1253,54 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: uninstalling the companion app after activation leaves FreeKit permanently reporting that device as active and can make graceful shutdown report cleanup failure although the app/VPN is already gone.
 - Reproduction: activate a device through the companion app, uninstall `tech.httptoolkit.android.v1`, and click Stop; the interceptor remains active on every retry.
 
+### BUG-305 — Medium — PID reuse prevents stale system-proxy recovery
+
+- Evidence: `_isProcessRunning()` at `src/interceptors/system-proxy-interceptor.js:65-72` checks only `process.kill(pid, 0)`, and `recoverStaleSettings()` at `:101-105` skips restoration whenever that raw PID exists. The recovery journal records no executable identity or process start time.
+- Impact: after FreeKit crashes and Windows reuses its PID for an unrelated long-lived process, every startup treats the stale journal as live and leaves Windows pointing at the dead FreeKit proxy.
+- Reproduction: leave Windows configured for FreeKit, seed `system-proxy-recovery.json` with an unrelated live PID and valid prior settings, then start FreeKit; recovery returns false without restoring the registry.
+
+### BUG-306 — High/Medium — Electron activation can outlive Stop or shutdown
+
+- Evidence: `ElectronInterceptor.activate()` at `src/interceptors/electron-interceptor.js:86-101` marks `activating`, awaits spawn confirmation, and only then stores the process and active state. `deactivate()` at `:119-125` sees no process during that wait, while `InterceptorManager.deactivateAll()` skips it because `isActive()` is false.
+- Impact: stopping or quitting during spawn can complete successfully before a newly launched Electron app becomes active and remains orphaned with proxy and TLS-bypass configuration.
+- Reproduction: delay a fake child's `spawn` event, start activation, await Stop, then emit `spawn`; activation finishes active with a live, un-killed child.
+
+### BUG-307 — High — Fresh Terminal PID reuse can kill an unrelated process
+
+- Evidence: Fresh Terminal stores only the reported shell PID; `_isSessionRunning()` at `src/interceptors/terminal-interceptors.js:64-80` accepts any process answering `kill(pid, 0)`, and Stop sends SIGTERM to that PID at `:213-220` without checking executable identity or start time.
+- Impact: after the terminal closes and its PID is reused, Refresh continues to report the interceptor active and Stop can terminate an unrelated user process.
+- Reproduction: close a tracked shell, arrange for another long-lived process to reuse its PID, then refresh and Stop; the unrelated process receives SIGTERM.
+
+### BUG-308 — Medium — Fresh Terminal Stop forgets shells that survive SIGTERM
+
+- Evidence: `FreshTerminalInterceptor.deactivate()` at `src/interceptors/terminal-interceptors.js:213-223` sends one SIGTERM, swallows errors, and immediately clears every PID/process handle and reports inactive without waiting for exit or escalating.
+- Impact: a resistant shell remains open with proxy environment variables while FreeKit discards the ownership needed to retry cleanup.
+- Reproduction: activate a POSIX shell that traps or ignores SIGTERM and click Stop; the shell remains alive, but the interceptor becomes inactive and a second Stop has no target.
+
+### BUG-309 — Medium — Android fallback can strand a failed companion reverse tunnel
+
+- Evidence: companion activation creates and tracks the reverse tunnel at `src/interceptors/android-adb-interceptor.js:211`; on intent failure, cleanup at `:235-241` ignores a false tunnel-removal result. Activation can then commit global-proxy fallback at `:463-493`, whose Stop path at `:527-533` never retries reverse-tunnel removal.
+- Impact: a partial companion failure can leave an ADB reverse mapping active after the successful fallback is stopped, exposing or conflicting with the reused device port.
+- Reproduction: let reverse creation succeed, make the companion intent and reverse removal fail, allow global-proxy fallback to succeed, then Stop; the interceptor becomes inactive while the reverse mapping remains tracked and installed.
+
+### BUG-310 — Medium — Docker CA configuration replaces public trust roots
+
+- Evidence: generated Docker setup at `src/interceptors/docker-interceptor.js:59-64` mounts a file containing only the FreeKit CA and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it. Those variables replace the clients' normal trust bundles; only `NODE_EXTRA_CA_CERTS` is additive.
+- Impact: direct, bypassed, or passthrough public HTTPS requests from OpenSSL, Requests, and curl can fail issuer validation even though their normal system roots trust the destination.
+- Reproduction: start a container with the generated configuration and request a public HTTPS origin through a direct/no-proxy path; the client cannot build the issuer chain from the one-certificate bundle.
+
+### BUG-311 — High/Medium — A stale browser monitor can erase a replacement during launch
+
+- Evidence: `BrowserInterceptor.activate()` at `src/interceptors/browser-interceptor.js:54-84` can determine that the old browser is dead, overwrite `profileDir`, and await asynchronous launch preparation before invalidating the old monitor. The generation check at `:319-344` therefore still accepts an already-pending old result during that window.
+- Impact: the old monitor or exit callback can mark a replacement inactive, delete its new profile, and clear its process state while the replacement activation is still progressing.
+- Reproduction: hold replacement activation in `_getBrowserArgs()`, resolve a pending old lifecycle check as false, and observe that the new profile is cleaned and the interceptor reset before launch completes.
+
+### BUG-312 — High/Medium — Pending device and JVM activations can commit after Stop
+
+- Evidence: Android activation awaits discovery and configuration before recording ownership at `src/interceptors/android-adb-interceptor.js:428-493`, while Stop returns when no record exists at `:536-544`. JVM activation similarly awaits discovery/attach at `src/interceptors/jvm-interceptor.js:400-409`, records at `:428-432`, and Stop returns for an unrecorded PID at `:464-468`. Docker has the same bookkeeping race at `src/interceptors/docker-interceptor.js:49-74,94-97`.
+- Impact: Stop or graceful shutdown can report completion, after which a pending operation modifies an Android proxy or attaches a JVM agent and only then records itself active.
+- Reproduction: delay the first discovery call, start activation, complete Stop while no target is recorded, then release discovery; activation finishes active and externally configured after Stop returned.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1792,6 +1841,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `showContextMenu()` at `src/ui/app.js:8581-8604` creates items as plain `div` elements with only `onclick`; it provides no menu roles, focus targets, arrow-key handling, or Enter/Space activation. Traffic exposes the menu only through pointer context-menu handlers.
 - Impact: keyboard-only users cannot access actions such as Copy URL, Copy as cURL, or header-copy operations.
 - Reproduction: select a Traffic row with the keyboard, press Shift+F10/Menu, and try to focus or activate a menu item; no usable keyboard menu is available.
+
+### BUG-313 — Low/Medium — Traffic navigation keys hijack every panel
+
+- Evidence: the global key handler at `src/ui/app.js:8987-8990` excludes only input-like elements, while the unscoped block at `:9101-9126` prevents Arrow Up/Down, `j`/`k`, Page Up/Down, Home, and End and drives Traffic selection without checking which panel is active.
+- Impact: normal keyboard scrolling and navigation is blocked in Settings, Intercept, Mock, and Send, and captured traffic can be selected invisibly behind those panels.
+- Reproduction: open a long Settings page, focus its background or a button, and press Page Down, Home, or End; the page does not perform its normal keyboard navigation.
+
+### BUG-314 — Low — Distributions declare MIT but include no license terms
+
+- Evidence: `package.json:45` and `README.md:322-324` declare the MIT license, but the repository has no LICENSE, COPYING, or NOTICE file. `npm pack --dry-run --json` includes no license text, and Electron packaging has none available to bundle.
+- Impact: downstream and offline recipients do not receive the permission grant and conditions represented by the package metadata.
+- Reproduction: run `git ls-files | rg -i '(^|/)(licen[sc]e|copying|notice)(\.|$)'`; it returns no files.
+
+### BUG-315 — Low/Medium — Native external-link failures become unhandled rejections
+
+- Evidence: `electron/menu.cjs:77` and `electron/updater.cjs:68` call `shell.openExternal()` without awaiting or catching its Promise. The updater's surrounding synchronous try/catch cannot catch an asynchronous rejection, unlike the explicit `.catch()` handling in `electron/main.cjs`.
+- Impact: a missing URL handler, OS policy denial, or invalid updater URL gives no user-facing error and raises an unhandled rejection in the Electron main process, which can terminate under the default rejection policy.
+- Reproduction: mock `shell.openExternal()` to return `Promise.reject(new Error('no URL handler'))` and invoke Help → Documentation; the main process emits `unhandledRejection`.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
