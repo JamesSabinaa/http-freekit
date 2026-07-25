@@ -4675,7 +4675,65 @@ export class ProxyServer {
 
   // ---- Breakpoint methods ----
 
+  validateBreakpointRule(rule, { patch = false } = {}) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return 'Breakpoint must be an object';
+    if (!patch || Object.prototype.hasOwnProperty.call(rule, 'matchers')) {
+      if (!Array.isArray(rule.matchers)) return 'Breakpoint matchers must be an array';
+      if (rule.matchers.some(matcher => !matcher || typeof matcher !== 'object' || Array.isArray(matcher))) {
+        return 'Every breakpoint matcher must be an object';
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(rule, 'enabled') && typeof rule.enabled !== 'boolean') {
+      return 'Breakpoint enabled must be a boolean';
+    }
+    return null;
+  }
+
+  validateBreakpointModifications(modifications) {
+    if (!modifications || typeof modifications !== 'object' || Array.isArray(modifications)) {
+      return 'Breakpoint modifications must be an object';
+    }
+    if (Object.prototype.hasOwnProperty.call(modifications, 'method')) {
+      const method = modifications.method;
+      if (typeof method !== 'string' || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(method)) {
+        return 'Invalid HTTP method';
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(modifications, 'url')) {
+      try {
+        const url = new URL(modifications.url);
+        if (!['http:', 'https:'].includes(url.protocol)) return 'Breakpoint URL must use HTTP or HTTPS';
+      } catch {
+        return 'Invalid breakpoint URL';
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(modifications, 'headers')) {
+      const headers = modifications.headers;
+      if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+        return 'Breakpoint headers must be an object';
+      }
+      try {
+        for (const [name, rawValue] of Object.entries(headers)) {
+          http.validateHeaderName(name);
+          const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+          if (values.length === 0) return `Invalid value for header ${name}`;
+          for (const value of values) http.validateHeaderValue(name, value);
+        }
+      } catch (err) {
+        return err.message;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(modifications, 'status')) {
+      if (!Number.isInteger(modifications.status) || modifications.status < 100 || modifications.status > 999) {
+        return 'Invalid HTTP response status';
+      }
+    }
+    return null;
+  }
+
   addBreakpoint(rule) {
+    const validationError = this.validateBreakpointRule(rule);
+    if (validationError) throw new TypeError(validationError);
     rule.id = rule.id || uuidv4();
     rule.enabled = rule.enabled !== false;
     this.breakpointRules.push(rule);
@@ -4687,6 +4745,8 @@ export class ProxyServer {
   }
 
   updateBreakpoint(id, patch = {}) {
+    const validationError = this.validateBreakpointRule(patch, { patch: true });
+    if (validationError) throw new TypeError(validationError);
     const rule = this.breakpointRules.find(r => r.id === id);
     if (!rule) return null;
     Object.assign(rule, patch);
@@ -4803,6 +4863,7 @@ export class ProxyServer {
   resumeBreakpoint(requestId, modifications = {}) {
     const bp = this.pendingBreakpoints.get(requestId);
     if (!bp) return false;
+    if (this.validateBreakpointModifications(modifications)) return false;
     bp.resolve(modifications);
     this.pendingBreakpoints.delete(requestId);
     try {
@@ -4828,8 +4889,9 @@ export class ProxyServer {
 
   _checkBreakpoint(method, url, headers) {
     return this.breakpointRules.find(rule => {
-      if (!rule.enabled) return false;
-      return (rule.matchers || []).every(m => this._evaluateMatcher(m, method, url, headers, ''));
+      if (!rule?.enabled || !Array.isArray(rule.matchers)) return false;
+      return rule.matchers.every(m => m && typeof m === 'object' && !Array.isArray(m)
+        && this._evaluateMatcher(m, method, url, headers, ''));
     });
   }
 

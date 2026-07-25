@@ -1125,14 +1125,22 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/breakpoints', (req, res) => {
-      const rule = this.proxy.addBreakpoint(req.body);
-      res.json({ success: true, rule });
+      try {
+        const rule = this.proxy.addBreakpoint(req.body);
+        res.json({ success: true, rule });
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
     });
 
     router.patch('/api/breakpoints/:id', (req, res) => {
-      const updated = this.proxy.updateBreakpoint(req.params.id, req.body || {});
-      if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
-      res.json({ success: true, rule: updated });
+      try {
+        const updated = this.proxy.updateBreakpoint(req.params.id, req.body || {});
+        if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
+        res.json({ success: true, rule: updated });
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
     });
 
     // Pending breakpoints (paused requests) — must be before /:id to avoid matching "pending" as an id
@@ -1141,8 +1149,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/breakpoints/pending/:requestId/resume', (req, res) => {
+      const validationError = this.proxy.validateBreakpointModifications(req.body);
+      if (validationError) return res.status(400).json({ error: validationError });
       const success = this.proxy.resumeBreakpoint(req.params.requestId, req.body);
-      res.json({ success });
+      if (!success) return res.status(404).json({ error: 'Pending breakpoint not found' });
+      res.json({ success: true });
     });
 
     router.delete('/api/breakpoints/:id', (req, res) => {
