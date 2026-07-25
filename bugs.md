@@ -31,6 +31,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 19 | 11 new bugs found; documented below | 0/2 |
 | 20 | 15 new bugs found; documented below | 0/2 |
 | 21 | 5 new bugs found; documented below | 0/2 |
+| 22 | 8 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -347,7 +348,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-131 — Medium — A fragmented ClientHello disables passthrough fingerprinting
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Capture now buffers arbitrary TCP chunks through the first TLS record. It marks capture complete at that record boundary, so a legal ClientHello handshake split across multiple TLS records is still never reassembled or mirrored upstream.
 
 - Evidence: `_parseClientHello()` returns null until an entire TLS record is available at `src/proxy/proxy-server.js:2717-2724`, but `_createCapturingSocket()` at `:2892-2917` marks capture complete after the first socket chunk without appending data or retrying. `_getUpstreamTlsOptions()` at `:3042-3052` mirrors the client only when the first parse succeeded.
 - Impact: clients whose ClientHello spans TCP reads silently use Node's default upstream TLS fingerprint despite selecting passthrough mode.
@@ -745,6 +747,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a valid `.htkrules` backup containing flat groups silently loses each group and all of its children on restore while the UI claims every exported item was imported.
 - Reproduction: create a group containing a rule, export it, remove the rules, and import the file; the group request returns 400, no grouped rules are restored, and the success toast still appears.
 
+### BUG-339 — Medium — Stale HTTP/2 session events evict a valid replacement
+
+- Evidence: `_getH2Session()` registers each session's close and post-connect error listeners to call `_evictH2Session(origin)` at `src/proxy/proxy-server.js:3099-3118`. Eviction at `:3148-3156` closes and deletes whichever session is currently cached for that origin without checking that it is the session that emitted the event.
+- Impact: after session A receives GOAWAY and session B replaces it, A's delayed close event destroys B. Requests on the healthy replacement fail or fall back unnecessarily and can interact with replay-sensitive request handling.
+- Reproduction: cache session A, evict it on GOAWAY, cache connected replacement B, then emit A's delayed close; B is closed and removed from the cache.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -762,7 +770,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-040 — High — JVM HTTPS interception does not trust the FreeKit CA
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Successful dynamic attachment now installs a combined system-and-FreeKit trust manager. The attach-failure/manual fallback suggests only `-D...proxyHost` and `-D...proxyPort` flags, with no truststore or CA configuration, so its advertised HTTPS path still fails validation.
 - Evidence: the comment at `src/interceptors/jvm-interceptor.js:98-101` claims CA trust, but the generated agent at `:112-133` only calls `System.setProperty` for proxy properties; it never updates a trust store or SSL context.
 - Impact: attached JVM applications commonly fail intercepted HTTPS with a PKIX/certificate-path error.
 - Reproduction: attach to a JVM using the default `HttpsURLConnection` trust manager and request an HTTPS URL.
@@ -1125,9 +1134,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-218 — High/Medium — Restart preserves orphaned browsers but discards their ownership
 
+- Scope update: Global Chrome has the same restart-ownership failure without a managed-profile marker. A fresh `ExistingBrowserInterceptor` has no handle for the surviving default-profile browser, reports inactive, and cannot stop it.
 - Evidence: startup cleanup classifies a profile with a related live browser as `skippedActive` at `src/interceptors/browser-lifecycle.js:223-230`. `InterceptorManager` invokes cleanup at `interceptor-manager.js:17-23` but ignores that result, then constructs new browser interceptors with empty process/profile state at `:25-37`.
-- Impact: after a server crash, restart deliberately preserves the surviving isolated browser but reports it inactive, cannot stop it, and never cleans its profile when it later exits.
-- Reproduction: activate isolated Chrome, hard-kill only the server, and restart while Chrome remains open.
+- Impact: after a server crash, restart leaves surviving isolated or Global browsers running while reporting them inactive and unable to be stopped; isolated profiles additionally remain orphaned after their browser exits.
+- Reproduction: activate isolated or Global Chrome, hard-kill only the server, restart while the browser remains open, and call Stop from the fresh interceptor.
 
 ### BUG-219 — Medium — Android treats `am start -W` timeout output as success
 
@@ -1417,6 +1427,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a child that survives a server crash or restart continues using FreeKit proxy and certificate-bypass switches, while the new instance reports inactive and Stop leaves it running.
 - Reproduction: launch a long-lived child, terminate only the FreeKit Node process, construct a fresh interceptor, and call Stop; the child remains alive and the new interceptor never adopts it.
 
+### BUG-336 — Medium — Fresh Terminal shell ownership is lost across a FreeKit restart
+
+- Evidence: launched process handles and shell PIDs exist only in `processes` and `sessionPids` at `src/interceptors/terminal-interceptors.js:31-36,220-224`. The one-shot PID file is deleted after launch at `:132`, and a new interceptor has no journal or adoption scan before `deactivate()` consults its empty collections at `:233-245`.
+- Impact: a detached shell that survives a server crash keeps its proxy and CA environment, while restarted FreeKit reports it inactive and Stop cannot close it or clear the stale session.
+- Reproduction: activate a detached terminal, terminate and restart only FreeKit, then query and Stop the fresh interceptor; it reports inactive with no recovered PID and the shell remains running.
+
+### BUG-337 — High/Medium — Ambiguous Android companion activation can leave an untracked VPN
+
+- Evidence: `_activateHttpToolkitApp()` treats any ADB exception as failure and removes the reverse tunnel at `src/interceptors/android-adb-interceptor.js:219-260`, even when the activation intent enabled the VPN before the host-side timeout. `activate()` then falls back to global proxy and records only that replacement mode at `:530-580`; later cleanup never sends the companion-app deactivate intent.
+- Impact: activation can report fallback success and Stop can remove every tracked fallback change while the device's companion VPN remains active and unowned.
+- Reproduction: make the activation intent enable the VPN and then time out; allow global fallback to succeed, then Stop. The proxy and reverse tunnel are gone, but the VPN stays active because no companion activation was recorded.
+
+### BUG-338 — Medium — Android cleanup-only state is displayed as an active proxy
+
+- Evidence: when proxy setup and staged-CA removal both fail, the interceptor records `mode: 'staging-cleanup'` and sets itself active at `src/interceptors/android-adb-interceptor.js:554-568`. The renderer maps every non-companion mode to “Global proxy” and displays “Activated” at `src/ui/app.js:4126-4143`.
+- Impact: an activation that explicitly failed without configuring a proxy appears as a successful global interception; the only retained state is a cleanup retry for a staged certificate.
+- Reproduction: fail `_setProxy()` and `_removeCaCert()`, refresh Android metadata, and inspect the device row; it shows an activated Global proxy despite having no proxy configured.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1442,6 +1470,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-059 — High — “Restart app” abandons the server child without cleanup
 
+- Status: **Fixed**.
+- Resolution: Renderer restart now calls the cleanup-aware `app.quit()` path, and the shared `before-quit` gate stops the child server before relaunch completes.
+
 - Evidence: the `restart-app` IPC handler at `electron/main.cjs:395-399` calls `app.relaunch()` followed by immediate `app.exit(0)`. It does not call `shutdownServer()` (`:226-260`), and immediate exit does not run the later `window-all-closed` cleanup path at `:441-445`.
 - Impact: the original proxy/API child and any active interceptors can survive the desktop shell restart; the relaunched app starts a second server/proxy and loses ownership of the first.
 - Reproduction: note the server PID, invoke the exposed restart action, and observe the original child after the new desktop process launches.
@@ -1460,7 +1491,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-025 — High — Multiple persisted/server values reach `innerHTML` unescaped
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: The originally identified status, settings, tab, and theme values are now rendered safely. Caller-controlled mock and breakpoint IDs are still interpolated raw into `innerHTML` attributes and inline handlers, allowing the same persisted script-injection class through rule APIs.
 - Evidence: Send status text incorporates upstream `statusMessage` and is assigned with `innerHTML` at `src/ui/app.js:7278-7289`; the value originates at `src/api/api-server.js:1197`. Certificate, CA, whitelist, and passthrough settings are interpolated at `app.js:7798`, `:7908`, `:8000`, and `:8061`. Send tab labels derived from arbitrary URLs are interpolated at `:6966-6977`. Custom-theme preview names and color values from uploaded JSON are concatenated into markup at `:9275-9283,9302-9314`; the upload validation at `:9340-9354` requires one recognized key but preserves and previews arbitrary extra keys. There is no restrictive application CSP.
 - Impact: crafted response metadata or persisted settings can execute script in the UI origin; in Electron this can reach the preload bridge.
 - Reproduction: store markup containing an event handler in one of the unescaped settings, or upload a theme containing one valid key plus an extra markup-bearing key whose value begins with `#`; observe it being parsed as DOM instead of displayed as text.
@@ -2031,6 +2063,30 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: every activable card installs a bubbling keydown handler that calls `card.click()` for Enter without checking the event target at `src/ui/app.js:3818`. Expanded Electron, Android, and JVM cards insert inputs and buttons inside that card at `:3935-3949,4111-4155,4267-4304`; their click-only propagation guards do not stop the earlier keydown from bubbling.
 - Impact: pressing Enter in a path field or on Browse, Launch, Refresh, or process/device actions instead invokes the expanded parent, collapses it, and destroys the current configuration before the intended control behavior completes.
 - Reproduction: expand Electron, enter an application path, focus the input or Launch button, and press Enter; the card collapses and the path/control is removed.
+
+### BUG-340 — Low/Medium — The delayed update check survives updater shutdown
+
+- Evidence: `initAutoUpdater()` schedules the startup check with an untracked ten-second `setTimeout` at `electron/updater.cjs:191-197`. `stopAutoUpdater()` at `:234-241` clears only the recurring interval, so it cannot cancel that pending callback.
+- Impact: quitting shortly after launch can still contact the update feed and emit updater state during asynchronous cleanup, after the updater was stopped and its window may already be gone.
+- Reproduction: initialize and immediately stop the updater, then allow the captured startup timer to fire; `checkForUpdates()` still runs once after shutdown.
+
+### BUG-341 — Low/Medium — Rule exports omit every breakpoint rule
+
+- Evidence: renderer counts and empty-state logic include both `mockRules` and `breakpointRules` at `src/ui/app.js:5068-5078`, but `exportMockRules()` refuses when `mockRules` alone is empty and serializes only `{ rules: mockRules }` at `:6483-6491`. The UI labels the action generically as Export Rules at `src/ui/index.html:199`.
+- Impact: users cannot back up breakpoint-only configurations, and mixed exports silently omit every breakpoint despite the interface presenting both kinds as rules.
+- Reproduction: configure only a breakpoint and click Export Rules; the UI reports “No rules to export” and creates no backup.
+
+### BUG-342 — Low — Interceptor copy controls are unavailable from the keyboard
+
+- Evidence: terminal, Docker, Android, and JVM instructions render “Click to copy” `.config-code-block` divs with only `onclick` handlers at `src/ui/app.js:4011,4015,4044,4088,4265,4302`. They have no focusability, role, or key handler and sit inside a non-selectable interceptor card.
+- Impact: keyboard-only users cannot focus, select, or invoke the controls that copy proxy URLs, commands, and setup instructions.
+- Reproduction: expand each interceptor and navigate with Tab; focus skips every copy block and no keyboard action calls `copyConfigCode()`.
+
+### BUG-343 — Low — Button-role interceptor cards ignore Space
+
+- Evidence: custom and manual interceptor cards declare `role="button"` and `tabindex="0"`, but their key handlers activate only for Enter at `src/ui/app.js:3808-3826,3854-3862`.
+- Impact: the controls violate expected button keyboard behavior; pressing Space scrolls or does nothing instead of expanding or activating the focused card.
+- Reproduction: focus a collapsed interceptor card with Tab and press Space; the advertised button does not activate.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
