@@ -10,6 +10,7 @@ const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
+const { isAllowedRendererUrl } = require('./security.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -331,8 +332,10 @@ function createWindow({ showOnReady = true } = {}) {
 
 /** Validate that the IPC call originates from the expected local server URL. */
 function validateSender(event) {
-  const url = event.senderFrame?.url || '';
-  return url.startsWith(`http://127.0.0.1:${apiPort}`);
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return false;
+  }
+  return isAllowedRendererUrl(event.senderFrame?.url, apiPort);
 }
 
 ipcMain.handle('get-desktop-version', (event) => {

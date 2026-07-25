@@ -1151,6 +1151,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
 
+- Status: **Fixed**.
 - Evidence: `electron/main.cjs:327-330` uses a string `startsWith()` check. A URL shaped as `http://127.0.0.1:<port>@remote-host/` passes the prefix check even though URL parsing identifies `remote-host` as the hostname. Privileged handlers at `:333-399` rely on this check.
 - Impact: remote content loaded in the renderer can obtain the API token, invoke native file dialogs/context menus, or restart the application.
 - Reproduction: evaluate the predicate against the user-info URL and compare `new URL(value).hostname`; the predicate is true while the hostname is remote.
