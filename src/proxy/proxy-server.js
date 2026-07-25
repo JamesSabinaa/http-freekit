@@ -30,6 +30,7 @@ const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
 const SUPPORTED_UPGRADE_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
+const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 
 class TruncatedBodyString extends String {
   constructor(value, capturedSize, decodedSize) {
@@ -216,6 +217,57 @@ export class ProxyServer {
       request.destroy(err);
     });
     response.once('error', (err) => request.destroy(err));
+  }
+
+  _createDownstreamAbortError() {
+    const error = new Error('Downstream client disconnected');
+    error.code = 'ERR_DOWNSTREAM_ABORTED';
+    return error;
+  }
+
+  _trackDownstreamCancellation(target, { http2Stream = false } = {}) {
+    const controller = new AbortController();
+    let completed = false;
+
+    const cleanup = () => {
+      target?.removeListener?.('close', onClose);
+      if (http2Stream) target?.removeListener?.('aborted', onAborted);
+    };
+    const abort = () => {
+      if (completed || controller.signal.aborted) return;
+      controller.abort(this._createDownstreamAbortError());
+      cleanup();
+    };
+    const onAborted = () => abort();
+    const onClose = () => {
+      if (!http2Stream && target?.writableFinished) {
+        cleanup();
+        return;
+      }
+      if (http2Stream && !target?.aborted && target?.rstCode === http2.constants.NGHTTP2_NO_ERROR) {
+        cleanup();
+        return;
+      }
+      abort();
+    };
+
+    target?.once?.('close', onClose);
+    if (http2Stream) target?.once?.('aborted', onAborted);
+    if (http2Stream
+      ? (target?.aborted || target?.destroyed)
+      : (target?.destroyed && !target?.writableFinished)) {
+      abort();
+    }
+
+    return {
+      signal: controller.signal,
+      get aborted() { return controller.signal.aborted; },
+      complete() {
+        if (completed) return;
+        completed = true;
+        cleanup();
+      }
+    };
   }
 
   _destroyUpstreamAgent() {
@@ -936,6 +988,7 @@ export class ProxyServer {
       let body = this._concatBody(requestBody);
       let breakpointBodyModified = false;
       const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
+      const downstream = this._trackDownstreamCancellation(clientRes);
 
       // Check mock rules
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
@@ -976,6 +1029,7 @@ export class ProxyServer {
           });
           this._setBreakpointTimeout(requestId, clientRes);
         });
+        if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
         // Apply modifications if provided
         if (modifications.url) {
           try { targetUrl = new URL(modifications.url); } catch { /* keep original */ }
@@ -1000,6 +1054,7 @@ export class ProxyServer {
         clientRes.end(`Bad Request: ${err.message}`);
         return;
       }
+      if (downstream.aborted) return;
 
       const isTargetHttps = targetUrl.protocol === 'https:';
       const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
@@ -1082,8 +1137,10 @@ export class ProxyServer {
 
       const connectStart = Date.now();
       const sendProxyRequest = (attempt = 0) => {
+        if (downstream.aborted) return;
         const proxyGeneration = this._upstreamProxyGeneration;
         const options = buildOptions();
+        options.signal = downstream.signal;
         const useUpstreamProxy = this._shouldUseUpstreamProxy(
           targetHostname,
           targetPort
@@ -1094,6 +1151,10 @@ export class ProxyServer {
           Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
         }
         const proxyReq = requestLib.request(options, (proxyRes) => {
+          if (downstream.aborted) {
+            proxyRes.destroy();
+            return;
+          }
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = this._createBodyCollector();
           proxyRes.on('data', chunk => {
@@ -1102,11 +1163,14 @@ export class ProxyServer {
             }
           });
           proxyRes.on('end', async () => {
+            if (downstream.aborted) return;
             const resBody = this._concatBody(responseBody);
-            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: clientReq.method,
               url: targetUrl.href, host: targetUrl.hostname
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -1144,12 +1208,14 @@ export class ProxyServer {
                 remote,
                 abortTarget: clientRes
               });
+              if (!finalResponse || downstream.aborted) return;
             }
             const duration = Date.now() - startTime;
             const timing = {
               total: Date.now() - startTime,
               waiting: Date.now() - connectStart // time waiting for response
             };
+            downstream.complete();
             this._sendH1Response(
               clientRes,
               finalResponse.statusCode,
@@ -1191,14 +1257,18 @@ export class ProxyServer {
         this._configureUpstreamRequest(proxyReq);
 
         proxyReq.once('error', async (err) => {
-          if (await this._shouldRetryAfterUpstreamError(err, {
+          if (downstream.aborted) return;
+          const shouldRetry = await this._shouldRetryAfterUpstreamError(err, {
             attempt, proxyGeneration, method: clientReq.method,
             url: targetUrl.href, host: targetUrl.hostname
-          })) {
+          });
+          if (downstream.aborted) return;
+          if (shouldRetry) {
             sendProxyRequest(attempt + 1);
             return;
           }
 
+          downstream.complete();
           const duration = Date.now() - startTime;
           try {
             clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
@@ -1489,6 +1559,7 @@ export class ProxyServer {
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
         const matcherBody = this._requestBodyForMatching(body, req.headers);
+        const downstream = this._trackDownstreamCancellation(res);
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -1769,6 +1840,7 @@ export class ProxyServer {
               });
               this._setBreakpointTimeout(requestId, res);
             });
+            if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
             if (modifications.url) {
               try {
                 const nextUrl = new URL(modifications.url);
@@ -1817,6 +1889,7 @@ export class ProxyServer {
               });
               this._setBreakpointTimeout(requestId, res);
             });
+            if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
             if (modifications.status) {
               try {
                 res.writeHead(modifications.status, modifications.headers || {});
@@ -1890,6 +1963,7 @@ export class ProxyServer {
             });
             this._setBreakpointTimeout(requestId, res);
           });
+          if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           // Apply modifications if provided
           if (modifications.url) {
             try {
@@ -1925,7 +1999,8 @@ export class ProxyServer {
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),
-          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
+          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls),
+          signal: downstream.signal
         };
 
         let upstreamProtocol = 'https';
@@ -1966,12 +2041,16 @@ export class ProxyServer {
         // Try HTTP/2 upstream first when this host bypasses the configured proxy.
         if (!useUpstreamProxy) {
           try {
+            if (downstream.aborted) return;
             const h2Session = await this._getH2Session(hostname, targetPort);
+            if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
+                downstream.signal
               );
+              if (downstream.aborted) return;
               let finalResponse = {
                 statusCode: h2Res.statusCode,
                 statusMessage: h2Res.statusMessage,
@@ -1988,7 +2067,9 @@ export class ProxyServer {
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
                   trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: res
                 });
+                if (!finalResponse || downstream.aborted) return;
               }
+              downstream.complete();
               try {
                 this._sendH1Response(
                   res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
@@ -2005,6 +2086,7 @@ export class ProxyServer {
               return;
             }
           } catch (err) {
+            if (downstream.aborted) return;
             // H2 request failed — fall back to h1.1
             upstreamProtocol = 'https';
           }
@@ -2012,6 +2094,10 @@ export class ProxyServer {
 
         // Fallback: HTTPS/1.1
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          if (downstream.aborted) {
+            proxyRes.destroy();
+            return;
+          }
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = this._createBodyCollector();
           proxyRes.on('data', chunk => {
@@ -2020,10 +2106,13 @@ export class ProxyServer {
             }
           });
           proxyRes.on('end', async () => {
+            if (downstream.aborted) return;
             const resBody = this._concatBody(responseBody);
-            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -2045,7 +2134,9 @@ export class ProxyServer {
                 responseHeaders: proxyRes.headers, responseBody: resBody,
                 trailers, startTime, tlsDetails, remote, abortTarget: res
               });
+              if (!finalResponse || downstream.aborted) return;
             }
+            downstream.complete();
             try {
               this._sendH1Response(
                 res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
@@ -2063,6 +2154,8 @@ export class ProxyServer {
         };
 
         const handleError = (err, request) => {
+          if (downstream.aborted) return;
+          downstream.complete();
           try {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
             res.end(`Proxy Error: ${err.message}`);
@@ -2072,6 +2165,7 @@ export class ProxyServer {
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           if (useUpstreamProxy) {
             const agent = this._getUpstreamAgent();
@@ -2088,9 +2182,12 @@ export class ProxyServer {
           attemptReq._upstreamProxyGeneration = proxyGeneration;
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
-            if (await this._shouldRetryAfterUpstreamError(err, {
+            if (downstream.aborted) return;
+            const shouldRetry = await this._shouldRetryAfterUpstreamError(err, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -2234,6 +2331,7 @@ export class ProxyServer {
         let breakpointBodyModified = false;
 
         // Convert h2 pseudo-headers to regular headers for matching
+        const downstream = this._trackDownstreamCancellation(stream, { http2Stream: true });
         const reqHeaders = {};
         for (const [k, v] of Object.entries(headers)) {
           if (!k.startsWith(':')) reqHeaders[k] = v;
@@ -2290,6 +2388,7 @@ export class ProxyServer {
             });
             this._setBreakpointTimeout(requestId, stream);
           });
+          if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           if (modifications.url) {
             try {
               const nextUrl = new URL(modifications.url);
@@ -2361,11 +2460,15 @@ export class ProxyServer {
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
         if (!useUpstreamProxy) {
           try {
+            if (downstream.aborted) return;
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
+            if (downstream.aborted) return;
             if (h2Session) {
               const h2Res = await this._makeH2Request(
-                h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers
+                h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers,
+                downstream.signal
               );
+              if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
               let finalResponse = {
                 statusCode: h2Res.statusCode,
@@ -2382,10 +2485,12 @@ export class ProxyServer {
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
                   trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: stream
                 });
+                if (!finalResponse || downstream.aborted) return;
               }
               const h2ResponseHeaders = this._toH2ResponseHeaders(
                 finalResponse.statusCode, finalResponse.headers
               );
+              downstream.complete();
               try {
                 if (!stream.destroyed && !stream.closed) {
                   this._sendH2Response(stream, h2ResponseHeaders, finalResponse.body, finalResponse.trailers);
@@ -2402,6 +2507,7 @@ export class ProxyServer {
               return;
             }
           } catch (err) {
+            if (downstream.aborted) return;
             // H2 request failed — fall back to h1.1
           }
         }
@@ -2410,10 +2516,15 @@ export class ProxyServer {
         const proxyOpts = {
           hostname: upstreamHostname, port: upstreamPort, path, method,
           headers: upstreamHeaders,
-          ...this._getUpstreamTlsOptions(upstreamHostname, tlsSocket._clientHelloTls)
+          ...this._getUpstreamTlsOptions(upstreamHostname, tlsSocket._clientHelloTls),
+          signal: downstream.signal
         };
 
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          if (downstream.aborted) {
+            proxyRes.destroy();
+            return;
+          }
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = this._createBodyCollector();
           proxyRes.on('data', chunk => {
@@ -2422,10 +2533,13 @@ export class ProxyServer {
             }
           });
           proxyRes.on('end', async () => {
+            if (downstream.aborted) return;
             const resBody = this._concatBody(responseBody);
-            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method, url: fullUrl, host: authority
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -2446,11 +2560,13 @@ export class ProxyServer {
                 responseHeaders: proxyRes.headers, responseBody: resBody,
                 trailers: proxyRes.trailers, startTime, tlsDetails, remote, abortTarget: stream
               });
+              if (!finalResponse || downstream.aborted) return;
             }
             const responseHeaders = this._toH2ResponseHeaders(
               finalResponse.statusCode, finalResponse.headers
             );
 
+            downstream.complete();
             try {
               if (!stream.destroyed && !stream.closed) {
                 this._sendH2Response(stream, responseHeaders, finalResponse.body, finalResponse.trailers);
@@ -2469,6 +2585,8 @@ export class ProxyServer {
         };
 
         const handleError = (err, request) => {
+          if (downstream.aborted) return;
+          downstream.complete();
           try {
             if (!stream.destroyed && !stream.closed) {
               stream.respond({ ':status': 502 });
@@ -2480,6 +2598,7 @@ export class ProxyServer {
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           if (useUpstreamProxy) {
             try {
@@ -2501,9 +2620,12 @@ export class ProxyServer {
           attemptReq._upstreamProxyGeneration = proxyGeneration;
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
-            if (await this._shouldRetryAfterUpstreamError(err, {
+            if (downstream.aborted) return;
+            const shouldRetry = await this._shouldRetryAfterUpstreamError(err, {
               attempt, proxyGeneration, method, url: fullUrl, host: authority
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -2550,6 +2672,7 @@ export class ProxyServer {
         const matcherBody = this._requestBodyForMatching(body, req.headers);
 
         // Emit pending request immediately so it appears in the UI
+        const downstream = this._trackDownstreamCancellation(res);
         this._emitPendingRequest({
           id: requestId, protocol: 'https', method: req.method, url: fullUrl,
           host: hostname, path: req.url, requestHeaders: req.headers,
@@ -2598,6 +2721,7 @@ export class ProxyServer {
             });
             this._setBreakpointTimeout(requestId, res);
           });
+          if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           if (modifications.url) {
             try {
               const nextUrl = new URL(modifications.url);
@@ -2654,12 +2778,16 @@ export class ProxyServer {
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
         if (!useUpstreamProxy) {
           try {
+            if (downstream.aborted) return;
             const h2Session = await this._getH2Session(hostname, targetPort);
+            if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
+                downstream.signal
               );
+              if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
               let finalResponse = {
                 statusCode: h2Res.statusCode,
@@ -2676,7 +2804,9 @@ export class ProxyServer {
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
                   trailers: h2Res.trailers, startTime, tlsDetails, remote, abortTarget: res
                 });
+                if (!finalResponse || downstream.aborted) return;
               }
+              downstream.complete();
               try {
                 this._sendH1Response(
                   res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
@@ -2692,6 +2822,7 @@ export class ProxyServer {
               return;
             }
           } catch (err) {
+            if (downstream.aborted) return;
             // H2 request failed — fall back to h1.1
             upstreamProtocol = 'https';
           }
@@ -2709,10 +2840,15 @@ export class ProxyServer {
             if (breakpointBodyModified) this._setContentLength(headers, body.length);
             return headers;
           })(),
-          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls)
+          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls),
+          signal: downstream.signal
         };
 
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
+          if (downstream.aborted) {
+            proxyRes.destroy();
+            return;
+          }
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
           const responseBody = this._createBodyCollector();
           proxyRes.on('data', chunk => {
@@ -2721,10 +2857,13 @@ export class ProxyServer {
             }
           });
           proxyRes.on('end', async () => {
+            if (downstream.aborted) return;
             const resBody = this._concatBody(responseBody);
-            if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -2746,7 +2885,9 @@ export class ProxyServer {
                 responseHeaders: proxyRes.headers, responseBody: resBody,
                 trailers, startTime, tlsDetails, remote, abortTarget: res
               });
+              if (!finalResponse || downstream.aborted) return;
             }
+            downstream.complete();
             try {
               this._sendH1Response(
                 res, finalResponse.statusCode, finalResponse.headers, finalResponse.body, finalResponse.trailers
@@ -2763,6 +2904,8 @@ export class ProxyServer {
         };
 
         const handleError = (err, request) => {
+          if (downstream.aborted) return;
+          downstream.complete();
           try {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
             res.end(`Proxy Error: ${err.message}`);
@@ -2772,6 +2915,7 @@ export class ProxyServer {
 
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
+          if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           if (useUpstreamProxy) {
             const agent = this._getUpstreamAgent();
@@ -2788,9 +2932,12 @@ export class ProxyServer {
           attemptReq._upstreamProxyGeneration = proxyGeneration;
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
-            if (await this._shouldRetryAfterUpstreamError(err, {
+            if (downstream.aborted) return;
+            const shouldRetry = await this._shouldRetryAfterUpstreamError(err, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
-            })) {
+            });
+            if (downstream.aborted) return;
+            if (shouldRetry) {
               sendProxyRequest(attempt + 1);
               return;
             }
@@ -3083,6 +3230,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, stream);
       });
+      if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       if (modifications.url) {
         try {
           const nextUrl = new URL(modifications.url);
@@ -3127,6 +3275,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, stream);
       });
+      if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       if (modifications.status) {
         try {
           if (!stream.destroyed && !stream.closed) {
@@ -3303,8 +3452,12 @@ export class ProxyServer {
 
   // Make an HTTP/2 request via a cached session. Returns a promise that resolves to
   // { statusCode, headers, body: Buffer, trailers } or null if the request can't be made via h2.
-  _makeH2Request(session, method, hostname, port, path, headers, body, trailers = {}) {
+  _makeH2Request(session, method, hostname, port, path, headers, body, trailers = {}, signal = null) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(this._createDownstreamAbortError());
+        return;
+      }
       // Build h2 pseudo-headers + regular headers
       const h2Headers = {
         ':method': method,
@@ -3327,6 +3480,28 @@ export class ProxyServer {
       const requestTrailers = this._cleanTrailers(trailers);
       const hasRequestTrailers = Object.keys(requestTrailers).length > 0;
       const stream = session.request(h2Headers, hasRequestTrailers ? { waitForTrailers: true } : undefined);
+      let settled = false;
+      const cleanup = () => signal?.removeEventListener?.('abort', onAbort);
+      const finishResolve = (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const finishReject = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        finishReject(this._createDownstreamAbortError());
+        if (!stream.destroyed && !stream.closed) {
+          stream.close(http2.constants.NGHTTP2_CANCEL);
+        }
+      };
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
 
       let statusCode;
       const responseHeaders = {};
@@ -3353,7 +3528,11 @@ export class ProxyServer {
       });
 
       stream.on('end', () => {
-        resolve({
+        if (signal?.aborted) {
+          finishReject(this._createDownstreamAbortError());
+          return;
+        }
+        finishResolve({
           statusCode,
           statusMessage: '',
           headers: responseHeaders,
@@ -3365,12 +3544,12 @@ export class ProxyServer {
       });
 
       stream.on('error', (err) => {
-        reject(err);
+        finishReject(signal?.aborted ? this._createDownstreamAbortError() : err);
       });
 
       stream.setTimeout(30000, () => {
         stream.close(http2.constants.NGHTTP2_CANCEL);
-        reject(new Error('H2 stream timeout after 30s'));
+        finishReject(new Error('H2 stream timeout after 30s'));
       });
 
       if (hasRequestTrailers) {
@@ -4530,6 +4709,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
+      if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply modifications and continue as normal proxy request
       if (modifications.url) {
         try { targetUrl = new URL(modifications.url); } catch { /* keep original */ }
@@ -4573,6 +4753,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
+      if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply modifications to the response
       if (modifications.status) {
         clientRes.writeHead(modifications.status, modifications.headers || {});
@@ -4614,6 +4795,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
+      if (reqModifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply request modifications
       if (reqModifications.url) {
         try { targetUrl = new URL(reqModifications.url); } catch { /* keep original */ }
@@ -4653,6 +4835,7 @@ export class ProxyServer {
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
+      if (resModifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply response modifications
       if (resModifications.status) {
         clientRes.writeHead(resModifications.status, resModifications.headers || {});
@@ -5185,6 +5368,7 @@ export class ProxyServer {
       });
       this._setBreakpointTimeout(requestId, abortTarget);
     });
+    if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return null;
     const requestedStatus = Number(modifications.status ?? modifications.statusCode);
     const bodyModified = Object.prototype.hasOwnProperty.call(modifications, 'body');
     const finalBody = bodyModified
@@ -5244,7 +5428,7 @@ export class ProxyServer {
     if (abortTarget?.once) {
       onClientClose = () => {
         if (this.pendingBreakpoints.get(requestId) !== bp) return;
-        bp.resolve({});
+        bp.resolve(BREAKPOINT_CLIENT_DISCONNECTED);
         this.pendingBreakpoints.delete(requestId);
         try {
           this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });

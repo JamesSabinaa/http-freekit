@@ -568,6 +568,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-180 — Medium — Client cancellation is not propagated upstream
 
+- Status: **Fixed**.
+- Resolution: Each proxy forwarding path now owns a downstream cancellation signal. Early H1 closes destroy active upstream requests, downstream H2 cancellation closes upstream streams with `NGHTTP2_CANCEL`, canceled work cannot retry or fall back, and disconnecting a paused breakpoint terminates the request instead of resuming it. Normal completed responses detach cancellation tracking before their downstream close event.
+
 - Evidence: H1 forwarding creates and buffers the upstream response without an aborted/close handler that destroys `proxyReq`, while `_makeH2Request()` has no downstream cancellation input. The breakpoint disconnect handler additionally resolves a paused request with empty modifications, so its await continues into normal upstream forwarding after the client has gone.
 - Impact: after a client disconnects, origins continue streaming and FreeKit continues consuming bandwidth and allocating body buffers; abandoned unsafe requests can still execute.
 - Reproduction: close the client early during a slow response and observe the origin continue sending, or disconnect while a request breakpoint is paused and observe the request reach the origin after the pause is released.
