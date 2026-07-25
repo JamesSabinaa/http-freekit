@@ -21,6 +21,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 9 | 12 new bugs found; documented below | 0/2 |
 | 10 | 13 new bugs found; documented below | 0/2 |
 | 11 | 7 new bugs found; documented below | 0/2 |
+| 12 | 8 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -679,6 +680,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a simple port typo terminates startup with ERR_SOCKET_BAD_PORT after proxy initialization instead of a validation error/fallback.
 - Reproduction: start with `API_PORT=70000` or `API_PORT=-1`.
 
+### BUG-273 — Medium — Management WebSocket peers delay graceful shutdown
+
+- Evidence: `ApiServer.stop()` sends `client.close()` and then waits on `httpServer.close()` at `src/api/api-server.js:1552-1559`; it does not terminate peers or explicitly close the WebSocket server. Application shutdown awaits that promise.
+- Impact: a peer that ignores the close frame keeps the upgraded socket active until the library's roughly 30-second close timeout, stalling shutdown.
+- Reproduction: connect an authenticated raw WebSocket client that ignores close frames and call graceful shutdown.
+
+### BUG-274 — Low/Medium — Management timeout starts after JSON upload parsing
+
+- Evidence: `express.json({ limit: "50mb" })` runs before middleware calling `req.setTimeout(30000)` at `src/api/api-server.js:612-618`, so the timeout is not installed until the complete body has arrived.
+- Impact: a slow or incomplete authenticated upload can hold a connection far beyond the advertised 30 seconds.
+- Reproduction: send part of a declared JSON body and hold the socket open beyond 30 seconds.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1088,6 +1101,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `src/interceptors/terminal-interceptors.js:50-53` points SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE directly at FreeKit's one-certificate CA file; those variables override rather than extend the clients' normal trust bundles.
 - Impact: curl/Python can validate intercepted certificates but reject genuine public certificates for TLS-passthrough hosts.
 - Reproduction: configure a public host for TLS passthrough, activate Fresh Terminal on Linux, and access it with curl or Requests.
+
+### BUG-275 — Medium — JVM agent bytecode can be newer than the target JVM
+
+- Evidence: `src/interceptors/jvm-interceptor.js:143-151` invokes the PATH-selected javac without `--release`, source, or target, then attaches the JAR to any JVM listed at `:223-275`.
+- Impact: a current JDK compiling for an older target fails during agent load with UnsupportedClassVersionError.
+- Reproduction: put JDK 21 first on PATH, run a Java 8 target, and attach it.
+
+### BUG-276 — Medium — JVM interception keeps the localhost bypass
+
+- Evidence: the generated agent and fallback flags set proxy hosts/ports but never clear or override `http.nonProxyHosts` (`src/interceptors/jvm-interceptor.js:112-132,170,260-263`; UI JVM flags).
+- Impact: Java's default localhost/loopback exclusions bypass FreeKit while the target is reported attached.
+- Reproduction: attach a JVM and request a localhost service using default networking properties.
+
+### BUG-277 — Low/Medium — Global Chrome activation bypasses URL validation
+
+- Evidence: isolated browsers normalize activation URLs, but `src/interceptors/existing-browser-interceptor.js:45-46` appends arbitrary `options.url` directly to Chromium arguments.
+- Impact: activation accepts strings beginning with `--` as switches and accepts local/custom schemes rejected by the browser-open path.
+- Reproduction: activate Global Chrome with URL `--incognito` or a file URL.
 
 ## Electron, updater, and renderer
 
@@ -1564,6 +1595,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: traffic validation omits parentId, while the renderer indexes frames into a plain object and assumes any existing key is an array at `src/ui/app.js:290-300`; inherited keys such as `__proto__` and `constructor` are truthy.
 - Impact: one accepted ws-frame record can make initial Traffic rendering and later filtering throw repeatedly until cleared externally.
 - Reproduction: import a valid ws-frame with `parentId: "__proto__"` and reload.
+
+### BUG-278 — Low/Medium — Canceling the OpenAPI prompt still uploads the spec
+
+- Evidence: the UI does not test `prompt()` for null before POST at `src/ui/app.js:8232-8241`; the API converts null baseUrl to an empty string, which matches any host.
+- Impact: clicking Cancel reports the spec loaded and can annotate unrelated traffic.
+- Reproduction: select a valid spec file and cancel the base-URL prompt.
+
+### BUG-279 — Low — API-spec deletion failures are invisible
+
+- Evidence: `src/ui/app.js:8250-8253` awaits DELETE without try/catch/finally; the fetch wrapper rejects non-2xx/network errors.
+- Impact: removal failure produces no toast or reload, leaving the user unaware that the spec remains.
+- Reproduction: disconnect the server or force DELETE 500 and click remove.
+
+### BUG-280 — Low — Split-pane resizers are mouse-only
+
+- Evidence: the two resizers are plain divs without separator role, tabindex, or value ARIA at `src/ui/index.html:118,317`; handlers at `src/ui/app.js:8817-8840,9596-9624` listen only for mouse events.
+- Impact: keyboard users cannot resize Traffic detail or Send response panes.
+- Reproduction: attempt to focus and resize either separator with the keyboard.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
