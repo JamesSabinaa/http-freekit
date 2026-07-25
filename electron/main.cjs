@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -10,7 +10,7 @@ const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
-const { isAllowedRendererUrl } = require('./security.cjs');
+const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -312,6 +312,27 @@ function createWindow({ showOnReady = true } = {}) {
   });
 
   windowState.manage(mainWindow);
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAllowedRendererUrl(url, apiPort)) return;
+    event.preventDefault();
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url).catch(() => {});
+    }
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedRendererUrl(url, apiPort)) {
+      try {
+        if (new URL(url).pathname === '/api/certificate') {
+          mainWindow.webContents.downloadURL(url);
+        }
+      } catch {}
+    } else if (isSafeExternalUrl(url)) {
+      shell.openExternal(url).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
 
   mainWindow.loadURL(`http://127.0.0.1:${apiPort}/?authToken=${authToken}`);
 

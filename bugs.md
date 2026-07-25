@@ -1158,6 +1158,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-023 — High — The Electron window permits unrestricted navigation and popups
 
+- Status: **Fixed**.
 - Evidence: the BrowserWindow installs the privileged preload at `electron/main.cjs:291-310`, but no `will-navigate` handler or `setWindowOpenHandler` exists. UI actions open URLs at `src/ui/app.js:3587,8235`.
 - Impact: renderer injection or an unsafe link can navigate/open remote content in Electron with the preload bridge present, enabling chains with the IPC validation defects.
 - Reproduction: navigate the main webContents or open a target URL; Electron does not deny it or route it exclusively through `shell.openExternal`.

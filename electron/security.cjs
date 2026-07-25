@@ -15,4 +15,17 @@ function isAllowedRendererUrl(value, apiPort) {
   }
 }
 
-module.exports = { isAllowedRendererUrl };
+/** Return true for links that may be handed to the user's external browser. */
+function isSafeExternalUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.username === '' &&
+      url.password === '';
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { isAllowedRendererUrl, isSafeExternalUrl };
