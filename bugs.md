@@ -896,6 +896,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-094 — Medium — Exited JVMs remain marked active forever
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/jvm-interceptor.js:25-27` checks only the in-memory map; PIDs inserted at `:272-276` are never pruned by process/metadata refresh.
 - Impact: a closed JVM leaves the interceptor active indefinitely, and PID reuse can label a different, unproxied JVM as already activated.
 - Reproduction: attach successfully, exit the target JVM, and refresh interceptor metadata.

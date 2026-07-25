@@ -11,6 +11,7 @@ export class JvmInterceptor {
     this.active = false;
     this.ca = null;
     this.activatedProcesses = new Map(); // pid -> { name, mainClass }
+    this.processDiscoveryFailed = false;
     this.agentDir = options.agentDir
       || (options.dataDir
         ? path.join(options.dataDir, 'jvm-agent')
@@ -29,6 +30,8 @@ export class JvmInterceptor {
   }
 
   async isActive() {
+    const processes = await this._getRunningProcesses();
+    this._syncActivatedProcesses(processes);
     return this.active && this.activatedProcesses.size > 0;
   }
 
@@ -39,6 +42,7 @@ export class JvmInterceptor {
   async _getRunningProcesses() {
     try {
       const output = await execFileAsync('jps', ['-v'], { encoding: 'utf8', timeout: 5000 });
+      this.processDiscoveryFailed = false;
       const lines = output.split('\n');
       const processes = [];
 
@@ -72,6 +76,7 @@ export class JvmInterceptor {
 
       return processes;
     } catch (err) {
+      this.processDiscoveryFailed = true;
       console.error('[Interceptor] JPS process list failed:', err.message);
       return [];
     }
@@ -91,6 +96,7 @@ export class JvmInterceptor {
 
   async getMetadata() {
     const processes = await this._getRunningProcesses();
+    this._syncActivatedProcesses(processes);
     return {
       processes,
       activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([pid, info]) => ({
@@ -261,6 +267,18 @@ public class ProxyAgent {
     }
 }
 `;
+  }
+
+  _syncActivatedProcesses(processes) {
+    if (this.processDiscoveryFailed) return;
+    const runningByPid = new Map(processes.map(process_ => [String(process_.pid), process_]));
+    for (const [pid, activated] of this.activatedProcesses) {
+      const running = runningByPid.get(String(pid));
+      if (!running || running.mainClass !== activated.mainClass) {
+        this.activatedProcesses.delete(pid);
+      }
+    }
+    this.active = this.activatedProcesses.size > 0;
   }
 
   _getAgentArgs(proxyHost, proxyPort, action = 'activate') {
