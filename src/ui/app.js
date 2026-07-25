@@ -8323,6 +8323,15 @@
       'settings': 'settings'
     };
 
+    function setActiveSidebarTab(el) {
+      document.querySelectorAll('.sidebar-item').forEach(item => {
+        item.classList.remove('active');
+        item.setAttribute('aria-selected', 'false');
+      });
+      el.classList.add('active');
+      el.setAttribute('aria-selected', 'true');
+    }
+
     function switchPanel(el, panelId) {
       // Warn if leaving mock page with unsaved changes
       const currentPanel = document.querySelector('.sidebar-item.active')?.dataset?.panel;
@@ -8340,12 +8349,7 @@
         }
       }
 
-      document.querySelectorAll('.sidebar-item').forEach(i => {
-        i.classList.remove('active');
-        i.setAttribute('aria-selected', 'false');
-      });
-      el.classList.add('active');
-      el.setAttribute('aria-selected', 'true');
+      setActiveSidebarTab(el);
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       document.getElementById(`panel-${panelId}`).classList.add('active');
 
@@ -8395,8 +8399,7 @@
         // Switch to traffic panel
         const el = document.querySelector('.sidebar-item[data-panel="traffic"]');
         if (el) {
-          document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
-          el.classList.add('active');
+          setActiveSidebarTab(el);
           document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
           document.getElementById('panel-traffic').classList.add('active');
         }
@@ -8414,12 +8417,7 @@
       if (settingsMatch) {
         const el = document.querySelector('.sidebar-item[data-panel="settings"]');
         if (el) {
-          document.querySelectorAll('.sidebar-item').forEach(item => {
-            item.classList.remove('active');
-            item.setAttribute('aria-selected', 'false');
-          });
-          el.classList.add('active');
-          el.setAttribute('aria-selected', 'true');
+          setActiveSidebarTab(el);
           document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
           document.getElementById('panel-settings')?.classList.add('active');
         }
@@ -8432,8 +8430,7 @@
       if (panelId) {
         const el = document.querySelector(`.sidebar-item[data-panel="${panelId}"]`);
         if (el) {
-          document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
-          el.classList.add('active');
+          setActiveSidebarTab(el);
           document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
           document.getElementById(`panel-${panelId}`).classList.add('active');
         }
