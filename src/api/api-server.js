@@ -1221,6 +1221,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         this.trafficLog[idx] = data;
       } else {
         this.trafficLog.push(data);
+        if (this.trafficLog.length > this.maxTrafficLog) {
+          this.trafficLog.shift();
+        }
       }
       this._broadcast({ type: 'request-update', data });
       this._maybeAutoRotateProxyOnError(data);
