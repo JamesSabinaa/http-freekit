@@ -34,6 +34,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 22 | 8 new bugs found; documented below | 0/2 |
 | 23 | 6 new bugs found; documented below | 0/2 |
 | 24 | 3 new bugs found; documented below | 0/2 |
+| 25 | 8 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -242,6 +243,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-104 — Medium — Send/mock-forward hang when a response aborts mid-body
 
+- Status: **Partially fixed**.
+- Resolution: Send now rejects aborted or errored response streams, but mock-forward still listens only for `data` and `end`, so an upstream partial-response disconnect can leave the forwarded request unsettled.
 - Evidence: Send listens only for response `data`/`end` at `src/api/api-server.js:1190-1203`; request `error` does not receive response-stream aborts. Mock-forward repeats this at `src/proxy/proxy-server.js:1167-1195`, `:2265-2300`, and `:3443-3472`, with no response abort/error forwarding or timeout.
 - Impact: a common upstream partial-response disconnect leaves clients, API handlers, and sockets unsettled indefinitely.
 - Reproduction: send headers and a partial body from an origin, destroy its socket, and observe neither rejection nor a 502.
@@ -266,6 +269,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-108 — Medium — H2 upstreams ignore the selected TLS fingerprint
 
+- Status: **Partially fixed**.
+- Resolution: Named TLS fingerprint presets now apply when creating H2 sessions. Passthrough H2 still receives no captured ClientHello, and changing the selected fingerprint does not evict already-cached H2 sessions.
 - Evidence: H1 upstreams spread `_getUpstreamTlsOptions()` at `src/proxy/proxy-server.js:1459,1825,2062`; `_getH2Session()` uses only verification/ALPN options at `:2556-2564` and never applies the selected fingerprint/ClientHello behavior.
 - Impact: Chrome/Safari/Firefox/passthrough fingerprint settings silently do nothing for H2-capable origins.
 - Reproduction: select different fingerprint presets, connect to an H2 fingerprint recorder, and compare ClientHello data.
@@ -369,7 +374,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-145 — High — Generated X.509 serial numbers are randomly negative
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Newly generated CA and leaf certificates now always receive positive, nonzero serials. Startup still loads a pre-fix persisted CA after checking only its expiry, so an already negative CA serial can remain active for nearly a year; correcting it also requires an explicit trust-store reinstallation strategy.
 
 - Evidence: CA and leaf creation assign `_randomSerial()` at `src/proxy/certificate-authority.js:47-54,88-99`; that helper at `:160-162` returns 16 unconstrained random bytes as hex. node-forge encodes the hex directly as an ASN.1 INTEGER, so values whose first nibble is 8-f have the sign bit set, with no leading zero or masking.
 - Impact: roughly half of generated CA and leaf certificates violate the X.509 positive-serial requirement and can be rejected by strict clients, making installs and host interception fail randomly.
@@ -531,6 +537,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-184 — Medium — WebSocket and TLS-passthrough setup have no timeout
 
+- Status: **Partially fixed**.
+- Resolution: WebSocket handshakes now use the standard upstream connect and idle timeouts. TLS passthrough still opens a bare TCP connection without any timeout.
 - Evidence: plain WebSocket `http.request()` runs without the normal upstream timeout configuration at `src/proxy/proxy-server.js:372-497`; TLS passthrough uses bare `net.connect()` with no timer at `:879-890`.
 - Impact: an accept-but-never-answer WebSocket origin or stalled passthrough connect holds client sockets and closures until long OS-level timeouts.
 - Reproduction: point either path at a TCP server that accepts and sends nothing.
@@ -549,6 +557,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-187 — Medium — Upstream WebSocket EOF is not propagated downstream
 
+- Status: **Fixed**.
+- Resolution: The successful WebSocket relay now ends the downstream socket when the upstream socket emits EOF, propagating closure before recording cleanup.
 - Evidence: `proxySocket.on("end", cleanup)` at `src/proxy/proxy-server.js:474-477` records the session but never calls `socket.end()`; the reverse direction does close the upstream socket.
 - Impact: when the origin closes transport, the client TCP connection remains open and hangs after capture is marked complete.
 - Reproduction: have an origin send 101 and then end its socket; the proxied client receives neither end nor close.
@@ -806,6 +816,42 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: the client-certificate UI has no passphrase input, and the item POST route stores only `host` and `pfxPath`, silently discarding a supplied `passphrase`. The proxy loader supports a passphrase and the legacy bulk route can retain one, but the normal item workflow cannot provide it.
 - Impact: adding a password-protected PKCS#12 file appears to succeed, but every matching mTLS connection fails when Node attempts to load the encrypted PFX without its password.
 - Reproduction: add an encrypted PFX through the UI, or include `passphrase` in the item POST, then connect to its host; the saved entry has no passphrase and TLS setup fails.
+
+### BUG-355 — Medium — Aborted non-upgrade WebSocket responses hang clients
+
+- Evidence: `_handleHttpUpgrade()` handles a rejected upgrade by piping `proxyRes` directly to the client at `src/proxy/proxy-server.js:741-748`, without `aborted` or `error` listeners. The request-level error handler does not settle an already-received response stream.
+- Impact: if an origin sends a normal 401/404 response and disconnects mid-body, the proxy forwards the partial response but leaves the downstream socket open indefinitely.
+- Reproduction: have a WebSocket origin send `401` with `Content-Length: 100`, write `partial`, then destroy its socket; the client receives the partial 401 but emits neither `end` nor `close`.
+
+### BUG-356 — Low/Medium — UI-setting updates can partially commit
+
+- Evidence: `POST /api/ui-settings` performs separate `Settings.set()` calls for `hideTunnelRequests` and `filterSafeFonts` at `src/api/api-server.js:695-704`, although atomic `Settings.setAll()` exists.
+- Impact: failure during the second write returns HTTP 500 after the first setting was permanently saved; persisted and runtime settings can disagree with each other and with the failed response.
+- Reproduction: make the first `settings.set()` succeed and the second throw; `hideTunnelRequests` retains its new persisted value while `filterSafeFonts` and the proxy retain their old values.
+
+### BUG-357 — Low/Medium — Prototype-named cookie matchers match absent cookies
+
+- Evidence: the cookie matcher builds a normal-prototype object with `Object.fromEntries()` and tests presence using `matcher.name in cookies` at `src/proxy/proxy-server.js:3934-3939`.
+- Impact: presence matchers named `constructor`, `toString`, or `__proto__` match requests containing no such cookie, potentially applying a mock to unrelated traffic.
+- Reproduction: evaluate `{ type: "cookie", name: "constructor", value: "" }` against empty headers; `_evaluateMatcher()` returns true.
+
+### BUG-358 — Low/Medium — Scalar partial-JSON matchers match every JSON body
+
+- Evidence: `json-body-includes` parses the expected value and checks `Object.keys(expected).every(...)` at `src/proxy/proxy-server.js:3920-3926`, without requiring an object with at least one property.
+- Impact: scalar expectations such as `1` or `true`, and an empty array, have no enumerable keys and therefore match every syntactically valid JSON body.
+- Reproduction: evaluate `json-body-includes` with matcher values `1`, `true`, or `[]` against body `2`; every evaluation returns true.
+
+### BUG-359 — Low — Prototype keys corrupt MCP traffic counters
+
+- Evidence: `_handleGetTrafficStats()` stores method and host counters in ordinary objects at `src/mcp/mcp-server.js:220-243`; inherited keys are read before incrementing.
+- Impact: imported traffic whose method or host is `constructor`, `toString`, or another prototype key produces function-text counts instead of numbers, corrupting MCP statistics.
+- Reproduction: seed one record with method `constructor` and host `toString`, then call `get_traffic_stats`; both counts contain native-function text followed by `1`.
+
+### BUG-360 — Low/Medium — MCP live summary exposes upstream-proxy credentials
+
+- Evidence: `ProxyServer.getStats()` returns the complete `upstreamProxy` object, including `auth`, and `_handleGetLiveSummary()` copies it directly into tool output at `src/mcp/mcp-server.js:389-405`.
+- Impact: invoking a status-summary tool sends plaintext upstream-proxy usernames and passwords into MCP client/model context although the summary needs only connection metadata.
+- Reproduction: configure upstream auth as `user:secret` and invoke `get_live_summary`; its JSON contains `"auth": "user:secret"`.
 
 ## Interceptors and cleanup
 
@@ -1528,6 +1574,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: a URL action can finish after Stop and spawn an untracked browser using cleared `profileDir` or `proxyPort` values. Focus can likewise target stale or already terminated process state.
 - Reproduction: pause the browser's second active check, complete manager Stop, then release the open; it reports success and launches after Stop with null lifecycle configuration while no manager operation was tracked.
 
+### BUG-353 — High/Medium — Loopback binding makes remote interceptors report unreachable proxies
+
+- Evidence: `ProxyServer` now listens on `127.0.0.1` by default, while Docker activation still advertises `host.docker.internal` or a bridge-gateway address and Android global-proxy/QR activation still configures a LAN adapter address. The interceptors cannot inspect the bind host and perform no reachability check before returning success.
+- Impact: default Docker bridge/Desktop and physical-device global/QR interception appear activated but cannot connect to FreeKit. The Android companion path remains viable through ADB reverse, and an undocumented-in-UI environment override can make the other paths reachable.
+- Reproduction: start with the default bind, activate Docker or Android global interception, and connect to the advertised gateway/LAN address; the loopback listener refuses or times out while `127.0.0.1` succeeds. Starting with `PROXY_BIND_HOST=0.0.0.0` makes the same advertised address reachable.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1777,7 +1829,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-143 — Medium — Reloading during an update download can lose the install control
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: The renderer can replay the latest updater event after reload, but `currentStatus` stores only one transient event. A later check, up-to-date result, or error overwrites `update-downloaded`, so another reload again cannot recreate Restart to install even though the package remains ready.
 
 - Evidence: updater state is emitted only as transient IPC events at `electron/updater.cjs:142-152`. The renderer registers its listener at `src/ui/app.js:9454-9478` and creates Restart to install only upon `update-downloaded` at `:9492-9507`; preload/updater exposes no current-status query or replay.
 - Impact: if completion occurs while the renderer reloads, the event is dropped and that session never offers installation even though the package is ready.
@@ -1790,6 +1843,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `switchPanel()` writes traffic state before changing panels at `src/ui/app.js:8321-8345`, `switchSettingsSection()` writes at `:8294`, and `setTheme()` writes at `:9403-9404`; none catches storage exceptions. Theme loading calls `setTheme()` before `connectWebSocket()` at `:9449-9450`.
 - Impact: full or blocked localStorage can prevent leaving Traffic, break theme changes, and throw during startup before live traffic initialization.
 - Reproduction: make `Storage.prototype.setItem` throw, then navigate away from Traffic or reload the app.
+
+### BUG-354 — Low — Guarded storage failures report success and silently lose state
+
+- Evidence: `safeLocalStorageSet()` and `safeLocalStorageRemove()` return `false` on blocked or quota-exceeded storage, but every caller ignores the result. Protobuf schema and custom-theme actions still show success or apply in memory; Send tabs, active tab, settings section, theme, and Traffic scroll state likewise continue without reporting that persistence failed.
+- Impact: users believe state was saved or cleared, but reload restores the previous state or discards the apparent change without any warning.
+- Reproduction: make `Storage.prototype.setItem` and `removeItem` throw, import or clear a protobuf schema or save/remove a custom theme, observe the success/applied UI, then reload and see the change disappear or the removed data return.
 
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
