@@ -740,6 +740,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-040 — High — JVM HTTPS interception does not trust the FreeKit CA
 
+- Status: **Fixed**.
 - Evidence: the comment at `src/interceptors/jvm-interceptor.js:98-101` claims CA trust, but the generated agent at `:112-133` only calls `System.setProperty` for proxy properties; it never updates a trust store or SSL context.
 - Impact: attached JVM applications commonly fail intercepted HTTPS with a PKIX/certificate-path error.
 - Reproduction: attach to a JVM using the default `HttpsURLConnection` trust manager and request an HTTPS URL.

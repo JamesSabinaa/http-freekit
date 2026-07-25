@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -98,19 +99,24 @@ export class JvmInterceptor {
    * Build a Java agent JAR that sets proxy system properties and trusts our CA.
    * Returns the path to the agent JAR, or null if unable.
    */
-  _getAgentJarPath() {
-    // Create a minimal agent that sets system properties for proxy
-    const agentDir = path.join(process.cwd(), '.http-freekit-jvm-agent');
-    const jarPath = path.join(agentDir, 'proxy-agent.jar');
-
-    if (fs.existsSync(jarPath)) return jarPath;
-
-    try {
-      fs.mkdirSync(agentDir, { recursive: true });
-
-      // Create a minimal Java agent source
-      const agentSource = `
+  _getAgentSource() {
+    return `
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.Base64;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 public class ProxyAgent {
     public static void premain(String args, Instrumentation inst) {
@@ -121,23 +127,116 @@ public class ProxyAgent {
     }
     private static void configure(String args) {
         if (args == null || args.isEmpty()) return;
+        String caPath = null;
         String[] parts = args.split(",");
         for (String part : parts) {
             String[] kv = part.split("=", 2);
-            if (kv.length == 2) {
+            if (kv.length != 2) continue;
+            if (kv[0].equals("freekit.caPathBase64")) {
+                caPath = new String(Base64.getDecoder().decode(kv[1]), StandardCharsets.UTF_8);
+            } else {
                 System.setProperty(kv[0], kv[1]);
+            }
+        }
+        if (caPath != null && !caPath.isEmpty()) {
+            try {
+                installCa(caPath);
+            } catch (Exception error) {
+                throw new IllegalStateException("Unable to trust the HTTP FreeKit CA", error);
             }
         }
         System.out.println("[HTTP FreeKit] Proxy agent loaded: " + args);
     }
+    private static X509TrustManager findX509TrustManager(TrustManager[] managers) {
+        for (TrustManager manager : managers) {
+            if (manager instanceof X509TrustManager) return (X509TrustManager) manager;
+        }
+        throw new IllegalStateException("No X509 trust manager is available");
+    }
+    private static void installCa(String caPath) throws Exception {
+        CertificateFactory certificates = CertificateFactory.getInstance("X.509");
+        Certificate caCertificate;
+        try (InputStream input = new FileInputStream(caPath)) {
+            caCertificate = certificates.generateCertificate(input);
+        }
+
+        KeyStore caStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        caStore.load(null, null);
+        caStore.setCertificateEntry("http-freekit", caCertificate);
+
+        TrustManagerFactory caFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        caFactory.init(caStore);
+        final X509TrustManager caTrust = findX509TrustManager(caFactory.getTrustManagers());
+
+        TrustManagerFactory systemFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        systemFactory.init((KeyStore) null);
+        final X509TrustManager systemTrust = findX509TrustManager(systemFactory.getTrustManagers());
+
+        X509TrustManager combinedTrust = new X509TrustManager() {
+            public X509Certificate[] getAcceptedIssuers() {
+                X509Certificate[] systemIssuers = systemTrust.getAcceptedIssuers();
+                X509Certificate[] caIssuers = caTrust.getAcceptedIssuers();
+                X509Certificate[] combined = Arrays.copyOf(systemIssuers, systemIssuers.length + caIssuers.length);
+                System.arraycopy(caIssuers, 0, combined, systemIssuers.length, caIssuers.length);
+                return combined;
+            }
+            public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                try {
+                    systemTrust.checkClientTrusted(chain, authType);
+                } catch (CertificateException systemError) {
+                    caTrust.checkClientTrusted(chain, authType);
+                }
+            }
+            public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                try {
+                    systemTrust.checkServerTrusted(chain, authType);
+                } catch (CertificateException systemError) {
+                    caTrust.checkServerTrusted(chain, authType);
+                }
+            }
+        };
+
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, new TrustManager[] { combinedTrust }, null);
+        SSLContext.setDefault(context);
+        HttpsURLConnection.setDefaultSSLSocketFactory(context.getSocketFactory());
+    }
 }
 `;
-      const javaPath = path.join(agentDir, 'ProxyAgent.java');
-      fs.writeFileSync(javaPath, agentSource);
+  }
 
-      // Create manifest
-      const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n';
-      const manifestPath = path.join(agentDir, 'MANIFEST.MF');
+  _getAgentArgs(proxyHost, proxyPort) {
+    const args = [
+      `http.proxyHost=${proxyHost}`,
+      `http.proxyPort=${proxyPort}`,
+      `https.proxyHost=${proxyHost}`,
+      `https.proxyPort=${proxyPort}`
+    ];
+    const caPath = this.ca?.getCertInfo()?.certificatePath;
+    if (caPath) {
+      args.push(`freekit.caPathBase64=${Buffer.from(caPath, 'utf8').toString('base64')}`);
+    }
+    return args.join(',');
+  }
+
+  _getAgentJarPath() {
+    const agentDir = path.join(process.cwd(), '.http-freekit-jvm-agent');
+    const jarPath = path.join(agentDir, 'proxy-agent.jar');
+    const javaPath = path.join(agentDir, 'ProxyAgent.java');
+    const manifestPath = path.join(agentDir, 'MANIFEST.MF');
+    const stampPath = path.join(agentDir, 'source.sha256');
+    const agentSource = this._getAgentSource();
+    const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n';
+    const sourceHash = crypto.createHash('sha256').update(agentSource).update(manifest).digest('hex');
+
+    if (fs.existsSync(jarPath) && fs.existsSync(stampPath)
+      && fs.readFileSync(stampPath, 'utf8') === sourceHash) {
+      return jarPath;
+    }
+
+    try {
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(javaPath, agentSource);
       fs.writeFileSync(manifestPath, manifest);
 
       // Compile
@@ -149,6 +248,7 @@ public class ProxyAgent {
         stdio: 'ignore',
         timeout: 10000
       });
+      fs.writeFileSync(stampPath, sourceHash);
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
       return jarPath;
@@ -167,7 +267,7 @@ public class ProxyAgent {
       return { success: false, error: 'Failed to build proxy agent JAR' };
     }
 
-    const agentArgs = `http.proxyHost=${proxyHost},http.proxyPort=${proxyPort},https.proxyHost=${proxyHost},https.proxyPort=${proxyPort}`;
+    const agentArgs = this._getAgentArgs(proxyHost, proxyPort);
 
     try {
       // Use jattach-style approach: com.sun.tools.attach
