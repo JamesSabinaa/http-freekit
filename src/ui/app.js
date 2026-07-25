@@ -82,6 +82,14 @@
     let sendExportCreating = false;
     const breakpointEditDrafts = new Map();
 
+    function activateOnKeyboard(event) {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      if (event.repeat) return;
+      event.currentTarget.click();
+    }
+
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
     const API_AUTH_TOKEN = new URLSearchParams(window.location.search).get('authToken') || '';
     const nativeFetch = window.fetch.bind(window);
@@ -6797,26 +6805,23 @@
 
       // Auto-collapse/expand body card based on method (matches HTTP Toolkit behavior)
       const bodyContent = document.getElementById('sendBodyBody');
-      const bodyArrow = document.getElementById('sendBodyArrow');
-      if (bodyContent && bodyArrow) {
+      if (bodyContent) {
         const hasBody = getSendBodyValue().trim().length > 0;
         if (METHODS_WITHOUT_BODY.includes(sel.value)) {
           // Collapse body card if body is empty
           if (!hasBody) {
-            bodyContent.style.display = 'none';
-            bodyArrow.style.transform = 'rotate(-90deg)';
+            setSendCardExpanded('sendBodyBody', false);
           }
         } else {
           // Expand body card for methods that commonly have bodies
           if (bodyContent.style.display === 'none') {
-            bodyContent.style.display = 'block';
-            bodyArrow.style.transform = 'rotate(0deg)';
+            setSendCardExpanded('sendBodyBody', true);
           }
         }
       }
     }
 
-    function toggleSendCard(contentId) {
+    function setSendCardExpanded(contentId, expanded) {
       const content = document.getElementById(contentId);
       const arrowIds = {
         sendHeadersBody: 'sendHeadersArrow',
@@ -6826,14 +6831,19 @@
       const arrowId = arrowIds[contentId];
       const arrow = document.getElementById(arrowId);
       if (!content) return;
-      const isHidden = content.style.display === 'none';
-      content.style.display = isHidden ? 'block' : 'none';
-      if (arrow) arrow.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+      content.style.display = expanded ? 'block' : 'none';
+      if (arrow) arrow.style.transform = expanded ? 'rotate(0deg)' : 'rotate(-90deg)';
       // Update aria-expanded on the card header
       const header = content.previousElementSibling;
       if (header && header.classList.contains('card-header')) {
-        header.setAttribute('aria-expanded', String(isHidden));
+        header.setAttribute('aria-expanded', String(expanded));
       }
+    }
+
+    function toggleSendCard(contentId) {
+      const content = document.getElementById(contentId);
+      if (!content) return;
+      setSendCardExpanded(contentId, content.style.display === 'none');
     }
 
     function formatToContentType(format) {

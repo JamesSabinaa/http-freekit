@@ -1998,6 +1998,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-175 — Low — Collapsible and sortable controls remain mouse-only
 
+- Status: **Fixed**.
+
 - Evidence: Send collapsible headers use `role="button"` with click handlers but no `tabindex` or keyboard handler at `src/ui/index.html:246,259,292`; Traffic sortable column headers likewise expose only `onclick` at `:73-77`.
 - Impact: keyboard-only users cannot focus, expand/collapse, or sort these controls despite their advertised semantic roles.
 - Reproduction: Tab through Send and Traffic and try Enter/Space on the relevant headers.

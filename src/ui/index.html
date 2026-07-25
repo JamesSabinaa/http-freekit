@@ -70,11 +70,11 @@
               <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic" aria-rowcount="0" aria-colcount="6">
                 <thead><tr role="row">
                   <th role="columnheader" style="width:5px;padding:0;" aria-label="Row marker"></th>
-                  <th role="columnheader" class="sortable" data-sort-field="method" aria-sort="none" style="width:71px" onclick="sortBy('method')"><span>Method</span><span class="sort-chevron" aria-hidden="true"></span></th>
-                  <th role="columnheader" class="sortable" data-sort-field="statusCode" aria-sort="none" style="width:45px" onclick="sortBy('statusCode')"><span>Status</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="method" aria-sort="none" tabindex="0" style="width:71px" onclick="sortBy('method')" onkeydown="activateOnKeyboard(event)"><span>Method</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="statusCode" aria-sort="none" tabindex="0" style="width:45px" onclick="sortBy('statusCode')" onkeydown="activateOnKeyboard(event)"><span>Status</span><span class="sort-chevron" aria-hidden="true"></span></th>
                   <th role="columnheader" style="width:49px">Source</th>
-                  <th role="columnheader" class="sortable" data-sort-field="host" aria-sort="none" onclick="sortBy('host')"><span>Host</span><span class="sort-chevron" aria-hidden="true"></span></th>
-                  <th role="columnheader" class="sortable" data-sort-field="path" aria-sort="none" onclick="sortBy('path')"><span>Path &amp; Query</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="host" aria-sort="none" tabindex="0" onclick="sortBy('host')" onkeydown="activateOnKeyboard(event)"><span>Host</span><span class="sort-chevron" aria-hidden="true"></span></th>
+                  <th role="columnheader" class="sortable" data-sort-field="path" aria-sort="none" tabindex="0" onclick="sortBy('path')" onkeydown="activateOnKeyboard(event)"><span>Path &amp; Query</span><span class="sort-chevron" aria-hidden="true"></span></th>
                 </tr></thead>
                 <tbody id="trafficBody"></tbody>
               </table>
@@ -243,7 +243,7 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')" role="button" aria-expanded="true" aria-controls="sendHeadersBody">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="true" aria-controls="sendHeadersBody">
                 <div style="display:flex;align-items:center;gap:8px;">
                   <span>Request Headers</span>
                   <button class="btn" onclick="event.stopPropagation();addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header" aria-label="Add header">+</button>
@@ -256,7 +256,7 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')" role="button" aria-expanded="true" aria-controls="sendBodyBody">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="true" aria-controls="sendBodyBody">
                 <div style="display:flex;align-items:center;gap:8px;">
                   <select id="sendBodyType" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyType()" aria-label="Request body type">
                     <option value="raw">Raw</option>
@@ -289,7 +289,7 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendExportBody');updateSendExportSnippet()" role="button" aria-expanded="false" aria-controls="sendExportBody">
+              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendExportBody');updateSendExportSnippet()" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="false" aria-controls="sendExportBody">
                 <div style="display:flex;align-items:center;gap:8px;">
                   <select id="sendExportFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendExportSnippet()" aria-label="Export format">
                     <option value="curl">cURL</option>
