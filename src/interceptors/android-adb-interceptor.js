@@ -458,6 +458,18 @@ export class AndroidAdbInterceptor {
     return [...new Set(this._getHostInterfaces().map(iface => iface.address))];
   }
 
+  async _cleanupActivatedDevice(serial, activeInfo) {
+    if (activeInfo?.mode === 'http-toolkit-app') {
+      return await this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
+    }
+    if (activeInfo?.mode === 'staging-cleanup') {
+      return await this._removeCaCert(serial);
+    }
+    const proxyRestored = await this._restoreProxy(serial, activeInfo?.previousProxy);
+    const certificateRemoved = await this._removeCaCert(serial);
+    return proxyRestored && certificateRemoved;
+  }
+
   async activate(proxyPort, options = {}) {
     const { deviceId, useHttpToolkitApp = true, hostIp: requestedHostIp } = options;
 
@@ -495,6 +507,15 @@ export class AndroidAdbInterceptor {
         success: false,
         error: `Device ${deviceId} is ${device.status} (must be authorized)`
       };
+    }
+
+    const previousActivation = this.activatedDevices.get(deviceId);
+    if (previousActivation) {
+      if (!await this._cleanupActivatedDevice(deviceId, previousActivation)) {
+        throw new Error(`Could not clean up the existing Android interception for ${deviceId}; reconnect it and retry`);
+      }
+      this.activatedDevices.delete(deviceId);
+      this.active = this.activatedDevices.size > 0;
     }
 
     let hostIp = null;
@@ -598,23 +619,12 @@ export class AndroidAdbInterceptor {
 
   async deactivate(options = {}) {
     const { deviceId } = options;
-    const cleanupDevice = async (serial, activeInfo) => {
-      if (activeInfo?.mode === 'http-toolkit-app') {
-        return await this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
-      }
-      if (activeInfo?.mode === 'staging-cleanup') {
-        return await this._removeCaCert(serial);
-      }
-      const proxyRestored = await this._restoreProxy(serial, activeInfo?.previousProxy);
-      const certificateRemoved = await this._removeCaCert(serial);
-      return proxyRestored && certificateRemoved;
-    };
 
     if (deviceId) {
       // Deactivate a specific device
       const activeInfo = this.activatedDevices.get(deviceId);
       if (!activeInfo) return;
-      if (!await cleanupDevice(deviceId, activeInfo)) {
+      if (!await this._cleanupActivatedDevice(deviceId, activeInfo)) {
         this.active = this.activatedDevices.size > 0;
         throw new Error(`Failed to clean up Android device ${deviceId}; reconnect it and retry Stop`);
       }
@@ -624,7 +634,7 @@ export class AndroidAdbInterceptor {
       // Deactivate all devices
       const failures = [];
       for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
-        if (await cleanupDevice(serial, activeInfo)) {
+        if (await this._cleanupActivatedDevice(serial, activeInfo)) {
           this.activatedDevices.delete(serial);
         } else {
           failures.push(serial);

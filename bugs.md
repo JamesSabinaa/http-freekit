@@ -973,6 +973,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-122 — High — Switching Android activation modes strands the old mode
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/android-adb-interceptor.js:383-465` never cleans an existing `activatedDevices` entry before replacing it. Stop at `:497-525` consults only the last stored mode.
 - Impact: switching between global-proxy and companion-app modes can leave the prior global proxy/CA or VPN app/reverse tunnel active, while Stop cleans only the newer half.
 - Reproduction: activate a device in global mode, make the companion app available, activate the same serial again, then Stop and inspect the global proxy.
