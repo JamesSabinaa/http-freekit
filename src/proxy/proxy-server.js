@@ -583,28 +583,41 @@ export class ProxyServer {
   }
 
   // Handle HTTP upgrade requests (WebSocket passthrough)
-  _handleHttpUpgrade(req, socket, head) {
+  _handleHttpUpgrade(req, socket, head, context = {}) {
     const startTime = Date.now();
     const requestId = uuidv4();
     let targetUrl;
     try {
       targetUrl = new URL(req.url);
     } catch {
-      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
-      return;
+      if (!context.hostname) {
+        socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+        return;
+      }
+      const urlHostname = net.isIP(context.hostname) === 6
+        ? `[${context.hostname}]`
+        : context.hostname;
+      const authority = `${urlHostname}${context.targetPort && context.targetPort !== 443 ? `:${context.targetPort}` : ''}`;
+      targetUrl = new URL(req.url, `https://${authority}`);
     }
+    const secureOrigin = context.secure === true ||
+      targetUrl.protocol === 'https:' || targetUrl.protocol === 'wss:';
+    const targetPort = parseInt(targetUrl.port, 10) || (secureOrigin ? 443 : 80);
     const options = {
       hostname: targetUrl.hostname,
-      port: targetUrl.port || 80,
+      port: targetPort,
       path: targetUrl.pathname + targetUrl.search,
       headers: this._rawHeadersToObject(req.rawHeaders),
       method: 'GET'
     };
-    let requestLib = http;
-    const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetUrl.port || 80);
-    if (useUpstreamProxy && this._isSocksProxy()) {
+    let requestLib = secureOrigin ? https : http;
+    if (secureOrigin) Object.assign(options, this._getUpstreamTlsOptions(targetUrl.hostname));
+    const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
+    if (useUpstreamProxy && secureOrigin) {
+      options.agent = this._getUpstreamAgent();
+    } else if (useUpstreamProxy && this._isSocksProxy()) {
       options.createConnection = (connectOptions, oncreate) => {
-        this._connectViaSocks(targetUrl.hostname, targetUrl.port || 80)
+        this._connectViaSocks(targetUrl.hostname, targetPort)
           .then(upstreamSocket => oncreate(null, upstreamSocket))
           .catch(err => oncreate(err));
       };
@@ -685,9 +698,9 @@ export class ProxyServer {
         const duration = Date.now() - startTime;
         this._emitRequest({
           id: requestId,
-          protocol: 'ws',
+          protocol: secureOrigin ? 'wss' : 'ws',
           method: 'WS',
-          url: req.url.replace(/^http/, 'ws'),
+          url: targetUrl.href.replace(/^https?/, secureOrigin ? 'wss' : 'ws'),
           host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search,
           requestHeaders: req.headers,
@@ -701,12 +714,15 @@ export class ProxyServer {
           duration,
           timestamp: startTime,
           source: this._detectSource(req.headers),
-          tls: null,
+          tls: context.tlsDetails || null,
           remote: { address: proxySocket.remoteAddress, port: proxySocket.remotePort }
         });
       };
 
-      proxySocket.on('end', cleanup);
+      proxySocket.on('end', () => {
+        socket.end();
+        cleanup();
+      });
       proxySocket.on('error', () => { socket.destroy(); cleanup(); });
       socket.on('end', () => proxySocket.end());
       socket.on('error', () => { proxySocket.destroy(); cleanup(); });
@@ -725,6 +741,7 @@ export class ProxyServer {
     });
 
     proxyReq.on('error', (err) => {
+      console.error('[Proxy] WebSocket upstream error:', err.message);
       socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       socket.destroy();
     });
@@ -1948,6 +1965,17 @@ export class ProxyServer {
       });
     });
 
+    virtualServer.on('upgrade', (req, socket, head) => {
+      httpRequestReceived = true;
+      clearTimeout(tunnelTimer);
+      this._handleHttpUpgrade(req, socket, head, {
+        secure: true,
+        hostname,
+        targetPort,
+        tlsDetails
+      });
+    });
+
     // Don't actually listen — just feed the TLS socket into the server
     virtualServer.emit('connection', tlsSocket);
 
@@ -2636,6 +2664,17 @@ export class ProxyServer {
     h2Server.on('sessionError', (err) => {
       if (err.code === 'ECONNRESET' || err.code === 'EPIPE') return;
       console.error(`[Proxy] HTTP/2 session error for ${hostname}:`, err.message);
+    });
+
+    h2Server.on('upgrade', (req, socket, head) => {
+      httpRequestReceived = true;
+      clearTimeout(tunnelTimer);
+      this._handleHttpUpgrade(req, socket, head, {
+        secure: true,
+        hostname,
+        targetPort,
+        tlsDetails
+      });
     });
 
     h2Server.on('error', (err) => {

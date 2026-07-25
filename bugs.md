@@ -322,6 +322,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-128 — High — Secure WebSockets cannot traverse TLS interception
 
+- Status: **Fixed**.
+
 - Evidence: only the outer plain proxy registers an upgrade listener at `src/proxy/proxy-server.js:321-333`, and `_handleHttpUpgrade()` at `:371-390` always creates a plain HTTP origin request. The HTTPS MITM virtual server at `:1025-1027,1584-1585` and the H2/allowHTTP1 server at `:1654-1672,1918-1924` register no upgrade handler.
 - Impact: ordinary `wss://` clients fail unless the hostname is placed in raw TLS passthrough, which also disables WebSocket inspection.
 - Reproduction: connect a WebSocket client to a working secure origin through FreeKit with default TLS interception; the handshake closes before the origin receives a connection.
