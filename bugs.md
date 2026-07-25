@@ -903,6 +903,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-095 — Medium — Android fallback selects an arbitrary host adapter
 
+- Status: **Fixed**.
 - Evidence: `_getHostIps()` includes every non-loopback IPv4 in OS enumeration order at `src/interceptors/android-adb-interceptor.js:368-380`; `_getHostIp()` chooses only the first or device-local `127.0.0.1` at `:359-366` and installs it at `:422,447`.
 - Impact: VPN/Hyper-V/Docker addresses can be chosen instead of Wi-Fi/Ethernet; a physical device then cannot reach the reported proxy although activation succeeds.
 - Reproduction: make a non-device-reachable virtual adapter enumerate first and activate the global fallback.

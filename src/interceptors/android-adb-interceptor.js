@@ -9,6 +9,27 @@ const HTTP_TOOLKIT_ANDROID_DEACTIVATE = 'tech.httptoolkit.android.DEACTIVATE';
 const HTTP_TOOLKIT_ANDROID_CONNECT_URL = 'https://android.httptoolkit.tech/connect/';
 const EMULATOR_HOST_IPS = ['10.0.2.2', '10.0.3.2'];
 
+function ipv4ToInteger(address) {
+  const parts = String(address).split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null;
+  }
+  return parts.reduce((value, part) => ((value << 8) | part) >>> 0, 0);
+}
+
+function sharesSubnet(firstAddress, secondAddress, netmask) {
+  const first = ipv4ToInteger(firstAddress);
+  const second = ipv4ToInteger(secondAddress);
+  const mask = ipv4ToInteger(netmask);
+  return first !== null && second !== null && mask !== null && (first & mask) === (second & mask);
+}
+
+function netmaskPrefixLength(netmask) {
+  const mask = ipv4ToInteger(netmask);
+  if (mask === null) return 0;
+  return mask.toString(2).replace(/0/g, '').length;
+}
+
 export class AndroidAdbInterceptor {
   constructor() {
     this.id = 'android-adb';
@@ -376,32 +397,69 @@ export class AndroidAdbInterceptor {
    * For emulators, use 10.0.2.2 (special alias for host loopback).
    * For physical devices, use the machine's LAN IP.
    */
-  _getHostIp(deviceId) {
+  async _getHostIp(deviceId, requestedHostIp) {
     // Android emulators typically have serial like "emulator-5554"
     if (deviceId.startsWith('emulator-')) {
       return '10.0.2.2';
     }
 
-    return this._getHostIps()[0] || '127.0.0.1';
+    const hostInterfaces = this._getHostInterfaces();
+    if (requestedHostIp) {
+      if (!hostInterfaces.some(iface => iface.address === requestedHostIp)) {
+        throw new Error(`Android proxy host ${requestedHostIp} is not a local IPv4 address`);
+      }
+      return requestedHostIp;
+    }
+
+    const deviceAddresses = await this._getDeviceIpv4Addresses(deviceId);
+    const matches = hostInterfaces
+      .filter(iface => deviceAddresses.some(address => sharesSubnet(iface.address, address, iface.netmask)))
+      .sort((first, second) => second.prefixLength - first.prefixLength);
+    if (matches.length === 0) {
+      throw new Error('Could not find a host network adapter reachable from the Android device');
+    }
+
+    const bestPrefixLength = matches[0].prefixLength;
+    const bestAddresses = [...new Set(
+      matches.filter(iface => iface.prefixLength === bestPrefixLength).map(iface => iface.address)
+    )];
+    if (bestAddresses.length !== 1) {
+      throw new Error(`Multiple host adapters can reach the Android device; specify hostIp (${bestAddresses.join(', ')})`);
+    }
+    return bestAddresses[0];
   }
 
-  _getHostIps() {
-    // For physical devices, find the host machine's LAN IP
+  async _getDeviceIpv4Addresses(deviceId) {
+    const output = await this._adb(deviceId, ['shell', 'ip', '-o', '-4', 'addr', 'show', 'scope', 'global'], {
+      timeout: 5000
+    });
+    return [...String(output).matchAll(/\binet\s+(\d+(?:\.\d+){3})\/\d+/g)].map(match => match[1]);
+  }
+
+  _getHostInterfaces() {
     const interfaces = os.networkInterfaces();
-    const addresses = [];
+    const candidates = [];
     for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name]) {
-        if (iface.family === 'IPv4' && !iface.internal) {
-          addresses.push(iface.address);
+      for (const iface of interfaces[name] || []) {
+        if ((iface.family === 'IPv4' || iface.family === 4) && !iface.internal) {
+          candidates.push({
+            name,
+            address: iface.address,
+            netmask: iface.netmask,
+            prefixLength: Number(iface.cidr?.split('/')[1]) || netmaskPrefixLength(iface.netmask)
+          });
         }
       }
     }
+    return candidates;
+  }
 
-    return [...new Set(addresses)];
+  _getHostIps() {
+    return [...new Set(this._getHostInterfaces().map(iface => iface.address))];
   }
 
   async activate(proxyPort, options = {}) {
-    const { deviceId, useHttpToolkitApp = true } = options;
+    const { deviceId, useHttpToolkitApp = true, hostIp: requestedHostIp } = options;
 
     if (!deviceId) {
       // No specific device — return metadata with device list for UI selection
@@ -439,7 +497,7 @@ export class AndroidAdbInterceptor {
       };
     }
 
-    const hostIp = this._getHostIp(deviceId);
+    let hostIp = null;
     let mode = 'global-proxy';
     let appInstalled = false;
     let tunnelActive = false;
@@ -461,6 +519,7 @@ export class AndroidAdbInterceptor {
     }
 
     if (mode !== 'http-toolkit-app') {
+      hostIp = await this._getHostIp(deviceId, requestedHostIp);
       const currentProxy = await this._getProxy(deviceId);
       if (!currentProxy.success) {
         return { success: false, error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}` };
