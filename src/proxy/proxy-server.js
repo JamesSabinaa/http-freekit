@@ -4774,12 +4774,16 @@ export class ProxyServer {
     }
   }
 
-  _decompressBody(buffer, encoding) {
-    if (!buffer || buffer.length === 0) return buffer;
-    const codings = (Array.isArray(encoding) ? encoding : [encoding])
+  _parseContentCodings(encoding) {
+    return (Array.isArray(encoding) ? encoding : [encoding])
       .flatMap(value => String(value || '').split(','))
       .map(value => value.trim().toLowerCase())
       .filter(Boolean);
+  }
+
+  _decompressBody(buffer, encoding) {
+    if (!buffer || buffer.length === 0) return buffer;
+    const codings = this._parseContentCodings(encoding);
     if (codings.length === 0) return buffer;
 
     const options = { maxOutputLength: this.maxDecompressedBodyBytes };
@@ -4818,9 +4822,9 @@ export class ProxyServer {
     const encodingKey = Object.keys(headers || {})
       .find(name => name.toLowerCase() === 'content-encoding');
     const headerValue = encodingKey ? headers[encodingKey] : '';
-    const contentEncoding = String(Array.isArray(headerValue) ? headerValue[0] : headerValue || '').trim();
-    const decoded = this._decompressBody(buffer, contentEncoding);
-    if (contentEncoding && contentEncoding !== 'identity' && decoded === buffer) return '';
+    const codings = this._parseContentCodings(headerValue);
+    const decoded = this._decompressBody(buffer, headerValue);
+    if (codings.some(coding => coding !== 'identity') && decoded === buffer) return '';
     return decoded.toString('utf8');
   }
 

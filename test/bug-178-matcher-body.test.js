@@ -114,3 +114,28 @@ test('breakpoint body matchers use decoded input within existing ceilings', () =
   assert.equal(proxy._checkBreakpoint('POST', 'http://example.test/', {},
     proxy._requestBodyForMatching(overCeiling, { 'content-encoding': 'gzip' })), undefined);
 });
+
+test('identity-only content-coding lists preserve matcher input case-insensitively', () => {
+  const proxy = new ProxyServer(null);
+  const body = Buffer.from('identity matcher token');
+
+  for (const contentEncoding of [
+    'Identity',
+    'IDENTITY, identity',
+    ['Identity', 'IDENTITY, identity']
+  ]) {
+    assert.equal(
+      proxy._requestBodyForMatching(body, { 'Content-Encoding': contentEncoding }),
+      'identity matcher token'
+    );
+  }
+});
+
+test('failed or unsupported non-identity codings never expose encoded matcher bytes', () => {
+  const proxy = new ProxyServer(null);
+  const body = Buffer.from('raw bytes that are not gzip');
+
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'GZip' }), '');
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'identity, unsupported' }), '');
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': ['Identity', 'BR'] }), '');
+});
