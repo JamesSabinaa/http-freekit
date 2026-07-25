@@ -25,6 +25,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 13 | 4 new bugs found; documented below | 0/2 |
 | 14 | No new bugs found | 1/2 |
 | 15 | 4 new bugs found; documented below | 0/2 |
+| 16 | 4 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -709,6 +710,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: default masked MCP HAR exports expose secret structured cookie values in cleartext.
 - Reproduction: import a cookie array containing a secret and call MCP `export_traffic` with default masking.
 
+### BUG-289 — Medium — Malformed management WebSocket frames crash the server
+
+- Evidence: accepted WebSocket peers receive close and message listeners but no error listener at `src/api/api-server.js:1487-1508`; parser/protocol errors are emitted as unhandled error events.
+- Impact: one malformed peer frame can terminate the server abruptly and bypass graceful interceptor/proxy cleanup.
+- Reproduction: complete an authenticated `/ws` upgrade and send an unmasked client text frame such as bytes `81 01 61`.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1161,6 +1168,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: closing the desktop with a resistant browser can terminate graceful cleanup before registry/device proxy restoration, leaving clients pointed at a dead proxy.
 - Reproduction: activate a resistant isolated browser plus System Proxy, close the desktop window, and inspect registry state after the child is killed.
 
+### BUG-290 — High/Medium — Browser activation can race Stop and lose the new browser
+
+- Evidence: `BrowserInterceptor.deactivate()` sets active false before its awaited termination loop at `src/interceptors/browser-interceptor.js:230-259`. Concurrent activation then passes the guard and overwrites process/profile/tracked state at `:35-72`; the old deactivation continues through mutable fields and finally resets them.
+- Impact: the old Stop can kill or forget a newly reported-successful isolated browser.
+- Reproduction: keep the old browser alive, begin Stop, then activate again before Stop resolves.
+
+### BUG-291 — Medium — Electron interception disables all Node TLS verification
+
+- Evidence: `src/interceptors/electron-interceptor.js:35-47` injects `NODE_TLS_REJECT_UNAUTHORIZED=0` into the launched application.
+- Impact: main-process HTTPS clients accept expired, self-signed, and wrong-host certificates for direct/bypassed destinations unrelated to FreeKit.
+- Reproduction: activate an Electron test app and have its main process request a wrong-host/self-signed endpoint.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1246,6 +1265,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-031 — Medium — Send Abort does not cancel the outbound request
 
+- Status: **Fixed**.
 - Evidence: `src/ui/app.js:7340-7346` aborts only the renderer-to-API fetch. `src/api/api-server.js:1125-1134,1174-1208` continues its independent outbound request and never ties it to the inbound connection closing.
 - Impact: a slow or state-changing request can still reach and complete at the destination after the UI reports it aborted.
 - Reproduction: send a slow POST, abort after the destination receives headers, and observe the destination complete the request.
@@ -1675,6 +1695,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `refreshAndroidDevices()` and `refreshJvmProcesses()` at `src/ui/app.js:4143-4165,4285-4307` parse JSON without testing `res.ok` or `data.error`, then always toast refreshed.
 - Impact: a 500/network-shape error retains stale device/process data while reporting success.
 - Reproduction: force the metadata endpoint to return 500 with `{ "error": "failed" }` and click Refresh.
+
+### BUG-292 — Low — Reopening Existing Terminal loses its CA path
+
+- Evidence: collapsing a card clears shared metadata at `src/ui/app.js:3916-3919`, but reopening an already-active Existing Terminal skips activation/metadata fetch at `:3874-3913`. Terminal rendering then falls back to an empty certPath at `:3952-3960`.
+- Impact: copied commands contain a blank NODE_EXTRA_CA_CERTS path after the card is reopened.
+- Reproduction: expand Existing Terminal, collapse it, reopen it, and inspect the generated command.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
