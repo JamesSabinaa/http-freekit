@@ -46,6 +46,8 @@ export class ProxyServer {
     this.http2Enabled = 'disabled'; // 'all', 'h2-only', 'disabled'
     this.clientCertificates = []; // [{host, pfxPath}]
     this.trustedCAs = []; // [certPath]
+    this._clientCertificateOptions = [];
+    this._trustedCaCertificates = [];
     this.httpsWhitelist = []; // [hostname]
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
@@ -247,12 +249,37 @@ export class ProxyServer {
   }
 
   setClientCertificates(certs) {
-    this.clientCertificates = certs || [];
+    this.clientCertificates = Array.isArray(certs) ? certs : [];
+    this._clientCertificateOptions = this.clientCertificates.flatMap((config) => {
+      if (!config?.host || !config?.pfxPath) return [];
+      try {
+        return [{
+          host: this._normalizeTlsHostname(config.host),
+          pfx: fs.readFileSync(config.pfxPath),
+          ...(config.passphrase ? { passphrase: config.passphrase } : {})
+        }];
+      } catch (err) {
+        console.error(`[Proxy] Failed to load client certificate ${config.pfxPath}: ${err.message}`);
+        return [];
+      }
+    });
+    this._destroyUpstreamAgent();
+    this._closeAllH2Sessions();
     console.log(`[Proxy] Client certificates: ${this.clientCertificates.length} configured`);
   }
 
   setTrustedCAs(cas) {
-    this.trustedCAs = cas || [];
+    this.trustedCAs = Array.isArray(cas) ? cas : [];
+    this._trustedCaCertificates = this.trustedCAs.flatMap((certPath) => {
+      try {
+        return [fs.readFileSync(certPath, 'utf8')];
+      } catch (err) {
+        console.error(`[Proxy] Failed to load trusted CA ${certPath}: ${err.message}`);
+        return [];
+      }
+    });
+    this._destroyUpstreamAgent();
+    this._closeAllH2Sessions();
     console.log(`[Proxy] Trusted CAs: ${this.trustedCAs.length} configured`);
   }
 
@@ -263,14 +290,25 @@ export class ProxyServer {
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
   }
 
-  _isHttpsWhitelisted(hostname) {
-    const normalize = (value) => String(value || '')
+  _normalizeTlsHostname(value) {
+    return String(value || '')
       .trim()
       .toLowerCase()
       .replace(/^\[|\]$/g, '')
       .replace(/\.$/, '');
-    const target = normalize(hostname);
-    return target.length > 0 && this.httpsWhitelist.some(host => normalize(host) === target);
+  }
+
+  _isHttpsWhitelisted(hostname) {
+    const target = this._normalizeTlsHostname(hostname);
+    return target.length > 0 && this.httpsWhitelist.some(
+      host => this._normalizeTlsHostname(host) === target
+    );
+  }
+
+  _getClientCertificateOptions(hostname) {
+    const target = this._normalizeTlsHostname(hostname);
+    const match = this._clientCertificateOptions.find(config => config.host === target);
+    return match ? { pfx: match.pfx, ...(match.passphrase ? { passphrase: match.passphrase } : {}) } : {};
   }
 
   setTlsFingerprint(preset) {
@@ -3057,6 +3095,10 @@ export class ProxyServer {
     const base = {
       servername: net.isIP(hostname) ? undefined : hostname,
       rejectUnauthorized: !this._isHttpsWhitelisted(hostname),
+      ...(this._trustedCaCertificates.length > 0
+        ? { ca: [...tls.rootCertificates, ...this._trustedCaCertificates] }
+        : {}),
+      ...this._getClientCertificateOptions(hostname),
     };
 
     // Passthrough mode — mirror the client's exact TLS parameters
@@ -3123,9 +3165,10 @@ export class ProxyServer {
         timeout: this._upstreamConnectTimeoutMs
       });
     } else {
+      const proxyTlsOptions = this._getUpstreamTlsOptions(this.upstreamProxy.host);
       this._upstreamAgent = new HttpsProxyAgent(proxyUrl, {
         ...agentOptions,
-        rejectUnauthorized: !this._isHttpsWhitelisted(this.upstreamProxy.host)
+        ...proxyTlsOptions
       });
     }
     this._upstreamAgentKey = agentKey;

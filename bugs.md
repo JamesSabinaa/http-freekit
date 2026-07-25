@@ -115,6 +115,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-011 — High — Client certificates and additional trusted CAs are no-ops
 
+- Status: **Fixed**.
+
 - Evidence: `src/proxy/proxy-server.js:247-255` assigns `clientCertificates` and `trustedCAs`, but no outbound connection path reads either collection; they appear again only in status output at `:4219-4221`.
 - Impact: configured mTLS credentials are never sent and private-CA endpoints do not gain trust.
 - Reproduction: configure a client certificate for an mTLS origin or a CA for a private-PKI origin and connect; behavior is unchanged.
