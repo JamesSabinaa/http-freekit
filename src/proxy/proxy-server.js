@@ -365,6 +365,12 @@ export class ProxyServer {
       : value;
   }
 
+  _assertSupportedOutboundUrl(url, label = 'URL') {
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`Unsupported ${label} protocol: ${url.protocol}`);
+    }
+  }
+
   _shouldUseUpstreamProxy(hostname, targetPort) {
     if (!this.upstreamProxy) return false;
     const host = this._normalizeConnectionHostname(hostname).toLowerCase().replace(/\.$/, '');
@@ -895,6 +901,14 @@ export class ProxyServer {
       return;
     }
 
+    try {
+      this._assertSupportedOutboundUrl(targetUrl, 'request URL');
+    } catch (err) {
+      clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
+      clientRes.end(`Bad Request: ${err.message}`);
+      return;
+    }
+
     if (this._serveHttpToolkitAndroidConfig(clientReq, clientRes, targetUrl)) {
       return;
     }
@@ -966,6 +980,19 @@ export class ProxyServer {
         }
       }
 
+      try {
+        this._assertSupportedOutboundUrl(targetUrl, 'request URL');
+      } catch (err) {
+        clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
+        clientRes.end(`Bad Request: ${err.message}`);
+        return;
+      }
+
+      const isTargetHttps = targetUrl.protocol === 'https:';
+      const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
+      const targetPort = parseInt(targetUrl.port, 10) || (isTargetHttps ? 443 : 80);
+      const captureProtocol = isTargetHttps ? 'https' : 'http';
+
       const buildOptions = () => {
         const headers = this._stripUpstreamHeaders({
           ...this._rawHeadersToObject(clientReq.rawHeaders),
@@ -975,19 +1002,31 @@ export class ProxyServer {
         if (breakpointBodyModified) this._setContentLength(headers, body.length);
 
         const useUpstreamProxy = this._shouldUseUpstreamProxy(
-          targetUrl.hostname,
-          targetUrl.port || 80
+          targetHostname,
+          targetPort
         );
+        if (isTargetHttps) {
+          return {
+            hostname: targetHostname,
+            port: targetPort,
+            path: targetUrl.pathname + targetUrl.search,
+            method: clientReq.method,
+            headers,
+            insecureHTTPParser: true,
+            ...this._getUpstreamTlsOptions(targetHostname),
+            ...(useUpstreamProxy ? { agent: this._getUpstreamAgent() } : {})
+          };
+        }
         if (useUpstreamProxy && this._isSocksProxy()) {
           // Route through SOCKS proxy — connect via SOCKS then send normal request
           return {
-            hostname: targetUrl.hostname,
-            port: parseInt(targetUrl.port) || 80,
+            hostname: targetHostname,
+            port: targetPort,
             path: targetUrl.pathname + targetUrl.search,
             method: clientReq.method,
             headers,
             createConnection: (opts, oncreate) => {
-              this._connectViaSocks(opts.hostname, opts.port)
+              this._connectViaSocks(targetHostname, opts.port)
                 .then(socket => oncreate(null, socket))
                 .catch(err => oncreate(err));
             }
@@ -1011,8 +1050,8 @@ export class ProxyServer {
         }
 
         return {
-          hostname: targetUrl.hostname,
-          port: targetUrl.port || 80,
+          hostname: targetHostname,
+          port: targetPort,
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,
           headers
@@ -1021,7 +1060,7 @@ export class ProxyServer {
 
       // Emit pending request immediately so it appears in the UI
       this._emitPendingRequest({
-        id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
         requestBodySize: body.length, timestamp: startTime, source: 'proxy',
@@ -1033,11 +1072,12 @@ export class ProxyServer {
         const proxyGeneration = this._upstreamProxyGeneration;
         const options = buildOptions();
         const useUpstreamProxy = this._shouldUseUpstreamProxy(
-          targetUrl.hostname,
-          targetUrl.port || 80
+          targetHostname,
+          targetPort
         );
-        const requestLib = useUpstreamProxy && this.upstreamProxy?.type === 'https' ? https : http;
-        if (useUpstreamProxy && requestLib === https) {
+        const requestLib = isTargetHttps ||
+          (useUpstreamProxy && this.upstreamProxy?.type === 'https') ? https : http;
+        if (!isTargetHttps && useUpstreamProxy && requestLib === https) {
           Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
         }
         const proxyReq = requestLib.request(options, (proxyRes) => {
@@ -1074,7 +1114,7 @@ export class ProxyServer {
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
                 requestId,
-                protocol: 'http',
+                protocol: captureProtocol,
                 method: clientReq.method,
                 url: targetUrl.href,
                 host: targetUrl.hostname,
@@ -1107,7 +1147,7 @@ export class ProxyServer {
 
             this._emitRequestUpdate({
               id: requestId,
-              protocol: 'http',
+              protocol: captureProtocol,
               method: clientReq.method,
               url: targetUrl.href,
               host: targetUrl.hostname,
@@ -1154,7 +1194,7 @@ export class ProxyServer {
 
           this._emitRequestUpdate({
             id: requestId,
-            protocol: 'http',
+            protocol: captureProtocol,
             method: clientReq.method,
             url: targetUrl.href,
             host: targetUrl.hostname,
@@ -1544,6 +1584,7 @@ export class ProxyServer {
           if (action.type === 'forward' && action.forwardTo) {
             try {
               const forwardUrl = new URL(action.forwardTo);
+              this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
               const isForwardHttps = forwardUrl.protocol === 'https:';
               const fwdLib = isForwardHttps ? https : http;
               const reqHeaders = this._currentHeadersWithRawCase(req.rawHeaders, req.headers);
@@ -2877,6 +2918,7 @@ export class ProxyServer {
     if (action.type === 'forward' && action.forwardTo) {
       try {
         const forwardUrl = new URL(action.forwardTo);
+        this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
         const isForwardHttps = forwardUrl.protocol === 'https:';
         const fwdLib = isForwardHttps ? https : http;
         const fwdHeaders = { ...reqHeaders };
@@ -4157,6 +4199,7 @@ export class ProxyServer {
     if (action.type === 'forward' && action.forwardTo) {
       try {
         const forwardUrl = new URL(action.forwardTo);
+        this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
         const isHttps = forwardUrl.protocol === 'https:';
         const lib = isHttps ? https : http;
         const reqHeaders = this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers);

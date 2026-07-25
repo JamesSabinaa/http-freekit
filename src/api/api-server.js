@@ -1555,6 +1555,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8', signal) {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(`Unsupported Send URL protocol: ${parsedUrl.protocol}`);
+      }
       const isHttps = parsedUrl.protocol === 'https:';
       const lib = isHttps ? https : http;
 
