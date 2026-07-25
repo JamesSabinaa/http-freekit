@@ -42,7 +42,14 @@ export class ExistingBrowserInterceptor {
     });
   }
 
+  _spawn(browserPath, args, options) {
+    return spawn(browserPath, args, options);
+  }
+
   async activate(proxyPort, options = {}) {
+    if (this.active || this.process) {
+      throw new Error(`${this.name} is already running`);
+    }
     const browserPath = this._findBrowserPath();
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
@@ -72,34 +79,41 @@ export class ExistingBrowserInterceptor {
     }
 
     console.log(`[Interceptor] Launching ${this.name} (existing profile) with proxy on port ${proxyPort}`);
-    this.process = spawn(browserPath, args, {
+    const launchedProcess = this._spawn(browserPath, args, {
       detached: false,
       stdio: 'ignore'
     });
+    this.process = launchedProcess;
 
     this.active = true;
     this._emitStatus('active');
 
-    this.process.on('exit', () => {
+    launchedProcess.on('exit', () => {
+      if (this.process !== launchedProcess) return;
       this.active = false;
-      this._emitStatus('exited');
+      this.process = null;
+      this._emitStatus('exited', { pid: launchedProcess.pid });
     });
 
-    this.process.on('error', (err) => {
+    launchedProcess.on('error', (err) => {
+      if (this.process !== launchedProcess) return;
       console.error(`[Interceptor] ${this.name} error:`, err.message);
       this.active = false;
-      this._emitStatus('error', { error: err.message });
+      this.process = null;
+      this._emitStatus('error', { pid: launchedProcess.pid, error: err.message });
     });
 
-    return { success: true, pid: this.process.pid, browser: this.name };
+    return { success: true, pid: launchedProcess.pid, browser: this.name };
   }
 
   async deactivate() {
-    if (this.process && !this.process.killed) {
-      this.process.kill();
+    const launchedProcess = this.process;
+    this.process = null;
+    if (launchedProcess && !launchedProcess.killed) {
+      launchedProcess.kill();
     }
     this.active = false;
-    this._emitStatus('inactive');
+    this._emitStatus('inactive', { pid: launchedProcess?.pid || null });
   }
 
   _emitStatus(reason, extra = {}) {

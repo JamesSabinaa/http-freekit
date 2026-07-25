@@ -959,6 +959,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-120 — High — Repeated Global Chrome activation loses the real browser handle
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/existing-browser-interceptor.js:23-70` has no active guard, replaces `this.process` on every activation, and lets each child's exit listener mutate shared state. `deactivate()` at `:73-78` can kill only the newest handle.
 - Impact: a second short-lived Chromium launcher can replace the original proxied-browser handle, mark the interceptor inactive on exit, and leave the real browser running after Stop.
 - Reproduction: activate Global Chrome while Chrome is closed, activate it again, then Stop; the original proxied browser remains.
