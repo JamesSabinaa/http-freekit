@@ -161,7 +161,8 @@ print(json.dumps({"providers": get_proxy_providers()}))
       host: proxy.host,
       port: proxy.port,
       auth: proxy.auth || null,
-      type: proxy.type || 'http'
+      type: proxy.type || 'http',
+      noProxy: this.proxy.upstreamProxy?.noProxy || []
     };
     this.proxy.setUpstreamProxy(upstreamProxy);
     this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
@@ -1076,8 +1077,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/upstream-proxy', (req, res) => {
-      const { host, port, auth, type } = req.body;
-      this.proxy.setUpstreamProxy(host ? { host, port, auth, type } : null);
+      const { host, port, auth, type, noProxy } = req.body;
+      this.proxy.setUpstreamProxy(host ? { host, port, auth, type, noProxy } : null);
       this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
       res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
     });

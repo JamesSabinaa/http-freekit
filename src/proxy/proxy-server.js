@@ -303,9 +303,61 @@ export class ProxyServer {
       host: config.host,
       port: parseInt(config.port) || defaultPort,
       auth: config.auth || null, // "user:pass" or null
-      type
+      type,
+      noProxy: this._normalizeNoProxyEntries(config.noProxy)
     };
     console.log(`[Proxy] Upstream proxy set to ${type.toUpperCase()} ${this.upstreamProxy.host}:${this.upstreamProxy.port}`);
+  }
+
+  _normalizeNoProxyEntries(value) {
+    const values = Array.isArray(value) ? value : String(value || '').split(',');
+    return values
+      .flatMap(entry => String(entry).split(','))
+      .map(entry => entry.trim())
+      .filter(Boolean);
+  }
+
+  _shouldUseUpstreamProxy(hostname, targetPort) {
+    if (!this.upstreamProxy) return false;
+    const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    const port = String(targetPort || '');
+
+    for (const rawEntry of this.upstreamProxy.noProxy || []) {
+      let entry = String(rawEntry).trim().toLowerCase();
+      if (!entry) continue;
+      if (entry === '*') return false;
+      if (entry === '<local>' && host && !host.includes('.') && !net.isIP(host)) return false;
+
+      let entryHost = entry;
+      let entryPort = '';
+      const bracketed = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
+      if (bracketed) {
+        entryHost = bracketed[1];
+        entryPort = bracketed[2] || '';
+      } else if ((entry.match(/:/g) || []).length === 1) {
+        const portMatch = entry.match(/^(.*):(\d+)$/);
+        if (portMatch) {
+          entryHost = portMatch[1];
+          entryPort = portMatch[2];
+        }
+      }
+      if (entryPort && entryPort !== port) continue;
+
+      const suffix = entryHost.replace(/^\*?\./, '').replace(/\.$/, '');
+      if (entryHost.startsWith('*.') || entryHost.startsWith('.')) {
+        if (host === suffix || host.endsWith(`.${suffix}`)) return false;
+        continue;
+      }
+      if (entryHost.includes('*')) {
+        const pattern = entryHost
+          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '.*');
+        if (new RegExp(`^${pattern}$`).test(host)) return false;
+        continue;
+      }
+      if (host === entryHost.replace(/\.$/, '')) return false;
+    }
+    return true;
   }
 
   setTlsPassthrough(hostnames) {
@@ -549,13 +601,14 @@ export class ProxyServer {
       method: 'GET'
     };
     let requestLib = http;
-    if (this.upstreamProxy && this._isSocksProxy()) {
+    const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetUrl.port || 80);
+    if (useUpstreamProxy && this._isSocksProxy()) {
       options.createConnection = (connectOptions, oncreate) => {
         this._connectViaSocks(targetUrl.hostname, targetUrl.port || 80)
           .then(upstreamSocket => oncreate(null, upstreamSocket))
           .catch(err => oncreate(err));
       };
-    } else if (this.upstreamProxy) {
+    } else if (useUpstreamProxy) {
       options.hostname = this.upstreamProxy.host;
       options.port = this.upstreamProxy.port;
       options.path = targetUrl.href;
@@ -833,7 +886,11 @@ export class ProxyServer {
         });
         if (breakpointBodyModified) this._setContentLength(headers, body.length);
 
-        if (this.upstreamProxy && this._isSocksProxy()) {
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(
+          targetUrl.hostname,
+          targetUrl.port || 80
+        );
+        if (useUpstreamProxy && this._isSocksProxy()) {
           // Route through SOCKS proxy — connect via SOCKS then send normal request
           return {
             hostname: targetUrl.hostname,
@@ -849,7 +906,7 @@ export class ProxyServer {
           };
         }
 
-        if (this.upstreamProxy) {
+        if (useUpstreamProxy) {
           // Route through HTTP/HTTPS upstream proxy — send full URL as path
           const options = {
             hostname: this.upstreamProxy.host,
@@ -887,8 +944,12 @@ export class ProxyServer {
       const sendProxyRequest = (attempt = 0) => {
         const proxyGeneration = this._upstreamProxyGeneration;
         const options = buildOptions();
-        const requestLib = this.upstreamProxy?.type === 'https' ? https : http;
-        if (requestLib === https) {
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(
+          targetUrl.hostname,
+          targetUrl.port || 80
+        );
+        const requestLib = useUpstreamProxy && this.upstreamProxy?.type === 'https' ? https : http;
+        if (useUpstreamProxy && requestLib === https) {
           Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
         }
         const proxyReq = requestLib.request(options, (proxyRes) => {
@@ -1746,8 +1807,9 @@ export class ProxyServer {
           });
         };
 
-        // Try HTTP/2 upstream first (skip if upstream proxy is configured)
-        if (!this.upstreamProxy) {
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        // Try HTTP/2 upstream first when this host bypasses the configured proxy.
+        if (!useUpstreamProxy) {
           try {
             const h2Session = await this._getH2Session(hostname, targetPort);
             if (h2Session) {
@@ -1856,7 +1918,7 @@ export class ProxyServer {
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
           const proxyGeneration = this._upstreamProxyGeneration;
-          if (this.upstreamProxy) {
+          if (useUpstreamProxy) {
             const agent = this._getUpstreamAgent();
             proxyReq = https.request({
               ...proxyOpts,
@@ -2127,8 +2189,9 @@ export class ProxyServer {
           });
         };
 
-        // Try HTTP/2 upstream (skip if upstream proxy is configured)
-        if (!this.upstreamProxy) {
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
+        // Try HTTP/2 upstream when this host bypasses the configured proxy.
+        if (!useUpstreamProxy) {
           try {
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
             if (h2Session) {
@@ -2250,7 +2313,7 @@ export class ProxyServer {
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
           const proxyGeneration = this._upstreamProxyGeneration;
-          if (this.upstreamProxy) {
+          if (useUpstreamProxy) {
             try {
               const agent = this._getUpstreamAgent();
               proxyReq = https.request({
@@ -2418,8 +2481,9 @@ export class ProxyServer {
           });
         };
 
-        // Try HTTP/2 upstream (skip if upstream proxy is configured)
-        if (!this.upstreamProxy) {
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        // Try HTTP/2 upstream when this host bypasses the configured proxy.
+        if (!useUpstreamProxy) {
           try {
             const h2Session = await this._getH2Session(hostname, targetPort);
             if (h2Session) {
@@ -2539,7 +2603,7 @@ export class ProxyServer {
         let proxyReq;
         const sendProxyRequest = (attempt = 0) => {
           const proxyGeneration = this._upstreamProxyGeneration;
-          if (this.upstreamProxy) {
+          if (useUpstreamProxy) {
             const agent = this._getUpstreamAgent();
             proxyReq = https.request({
               ...proxyOpts,
@@ -3574,7 +3638,7 @@ export class ProxyServer {
   }
 
   _connectTcp(hostname, targetPort) {
-    if (!this.upstreamProxy) {
+    if (!this._shouldUseUpstreamProxy(hostname, targetPort)) {
       return new Promise((resolve, reject) => {
         const socket = net.connect(targetPort, hostname);
         socket.once('connect', () => resolve(socket));

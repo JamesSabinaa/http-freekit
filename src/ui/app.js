@@ -7712,6 +7712,10 @@
       }
 
       const details = document.getElementById('upstreamDetails').value.trim();
+      const noProxy = document.getElementById('upstreamNoProxy').value
+        .split(',')
+        .map(hostname => hostname.trim())
+        .filter(Boolean);
       if (!details) { toast('Enter proxy details first', 'error'); return; }
 
       // Parse host:port and optional auth from the details string
@@ -7735,7 +7739,7 @@
         const res = await fetch(API_BASE + '/api/upstream-proxy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host, port, auth: auth || null, type })
+          body: JSON.stringify({ host, port, auth: auth || null, type, noProxy })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
@@ -7747,6 +7751,7 @@
     function updateUpstreamProxyUi(proxy, provider) {
       const typeEl = document.getElementById('upstreamType');
       const detailsEl = document.getElementById('upstreamDetails');
+      const noProxyEl = document.getElementById('upstreamNoProxy');
       const statusEl = document.getElementById('upstreamStatus');
 
       if (typeEl) typeEl.value = proxy.type || 'http';
@@ -7766,6 +7771,7 @@
           'var(--status-2xx)'
         );
       }
+      if (noProxyEl) noProxyEl.value = (proxy.noProxy || []).join(', ');
     }
 
     async function loadBottingToolsProxyProviders() {

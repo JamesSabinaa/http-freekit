@@ -1239,6 +1239,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-030 — Medium — “Non-proxied hosts” is never saved or enforced
 
+- Status: **Fixed**.
 - Evidence: the input is rendered at `src/ui/index.html:469`, but `src/ui/app.js:7619-7625` submits only host, port, auth, and type. No backend forwarding path implements a bypass list.
 - Impact: hosts listed by the user still traverse the upstream proxy.
 - Reproduction: enter a bypass host, save, and request that host through the proxy.
