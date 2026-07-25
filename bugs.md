@@ -1190,6 +1190,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-025 — High — Multiple persisted/server values reach `innerHTML` unescaped
 
+- Status: **Fixed**.
 - Evidence: Send status text incorporates upstream `statusMessage` and is assigned with `innerHTML` at `src/ui/app.js:7278-7289`; the value originates at `src/api/api-server.js:1197`. Certificate, CA, whitelist, and passthrough settings are interpolated at `app.js:7798`, `:7908`, `:8000`, and `:8061`. Send tab labels derived from arbitrary URLs are interpolated at `:6966-6977`. Custom-theme preview names and color values from uploaded JSON are concatenated into markup at `:9275-9283,9302-9314`; the upload validation at `:9340-9354` requires one recognized key but preserves and previews arbitrary extra keys. There is no restrictive application CSP.
 - Impact: crafted response metadata or persisted settings can execute script in the UI origin; in Electron this can reach the preload bridge.
 - Reproduction: store markup containing an event handler in one of the unescaped settings, or upload a theme containing one valid key plus an extra markup-bearing key whose value begins with `#`; observe it being parsed as DOM instead of displayed as text.

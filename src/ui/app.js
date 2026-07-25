@@ -7016,18 +7016,56 @@
       if (!bar) return;
       bar.setAttribute('role', 'tablist');
       bar.setAttribute('aria-label', 'Request tabs');
-      bar.innerHTML = sendTabs.map(tab => {
+      bar.textContent = '';
+      sendTabs.forEach(tab => {
         const isActive = tab.id === activeSendTab;
-        const active = isActive ? ' active' : '';
         let label = 'New request';
         if (tab.url) {
           try { label = tab.method + ' ' + new URL(tab.url).hostname; } catch { label = tab.method + ' ' + tab.url.substring(0, 30); }
         }
-        return '<div class="send-tab' + active + '" role="tab" aria-selected="' + isActive + '" onclick="switchSendTab(\'' + tab.id + '\')" title="' + (tab.url || 'New request').replace(/"/g, '&quot;') + '">' +
-          '<span>' + label + '</span>' +
-          '<button type="button" class="send-tab-close" onclick="event.stopPropagation();closeSendTab(\'' + tab.id + '\')" title="Close tab" aria-label="Close tab">&times;</button>' +
-          '</div>';
-      }).join('') + '<div class="send-tab-add" onclick="addSendTab()" title="New request tab" aria-label="New request tab">+</div>';
+        const tabEl = document.createElement('div');
+        tabEl.className = 'send-tab' + (isActive ? ' active' : '');
+        tabEl.setAttribute('role', 'tab');
+        tabEl.setAttribute('aria-selected', String(isActive));
+        tabEl.title = tab.url || 'New request';
+        tabEl.addEventListener('click', () => switchSendTab(tab.id));
+
+        const labelEl = document.createElement('span');
+        labelEl.textContent = label;
+        tabEl.appendChild(labelEl);
+
+        const closeEl = document.createElement('button');
+        closeEl.type = 'button';
+        closeEl.className = 'send-tab-close';
+        closeEl.title = 'Close tab';
+        closeEl.setAttribute('aria-label', 'Close tab');
+        closeEl.textContent = '×';
+        closeEl.addEventListener('click', (event) => {
+          event.stopPropagation();
+          closeSendTab(tab.id);
+        });
+        tabEl.appendChild(closeEl);
+        bar.appendChild(tabEl);
+      });
+
+      const addEl = document.createElement('div');
+      addEl.className = 'send-tab-add';
+      addEl.title = 'New request tab';
+      addEl.setAttribute('aria-label', 'New request tab');
+      addEl.textContent = '+';
+      addEl.addEventListener('click', addSendTab);
+      bar.appendChild(addEl);
+    }
+
+    function renderSendResponseStatus(statusCode, statusMessage) {
+      const statusEl = document.getElementById('sendResStatus');
+      if (!statusEl) return;
+      const numericStatus = Number(statusCode);
+      const family = Number.isFinite(numericStatus) ? Math.floor(numericStatus / 100) : 0;
+      const badge = document.createElement('span');
+      badge.className = `status-badge status-${family}xx`;
+      badge.textContent = `${statusCode ?? ''} ${statusMessage || ''}`.trim() || '-';
+      statusEl.replaceChildren(badge);
     }
 
     function cloneSendFormFields(fields, includeFiles = true) {
@@ -7137,7 +7175,7 @@
       if (tab.response) {
         if (resEl) resEl.style.display = 'block';
         if (emptyEl) emptyEl.style.display = 'none';
-        document.getElementById('sendResStatus').innerHTML = tab.response.statusHtml || '-';
+        renderSendResponseStatus(tab.response.statusCode, tab.response.statusMessage);
         document.getElementById('sendResDuration').textContent = tab.response.duration || '-';
         document.getElementById('sendResHeaders').innerHTML = tab.response.headersHtml || '';
         let responsePath = '';
@@ -7328,7 +7366,6 @@
 
         if (data.error) throw new Error(data.error);
 
-        const statusHtml = `<span class="status-badge status-${Math.floor(data.statusCode/100)}xx">${data.statusCode} ${data.statusMessage || ''}</span>`;
         const headersHtml = renderHeaders(data.headers);
         const resCt = data.headers?.['content-type'] || '';
         const modes = getBodyViewModes(data.body, resCt);
@@ -7337,7 +7374,7 @@
 
         document.getElementById('sendResponse').style.display = 'block';
         document.getElementById('sendEmptyResponse').style.display = 'none';
-        document.getElementById('sendResStatus').innerHTML = statusHtml;
+        renderSendResponseStatus(data.statusCode, data.statusMessage);
         document.getElementById('sendResDuration').textContent = duration;
         document.getElementById('sendResHeaders').innerHTML = headersHtml;
 
@@ -7377,7 +7414,18 @@
         // Save response to current tab
         const currentTab = sendTabs.find(t => t.id === activeSendTab);
         if (currentTab) {
-          currentTab.response = { statusHtml, headersHtml, responseHeaders: data.headers || {}, body: data.body || '', contentType: resCt, mode: defaultMode, duration, url, method };
+          currentTab.response = {
+            statusCode: data.statusCode,
+            statusMessage: data.statusMessage || '',
+            headersHtml,
+            responseHeaders: data.headers || {},
+            body: data.body || '',
+            contentType: resCt,
+            mode: defaultMode,
+            duration,
+            url,
+            method
+          };
         }
         saveSendTabState();
         renderSendTabs();
@@ -7604,6 +7652,14 @@
     }
 
     // ============ UPSTREAM PROXY ============
+    function setSettingsStatus(statusEl, message, color) {
+      if (!statusEl) return;
+      const span = document.createElement('span');
+      span.style.color = color;
+      span.textContent = message;
+      statusEl.replaceChildren(span);
+    }
+
     function updateUpstreamFields() {
       const type = document.getElementById('upstreamType').value;
       const fields = document.getElementById('upstreamDetailsFields');
@@ -7637,14 +7693,14 @@
         // Disable upstream proxy
         try {
           await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--status-2xx);">Direct connection (no proxy)</span>';
+          setSettingsStatus(statusEl, 'Direct connection (no proxy)', 'var(--status-2xx)');
           toast('Upstream proxy disabled', 'success');
         } catch (err) { toast('Error: ' + err.message, 'error'); }
         return;
       }
 
       if (type === 'system') {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-lowlight);">Using system proxy settings</span>';
+        setSettingsStatus(statusEl, 'Using system proxy settings', 'var(--text-lowlight)');
         toast('Using system proxy settings', 'success');
         return;
       }
@@ -7677,7 +7733,7 @@
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--status-2xx);">Active: ' + type.toUpperCase() + ' proxy at ' + host + ':' + port + '</span>';
+        setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${host}:${port}`, 'var(--status-2xx)');
         toast('Upstream proxy configured', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
@@ -7698,7 +7754,11 @@
 
       if (statusEl) {
         const providerText = provider ? ' from ' + provider : '';
-        statusEl.innerHTML = '<span style="color:var(--status-2xx);">Active: ' + (proxy.type || 'HTTP').toUpperCase() + ' proxy at ' + proxy.host + ':' + proxy.port + providerText + '</span>';
+        setSettingsStatus(
+          statusEl,
+          `Active: ${(proxy.type || 'HTTP').toUpperCase()} proxy at ${proxy.host}:${proxy.port}${providerText}`,
+          'var(--status-2xx)'
+        );
       }
     }
 
@@ -7850,7 +7910,7 @@
       }
       list.innerHTML = hosts.map((h, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
-          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${h}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(h)}</span>
           <button class="btn btn-danger" onclick="removeTlsPassthrough(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
@@ -7960,7 +8020,7 @@
       }
       el.innerHTML = certs.map((c, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
-          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${c.host} &rarr; ${c.pfxPath}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(c.host)} &rarr; ${esc(c.pfxPath)}</span>
           <button class="btn btn-danger" onclick="removeClientCert(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
@@ -8052,7 +8112,7 @@
       }
       el.innerHTML = cas.map((c, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
-          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${c}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(c)}</span>
           <button class="btn btn-danger" onclick="removeTrustedCA(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
@@ -8113,7 +8173,7 @@
       }
       el.innerHTML = hosts.map((h, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
-          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${h}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(h)}</span>
           <button class="btn btn-danger" onclick="removeHttpsWhitelist(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
@@ -9303,26 +9363,56 @@
       'accent','error','success','warning','info'
     ];
 
+    var _themeNumericVars = ['lowlight-text-opacity', 'box-shadow-alpha', 'pill-contrast'];
+
+    function normalizeCustomThemeVarName(key) {
+      return String(key).replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+    }
+
+    function isSafeCustomThemeValue(varName, value) {
+      if (typeof value !== 'string') return false;
+      var trimmed = value.trim();
+      if (!trimmed || trimmed.length > 100 || /[;{}<>"'\\]/.test(trimmed) || /(?:url|var|expression)\s*\(/i.test(trimmed)) {
+        return false;
+      }
+      if (_themeNumericVars.indexOf(varName) !== -1) {
+        if (!/^(?:0|1|0?\.\d+)$/.test(trimmed)) return false;
+        var numeric = Number(trimmed);
+        return Number.isFinite(numeric) && numeric >= 0 && numeric <= 1;
+      }
+      return typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('color', trimmed);
+    }
+
+    function sanitizeCustomThemeData(themeData) {
+      var sanitized = {};
+      if (!themeData || typeof themeData !== 'object' || Array.isArray(themeData)) return sanitized;
+      var keys = Object.keys(themeData);
+      for (var i = 0; i < keys.length; i++) {
+        var varName = normalizeCustomThemeVarName(keys[i]);
+        var value = themeData[keys[i]];
+        if (_themeOverridableVars.indexOf(varName) !== -1 && isSafeCustomThemeValue(varName, value)) {
+          sanitized[varName] = value.trim();
+        }
+      }
+      return sanitized;
+    }
+
     /**
      * Apply a custom theme object by injecting CSS variable overrides.
      * themeData: object mapping CSS variable names (with or without --) to values.
      */
     function applyCustomThemeData(themeData) {
-      if (!themeData || typeof themeData !== 'object') return;
+      var sanitizedTheme = sanitizeCustomThemeData(themeData);
       // Remove old custom style
       if (_customThemeStyleEl) {
         _customThemeStyleEl.remove();
         _customThemeStyleEl = null;
       }
       var lines = [];
-      var keys = Object.keys(themeData);
+      var keys = Object.keys(sanitizedTheme);
       for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
-        // Normalize: allow keys like "bg-main", "--bg-main", "bgMain" (camelCase→kebab)
-        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
-        if (_themeOverridableVars.indexOf(varName) !== -1) {
-          lines.push('  --' + varName + ': ' + themeData[key] + ';');
-        }
+        var varName = keys[i];
+        lines.push('  --' + varName + ': ' + sanitizedTheme[varName] + ';');
       }
       if (lines.length === 0) return;
       var css = '[data-theme="custom"] {\n' + lines.join('\n') + '\n}';
@@ -9338,6 +9428,7 @@
     function renderCustomThemeSwatches(themeData) {
       var container = document.getElementById('customThemeSwatches');
       if (!container) return;
+      themeData = sanitizeCustomThemeData(themeData);
 
       // Pick up to 10 color values for preview
       var swatchColors = [];
@@ -9347,10 +9438,10 @@
       var keys = Object.keys(themeData);
       for (var i = 0; i < keys.length && swatchColors.length < 10; i++) {
         var key = keys[i];
-        var varName = key.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
+        var varName = normalizeCustomThemeVarName(key);
         var val = themeData[key];
         // Only show values that look like colors
-        if (typeof val === 'string' && /^(#|rgb|hsl)/.test(val.trim())) {
+        if (_themeNumericVars.indexOf(varName) === -1 && isSafeCustomThemeValue(varName, val)) {
           swatchColors.push({ name: varName, color: val });
         }
       }
@@ -9359,7 +9450,7 @@
         for (var j = 0; j < colorKeys.length && swatchColors.length < 10; j++) {
           var ck = colorKeys[j];
           var v = themeData[ck] || themeData['--' + ck];
-          if (v && typeof v === 'string' && /^(#|rgb|hsl)/.test(v.trim())) {
+          if (v && isSafeCustomThemeValue(ck, v)) {
             var already = swatchColors.some(function(s) { return s.name === ck; });
             if (!already) swatchColors.push({ name: ck, color: v });
           }
@@ -9371,19 +9462,23 @@
         return;
       }
 
-      var html = '<div style="font-size:11px;color:var(--text-lowlight);margin-bottom:6px;">Theme Preview</div>';
-      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      container.textContent = '';
+      var previewLabel = document.createElement('div');
+      previewLabel.style.cssText = 'font-size:11px;color:var(--text-lowlight);margin-bottom:6px;';
+      previewLabel.textContent = 'Theme Preview';
+      container.appendChild(previewLabel);
+      var swatchRow = document.createElement('div');
+      swatchRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
       for (var k = 0; k < swatchColors.length; k++) {
         var s = swatchColors[k];
-        html += '<div title="' + s.name + ': ' + s.color + '" style="' +
-          'width:32px;height:32px;border-radius:4px;' +
-          'background:' + s.color + ';' +
-          'border:1px solid var(--text-input-border);' +
-          'cursor:default;' +
-          '"></div>';
+        var swatch = document.createElement('div');
+        swatch.title = s.name + ': ' + s.color;
+        swatch.style.cssText = 'width:32px;height:32px;border-radius:4px;' +
+          'border:1px solid var(--text-input-border);cursor:default;';
+        swatch.style.backgroundColor = s.color;
+        swatchRow.appendChild(swatch);
       }
-      html += '</div>';
-      container.innerHTML = html;
+      container.appendChild(swatchRow);
       container.style.display = 'block';
     }
 
@@ -9409,21 +9504,17 @@
             toast('Invalid theme file: expected a JSON object with color overrides', 'error');
             return;
           }
-          // Check that at least one key maps to a recognized variable
-          var validCount = 0;
-          var keys = Object.keys(themeData);
-          for (var i = 0; i < keys.length; i++) {
-            var varName = keys[i].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().replace(/^-+/, '');
-            if (_themeOverridableVars.indexOf(varName) !== -1) validCount++;
-          }
+          // Keep only recognized variables with safe CSS values.
+          var sanitizedTheme = sanitizeCustomThemeData(themeData);
+          var validCount = Object.keys(sanitizedTheme).length;
           if (validCount === 0) {
             toast('No recognized CSS variable overrides found in theme file', 'error');
             return;
           }
           // Save and apply
-          localStorage.setItem('http-freekit-custom-theme', JSON.stringify(themeData));
-          applyCustomThemeData(themeData);
-          renderCustomThemeSwatches(themeData);
+          localStorage.setItem('http-freekit-custom-theme', JSON.stringify(sanitizedTheme));
+          applyCustomThemeData(sanitizedTheme);
+          renderCustomThemeSwatches(sanitizedTheme);
           setTheme('custom');
           var removeBtn = document.getElementById('removeCustomThemeBtn');
           if (removeBtn) removeBtn.style.display = '';
