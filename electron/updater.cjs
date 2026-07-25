@@ -1,5 +1,6 @@
 const { autoUpdater } = require('electron-updater');
 const { app, dialog, ipcMain, shell } = require('electron');
+const { shouldForceLinuxUpdateChecks } = require('./update-platform.cjs');
 
 /**
  * Auto-update module for HTTP FreeKit.
@@ -115,6 +116,13 @@ function initAutoUpdater(win, options = {}) {
   // Don't auto-download — we notify the user first
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+
+  // electron-updater selects AppImageUpdater for every Linux package and its
+  // normal activity check returns false without APPIMAGE. DEB/RPM only use the
+  // check/notification path below, so enable checks without enabling downloads.
+  if (shouldForceLinuxUpdateChecks(process.platform, app.isPackaged, process.env)) {
+    autoUpdater.forceDevUpdateConfig = true;
+  }
 
   // --- Events ---
 

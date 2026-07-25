@@ -1204,6 +1204,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-027 — Medium — Update checks are inactive in DEB/RPM installations
 
+- Status: **Fixed**.
 - Evidence: `electron-builder.config.cjs:85-91` publishes AppImage, DEB, and RPM, while all Linux checks go through `electron-updater` (`electron/updater.cjs:33`). Its installed `AppImageUpdater.isUpdaterActive()` returns false when the `APPIMAGE` environment variable is absent.
 - Impact: DEB/RPM users do not reach the Linux update notification flow, including manual checks.
 - Reproduction: install the DEB/RPM and trigger Check for Updates in an environment without `APPIMAGE`.
