@@ -20,6 +20,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 8 | 14 new bugs found; documented below | 0/2 |
 | 9 | 12 new bugs found; documented below | 0/2 |
 | 10 | 13 new bugs found; documented below | 0/2 |
+| 11 | 7 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -648,6 +649,30 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: standard credentialed URLs reach Basic-auth endpoints without Authorization and unexpectedly return 401.
 - Reproduction: Send `http://user:pass@127.0.0.1:<port>/` to an origin that echoes Authorization.
 
+### BUG-266 — Medium — Wildcard client certificates never match a host
+
+- Evidence: the UI accepts `*` for all hosts at `src/ui/index.html:498`, and `setClientCertificates()` stores it, but `_getClientCertificateOptions()` uses exact host equality only at `src/proxy/proxy-server.js:251-265,308-311`.
+- Impact: an accepted all-host PFX is never sent, so every protected mTLS origin fails while exact-host entries work.
+- Reproduction: configure client certificate host `*` and connect to an mTLS origin.
+
+### BUG-267 — Medium — Failed persistence leaves runtime configuration applied
+
+- Evidence: routes mutate proxy/rule state before saving (for example upstream, H2, and mock routes), while `Settings.set()` can restore only its own data object on write failure and cannot roll back the proxy mutation.
+- Impact: a request returns an error but the supposedly failed proxy, TLS, H2, or mock change remains active until restart; retries can duplicate rule behavior.
+- Reproduction: make settings persistence fail, POST a new upstream or mock, then query/use runtime state.
+
+### BUG-268 — Low/Medium — HAR conversion conflates wire and decoded body sizes
+
+- Evidence: HAR import stores `response.content.size` as internal responseBodySize and ignores `response.bodySize`; export writes that one value into both fields (`src/api/api-server.js` HAR mapping; `src/api/har-converter.js:66,73`).
+- Impact: compressed responses lose the distinction between transfer size and decoded content size, corrupting round trips and bandwidth analysis.
+- Reproduction: import bodySize 100 with content.size 1000 and re-export; both become 1000.
+
+### BUG-269 — Low — Invalid API ports reach server startup unchecked
+
+- Evidence: `src/index.js` uses unchecked `parseInt(API_PORT) || 8001`; truthy out-of-range values reach `httpServer.listen()` in `src/api/api-server.js`.
+- Impact: a simple port typo terminates startup with ERR_SOCKET_BAD_PORT after proxy initialization instead of a validation error/fallback.
+- Reproduction: start with `API_PORT=70000` or `API_PORT=-1`.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -1051,6 +1076,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: the UI promises all processes and Docker containers, but Fresh Terminal only gives the host shell loopback proxy variables at `src/ui/app.js:3592` and `src/interceptors/terminal-interceptors.js:40-56`; it neither configures Docker client proxies nor adds container environment flags.
 - Impact: normal docker run/Compose workloads launched from that shell bypass FreeKit, and propagating 127.0.0.1 would point at the container itself.
 - Reproduction: activate Fresh Terminal, launch a container that makes HTTP requests, and inspect FreeKit traffic.
+
+### BUG-270 — Medium — Fresh Terminal replaces public CA trust
+
+- Evidence: `src/interceptors/terminal-interceptors.js:50-53` points SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE directly at FreeKit's one-certificate CA file; those variables override rather than extend the clients' normal trust bundles.
+- Impact: curl/Python can validate intercepted certificates but reject genuine public certificates for TLS-passthrough hosts.
+- Reproduction: configure a public host for TLS passthrough, activate Fresh Terminal on Linux, and access it with curl or Requests.
 
 ## Electron, updater, and renderer
 
@@ -1515,6 +1546,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `startServer()` creates a WriteStream and pipes/writes to it at `electron/main.cjs:90-112` and later process handlers, but never registers a log-stream error handler; asynchronous stream errors escape the startup catch.
 - Impact: an unwritable or full log destination can terminate the desktop shell instead of showing a startup failure.
 - Reproduction: make the logs path unwritable or simulate ENOSPC and launch Electron.
+
+### BUG-271 — Medium — Monaco load failures stall every text editor forever
+
+- Evidence: `src/ui/index.html:617-623` assumes the AMD loader exists, while `monacoReady` at `src/ui/app.js:9014-9110` has no reject path, loader error callback, timeout, or resolution when require is unavailable. Editors wait on it at `:9132-9134`, after body fallback is hidden.
+- Impact: a missing/corrupt packaged asset leaves Send editing and captured text/JSON views blank forever with no fallback or error.
+- Reproduction: remove or block Monaco's editor main asset and open Send or a captured JSON body.
+
+### BUG-272 — Low/Medium — Prototype-key WebSocket parent IDs poison rendering
+
+- Evidence: traffic validation omits parentId, while the renderer indexes frames into a plain object and assumes any existing key is an array at `src/ui/app.js:290-300`; inherited keys such as `__proto__` and `constructor` are truthy.
+- Impact: one accepted ws-frame record can make initial Traffic rendering and later filtering throw repeatedly until cleared externally.
+- Reproduction: import a valid ws-frame with `parentId: "__proto__"` and reload.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
