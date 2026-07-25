@@ -5,6 +5,7 @@ import { DockerInterceptor } from '../src/interceptors/docker-interceptor.js';
 for (const platform of ['win32', 'darwin']) {
   test(`Docker Desktop on ${platform} uses its host gateway name`, async () => {
     const interceptor = new DockerInterceptor();
+    interceptor.ca = { getCertInfo: () => ({ certificatePath: '/tmp/freekit-ca.pem' }) };
     interceptor._platform = () => platform;
     interceptor._exec = () => assert.fail('Docker Desktop must not use the Linux bridge gateway');
 
@@ -18,6 +19,7 @@ for (const platform of ['win32', 'darwin']) {
 
 test('native Linux keeps using its inspected bridge gateway', async () => {
   const interceptor = new DockerInterceptor();
+  interceptor.ca = { getCertInfo: () => ({ certificatePath: '/tmp/freekit-ca.pem' }) };
   interceptor._platform = () => 'linux';
   interceptor._exec = () => '"172.18.0.1"\n';
 

@@ -818,6 +818,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-051 — Medium — Docker HTTPS setup supports only Node with validation disabled
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/docker-interceptor.js:46-54` does not mount or install the FreeKit CA and only adds `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 - Impact: curl, Python, Java, Go, and other validating clients reject intercepted HTTPS even when proxy routing works.
 - Reproduction: run the generated command with curl or Python and request an HTTPS URL.

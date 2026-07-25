@@ -50,27 +50,42 @@ export class DockerInterceptor {
     // Get host IP that Docker containers can reach
     const hostIp = this._getDockerHost();
 
-    // If a specific container is specified, set its env vars
-    if (options.containerId) {
-      // We can't modify env vars of a running container, but we can restart it with proxy settings
-      // For now, just record that we want to intercept it
-      this.interceptedContainers.add(options.containerId);
-    }
-
-    this.active = true;
     const proxyUrl = `http://${hostIp}:${proxyPort}`;
+    const certPath = this.ca?.getCertInfo?.()?.certificatePath;
+    if (!certPath) {
+      throw new Error('FreeKit CA certificate is not available for Docker HTTPS interception');
+    }
+    const containerCertPath = '/etc/http-freekit/ca.pem';
+    const certMount = `--mount type=bind,source="${String(certPath).replace(/"/g, '\\"')}",target=${containerCertPath},readonly`;
+    const trustEnvironment = [
+      `SSL_CERT_FILE=${containerCertPath}`,
+      `REQUESTS_CA_BUNDLE=${containerCertPath}`,
+      `CURL_CA_BUNDLE=${containerCertPath}`,
+      `NODE_EXTRA_CA_CERTS=${containerCertPath}`
+    ];
+    const runEnvironment = trustEnvironment.map(value => `-e ${value}`).join(' ');
+    const composeEnvironment = trustEnvironment.map(value => `  - ${value}`).join('\n');
+    const composeMount = JSON.stringify(`${certPath}:${containerCertPath}:ro`);
+    const runInstruction = `docker run ${certMount} -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} ${runEnvironment} <image>`;
+    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n${composeEnvironment}`;
+    // Running container environments cannot be changed, but retain the selected
+    // container so the UI can represent the requested interception state.
+    if (options.containerId) this.interceptedContainers.add(options.containerId);
+    this.active = true;
 
     console.log(`[Interceptor] Docker interceptor active. Proxy: ${proxyUrl}`);
-    console.log(`[Interceptor] Run containers with: docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} <image>`);
+    console.log(`[Interceptor] Run containers with: ${runInstruction}`);
 
     return {
       success: true,
       metadata: {
         proxyUrl,
         hostIp,
+        caPath: certPath,
+        containerCaPath: containerCertPath,
         instructions: {
-          run: `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`,
-          compose: `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`
+          run: runInstruction,
+          compose: composeInstruction
         }
       }
     };
