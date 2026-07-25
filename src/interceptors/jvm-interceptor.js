@@ -1,15 +1,20 @@
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { execFileAsync } from './command-runner.js';
 
 export class JvmInterceptor {
-  constructor() {
+  constructor(options = {}) {
     this.id = 'jvm';
     this.name = 'Java/JVM Application';
     this.active = false;
     this.ca = null;
     this.activatedProcesses = new Map(); // pid -> { name, mainClass }
+    this.agentDir = options.agentDir
+      || (options.dataDir
+        ? path.join(options.dataDir, 'jvm-agent')
+        : path.join(os.tmpdir(), `http-freekit-jvm-agent-${process.pid}`));
   }
 
   async isActivable() {
@@ -276,7 +281,7 @@ public class ProxyAgent {
   }
 
   async _getAgentJarPath() {
-    const agentDir = path.join(process.cwd(), '.http-freekit-jvm-agent');
+    const agentDir = this.agentDir;
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
     const javaPath = path.join(agentDir, 'ProxyAgent.java');
     const manifestPath = path.join(agentDir, 'MANIFEST.MF');
@@ -327,7 +332,7 @@ public class ProxyAgent {
     try {
       // Use jattach-style approach: com.sun.tools.attach
       // Create a small Java program to do the attachment
-      const attachDir = path.join(process.cwd(), '.http-freekit-jvm-agent');
+      const attachDir = this.agentDir;
       const attachSource = `
 import com.sun.tools.attach.VirtualMachine;
 

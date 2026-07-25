@@ -36,7 +36,7 @@ export class InterceptorManager {
     this._register(new DockerInterceptor());
     this._register(new ElectronInterceptor());
     this._register(new AndroidAdbInterceptor());
-    this._register(new JvmInterceptor());
+    this._register(new JvmInterceptor({ dataDir: options.dataDir }));
 
     // Give all interceptors that need it a reference to the CA
     for (const interceptor of this.interceptors.values()) {

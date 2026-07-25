@@ -882,6 +882,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-092 — High — JVM helper artifacts are written inside packaged app resources
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/jvm-interceptor.js:103-109,175` builds under `process.cwd()`. Electron starts the child with cwd set to the unpacked `src` resources at `electron/main.cjs:92-106`; packaged application/AppImage resources are commonly not writable.
 - Impact: Java/JDK discovery succeeds, but every attach fails when it tries to create `.http-freekit-jvm-agent` under `/Applications`, `/opt`, or a read-only AppImage mount.
 - Reproduction: run a packaged install from a non-writable application directory and attempt JVM attach.
