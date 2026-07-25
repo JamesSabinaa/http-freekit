@@ -1680,6 +1680,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-142 — Medium — cURL paste corrupts valid multi-data commands
 
+- Status: **Fixed**.
+
 - Evidence: every `-d`, `--data`, `--data-raw`, or `--data-binary` overwrites `result.body` at `src/ui/app.js:6511-6513`, although cURL joins repeated data options with `&`. `--data-urlencode` is copied without encoding at `:6514-6519`; the tokenizer strips backslashes inside single quotes at `:6487-6492`, and Unicode basic-auth values can throw through `btoa()` at `:6524-6525`.
 - Impact: the Send request differs from the pasted command, and some valid cURL input aborts paste handling entirely.
 - Reproduction: paste `curl https://example.test -d 'a=1' -d 'b=2'`; the body becomes only `b=2` instead of `a=1&b=2`.

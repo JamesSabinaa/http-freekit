@@ -6646,8 +6646,25 @@
     }
 
     // ============ cURL PASTE PARSER ============
+    function encodeCurlDataUrlValue(value) {
+      const equalsIndex = value.indexOf('=');
+      if (equalsIndex > 0) {
+        return value.slice(0, equalsIndex + 1) + encodeURIComponent(value.slice(equalsIndex + 1));
+      }
+      if (equalsIndex === 0) return encodeURIComponent(value.slice(1));
+      return encodeURIComponent(value);
+    }
+
+    function encodeBasicAuthorization(value) {
+      const bytes = new TextEncoder().encode(value);
+      let binary = '';
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      return btoa(binary);
+    }
+
     function parseCurlCommand(curlStr) {
       const result = { method: 'GET', url: '', headers: {}, body: '' };
+      const dataParts = [];
       
       // Normalize: remove line continuations and extra whitespace
       let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
@@ -6663,10 +6680,10 @@
       for (let i = 0; i < cmd.length; i++) {
         const ch = cmd[i];
         if (escaped) { current += ch; escaped = false; continue; }
-        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '\\' && !inSingle) { escaped = true; continue; }
         if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
         if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
-        if (ch === ' ' && !inSingle && !inDouble) {
+        if (/\s/.test(ch) && !inSingle && !inDouble) {
           if (current) { tokens.push(current); current = ''; }
           continue;
         }
@@ -6685,10 +6702,13 @@
             result.headers[header.slice(0, colonIdx).trim()] = header.slice(colonIdx + 1).trim();
           }
         } else if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary') {
-          result.body = tokens[++i] || '';
+          dataParts.push(tokens[++i] || '');
           if (result.method === 'GET') result.method = 'POST';
+          if (!result.headers['Content-Type']) {
+            result.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+          }
         } else if (t === '--data-urlencode') {
-          result.body = tokens[++i] || '';
+          dataParts.push(encodeCurlDataUrlValue(tokens[++i] || ''));
           if (result.method === 'GET') result.method = 'POST';
           if (!result.headers['Content-Type']) {
             result.headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -6698,11 +6718,12 @@
         } else if (t === '-b' || t === '--cookie') {
           result.headers['Cookie'] = tokens[++i] || '';
         } else if (t === '-u' || t === '--user') {
-          result.headers['Authorization'] = 'Basic ' + btoa(tokens[++i] || '');
+          result.headers['Authorization'] = 'Basic ' + encodeBasicAuthorization(tokens[++i] || '');
         } else if (!t.startsWith('-') && !result.url) {
           result.url = t;
         }
       }
+      result.body = dataParts.join('&');
       
       return result.url ? result : null;
     }
