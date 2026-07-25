@@ -601,8 +601,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-184 — Medium — WebSocket and TLS-passthrough setup have no timeout
 
-- Status: **Partially fixed**.
-- Resolution: WebSocket handshakes now use the standard upstream connect and idle timeouts. TLS passthrough still opens a bare TCP connection without any timeout.
+- Status: **Fixed**.
+- Resolution: WebSocket handshakes use the standard upstream connect and idle timeouts. Direct TLS-passthrough sockets now apply the same upstream connect timeout, reject with a connect-phase timeout, destroy the pending socket, and remove their timer and temporary listeners when connection setup settles. Proxied and SOCKS tunnels retain their existing configured timeout handling.
 - Evidence: plain WebSocket `http.request()` runs without the normal upstream timeout configuration at `src/proxy/proxy-server.js:372-497`; TLS passthrough uses bare `net.connect()` with no timer at `:879-890`.
 - Impact: an accept-but-never-answer WebSocket origin or stalled passthrough connect holds client sockets and closures until long OS-level timeouts.
 - Reproduction: point either path at a TCP server that accepts and sends nothing.

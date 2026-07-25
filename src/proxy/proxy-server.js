@@ -4084,8 +4084,42 @@ export class ProxyServer {
     if (!this._shouldUseUpstreamProxy(hostname, targetPort)) {
       return new Promise((resolve, reject) => {
         const socket = net.connect(targetPort, this._normalizeConnectionHostname(hostname));
-        socket.once('connect', () => resolve(socket));
-        socket.once('error', reject);
+        let connectTimer = null;
+        let settled = false;
+
+        const cleanup = () => {
+          if (connectTimer) {
+            clearTimeout(connectTimer);
+            connectTimer = null;
+          }
+          socket.removeListener('connect', onConnect);
+          socket.removeListener('error', onError);
+        };
+        const settle = (callback) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback();
+        };
+        const onConnect = () => settle(() => resolve(socket));
+        const onError = (error) => settle(() => reject(error));
+
+        socket.once('connect', onConnect);
+        socket.once('error', onError);
+        if (this._upstreamConnectTimeoutMs > 0) {
+          connectTimer = setTimeout(() => {
+            const error = new Error(
+              `Upstream connection timeout after ${this._upstreamConnectTimeoutMs / 1000}s`
+            );
+            error.code = 'ETIMEDOUT';
+            error.upstreamPhase = 'connect';
+            settle(() => {
+              socket.destroy();
+              reject(error);
+            });
+          }, this._upstreamConnectTimeoutMs);
+          connectTimer.unref?.();
+        }
       });
     }
     if (this._isSocksProxy()) {
