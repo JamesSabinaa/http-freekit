@@ -533,7 +533,22 @@ export class AndroidAdbInterceptor {
       const proxySet = await this._setProxy(deviceId, hostIp, proxyPort);
 
       if (!proxySet) {
-        return { success: false, error: `Failed to set proxy on ${deviceId}` };
+        const certificateRemoved = !remoteCertPath || await this._removeCaCert(deviceId);
+        if (!certificateRemoved) {
+          this.activatedDevices.set(deviceId, {
+            model: device.model,
+            deviceName: device.deviceName,
+            remoteCertPath,
+            mode: 'staging-cleanup'
+          });
+          this.active = true;
+        }
+        return {
+          success: false,
+          error: certificateRemoved
+            ? `Failed to set proxy on ${deviceId}`
+            : `Failed to set proxy on ${deviceId} and remove its staged CA; reconnect it and retry Stop`
+        };
       }
     }
 
@@ -586,6 +601,9 @@ export class AndroidAdbInterceptor {
     const cleanupDevice = async (serial, activeInfo) => {
       if (activeInfo?.mode === 'http-toolkit-app') {
         return await this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
+      }
+      if (activeInfo?.mode === 'staging-cleanup') {
+        return await this._removeCaCert(serial);
       }
       const proxyRestored = await this._restoreProxy(serial, activeInfo?.previousProxy);
       const certificateRemoved = await this._removeCaCert(serial);

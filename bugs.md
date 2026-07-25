@@ -931,6 +931,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-099 — Medium — Android CA file is leaked when fallback proxy setup fails
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/android-adb-interceptor.js:442-451` pushes the CA before setting the proxy, but the `_setProxy()` failure return does not call `_removeCaCert()` or store the device for later cleanup.
 - Impact: a disconnect/failure between the two ADB operations leaves an untracked certificate file in `/data/local/tmp`.
 - Reproduction: allow the push to succeed, fail the settings command, and inspect the device file afterward.
