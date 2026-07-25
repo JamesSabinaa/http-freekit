@@ -4738,31 +4738,26 @@ export class ProxyServer {
     this.mockRules.splice(index, 1);
   }
 
-  removeMockRuleById(id) {
-    const idx = this.mockRules.findIndex(r => r.id === id);
+  removeMockRuleById(id, rules = this.mockRules) {
+    const idx = rules.findIndex(r => r.id === id);
     if (idx !== -1) {
-      this.mockRules.splice(idx, 1);
+      rules.splice(idx, 1);
       return true;
     }
-    // Search inside groups
-    for (const item of this.mockRules) {
+    for (const item of rules) {
       if (item.type === 'group' && item.items) {
-        const gIdx = item.items.findIndex(r => r.id === id);
-        if (gIdx !== -1) {
-          item.items.splice(gIdx, 1);
-          return true;
-        }
+        if (this.removeMockRuleById(id, item.items)) return true;
       }
     }
     return false;
   }
 
-  _findMockRuleById(id) {
-    const top = this.mockRules.find(r => r.id === id);
+  _findMockRuleById(id, rules = this.mockRules) {
+    const top = rules.find(r => r.id === id);
     if (top) return top;
-    for (const item of this.mockRules) {
+    for (const item of rules) {
       if (item.type === 'group' && item.items) {
-        const nested = item.items.find(r => r.id === id);
+        const nested = this._findMockRuleById(id, item.items);
         if (nested) return nested;
       }
     }

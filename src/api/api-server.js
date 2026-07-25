@@ -975,12 +975,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Create a rule group
     router.post('/api/mock-rules/group', (req, res) => {
+      const items = Array.isArray(req.body.items) ? req.body.items : [];
+      if (items.some(item => item?.type === 'group')) {
+        return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
+      }
       const group = {
         id: crypto.randomUUID(),
         type: 'group',
         title: req.body.title || 'New Group',
         enabled: true,
-        items: req.body.items || [],
+        items,
         collapsed: false
       };
       this.proxy.mockRules.push(group);
@@ -996,11 +1000,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       const group = this.proxy.mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return res.status(404).json({ error: 'Group not found' });
+      const rule = this._findRuleById(ruleId);
+      if (rule?.type === 'group') {
+        return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
+      }
 
       // Find and remove the rule from its current location
-      const rule = this._removeRuleById(ruleId);
-      if (!rule) return res.status(404).json({ error: 'Rule not found' });
-      group.items.push(rule);
+      const removedRule = this._removeRuleById(ruleId);
+      if (!removedRule) return res.status(404).json({ error: 'Rule not found' });
+      group.items.push(removedRule);
       this._persistMockRules();
       res.json({ success: true });
     });
@@ -1318,18 +1326,23 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this.app.use(router);
   }
 
-  _removeRuleById(ruleId) {
-    for (let i = 0; i < this.proxy.mockRules.length; i++) {
-      if (this.proxy.mockRules[i].id === ruleId) {
-        return this.proxy.mockRules.splice(i, 1)[0];
+  _findRuleById(ruleId, rules = this.proxy.mockRules) {
+    for (const rule of rules) {
+      if (rule.id === ruleId) return rule;
+      if (rule.type === 'group') {
+        const nested = this._findRuleById(ruleId, rule.items || []);
+        if (nested) return nested;
       }
-      if (this.proxy.mockRules[i].type === 'group') {
-        const items = this.proxy.mockRules[i].items || [];
-        for (let j = 0; j < items.length; j++) {
-          if (items[j].id === ruleId) {
-            return items.splice(j, 1)[0];
-          }
-        }
+    }
+    return null;
+  }
+
+  _removeRuleById(ruleId, rules = this.proxy.mockRules) {
+    for (let i = 0; i < rules.length; i++) {
+      if (rules[i].id === ruleId) return rules.splice(i, 1)[0];
+      if (rules[i].type === 'group') {
+        const nested = this._removeRuleById(ruleId, rules[i].items || []);
+        if (nested) return nested;
       }
     }
     return null;
