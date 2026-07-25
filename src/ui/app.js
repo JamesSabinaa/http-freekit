@@ -9271,10 +9271,26 @@
       }, 200);
     });
 
+    function isEditableKeyboardTarget(element) {
+      const tagName = element?.tagName?.toUpperCase();
+      if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return true;
+      if (element?.isContentEditable) return true;
+      return Boolean(element?.closest?.('.monaco-editor, [contenteditable]:not([contenteditable="false"])'));
+    }
+
+    function isClearTrafficShortcut(event, activeElement, trafficPanelActive) {
+      return event.key === 'Delete'
+        && (event.ctrlKey || event.metaKey)
+        && !event.altKey
+        && trafficPanelActive
+        && !isEditableKeyboardTarget(activeElement);
+    }
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
       const activeEl = document.activeElement;
-      const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT');
+      const isInput = isEditableKeyboardTarget(activeEl);
+      const trafficPanelActive = document.getElementById('panel-traffic')?.classList.contains('active') === true;
 
       if (e.key === 'Escape') closeDetail();
 
@@ -9302,7 +9318,7 @@
       }
 
       // Ctrl+Delete or Ctrl+Shift+Delete: Clear all traffic
-      if (e.key === 'Delete' && (e.ctrlKey || e.metaKey)) {
+      if (isClearTrafficShortcut(e, activeEl, trafficPanelActive)) {
         e.preventDefault();
         clearTraffic();
         return;

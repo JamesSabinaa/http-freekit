@@ -1990,6 +1990,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-174 — Medium — Ctrl+Delete clears traffic while editing text
 
+- Status: **Fixed**.
+
 - Evidence: the document-wide shortcut at `src/ui/app.js:8864-8869` does not test input focus or the active panel. It invokes `clearTraffic()`, which sends `clear-traffic` without confirmation at `:7507-7511`.
 - Impact: the normal Windows shortcut for deleting the next word destroys the complete server traffic log when used in a Send or settings input.
 - Reproduction: focus the Send URL between path words and press Ctrl+Delete.
