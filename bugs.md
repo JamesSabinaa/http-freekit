@@ -783,6 +783,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-046 — High — Browser activation failures leak managed profiles
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/browser-interceptor.js:53-62` creates and stores a managed profile before later argument/CA operations, without failure cleanup. `src/interceptors/interceptor-manager.js:109-117` deactivates only interceptors whose `isActive()` returns true.
 - Impact: a launch-time exception leaves the profile directory behind for the remainder of the run.
 - Reproduction: make `ca.getSpkiFingerprint()` throw; activation rejects with `active=false`, and `deactivateAll()` leaves the created profile in place.

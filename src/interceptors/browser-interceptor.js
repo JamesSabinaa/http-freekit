@@ -28,7 +28,15 @@ export class BrowserInterceptor {
   }
 
   async isActivable() {
-    return findBrowserPath(this.browserType) !== null;
+    return this._findBrowserPath() !== null;
+  }
+
+  _findBrowserPath() {
+    return findBrowserPath(this.browserType);
+  }
+
+  _createManagedProfile() {
+    return createManagedBrowserProfile(this.browserType);
   }
 
   async isActive() {
@@ -40,7 +48,7 @@ export class BrowserInterceptor {
       throw new Error(`${this.name} is already running`);
     }
 
-    const browserPath = findBrowserPath(this.browserType);
+    const browserPath = this._findBrowserPath();
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
     }
@@ -52,20 +60,28 @@ export class BrowserInterceptor {
 
     // Create a uniquely-owned temporary profile. The marker lets a future
     // startup distinguish abandoned profiles from another active instance.
-    this.profileDir = createManagedBrowserProfile(this.browserType);
+    this.profileDir = this._createManagedProfile();
     this.proxyPort = proxyPort;
     this.trackedProcessIds.clear();
     this.lifecycleInspectionErrorLogged = false;
     this.lastProcessInspectionAt = 0;
     this.lastProcessInspectionFailed = false;
 
-    const args = this._getBrowserArgs(proxyPort, launchOptions);
-
-    console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
-    const launchedProcess = spawn(browserPath, args, {
-      detached: false,
-      stdio: 'ignore'
-    });
+    let args;
+    let launchedProcess;
+    try {
+      args = this._getBrowserArgs(proxyPort, launchOptions);
+      console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
+      launchedProcess = spawn(browserPath, args, {
+        detached: false,
+        stdio: 'ignore'
+      });
+    } catch (err) {
+      const profileDir = this.profileDir;
+      this._cleanup(profileDir);
+      this._resetLifecycleState();
+      throw err;
+    }
     this.process = launchedProcess;
     if (Number.isInteger(launchedProcess.pid)) this.trackedProcessIds.add(launchedProcess.pid);
 
@@ -105,7 +121,7 @@ export class BrowserInterceptor {
       throw new Error('Opening a new tab in an active isolated Firefox profile is not supported');
     }
 
-    const browserPath = findBrowserPath(this.browserType);
+    const browserPath = this._findBrowserPath();
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
     }
