@@ -38,8 +38,11 @@ function assertVersionAtLeast(name, minimum) {
 test('installed packages meet the audited safe minimums', () => {
   const minimumVersions = {
     '@hono/node-server': '2.0.5',
+    'app-builder-lib': '26.15.0',
     'body-parser': '2.3.0',
+    'builder-util-runtime': '9.7.0',
     'dompurify': '3.4.12',
+    'electron-builder': '26.15.0',
     'fast-uri': '3.1.4',
     'hono': '4.12.27',
     'js-yaml': '4.3.0',

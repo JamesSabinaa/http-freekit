@@ -1763,6 +1763,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-036 — High — Built AppImages contain a vulnerable updater search path
 
+- Status: **Fixed**.
 - Evidence: `package-lock.json:1753-1755` resolves `app-builder-lib` 26.8.1, below the fixed 26.15.0. Full `npm audit` reports [GHSA-7g7r-gx96-252g](https://github.com/advisories/GHSA-7g7r-gx96-252g).
 - Impact: the configured AppImage artifact is affected by uncontrolled executable search-path elements, enabling local code execution in the updater context.
 - Reproduction: run `npm audit --audit-level=high` and inspect the `app-builder-lib` advisory.
