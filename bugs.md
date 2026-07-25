@@ -37,6 +37,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 25 | 8 new bugs found; documented below | 0/2 |
 | 26 | 3 new bugs found; documented below | 0/2 |
 | 27 | 3 new bugs found; documented below | 0/2 |
+| 28 | 1 new bug found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -483,7 +484,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-158 — Medium — Capture truncation silently corrupts HAR body exports
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Initial HAR exports now include explicit captured/original sizes and truncation metadata. Both HAR import paths discard that metadata and replace the original response size with the captured size, so re-exporting a truncated capture presents its retained preview as complete; the renderer also uses clipped bodies for viewing, searching, resend, and mock creation without warning.
 
 - Evidence: `_safeBodyString()` truncates text at 512 KiB and replaces binary bodies of at least 2 MiB with a textual placeholder at `src/proxy/proxy-server.js:3988-4010`; only the transformed field is stored. HAR conversion writes it as response content while reporting the original size at `src/api/har-converter.js:29-30,57-65`.
 - Impact: exported HARs cannot replay or inspect full large responses and are internally inconsistent, with no truncation flag.
@@ -1187,7 +1189,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-161 — High — Android companion setup destroys an existing ADB reverse mapping
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Normal activation snapshots and restores an existing reverse mapping. If ADB applies the replacement and then times out, activation records neither the previous mapping nor tunnel ownership, so Stop cannot restore it and the original mapping remains lost.
 
 - Evidence: `src/interceptors/android-adb-interceptor.js:124-136` creates `adb reverse tcp:<proxyPort> tcp:<proxyPort>` without checking `adb reverse --list` or using `--no-rebind`; Stop at `:139-153` removes the port instead of restoring a prior destination.
 - Impact: FreeKit can overwrite and then delete another Android development workflow's reverse tunnel.
@@ -1195,7 +1198,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-162 — Medium — Browser interceptors report success before spawn is confirmed
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Activation now waits for the child `spawn` event and catches errors such as ENOENT and EACCES. A corrupt or otherwise unusable browser that spawns successfully and exits immediately can still be returned as active/successful before its exit handler reverses the state.
 - Evidence: `src/interceptors/browser-paths.js:41-47` verifies only that the path exists. Isolated browsers at `browser-interceptor.js:65-92` and Global Chrome at `existing-browser-interceptor.js:51-70` mark active and return immediately after `spawn()`, while launch failure is handled only by a later error listener.
 - Impact: API/UI confirms activation for a non-executable or corrupt browser binary and only silently changes state afterward.
 - Reproduction: leave a non-executable file at a detected browser path and activate its interceptor.
@@ -1210,7 +1214,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-164 — Medium — Fresh Terminal never falls back after an early launcher failure
 
-- Status: **Fixed**.
+- Status: **Partially fixed**.
+- Resolution: Candidate launchers now fall back when they fail within a fixed 100 ms grace period. A launcher that exits nonzero just after that window is returned as a successful activation and later becomes inactive without trying the next working candidate.
 
 - Evidence: the spawn helper resolves on the child's spawn event at `src/interceptors/terminal-interceptors.js:3-16`; candidate loops at `:69-81,95-103` stop at that point without checking for an immediate nonzero exit, and `:110-125` reports success.
 - Impact: an installed but unusable first-choice terminal prevents later working candidates from being attempted.
@@ -1916,6 +1921,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `findFreePort()` releases its temporary listener before the server child binds at `electron/main.cjs:34-42`, and `waitForServer()` resolves on any HTTP response from `/api/config` at `:48-80` without checking its status or validating that it is FreeKit.
 - Impact: another local process can claim the selected port during the race, after which the desktop loads an unrelated response or error page and treats failed FreeKit startup inconsistently.
 - Reproduction: claim the selected port after `findFreePort()` returns and respond 503 to `/api/config`; `waitForServer()` still reports readiness.
+
+### BUG-367 — Low — Core Send and Settings controls lack accessible names
+
+- Evidence: The Send method and URL controls and multiple Settings toggles, selects, and port fields use adjacent text rather than associated `<label for>` elements, wrapping labels, or ARIA names at `src/ui/index.html:230,235,363-371,393-398,416-440,530-538,578-580`; renderer code never assigns names programmatically.
+- Impact: screen-reader users hear only generic control roles and current values, without the purpose of essential request and configuration controls.
+- Reproduction: inspect `hideTunnelRequestsToggle.labels.length` and its ARIA attributes, or navigate Send and Settings with a screen reader; the control purpose is not announced.
 
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
