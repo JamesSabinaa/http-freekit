@@ -889,6 +889,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-093 — Medium — Failed JVM helper compilation poisons all retries
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/jvm-interceptor.js:198-208` writes `AttachProxy.java` but recompiles only if the source does not exist; `:106` similarly trusts any existing `proxy-agent.jar`. A timeout/failure after creation leaves partial/stale artifacts that every later call reuses.
 - Impact: one transient compiler/disk failure makes JVM attach permanently fail until the hidden directory is manually deleted.
 - Reproduction: fail `javac` after the source write, restore it, and retry without deleting the artifact directory.

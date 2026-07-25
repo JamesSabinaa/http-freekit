@@ -318,22 +318,8 @@ public class ProxyAgent {
     }
   }
 
-  /**
-   * Attach the agent to a running JVM process using the Attach API.
-   */
-  async _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
-    const agentJar = await this._getAgentJarPath();
-    if (!agentJar) {
-      return { success: false, error: 'Failed to build proxy agent JAR' };
-    }
-
-    const agentArgs = this._getAgentArgs(proxyHost, proxyPort, action);
-
-    try {
-      // Use jattach-style approach: com.sun.tools.attach
-      // Create a small Java program to do the attachment
-      const attachDir = this.agentDir;
-      const attachSource = `
+  _getAttachSource() {
+    return `
 import com.sun.tools.attach.VirtualMachine;
 
 public class AttachProxy {
@@ -355,24 +341,64 @@ public class AttachProxy {
     }
 }
 `;
-      const attachJavaPath = path.join(attachDir, 'AttachProxy.java');
-      if (!fs.existsSync(attachJavaPath)) {
-        fs.writeFileSync(attachJavaPath, attachSource);
-        // Compile with tools.jar on classpath (needed for com.sun.tools.attach)
-        try {
-          await execFileAsync('javac', [attachJavaPath], { cwd: attachDir, timeout: 15000 });
-        } catch {
-          // On JDK 9+, com.sun.tools.attach is in jdk.attach module — no tools.jar needed
-          await execFileAsync('javac', [attachJavaPath], { cwd: attachDir, timeout: 15000 });
-        }
+  }
+
+  _compileJava(sourcePath, cwd) {
+    return execFileAsync('javac', [sourcePath], { cwd, timeout: 15000 });
+  }
+
+  async _ensureAttachHelper() {
+    const attachDir = this.agentDir;
+    const attachSource = this._getAttachSource();
+    const attachJavaPath = path.join(attachDir, 'AttachProxy.java');
+    const attachClassPath = path.join(attachDir, 'AttachProxy.class');
+    const attachStampPath = path.join(attachDir, 'attach-source.sha256');
+    const sourceHash = crypto.createHash('sha256').update(attachSource).digest('hex');
+    const cachedHash = fs.existsSync(attachStampPath)
+      ? fs.readFileSync(attachStampPath, 'utf8')
+      : null;
+
+    if (fs.existsSync(attachClassPath) && cachedHash === sourceHash) return attachDir;
+
+    fs.mkdirSync(attachDir, { recursive: true });
+    for (const stalePath of [attachClassPath, attachStampPath]) {
+      try { fs.unlinkSync(stalePath); } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
       }
+    }
+    fs.writeFileSync(attachJavaPath, attachSource);
+    await this._compileJava(attachJavaPath, attachDir);
+    if (!fs.existsSync(attachClassPath)) {
+      throw new Error('javac did not produce AttachProxy.class');
+    }
+    fs.writeFileSync(attachStampPath, sourceHash);
+    return attachDir;
+  }
+
+  _runAttachHelper(attachDir, pid, agentJar, agentArgs) {
+    return execFileAsync(
+      'java',
+      ['-cp', attachDir, 'AttachProxy', String(pid), agentJar, agentArgs],
+      { encoding: 'utf8', timeout: 15000, cwd: attachDir }
+    );
+  }
+
+  /**
+   * Attach the agent to a running JVM process using the Attach API.
+   */
+  async _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
+    const agentJar = await this._getAgentJarPath();
+    if (!agentJar) {
+      return { success: false, error: 'Failed to build proxy agent JAR' };
+    }
+
+    const agentArgs = this._getAgentArgs(proxyHost, proxyPort, action);
+
+    try {
+      const attachDir = await this._ensureAttachHelper();
 
       // Run the attach program
-      const result = await execFileAsync(
-        'java',
-        ['-cp', attachDir, 'AttachProxy', String(pid), agentJar, agentArgs],
-        { encoding: 'utf8', timeout: 15000, cwd: attachDir }
-      );
+      const result = await this._runAttachHelper(attachDir, pid, agentJar, agentArgs);
       console.log('[Interceptor] JVM attach result:', result.trim());
       return { success: true };
     } catch (err) {
