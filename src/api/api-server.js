@@ -58,6 +58,7 @@ export class ApiServer {
     this.sendConnectTimeoutMs = options.sendConnectTimeoutMs ?? 10000;
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
+    this.sendMaxResponseBytes = options.sendMaxResponseBytes ?? 32 * 1024 * 1024;
 
     // Wire up breakpoint broadcast so the UI gets real-time breakpoint events
     this.proxy.onBreakpoint = (event) => {
@@ -1358,7 +1359,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
       req = lib.request(options, (res) => {
         const chunks = [];
-        res.on('data', chunk => chunks.push(chunk));
+        let responseBytes = 0;
+        res.on('data', chunk => {
+          responseBytes += chunk.length;
+          if (responseBytes > this.sendMaxResponseBytes) {
+            fail(new Error(`Send response exceeds ${this.sendMaxResponseBytes} byte buffer limit`));
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.once('aborted', () => fail(new Error('Send response aborted before completion')));
         res.once('error', fail);
         res.on('end', () => {

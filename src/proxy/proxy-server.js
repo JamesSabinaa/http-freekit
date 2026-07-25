@@ -62,6 +62,8 @@ export class ProxyServer {
     this._upstreamConnectTimeoutMs = options.upstreamConnectTimeoutMs ?? 15000;
     this._upstreamIdleTimeoutMs = options.upstreamIdleTimeoutMs ?? 30000;
     this._upstreamRetryDelayMs = options.upstreamRetryDelayMs ?? 200;
+    this.maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 32 * 1024 * 1024;
+    this.maxDecompressedBodyBytes = options.maxDecompressedBodyBytes ?? 32 * 1024 * 1024;
   }
 
   async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
@@ -216,6 +218,32 @@ export class ProxyServer {
       if (key.toLowerCase() === 'content-length') delete headers[key];
     }
     headers['content-length'] = String(length);
+  }
+
+  _createBodyCollector(limit = this.maxBufferedBodyBytes) {
+    return { chunks: [], length: 0, limit, exceeded: false };
+  }
+
+  _appendBodyChunk(collector, chunk) {
+    if (collector.exceeded) return false;
+    collector.length += chunk.length;
+    if (collector.length > collector.limit) {
+      collector.exceeded = true;
+      collector.chunks.length = 0;
+      return false;
+    }
+    collector.chunks.push(chunk);
+    return true;
+  }
+
+  _concatBody(collector) {
+    return Buffer.concat(collector.chunks, collector.length);
+  }
+
+  _bodyLimitError(kind = 'body') {
+    const err = new Error(`${kind} exceeds ${this.maxBufferedBodyBytes} byte buffer limit`);
+    err.code = 'ERR_BODY_TOO_LARGE';
+    return err;
   }
 
 
@@ -667,10 +695,15 @@ export class ProxyServer {
       return;
     }
 
-    const requestBody = [];
-    clientReq.on('data', chunk => requestBody.push(chunk));
+    const requestBody = this._createBodyCollector();
+    clientReq.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
     clientReq.on('end', async () => {
-      let body = Buffer.concat(requestBody);
+      if (requestBody.exceeded) {
+        clientRes.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
+        clientRes.end('Request body too large');
+        return;
+      }
+      let body = this._concatBody(requestBody);
       let breakpointBodyModified = false;
 
       // Check mock rules
@@ -792,10 +825,14 @@ export class ProxyServer {
         }
         const proxyReq = requestLib.request(options, (proxyRes) => {
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          proxyRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              proxyReq.destroy(this._bodyLimitError('Upstream response body'));
+            }
+          });
           proxyRes.on('end', async () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: clientReq.method,
               url: targetUrl.href, host: targetUrl.hostname
@@ -1132,10 +1169,15 @@ export class ProxyServer {
       this.requestCount++;
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
-      const requestBody = [];
-      req.on('data', chunk => requestBody.push(chunk));
+      const requestBody = this._createBodyCollector();
+      req.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
     req.on('end', async () => {
-        let body = Buffer.concat(requestBody);
+        if (requestBody.exceeded) {
+          res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
+          res.end('Request body too large');
+          return;
+        }
+        let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
 
         // Emit pending request immediately so it appears in the UI
@@ -1265,10 +1307,14 @@ export class ProxyServer {
                 headers: reqHeaders,
                 ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
               }, (fwdRes) => {
-                const responseBody = [];
-                fwdRes.on('data', chunk => responseBody.push(chunk));
+                const responseBody = this._createBodyCollector();
+                fwdRes.on('data', chunk => {
+                  if (!this._appendBodyChunk(responseBody, chunk)) {
+                    fwdReq.destroy(this._bodyLimitError('Mock forward response body'));
+                  }
+                });
                 fwdRes.on('end', () => {
-                  const resBody = Buffer.concat(responseBody);
+                  const resBody = this._concatBody(responseBody);
                   const resHeaders = { ...fwdRes.headers };
                   if (action.addResponseHeaders) {
                     for (const [k, v] of Object.entries(action.addResponseHeaders)) {
@@ -1622,10 +1668,14 @@ export class ProxyServer {
         // Fallback: HTTPS/1.1
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          proxyRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              proxyReq.destroy(this._bodyLimitError('Upstream response body'));
+            }
+          });
           proxyRes.on('end', async () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
             })) {
@@ -1787,10 +1837,17 @@ export class ProxyServer {
       let upstreamPort = targetPort;
 
       // Collect request body
-      const requestBody = [];
-      stream.on('data', chunk => requestBody.push(chunk));
+      const requestBody = this._createBodyCollector();
+      stream.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
       stream.on('end', async () => {
-        let body = Buffer.concat(requestBody);
+        if (requestBody.exceeded) {
+          if (!stream.destroyed && !stream.closed) {
+            stream.respond({ ':status': 413, 'content-type': 'text/plain' });
+            stream.end('Request body too large');
+          }
+          return;
+        }
+        let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
 
         // Convert h2 pseudo-headers to regular headers for matching
@@ -1944,10 +2001,14 @@ export class ProxyServer {
 
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          proxyRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              proxyReq.destroy(this._bodyLimitError('Upstream response body'));
+            }
+          });
           proxyRes.on('end', async () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method, url: fullUrl, host: authority
             })) {
@@ -2039,10 +2100,15 @@ export class ProxyServer {
       this.requestCount++;
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
-      const requestBody = [];
-      req.on('data', chunk => requestBody.push(chunk));
+      const requestBody = this._createBodyCollector();
+      req.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
       req.on('end', async () => {
-        let body = Buffer.concat(requestBody);
+        if (requestBody.exceeded) {
+          res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
+          res.end('Request body too large');
+          return;
+        }
+        let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
 
         // Emit pending request immediately so it appears in the UI
@@ -2181,10 +2247,14 @@ export class ProxyServer {
 
         const handleResponse = (attempt, proxyGeneration) => (proxyRes) => {
           this._forwardUpstreamResponseErrors(proxyRes, proxyReq);
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          proxyRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              proxyReq.destroy(this._bodyLimitError('Upstream response body'));
+            }
+          });
           proxyRes.on('end', async () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             if (await this._shouldRetryAfterUpstreamResponse(proxyRes, {
               attempt, proxyGeneration, method: req.method, url: fullUrl, host: hostname
             })) {
@@ -2380,10 +2450,14 @@ export class ProxyServer {
           headers: fwdHeaders,
           ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
         }, (fwdRes) => {
-          const responseBody = [];
-          fwdRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          fwdRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              fwdReq.destroy(this._bodyLimitError('Mock forward response body'));
+            }
+          });
           fwdRes.on('end', () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, fwdRes.headers);
             if (action.addResponseHeaders) {
               for (const [k, v] of Object.entries(action.addResponseHeaders)) {
@@ -2750,7 +2824,7 @@ export class ProxyServer {
 
       let statusCode;
       const responseHeaders = {};
-      const responseBody = [];
+      const responseBody = this._createBodyCollector();
 
       stream.on('response', (hdrs) => {
         statusCode = hdrs[':status'];
@@ -2761,14 +2835,18 @@ export class ProxyServer {
         }
       });
 
-      stream.on('data', chunk => responseBody.push(chunk));
+      stream.on('data', chunk => {
+        if (!this._appendBodyChunk(responseBody, chunk)) {
+          stream.destroy(this._bodyLimitError('HTTP/2 response body'));
+        }
+      });
 
       stream.on('end', () => {
         resolve({
           statusCode,
           statusMessage: '',
           headers: responseHeaders,
-          body: Buffer.concat(responseBody),
+          body: this._concatBody(responseBody),
           remoteAddress: session.socket?.remoteAddress,
           remotePort: session.socket?.remotePort
         });
@@ -3574,10 +3652,14 @@ export class ProxyServer {
           headers: reqHeaders,
           ...(isHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
         }, (proxyRes) => {
-          const responseBody = [];
-          proxyRes.on('data', chunk => responseBody.push(chunk));
+          const responseBody = this._createBodyCollector();
+          proxyRes.on('data', chunk => {
+            if (!this._appendBodyChunk(responseBody, chunk)) {
+              proxyReq.destroy(this._bodyLimitError('Mock forward response body'));
+            }
+          });
           proxyRes.on('end', () => {
-            const resBody = Buffer.concat(responseBody);
+            const resBody = this._concatBody(responseBody);
             const resHeaders = { ...proxyRes.headers };
             const trailers = proxyRes.trailers;
             // Apply response header modifications
@@ -4075,17 +4157,18 @@ export class ProxyServer {
 
   _decompressBody(buffer, encoding) {
     if (!buffer || buffer.length === 0) return buffer;
+    const options = { maxOutputLength: this.maxDecompressedBodyBytes };
     try {
       switch (encoding) {
         case 'gzip':
         case 'x-gzip':
-          return zlib.gunzipSync(buffer);
+          return zlib.gunzipSync(buffer, options);
         case 'deflate':
-          return zlib.inflateSync(buffer);
+          return zlib.inflateSync(buffer, options);
         case 'br':
-          return zlib.brotliDecompressSync(buffer);
+          return zlib.brotliDecompressSync(buffer, options);
         case 'zstd':
-          if (zlib.zstdDecompressSync) return zlib.zstdDecompressSync(buffer);
+          if (zlib.zstdDecompressSync) return zlib.zstdDecompressSync(buffer, options);
           return buffer;
         default:
           return buffer;

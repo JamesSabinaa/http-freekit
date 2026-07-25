@@ -169,6 +169,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-018 — Medium — Captured bodies and decompression are unbounded
 
+- Status: **Fixed**.
+
 - Evidence: request and response chunks are accumulated without a cap in multiple H1/H2 paths (`src/proxy/proxy-server.js:580-583`, `:702-705`, `:1035-1038`, `:1522-1525`, `:1684-1688`, `:1830-1833`, `:1930-1933`, `:2067-2070`, `:2673-2691`) and by Send at `src/api/api-server.js:1189-1192`. `_decompressBody()` synchronously expands compressed data at `proxy-server.js:3943-3961` before any display truncation.
 - Impact: large transfers or highly expanding compressed bodies can exhaust memory and block the event loop.
 - Reproduction: proxy a large/chunked upload or a small, high-ratio compressed response while monitoring process memory and responsiveness.
