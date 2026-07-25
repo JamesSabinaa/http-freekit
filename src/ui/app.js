@@ -157,6 +157,7 @@
               applyFilter();
               // If this request is currently selected, refresh the detail view
               if (selectedRequestId === msg.data.id) {
+                document.getElementById('detailPanel')._request = msg.data;
                 renderDetailCards(msg.data);
               }
             }
