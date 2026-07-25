@@ -548,6 +548,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-178 — Medium — Body matchers inspect truncated encoded display text
 
+- Status: **Fixed**.
+- Resolution: Request paths now build a separate matcher-only body from the complete buffered request, decoding supported content encodings within the existing decompression ceiling. Mock and breakpoint evaluation receive that bounded decoded text across plain HTTP, intercepted HTTP/1, HTTP/2, and HTTP/1 fallback, while captured bodies continue using the 512 KiB display preview.
 - Evidence: request paths call `_findMockRule()` with `_safeBodyString(body)` and no request encoding/type metadata (`src/proxy/proxy-server.js:587,1050,1706,1945`). Body/JSON matchers consume that string at `:3246-3269`, while `_safeBodyString()` truncates text and substitutes large binary at `:3965-4010`.
 - Impact: tokens after 512 KiB never match, and compressed JSON/body matchers see gzip bytes instead of the request payload.
 - Reproduction: place a searched token after byte 524,288 in a POST, or send gzip JSON, and apply the corresponding matcher.

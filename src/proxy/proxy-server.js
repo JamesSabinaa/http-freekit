@@ -935,9 +935,10 @@ export class ProxyServer {
       }
       let body = this._concatBody(requestBody);
       let breakpointBodyModified = false;
+      const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
 
       // Check mock rules
-      const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, this._safeBodyString(body));
+      const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
       const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
       if (mockRule && !mockBreakpointPhase) {
         this._serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime);
@@ -947,7 +948,7 @@ export class ProxyServer {
       // Check breakpoint rules
       const breakpoint = mockBreakpointPhase === 'request'
         ? mockRule
-        : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers);
+        : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
       const responseBreakpoint = mockBreakpointPhase === 'response';
       if (breakpoint) {
         this._emitRequest({
@@ -1487,6 +1488,7 @@ export class ProxyServer {
         }
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
+        const matcherBody = this._requestBodyForMatching(body, req.headers);
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -1497,7 +1499,7 @@ export class ProxyServer {
         });
 
         // Check mock rules
-        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
+        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         if (mockRule && !mockBreakpointPhase) {
           const action = mockRule.action || {
@@ -1860,7 +1862,7 @@ export class ProxyServer {
         // Check breakpoint rules
         const breakpointRule = mockBreakpointPhase === 'request'
           ? mockRule
-          : this._checkBreakpoint(req.method, fullUrl, req.headers);
+          : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
         const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
@@ -2236,6 +2238,7 @@ export class ProxyServer {
         for (const [k, v] of Object.entries(headers)) {
           if (!k.startsWith(':')) reqHeaders[k] = v;
         }
+        const matcherBody = this._requestBodyForMatching(body, reqHeaders);
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -2246,7 +2249,7 @@ export class ProxyServer {
         });
 
         // Check mock rules
-        const mockRule = this._findMockRule(method, fullUrl, reqHeaders, this._safeBodyString(body));
+        const mockRule = this._findMockRule(method, fullUrl, reqHeaders, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         if (mockRule && !mockBreakpointPhase) {
           await this._handleH2MockResponse(stream, mockRule, {
@@ -2259,7 +2262,7 @@ export class ProxyServer {
         // Check breakpoint rules
         const breakpointRule = mockBreakpointPhase === 'request'
           ? mockRule
-          : this._checkBreakpoint(method, fullUrl, reqHeaders);
+          : this._checkBreakpoint(method, fullUrl, reqHeaders, matcherBody);
         const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
@@ -2544,6 +2547,7 @@ export class ProxyServer {
         }
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
+        const matcherBody = this._requestBodyForMatching(body, req.headers);
 
         // Emit pending request immediately so it appears in the UI
         this._emitPendingRequest({
@@ -2554,7 +2558,7 @@ export class ProxyServer {
         });
 
         // Check mock rules
-        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, this._safeBodyString(body));
+        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         if (mockRule && !mockBreakpointPhase) {
           await this._serveMockResponseH1OnH2(
@@ -2566,7 +2570,7 @@ export class ProxyServer {
         // Check breakpoint rules
         const breakpointRule = mockBreakpointPhase === 'request'
           ? mockRule
-          : this._checkBreakpoint(req.method, fullUrl, req.headers);
+          : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
         const responseBreakpoint = mockBreakpointPhase === 'response';
         if (breakpointRule) {
           this._emitRequest({
@@ -4809,6 +4813,17 @@ export class ProxyServer {
     }
   }
 
+  _requestBodyForMatching(buffer, headers = {}) {
+    if (!buffer || buffer.length === 0 || buffer.length > this.maxBufferedBodyBytes) return '';
+    const encodingKey = Object.keys(headers || {})
+      .find(name => name.toLowerCase() === 'content-encoding');
+    const headerValue = encodingKey ? headers[encodingKey] : '';
+    const contentEncoding = String(Array.isArray(headerValue) ? headerValue[0] : headerValue || '').trim();
+    const decoded = this._decompressBody(buffer, contentEncoding);
+    if (contentEncoding && contentEncoding !== 'identity' && decoded === buffer) return '';
+    return decoded.toString('utf8');
+  }
+
   _safeBodyString(buffer, contentEncoding, contentType) {
     if (!buffer || buffer.length === 0) return '';
 
@@ -5094,11 +5109,11 @@ export class ProxyServer {
     }
   }
 
-  _checkBreakpoint(method, url, headers) {
+  _checkBreakpoint(method, url, headers, body = '') {
     return this.breakpointRules.find(rule => {
       if (!rule?.enabled || !Array.isArray(rule.matchers)) return false;
       return rule.matchers.every(m => m && typeof m === 'object' && !Array.isArray(m)
-        && this._evaluateMatcher(m, method, url, headers, ''));
+        && this._evaluateMatcher(m, method, url, headers, body));
     });
   }
 

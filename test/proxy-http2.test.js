@@ -10,7 +10,7 @@ import test from 'node:test';
 import { CertificateAuthority } from '../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
-async function startProxy(t, mode, body) {
+async function startProxy(t, mode, body, matchers = []) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-'));
   const ca = new CertificateAuthority(dataDir);
   await ca.initialize();
@@ -22,7 +22,7 @@ async function startProxy(t, mode, body) {
   proxy.setTlsFingerprint('passthrough');
   proxy.mockRules = [{
     enabled: true,
-    matchers: [],
+    matchers,
     action: {
       type: 'fixed-response',
       status: 200,
@@ -141,4 +141,43 @@ test('HTTP/2 all mode still accepts HTTP/1.1 via ALPN fallback', { timeout: 2000
     ['https', 'Pending'],
     ['https', 'Mocked']
   ]);
+});
+
+test('HTTP/2 body matching uses complete input while capture stays truncated', { timeout: 20000 }, async t => {
+  const token = 'h2-token-after-display-cap';
+  const requestBody = Buffer.concat([
+    Buffer.alloc(512 * 1024 + 32, 0x61),
+    Buffer.from(token)
+  ]);
+  const { proxy, events } = await startProxy(t, 'h2-only', 'h2-matched', [
+    { type: 'body-contains', value: token }
+  ]);
+  const hostname = 'example.test';
+  const secureSocket = await connectTls(proxy.server.address().port, hostname, ['h2']);
+  const client = http2.connect(`https://${hostname}`, { createConnection: () => secureSocket });
+  t.after(() => client.destroy());
+  await once(client, 'connect');
+
+  const req = client.request({
+    ':method': 'POST',
+    ':path': '/large',
+    ':authority': hostname,
+    ':scheme': 'https',
+    'content-length': String(requestBody.length)
+  });
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  const responsePromise = once(req, 'response');
+  const endPromise = once(req, 'end');
+  req.end(requestBody);
+
+  const [headers] = await responsePromise;
+  await endPromise;
+  client.close();
+  await once(client, 'close');
+
+  assert.equal(headers[':status'], 200);
+  assert.equal(Buffer.concat(chunks).toString('utf8'), 'h2-matched');
+  assert.equal(events[1].requestBodyTruncated, true);
+  assert.equal(events[1].requestBody.includes(token), false);
 });
