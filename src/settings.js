@@ -16,7 +16,11 @@ export class Settings {
     try {
       if (fs.existsSync(this.filePath)) {
         const raw = fs.readFileSync(this.filePath, 'utf8');
-        this.data = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new TypeError('Settings file must contain a JSON object');
+        }
+        this.data = parsed;
       }
     } catch (err) {
       console.error('[Settings] Failed to load settings:', err.message);
