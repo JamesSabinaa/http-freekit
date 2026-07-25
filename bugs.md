@@ -1546,6 +1546,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-133 — High — Normal desktop Quit paths bypass server cleanup
 
+- Status: **Fixed**.
+
 - Evidence: `shutdownServer()` exists at `electron/main.cjs:226-260` but is called for window closure only from `window-all-closed` at `:441-445`. File/App Quit uses the Electron quit role at `electron/menu.cjs:20,35-37`, tray Quit calls `app.quit()` at `electron/tray.cjs:97-101`, the updater quits at `electron/updater.cjs:167-170`, and startup failure quits at `electron/main.cjs:435-437`; those flows do not first close every window and invoke the handler.
 - Impact: the child server can survive normal Quit or restart-to-install, leaving interceptor processes and system/device proxy settings active.
 - Reproduction: activate an interceptor, choose File or tray Quit, and inspect the server child PID and proxy settings.

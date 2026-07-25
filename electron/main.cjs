@@ -17,6 +17,8 @@ let serverProcess = null;
 let apiPort = null;
 let isShuttingDown = false;
 let serverReady = false;
+let quitCleanupComplete = false;
+let quitCleanupPromise = null;
 let deepLinkProcessing = Promise.resolve();
 const pendingDeepLinks = [];
 const authToken = crypto.randomBytes(32).toString('hex');
@@ -424,7 +426,7 @@ ipcMain.handle('open-context-menu', (event, items) => {
 ipcMain.handle('restart-app', (event) => {
   if (!validateSender(event)) return;
   app.relaunch();
-  app.exit(0);
+  app.quit();
 });
 
 if (hasSingleInstanceLock) app.on('second-instance', (_event, argv) => {
@@ -439,6 +441,27 @@ if (hasSingleInstanceLock) app.on('second-instance', (_event, argv) => {
 if (hasSingleInstanceLock) app.on('open-url', (event, url) => {
   event.preventDefault();
   handleDeepLink(url);
+});
+
+if (hasSingleInstanceLock) app.on('before-quit', (event) => {
+  if (quitCleanupComplete) return;
+  event.preventDefault();
+  if (quitCleanupPromise) return;
+
+  isShuttingDown = true;
+  quitCleanupPromise = Promise.resolve()
+    .then(() => {
+      stopAutoUpdater();
+      destroyTray();
+      return shutdownServer();
+    })
+    .catch(err => {
+      console.error('[Electron] Shutdown cleanup failed:', err.message);
+    })
+    .finally(() => {
+      quitCleanupComplete = true;
+      app.quit();
+    });
 });
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
@@ -468,9 +491,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
 });
 
 if (hasSingleInstanceLock) app.on('window-all-closed', () => {
-  stopAutoUpdater();
-  destroyTray();
-  shutdownServer().then(() => app.quit());
+  app.quit();
 });
 
 if (hasSingleInstanceLock) app.on('activate', () => {
