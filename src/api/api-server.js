@@ -479,14 +479,57 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     };
   }
 
+  _isAllowedBrowserOrigin(origin) {
+    if (!origin) return true;
+    try {
+      const parsed = new URL(origin);
+      const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname);
+      return isLoopback && parsed.port === String(this.port);
+    } catch {
+      return false;
+    }
+  }
+
+  _isValidAuthToken(value) {
+    if (!this.authToken || typeof value !== 'string') return !this.authToken;
+    const actual = Buffer.from(value);
+    const expected = Buffer.from(this.authToken);
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  }
+
+  _isAuthorizedRequest(req) {
+    if (!this.authToken) return true;
+    const authorization = req.headers?.authorization || '';
+    const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : null;
+    let queryToken = null;
+    try {
+      queryToken = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('authToken');
+    } catch {}
+    return this._isValidAuthToken(bearerToken) || this._isValidAuthToken(queryToken);
+  }
+
   _setupMiddleware() {
     // CORS
     this.app.use((req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
+      const origin = req.get('origin');
+      if (origin && !this._isAllowedBrowserOrigin(origin)) {
+        return res.status(403).json({ error: 'Forbidden origin' });
+      }
+      if (origin) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Vary', 'Origin');
+      }
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.header('Access-Control-Max-Age', '86400');
       if (req.method === 'OPTIONS') return res.sendStatus(204);
+      next();
+    });
+
+    this.app.use('/api', (req, res, next) => {
+      if (!this._isAuthorizedRequest(req)) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
       next();
     });
 
@@ -1262,7 +1305,23 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.wss = new WebSocketServer({ noServer: true });
 
       this.httpServer.on('upgrade', (request, socket, head) => {
-        if (request.url === '/ws') {
+        let pathname;
+        try {
+          pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+        } catch {
+          socket.destroy();
+          return;
+        }
+
+        if (pathname === '/ws') {
+          if (!this._isAllowedBrowserOrigin(request.headers.origin)) {
+            socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+            return;
+          }
+          if (!this._isAuthorizedRequest(request)) {
+            socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+            return;
+          }
           this.wss.handleUpgrade(request, socket, head, (ws) => {
             this.wss.emit('connection', ws, request);
           });

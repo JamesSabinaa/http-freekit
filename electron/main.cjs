@@ -61,7 +61,9 @@ function waitForServer(port, proc, timeoutMs = 30000) {
         done = true;
         return reject(new Error(`Server did not start within ${timeoutMs}ms`));
       }
-      const req = http.get(`http://127.0.0.1:${port}/api/config`, (res) => {
+      const req = http.get(`http://127.0.0.1:${port}/api/config`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      }, (res) => {
         res.resume();
         if (!done) { done = true; resolve(); }
       });
@@ -250,7 +252,10 @@ function shutdownServer() {
       port: apiPort,
       path: '/api/shutdown',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
     });
     req.on('error', () => {
       // Server may already be down — force-kill timeout will handle it

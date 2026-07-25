@@ -52,12 +52,33 @@
     const breakpointEditDrafts = new Map();
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
+    const API_AUTH_TOKEN = new URLSearchParams(window.location.search).get('authToken') || '';
+    const nativeFetch = window.fetch.bind(window);
+
+    function authenticatedApiUrl(url) {
+      if (!API_AUTH_TOKEN) return url;
+      const authenticatedUrl = new URL(url, window.location.href);
+      authenticatedUrl.searchParams.set('authToken', API_AUTH_TOKEN);
+      return authenticatedUrl.toString();
+    }
+
+    window.fetch = (resource, options = {}) => {
+      if (!API_AUTH_TOKEN) return nativeFetch(resource, options);
+      const requestUrl = new URL(typeof resource === 'string' ? resource : resource.url, window.location.href);
+      if (requestUrl.origin !== window.location.origin || !requestUrl.pathname.startsWith('/api/')) {
+        return nativeFetch(resource, options);
+      }
+      const headers = new Headers(resource instanceof Request ? resource.headers : undefined);
+      new Headers(options.headers || {}).forEach((value, name) => headers.set(name, value));
+      headers.set('Authorization', `Bearer ${API_AUTH_TOKEN}`);
+      return nativeFetch(resource, { ...options, headers });
+    };
 
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
 
     function connectWebSocket() {
-      const wsUrl = `ws://${window.location.hostname}:${window.location.port}/ws`;
+      const wsUrl = authenticatedApiUrl(`ws://${window.location.hostname}:${window.location.port}/ws`);
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -7515,7 +7536,7 @@
         if (format === 'har') {
           // Download HAR from server (proper HAR 1.2 format)
           const a = document.createElement('a');
-          a.href = `${API_BASE}/api/traffic/export.har`;
+          a.href = authenticatedApiUrl(`${API_BASE}/api/traffic/export.har`);
           a.download = `http-freekit-${new Date().toISOString().slice(0,10)}.har`;
           a.click();
           toast('HAR file exported', 'success');
@@ -8238,7 +8259,7 @@
     }
 
     function downloadCert() {
-      window.open(`${API_BASE}/api/certificate`, '_blank');
+      window.open(authenticatedApiUrl(`${API_BASE}/api/certificate`), '_blank');
     }
 
     // ============ SORTING ============

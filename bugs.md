@@ -19,6 +19,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-001 — Critical — Management API and WebSocket ignore the Electron session token
 
+- Status: **Fixed**.
+
 - Evidence: `src/api/api-server.js:482-490` allows every cross-origin caller with `Access-Control-Allow-Origin: *`. The token is checked only by the browser-open route at `:768-770`; traffic, settings, rules, Send, shutdown, WebSocket upgrade, and WebSocket messages have no equivalent check (`:558-577`, `:784-914`, `:1119-1128`, `:1261-1315`).
 - Impact: a web page can read captured credentials and bodies, alter proxy behavior, issue requests, clear data, or stop the server. WebSockets are independently exposed because their upgrade path validates neither token nor `Origin`.
 - Reproduction: start an `ApiServer` with `authToken: "secret"`, seed a traffic record, and request `/api/traffic` with a foreign `Origin` and no authorization. It returns `200`, `Access-Control-Allow-Origin: *`, and the full record. The current auth test covers only `/api/interceptors/:id/open`.
