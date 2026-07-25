@@ -938,6 +938,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-117 — High — The Electron interceptor cannot be configured from the desktop UI
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/electron-interceptor.js:23-32` returns manual instructions when `appPath` is absent, but Electron is not one of the expandable interceptors at `src/ui/app.js:3621`. Its card therefore posts an empty options object at `:3758-3766,4297-4301`, discards the response metadata, and unconditionally shows a Launched toast at `:4302-4308`.
 - Impact: clicking Electron App launches nothing and offers no application picker or instructions; only a direct API caller can supply the required path.
 - Reproduction: click Electron App in the desktop UI, then refresh interceptor status and observe that it is still inactive.

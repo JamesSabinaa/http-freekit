@@ -3671,7 +3671,7 @@
     let expandedInterceptorMetadata = null;
 
     // Interceptors that have expandable config components
-    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'android-adb', 'jvm']);
+    const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'electron', 'android-adb', 'jvm']);
     function renderConnectedSources(interceptors = allInterceptors) {
       const active = interceptors.filter(i => i.active);
       const sourcesList = document.getElementById('connectedSourcesList');
@@ -3878,7 +3878,7 @@
 
       // Activate if not already active, then expand
       // Always refresh for android-adb (device list may change)
-      if (!isActive || id === 'android-adb' || id === 'jvm') {
+      if (id !== 'electron' && (!isActive || id === 'android-adb' || id === 'jvm')) {
         interceptorsInProgress.add(id);
         filterInterceptors();
         try {
@@ -3922,10 +3922,78 @@
         renderDockerConfig(container);
       } else if (id === 'existing-terminal') {
         renderTerminalConfig(container);
+      } else if (id === 'electron') {
+        renderElectronConfig(container);
       } else if (id === 'android-adb') {
         renderAndroidConfig(container);
       } else if (id === 'jvm') {
         renderJvmConfig(container);
+      }
+    }
+
+    function renderElectronConfig(container) {
+      container.innerHTML = `
+        <div class="config-section">
+          <h3>Electron application</h3>
+          <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">
+            Select the application executable to launch with FreeKit's proxy flags.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="electronAppPath" type="text" placeholder="Path to Electron executable" aria-label="Electron application path"
+              onclick="event.stopPropagation();" style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:7px 9px;font-family:var(--font-mono);font-size:12px;">
+            <button class="android-refresh-btn" onclick="event.stopPropagation(); browseElectronApp();">Browse</button>
+          </div>
+          <button class="jvm-process-activate" style="margin-top:10px;" onclick="event.stopPropagation(); launchElectronApp();">
+            Launch &amp; intercept
+          </button>
+        </div>
+      `;
+    }
+
+    async function browseElectronApp() {
+      const input = document.getElementById('electronAppPath');
+      if (!input) return;
+      if (!window.electronApi?.selectFilePath) {
+        input.focus();
+        toast('Enter the Electron executable path', 'success');
+        return;
+      }
+      const selectedPath = await window.electronApi.selectFilePath({
+        title: 'Select Electron application'
+      });
+      if (selectedPath) input.value = selectedPath;
+    }
+
+    async function launchElectronApp() {
+      const input = document.getElementById('electronAppPath');
+      const appPath = input?.value.trim();
+      if (!appPath) {
+        toast('Select an Electron application first', 'error');
+        return;
+      }
+
+      try {
+        interceptorsInProgress.add('electron');
+        filterInterceptors();
+        const response = await fetch(`${API_BASE}/api/interceptors/electron/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appPath })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error || data.success === false) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        toast('Electron application launched', 'success');
+        collapseInterceptorCard();
+        const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+        if (trafficTab) switchPanel(trafficTab, 'traffic');
+        setTimeout(loadInterceptors, 300);
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+      } finally {
+        interceptorsInProgress.delete('electron');
+        filterInterceptors();
       }
     }
 
