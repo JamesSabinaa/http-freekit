@@ -346,6 +346,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-131 — Medium — A fragmented ClientHello disables passthrough fingerprinting
 
+- Status: **Fixed**.
+
 - Evidence: `_parseClientHello()` returns null until an entire TLS record is available at `src/proxy/proxy-server.js:2717-2724`, but `_createCapturingSocket()` at `:2892-2917` marks capture complete after the first socket chunk without appending data or retrying. `_getUpstreamTlsOptions()` at `:3042-3052` mirrors the client only when the first parse succeeded.
 - Impact: clients whose ClientHello spans TCP reads silently use Node's default upstream TLS fingerprint despite selecting passthrough mode.
 - Reproduction: send a valid ClientHello in two writes through CONNECT with `tlsFingerprint=passthrough` and compare the upstream fingerprint.

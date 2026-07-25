@@ -24,6 +24,7 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'ETIMEDOUT',
   'EAI_AGAIN'
 ]);
+const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
 
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
@@ -3426,10 +3427,13 @@ export class ProxyServer {
   }
 
   // Create a Duplex wrapper around a socket that transparently captures the
-  // first chunk (the TLS ClientHello) as it passes through. Unlike unshift(),
+  // TLS ClientHello as it passes through. Unlike unshift(),
   // this works with tls.TLSSocket which reads from the native handle.
   _createCapturingSocket(socket, initialData = Buffer.alloc(0)) {
-    let captured = initialData.length > 0;
+    let captureComplete = false;
+    let expectedLength = null;
+    const capturedChunks = [];
+    let capturedLength = 0;
     const wrapper = new Duplex({
       read() { socket.resume(); },
       write(chunk, enc, cb) { socket.write(chunk, enc, cb); },
@@ -3442,17 +3446,45 @@ export class ProxyServer {
       },
       destroy(err, cb) { socket.destroy(err); cb(err); }
     });
-    wrapper._captured = captured
-      ? ProxyServer._parseClientHello(initialData)
-      : null; // will hold parsed ClientHello
+    wrapper._captured = null;
+
+    const capture = (chunk) => {
+      if (captureComplete || !chunk.length) return;
+      const remaining = MAX_CAPTURED_CLIENT_HELLO_BYTES - capturedLength;
+      if (remaining <= 0) {
+        captureComplete = true;
+        return;
+      }
+      const capturedChunk = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+      capturedChunks.push(capturedChunk);
+      capturedLength += capturedChunk.length;
+
+      if (expectedLength === null && capturedLength >= 5) {
+        const header = Buffer.concat(capturedChunks, capturedLength).subarray(0, 5);
+        if (header[0] !== 0x16) {
+          captureComplete = true;
+          return;
+        }
+        expectedLength = 5 + header.readUInt16BE(3);
+        if (expectedLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) {
+          captureComplete = true;
+          return;
+        }
+      }
+
+      if (expectedLength !== null && capturedLength >= expectedLength) {
+        const clientHello = Buffer.concat(capturedChunks, capturedLength).subarray(0, expectedLength);
+        wrapper._captured = ProxyServer._parseClientHello(clientHello);
+        captureComplete = true;
+      }
+    };
+
+    capture(initialData);
 
     if (initialData.length > 0) wrapper.push(initialData);
 
     socket.on('data', (chunk) => {
-      if (!captured) {
-        captured = true;
-        wrapper._captured = ProxyServer._parseClientHello(chunk);
-      }
+      capture(chunk);
       if (!wrapper.push(chunk)) socket.pause();
     });
     wrapper.on('drain', () => socket.resume());
