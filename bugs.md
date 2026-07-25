@@ -160,6 +160,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-017 — Medium — HTTP/2 forwarding corrupts multiple `Set-Cookie` fields
 
+- Status: **Fixed**.
+
 - Evidence: `src/proxy/proxy-server.js:1801-1805,1843-1847` joins every array-valued response header with `", "`, including `Set-Cookie`, whose values cannot be safely comma-combined.
 - Impact: clients can fail to store one or both cookies, especially when an `Expires` attribute itself contains a comma.
 - Reproduction: return two `Set-Cookie` headers over the H2 forwarding path and inspect the forwarded field.

@@ -370,6 +370,18 @@ export class ProxyServer {
     return clean;
   }
 
+  _toH2ResponseHeaders(statusCode, headers) {
+    const converted = { ':status': statusCode };
+    for (const [name, value] of Object.entries(headers || {})) {
+      const lower = name.toLowerCase();
+      if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'http2-settings'].includes(lower)) continue;
+      converted[lower] = Array.isArray(value)
+        ? (lower === 'set-cookie' ? value : value.join(', '))
+        : value;
+    }
+    return converted;
+  }
+
   start() {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
@@ -1888,12 +1900,7 @@ export class ProxyServer {
                 h2Session, method, hostname, targetPort, path, upstreamHeaders, body
               );
               // Build h2 response headers for the client stream
-              const h2ResponseHeaders = { ':status': h2Res.statusCode };
-              for (const [k, v] of Object.entries(h2Res.headers)) {
-                const lower = k.toLowerCase();
-                if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'http2-settings'].includes(lower)) continue;
-                h2ResponseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-              }
+              const h2ResponseHeaders = this._toH2ResponseHeaders(h2Res.statusCode, h2Res.headers);
               try {
                 if (!stream.destroyed && !stream.closed) {
                   stream.respond(h2ResponseHeaders);
@@ -1930,12 +1937,7 @@ export class ProxyServer {
             }
 
             // Build h2 response headers, filtering out h1-specific ones
-            const responseHeaders = { ':status': proxyRes.statusCode };
-            for (const [k, v] of Object.entries(proxyRes.headers)) {
-              const lower = k.toLowerCase();
-              if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'http2-settings'].includes(lower)) continue;
-              responseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-            }
+            const responseHeaders = this._toH2ResponseHeaders(proxyRes.statusCode, proxyRes.headers);
 
             try {
               if (!stream.destroyed && !stream.closed) {
@@ -2363,12 +2365,7 @@ export class ProxyServer {
           fwdRes.on('data', chunk => responseBody.push(chunk));
           fwdRes.on('end', () => {
             const resBody = Buffer.concat(responseBody);
-            const resHeaders = { ':status': fwdRes.statusCode };
-            for (const [k, v] of Object.entries(fwdRes.headers)) {
-              const lower = k.toLowerCase();
-              if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade'].includes(lower)) continue;
-              resHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-            }
+            const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, fwdRes.headers);
             if (action.addResponseHeaders) {
               for (const [k, v] of Object.entries(action.addResponseHeaders)) {
                 resHeaders[k.toLowerCase()] = v;
