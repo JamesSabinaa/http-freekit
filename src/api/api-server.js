@@ -90,6 +90,8 @@ export class ApiServer {
     this.clients = new Set();
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
+    this._pendingTrafficIds = new Set();
+    this._clearedPendingTrafficIds = new Set();
     this.authToken = options.authToken || null;
     this.onShutdown = options.onShutdown || null;
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
@@ -749,8 +751,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Clear traffic
     router.post('/api/traffic/clear', (req, res) => {
-      this.trafficLog = [];
-      this._broadcast({ type: 'traffic-cleared' });
+      this._clearTraffic();
       res.json({ success: true });
     });
 
@@ -1626,6 +1627,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     if (data._update) {
       // Update an existing pending request in-place
       delete data._update;
+      this._pendingTrafficIds.delete(data.id);
+      if (this._clearedPendingTrafficIds.delete(data.id)) {
+        this._maybeAutoRotateProxyOnError(data);
+        return;
+      }
       const idx = this.trafficLog.findIndex(r => r.id === data.id);
       if (idx !== -1) {
         this.trafficLog[idx] = data;
@@ -1639,6 +1645,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this._maybeAutoRotateProxyOnError(data);
     } else {
       // New request (pending or complete)
+      this._clearedPendingTrafficIds.delete(data.id);
+      if (data._pending) this._pendingTrafficIds.add(data.id);
+      else this._pendingTrafficIds.delete(data.id);
       delete data._pending;
       this.trafficLog.push(data);
       if (this.trafficLog.length > this.maxTrafficLog) {
@@ -1742,12 +1751,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }));
         break;
       case 'clear-traffic':
-        this.trafficLog = [];
-        this._broadcast({ type: 'traffic-cleared' });
+        this._clearTraffic();
         break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
     }
+  }
+
+  _clearTraffic() {
+    for (const id of this._pendingTrafficIds) this._clearedPendingTrafficIds.add(id);
+    this._pendingTrafficIds.clear();
+    this.trafficLog = [];
+    this._broadcast({ type: 'traffic-cleared' });
   }
 
   _persistMockRules() {

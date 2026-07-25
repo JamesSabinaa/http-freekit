@@ -409,6 +409,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-150 — Medium — Completing a pending request undoes Clear Traffic
 
+- Status: **Fixed**.
+
 - Evidence: Clear replaces the log with an empty array at `src/api/api-server.js:581-584`; a later `_update` whose original ID is now absent is pushed back into the log at `:1216-1227`.
 - Impact: exchanges started before Clear unexpectedly reappear in backend search and exports after their origins respond, while renderer state can diverge.
 - Reproduction: start a slow request, clear after its pending event, let it finish, then GET `/api/traffic`.
