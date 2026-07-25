@@ -43,6 +43,26 @@ export class BrowserInterceptor {
     return process.platform;
   }
 
+  _spawn(browserPath, args, options) {
+    return spawn(browserPath, args, options);
+  }
+
+  _waitForSpawn(launchedProcess) {
+    return new Promise((resolve, reject) => {
+      const onSpawn = () => {
+        launchedProcess.removeListener('error', onError);
+        resolve();
+      };
+      const onError = (err) => {
+        launchedProcess.removeListener('spawn', onSpawn);
+        reject(err);
+      };
+
+      launchedProcess.once('spawn', onSpawn);
+      launchedProcess.once('error', onError);
+    });
+  }
+
   canFocus() {
     return this._platform() === 'win32' || this._platform() === 'darwin';
   }
@@ -84,10 +104,11 @@ export class BrowserInterceptor {
     try {
       args = await this._getBrowserArgs(proxyPort, launchOptions);
       console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
-      launchedProcess = spawn(browserPath, args, {
+      launchedProcess = this._spawn(browserPath, args, {
         detached: false,
         stdio: 'ignore'
       });
+      await this._waitForSpawn(launchedProcess);
     } catch (err) {
       const profileDir = this.profileDir;
       this._cleanup(profileDir);

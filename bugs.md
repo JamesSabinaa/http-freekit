@@ -1177,6 +1177,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-162 — Medium — Browser interceptors report success before spawn is confirmed
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/browser-paths.js:41-47` verifies only that the path exists. Isolated browsers at `browser-interceptor.js:65-92` and Global Chrome at `existing-browser-interceptor.js:51-70` mark active and return immediately after `spawn()`, while launch failure is handled only by a later error listener.
 - Impact: API/UI confirms activation for a non-executable or corrupt browser binary and only silently changes state afterward.
 - Reproduction: leave a non-executable file at a detected browser path and activate its interceptor.

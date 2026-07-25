@@ -14,6 +14,11 @@ function fakeChild(pid) {
   return child;
 }
 
+function spawnChild(child) {
+  queueMicrotask(() => child.emit('spawn'));
+  return child;
+}
+
 test('Global Chrome rejects repeated activation and retains its first handle', async () => {
   const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
   interceptor._findBrowserPath = () => '/test/chrome';
@@ -23,7 +28,7 @@ test('Global Chrome rejects repeated activation and retains its first handle', a
   let spawns = 0;
   interceptor._spawn = () => {
     spawns += 1;
-    return first;
+    return spawnChild(first);
   };
 
   await interceptor.activate(8080);
@@ -42,7 +47,7 @@ test('events from a stopped Global Chrome handle cannot affect a replacement', a
   const first = fakeChild(7101);
   const second = fakeChild(7102);
   const children = [first, second];
-  interceptor._spawn = () => children.shift();
+  interceptor._spawn = () => spawnChild(children.shift());
 
   await interceptor.activate(8080);
   await interceptor.deactivate();

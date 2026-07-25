@@ -46,6 +46,22 @@ export class ExistingBrowserInterceptor {
     return spawn(browserPath, args, options);
   }
 
+  _waitForSpawn(launchedProcess) {
+    return new Promise((resolve, reject) => {
+      const onSpawn = () => {
+        launchedProcess.removeListener('error', onError);
+        resolve();
+      };
+      const onError = (err) => {
+        launchedProcess.removeListener('spawn', onSpawn);
+        reject(err);
+      };
+
+      launchedProcess.once('spawn', onSpawn);
+      launchedProcess.once('error', onError);
+    });
+  }
+
   async activate(proxyPort, options = {}) {
     if (this.active || this.process) {
       throw new Error(`${this.name} is already running`);
@@ -83,6 +99,7 @@ export class ExistingBrowserInterceptor {
       detached: false,
       stdio: 'ignore'
     });
+    await this._waitForSpawn(launchedProcess);
     this.process = launchedProcess;
 
     this.active = true;
