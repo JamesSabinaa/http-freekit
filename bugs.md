@@ -29,6 +29,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 17 | 3 new bugs found; documented below | 0/2 |
 | 18 | 9 new bugs found; documented below | 0/2 |
 | 19 | 11 new bugs found; documented below | 0/2 |
+| 20 | 15 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -945,7 +946,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-118 — High — Windows proxy changes are not published to running WinINet clients
 
-- Status: **Fixed**.
+- Status: **Partially fixed**. Normal activation and restoration now publish WinINet notifications, but a failed restoration notification cannot be retried because the next Stop misclassifies the restored registry values as an external change.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:46-53,72-80,90-99` changes registry values only and never sends the WinINet settings-changed and refresh notifications required after a global configuration change ([Microsoft option flags](https://learn.microsoft.com/en-us/windows/win32/wininet/option-flags)).
 - Impact: already-running WinINet clients can continue using cached direct/proxy settings after both Start and Stop even though FreeKit reports success.
 - Reproduction: keep a WinINet client open, activate System Proxy, and make another request without restarting the client.
@@ -959,7 +960,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-120 — High — Repeated Global Chrome activation loses the real browser handle
 
-- Status: **Fixed**.
+- Status: **Partially fixed**. Sequential repeat activation is rejected, but the guard is set before an awaited process scan and does not reserve an in-progress activation, so overlapping Starts can still overwrite the first handle.
 - Evidence: `src/interceptors/existing-browser-interceptor.js:23-70` has no active guard, replaces `this.process` on every activation, and lets each child's exit listener mutate shared state. `deactivate()` at `:73-78` can kill only the newest handle.
 - Impact: a second short-lived Chromium launcher can replace the original proxied-browser handle, mark the interceptor inactive on exit, and leave the real browser running after Stop.
 - Reproduction: activate Global Chrome while Chrome is closed, activate it again, then Stop; the original proxied browser remains.
@@ -973,7 +974,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-122 — High — Switching Android activation modes strands the old mode
 
-- Status: **Fixed**.
+- Status: **Partially fixed**. A normal replacement cleans the recorded mode first, but concurrent replacements can both pass that cleanup point and last-writer-win the device map, stranding the losing mode.
 - Evidence: `src/interceptors/android-adb-interceptor.js:383-465` never cleans an existing `activatedDevices` entry before replacing it. Stop at `:497-525` consults only the last stored mode.
 - Impact: switching between global-proxy and companion-app modes can leave the prior global proxy/CA or VPN app/reverse tunnel active, while Stop cleans only the newer half.
 - Reproduction: activate a device in global mode, make the companion app available, activate the same serial again, then Stop and inspect the global proxy.
@@ -986,7 +987,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-124 — Medium — The JVM API rejects numeric process IDs
 
-- Status: **Fixed**.
+- Status: **Partially fixed**. Activation normalizes a numeric PID to the stored string form, but targeted deactivation still tests the raw numeric value and silently leaves the JVM attached.
 
 - Evidence: `_getRunningProcesses()` stores PIDs as strings at `src/interceptors/jvm-interceptor.js:46-60`; activation compares the caller's value with strict equality at `:223-249` without normalization.
 - Impact: the natural JSON body `{ "pid": 1234 }` returns process not found even though `{ "pid": "1234" }` selects the same running JVM.
@@ -1321,6 +1322,54 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: Android activation awaits discovery and configuration before recording ownership at `src/interceptors/android-adb-interceptor.js:428-493`, while Stop returns when no record exists at `:536-544`. JVM activation similarly awaits discovery/attach at `src/interceptors/jvm-interceptor.js:400-409`, records at `:428-432`, and Stop returns for an unrecorded PID at `:464-468`. Docker has the same bookkeeping race at `src/interceptors/docker-interceptor.js:49-74,94-97`.
 - Impact: Stop or graceful shutdown can report completion, after which a pending operation modifies an Android proxy or attaches a JVM agent and only then records itself active.
 - Reproduction: delay the first discovery call, start activation, complete Stop while no target is recorded, then release discovery; activation finishes active and externally configured after Stop returned.
+
+### BUG-316 — Low/Medium — Global Chrome detection false-positives on command arguments
+
+- Evidence: `_isBrowserRunning()` at `src/interceptors/existing-browser-interceptor.js:33-42` searches each entire process command line for the selected browser's full path or executable basename instead of checking the process executable/argv0.
+- Impact: an unrelated editor, installer, or script that merely mentions `chrome.exe` can block Global Chrome activation with an instruction to close a browser that is not running.
+- Reproduction: return a process snapshot containing `notepad.exe "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"`; `_isBrowserRunning()` returns true.
+
+### BUG-317 — Medium — Cleanup-only browser state is accepted as a live browser
+
+- Evidence: `BrowserInterceptor.isActive()` at `src/interceptors/browser-interceptor.js:54-55` returns true solely for `cleanupPending`. `openUrl()` at `:129-154` therefore spawns an opener with the retained profile even when the tracked browser is dead; `toJSON()` also exposes the state as active and focusable without identifying cleanup failure.
+- Impact: the UI claims interception is Connected/Activated, and an open trigger can relaunch an untracked browser into the profile that Stop was trying to clean. Focus can instead target a dead PID or an ordinary unproxied browser.
+- Reproduction: make profile cleanup fail after child exit, then invoke browser-open; it returns success and launches an opener while cleanup remains pending and the original tracked process is dead.
+
+### BUG-318 — Medium — JVM Stop overwrites target changes made after activation
+
+- Evidence: the generated agent snapshots proxy properties and default SSL objects once at `src/interceptors/jvm-interceptor.js:169-179`, then restoration at `:195-212` unconditionally writes those stale originals without verifying that the current values still belong to FreeKit.
+- Impact: a target application that deliberately changes its proxy or default SSL context while interception is active loses the newer configuration when FreeKit stops.
+- Reproduction: activate a JVM, have it set a new `http.proxyHost` or default `SSLContext`, then Stop; the agent restores the pre-FreeKit value instead of preserving the application's change.
+
+### BUG-319 — Medium — Ambiguous Android adapters cannot be selected in the UI
+
+- Evidence: Android activation at `src/interceptors/android-adb-interceptor.js:400-430,462,522` rejects equally reachable adapters unless the caller supplies `hostIp`, but `activateAndroidDevice()` at `src/ui/app.js:4077,4091-4104` posts only `deviceId` and renders no adapter choice.
+- Impact: the visible Android fallback is unusable on common dual-homed systems where Ethernet and Wi-Fi are equally suitable for the device subnet.
+- Reproduction: expose two host adapters on the device's subnet and activate through the UI; the API requires `hostIp`, but the interface offers no way to provide it.
+
+### BUG-320 — High/Medium — Fresh Terminal activation can outlive Stop or shutdown
+
+- Evidence: POSIX activation holds its launched process and shell PID only in local variables while awaiting terminal launch, then records them at `src/interceptors/terminal-interceptors.js:214-218`. `deactivate()` at `:233-245` sees empty arrays during that wait and returns without canceling activation.
+- Impact: Stop or graceful shutdown can finish before a pending launch records itself, after which a new terminal opens and remains proxy-configured and active.
+- Reproduction: delay `_launchTrackedPosixTerminal()`, start activation, await Stop, then resolve the launch; the interceptor changes from inactive/empty to active with a live process and session PID.
+
+### BUG-325 — High/Medium — Android proxy setup can apply but be treated as untracked failure
+
+- Evidence: `_setProxy()` collapses every ADB timeout or disconnect into `false`, even when the device applied the command first. The failure branch at `src/interceptors/android-adb-interceptor.js:533-551` rolls back only the staged CA and discards the already captured `previousProxy` without recording the device.
+- Impact: activation can return failure and remain locally inactive while the device continues pointing at FreeKit; Stop then has no ownership record with which to restore the prior proxy.
+- Reproduction: make the ADB settings command apply FreeKit's proxy and then time out so `_setProxy()` returns false; activation fails, the map stays empty, and Stop leaves the changed device proxy in place.
+
+### BUG-326 — High/Medium — Global Chrome activation can outlive Stop
+
+- Evidence: `ExistingBrowserInterceptor.activate()` checks `active`/`process` before awaiting `_isBrowserRunning()` and records no `activating` reservation. `deactivate()` can therefore complete while the scan is pending, after which activation resumes and spawns the browser.
+- Impact: Stop or graceful shutdown can report success before Global Chrome launches and remains active with the user's normal profile and proxy flags.
+- Reproduction: defer `_isBrowserRunning()`, start activation, await Stop, then resolve the scan as false; activation finishes active with a live un-killed child.
+
+### BUG-330 — Medium — Failed Android mode replacement destroys the working mode
+
+- Evidence: Android replacement cleans and deletes the current activation at `src/interceptors/android-adb-interceptor.js:509-518` before validating the new mode's host selection and prerequisites later in `activate()`.
+- Impact: a typo, ambiguous/unreachable adapter, missing companion prerequisite, or other replacement error stops a working interception even though the requested replacement reports failure.
+- Reproduction: activate the companion mode, request global replacement with an invalid `hostIp`, and observe that activation throws after the companion was stopped and its ownership removed.
 
 ## Electron, updater, and renderer
 
@@ -1841,6 +1890,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-292 — Low — Reopening Existing Terminal loses its CA path
 
+- Status: **Fixed**. Existing Terminal is now instructions-only and always refreshes its metadata when reopened.
+
 - Evidence: collapsing a card clears shared metadata at `src/ui/app.js:3916-3919`, but reopening an already-active Existing Terminal skips activation/metadata fetch at `:3874-3913`. Terminal rendering then falls back to an empty certPath at `:3952-3960`.
 - Impact: copied commands contain a blank NODE_EXTRA_CA_CERTS path after the card is reopened.
 - Reproduction: expand Existing Terminal, collapse it, reopen it, and inspect the generated command.
@@ -1880,6 +1931,48 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `electron/menu.cjs:77` and `electron/updater.cjs:68` call `shell.openExternal()` without awaiting or catching its Promise. The updater's surrounding synchronous try/catch cannot catch an asynchronous rejection, unlike the explicit `.catch()` handling in `electron/main.cjs`.
 - Impact: a missing URL handler, OS policy denial, or invalid updater URL gives no user-facing error and raises an unhandled rejection in the Electron main process, which can terminate under the default rejection policy.
 - Reproduction: mock `shell.openExternal()` to return `Promise.reject(new Error('no URL handler'))` and invoke Help → Documentation; the main process emits `unhandledRejection`.
+
+### BUG-321 — Medium — Linux custom update feeds open the wrong download source
+
+- Evidence: `initAutoUpdater()` accepts `UPDATE_URL` at `electron/updater.cjs:111-114`, but `getGitHubReleasesUrl()` at `:205-228` later reads `autoUpdater.getFeedURL()`. Installed `electron-updater` returns the literal deprecated-getter message, URL parsing fails, and the code falls back to the hard-coded project GitHub releases page.
+- Impact: Linux users notified through a custom release channel are sent to an unrelated build instead of the feed or artifact that produced the notification.
+- Reproduction: configure a generic custom `UPDATE_URL` containing a newer Linux release with ordinary text release notes, trigger the update notice, and inspect its link; it targets the hard-coded GitHub latest page.
+
+### BUG-322 — Low — Toast feedback is silent to screen readers
+
+- Evidence: the toast container at `src/ui/index.html:616` has no status/alert role, `aria-live`, or `aria-atomic`. `toast()` at `src/ui/app.js:8922-8933` and updater notifications at `:9678-9704` insert non-focusable messages and remove them shortly afterward without another announcement mechanism.
+- Impact: blind users receive no confirmation or error for many saves, activations, copies, and update actions.
+- Reproduction: trigger a failed activation or save while using a screen reader; the visible toast appears but no live-region announcement or focus change occurs.
+
+### BUG-323 — Low — Traffic active-descendant is attached to an unfocusable owner
+
+- Evidence: the Traffic grid is the table at `src/ui/index.html:70`, but `updateTrafficActiveDescendant()` at `src/ui/app.js:700-703` writes `aria-activedescendant` to the unfocusable `tbody`. The table, body, and generated rows never receive keyboard or programmatic focus.
+- Impact: keyboard selection changes visually, but assistive technology receives no active-row focus or selection announcement.
+- Reproduction: navigate Traffic with Arrow keys and inspect `document.activeElement` and the accessibility tree; the active descendant belongs to no focused composite.
+
+### BUG-324 — Low — Packaged UI version text is hard-coded
+
+- Evidence: `src/ui/index.html:19,590` embeds `1.0.0`. Although the preload exposes `getDesktopVersion()` and main returns `app.getVersion()`, the renderer never requests it.
+- Impact: after any release bump, Settings and the logo tooltip report an obsolete version while native About and the updater report the actual one.
+- Reproduction: package version 1.0.1 and launch it; both renderer locations still display 1.0.0.
+
+### BUG-327 — Low/Medium — Electron launcher paths are destroyed by rerenders
+
+- Evidence: the selected path exists only in the input created by `renderElectronConfig()` at `src/ui/app.js:3934-3951`. `filterInterceptors()` recreates the cards, and `launchElectronApp()` invokes it immediately after capturing the path and again in `finally` at `:3975-3996`; status and search rerenders do the same.
+- Impact: every failed launch returns to an empty field and forces the user to browse or type again; a rerender while the native picker is open can make its result write into a detached input and disappear.
+- Reproduction: enter a path, force activation to fail, and click Launch; the error toast appears but the path field has been reset.
+
+### BUG-328 — Low — Electron Browse failures are unhandled
+
+- Evidence: `browseElectronApp()` at `src/ui/app.js:3953-3965` directly awaits `window.electronApi.selectFilePath()` without try/catch, unlike the caught and toasted certificate picker path.
+- Impact: an IPC or native dialog rejection becomes an unhandled renderer Promise and gives the user no error feedback.
+- Reproduction: make `selectFilePath()` reject and click Browse; no toast appears and the renderer reports an unhandled rejection.
+
+### BUG-329 — Medium — Electron Browse cannot launch macOS application bundles
+
+- Evidence: the generic picker at `electron/main.cjs:382-391` returns a selected `.app` bundle path, while `ElectronInterceptor` passes that directory verbatim to `spawn()` at `src/interceptors/electron-interceptor.js:36-44` instead of resolving `Contents/MacOS/<executable>` or using a macOS application launcher.
+- Impact: the normal Browse workflow on macOS selects `/Applications/Foo.app` but Launch fails, unless the user manually discovers and types the inner executable path.
+- Reproduction: on macOS, Browse to an Electron `.app` bundle and click Launch; spawning the bundle directory fails.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
