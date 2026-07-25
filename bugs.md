@@ -498,6 +498,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-160 — Low — HAR import misclassifies uppercase HTTPS schemes
 
+- Status: **Fixed** (already addressed by `a9b335e`).
+
 - Evidence: URL parsing succeeds at `src/api/api-server.js:678-688`, but protocol is derived separately with case-sensitive `entry.request.url?.startsWith("https")` at `:691-695`.
 - Impact: a valid `HTTPS://` record is labeled insecure HTTP, affecting display, security scans, and later exports.
 - Reproduction: import a minimal HAR containing `HTTPS://example.com/` and inspect the resulting protocol.
