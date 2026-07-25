@@ -27,6 +27,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 15 | 4 new bugs found; documented below | 0/2 |
 | 16 | 4 new bugs found; documented below | 0/2 |
 | 17 | 3 new bugs found; documented below | 0/2 |
+| 18 | 9 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -1199,6 +1200,48 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: FreeKit reports Global Chrome stopped while the tracked browser and its proxy configuration can remain running, with no further cleanup attempt available through the UI.
 - Reproduction: suspend the tracked Chrome process so it cannot handle termination, click Stop, and observe that the interceptor becomes inactive while the PID remains alive.
 
+### BUG-296 — High — Node core HTTP(S) bypasses every environment-based Node interceptor
+
+- Evidence: Fresh Terminal sets proxy and TLS environment variables at `src/interceptors/terminal-interceptors.js:44-56`, Existing Terminal at `:179-181`, Electron at `src/interceptors/electron-interceptor.js:47-52`, and Docker in its generated commands at `src/interceptors/docker-interceptor.js:52-53`; none enables Node's environment-proxy support or installs a proxy agent.
+- Impact: built-in `node:http` and `node:https` requests from terminal children, Electron main processes, and containers connect directly and never appear in FreeKit despite those paths being advertised for Node interception.
+- Reproduction: activate any affected path and issue a request with `node:http.get()` and no custom agent; the origin receives it directly, while enabling `NODE_USE_ENV_PROXY=1` on a supporting Node release routes it through the proxy.
+
+### BUG-297 — Medium — Generated Docker configuration makes curl HTTP traffic bypass FreeKit
+
+- Evidence: `src/interceptors/docker-interceptor.js:44,52-53` and the UI fallback at `src/ui/app.js:3937-3938` emit only uppercase `HTTP_PROXY`/`HTTPS_PROXY`. On case-sensitive container environments curl deliberately ignores uppercase `HTTP_PROXY` and recognizes lowercase `http_proxy` for HTTP.
+- Impact: HTTP curl requests launched with the exact displayed Docker run or Compose configuration connect directly and are not captured.
+- Reproduction: use the generated command with `curlimages/curl` against an HTTP origin and observe that the origin, rather than FreeKit, receives the connection.
+
+### BUG-298 — Medium — Isolated Firefox disables unrelated web security
+
+- Evidence: the generated Firefox profile at `src/interceptors/browser-interceptor.js:173-178` disables certificate pinning, active mixed-content blocking, and OCSP checking in addition to configuring the FreeKit CA.
+- Impact: the isolated browser permits insecure active content and suppresses pinning/revocation protections even for unrelated direct or passthrough traffic; trusting the interception CA does not require those global relaxations.
+- Reproduction: launch isolated Firefox and visit an HTTPS page that embeds an HTTP script; the generated profile allows content that a stock Firefox profile blocks.
+
+### BUG-299 — Low — Browser-open can lose its URL when the browser closes mid-request
+
+- Evidence: `InterceptorManager.openUrl()` checks `isActive()` at `src/interceptors/interceptor-manager.js:102`, then `BrowserInterceptor.openUrl()` checks again at `src/interceptors/browser-interceptor.js:101-103` and throws if the process exited between the checks. The manager does not catch that transition and fall back to activation.
+- Impact: closing the browser during an API trigger or deep link produces a 400 response and drops the requested URL instead of launching a replacement browser as promised for inactive interceptors.
+- Reproduction: make the manager's first active check return true and the browser's second check return false, then call the open route; it returns “Chrome is not running” without activating.
+
+### BUG-300 — Medium — Electron renderer interception disables all certificate validation
+
+- Evidence: `_getLaunchArgs()` at `src/interceptors/electron-interceptor.js:21-27` includes both a scoped SPKI allowlist and unconditional `--ignore-certificate-errors`, and activation passes the flags as real process arguments at `:55`.
+- Impact: intercepted Electron renderers accept expired, self-signed, and wrong-host certificates unrelated to FreeKit, including bypassed or passthrough destinations; the unconditional switch makes the scoped SPKI flag ineffective as a boundary.
+- Reproduction: activate an Electron app and load a wrong-host or self-signed HTTPS origin in a BrowserWindow; the renderer accepts it.
+
+### BUG-301 — Medium — Android Stop overwrites proxy changes made after activation
+
+- Evidence: activation snapshots the previous global proxy at `src/interceptors/android-adb-interceptor.js:465-469` and stores it at `:482-492`; cleanup at `:533-544` restores that stale value without first checking whether the current proxy still belongs to FreeKit.
+- Impact: a VPN, administrator, or second debugging tool that changes the device proxy while FreeKit is active has its newer setting silently overwritten on Stop.
+- Reproduction: start with `old:1`, activate FreeKit, set Android's global proxy to `new:2`, then Stop; the setting becomes `old:1`.
+
+### BUG-302 — Low/Medium — Uninstalling the Android companion app makes Stop fail forever
+
+- Evidence: `_deactivateHttpToolkitApp()` at `src/interceptors/android-adb-interceptor.js:247-267` treats an absent package as a failed app deactivation even when tunnel cleanup succeeds. Deactivation then retains the record and throws at `:525-554`, so every retry repeats the same false failure.
+- Impact: uninstalling the companion app after activation leaves FreeKit permanently reporting that device as active and can make graceful shutdown report cleanup failure although the app/VPN is already gone.
+- Reproduction: activate a device through the companion app, uninstall `tech.httptoolkit.android.v1`, and click Stop; the interceptor remains active on every retry.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1727,6 +1770,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: the sole `addNewMockRule()` trigger is a clickable `div` at `src/ui/index.html:214` with no button role, tabindex, or keyboard handler.
 - Impact: keyboard-only users cannot create a mock rule through the visible interface.
 - Reproduction: navigate the Mock panel using only Tab and Enter/Space; the Add Rule control never receives focus and cannot be invoked.
+
+### BUG-303 — Low — Breakpoint fields are keyboard-inaccessible
+
+- Evidence: `src/ui/app.js:1093-1122` renders every editable breakpoint field as a `span` or `pre` with only an `ondblclick` handler and no tabindex, semantic role, or keyboard handler.
+- Impact: keyboard-only users can resume a paused request but cannot edit its method, URL, status, headers, or body first.
+- Reproduction: pause a request and Tab through the detail card; focus reaches Resume but skips every editable field.
+
+### BUG-304 — Low — Custom context menus cannot be operated by keyboard
+
+- Evidence: `showContextMenu()` at `src/ui/app.js:8581-8604` creates items as plain `div` elements with only `onclick`; it provides no menu roles, focus targets, arrow-key handling, or Enter/Space activation. Traffic exposes the menu only through pointer context-menu handlers.
+- Impact: keyboard-only users cannot access actions such as Copy URL, Copy as cURL, or header-copy operations.
+- Reproduction: select a Traffic row with the keyboard, press Shift+F10/Menu, and try to focus or activate a menu item; no usable keyboard menu is available.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
