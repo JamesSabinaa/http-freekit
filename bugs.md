@@ -16,6 +16,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 4 | 31 new bugs found; documented below | 0/2 |
 | 5 | 27 new bugs found; documented below | 0/2 |
 | 6 | 11 new bugs found; documented below | 0/2 |
+| 7 | 13 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -522,6 +523,30 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: partial uploads and client resets are absent from capture despite incrementing request counters, defeating diagnosis and leaving no terminal record.
 - Reproduction: declare a large Content-Length, send a short prefix, and close the client socket.
 
+### BUG-214 — Medium — Management WebSocket broadcasts buffer without bound
+
+- Evidence: `src/api/api-server.js:1368-1376` serializes every event and calls `client.send()` for every OPEN client with no `bufferedAmount` limit, throttling, send callback/error policy, or slow-client disconnect.
+- Impact: one authenticated but non-reading UI/WebSocket client can accumulate an unbounded per-client queue and process memory as large captures arrive.
+- Reproduction: authenticate to `/ws`, pause the underlying socket, generate repeated large captures, and monitor `bufferedAmount` and RSS.
+
+### BUG-215 — Medium — MCP HAR export returns invalid truncation after full allocation
+
+- Evidence: the tool promises HAR 1.2 but builds and pretty-serializes the complete result before its size check at `src/mcp/mcp-server.js:48,358-374`; above 200 KiB it returns prose plus only the first 50 KiB of JSON at `:375-383`.
+- Impact: large filtered exports are not parseable HAR, and the guard does not prevent large memory/event-loop work for up to the full traffic cap.
+- Reproduction: export one exchange over 200 KiB and pass the returned text to `JSON.parse()`.
+
+### BUG-216 — Low/Medium — Traffic import permits duplicate and colliding IDs
+
+- Evidence: JSON validation requires only a nonempty string ID and appends records unchanged at `src/api/api-server.js:295-339,765-780`, including duplicates and collisions with existing traffic. Detail/API/MCP consumers use the first match.
+- Impact: later records become unaddressable, selection is ambiguous, and ID-keyed renderer state can alias unrelated exchanges.
+- Reproduction: import two valid records with `id: "dup"` and request `/api/traffic/dup` or select it through MCP.
+
+### BUG-217 — Medium — HTTP/2 capture authority differs from actual upstream routing
+
+- Evidence: CONNECT-H2 uses inbound `:authority` and `:scheme` for `fullUrl`, capture, and matching at `src/proxy/proxy-server.js:1688-1710`, but opens the upstream session to the original CONNECT target and `_makeH2Request()` rewrites both pseudo-fields to that target at `:1802-1806,2656-2667`.
+- Impact: a coalesced/custom H2 request can be logged and mocked as origin B while it is actually delivered to origin A.
+- Reproduction: CONNECT to local origin A, negotiate H2, then send `:authority: b.test`; observe capture and destination disagree.
+
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
@@ -854,6 +879,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: other open UI sessions remain indefinitely stale after one client starts or stops these interceptors and can offer invalid actions against outdated state.
 - Reproduction: open two UI sessions, activate System Proxy or Android in one, and observe no connected-source change in the other until reload.
 
+### BUG-218 — High/Medium — Restart preserves orphaned browsers but discards their ownership
+
+- Evidence: startup cleanup classifies a profile with a related live browser as `skippedActive` at `src/interceptors/browser-lifecycle.js:223-230`. `InterceptorManager` invokes cleanup at `interceptor-manager.js:17-23` but ignores that result, then constructs new browser interceptors with empty process/profile state at `:25-37`.
+- Impact: after a server crash, restart deliberately preserves the surviving isolated browser but reports it inactive, cannot stop it, and never cleans its profile when it later exits.
+- Reproduction: activate isolated Chrome, hard-kill only the server, and restart while Chrome remains open.
+
+### BUG-219 — Medium — Android treats `am start -W` timeout output as success
+
+- Evidence: activation and deactivation ignore `_adb()` stdout at `src/interceptors/android-adb-interceptor.js:216-234,251-261` and infer success only from exit status, although `am start -W` can print `Status: timeout` with a zero exit.
+- Impact: a timed-out launch is marked active; a timed-out stop clears local ownership and removes the reverse tunnel even though the VPN app may still be active.
+- Reproduction: make the companion activity return `Status: timeout` and observe both helpers return success.
+
 ## Electron, updater, and renderer
 
 ### BUG-022 — Critical — Electron IPC origin validation accepts a remote URL
@@ -1185,6 +1222,48 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: any startup deep-link sets `showOnReady: false` at `electron/main.cjs:425-429`. Parse/request failure paths at `:152-159,196-208` report the error but never call `showMainWindow()`.
 - Impact: after dismissing a failed startup link, the main window remains hidden and must be recovered from the tray.
 - Reproduction: launch the stopped app with an invalid target or force proxied-Chrome opening to fail.
+
+### BUG-220 — Medium — Traffic context actions can target a different row
+
+- Evidence: the menu captures `requestId`, but Create Breakpoint, Pin, and Delete call selection-global functions at `src/ui/app.js:8524-8545`; only Resend and Create Mock pass the captured ID.
+- Impact: keyboard navigation while the menu is open can make a destructive action operate on another selected exchange.
+- Reproduction: right-click row A, press Arrow Down to select B, then choose Delete or Pin.
+
+### BUG-221 — Low/Medium — Escape-to-abort works only inside Monaco
+
+- Evidence: Send registers Escape abort on Monaco at `src/ui/app.js:6696-6699`; document-level Escape only closes details at `:8872`, despite the README promising a general abort shortcut.
+- Impact: pressing Escape while focus is in the URL, headers, Send button, or response pane leaves the request running.
+- Reproduction: start Send with focus on the URL input and press Escape.
+
+### BUG-222 — Medium — Create Mock corrupts repeated response headers
+
+- Evidence: mock-from-exchange flattens response header arrays with `join(", ")` at `src/ui/app.js:8580-8600`, including Set-Cookie, although the fixed-response path can preserve arrays.
+- Impact: replay turns distinct cookie fields into one comma-combined value with different semantics.
+- Reproduction: capture two Set-Cookie fields, create a mock, and trigger it.
+
+### BUG-223 — Low/Medium — URL-encoded body views decode values twice
+
+- Evidence: `URLSearchParams` already decodes entries, but both body formatters call `decodeURIComponent()` again at `src/ui/app.js:2319-2330,3145-3162`.
+- Impact: displayed/copied form values differ from the request and can throw for percent text after the first decode.
+- Reproduction: inspect `token=%252Fadmin`; the UI shows `/admin` instead of `%2Fadmin`.
+
+### BUG-224 — Low — Opaque traffic IDs are not encoded consistently in hashes
+
+- Evidence: imports accept any nonempty string ID; selection writes it directly into the fragment at `src/ui/app.js:705-713,7469-7470`, while routing compares the browser-encoded fragment directly at `:8429-8445`.
+- Impact: imported IDs containing spaces or fragment-significant characters cannot restore selection after reload.
+- Reproduction: import ID `id with space`, select it, and reload the resulting hash.
+
+### BUG-225 — Low — Global search shortcuts are swallowed outside Traffic
+
+- Evidence: Ctrl+F, `/`, and Ctrl+K prevent the default and focus the hidden Traffic search input without checking/switching the active panel at `src/ui/app.js:8886-8895`.
+- Impact: browser/editor find is suppressed in Send or Settings, but the focused Traffic filter is invisible.
+- Reproduction: focus a Send or Settings field and press Ctrl+F.
+
+### BUG-226 — Low — The 100,000-row claim contradicts the 10,000-record cap
+
+- Evidence: `README.md:13` promises a table handling 100,000+ rows, while the API caps traffic at 10,000 and the renderer independently evicts beyond 10,000 (`src/api/api-server.js:51`; `src/ui/app.js:277-278`).
+- Impact: the advertised scale is impossible because older records are discarded before the table can contain them.
+- Reproduction: capture or import more than 10,000 exchanges and observe eviction.
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
