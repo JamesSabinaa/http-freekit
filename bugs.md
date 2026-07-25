@@ -36,6 +36,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 | 24 | 3 new bugs found; documented below | 0/2 |
 | 25 | 8 new bugs found; documented below | 0/2 |
 | 26 | 3 new bugs found; documented below | 0/2 |
+| 27 | 3 new bugs found; documented below | 0/2 |
 
 ## API, MCP, and persistence
 
@@ -506,6 +507,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-176 — Medium — Unsupported outbound URL schemes are silently sent as HTTP
 
+- Status: **Partially fixed**.
+- Resolution: Webhook actions now reject schemes other than HTTP and HTTPS, but Send, plain absolute-form forwarding, and mock-forward actions still route unsupported schemes through HTTP.
+
 - Evidence: Send treats only exact `https:` as HTTPS and routes every other parsed scheme through `http` (`src/api/api-server.js` `_sendRequest`). Plain absolute-form forwarding similarly selects HTTP/default port 80 for non-HTTPS paths at `src/proxy/proxy-server.js:566-568,674-700`; mock forward and webhook paths repeat the boolean scheme choice at `:3424-3442,3554-3570`.
 - Impact: `ftp:`, `ws:`, and other unsupported URLs send HTTP bytes to unintended endpoints; an absolute-form `https://` request accepted on the plain proxy path can be downgraded to plaintext.
 - Reproduction: Send `ftp://127.0.0.1:<listener>/` and observe an HTTP request, then submit absolute-form HTTPS to the plain proxy.
@@ -877,6 +881,18 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: `_clearTraffic()` copies every live pending ID into `_clearedPendingTrafficIds`. Entries are deleted only if a later event reuses or completes the same ID; the set has no size limit, expiry, or other cleanup path.
 - Impact: pending requests that never produce a completion leave permanent tombstones. Repeated pending-and-clear cycles can grow backend memory even while the bounded traffic log stays small.
 - Reproduction: emit unique pending traffic events and clear after each without emitting their completions; `_clearedPendingTrafficIds` grows once per cycle while `trafficLog` remains empty.
+
+### BUG-364 — Low/Medium — Webhook actions block matched requests despite their fire-and-forget contract
+
+- Evidence: The rule editor labels webhooks `Send a webhook (fire-and-forget)` at `src/ui/app.js:4537`, but `_serveMockResponse()` awaits webhook response headers before it responds to the matched client at `src/proxy/proxy-server.js:4294-4309`.
+- Impact: a slow or nonresponsive webhook delays the original client for up to the outbound timeout and can turn an otherwise matched mock response into an error.
+- Reproduction: point a webhook rule at a server that accepts the connection without sending headers; the matched request remains pending instead of receiving its mock response immediately.
+
+### BUG-365 — Low/Medium — Interrupted mock-file streams are falsely recorded or omitted
+
+- Evidence: `_streamMockFile()` rejects when a downstream client closes early. The HTTP/1 handlers catch that post-header rejection and record status 500, `File Error`, and a file-not-found message for the existing file at `src/proxy/proxy-server.js:1629-1668,4232-4269`; the HTTP/2 catch at `:2956-2988` emits no traffic record.
+- Impact: traffic history falsely diagnoses a valid file as missing on HTTP/1 and loses the request entirely on HTTP/2, obscuring ordinary client cancellations and real delivery failures.
+- Reproduction: serve a large existing file, close the client after the first response chunk, and inspect traffic; HTTP/1 records `Premature close` as a missing-file 500 while HTTP/2 records nothing.
 
 ## Interceptors and cleanup
 
@@ -1895,6 +1911,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Impact: the interface continues showing a paused request after it resumed automatically, and a later Resume attempt fails because the pending breakpoint no longer exists.
 - Reproduction: leave a paused request untouched until its five-minute timeout expires; the server removes it but the pause banner remains visible.
 
+### BUG-366 — Low/Medium — Desktop startup can accept an unrelated local service as ready
+
+- Evidence: `findFreePort()` releases its temporary listener before the server child binds at `electron/main.cjs:34-42`, and `waitForServer()` resolves on any HTTP response from `/api/config` at `:48-80` without checking its status or validating that it is FreeKit.
+- Impact: another local process can claim the selected port during the race, after which the desktop loads an unrelated response or error page and treats failed FreeKit startup inconsistently.
+- Reproduction: claim the selected port after `findFreePort()` returns and respond 503 to `/api/config`; `waitForServer()` still reports readiness.
+
 ### BUG-168 — Medium — Concurrent Send actions corrupt abort ownership
 
 - Evidence: `sendRequest()` has no in-flight guard and replaces the one global `currentSendAbort` on each invocation at `src/ui/app.js:7257-7277`. Every request's `finally` clears the same global at `:7340`, while `abortSendRequest()` at `:7345-7349` aborts only its current value; Ctrl+Enter can invoke the disabled button's function again.
@@ -2359,7 +2381,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-037 — High — Build dependencies contain an unbounded brace-expansion DoS
 
-- Evidence: `package-lock.json:2070-2072` resolves `brace-expansion` 5.0.7, within the affected `<=5.0.7` range. Full `npm audit` reports [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) through multiple builder paths.
+- Evidence: The top-level `brace-expansion` is 5.0.8, but `package-lock.json` still resolves vulnerable nested 1.1.16 and 2.1.2 copies under Electron/build tooling. Full `npm audit` reports [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) through those paths.
 - Impact: attacker-controlled or accidentally extreme patterns processed by the build dependency graph can exhaust memory.
 - Reproduction: run `npm audit --audit-level=high`; the full audit exits nonzero and reports this advisory.
 
