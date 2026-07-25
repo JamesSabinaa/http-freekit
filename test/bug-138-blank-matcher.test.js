@@ -42,6 +42,14 @@ test('blank broad matchers never match traffic at runtime', () => {
   }
 });
 
+test('legacy internal empty matcher arrays retain their explicit match-all behavior', () => {
+  const proxy = new ProxyServer(null);
+  const rule = { enabled: true, matchers: [], action: { type: 'fixed-response' } };
+  proxy.mockRules = [rule];
+
+  assert.equal(proxy._findMockRule('GET', 'https://example.test/path', {}, ''), rule);
+});
+
 test('the mock API rejects empty and incomplete matcher arrays', async t => {
   const proxy = new ProxyServer(null);
   const api = new ApiServer(proxy, null, null);

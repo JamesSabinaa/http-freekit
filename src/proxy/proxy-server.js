@@ -3821,7 +3821,6 @@ export class ProxyServer {
 
       // New format: matchers + action
       if (rule.matchers && rule.action) {
-        if (!Array.isArray(rule.matchers) || rule.matchers.length === 0) return false;
         return rule.matchers.every(m => this._evaluateMatcher(m, method, url, headers, body));
       }
 
