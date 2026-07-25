@@ -107,7 +107,12 @@ export class FreshTerminalInterceptor {
       `printf '%s' "$$" > ${shellQuote(pidFile)}`,
       `export HTTP_PROXY=${shellQuote(proxyUrl)}`,
       `export HTTPS_PROXY=${shellQuote(proxyUrl)}`,
+      `export http_proxy=${shellQuote(proxyUrl)}`,
+      `export https_proxy=${shellQuote(proxyUrl)}`,
+      `export SSL_CERT_FILE=${shellQuote(certPath)}`,
       `export NODE_EXTRA_CA_CERTS=${shellQuote(certPath)}`,
+      `export REQUESTS_CA_BUNDLE=${shellQuote(certPath)}`,
+      `export CURL_CA_BUNDLE=${shellQuote(certPath)}`,
       'export NODE_TLS_REJECT_UNAUTHORIZED=0',
       `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`,
       'exec "${SHELL:-/bin/sh}" -l'

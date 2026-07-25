@@ -917,6 +917,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-097 — Medium — macOS Fresh Terminal omits most promised environment
 
+- Status: **Fixed**.
 - Evidence: the full environment at `src/interceptors/terminal-interceptors.js:44-56` is passed only to short-lived `osascript`. The actual Terminal command at `:82-86` exports only uppercase HTTP/HTTPS proxy, `NODE_EXTRA_CA_CERTS`, and Node TLS disable, omitting lowercase proxy variables and the curl/Python CA variables.
 - Impact: tools such as curl can bypass the HTTP proxy or reject HTTPS even though the terminal is labeled intercepted.
 - Reproduction: open Fresh Terminal on macOS and inspect relevant variables/use curl.
