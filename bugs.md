@@ -1664,6 +1664,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-140 — Medium — Electron menu accelerators override documented renderer shortcuts
 
+- Status: **Fixed**.
+
 - Evidence: File New Session registers `CmdOrCtrl+Shift+N` to reload at `electron/menu.cjs:25-31`, while the renderer maps the same chord to New Send Tab at `src/ui/app.js:8877-8881`. The View reload role at `electron/menu.cjs:55-60` conflicts with renderer resend on `CmdOrCtrl+R` at `app.js:8916-8920`; on macOS, File close conflicts with close-tab on `Cmd+W` at `:8901-8906`. README documents the renderer meanings at `README.md:147,154-155`.
 - Impact: packaged desktop shortcuts reload or close the application window instead of performing the advertised Send/Traffic action, losing unsaved UI state.
 - Reproduction: press Ctrl/Cmd+Shift+N in the packaged app and observe a session reload instead of a new Send tab.

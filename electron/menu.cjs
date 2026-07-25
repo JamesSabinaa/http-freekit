@@ -26,14 +26,13 @@ function buildAppMenu(mainWindow) {
     submenu: [
       {
         label: 'New Session',
-        accelerator: 'CmdOrCtrl+Shift+N',
         click: () => {
           if (mainWindow) mainWindow.webContents.reload();
         }
       },
       { type: 'separator' },
       isMac
-        ? { role: 'close' }
+        ? { label: 'Close Window', click: () => mainWindow?.close() }
         : { role: 'quit', label: 'Quit', accelerator: 'Ctrl+Q' }
     ]
   };
@@ -56,7 +55,7 @@ function buildAppMenu(mainWindow) {
   const viewMenu = {
     label: 'View',
     submenu: [
-      { role: 'reload' },
+      { label: 'Reload', click: () => mainWindow?.webContents.reload() },
       { type: 'separator' },
       { role: 'zoomIn', accelerator: 'CmdOrCtrl+=' },
       { role: 'zoomOut' },
