@@ -1279,6 +1279,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         ws.send(JSON.stringify({
           type: 'init',
           trafficCount: this.trafficLog.length,
+          trafficLimit: this.maxTrafficLog,
           proxyPort: this.proxy.port,
           apiPort: this.port
         }));

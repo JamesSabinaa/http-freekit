@@ -109,6 +109,10 @@
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
           config.apiPort = msg.apiPort;
+          ws.send(JSON.stringify({
+            type: 'get-traffic',
+            limit: msg.trafficLimit || msg.trafficCount || 100
+          }));
           // Load initial data
           loadConfig();
           loadUiSettings();
