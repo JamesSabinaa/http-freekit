@@ -358,9 +358,16 @@ export class ProxyServer {
       .filter(Boolean);
   }
 
+  _normalizeConnectionHostname(hostname) {
+    const value = String(hostname || '');
+    return value.startsWith('[') && value.endsWith(']')
+      ? value.slice(1, -1)
+      : value;
+  }
+
   _shouldUseUpstreamProxy(hostname, targetPort) {
     if (!this.upstreamProxy) return false;
-    const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    const host = this._normalizeConnectionHostname(hostname).toLowerCase().replace(/\.$/, '');
     const port = String(targetPort || '');
 
     for (const rawEntry of this.upstreamProxy.noProxy || []) {
@@ -685,7 +692,7 @@ export class ProxyServer {
           .catch(err => oncreate(err));
       };
     } else if (useUpstreamProxy) {
-      options.hostname = this.upstreamProxy.host;
+      options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
       options.port = this.upstreamProxy.port;
       options.path = targetUrl.href;
       if (this.upstreamProxy.auth) {
@@ -990,7 +997,7 @@ export class ProxyServer {
         if (useUpstreamProxy) {
           // Route through HTTP/HTTPS upstream proxy — send full URL as path
           const options = {
-            hostname: this.upstreamProxy.host,
+            hostname: this._normalizeConnectionHostname(this.upstreamProxy.host),
             port: this.upstreamProxy.port,
             path: targetUrl.href,
             method: clientReq.method,
@@ -3674,13 +3681,14 @@ export class ProxyServer {
   };
 
   _getUpstreamTlsOptions(hostname, clientHelloTls) {
+    const connectionHostname = this._normalizeConnectionHostname(hostname);
     const base = {
-      servername: net.isIP(hostname) ? undefined : hostname,
-      rejectUnauthorized: !this._isHttpsWhitelisted(hostname),
+      servername: net.isIP(connectionHostname) ? undefined : connectionHostname,
+      rejectUnauthorized: !this._isHttpsWhitelisted(connectionHostname),
       ...(this._trustedCaCertificates.length > 0
         ? { ca: [...tls.rootCertificates, ...this._trustedCaCertificates] }
         : {}),
-      ...this._getClientCertificateOptions(hostname),
+      ...this._getClientCertificateOptions(connectionHostname),
     };
 
     // Passthrough mode — mirror the client's exact TLS parameters
@@ -3715,8 +3723,8 @@ export class ProxyServer {
   _getUpstreamProxyUrl() {
     const p = this.upstreamProxy;
     const scheme = p.type?.startsWith('socks') ? p.type : (p.type === 'https' ? 'https' : 'http');
-    const unwrappedHost = String(p.host).replace(/^\[|\]$/g, '');
-    const urlHost = net.isIP(unwrappedHost) === 6 ? `[${unwrappedHost}]` : p.host;
+    const connectionHost = this._normalizeConnectionHostname(p.host);
+    const urlHost = net.isIP(connectionHost) === 6 ? `[${connectionHost}]` : connectionHost;
     let auth = '';
     if (p.auth) {
       const colonIdx = p.auth.indexOf(':');
@@ -3769,13 +3777,13 @@ export class ProxyServer {
     const proxy = this.upstreamProxy;
     const socksOptions = {
       proxy: {
-        host: proxy.host,
+        host: this._normalizeConnectionHostname(proxy.host),
         port: proxy.port,
         type: (proxy.type === 'socks4' || proxy.type === 'socks4a') ? 4 : 5,
       },
       command: 'connect',
       destination: {
-        host: hostname,
+        host: this._normalizeConnectionHostname(hostname),
         port: targetPort,
       },
       timeout: this._upstreamConnectTimeoutMs,
@@ -3792,7 +3800,7 @@ export class ProxyServer {
   _connectTcp(hostname, targetPort) {
     if (!this._shouldUseUpstreamProxy(hostname, targetPort)) {
       return new Promise((resolve, reject) => {
-        const socket = net.connect(targetPort, hostname);
+        const socket = net.connect(targetPort, this._normalizeConnectionHostname(hostname));
         socket.once('connect', () => resolve(socket));
         socket.once('error', reject);
       });
@@ -3810,7 +3818,7 @@ export class ProxyServer {
       }
       const requestLib = this.upstreamProxy.type === 'https' ? https : http;
       const options = {
-        hostname: this.upstreamProxy.host,
+        hostname: this._normalizeConnectionHostname(this.upstreamProxy.host),
         port: this.upstreamProxy.port,
         method: 'CONNECT',
         path: authority,
