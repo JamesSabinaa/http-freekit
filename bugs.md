@@ -2099,6 +2099,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-194 — Low/Medium — Plain search omits headers and bodies despite its all-fields contract
 
+- Status: **Fixed**.
+- Resolution: Unscoped renderer searches now compare safely and case-insensitively against request and response header names, scalar or array header values, and request and response bodies in addition to the existing request fields. Null and object values are ignored without changing structured-filter parsing or matching.
 - Evidence: README promises all-field search at `README.md:180`, while `src/ui/app.js:391-399` searches only URL, method, host, status, path, and source unless a scoped filter is used.
 - Impact: a unique token present only in a header or body is invisible to ordinary search.
 - Reproduction: capture a token only in a response body; plain search misses it while `body:<token>` finds it.

@@ -445,6 +445,24 @@
       return filters;
     }
 
+    function plainSearchValueIncludes(value, searchText) {
+      const values = Array.isArray(value) ? value : [value];
+      return values.some(item => {
+        if (item === null || item === undefined ||
+            typeof item === 'object' || typeof item === 'function') {
+          return false;
+        }
+        return String(item).toLowerCase().includes(searchText);
+      });
+    }
+
+    function plainSearchHeadersInclude(headers, searchText) {
+      if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return false;
+      return Object.entries(headers).some(([name, value]) =>
+        name.toLowerCase().includes(searchText) || plainSearchValueIncludes(value, searchText)
+      );
+    }
+
     function matchesAllFilters(req, filters) {
       return filters.every(f => matchesFilter(req, f));
     }
@@ -496,12 +514,16 @@
         case 'text':
         default:
           // Search across all fields
-          return req.url?.toLowerCase().includes(val) ||
-            req.method?.toLowerCase().includes(val) ||
-            req.host?.toLowerCase().includes(val) ||
+          return plainSearchValueIncludes(req.url, val) ||
+            plainSearchValueIncludes(req.method, val) ||
+            plainSearchValueIncludes(req.host, val) ||
             String(req.statusCode).includes(val) ||
-            req.path?.toLowerCase().includes(val) ||
-            (req.source || '').toLowerCase().includes(val);
+            plainSearchValueIncludes(req.path, val) ||
+            plainSearchValueIncludes(req.source, val) ||
+            plainSearchHeadersInclude(req.requestHeaders, val) ||
+            plainSearchHeadersInclude(req.responseHeaders, val) ||
+            plainSearchValueIncludes(req.requestBody, val) ||
+            plainSearchValueIncludes(req.responseBody, val);
       }
     }
 
