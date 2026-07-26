@@ -8129,26 +8129,72 @@
       return params.toString();
     }
 
-    function bytesToBase64(bytes) {
+    function throwIfSendAborted(signal) {
+      if (!signal?.aborted) return;
+      if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted();
+      const error = new Error('Request aborted');
+      error.name = 'AbortError';
+      throw error;
+    }
+
+    function awaitSendPreparation(promise, signal) {
+      if (!signal) return Promise.resolve(promise);
+      try {
+        throwIfSendAborted(signal);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => signal.removeEventListener('abort', onAbort);
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback(value);
+        };
+        const onAbort = () => {
+          try {
+            throwIfSendAborted(signal);
+          } catch (error) {
+            finish(reject, error);
+          }
+        };
+
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise).then(
+          value => finish(resolve, value),
+          error => finish(reject, error)
+        );
+        if (signal.aborted) onAbort();
+      });
+    }
+
+    function bytesToBase64(bytes, signal) {
       let binary = '';
       const chunkSize = 0x8000;
       for (let i = 0; i < bytes.length; i += chunkSize) {
+        throwIfSendAborted(signal);
         binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
       }
+      throwIfSendAborted(signal);
       return btoa(binary);
     }
 
-    async function serializeMultipartFields(fields, boundary) {
+    async function serializeMultipartFields(fields, boundary, signal) {
       const encoder = new TextEncoder();
       const chunks = [];
       let totalLength = 0;
       const append = (chunk) => {
+        throwIfSendAborted(signal);
         const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
         chunks.push(bytes);
         totalLength += bytes.length;
       };
 
       for (const field of fields) {
+        throwIfSendAborted(signal);
         if (field.enabled === false || !field.key) continue;
         const safeName = String(field.key).replace(/["\r\n]/g, '_');
         append(`--${boundary}\r\n`);
@@ -8157,7 +8203,10 @@
           const safeFilename = String(field.file.name).replace(/["\r\n]/g, '_');
           append(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`);
           append(`Content-Type: ${field.file.type || 'application/octet-stream'}\r\n\r\n`);
-          append(new Uint8Array(await field.file.arrayBuffer()));
+          throwIfSendAborted(signal);
+          const fileBuffer = await awaitSendPreparation(field.file.arrayBuffer(), signal);
+          throwIfSendAborted(signal);
+          append(new Uint8Array(fileBuffer));
           append('\r\n');
         } else {
           append(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n`);
@@ -8165,14 +8214,18 @@
           append('\r\n');
         }
       }
+      throwIfSendAborted(signal);
       append(`--${boundary}--\r\n`);
 
+      throwIfSendAborted(signal);
       const result = new Uint8Array(totalLength);
       let offset = 0;
-      chunks.forEach((chunk) => {
+      for (const chunk of chunks) {
+        throwIfSendAborted(signal);
         result.set(chunk, offset);
         offset += chunk.length;
-      });
+      }
+      throwIfSendAborted(signal);
       return result;
     }
 
@@ -8807,11 +8860,13 @@
         .join('\n');
     }
 
-    async function prepareSendRequestPayload(headers) {
+    async function prepareSendRequestPayload(headers, signal) {
+      if (signal) throwIfSendAborted(signal);
       const bodyType = getSendBodyType();
       if (bodyType === 'urlencoded') {
         const body = serializeUrlEncodedFields();
         setDefaultHeader(headers, 'Content-Type', 'application/x-www-form-urlencoded');
+        if (signal) throwIfSendAborted(signal);
         return { body, bodyEncoding: 'utf8', displayBody: body, byteLength: new TextEncoder().encode(body).length };
       }
 
@@ -8828,9 +8883,10 @@
           headers[contentTypeKey] = `${contentType}; boundary=${boundary}`;
         }
 
-        const bytes = await serializeMultipartFields(sendMultipartFields, boundary);
+        const bytes = await serializeMultipartFields(sendMultipartFields, boundary, signal);
+        if (signal) throwIfSendAborted(signal);
         return {
-          body: bytesToBase64(bytes),
+          body: bytesToBase64(bytes, signal),
           bodyEncoding: 'base64',
           displayBody: getMultipartDisplayBody(sendMultipartFields),
           byteLength: bytes.length
@@ -8839,6 +8895,7 @@
 
       const body = getSendBodyValue();
       if (body) setDefaultHeader(headers, 'Content-Type', formatToContentType(document.getElementById('sendBodyFormat')?.value || 'text'));
+      if (signal) throwIfSendAborted(signal);
       return { body, bodyEncoding: 'utf8', displayBody: body, byteLength: new TextEncoder().encode(body).length };
     }
 
@@ -8860,7 +8917,7 @@
       const sendAbort = new AbortController();
       currentSendAbort = sendAbort;
       try {
-        const payload = await prepareSendRequestPayload(headers);
+        const payload = await prepareSendRequestPayload(headers, sendAbort.signal);
         const res = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

@@ -301,7 +301,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
     function setDefaultHeader(headers, name, value) { headers[name] = value; }
     function formatToContentType() { return 'application/json'; }
     ${between('function getSendBodyValue()', 'function createMultipartBoundary()')}
-    ${between('async function prepareSendRequestPayload(headers)', 'async function sendRequest()')}
+    ${between('async function prepareSendRequestPayload(headers, signal)', 'async function sendRequest()')}
     globalThis.toasts = [];
     globalThis.sends = 0;
     globalThis.harness = {

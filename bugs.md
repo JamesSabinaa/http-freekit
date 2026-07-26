@@ -2274,6 +2274,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-371 — Low/Medium — Send Abort cannot cancel multipart preparation
 
+- Status: **Fixed**.
+- Resolution: Send now threads its existing AbortSignal through payload and multipart serialization, races every file read against abort, and checks the signal before and after reads and throughout assembly/base64 conversion. Abort therefore settles preparation without a later fetch, while the existing single-flight `finally` retains controller ownership until settlement and safely enables the next Send.
+
 - Evidence: `sendRequest()` installs the single-flight controller before awaiting `prepareSendRequestPayload()` at `src/ui/app.js:7623-7639`, but multipart serialization reads every file and copies/encodes the complete payload at `:7096-7132` without receiving that signal. Abort affects only the later fetch, and the controller is retained until preparation settles at `:7717-7728`.
 - Impact: aborting a slow or large multipart request still reads and assembles its local files, keeps the loading state active, and silently blocks Send in every tab until preparation finishes.
 - Reproduction: hold a multipart file's `arrayBuffer()` promise pending, start Send, then Abort and try another Send; no fetch occurs, the first call and loading state remain pending, and the second call is ignored until the file promise resolves.
