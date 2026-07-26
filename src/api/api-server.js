@@ -1703,6 +1703,23 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
         throw new Error(`Unsupported Send URL protocol: ${parsedUrl.protocol}`);
       }
+      const outboundHeaders = { ...headers };
+      const hasExplicitAuthorization = Object.keys(outboundHeaders)
+        .some(name => name.toLowerCase() === 'authorization');
+      if (!hasExplicitAuthorization && (parsedUrl.username !== '' || parsedUrl.password !== '')) {
+        let username;
+        let password;
+        try {
+          username = decodeURIComponent(parsedUrl.username);
+          password = decodeURIComponent(parsedUrl.password);
+        } catch {
+          throw new Error('Send URL contains invalid percent-encoding in its credentials');
+        }
+        const encodedCredentials = Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
+        outboundHeaders.Authorization = `Basic ${encodedCredentials}`;
+      }
+      parsedUrl.username = '';
+      parsedUrl.password = '';
       const isHttps = parsedUrl.protocol === 'https:';
       const lib = isHttps ? https : http;
 
@@ -1711,7 +1728,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         port: parsedUrl.port || (isHttps ? 443 : 80),
         path: parsedUrl.pathname + parsedUrl.search,
         method,
-        headers,
+        headers: outboundHeaders,
         ...(isHttps ? this.proxy._getUpstreamTlsOptions(parsedUrl.hostname) : {})
       };
 

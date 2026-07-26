@@ -835,9 +835,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-265 — Low/Medium — Send drops credentials embedded in URLs
 
+- Status: **Fixed**.
 - Evidence: `_sendRequest()` parses the URL at `src/api/api-server.js:1319`, but options at `:1323-1329` copy host, port, path, method, and headers while omitting username/password or auth.
 - Impact: standard credentialed URLs reach Basic-auth endpoints without Authorization and unexpectedly return 401.
 - Reproduction: Send `http://user:pass@127.0.0.1:<port>/` to an origin that echoes Authorization.
+- Resolution: Send now percent-decodes URL username/password components and emits UTF-8 Basic authentication, including username-only and empty-password URLs. A case-insensitive explicit Authorization header remains authoritative, and userinfo is removed before outbound host/path construction.
 
 ### BUG-266 — Medium — Wildcard client certificates never match a host
 
