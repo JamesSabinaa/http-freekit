@@ -1859,6 +1859,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-336 — Medium — Fresh Terminal shell ownership is lost across a FreeKit restart
 
+- Status: **Fixed**.
+
 - Evidence: launched process handles and shell PIDs exist only in `processes` and `sessionPids` at `src/interceptors/terminal-interceptors.js:31-36,220-224`. The one-shot PID file is deleted after launch at `:132`, and a new interceptor has no journal or adoption scan before `deactivate()` consults its empty collections at `:233-245`.
 - Impact: a detached shell that survives a server crash keeps its proxy and CA environment, while restarted FreeKit reports it inactive and Stop cannot close it or clear the stale session.
 - Reproduction: activate a detached terminal, terminate and restart only FreeKit, then query and Stop the fresh interceptor; it reports inactive with no recovered PID and the shell remains running.

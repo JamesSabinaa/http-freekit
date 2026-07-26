@@ -33,7 +33,7 @@ export class InterceptorManager {
     this._register(new BrowserInterceptor('firefox', 'Firefox', 'firefox'));
     this._register(new BrowserInterceptor('edge', 'Edge', 'edge'));
     this._register(new BrowserInterceptor('brave', 'Brave', 'brave'));
-    this._register(new FreshTerminalInterceptor());
+    this._register(new FreshTerminalInterceptor({ dataDir: options.dataDir }));
     this._register(new ExistingTerminalInterceptor());
     const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });
     systemProxy.recoverStaleSettings();

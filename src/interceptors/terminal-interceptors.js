@@ -21,6 +21,10 @@ const LINUX_TERMINAL_LAUNCHERS = [
     buildArgs: shellCommand => ['--separate', '--nofork', '-e', 'sh', '-c', shellCommand]
   }
 ];
+const TERMINAL_SESSION_OWNERSHIP_VERSION = 1;
+const MAX_TERMINAL_OWNERSHIP_BYTES = 64 * 1024;
+const MAX_TERMINAL_SESSIONS = 32;
+const MAX_EXECUTABLE_IDENTITY_LENGTH = 4096;
 
 function spawnDetached(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -92,7 +96,7 @@ export function buildExistingTerminalInstructions(proxyUrl, certPath) {
 }
 
 export class FreshTerminalInterceptor {
-  constructor() {
+  constructor(options = {}) {
     this.id = 'fresh-terminal';
     this.name = 'Fresh Terminal';
     this.active = false;
@@ -106,10 +110,16 @@ export class FreshTerminalInterceptor {
     this.gracefulExitTimeoutMs = 2000;
     this.forceExitTimeoutMs = 2000;
     this.sessionExitPollIntervalMs = 50;
+    this.platformOverride = options.platform || null;
+    this.recoveryFile = options.dataDir
+      ? path.join(options.dataDir, 'fresh-terminal-session-ownership.json')
+      : options.recoveryFile || null;
+    this.recoveryJournalError = null;
+    this._loadSessionJournal();
   }
 
   _platform() {
-    return process.platform;
+    return this.platformOverride || process.platform;
   }
 
   _environment() {
@@ -235,7 +245,7 @@ export class FreshTerminalInterceptor {
   }
 
   _identityInspectionTimeoutMs() {
-    return 1000;
+    return this._platform() === 'win32' ? 5000 : 1000;
   }
 
   _execFile(command, args, options) {
@@ -251,11 +261,186 @@ export class FreshTerminalInterceptor {
     });
   }
 
-  _normalizeExecutableIdentity(executable) {
-    const value = String(executable || '').trim();
-    if (!value) throw new Error('Process executable identity is empty');
-    const platformPath = this._platform() === 'win32' ? path.win32 : path.posix;
-    return platformPath.normalize(value).normalize('NFC');
+  _normalizeExecutableIdentity(executable, platform = this._platform()) {
+    if (typeof executable !== 'string') {
+      throw new Error('Process executable identity is missing');
+    }
+    const value = executable.trim();
+    if (!value || value.length > MAX_EXECUTABLE_IDENTITY_LENGTH || /[\0\r\n]/.test(value)) {
+      throw new Error('Process executable identity is invalid');
+    }
+    const platformPath = platform === 'win32' ? path.win32 : path.posix;
+    const normalized = platformPath.normalize(value).normalize('NFC');
+    return platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  _normalizeSessionIdentity(identity, expectedPid = identity?.pid, platform = this._platform()) {
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+      throw new Error('Process identity is missing or malformed');
+    }
+    if (!Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+        identity.pid > 0xffffffff || identity.pid !== expectedPid) {
+      throw new Error('Process identity PID is missing, invalid, or unexpected');
+    }
+    const startTime = String(identity.startTime || '');
+    if (!/^\d{1,32}$/.test(startTime)) {
+      throw new Error('Process start identity is missing or invalid');
+    }
+    return Object.freeze({
+      pid: identity.pid,
+      startTime,
+      executable: this._normalizeExecutableIdentity(identity.executable, platform)
+    });
+  }
+
+  _sessionJournalEntry(identity, platform = this._platform()) {
+    const normalized = this._normalizeSessionIdentity(identity, identity?.pid, platform);
+    return {
+      pid: normalized.pid,
+      startTime: normalized.startTime,
+      executable: normalized.executable,
+      platform
+    };
+  }
+
+  _validateSessionJournal(record) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      throw new Error('Fresh Terminal ownership journal must contain an object');
+    }
+    const keys = Object.keys(record).sort();
+    if (keys.length !== 2 || keys[0] !== 'sessions' || keys[1] !== 'version' ||
+        record.version !== TERMINAL_SESSION_OWNERSHIP_VERSION ||
+        !Array.isArray(record.sessions) || record.sessions.length === 0 ||
+        record.sessions.length > MAX_TERMINAL_SESSIONS) {
+      throw new Error('Fresh Terminal ownership journal has an invalid schema');
+    }
+
+    const sessions = new Map();
+    for (const rawEntry of record.sessions) {
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+        throw new Error('Fresh Terminal ownership journal has an invalid session');
+      }
+      const entryKeys = Object.keys(rawEntry).sort();
+      const expectedKeys = ['executable', 'pid', 'platform', 'startTime'];
+      if (entryKeys.length !== expectedKeys.length ||
+          entryKeys.some((key, index) => key !== expectedKeys[index]) ||
+          !['darwin', 'linux', 'win32'].includes(rawEntry.platform) ||
+          rawEntry.platform !== this._platform()) {
+        throw new Error('Fresh Terminal ownership journal has an invalid session schema');
+      }
+      const identity = this._normalizeSessionIdentity(rawEntry, rawEntry.pid, rawEntry.platform);
+      if (sessions.has(identity.pid)) {
+        throw new Error('Fresh Terminal ownership journal contains duplicate process IDs');
+      }
+      sessions.set(identity.pid, identity);
+    }
+    return sessions;
+  }
+
+  _sessionJournalRecord(sessions) {
+    return {
+      version: TERMINAL_SESSION_OWNERSHIP_VERSION,
+      sessions: [...sessions.values()].map(identity => this._sessionJournalEntry(identity))
+    };
+  }
+
+  _loadSessionJournal() {
+    if (!this.recoveryFile) return;
+    try {
+      let descriptor;
+      try {
+        const pathStats = fs.lstatSync(this.recoveryFile);
+        if (!pathStats.isFile()) {
+          throw new Error('Fresh Terminal ownership journal is not a bounded regular file');
+        }
+        descriptor = fs.openSync(this.recoveryFile, 'r');
+      } catch (error) {
+        if (error?.code === 'ENOENT') return;
+        throw error;
+      }
+      let serialized;
+      try {
+        const stats = fs.fstatSync(descriptor);
+        if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_TERMINAL_OWNERSHIP_BYTES) {
+          throw new Error('Fresh Terminal ownership journal is not a bounded regular file');
+        }
+        const buffer = Buffer.alloc(stats.size + 1);
+        let bytesRead = 0;
+        while (bytesRead < buffer.length) {
+          const count = fs.readSync(
+            descriptor,
+            buffer,
+            bytesRead,
+            buffer.length - bytesRead,
+            bytesRead
+          );
+          if (count === 0) break;
+          bytesRead += count;
+        }
+        if (bytesRead !== stats.size) {
+          throw new Error('Fresh Terminal ownership journal changed while it was being read');
+        }
+        serialized = buffer.subarray(0, bytesRead).toString('utf8');
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      const parsed = JSON.parse(serialized);
+      this.sessions = this._validateSessionJournal(parsed);
+      this.active = this.sessions.size > 0;
+      if (this.active) this._startStatusMonitor();
+    } catch (error) {
+      this.recoveryJournalError = error;
+      console.warn('[Interceptor] Ignoring invalid Fresh Terminal ownership journal:', error.message);
+    }
+  }
+
+  _writeSessionJournal(sessions) {
+    if (!this.recoveryFile) return;
+    if (sessions.size === 0) {
+      try {
+        fs.unlinkSync(this.recoveryFile);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      return;
+    }
+
+    const record = this._sessionJournalRecord(sessions);
+    this._validateSessionJournal(record);
+    const serialized = JSON.stringify(record);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_TERMINAL_OWNERSHIP_BYTES) {
+      throw new Error('Fresh Terminal ownership journal exceeds its size limit');
+    }
+    fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
+    const tempPath = path.join(
+      path.dirname(this.recoveryFile),
+      `.${path.basename(this.recoveryFile)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    );
+    let descriptor;
+    try {
+      descriptor = fs.openSync(tempPath, 'wx', 0o600);
+      fs.writeFileSync(descriptor, serialized, 'utf8');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
+      fs.renameSync(tempPath, this.recoveryFile);
+    } catch (error) {
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw error;
+    }
+  }
+
+  _addTrackedSession(identity) {
+    const normalized = this._normalizeSessionIdentity(identity);
+    const next = new Map(this.sessions);
+    next.set(normalized.pid, normalized);
+    this._writeSessionJournal(next);
+    this.sessions = next;
+    this.recoveryJournalError = null;
+    return normalized;
   }
 
   _parseLinuxProcessStart(stat, pid) {
@@ -311,13 +496,51 @@ export class FreshTerminalInterceptor {
     };
   }
 
+  async _inspectWindowsSessionIdentity(pid) {
+    const script = [
+      `$target = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop | Select-Object -First 1`,
+      "if ($null -eq $target) { [Console]::Out.Write('null'); exit 0 }",
+      '$identity = [PSCustomObject]@{',
+      '  pid = [int]$target.ProcessId',
+      "  startTime = [string]([DateTime]$target.CreationDate).ToUniversalTime().Ticks",
+      '  executable = [string]$target.ExecutablePath',
+      '}',
+      '[Console]::Out.Write(($identity | ConvertTo-Json -Compress))'
+    ].join('\n');
+    const { stdout } = await this._execFile(
+      'powershell.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      {
+        encoding: 'utf8',
+        timeout: this._identityInspectionTimeoutMs(),
+        maxBuffer: 16 * 1024,
+        windowsHide: true
+      }
+    );
+    const serialized = String(stdout).trim();
+    if (!serialized) throw new Error('Windows process identity query returned no result');
+    const identity = JSON.parse(serialized);
+    if (identity === null) {
+      const error = new Error('Terminal process is absent');
+      error.code = 'ESRCH';
+      throw error;
+    }
+    return identity;
+  }
+
   async _inspectSessionIdentity(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return { state: 'unknown' };
     try {
-      const identity = this._platform() === 'darwin'
-        ? await this._inspectDarwinSessionIdentity(pid)
-        : await this._inspectLinuxSessionIdentity(pid);
-      return { state: 'running', identity };
+      const platform = this._platform();
+      const identity = platform === 'win32'
+        ? await this._inspectWindowsSessionIdentity(pid)
+        : platform === 'darwin'
+          ? await this._inspectDarwinSessionIdentity(pid)
+          : await this._inspectLinuxSessionIdentity(pid);
+      return {
+        state: 'running',
+        identity: this._normalizeSessionIdentity(identity, pid, platform)
+      };
     } catch (error) {
       const state = this._probeSessionPid(pid);
       return state === 'absent' ? { state } : { state: 'unknown', error };
@@ -395,7 +618,12 @@ export class FreshTerminalInterceptor {
 
   _removeTrackedSession(expected) {
     const tracked = this.sessions.get(expected.pid);
-    if (this._isSameSessionIdentity(tracked, expected)) this.sessions.delete(expected.pid);
+    if (!this._isSameSessionIdentity(tracked, expected)) return false;
+    const next = new Map(this.sessions);
+    next.delete(expected.pid);
+    this._writeSessionJournal(next);
+    this.sessions = next;
+    return true;
   }
 
   async _waitForSessionChange(expected, timeoutMs) {
@@ -429,13 +657,22 @@ export class FreshTerminalInterceptor {
     return { state: 'signalled', observation, error };
   }
 
+  _finishSessionCleanup(identity) {
+    try {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    } catch (error) {
+      this._markSessionCleanupPending(identity);
+      return { stopped: false, error };
+    }
+  }
+
   async _stopOwnedSession(originalIdentity) {
     let identity = originalIdentity;
     const initial = await this._observeSessionIdentity(identity.pid);
     const initialState = this._classifySessionObservation(identity, initial);
     if (initialState === 'gone' || initialState === 'replaced') {
-      this._removeTrackedSession(identity);
-      return { stopped: true };
+      return this._finishSessionCleanup(identity);
     }
     if (initialState === 'unknown') {
       this._markSessionCleanupPending(identity);
@@ -445,8 +682,7 @@ export class FreshTerminalInterceptor {
     identity = this._markSessionCleanupPending(identity);
     const gracefulSignal = await this._signalOwnedSession(identity, 'SIGTERM');
     if (gracefulSignal.state === 'gone' || gracefulSignal.state === 'replaced') {
-      this._removeTrackedSession(identity);
-      return { stopped: true };
+      return this._finishSessionCleanup(identity);
     }
     if (gracefulSignal.state === 'unknown') {
       return { stopped: false, error: gracefulSignal.observation?.error || new Error('process identity became ambiguous') };
@@ -454,8 +690,7 @@ export class FreshTerminalInterceptor {
 
     const gracefulWait = await this._waitForSessionChange(identity, this.gracefulExitTimeoutMs);
     if (gracefulWait.state === 'gone' || gracefulWait.state === 'replaced') {
-      this._removeTrackedSession(identity);
-      return { stopped: true };
+      return this._finishSessionCleanup(identity);
     }
     if (gracefulWait.state === 'unknown') {
       return { stopped: false, error: gracefulWait.observation?.error || gracefulSignal.error };
@@ -463,8 +698,7 @@ export class FreshTerminalInterceptor {
 
     const forcedSignal = await this._signalOwnedSession(identity, 'SIGKILL');
     if (forcedSignal.state === 'gone' || forcedSignal.state === 'replaced') {
-      this._removeTrackedSession(identity);
-      return { stopped: true };
+      return this._finishSessionCleanup(identity);
     }
     if (forcedSignal.state === 'unknown') {
       return { stopped: false, error: forcedSignal.observation?.error || new Error('process identity became ambiguous') };
@@ -472,8 +706,7 @@ export class FreshTerminalInterceptor {
 
     const forcedWait = await this._waitForSessionChange(identity, this.forceExitTimeoutMs);
     if (forcedWait.state === 'gone' || forcedWait.state === 'replaced') {
-      this._removeTrackedSession(identity);
-      return { stopped: true };
+      return this._finishSessionCleanup(identity);
     }
     return {
       stopped: false,
@@ -565,18 +798,24 @@ export class FreshTerminalInterceptor {
   async _refreshActiveState(reason = 'exited', extra = {}) {
     if (this.deactivating) return this.active;
     const wasActive = this.active;
+    let cleanupError = null;
     for (const [pid, identity] of [...this.sessions]) {
       const observation = await this._observeSessionIdentity(pid);
       const state = this._classifySessionObservation(identity, observation);
-      const retainAmbiguousCleanup = state === 'unknown' && identity.cleanupPending;
-      if (state !== 'same' && !retainAmbiguousCleanup && this.sessions.get(pid) === identity) {
-        this.sessions.delete(pid);
+      if ((state === 'gone' || state === 'replaced') && this.sessions.get(pid) === identity) {
+        const result = this._finishSessionCleanup(identity);
+        if (!result.stopped) {
+          cleanupError = result.error;
+          console.warn('[Interceptor] Failed to remove stale Fresh Terminal ownership:', result.error.message);
+        }
       }
     }
     this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
     if (wasActive && !this.active) {
       this._stopStatusMonitor();
       this._emitStatus(reason, extra);
+    } else if (cleanupError) {
+      this._emitStatus('cleanup-failed', { ...extra, error: cleanupError.message });
     }
     return this.active;
   }
@@ -594,6 +833,32 @@ export class FreshTerminalInterceptor {
     }
   }
 
+  _trackLauncherProcess(proc, sessionPid = null) {
+    this.processes.push(proc);
+    proc.on('exit', () => {
+      if (!this.processes.includes(proc) && !this.deactivatingProcesses.has(proc)) return;
+      this.processes = this.processes.filter(candidate => candidate !== proc);
+      if (this.deactivatingProcesses.has(proc)) return;
+      void this._refreshActiveState('exited', { pid: sessionPid || proc.pid });
+    });
+
+    proc.on('error', (err) => {
+      if (this.deactivatingProcesses.has(proc)) return;
+      if (!this.processes.includes(proc)) return;
+      console.error('[Interceptor] Fresh terminal error:', err.message);
+      if (this._hasProcessExited(proc)) {
+        this.processes = this.processes.filter(candidate => candidate !== proc);
+        void this._refreshActiveState('error', {
+          pid: sessionPid || proc.pid,
+          error: err.message
+        });
+      } else {
+        this.active = true;
+        this._emitStatus('error', { pid: sessionPid || proc.pid, error: err.message });
+      }
+    });
+  }
+
   _buildPosixShellCommand(proxyUrl, certPath, pidFile) {
     return [
       `printf '%s' "$$" > ${shellQuote(pidFile)}`,
@@ -601,6 +866,13 @@ export class FreshTerminalInterceptor {
         .map(([name, value]) => `export ${name}=${shellQuote(value)}`),
       `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`,
       'exec "${SHELL:-/bin/sh}" -l'
+    ].join('; ');
+  }
+
+  _buildWindowsPowerShellCommand(proxyUrl, pidFile) {
+    return [
+      `[IO.File]::WriteAllText(${powerShellQuote(pidFile)}, [string]$PID)`,
+      `Write-Host ${powerShellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)} -ForegroundColor Green`
     ].join('; ');
   }
 
@@ -630,6 +902,11 @@ export class FreshTerminalInterceptor {
   }
 
   async activate(proxyPort) {
+    if (this.recoveryJournalError) {
+      throw new Error(
+        `Fresh Terminal ownership journal is invalid and must be resolved before launch: ${this.recoveryJournalError.message}`
+      );
+    }
     const certPath = getTerminalCaPath(this.ca);
     const proxyUrl = `http://127.0.0.1:${proxyPort}`;
 
@@ -644,17 +921,46 @@ export class FreshTerminalInterceptor {
     let shellPid = null;
 
     if (platform === 'win32') {
-      // Open Windows Terminal, PowerShell, or cmd
+      // Open Windows Terminal, PowerShell, or cmd. Windows Terminal's launcher
+      // is short-lived, so its child PowerShell reports the durable shell PID.
       const terminals = [
-        { cmd: 'wt.exe', args: ['new-tab', '--inheritEnvironment'] },
-        { cmd: 'powershell.exe', args: ['-NoExit', '-Command', `Write-Host "HTTP FreeKit proxy active on ${proxyUrl}" -ForegroundColor Green`] },
-        { cmd: 'cmd.exe', args: ['/K', `echo HTTP FreeKit proxy active on ${proxyUrl}`] },
+        {
+          cmd: 'wt.exe',
+          reportsPid: Boolean(this.recoveryFile),
+          buildArgs: pidFile => pidFile
+            ? [
+                'new-tab',
+                '--inheritEnvironment',
+                'powershell.exe',
+                '-NoExit',
+                '-Command',
+                this._buildWindowsPowerShellCommand(proxyUrl, pidFile)
+              ]
+            : ['new-tab', '--inheritEnvironment']
+        },
+        {
+          cmd: 'powershell.exe',
+          reportsPid: Boolean(this.recoveryFile),
+          buildArgs: pidFile => [
+            '-NoExit',
+            '-Command',
+            pidFile
+              ? this._buildWindowsPowerShellCommand(proxyUrl, pidFile)
+              : `Write-Host "HTTP FreeKit proxy active on ${proxyUrl}" -ForegroundColor Green`
+          ]
+        },
+        {
+          cmd: 'cmd.exe',
+          reportsPid: false,
+          buildArgs: () => ['/K', `echo HTTP FreeKit proxy active on ${proxyUrl}`]
+        }
       ];
 
       for (const terminal of terminals) {
         let candidateProc;
+        const pidFile = terminal.reportsPid ? this._createPidFilePath() : null;
         try {
-          candidateProc = await this._spawnDetached(terminal.cmd, terminal.args, {
+          candidateProc = await this._spawnDetached(terminal.cmd, terminal.buildArgs(pidFile), {
             detached: true,
             stdio: 'ignore',
             env
@@ -662,10 +968,17 @@ export class FreshTerminalInterceptor {
           await this._confirmLauncherStartup(candidateProc);
           proc = candidateProc;
           proc.unref();
+          shellPid = pidFile
+            ? await this._waitForShellPid(pidFile)
+            : this.recoveryFile ? proc.pid : null;
           break;
         } catch {
           try { candidateProc?.kill(); } catch {}
           continue;
+        } finally {
+          if (pidFile) {
+            try { fs.unlinkSync(pidFile); } catch {}
+          }
         }
       }
     } else if (platform === 'darwin') {
@@ -700,31 +1013,81 @@ export class FreshTerminalInterceptor {
     }
 
     const sessionIdentity = shellPid ? await this._adoptSession(shellPid) : null;
-    this.processes.push(proc);
-    if (sessionIdentity) this.sessions.set(sessionIdentity.pid, sessionIdentity);
+    this._trackLauncherProcess(proc, sessionIdentity?.pid || shellPid);
+    if (this.recoveryFile && !sessionIdentity) {
+      const processResult = await this._stopLauncherProcess(proc);
+      this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
+      const detail = 'the reported shell process identity could not be verified';
+      if (!processResult.stopped) {
+        this._startStatusMonitor();
+        const message = `Fresh Terminal launch was rejected because ${detail}; ` +
+          'the exact launcher handle remains tracked so Stop can be retried';
+        this._emitStatus('stop-failed', { pid: shellPid || proc.pid, error: message });
+        throw new Error(message);
+      }
+      throw new Error(
+        `Fresh Terminal launch was rejected because ${detail}; its launcher was stopped`
+      );
+    }
+
+    let ownershipWriteError = null;
+    const sessionsBeforeOwnershipWrite = new Map(this.sessions);
+    if (sessionIdentity) {
+      try {
+        this._addTrackedSession(sessionIdentity);
+      } catch (error) {
+        // The exact live identity is still safe to own in memory. Cleanup below
+        // either confirms it gone or leaves this state available to Stop.
+        this.sessions.set(sessionIdentity.pid, sessionIdentity);
+        ownershipWriteError = error;
+      }
+    }
     this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
+
+    if (ownershipWriteError) {
+      let sessionResult = await this._stopOwnedSession(sessionIdentity);
+      if (!sessionResult.stopped) {
+        const observation = await this._observeSessionIdentity(sessionIdentity.pid);
+        const state = this._classifySessionObservation(sessionIdentity, observation);
+        if (state === 'gone' || state === 'replaced') {
+          // The failed atomic add left the previous journal intact. Once this
+          // unpersisted shell is conclusively gone, restoring only its prior
+          // map entry does not require another journal write.
+          const tracked = this.sessions.get(sessionIdentity.pid);
+          if (this._isSameSessionIdentity(tracked, sessionIdentity)) {
+            const previous = sessionsBeforeOwnershipWrite.get(sessionIdentity.pid);
+            if (previous) this.sessions.set(previous.pid, previous);
+            else this.sessions.delete(sessionIdentity.pid);
+          }
+          sessionResult = { stopped: true };
+        }
+      }
+      let processResult;
+      if (proc.pid === sessionIdentity.pid) {
+        processResult = sessionResult;
+        if (sessionResult.stopped) {
+          this.processes = this.processes.filter(candidate => candidate !== proc);
+        }
+      } else {
+        processResult = await this._stopLauncherProcess(proc);
+      }
+      this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
+      if (!sessionResult.stopped || !processResult.stopped) {
+        this._startStatusMonitor();
+        const cleanupError = [sessionResult, processResult]
+          .find(result => !result.stopped)?.error;
+        const message = `Fresh Terminal ownership could not be persisted: ${ownershipWriteError.message}; ` +
+          `the exact live process remains tracked so Stop can be retried${cleanupError ? ` (${cleanupError.message})` : ''}`;
+        this._emitStatus('stop-failed', { pid: sessionIdentity.pid, error: message });
+        throw new Error(message);
+      }
+      throw new Error(
+        `Fresh Terminal ownership could not be persisted, so the launched session was stopped: ${ownershipWriteError.message}`
+      );
+    }
+
     this._emitStatus('active');
     if (this.active) this._startStatusMonitor();
-
-    proc.on('exit', () => {
-      if (!this.processes.includes(proc) && !this.deactivatingProcesses.has(proc)) return;
-      this.processes = this.processes.filter(p => p !== proc);
-      if (this.deactivatingProcesses.has(proc)) return;
-      void this._refreshActiveState('exited', { pid: sessionIdentity?.pid || proc.pid });
-    });
-
-    proc.on('error', (err) => {
-      if (this.deactivatingProcesses.has(proc)) return;
-      if (!this.processes.includes(proc)) return;
-      console.error('[Interceptor] Fresh terminal error:', err.message);
-      if (this._hasProcessExited(proc)) {
-        this.processes = this.processes.filter(p => p !== proc);
-        void this._refreshActiveState('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
-      } else {
-        this.active = true;
-        this._emitStatus('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
-      }
-    });
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
     return { success: true, pid: sessionIdentity?.pid || proc.pid };
@@ -735,21 +1098,37 @@ export class FreshTerminalInterceptor {
     this.deactivating = true;
     const errors = [];
     try {
+      if (this.recoveryJournalError && this.sessions.size === 0) {
+        this.active = false;
+        const message = `Fresh Terminal ownership journal is invalid and cannot be cleaned safely: ` +
+          `${this.recoveryJournalError.message}. Stop can be retried after the journal is resolved`;
+        this._emitStatus('stop-failed', { error: message });
+        throw new Error(message);
+      }
+      const ownedSessionPids = new Set(this.sessions.keys());
       const sessionResults = await Promise.all(
         [...this.sessions.values()].map(identity => this._stopOwnedSession(identity))
       );
       const processResults = await Promise.all(
-        [...this.processes].map(proc => this._stopLauncherProcess(proc))
+        [...this.processes]
+          .filter(proc => !ownedSessionPids.has(proc.pid))
+          .map(proc => this._stopLauncherProcess(proc))
       );
       for (const result of [...sessionResults, ...processResults]) {
         if (!result.stopped && result.error) errors.push(result.error);
       }
+      this.processes = this.processes.filter(proc =>
+        !ownedSessionPids.has(proc.pid) || this.sessions.has(proc.pid)
+      );
 
       // A launcher exit may also close a shell that survived its own signal sequence.
       for (const [pid, identity] of [...this.sessions]) {
         const observation = await this._observeSessionIdentity(pid);
         const state = this._classifySessionObservation(identity, observation);
-        if (state === 'gone' || state === 'replaced') this._removeTrackedSession(identity);
+        if (state === 'gone' || state === 'replaced') {
+          const result = this._finishSessionCleanup(identity);
+          if (!result.stopped && result.error) errors.push(result.error);
+        }
       }
       this.processes = this.processes.filter(proc => !this._hasProcessExited(proc));
       this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
@@ -768,6 +1147,13 @@ export class FreshTerminalInterceptor {
       this.deactivatingProcesses.clear();
       if (this.active) this._startStatusMonitor();
     }
+  }
+
+  async needsDeactivation() {
+    return Boolean(
+      this.deactivating || this.recoveryJournalError || this.sessions.size > 0 ||
+      this.processes.some(proc => !this._hasProcessExited(proc))
+    );
   }
 
   _emitStatus(reason, extra = {}) {
