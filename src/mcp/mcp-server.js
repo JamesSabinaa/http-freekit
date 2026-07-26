@@ -294,6 +294,7 @@ export class McpServerBridge {
     for (const r of log) {
       // Skip non-HTTP events
       if (!r.statusCode || r.source === 'mock') continue;
+      const responseHeaders = r.responseHeaders;
 
       // Missing HTTPS (excluding localhost)
       const isLocalhost = /^(?:localhost|127\.0\.0\.1)(?::\d+)?$|^(?:::1|\[::1\](?::\d+)?)$/i.test(r.host || '');
@@ -310,9 +311,9 @@ export class McpServerBridge {
       }
 
       // Insecure cookies
-      const setCookie = r.responseHeaders?.['set-cookie'];
+      const setCookie = getHeaderValue(responseHeaders, 'set-cookie');
       if (setCookie) {
-        const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+        const cookies = headerValues(setCookie);
         for (const cookie of cookies) {
           const attributes = String(cookie).split(';').slice(1).map(part => part.trim().toLowerCase());
           if (!attributes.includes('secure')) {
@@ -327,10 +328,10 @@ export class McpServerBridge {
       }
 
       // Missing security headers (on HTML responses)
-      const ct = r.responseHeaders?.['content-type'] || '';
-      if (ct.includes('text/html') && r.statusCode >= 200 && r.statusCode < 400) {
+      const contentTypes = headerValues(getHeaderValue(responseHeaders, 'content-type'));
+      if (contentTypes.some(value => value.includes('text/html')) && r.statusCode >= 200 && r.statusCode < 400) {
         for (const header of securityHeaders) {
-          if (!r.responseHeaders?.[header]) {
+          if (!getHeaderValue(responseHeaders, header)) {
             issues.push({ severity: 'low', category: 'Missing Security Header', url: r.url, requestId: r.id,
               description: `Missing ${header} header on HTML response` });
           }
@@ -338,7 +339,8 @@ export class McpServerBridge {
       }
 
       // CORS wildcard
-      if (r.responseHeaders?.['access-control-allow-origin'] === '*') {
+      const allowedOrigins = headerValues(getHeaderValue(responseHeaders, 'access-control-allow-origin'));
+      if (allowedOrigins.includes('*')) {
         issues.push({ severity: 'low', category: 'CORS Wildcard', url: r.url, requestId: r.id,
           description: 'Access-Control-Allow-Origin set to * (allows any origin)' });
       }
@@ -536,6 +538,18 @@ export class McpServerBridge {
       claudeDesktopConfig: this.launchConfig
     };
   }
+}
+
+function getHeaderValue(headers, name) {
+  const normalizedName = name.toLowerCase();
+  const entry = Object.entries(headers || {})
+    .find(([headerName]) => headerName.toLowerCase() === normalizedName);
+  return entry?.[1];
+}
+
+function headerValues(value) {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 function serializeHarWithinLimit(requests, maxBytes) {

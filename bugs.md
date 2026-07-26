@@ -749,6 +749,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-230 — Low/Medium — MCP security scan treats header names as case-sensitive
 
+- Status: **Fixed**.
+- Resolution: MCP security scanning now resolves response headers case-insensitively without modifying captured/imported records. Cookie, HTML content-type, all security-header, and CORS checks share the lookup, with scalar and repeated header values handled safely while existing status and mock skips remain unchanged.
+
 - Evidence: `src/mcp/mcp-server.js:307-338` reads only lowercase names for Set-Cookie, Content-Type, security headers, and ACAO, while JSON import accepts preserved arbitrary casing.
 - Impact: valid imported records with normally capitalized headers evade cookie, content, security-header, and CORS findings.
 - Reproduction: import `Content-Type`, `Set-Cookie`, and `Access-Control-Allow-Origin` headers, then run `security_scan`.
