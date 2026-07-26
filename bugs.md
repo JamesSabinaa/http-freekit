@@ -2166,6 +2166,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-210 — Medium — Failed mock deletion discards unsaved edits first
 
+- Status: **Fixed**.
+- Resolution: Saved-rule deletion now validates both the HTTP response and returned error state before clearing its local draft, expansion, and editor data. Brand-new drafts still delete immediately without contacting the server.
+
 - Evidence: `deleteMockRule()` removes the draft and clears editor state at `src/ui/app.js:6244-6252` before awaiting server deletion at `:6262-6266`; failure only shows a toast.
 - Impact: when DELETE fails, the server rule remains but the user's unsaved draft is irrecoverably erased.
 - Reproduction: edit a saved rule, force DELETE to fail, and click Delete.

@@ -6688,24 +6688,33 @@
 
     async function deleteMockRule(ruleId) {
       try {
-        // Clean up local draft state
-        mockDraftRules.delete(ruleId);
-        mockExpandedRules.delete(ruleId);
-        if (mockEditingRule === ruleId) {
-          mockEditingRule = null;
-          mockEditDraft = null;
-        }
-
         if (mockNewDraftIds.has(ruleId)) {
           // Unsaved draft — remove locally only (it's not on the server yet)
+          mockDraftRules.delete(ruleId);
+          mockExpandedRules.delete(ruleId);
           mockNewDraftIds.delete(ruleId);
+          if (mockEditingRule === ruleId) {
+            mockEditingRule = null;
+            mockEditDraft = null;
+          }
           mockRules = mockRules.filter(r => r.id !== ruleId);
           toast('Draft rule deleted', 'success');
           updateMockSaveButtons();
           renderMockRules();
         } else {
           // Saved rule — delete from server AND reload to get fresh state
-          await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
+          const response = await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || data?.success === false || data?.error) {
+            throw new Error(data?.error || `Could not delete rule (${response.status})`);
+          }
+
+          mockDraftRules.delete(ruleId);
+          mockExpandedRules.delete(ruleId);
+          if (mockEditingRule === ruleId) {
+            mockEditingRule = null;
+            mockEditDraft = null;
+          }
           toast('Rule deleted', 'success');
           updateMockSaveButtons();
           await loadMockRules();
