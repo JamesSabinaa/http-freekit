@@ -1668,6 +1668,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-301 — Medium — Android Stop overwrites proxy changes made after activation
 
+- Status: **Fixed**.
+- Resolution: Android global-proxy cleanup now reads the current device setting and restores the saved prior value only when it exactly matches the `hostIp:proxyPort` owned by that activation. A newer external proxy is preserved while FreeKit relinquishes its journal and staged CA; failed or ambiguous reads perform no proxy write and retain retryable recovery ownership.
+
 - Evidence: activation snapshots the previous global proxy at `src/interceptors/android-adb-interceptor.js:465-469` and stores it at `:482-492`; cleanup at `:533-544` restores that stale value without first checking whether the current proxy still belongs to FreeKit.
 - Impact: a VPN, administrator, or second debugging tool that changes the device proxy while FreeKit is active has its newer setting silently overwritten on Stop.
 - Reproduction: start with `old:1`, activate FreeKit, set Android's global proxy to `new:2`, then Stop; the setting becomes `old:1`.

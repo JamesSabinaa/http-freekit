@@ -547,9 +547,25 @@ export class AndroidAdbInterceptor {
   }
 
   /**
-   * Restore the global HTTP proxy value that existed before activation.
+   * Restore the global HTTP proxy value that existed before activation, but
+   * only while the device still has the exact proxy value owned by FreeKit.
    */
-  async _restoreProxy(deviceId, previousProxy) {
+  async _restoreProxy(deviceId, previousProxy, ownedProxy) {
+    if (!this._isSafeJournalString(ownedProxy) || ownedProxy.length === 0) {
+      console.error(`[Interceptor] Cannot verify proxy ownership on ${deviceId}: owned proxy is unavailable`);
+      return false;
+    }
+
+    const currentProxy = await this._getProxy(deviceId);
+    if (currentProxy?.success !== true || !this._isSafeJournalString(currentProxy.value)) {
+      console.error(`[Interceptor] Cannot verify current proxy ownership on ${deviceId}`);
+      return false;
+    }
+    if (currentProxy.value !== ownedProxy) {
+      console.warn(`[Interceptor] Proxy changed externally on ${deviceId}; preserving the current setting`);
+      return true;
+    }
+
     const wasUnset = previousProxy == null || previousProxy === '' || previousProxy === 'null';
     const settingsArgs = wasUnset
       ? ['shell', 'settings', 'delete', 'global', 'http_proxy']
@@ -657,7 +673,16 @@ export class AndroidAdbInterceptor {
     if (activeInfo?.mode === 'staging-cleanup') {
       return await this._removeCaCert(serial);
     }
-    const proxyRestored = await this._restoreProxy(serial, activeInfo?.previousProxy);
+    const ownedProxy = ipv4ToInteger(activeInfo?.hostIp) !== null &&
+      Number.isInteger(activeInfo?.proxyPort) &&
+      activeInfo.proxyPort >= 1 && activeInfo.proxyPort <= 65535
+      ? `${activeInfo.hostIp}:${activeInfo.proxyPort}`
+      : null;
+    const proxyRestored = await this._restoreProxy(
+      serial,
+      activeInfo?.previousProxy,
+      ownedProxy
+    );
     const certificateRemoved = await this._removeCaCert(serial);
     return proxyRestored && certificateRemoved;
   }

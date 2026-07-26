@@ -15,9 +15,12 @@ test('Android fallback restores the proxy that existed before activation', async
   interceptor._getQrMetadata = async () => ({});
   interceptor._pushCaCert = () => '/data/local/tmp/http-freekit-ca.pem';
   interceptor._removeCaCert = () => true;
+  let deviceProxy = 'corporate.proxy:8888';
   interceptor._adb = (_deviceId, args) => {
     adbCalls.push(args);
-    if (args[2] === 'get') return 'corporate.proxy:8888\n';
+    if (args[2] === 'get') return `${deviceProxy}\n`;
+    if (args[2] === 'put') deviceProxy = args[5];
+    if (args[2] === 'delete') deviceProxy = 'null';
     return '';
   };
 
@@ -37,9 +40,10 @@ test('Android fallback restores the proxy that existed before activation', async
 test('Android fallback restores an originally unset proxy by deleting the setting', async () => {
   const interceptor = new AndroidAdbInterceptor();
   const calls = [];
+  interceptor._getProxy = () => ({ success: true, value: '192.0.2.10:8080' });
   interceptor._adb = (_deviceId, args) => calls.push(args);
 
-  assert.equal(await interceptor._restoreProxy('device-1', 'null'), true);
+  assert.equal(await interceptor._restoreProxy('device-1', 'null', '192.0.2.10:8080'), true);
   assert.deepEqual(calls, [['shell', 'settings', 'delete', 'global', 'http_proxy']]);
 });
 
