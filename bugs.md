@@ -770,6 +770,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-241 — Medium — Ordinary upstream HTTP/2 requests can hang forever
 
+- Status: **Fixed**.
+- Resolution: Ordinary upstream HTTP/2 streams now share the configured response-idle timeout and settle once on success, timeout, downstream cancellation, abort/error, or premature close. Terminal paths remove timers and listeners and cancel only the affected stream, preserving cached sessions, informational responses, trailers, and body limits.
+
 - Evidence: `_makeH2Request()` at `src/proxy/proxy-server.js:2656-2711` handles response, body end, and error but configures no connect/response timeout and no settlement for aborted or premature close. All normal intercepted H2 paths use it, while H1 fallbacks receive configured timeouts.
 - Impact: an origin that accepts an H2 stream without response headers, or closes it without error/end, leaves the downstream request pending indefinitely.
 - Reproduction: accept an H2 stream and send no response headers.

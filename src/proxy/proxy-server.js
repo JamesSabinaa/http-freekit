@@ -4085,43 +4085,85 @@ export class ProxyServer {
       const hasRequestTrailers = Object.keys(requestTrailers).length > 0;
       const stream = session.request(h2Headers, hasRequestTrailers ? { waitForTrailers: true } : undefined);
       let settled = false;
-      const cleanup = () => signal?.removeEventListener?.('abort', onAbort);
+      let responseStarted = false;
+      let idleTimer = null;
+      const cleanup = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        signal?.removeEventListener?.('abort', onAbort);
+        stream.removeListener('response', onResponse);
+        stream.removeListener('headers', onHeaders);
+        stream.removeListener('data', onData);
+        stream.removeListener('trailers', onTrailers);
+        stream.removeListener('end', onEnd);
+        stream.removeListener('aborted', onAborted);
+        stream.removeListener('error', onError);
+        stream.removeListener('close', onClose);
+        stream.removeListener('wantTrailers', onWantTrailers);
+      };
+      const cancelStream = () => {
+        if (stream.destroyed || stream.closed) return;
+        // Keep cancellation errors handled after the lifecycle listeners are removed.
+        stream.once('error', () => {});
+        stream.close(http2.constants.NGHTTP2_CANCEL);
+      };
       const finishResolve = (value) => {
         if (settled) return;
         settled = true;
         cleanup();
         resolve(value);
       };
-      const finishReject = (error) => {
+      const finishReject = (error, cancel = false) => {
         if (settled) return;
         settled = true;
         cleanup();
+        if (cancel) cancelStream();
         reject(error);
       };
-      const onAbort = () => {
-        finishReject(this._createDownstreamAbortError());
-        if (!stream.destroyed && !stream.closed) {
-          stream.close(http2.constants.NGHTTP2_CANCEL);
-        }
+      const responseError = (message) => {
+        const error = new Error(message);
+        error.code = 'ECONNRESET';
+        error.upstreamPhase = 'response';
+        return error;
       };
-      signal?.addEventListener?.('abort', onAbort, { once: true });
-      if (signal?.aborted) onAbort();
+      const onTimeout = () => {
+        const error = new Error(
+          `Upstream response timeout after ${this._upstreamIdleTimeoutMs / 1000}s`
+        );
+        error.code = 'ETIMEDOUT';
+        error.upstreamPhase = 'response';
+        finishReject(error, true);
+      };
+      const resetIdleTimer = () => {
+        if (settled || this._upstreamIdleTimeoutMs <= 0) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(onTimeout, this._upstreamIdleTimeoutMs);
+        idleTimer.unref?.();
+      };
+      const onAbort = () => {
+        finishReject(this._createDownstreamAbortError(), true);
+      };
 
       let statusCode;
       const responseHeaders = {};
       let responseTrailers = {};
       const responseBody = this._createBodyCollector();
 
-      stream.on('response', (hdrs) => {
+      const onResponse = (hdrs) => {
+        responseStarted = true;
         statusCode = hdrs[':status'];
         for (const [k, v] of Object.entries(hdrs)) {
           if (!k.startsWith(':')) {
             responseHeaders[k] = v;
           }
         }
-      });
+        resetIdleTimer();
+      };
 
-      stream.on('headers', (hdrs) => {
+      const onHeaders = (hdrs) => {
+        resetIdleTimer();
         const informationalStatus = Number(hdrs[':status']);
         if (!Number.isInteger(informationalStatus) || informationalStatus < 100 ||
             informationalStatus >= 200 || informationalStatus === 101) {
@@ -4140,21 +4182,27 @@ export class ProxyServer {
         } catch {
           // Informational forwarding must not disrupt the final response.
         }
-      });
+      };
 
-      stream.on('data', chunk => {
+      const onData = (chunk) => {
+        resetIdleTimer();
         if (!this._appendBodyChunk(responseBody, chunk)) {
-          stream.destroy(this._bodyLimitError('HTTP/2 response body'));
+          finishReject(this._bodyLimitError('HTTP/2 response body'), true);
         }
-      });
+      };
 
-      stream.on('trailers', receivedTrailers => {
+      const onTrailers = (receivedTrailers) => {
+        resetIdleTimer();
         responseTrailers = this._cleanTrailers(receivedTrailers);
-      });
+      };
 
-      stream.on('end', () => {
+      const onEnd = () => {
         if (signal?.aborted) {
-          finishReject(this._createDownstreamAbortError());
+          finishReject(this._createDownstreamAbortError(), true);
+          return;
+        }
+        if (!responseStarted) {
+          finishReject(responseError('Upstream HTTP/2 stream ended before response headers'), true);
           return;
         }
         finishResolve({
@@ -4166,26 +4214,62 @@ export class ProxyServer {
           remoteAddress: session.socket?.remoteAddress,
           remotePort: session.socket?.remotePort
         });
-      });
+      };
 
-      stream.on('error', (err) => {
-        finishReject(signal?.aborted ? this._createDownstreamAbortError() : err);
-      });
+      const onAborted = () => {
+        finishReject(responseError('Upstream response aborted'), true);
+      };
 
-      stream.setTimeout(30000, () => {
-        stream.close(http2.constants.NGHTTP2_CANCEL);
-        finishReject(new Error('H2 stream timeout after 30s'));
-      });
+      const onError = (err) => {
+        if (!err.upstreamPhase) err.upstreamPhase = 'response';
+        finishReject(signal?.aborted ? this._createDownstreamAbortError() : err, true);
+      };
+
+      const onClose = () => {
+        finishReject(responseError(
+          responseStarted
+            ? 'Upstream HTTP/2 response closed prematurely'
+            : 'Upstream HTTP/2 stream closed before response headers'
+        ));
+      };
+
+      const onWantTrailers = () => {
+        try {
+          stream.sendTrailers(requestTrailers);
+        } catch (err) {
+          finishReject(err, true);
+        }
+      };
+
+      stream.on('response', onResponse);
+      stream.on('headers', onHeaders);
+      stream.on('data', onData);
+      stream.on('trailers', onTrailers);
+      stream.on('end', onEnd);
+      stream.on('aborted', onAborted);
+      stream.on('error', onError);
+      stream.on('close', onClose);
 
       if (hasRequestTrailers) {
-        stream.once('wantTrailers', () => stream.sendTrailers(requestTrailers));
+        stream.once('wantTrailers', onWantTrailers);
       }
 
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      resetIdleTimer();
+
       // Send request body
-      if (body && body.length > 0) {
-        stream.end(body);
-      } else {
-        stream.end();
+      try {
+        if (body && body.length > 0) {
+          stream.end(body);
+        } else {
+          stream.end();
+        }
+      } catch (err) {
+        finishReject(err, true);
       }
     });
   }
