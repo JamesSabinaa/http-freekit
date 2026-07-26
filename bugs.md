@@ -1488,6 +1488,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-254 — Medium — Fresh Terminal preserves inherited proxy bypass rules
 
+- Status: **Fixed**.
+- Resolution: The shared terminal environment now explicitly clears both `NO_PROXY` and `no_proxy`, overriding inherited bypasses in every Fresh Terminal launcher and emitting matching empty assignments in Bash/Zsh, PowerShell, CMD, and renderer-fallback instructions.
 - Evidence: the environment spreads all of `process.env` and overrides proxy variables at `src/interceptors/terminal-interceptors.js:44-56`, but never clears or replaces NO_PROXY/no_proxy.
 - Impact: `NO_PROXY=*` makes activation a complete no-op for compliant clients, and common exclusions silently bypass capture despite the all-processes promise.
 - Reproduction: launch FreeKit with `NO_PROXY=*`, activate Fresh Terminal, and make a request with curl.

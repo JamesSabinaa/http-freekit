@@ -56,6 +56,8 @@ function buildTerminalEnvironment(proxyUrl, certPath) {
     HTTPS_PROXY: proxyUrl,
     http_proxy: proxyUrl,
     https_proxy: proxyUrl,
+    NO_PROXY: '',
+    no_proxy: '',
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
@@ -281,7 +283,7 @@ export class FreshTerminalInterceptor {
     const proxyUrl = `http://127.0.0.1:${proxyPort}`;
 
     const env = {
-      ...process.env,
+      ...this._environment(),
       ...buildTerminalEnvironment(proxyUrl, certPath)
     };
 
