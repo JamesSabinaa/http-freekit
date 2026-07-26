@@ -1499,9 +1499,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-255 — Medium — Fresh Terminal cannot intercept Docker as advertised
 
+- Status: **Fixed**.
 - Evidence: the UI promises all processes and Docker containers, but Fresh Terminal only gives the host shell loopback proxy variables at `src/ui/app.js:3592` and `src/interceptors/terminal-interceptors.js:40-56`; it neither configures Docker client proxies nor adds container environment flags.
 - Impact: normal docker run/Compose workloads launched from that shell bypass FreeKit, and propagating 127.0.0.1 would point at the container itself.
 - Reproduction: activate Fresh Terminal, launch a container that makes HTTP requests, and inspect FreeKit traffic.
+- Resolution: Fresh Terminal now describes only host commands and processes launched from its shell, directs container traffic to the dedicated Docker interceptor, and no longer appears in Docker-tagged interceptor searches; README copy makes the same capability boundary explicit.
 
 ### BUG-270 — Medium — Fresh Terminal replaces public CA trust
 

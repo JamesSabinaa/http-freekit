@@ -7,7 +7,7 @@ Available as a **standalone desktop app** (Electron) for Windows, macOS, and Lin
 ## Features
 
 ### Intercept
-Launch pre-configured browsers, terminals, Docker containers, Electron apps, Android devices (via ADB), or JVM processes with all HTTP(S) traffic routed through the proxy. Supports Chrome, Firefox, Edge, Brave, system proxy, and more. Interceptor cards expand in-grid to show custom configuration (device lists, process selection, setup instructions).
+Launch pre-configured browsers, terminals, Docker containers, Electron apps, Android devices (via ADB), or JVM processes with HTTP(S) traffic routed through the proxy. Fresh Terminal configures host commands and processes started in that shell; container traffic uses the dedicated Docker interceptor. Supports Chrome, Firefox, Edge, Brave, system proxy, and more. Interceptor cards expand in-grid to show custom configuration (device lists, process selection, setup instructions).
 
 ### View
 Inspect every HTTP request and response in real-time with a **virtualized traffic table** supporting up to 10,000 retained rows. Full **Monaco Editor** integration for viewing request/response bodies with syntax highlighting, code folding, search, and bracket matching. See headers (with per-header documentation for 80+ standard headers), timing, TLS/connection details, compression analysis, and caching analysis. WebSocket frames are individually captured and displayed. TLS failures and raw tunnels appear as distinct event types with their own detail views.
