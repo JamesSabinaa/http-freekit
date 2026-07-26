@@ -1126,6 +1126,60 @@ export class ProxyServer {
     };
   }
 
+  _forwardRejectedUpgradeResponse(proxyRes, socket, requestRecord, startTime) {
+    const responseBody = this._createBodyCollector();
+    let responseBodySize = 0;
+    let finalized = false;
+    let failed = false;
+    const finalize = (err = null) => {
+      if (finalized) return;
+      finalized = true;
+      const body = this._concatBody(responseBody);
+      this._emitRequestUpdate({
+        ...requestRecord,
+        statusCode: proxyRes.statusCode,
+        statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
+        responseHeaders: proxyRes.headers,
+        responseBody: responseBody.exceeded
+          ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
+          : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+        responseBodySize,
+        duration: Date.now() - startTime,
+        remote: proxyRes.socket
+          ? { address: proxyRes.socket.remoteAddress, port: proxyRes.socket.remotePort }
+          : null,
+        ...(err ? {
+          error: err.message,
+          errorCode: this._getUpstreamErrorCode(err),
+          errorPhase: this._getUpstreamErrorPhase(err)
+        } : {})
+      });
+    };
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      finalize(err);
+      proxyRes.unpipe(socket);
+      if (!socket.destroyed && !socket.writableEnded) socket.end();
+    };
+
+    proxyRes.on('data', chunk => {
+      responseBodySize += chunk.length;
+      this._appendBodyChunk(responseBody, chunk);
+    });
+    proxyRes.once('end', () => finalize());
+    proxyRes.once('aborted', () => fail(new Error('Upstream WebSocket handshake response aborted')));
+    proxyRes.on('error', fail);
+
+    let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}\r\n`;
+    for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+      responseStr += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
+    }
+    responseStr += '\r\n';
+    socket.write(responseStr);
+    proxyRes.pipe(socket);
+  }
+
   // Handle HTTP upgrade requests (WebSocket passthrough)
   _handleHttpUpgrade(req, socket, head, context = {}) {
     const startTime = Date.now();
@@ -1313,48 +1367,7 @@ export class ProxyServer {
     // 401 or 404). In that case Node emits `response`, not `upgrade`.
     proxyReq.on('response', (proxyRes) => {
       handshakeState = 'response';
-      const responseBody = this._createBodyCollector();
-      let responseBodySize = 0;
-      let finalized = false;
-      const finalize = (err = null) => {
-        if (finalized) return;
-        finalized = true;
-        const body = this._concatBody(responseBody);
-        this._emitRequestUpdate({
-          ...requestRecord,
-          statusCode: proxyRes.statusCode,
-          statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
-          responseHeaders: proxyRes.headers,
-          responseBody: responseBody.exceeded
-            ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
-            : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
-          responseBodySize,
-          duration: Date.now() - startTime,
-          remote: proxyRes.socket
-            ? { address: proxyRes.socket.remoteAddress, port: proxyRes.socket.remotePort }
-            : null,
-          ...(err ? {
-            error: err.message,
-            errorCode: this._getUpstreamErrorCode(err),
-            errorPhase: this._getUpstreamErrorPhase(err)
-          } : {})
-        });
-      };
-      proxyRes.on('data', chunk => {
-        responseBodySize += chunk.length;
-        this._appendBodyChunk(responseBody, chunk);
-      });
-      proxyRes.once('end', () => finalize());
-      proxyRes.once('aborted', () => finalize(new Error('Upstream WebSocket handshake response aborted')));
-      proxyRes.once('error', finalize);
-
-      let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}\r\n`;
-      for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
-        responseStr += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
-      }
-      responseStr += '\r\n';
-      socket.write(responseStr);
-      proxyRes.pipe(socket);
+      this._forwardRejectedUpgradeResponse(proxyRes, socket, requestRecord, startTime);
     });
 
     proxyReq.on('error', (err) => {

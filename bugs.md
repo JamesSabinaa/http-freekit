@@ -986,6 +986,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-355 — Medium — Aborted non-upgrade WebSocket responses hang clients
 
+- Status: **Fixed**.
+
 - Evidence: `_handleHttpUpgrade()` handles a rejected upgrade by piping `proxyRes` directly to the client at `src/proxy/proxy-server.js:741-748`, without `aborted` or `error` listeners. The request-level error handler does not settle an already-received response stream.
 - Impact: if an origin sends a normal 401/404 response and disconnects mid-body, the proxy forwards the partial response but leaves the downstream socket open indefinitely.
 - Reproduction: have a WebSocket origin send `401` with `Content-Length: 100`, write `partial`, then destroy its socket; the client receives the partial 401 but emits neither `end` nor `close`.
