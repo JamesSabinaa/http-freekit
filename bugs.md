@@ -2476,9 +2476,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-272 — Low/Medium — Prototype-key WebSocket parent IDs poison rendering
 
+- Status: **Fixed**.
 - Evidence: traffic validation omits parentId, while the renderer indexes frames into a plain object and assumes any existing key is an array at `src/ui/app.js:290-300`; inherited keys such as `__proto__` and `constructor` are truthy.
 - Impact: one accepted ws-frame record can make initial Traffic rendering and later filtering throw repeatedly until cleared externally.
 - Reproduction: import a valid ws-frame with `parentId: "__proto__"` and reload.
+- Resolution: the renderer now builds its WebSocket frame index with a null prototype during both live updates and filter/reload rebuilds, so every string parent ID is an own data key. Generic traffic import also rejects WebSocket frames whose parent ID is missing, empty, or not a string.
 
 ### BUG-278 — Low/Medium — Canceling the OpenAPI prompt still uploads the spec
 

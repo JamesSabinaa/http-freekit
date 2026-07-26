@@ -69,7 +69,7 @@
 
     // ============ WEBSOCKET FRAMES STATE ============
     /** Map of parentId -> [frame request objects] for WS frame sub-rows */
-    let wsFramesByParent = {};
+    let wsFramesByParent = Object.create(null);
     /** Set of WS connection IDs that are expanded to show frame sub-rows */
     const wsExpandedConnections = new Set();
 
@@ -401,7 +401,7 @@
       const raw = document.getElementById('searchInput').value.trim();
 
       // Rebuild wsFramesByParent index (handles clears, imports, etc.)
-      wsFramesByParent = {};
+      wsFramesByParent = Object.create(null);
       requests.forEach(r => {
         if (r.protocol === 'ws-frame' && r.parentId) {
           if (!wsFramesByParent[r.parentId]) wsFramesByParent[r.parentId] = [];

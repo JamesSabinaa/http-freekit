@@ -529,7 +529,8 @@ print(json.dumps({"providers": get_proxy_providers()}))
     if (!Array.isArray(requests)) return 'requests must be an array';
     const textFields = [
       'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
-      'requestBodyEncoding', 'responseBodyEncoding', 'statusMessage', 'protocol', 'source'
+      'requestBodyEncoding', 'responseBodyEncoding', 'statusMessage', 'protocol', 'source',
+      'parentId'
     ];
     const bodySizeFields = [
       'requestBodySize', 'responseBodySize',
@@ -553,6 +554,10 @@ print(json.dumps({"providers": get_proxy_providers()}))
         if (request[field] !== undefined && request[field] !== null && typeof request[field] !== 'string') {
           return `requests[${index}].${field} must be a string`;
         }
+      }
+      if (request.protocol === 'ws-frame' &&
+          (typeof request.parentId !== 'string' || request.parentId.length === 0)) {
+        return `requests[${index}].parentId must be a non-empty string for WebSocket frames`;
       }
       for (const field of numberFields) {
         if (request[field] !== undefined && request[field] !== null && !Number.isFinite(request[field])) {
