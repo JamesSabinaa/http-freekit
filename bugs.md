@@ -695,6 +695,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-214 — Medium — Management WebSocket broadcasts buffer without bound
 
+- Status: **Fixed**.
+- Resolution: Broadcasts now enforce a configurable 16 MiB per-client queued-byte ceiling using `bufferedAmount` plus the next message size. Slow, non-open, and send-failing clients are removed and safely terminated without interrupting delivery to healthy clients.
+
 - Evidence: `src/api/api-server.js:1368-1376` serializes every event and calls `client.send()` for every OPEN client with no `bufferedAmount` limit, throttling, send callback/error policy, or slow-client disconnect.
 - Impact: one authenticated but non-reading UI/WebSocket client can accumulate an unbounded per-client queue and process memory as large captures arrive.
 - Reproduction: authenticate to `/ws`, pause the underlying socket, generate repeated large captures, and monitor `bufferedAmount` and RSS.

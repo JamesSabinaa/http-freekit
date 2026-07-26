@@ -13,6 +13,8 @@ import { validatePortRange } from '../proxy/port-range.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
+// A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
+export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 
 function harHeadersToObject(headers = []) {
   const result = {};
@@ -108,6 +110,10 @@ export class ApiServer {
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
     this.sendMaxResponseBytes = options.sendMaxResponseBytes ?? 32 * 1024 * 1024;
+    const maxWsBufferedBytes = options.maxWsBufferedBytes ?? DEFAULT_MAX_WS_BUFFERED_BYTES;
+    this.maxWsBufferedBytes = Number.isSafeInteger(maxWsBufferedBytes) && maxWsBufferedBytes >= 0
+      ? maxWsBufferedBytes
+      : DEFAULT_MAX_WS_BUFFERED_BYTES;
 
     // Wire up breakpoint broadcast so the UI gets real-time breakpoint events
     this.proxy.onBreakpoint = (event) => {
@@ -1798,11 +1804,33 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _broadcast(message) {
     const json = JSON.stringify(message);
+    const messageBytes = Buffer.byteLength(json);
     for (const client of this.clients) {
-      if (client.readyState === 1) { // OPEN
-        client.send(json);
+      try {
+        if (client.readyState !== 1) { // OPEN
+          this._evictWebSocketClient(client);
+          continue;
+        }
+        const bufferedBytes = Number(client.bufferedAmount);
+        if (!Number.isFinite(bufferedBytes) || bufferedBytes < 0 ||
+            bufferedBytes + messageBytes > this.maxWsBufferedBytes) {
+          this._evictWebSocketClient(client);
+          continue;
+        }
+        client.send(json, err => {
+          if (err) this._evictWebSocketClient(client);
+        });
+      } catch {
+        this._evictWebSocketClient(client);
       }
     }
+  }
+
+  _evictWebSocketClient(client) {
+    if (!this.clients.delete(client)) return;
+    try {
+      client.terminate?.();
+    } catch {}
   }
 
   start() {
