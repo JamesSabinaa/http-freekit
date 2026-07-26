@@ -4177,15 +4177,46 @@
       `;
     }
 
+    function quoteTerminalBashValue(value) {
+      return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+    }
+
+    function quoteTerminalPowerShellValue(value) {
+      return `'${String(value).replace(/'/g, "''")}'`;
+    }
+
+    function terminalCmdSet(variable, value) {
+      return `set "${variable}=${String(value)}"`;
+    }
+
+    function buildTerminalFallbackInstructions(proxyUrl, certPath) {
+      return {
+        bash: [
+          `export HTTP_PROXY=${quoteTerminalBashValue(proxyUrl)}`,
+          `HTTPS_PROXY=${quoteTerminalBashValue(proxyUrl)}`,
+          `NODE_EXTRA_CA_CERTS=${quoteTerminalBashValue(certPath)}`,
+          'NODE_TLS_REJECT_UNAUTHORIZED=0'
+        ].join(' '),
+        powershell: [
+          `$env:HTTP_PROXY=${quoteTerminalPowerShellValue(proxyUrl)}`,
+          `$env:HTTPS_PROXY=${quoteTerminalPowerShellValue(proxyUrl)}`,
+          `$env:NODE_EXTRA_CA_CERTS=${quoteTerminalPowerShellValue(certPath)}`,
+          `$env:NODE_TLS_REJECT_UNAUTHORIZED='0'`
+        ].join('; '),
+        cmd: [
+          terminalCmdSet('HTTP_PROXY', proxyUrl),
+          terminalCmdSet('HTTPS_PROXY', proxyUrl),
+          terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
+          terminalCmdSet('NODE_TLS_REJECT_UNAUTHORIZED', '0')
+        ].join('&& ')
+      };
+    }
+
     function renderTerminalConfig(container) {
       const meta = expandedInterceptorMetadata;
       const proxyUrl = meta?.proxyUrl || `http://127.0.0.1:${config.proxyPort || 8000}`;
       const certPath = meta?.certPath || '';
-      const instructions = meta?.instructions || {
-        bash: `export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS="${certPath}" NODE_TLS_REJECT_UNAUTHORIZED=0`,
-        powershell: `$env:HTTP_PROXY="${proxyUrl}"; $env:HTTPS_PROXY="${proxyUrl}"; $env:NODE_EXTRA_CA_CERTS="${certPath}"; $env:NODE_TLS_REJECT_UNAUTHORIZED="0"`,
-        cmd: `set HTTP_PROXY=${proxyUrl}&& set HTTPS_PROXY=${proxyUrl}&& set NODE_EXTRA_CA_CERTS=${certPath}&& set NODE_TLS_REJECT_UNAUTHORIZED=0`
-      };
+      const instructions = meta?.instructions || buildTerminalFallbackInstructions(proxyUrl, certPath);
 
       // Detect default shell
       const platform = navigator.platform.toLowerCase();

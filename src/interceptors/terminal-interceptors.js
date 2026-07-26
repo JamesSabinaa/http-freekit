@@ -27,6 +27,37 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
+function powerShellQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function cmdSet(variable, value) {
+  return `set "${variable}=${String(value)}"`;
+}
+
+export function buildExistingTerminalInstructions(proxyUrl, certPath) {
+  return {
+    bash: [
+      `export HTTP_PROXY=${shellQuote(proxyUrl)}`,
+      `HTTPS_PROXY=${shellQuote(proxyUrl)}`,
+      `NODE_EXTRA_CA_CERTS=${shellQuote(certPath)}`,
+      'NODE_TLS_REJECT_UNAUTHORIZED=0'
+    ].join(' '),
+    powershell: [
+      `$env:HTTP_PROXY=${powerShellQuote(proxyUrl)}`,
+      `$env:HTTPS_PROXY=${powerShellQuote(proxyUrl)}`,
+      `$env:NODE_EXTRA_CA_CERTS=${powerShellQuote(certPath)}`,
+      `$env:NODE_TLS_REJECT_UNAUTHORIZED='0'`
+    ].join('; '),
+    cmd: [
+      cmdSet('HTTP_PROXY', proxyUrl),
+      cmdSet('HTTPS_PROXY', proxyUrl),
+      cmdSet('NODE_EXTRA_CA_CERTS', certPath),
+      cmdSet('NODE_TLS_REJECT_UNAUTHORIZED', '0')
+    ].join('&& ')
+  };
+}
+
 export class FreshTerminalInterceptor {
   constructor() {
     this.id = 'fresh-terminal';
@@ -360,11 +391,7 @@ export class ExistingTerminalInterceptor {
         lifecycleNote: 'These variables remain active in the terminal until you unset them or close that shell.',
         proxyUrl,
         certPath,
-        instructions: {
-          bash: `export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_EXTRA_CA_CERTS="${certPath}" NODE_TLS_REJECT_UNAUTHORIZED=0`,
-          powershell: `$env:HTTP_PROXY="${proxyUrl}"; $env:HTTPS_PROXY="${proxyUrl}"; $env:NODE_EXTRA_CA_CERTS="${certPath}"; $env:NODE_TLS_REJECT_UNAUTHORIZED="0"`,
-          cmd: `set HTTP_PROXY=${proxyUrl}&& set HTTPS_PROXY=${proxyUrl}&& set NODE_EXTRA_CA_CERTS=${certPath}&& set NODE_TLS_REJECT_UNAUTHORIZED=0`,
-        }
+        instructions: buildExistingTerminalInstructions(proxyUrl, certPath)
       }
     };
   }

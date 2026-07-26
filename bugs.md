@@ -1337,6 +1337,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-202 — Low/Medium — Terminal setup commands do not escape certificate paths
 
+- Status: **Fixed**.
+- Resolution: Existing Terminal metadata and the renderer fallback now generate shell-specific literal assignments: POSIX-safe single quoting for Bash/Zsh, doubled single quotes for PowerShell, and CMD's quoted `set "NAME=value"` form. Paths containing spaces and shell metacharacters are no longer split or executed as command syntax.
+
 - Evidence: `src/interceptors/terminal-interceptors.js:84,179-181` interpolates the path directly into AppleScript, Bash, PowerShell, and CMD commands; CMD is unquoted and the others do not escape their shell's interpolation characters. UI fallback commands repeat this at `src/ui/app.js:3936-3938`.
 - Impact: valid data paths containing `&`, `$`, backticks, or apostrophes create truncated or invalid commands, leaving HTTPS trust unconfigured.
 - Reproduction: use an APPDATA path under `C:\Temp\A&B`, choose CMD in Existing Terminal, and paste the generated command.
