@@ -2318,6 +2318,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-237 — Low — JSON traffic export is unreachable from the UI
 
+- Status: **Fixed**.
+
 - Evidence: README advertises JSON and HAR export, and `exportTraffic()` implements a JSON branch at `src/ui/app.js:7546-7568`; the sole visible action is the HAR button at `src/ui/index.html:103`.
 - Impact: desktop/browser users cannot invoke the documented JSON export without using developer tools or the API directly.
 - Reproduction: inspect all Traffic controls and context menus; none calls `exportTraffic("json")`.

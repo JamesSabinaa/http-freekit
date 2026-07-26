@@ -93,14 +93,17 @@
                 <span class="request-count" id="trafficCount">0</span>
                 <span class="request-count-label" id="trafficCountLabel">requests</span>
               </div>
-              <div style="display:flex;align-items:center;gap:6px;">
+              <div class="traffic-toolbar-actions" role="toolbar" aria-label="Traffic actions">
                 <button class="btn" id="pauseBtn" onclick="togglePause()" title="Pause/Resume capture" aria-label="Pause capture">
                   <i class="ph ph-pause" style="font-size:14px;"></i>
                 </button>
                 <button class="btn" onclick="scrollToEnd()" title="Scroll to the bottom of the list" aria-label="Scroll to end">
                   <i class="ph ph-arrow-down" style="font-size:14px;"></i>
                 </button>
-                <button class="btn" onclick="exportTraffic('har')" title="Export as HAR" aria-label="Export as HAR">
+                <button class="btn" id="exportJsonBtn" onclick="exportTraffic('json')" title="Export traffic as JSON" aria-label="Export traffic as JSON">
+                  <i class="ph ph-brackets-curly" style="font-size:14px;"></i>
+                </button>
+                <button class="btn" id="exportHarBtn" onclick="exportTraffic('har')" title="Export traffic as HAR" aria-label="Export traffic as HAR">
                   <i class="ph ph-download-simple" style="font-size:14px;"></i>
                 </button>
                 <button class="btn" onclick="exportHarToGenerator()" title="Open HAR in Generator" aria-label="Open HAR in Generator">

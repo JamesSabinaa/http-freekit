@@ -1086,6 +1086,14 @@
       white-space: nowrap;
     }
 
+    .traffic-toolbar-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      min-width: 0;
+    }
+
     /* ============================================================
        13. Search Input (standalone)
        ============================================================ */
@@ -3476,6 +3484,18 @@
       .sidebar-item { height: 44px; min-height: 44px; }
       .sidebar-item i.ph { font-size: 22px; }
       .app { grid-template-columns: 44px 1fr; }
+
+      .traffic-footer {
+        flex-wrap: wrap;
+        gap: 6px 12px;
+      }
+      .traffic-footer > div:first-child {
+        flex-basis: 100%;
+      }
+      .traffic-toolbar-actions {
+        flex: 1;
+        flex-wrap: wrap;
+      }
 
       .intercept-page-grid {
         grid-template-columns: 1fr 1fr;
