@@ -2262,6 +2262,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-225 — Low — Global search shortcuts are swallowed outside Traffic
 
+- Status: **Fixed**.
+- Resolution: Ctrl+F, Ctrl+K, and non-editable `/` now share one handled shortcut path that switches to Traffic through `switchPanel()` when needed, verifies the panel is visible, focuses its search input, and returns before row navigation. `/` inside inputs, textareas, selects, contenteditable elements, and Monaco remains available for editing.
+
 - Evidence: Ctrl+F, `/`, and Ctrl+K prevent the default and focus the hidden Traffic search input without checking/switching the active panel at `src/ui/app.js:8886-8895`.
 - Impact: browser/editor find is suppressed in Send or Settings, but the focused Traffic filter is invisible.
 - Reproduction: focus a Send or Settings field and press Ctrl+F.

@@ -9837,6 +9837,32 @@
         && !isEditableKeyboardTarget(activeElement);
     }
 
+    function focusTrafficSearch() {
+      const trafficPanel = document.getElementById('panel-traffic');
+      if (!trafficPanel?.classList.contains('active')) {
+        const trafficNav = document.querySelector('.sidebar-item[data-panel="traffic"]');
+        if (!trafficNav) return false;
+        switchPanel(trafficNav, 'traffic');
+      }
+
+      if (!trafficPanel?.classList.contains('active')) return false;
+      const searchInput = document.getElementById('searchInput');
+      if (!searchInput) return false;
+      searchInput.focus();
+      return true;
+    }
+
+    function handleTrafficSearchShortcut(event, editableTarget) {
+      const commandShortcut = (event.ctrlKey || event.metaKey)
+        && (event.key === 'f' || event.key === 'k');
+      const slashShortcut = event.key === '/' && !editableTarget;
+      if (!commandShortcut && !slashShortcut) return false;
+
+      event.preventDefault();
+      focusTrafficSearch();
+      return true;
+    }
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
       const activeEl = document.activeElement;
@@ -9860,16 +9886,8 @@
         }
       }
 
-      if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        document.getElementById('searchInput').focus();
-      }
-
-      // Ctrl+F or / : Focus search input in traffic view
-      if ((e.key === 'f' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !isInput)) {
-        e.preventDefault();
-        document.getElementById('searchInput').focus();
-      }
+      // Ctrl+F, Ctrl+K, or /: switch to Traffic and focus its search input.
+      if (handleTrafficSearchShortcut(e, isInput)) return;
 
       // Ctrl+Delete or Ctrl+Shift+Delete: Clear all traffic
       if (isClearTrafficShortcut(e, activeEl, trafficPanelActive)) {
