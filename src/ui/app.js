@@ -10010,22 +10010,39 @@
     }
 
     async function resumeAllBreakpoints() {
+      const failures = [];
       try {
         const res = await fetch(API_BASE + '/api/breakpoints/pending');
         const data = await res.json();
         for (const bp of (data.pending || [])) {
-          const resumeRes = await fetch(API_BASE + '/api/breakpoints/pending/' + bp.id + '/resume', {
-            method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
-          });
-          let resumeData = null;
-          try { resumeData = await resumeRes.json(); } catch { /* ignore non-json error bodies */ }
-          if (!resumeRes.ok || resumeData?.success === false) {
-            throw new Error(resumeData?.error || `Resume failed (${resumeRes.status})`);
+          try {
+            const resumeRes = await fetch(API_BASE + '/api/breakpoints/pending/' + bp.id + '/resume', {
+              method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+            });
+            let resumeData = null;
+            try { resumeData = await resumeRes.json(); } catch { /* ignore non-json error bodies */ }
+            if (resumeRes.status === 404) continue;
+            if (!resumeRes.ok || resumeData?.success === false) {
+              throw new Error(resumeData?.error || `Resume failed (${resumeRes.status})`);
+            }
+          } catch (err) {
+            failures.push(err);
           }
         }
-        toast('All breakpoints resumed', 'success');
-        updateBreakpointBanner();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+        if (failures.length > 0) {
+          toast(
+            failures.length + ' breakpoint' + (failures.length > 1 ? 's' : '') +
+              ' could not be resumed: ' + failures[0].message,
+            'error'
+          );
+        } else {
+          toast('All breakpoints resumed', 'success');
+        }
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+      } finally {
+        await updateBreakpointBanner();
+      }
     }
 
     function getBreakpointEditDraft(req) {

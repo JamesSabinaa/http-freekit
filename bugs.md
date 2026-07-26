@@ -2426,9 +2426,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-259 — Low/Medium — Resume All stops at the first stale breakpoint
 
+- Status: **Fixed**.
 - Evidence: `resumeAllBreakpoints()` processes entries sequentially and throws on the first failed response at `src/ui/app.js:8687-8704`; later entries are skipped and banner refresh occurs only on total success.
 - Impact: one concurrently removed breakpoint prevents every later request from resuming and leaves the displayed count stale.
 - Reproduction: return pending A/B, make A resume return 404, and click Resume All.
+- Resolution: Resume All now treats a stale 404 as already cleared, continues after per-breakpoint failures, reports any remaining failures, and refreshes the pending banner after every attempt.
 
 ### BUG-260 — Medium — Visible HAR import still discards standard metadata
 
