@@ -640,6 +640,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-189 — Medium — Concurrent generator exports collide on one file
 
+- Status: **Fixed**.
+- Resolution: Each export now atomically reserves its own portable, timestamp-prefixed session directory and uses that exact session name for both its HAR and generator launch. Failed writes or launch setup remove only the newly reserved directory.
+
 - Evidence: `_exportToGenerator()` derives a session name only to whole-second precision and writes a deterministic directory/HAR path; the POST route has no lock or unique suffix (`src/api/api-server.js` generator export helpers and route).
 - Impact: two exports in one second race on the same file and launch generator processes against a shared session, with the last writer winning.
 - Reproduction: issue two export-generator requests concurrently around a traffic-log change and compare returned session/path values.

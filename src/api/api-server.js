@@ -602,25 +602,45 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     throw new Error(`Could not launch generator. Tried ${errors.join('; ')}`);
   }
 
+  async _reserveGeneratorSession(harBaseDir) {
+    await fs.mkdir(harBaseDir, { recursive: true });
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    const prefix = this._sanitizeGeneratorSessionName(`http-freekit-${timestamp}`);
+    const sessionDir = await fs.mkdtemp(path.join(harBaseDir, `${prefix}-`));
+    return {
+      sessionDir,
+      sessionName: path.basename(sessionDir)
+    };
+  }
+
+  async _cleanupGeneratorSession(sessionDir, harBaseDir) {
+    const resolvedSessionDir = path.resolve(sessionDir);
+    if (path.dirname(resolvedSessionDir) !== path.resolve(harBaseDir)) return;
+    await fs.rm(resolvedSessionDir, { recursive: true, force: true });
+  }
+
   async _exportToGenerator() {
     const generatorDir = this._getGeneratorDir();
     const pythonCandidates = this._getGeneratorPythonCandidates();
-    const sessionName = this._sanitizeGeneratorSessionName(
-      `http-freekit-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`
-    );
     const harBaseDir = await this._getGeneratorHarBaseDir(generatorDir, pythonCandidates);
-    const sessionDir = path.join(harBaseDir, sessionName);
-    const harPath = path.join(sessionDir, `${sessionName}.har`);
     const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: false });
+    const { sessionDir, sessionName } = await this._reserveGeneratorSession(harBaseDir);
+    const harPath = path.join(sessionDir, `${sessionName}.har`);
 
-    await fs.mkdir(sessionDir, { recursive: true });
-    await fs.writeFile(harPath, JSON.stringify(har, null, 2), 'utf8');
+    try {
+      await fs.writeFile(harPath, JSON.stringify(har, null, 2), 'utf8');
 
-    await this._spawnGeneratorPython(
-      this._getGeneratorLaunchPythonCandidates(pythonCandidates),
-      ['main_app.py', '--session', sessionName],
-      { cwd: generatorDir }
-    );
+      await this._spawnGeneratorPython(
+        this._getGeneratorLaunchPythonCandidates(pythonCandidates),
+        ['main_app.py', '--session', sessionName],
+        { cwd: generatorDir }
+      );
+    } catch (err) {
+      try {
+        await this._cleanupGeneratorSession(sessionDir, harBaseDir);
+      } catch {}
+      throw err;
+    }
 
     return {
       sessionName,
