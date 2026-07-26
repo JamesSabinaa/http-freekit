@@ -533,6 +533,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-373 — Low/Medium — MCP runtime descriptor publication and cleanup are racy
 
+- Status: **Fixed**.
+- Resolution: Runtime descriptor writes now publish a flushed mode-0600 same-directory temporary file by atomic rename. Publication and instance-owned cleanup share a bounded ownership-verified cross-process lock, so readers see complete old/new JSON and stale cleanup cannot remove a newer descriptor.
+
 - Evidence: `writeMcpRuntimeDescriptor()` writes directly to the final path with a truncating `writeFileSync()` at `src/mcp/launch-config.js:34-36`, so a concurrently launched bridge can read empty or partial JSON. `removeMcpRuntimeDescriptor()` separately reads, checks the instance ID, and unlinks at `:40-44`, leaving a time-of-check/time-of-use window in which an older instance can delete a newer instance's replacement descriptor.
 - Impact: a concurrent Claude launch can fail transiently while FreeKit is publishing the credential-bearing descriptor, and a restart or multi-instance cleanup race can remove the live instance's descriptor so all future bridge launches fail.
 - Reproduction: pause publication after truncating the final file and call `readRuntimeDescriptor()` to receive `Unexpected end of JSON input`; separately pause old-instance cleanup after its ownership read, replace the descriptor with a new instance's record, then resume cleanup and observe the new record deleted.
