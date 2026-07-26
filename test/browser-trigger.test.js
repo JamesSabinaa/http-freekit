@@ -88,12 +88,15 @@ test('reuses an active interceptor and activates an inactive interceptor', async
   assert.equal(reused.success, true);
 
   const inactiveInterceptor = {
+    id: 'chrome',
     name: 'Chrome',
     isActive: async () => false,
-    openUrl: async () => {}
+    isActivable: async () => true,
+    openUrl: async () => {},
+    activate: async (port, options) => ({ id: 'chrome', port, ...options })
   };
   manager.interceptors.set('chrome', inactiveInterceptor);
-  manager.activate = async (id, port, options) => ({ id, port, ...options });
+  manager.operationsInProgress = new Map();
 
   assert.deepEqual(
     await manager.openUrl('chrome', 9090, 'https://example.com/new'),

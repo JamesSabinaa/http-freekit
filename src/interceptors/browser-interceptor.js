@@ -11,6 +11,8 @@ import {
 } from './browser-lifecycle.js';
 import { execFileAsync } from './command-runner.js';
 
+export const BROWSER_BECAME_INACTIVE_ERROR_CODE = 'BROWSER_BECAME_INACTIVE';
+
 export class BrowserInterceptor {
   constructor(id, name, browserType) {
     this.id = id;
@@ -151,7 +153,18 @@ export class BrowserInterceptor {
   async openUrl(url) {
     const normalizedUrl = normalizeBrowserUrl(url);
     if (!(await this.isActive())) {
-      throw new Error(`${this.name} is not running`);
+      if (this.active || this.profileDir) this._markInactive('closed');
+      if (this.cleanupPending) {
+        const cleanupError = new Error(
+          `Could not reopen ${this.name}; its previous profile cleanup is still pending`
+        );
+        cleanupError.code = 'BROWSER_CLEANUP_PENDING';
+        throw cleanupError;
+      }
+      const error = new Error(`${this.name} is not running`);
+      error.code = BROWSER_BECAME_INACTIVE_ERROR_CODE;
+      error.normalizedUrl = normalizedUrl;
+      throw error;
     }
     if (this.browserType === 'firefox') {
       throw new Error('Opening a new tab in an active isolated Firefox profile is not supported');

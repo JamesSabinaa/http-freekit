@@ -1,4 +1,7 @@
-import { BrowserInterceptor } from './browser-interceptor.js';
+import {
+  BROWSER_BECAME_INACTIVE_ERROR_CODE,
+  BrowserInterceptor
+} from './browser-interceptor.js';
 import { ExistingBrowserInterceptor } from './existing-browser-interceptor.js';
 import { FreshTerminalInterceptor, ExistingTerminalInterceptor } from './terminal-interceptors.js';
 import { SystemProxyInterceptor } from './system-proxy-interceptor.js';
@@ -147,15 +150,21 @@ export class InterceptorManager {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
 
-    return await this._runExclusive(id, interceptor, async () => {
-      const activable = await interceptor.isActivable();
-      if (!activable) throw new Error(`${interceptor.name} is not available on this system`);
+    return await this._runExclusive(
+      id,
+      interceptor,
+      () => this._activateInterceptor(interceptor, proxyPort, options)
+    );
+  }
 
-      return await this._runStateTransition(
-        interceptor,
-        () => interceptor.activate(proxyPort, options)
-      );
-    });
+  async _activateInterceptor(interceptor, proxyPort, options = {}) {
+    const activable = await interceptor.isActivable();
+    if (!activable) throw new Error(`${interceptor.name} is not available on this system`);
+
+    return await this._runStateTransition(
+      interceptor,
+      () => interceptor.activate(proxyPort, options)
+    );
   }
 
   async deactivate(id, options = {}) {
@@ -203,11 +212,25 @@ export class InterceptorManager {
       throw new Error(`${interceptor.name} cannot open browser URLs`);
     }
 
-    if (await interceptor.isActive()) {
-      return await interceptor.openUrl(url);
-    }
+    return await this._runExclusive(id, interceptor, async () => {
+      if (!(await interceptor.isActive())) {
+        return await this._activateInterceptor(interceptor, proxyPort, { url });
+      }
 
-    return await this.activate(id, proxyPort, { url });
+      try {
+        return await interceptor.openUrl(url);
+      } catch (err) {
+        const browserBecameInactive =
+          err?.code === BROWSER_BECAME_INACTIVE_ERROR_CODE &&
+          typeof err.normalizedUrl === 'string' &&
+          !(await interceptor.isActive());
+        if (!browserBecameInactive) throw err;
+
+        return await this._activateInterceptor(interceptor, proxyPort, {
+          url: err.normalizedUrl
+        });
+      }
+    });
   }
 
   async deactivateAll() {

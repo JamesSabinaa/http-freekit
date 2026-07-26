@@ -1653,6 +1653,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-299 — Low — Browser-open can lose its URL when the browser closes mid-request
 
+- Status: **Fixed**.
+- Resolution: Browser open now reports a specific inactive-during-open state with the already-normalized URL. The manager serializes the full Open operation and retries only that state through its internal activation path, so the URL reaches one replacement browser without recursively acquiring the interceptor lock.
+
 - Evidence: `InterceptorManager.openUrl()` checks `isActive()` at `src/interceptors/interceptor-manager.js:102`, then `BrowserInterceptor.openUrl()` checks again at `src/interceptors/browser-interceptor.js:101-103` and throws if the process exited between the checks. The manager does not catch that transition and fall back to activation.
 - Impact: closing the browser during an API trigger or deep link produces a 400 response and drops the requested URL instead of launching a replacement browser as promised for inactive interceptors.
 - Reproduction: make the manager's first active check return true and the browser's second check return false, then call the open route; it returns “Chrome is not running” without activating.
