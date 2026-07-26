@@ -9,6 +9,18 @@ const HTTP_TOOLKIT_ANDROID_DEACTIVATE = 'tech.httptoolkit.android.DEACTIVATE';
 const HTTP_TOOLKIT_ANDROID_CONNECT_URL = 'https://android.httptoolkit.tech/connect/';
 const EMULATOR_HOST_IPS = ['10.0.2.2', '10.0.3.2'];
 
+function getActivityLaunchError(output) {
+  const statuses = String(output || '')
+    .split(/\r\n?|\n/)
+    .map(line => line.match(/^\s*Status\s*:\s*(.*?)\s*$/i)?.[1])
+    .filter(status => status !== undefined);
+  const status = statuses.at(-1)?.trim();
+  if (status?.toLowerCase() === 'ok') return null;
+  return status
+    ? `Android activity launch reported Status: ${status}`
+    : 'Android activity launch did not report Status: ok';
+}
+
 function ipv4ToInteger(address) {
   const parts = String(address).split('.').map(Number);
   if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
@@ -265,7 +277,7 @@ export class AndroidAdbInterceptor {
     await this._bringHttpToolkitAppToFront(deviceId);
 
     try {
-      await this._adb(deviceId, [
+      const output = await this._adb(deviceId, [
         'shell',
         'am',
         'start',
@@ -275,6 +287,8 @@ export class AndroidAdbInterceptor {
         '-d',
         connectUrl
       ], { timeout: 15000 });
+      const launchError = getActivityLaunchError(output);
+      if (launchError) throw new Error(launchError);
 
       console.log(`[Interceptor] HTTP Toolkit Android app activation intent sent to ${deviceId}`);
       return {
@@ -284,12 +298,12 @@ export class AndroidAdbInterceptor {
         connectUrl
       };
     } catch (err) {
-      await this._removeReverseTunnel(deviceId, proxyPort);
+      const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
       return {
         success: false,
         error: err.message,
         appInstalled: true,
-        tunnelActive
+        tunnelActive: tunnelActive && !tunnelRemoved
       };
     }
   }
@@ -299,7 +313,7 @@ export class AndroidAdbInterceptor {
     try {
       if (await this._isHttpToolkitAppInstalled(deviceId)) {
         await this._bringHttpToolkitAppToFront(deviceId);
-        await this._adb(deviceId, [
+        const output = await this._adb(deviceId, [
           'shell',
           'am',
           'start',
@@ -307,11 +321,14 @@ export class AndroidAdbInterceptor {
           '-a',
           HTTP_TOOLKIT_ANDROID_DEACTIVATE
         ], { timeout: 10000 });
+        const launchError = getActivityLaunchError(output);
+        if (launchError) throw new Error(launchError);
         console.log(`[Interceptor] HTTP Toolkit Android app deactivation intent sent to ${deviceId}`);
         appDeactivated = true;
       }
     } catch (err) {
       console.warn(`[Interceptor] Failed to deactivate HTTP Toolkit Android app on ${deviceId}:`, err.message);
+      return false;
     }
     const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
     return appDeactivated && tunnelRemoved;

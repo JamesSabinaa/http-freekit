@@ -1388,6 +1388,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-219 — Medium — Android treats `am start -W` timeout output as success
 
+- Status: **Fixed**.
+- Resolution: HTTP Toolkit Android activation and deactivation now require an explicit successful `Status: ok` from `am start -W`. Failed activation rolls back its reverse tunnel; failed deactivation retains the device and tunnel ownership so Stop can be retried safely.
+
 - Evidence: activation and deactivation ignore `_adb()` stdout at `src/interceptors/android-adb-interceptor.js:216-234,251-261` and infer success only from exit status, although `am start -W` can print `Status: timeout` with a zero exit.
 - Impact: a timed-out launch is marked active; a timed-out stop clears local ownership and removes the reverse tunnel even though the VPN app may still be active.
 - Reproduction: make the companion activity return `Status: timeout` and observe both helpers return success.
