@@ -549,13 +549,39 @@ export class ProxyServer {
     return err;
   }
 
-  async _streamMockFile(filePath, destination, onReady = () => {}) {
+  async _streamMockFile(filePath, destination, onReady = () => {}, options = {}) {
     const stats = await fs.promises.stat(filePath);
     if (!stats.isFile()) throw new Error('Configured path is not a file');
+
+    // Open the source before committing response headers so filesystem/setup
+    // failures can still be returned as a real 500 response.
+    const source = fs.createReadStream(filePath);
+    try {
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          source.removeListener('open', onOpen);
+          source.removeListener('error', onError);
+        };
+        const onOpen = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = error => {
+          cleanup();
+          reject(error);
+        };
+        source.once('open', onOpen);
+        source.once('error', onError);
+      });
+    } catch (error) {
+      source.destroy();
+      throw error;
+    }
 
     const captureLimit = Math.max(0, this.maxBufferedBodyBytes);
     let capturedChunks = stats.size <= captureLimit ? [] : null;
     let streamedBytes = 0;
+    let responseStarted = false;
     const capture = new Transform({
       transform(chunk, encoding, callback) {
         streamedBytes += chunk.length;
@@ -567,12 +593,105 @@ export class ProxyServer {
       }
     });
 
-    onReady(stats);
-    await pipeline(fs.createReadStream(filePath), capture, destination);
-    return {
+    const progress = () => ({
       content: capturedChunks ? Buffer.concat(capturedChunks, streamedBytes) : null,
       size: streamedBytes,
-      truncated: capturedChunks === null
+      truncated: capturedChunks === null || streamedBytes < stats.size,
+      responseStarted
+    });
+    const downstream = options.downstream;
+    let firstFailure = null;
+    const rememberDownstreamFailure = () => {
+      if (!firstFailure) {
+        firstFailure = {
+          type: 'downstream',
+          error: downstream?.signal.reason || this._createDownstreamAbortError()
+        };
+      }
+    };
+    const rememberSourceError = error => {
+      if (!firstFailure) firstFailure = { type: 'source', error };
+    };
+    const rememberDestinationError = () => rememberDownstreamFailure();
+    const rememberDestinationClose = () => {
+      const completedNormally = options.http2Stream
+        ? !destination?.aborted && destination?.rstCode === http2.constants.NGHTTP2_NO_ERROR
+        : destination?.writableFinished;
+      if (!completedNormally) rememberDownstreamFailure();
+    };
+    source.once('error', rememberSourceError);
+    destination?.once?.('error', rememberDestinationError);
+    destination?.once?.('close', rememberDestinationClose);
+    if (options.http2Stream) destination?.once?.('aborted', rememberDownstreamFailure);
+    downstream?.signal.addEventListener('abort', rememberDownstreamFailure, { once: true });
+    if (downstream?.aborted || (options.http2Stream
+      ? destination?.aborted || destination?.destroyed
+      : destination?.destroyed && !destination?.writableFinished)) {
+      rememberDownstreamFailure();
+    }
+
+    try {
+      if (downstream?.aborted) throw downstream.signal.reason;
+      onReady(stats);
+      responseStarted = true;
+      if (downstream) await pipeline(source, capture, destination, { signal: downstream.signal });
+      else await pipeline(source, capture, destination);
+      return progress();
+    } catch (error) {
+      const failure = firstFailure?.type === 'downstream'
+        ? this._createDownstreamAbortError()
+        : firstFailure?.error || error;
+      failure.mockFileProgress = progress();
+      throw failure;
+    } finally {
+      source.removeListener('error', rememberSourceError);
+      destination?.removeListener?.('error', rememberDestinationError);
+      destination?.removeListener?.('close', rememberDestinationClose);
+      if (options.http2Stream) destination?.removeListener?.('aborted', rememberDownstreamFailure);
+      downstream?.signal.removeEventListener('abort', rememberDownstreamFailure);
+      if (!source.destroyed) source.destroy();
+    }
+  }
+
+  _mockFileFailure(filePath, fileStatus, mime, error) {
+    const progress = error?.mockFileProgress;
+    if (error?.code === 'ERR_DOWNSTREAM_ABORTED') {
+      const responseStarted = progress?.responseStarted === true;
+      return {
+        responseStarted,
+        statusCode: responseStarted ? fileStatus : 0,
+        statusMessage: 'Client Disconnected',
+        responseHeaders: responseStarted ? { 'Content-Type': mime } : {},
+        responseBody: progress?.content ? this._safeBodyString(progress.content) : '',
+        responseBodySize: progress?.size || 0,
+        responseBodyTruncated: progress?.truncated === true,
+        error: error.message,
+        errorCode: error.code
+      };
+    }
+    if (progress?.responseStarted) {
+      return {
+        responseStarted: true,
+        statusCode: fileStatus,
+        statusMessage: 'File Delivery Error',
+        responseHeaders: { 'Content-Type': mime },
+        responseBody: progress.content ? this._safeBodyString(progress.content) : '',
+        responseBodySize: progress.size,
+        responseBodyTruncated: progress.truncated,
+        error: error.message,
+        errorCode: error.code || null
+      };
+    }
+
+    return {
+      responseStarted: false,
+      statusCode: 500,
+      statusMessage: 'File Error',
+      responseHeaders: { 'Content-Type': 'text/plain' },
+      responseBody: 'File not found: ' + filePath,
+      responseBodySize: 0,
+      error: error.message,
+      errorCode: error.code || null
     };
   }
 
@@ -2373,12 +2492,12 @@ export class ProxyServer {
               });
               return;
             }
+            const mime = action.contentType || 'application/octet-stream';
+            const fileStatus = action.status || 200;
             try {
-              const mime = action.contentType || 'application/octet-stream';
-              const fileStatus = action.status || 200;
               const file = await this._streamMockFile(filePath, res, () => {
                 res.writeHead(fileStatus, { 'Content-Type': mime });
-              });
+              }, { downstream });
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
@@ -2393,8 +2512,9 @@ export class ProxyServer {
                 originalRequest, transformedBy
               });
             } catch (err) {
+              const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
               try {
-                if (!res.headersSent && !res.destroyed) {
+                if (failure.statusCode === 500 && !res.headersSent && !res.destroyed) {
                   res.writeHead(500, { 'Content-Type': 'text/plain' });
                   res.end('File not found: ' + filePath);
                 } else if (!res.destroyed) {
@@ -2405,11 +2525,13 @@ export class ProxyServer {
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
                 requestBody: this._safeBodyString(body), requestBodySize: body.length,
-                statusCode: 500, statusMessage: 'File Error',
-                responseHeaders: { 'Content-Type': 'text/plain' },
-                responseBody: 'File not found: ' + filePath, responseBodySize: 0,
+                statusCode: failure.statusCode, statusMessage: failure.statusMessage,
+                responseHeaders: failure.responseHeaders,
+                responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
+                responseBodyTruncated: failure.responseBodyTruncated,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-                error: err.message, tls: tlsDetails, remote: null,
+                error: failure.error, errorCode: failure.errorCode,
+                tls: tlsDetails, remote: null,
                 originalRequest, transformedBy
               });
             }
@@ -3942,13 +4064,13 @@ export class ProxyServer {
         });
         return;
       }
+      const mime = action.contentType || 'application/octet-stream';
+      const fileStatus = action.status || 200;
       try {
-        const mime = action.contentType || 'application/octet-stream';
-        const fileStatus = action.status || 200;
         const file = await this._streamMockFile(filePath, stream, () => {
           if (stream.destroyed || stream.closed) throw new Error('Client stream closed');
           stream.respond({ ':status': fileStatus, 'content-type': mime });
-        });
+        }, { downstream, http2Stream: true });
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
@@ -3963,8 +4085,9 @@ export class ProxyServer {
           originalRequest, transformedBy
         });
       } catch (err) {
+        const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
         try {
-          if (!stream.destroyed && !stream.closed && !stream.headersSent) {
+          if (failure.statusCode === 500 && !stream.destroyed && !stream.closed && !stream.headersSent) {
             stream.respond({ ':status': 500, 'content-type': 'text/plain' });
             stream.end('File not found: ' + filePath);
           } else if (!stream.destroyed && !stream.closed) {
@@ -3975,11 +4098,13 @@ export class ProxyServer {
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeBodyString(body), requestBodySize: body.length,
-          statusCode: 500, statusMessage: 'File Error',
-          responseHeaders: { 'Content-Type': 'text/plain' },
-          responseBody: 'File not found: ' + filePath, responseBodySize: 0,
+          statusCode: failure.statusCode, statusMessage: failure.statusMessage,
+          responseHeaders: failure.responseHeaders,
+          responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
+          responseBodyTruncated: failure.responseBodyTruncated,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          error: err.message, tls: tlsDetails, remote: null,
+          error: failure.error, errorCode: failure.errorCode,
+          tls: tlsDetails, remote: null,
           originalRequest, transformedBy
         });
       }
@@ -5631,12 +5756,12 @@ export class ProxyServer {
         });
         return;
       }
+      const mime = action.contentType || 'application/octet-stream';
+      const fileStatus = action.status || 200;
       try {
-        const mime = action.contentType || 'application/octet-stream';
-        const fileStatus = action.status || 200;
         const file = await this._streamMockFile(filePath, clientRes, () => {
           clientRes.writeHead(fileStatus, { 'Content-Type': mime });
-        });
+        }, { downstream });
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
@@ -5651,7 +5776,8 @@ export class ProxyServer {
           originalRequest, transformedBy
         });
       } catch (err) {
-        if (!clientRes.headersSent && !clientRes.destroyed) {
+        const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
+        if (failure.statusCode === 500 && !clientRes.headersSent && !clientRes.destroyed) {
           clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
           clientRes.end('File not found: ' + filePath);
         } else if (!clientRes.destroyed) {
@@ -5661,11 +5787,13 @@ export class ProxyServer {
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-          requestBodySize: body.length, statusCode: 500, statusMessage: 'File Error',
-          responseHeaders: { 'Content-Type': 'text/plain' },
-          responseBody: 'File not found: ' + filePath, responseBodySize: 0,
+          requestBodySize: body.length, statusCode: failure.statusCode,
+          statusMessage: failure.statusMessage, responseHeaders: failure.responseHeaders,
+          responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
+          responseBodyTruncated: failure.responseBodyTruncated,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          error: err.message, tls: captureTls, remote: null,
+          error: failure.error, errorCode: failure.errorCode,
+          tls: captureTls, remote: null,
           originalRequest, transformedBy
         });
       }

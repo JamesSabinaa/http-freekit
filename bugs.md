@@ -1050,6 +1050,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-365 — Low/Medium — Interrupted mock-file streams are falsely recorded or omitted
 
+- Status: **Fixed**.
+- Resolution: Plain HTTP/1, intercepted HTTPS HTTP/1, and native HTTP/2 mock-file paths now open the source before committing headers and preserve the first stream-failure cause. Pre-header file failures remain 500 File Error responses, while downstream cancellation records exactly one explicit Client Disconnected outcome with the configured sent status and partial streamed/captured byte progress.
+
 - Evidence: `_streamMockFile()` rejects when a downstream client closes early. The HTTP/1 handlers catch that post-header rejection and record status 500, `File Error`, and a file-not-found message for the existing file at `src/proxy/proxy-server.js:1629-1668,4232-4269`; the HTTP/2 catch at `:2956-2988` emits no traffic record.
 - Impact: traffic history falsely diagnoses a valid file as missing on HTTP/1 and loses the request entirely on HTTP/2, obscuring ordinary client cancellations and real delivery failures.
 - Reproduction: serve a large existing file, close the client after the first response chunk, and inspect traffic; HTTP/1 records `Premature close` as a missing-file 500 while HTTP/2 records nothing.
