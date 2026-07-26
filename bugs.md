@@ -2726,6 +2726,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-329 — Medium — Electron Browse cannot launch macOS application bundles
 
+- Status: **Fixed**.
+
 - Evidence: the generic picker at `electron/main.cjs:382-391` returns a selected `.app` bundle path, while `ElectronInterceptor` passes that directory verbatim to `spawn()` at `src/interceptors/electron-interceptor.js:36-44` instead of resolving `Contents/MacOS/<executable>` or using a macOS application launcher.
 - Impact: the normal Browse workflow on macOS selects `/Applications/Foo.app` but Launch fails, unless the user manually discovers and types the inner executable path.
 - Reproduction: on macOS, Browse to an Electron `.app` bundle and click Launch; spawning the bundle directory fails.

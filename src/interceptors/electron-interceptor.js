@@ -1,5 +1,6 @@
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
+import path from 'path';
 import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
 
 export class ElectronInterceptor {
@@ -130,6 +131,110 @@ export class ElectronInterceptor {
     return spawn(appPath, args, options);
   }
 
+  _platform() {
+    return process.platform;
+  }
+
+  _execFileSync(command, args, options) {
+    return execFileSync(command, args, options);
+  }
+
+  _readMacBundleExecutable(infoPlistPath) {
+    try {
+      return this._execFileSync('/usr/bin/plutil', [
+        '-extract', 'CFBundleExecutable', 'raw', '-o', '-', infoPlistPath
+      ], {
+        encoding: 'utf8',
+        timeout: 5000,
+        maxBuffer: 64 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).replace(/\r?\n$/, '');
+    } catch {
+      throw new Error('macOS application bundle has no readable CFBundleExecutable metadata');
+    }
+  }
+
+  _resolveMacApplicationBundle(bundlePath) {
+    const bundleRoot = fs.realpathSync(bundlePath);
+    const contentsPath = path.join(bundleRoot, 'Contents');
+    const macOsPath = path.join(contentsPath, 'MacOS');
+    const infoPlistPath = path.join(contentsPath, 'Info.plist');
+
+    let contentsIsDirectory = false;
+    let macOsIsDirectory = false;
+    let infoPlistIsFile = false;
+    try { contentsIsDirectory = fs.statSync(contentsPath).isDirectory(); } catch {}
+    try { macOsIsDirectory = fs.statSync(macOsPath).isDirectory(); } catch {}
+    try { infoPlistIsFile = fs.statSync(infoPlistPath).isFile(); } catch {}
+    if (!contentsIsDirectory || !macOsIsDirectory) {
+      throw new Error('macOS application bundle is missing its Contents/MacOS directory');
+    }
+    if (!infoPlistIsFile) {
+      throw new Error('macOS application bundle is missing Contents/Info.plist');
+    }
+
+    const executableName = this._readMacBundleExecutable(infoPlistPath);
+    if (!executableName || /[\\/\0\r\n]/.test(executableName) ||
+        executableName === '.' || executableName === '..' ||
+        path.basename(executableName) !== executableName) {
+      throw new Error('macOS application bundle has invalid CFBundleExecutable metadata');
+    }
+
+    const realMacOsPath = fs.realpathSync(macOsPath);
+    let executablePath;
+    try {
+      executablePath = fs.realpathSync(path.join(realMacOsPath, executableName));
+    } catch {
+      throw new Error(`macOS application bundle executable "${executableName}" does not exist`);
+    }
+    const relativeExecutablePath = path.relative(realMacOsPath, executablePath);
+    if (!relativeExecutablePath || relativeExecutablePath === '..' ||
+        relativeExecutablePath.startsWith('..' + path.sep) ||
+        path.isAbsolute(relativeExecutablePath)) {
+      throw new Error('macOS application bundle executable resolves outside Contents/MacOS');
+    }
+    const executableStats = fs.statSync(executablePath);
+    if (!executableStats.isFile()) {
+      throw new Error('macOS application bundle executable is not a file');
+    }
+    try {
+      fs.accessSync(executablePath, fs.constants.X_OK);
+    } catch {
+      throw new Error('macOS application bundle executable is not executable');
+    }
+    return executablePath;
+  }
+
+  _resolveLaunchPath(appPath) {
+    if (typeof appPath !== 'string' || !appPath.trim() || appPath.includes('\0')) {
+      throw new Error('Electron application path is invalid');
+    }
+    if (this._platform() !== 'darwin') return appPath;
+
+    const isApplicationBundle = path.basename(path.resolve(appPath)).toLowerCase().endsWith('.app');
+    const isBareCommand = !path.isAbsolute(appPath) && path.dirname(appPath) === '.';
+    let stats;
+    try {
+      stats = fs.statSync(appPath);
+    } catch (err) {
+      if (isApplicationBundle && !isBareCommand) {
+        throw new Error(`macOS application bundle is unavailable: ${err.message}`);
+      }
+      return appPath;
+    }
+
+    if (stats.isDirectory()) {
+      if (!isApplicationBundle) {
+        throw new Error('Electron application path is a directory, not a macOS .app bundle');
+      }
+      return this._resolveMacApplicationBundle(appPath);
+    }
+    if (isApplicationBundle) {
+      throw new Error('macOS .app selection is not an application bundle directory');
+    }
+    return appPath;
+  }
+
   _spawnConfirmed(appPath, args, options) {
     return new Promise((resolve, reject) => {
       let child;
@@ -173,11 +278,12 @@ export class ElectronInterceptor {
     const launchArgs = this._getLaunchArgs(proxyPort);
     const env = this._getLaunchEnvironment(proxyPort, caBundlePath);
 
-    console.log(`[Interceptor] Launching Electron app: ${appPath}`);
     this.activating = true;
     let launchedProcess;
     try {
-      launchedProcess = await this._spawnConfirmed(appPath, launchArgs, {
+      const launchPath = this._resolveLaunchPath(appPath);
+      console.log(`[Interceptor] Launching Electron app: ${launchPath}`);
+      launchedProcess = await this._spawnConfirmed(launchPath, launchArgs, {
         detached: false,
         stdio: 'ignore',
         env
