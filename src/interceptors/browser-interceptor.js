@@ -220,12 +220,8 @@ export class BrowserInterceptor {
       `user_pref("network.proxy.ssl", "127.0.0.1");`,
       `user_pref("network.proxy.ssl_port", ${proxyPort});`,
       `user_pref("network.proxy.no_proxies_on", "");`,
-      // Trust our CA cert
+      // Allow the OS-trust fallback when NSS certutil is unavailable
       `user_pref("security.enterprise_roots.enabled", true);`,
-      `user_pref("security.cert_pinning.enforcement_level", 0);`,
-      `user_pref("security.mixed_content.block_active_content", false);`,
-      `user_pref("security.OCSP.enabled", 0);`,
-      `user_pref("security.OCSP.require", false);`,
       // Disable warnings / first-run
       `user_pref("browser.shell.checkDefaultBrowser", false);`,
       `user_pref("browser.startup.homepage_override.mstone", "ignore");`,

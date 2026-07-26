@@ -1642,6 +1642,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-298 — Medium — Isolated Firefox disables unrelated web security
 
+- Status: **Fixed**.
+- Resolution: Isolated Firefox profiles now keep stock certificate-pinning, active mixed-content, and OCSP behavior. FreeKit still configures the isolated profile proxy and trusts its CA through an explicit NSS `certutil` import, with `security.enterprise_roots.enabled` retained solely for the existing operating-system trust fallback.
 - Evidence: the generated Firefox profile at `src/interceptors/browser-interceptor.js:173-178` disables certificate pinning, active mixed-content blocking, and OCSP checking in addition to configuring the FreeKit CA.
 - Impact: the isolated browser permits insecure active content and suppresses pinning/revocation protections even for unrelated direct or passthrough traffic; trusting the interception CA does not require those global relaxations.
 - Reproduction: launch isolated Firefox and visit an HTTPS page that embeds an HTTP script; the generated profile allows content that a stock Firefox profile blocks.
