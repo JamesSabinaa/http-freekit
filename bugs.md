@@ -1403,6 +1403,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-232 — High — Failed System Proxy activation can survive graceful shutdown
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/system-proxy-interceptor.js:75-84` writes ProxyEnable before ProxyServer. If the second write and rollback both fail, it reports an error with `active=false` but retains `previousSettings`; shutdown at `interceptor-manager.js:109-114` deactivates only entries whose `isActive()` is true.
 - Impact: Windows can remain pointed at a dead partial proxy even after failed activation and orderly application shutdown.
 - Reproduction: fail the ProxyServer write and rollback, then run manager shutdown and inspect registry state.

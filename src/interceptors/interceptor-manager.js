@@ -214,7 +214,10 @@ export class InterceptorManager {
     for (const interceptor of this.interceptors.values()) {
       try {
         await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});
-        if (await interceptor.isActive()) {
+        const needsDeactivation = typeof interceptor.needsDeactivation === 'function'
+          ? await interceptor.needsDeactivation()
+          : await interceptor.isActive();
+        if (needsDeactivation) {
           await this.deactivate(interceptor.id);
         }
       } catch (err) {

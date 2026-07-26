@@ -11,6 +11,7 @@ export class SystemProxyInterceptor {
     this.active = false;
     this.previousSettings = null;
     this.activeProxyServer = null;
+    this.pendingRecovery = null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'system-proxy-recovery.json')
       : options.recoveryFile || null;
@@ -26,6 +27,10 @@ export class SystemProxyInterceptor {
 
   async isActive() {
     return this.active;
+  }
+
+  async needsDeactivation() {
+    return this.active || Boolean(this.previousSettings && this.pendingRecovery);
   }
 
   _execRegistry(args, options) {
@@ -131,21 +136,12 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     }
   }
 
-  _persistRecoveryState(proxyServer) {
+  _persistRecoveryState(recovery) {
     if (!this.recoveryFile) return;
     fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
     const tempPath = `${this.recoveryFile}.${process.pid}.${Date.now()}.tmp`;
     try {
-      fs.writeFileSync(tempPath, JSON.stringify({
-        pid: process.pid,
-        proxyServer,
-        ownedSettings: {
-          enabled: true,
-          server: proxyServer,
-          override: ''
-        },
-        previousSettings: this.previousSettings
-      }), { encoding: 'utf8', mode: 0o600 });
+      fs.writeFileSync(tempPath, JSON.stringify(recovery), { encoding: 'utf8', mode: 0o600 });
       fs.renameSync(tempPath, this.recoveryFile);
     } catch (err) {
       try { fs.unlinkSync(tempPath); } catch {}
@@ -196,6 +192,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
         return false;
       }
       this.previousSettings = recovery.previousSettings;
+      this.pendingRecovery = recovery;
       this._restorePreviousSettings();
       this.active = false;
       console.log('[Interceptor] Restored system proxy settings left by an interrupted session');
@@ -231,6 +228,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     this._removeRecoveryState();
     this.previousSettings = null;
     this.activeProxyServer = null;
+    this.pendingRecovery = null;
   }
 
   _settingsBelongToActiveSession(settings) {
@@ -250,7 +248,17 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
         }
         if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
         const proxyServer = `127.0.0.1:${proxyPort}`;
-        this._persistRecoveryState(proxyServer);
+        this.pendingRecovery = {
+          pid: process.pid,
+          proxyServer,
+          ownedSettings: {
+            enabled: true,
+            server: proxyServer,
+            override: ''
+          },
+          previousSettings: this.previousSettings
+        };
+        this._persistRecoveryState(this.pendingRecovery);
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
         this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
@@ -275,10 +283,15 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       if (!this.active && !this.previousSettings) return;
       try {
         const currentSettings = this._readCurrentSettings();
-        if (!this._settingsBelongToActiveSession(currentSettings)) {
+        const settingsAreOwned = this.active
+          ? this._settingsBelongToActiveSession(currentSettings)
+          : this.pendingRecovery
+            && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
+        if (!settingsAreOwned) {
           this._removeRecoveryState();
           this.previousSettings = null;
           this.activeProxyServer = null;
+          this.pendingRecovery = null;
           this.active = false;
           console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
           return;
