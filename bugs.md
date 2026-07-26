@@ -539,6 +539,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-375 — Medium — Electron-hosted MCP bridge remains alive after transport closure
 
+- Status: **Fixed**.
+- Resolution: The packaged Electron bridge host now treats bridge mode as a bounded lifecycle: invalid invocation and startup failure exit once with status 1, while successful startup awaits the bridge's completed transport cleanup before exiting once with status 0 only for a fully successful normal closure or 1 for a bridge or cleanup error. The reusable Node bridge and ordinary desktop bootstrap remain independent of Electron termination.
+
 - Evidence: `electron/bootstrap.cjs` starts the bridge but never terminates Electron after a missing descriptor, a bridge failure, or normal transport cleanup. `startStdioBridge()` closes its SSE and stdio transports when `remote.onclose` fires, but that cannot stop Electron's application event loop.
 - Impact: after FreeKit shuts down, restarts, or loses the MCP transport, Claude's child remains alive but permanently disconnected and may prevent the client from spawning a replacement. Invalid invocations without a descriptor likewise hang instead of exiting with their recorded failure status.
 - Reproduction: launch the bridge through Electron, establish an authenticated SSE session, then stop the MCP server. One second after the remote-close handler runs, the transports are closed but the Electron child still has no exit code and must be killed explicitly. Launching the flag without a descriptor similarly remains alive after setting `process.exitCode = 1`.
