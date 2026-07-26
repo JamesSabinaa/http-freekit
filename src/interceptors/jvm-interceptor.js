@@ -148,8 +148,11 @@ public class ProxyAgent {
         "https.proxyHost", "https.proxyPort"
     };
     private static final Map<String, String> originalProperties = new HashMap<String, String>();
+    private static final Map<String, String> installedProperties = new HashMap<String, String>();
     private static SSLContext originalSslContext;
+    private static SSLContext installedSslContext;
     private static SSLSocketFactory originalSslSocketFactory;
+    private static SSLSocketFactory installedSslSocketFactory;
     private static boolean configured;
 
     public static void premain(String args, Instrumentation inst) {
@@ -191,7 +194,10 @@ public class ProxyAgent {
         }
         for (String property : PROXY_PROPERTIES) {
             String value = values.get(property);
-            if (value != null) System.setProperty(property, value);
+            if (value != null) {
+                System.setProperty(property, value);
+                installedProperties.put(property, value);
+            }
         }
         if (caPath != null && !caPath.isEmpty()) {
             try {
@@ -206,6 +212,10 @@ public class ProxyAgent {
     private static void restore() {
         if (!configured) return;
         for (String property : PROXY_PROPERTIES) {
+            String installedValue = installedProperties.get(property);
+            if (installedValue == null || !installedValue.equals(System.getProperty(property))) {
+                continue;
+            }
             String originalValue = originalProperties.get(property);
             if (originalValue == null) {
                 System.clearProperty(property);
@@ -213,13 +223,26 @@ public class ProxyAgent {
                 System.setProperty(property, originalValue);
             }
         }
-        if (originalSslContext != null) SSLContext.setDefault(originalSslContext);
-        if (originalSslSocketFactory != null) {
+        try {
+            if (installedSslContext != null
+                    && SSLContext.getDefault() == installedSslContext
+                    && originalSslContext != null) {
+                SSLContext.setDefault(originalSslContext);
+            }
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to inspect the JVM SSL context", error);
+        }
+        if (installedSslSocketFactory != null
+                && HttpsURLConnection.getDefaultSSLSocketFactory() == installedSslSocketFactory
+                && originalSslSocketFactory != null) {
             HttpsURLConnection.setDefaultSSLSocketFactory(originalSslSocketFactory);
         }
         originalProperties.clear();
+        installedProperties.clear();
         originalSslContext = null;
+        installedSslContext = null;
         originalSslSocketFactory = null;
+        installedSslSocketFactory = null;
         configured = false;
     }
     private static X509TrustManager findX509TrustManager(TrustManager[] managers) {
@@ -273,8 +296,11 @@ public class ProxyAgent {
 
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(null, new TrustManager[] { combinedTrust }, null);
+        SSLSocketFactory socketFactory = context.getSocketFactory();
         SSLContext.setDefault(context);
-        HttpsURLConnection.setDefaultSSLSocketFactory(context.getSocketFactory());
+        installedSslContext = context;
+        HttpsURLConnection.setDefaultSSLSocketFactory(socketFactory);
+        installedSslSocketFactory = socketFactory;
     }
 }
 `;

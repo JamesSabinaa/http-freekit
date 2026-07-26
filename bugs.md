@@ -1777,6 +1777,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-318 — Medium — JVM Stop overwrites target changes made after activation
 
+- Status: **Fixed**.
+- Resolution: The generated agent now records the exact proxy values, SSL context, and HTTPS socket factory that it installs. Stop restores each original only while the target still has that installed value or object, so application-owned changes survive independently; the default hostname verifier remains untouched.
+
 - Evidence: the generated agent snapshots proxy properties and default SSL objects once at `src/interceptors/jvm-interceptor.js:169-179`, then restoration at `:195-212` unconditionally writes those stale originals without verifying that the current values still belong to FreeKit.
 - Impact: a target application that deliberately changes its proxy or default SSL context while interception is active loses the newer configuration when FreeKit stops.
 - Reproduction: activate a JVM, have it set a new `http.proxyHost` or default `SSLContext`, then Stop; the agent restores the pre-FreeKit value instead of preserving the application's change.
