@@ -2824,6 +2824,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-349 — Medium — Append import partially commits and duplicates on retry
 
+- Status: **Fixed**.
+
 - Evidence: the append branch of `importMockRules()` posts rules sequentially at `src/ui/app.js:6528-6541`. A later rejection throws only after every earlier POST has already mutated runtime and persisted; rules without IDs receive fresh UUIDs from the API on each attempt.
 - Impact: one invalid or unsupported item leaves a partial import despite the overall error. Retrying the same file creates another copy of the successful prefix and can compound the rule set on every attempt.
 - Reproduction: append `[validRule, {}]`; the valid rule persists before the second request fails. Retry and observe another UUID-backed copy of that rule.

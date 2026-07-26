@@ -171,6 +171,12 @@ function createImportRenderer({ fileData, mockRules = [], breakpointRules = [], 
           })
         };
       }
+      if (url === '/api/mock-rules') {
+        return {
+          ok: true,
+          json: async () => ({ success: true, rules: body.rules })
+        };
+      }
       return {
         ok: true,
         json: async () => ({ success: true, rule: body })
@@ -327,7 +333,7 @@ test('legacy mock-only replacement never changes persisted or runtime breakpoint
   assert.deepEqual(savedSettings(settings).breakpointRules, savedBreakpoint);
 });
 
-test('version 1 and raw-array renderer imports keep the legacy mock-only route and prompt semantics', async t => {
+test('version 1 and raw-array renderer imports atomically use the mock-only route and keep prompt semantics', async t => {
   for (const fileData of [
     { version: 1, rules: [mockRule('v1')] },
     [mockRule('raw')]
@@ -342,7 +348,8 @@ test('version 1 and raw-array renderer imports keep the legacy mock-only route a
 
       assert.equal(renderer.confirmCalls, 0);
       assert.deepEqual(renderer.requests.map(request => request.url), ['/api/mock-rules']);
-      assert.deepEqual(renderer.requests.map(request => request.method), ['POST']);
+      assert.deepEqual(renderer.requests.map(request => request.method), ['PUT']);
+      assert.deepEqual(renderer.requests[0].body, { rules: fileData.rules || fileData });
       assert.equal(renderer.mockReloads, 1);
       assert.equal(renderer.breakpointReloads, 0);
     });

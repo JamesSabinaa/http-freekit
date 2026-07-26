@@ -7488,45 +7488,25 @@
           if (!Array.isArray(rules)) throw new Error('Invalid format');
 
           const shouldReplace = mockRules.length > 0 && confirm('Replace existing rules? Click OK to replace, Cancel to append.');
-          const hasTopLevelGroups = rules.some(rule => rule?.type === 'group');
-          const useAtomicTreeImport = shouldReplace || hasTopLevelGroups;
-
-          if (useAtomicTreeImport) {
-            const appendToExistingTree = hasTopLevelGroups && mockRules.length > 0 && !shouldReplace;
-            const response = await fetch(API_BASE + '/api/mock-rules', {
-              method: 'PUT',
-              headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({
-                rules,
-                ...(appendToExistingTree ? { mode: 'append' } : {})
-              })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(result.error || 'Server rejected imported rules');
-            }
-            if (result?.success !== true || !Array.isArray(result.rules)) {
-              throw new Error('Server returned an invalid imported rule tree');
-            }
-            if (!appendToExistingTree) {
-              mockDraftRules.clear();
-              mockNewDraftIds.clear();
-            }
-          } else {
-            for (const rule of rules) {
-              const response = await fetch(API_BASE + '/api/mock-rules', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify(rule)
-              });
-              const result = await response.json().catch(() => ({}));
-              if (!response.ok) {
-                throw new Error(result.error || 'Server rejected an imported rule');
-              }
-              if (result?.success !== true || !result.rule) {
-                throw new Error('Server returned an invalid imported rule');
-              }
-            }
+          const appendToExistingTree = mockRules.length > 0 && !shouldReplace;
+          const response = await fetch(API_BASE + '/api/mock-rules', {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              rules,
+              ...(appendToExistingTree ? { mode: 'append' } : {})
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || 'Server rejected imported rules');
+          }
+          if (result?.success !== true || !Array.isArray(result.rules)) {
+            throw new Error('Server returned an invalid imported rule tree');
+          }
+          if (!appendToExistingTree) {
+            mockDraftRules.clear();
+            mockNewDraftIds.clear();
           }
           toast((shouldReplace ? 'Replaced with ' : 'Imported ') + rules.length + ' rules', 'success');
           loadMockRules();

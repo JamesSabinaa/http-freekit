@@ -214,14 +214,6 @@ function successfulTreeResponse(rules) {
   };
 }
 
-function successfulRuleResponse(rule) {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({ success: true, rule })
-  };
-}
-
 test('empty and mixed group backups restore through one atomic renderer request', async () => {
   const importedRules = [
     mockGroup('group', 'Group', [mockRule('child', 'Child')]),
@@ -308,20 +300,48 @@ test('structured import server rejection produces no success toast or reload', a
   }]);
 });
 
-test('ordinary rule append remains compatible with the per-rule creation route', async () => {
-  const importedRules = [mockRule('first', 'First'), mockRule('second', 'Second')];
+test('failed flat replacement preserves drafts until an atomic import succeeds', async () => {
+  const importedRules = [mockRule('replacement', 'Replacement')];
   const renderer = createImportRenderer({
     existingRules: [mockRule('existing', 'Existing')],
     importedRules,
-    replace: false,
-    fetch: async (_url, _options, index) => successfulRuleResponse(importedRules[index])
+    replace: true,
+    fetch: async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'disk full' })
+    })
   });
 
   await renderer.importRules();
 
-  assert.equal(renderer.requests.length, 2);
-  assert.deepEqual(renderer.requests.map(request => request.options.method), ['POST', 'POST']);
-  assert.deepEqual(renderer.requests.map(request => request.body), importedRules);
+  assert.equal(renderer.requests.length, 1);
+  assert.equal(renderer.requests[0].options.method, 'PUT');
+  assert.deepEqual(renderer.requests[0].body, { rules: importedRules });
+  assert.equal(renderer.mockDraftRules.size, 1);
+  assert.equal(renderer.mockNewDraftIds.size, 1);
+  assert.equal(renderer.reloads, 0);
+  assert.deepEqual(renderer.toasts, [{
+    message: 'Import failed: disk full',
+    type: 'error'
+  }]);
+});
+
+test('ordinary flat rule append uses one atomic tree request', async () => {
+  const existingRules = [mockRule('existing', 'Existing')];
+  const importedRules = [mockRule('first', 'First'), mockRule('second', 'Second')];
+  const renderer = createImportRenderer({
+    existingRules,
+    importedRules,
+    replace: false,
+    fetch: async () => successfulTreeResponse([...existingRules, ...importedRules])
+  });
+
+  await renderer.importRules();
+
+  assert.equal(renderer.requests.length, 1);
+  assert.equal(renderer.requests[0].options.method, 'PUT');
+  assert.deepEqual(renderer.requests[0].body, { rules: importedRules, mode: 'append' });
   assert.equal(renderer.mockDraftRules.size, 1);
   assert.equal(renderer.reloads, 1);
   assert.deepEqual(renderer.toasts, [{ message: 'Imported 2 rules', type: 'success' }]);
