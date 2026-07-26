@@ -524,6 +524,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-372 — Medium — Claude MCP bridge survives stdio client disconnects
 
+- Status: **Fixed**.
+- Resolution: The stdio bridge now observes input `end` and `close` before transport startup and routes EOF, transport closure, relay errors, and startup errors through one idempotent cleanup completion. Cleanup removes bridge-owned listeners, closes SSE and stdio once, preserves normal versus error exit status, and prevents late remote startup settlement from starting stdio after closure.
+
 - Evidence: `startStdioBridge()` wires message/error paths and `remote.onclose` at `src/mcp/stdio-bridge.js:22-45`, but never observes the input stream's `end` or `close`. The installed SDK `StdioServerTransport` listens only for stdin `data` and `error`; its `onclose` fires only when its own `close()` is explicitly called.
 - Impact: when Claude stops or restarts and closes stdin normally, the bridge process and its authenticated SSE session remain alive indefinitely. Repeated restarts can accumulate orphan processes and server sessions until FreeKit itself shuts down.
 - Reproduction: launch the generated bridge against a live MCP SSE endpoint, wait for its session to connect, call `child.stdin.end()`, and wait; the child has no exit code and the SSE session remains connected until the child is explicitly killed.

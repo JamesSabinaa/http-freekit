@@ -58,6 +58,31 @@ function jsonLineReader(stream) {
   };
 }
 
+function waitForChildExit(child, timeout = 5000) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      reject(new Error('Timed out waiting for the MCP bridge child to exit'));
+    }, timeout);
+    const onExit = (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    };
+    child.once('exit', onExit);
+  });
+}
+
+async function waitForCondition(predicate, message, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 test('source MCP config uses an absolute Node bridge command from any working directory', () => {
   const bridgeScript = path.join(repoRoot, 'src', 'mcp', 'stdio-bridge.js');
   const descriptorPath = path.join(repoRoot, 'data', 'mcp-runtime.json');
@@ -253,6 +278,14 @@ test('application bootstrap relays Claude requests to the active authenticated t
   const tools = await nextMessage();
   assert.equal(tools.id, 2, stderr);
   assert.ok(tools.result.tools.some(tool => tool.name === 'search_traffic'));
+
+  const exited = waitForChildExit(child);
+  child.stdin.end();
+  assert.deepEqual(await exited, { code: 0, signal: null }, stderr);
+  await waitForCondition(
+    () => bridge.sseSessions.size === 0,
+    'Authenticated SSE session remained after the stdio client disconnected'
+  );
 });
 
 test('MCP status exposes only the supplied secret-free launch configuration', () => {
