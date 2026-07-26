@@ -275,6 +275,13 @@ function isProfileOwnerActive(owner, processes) {
   return startedAt <= owner.createdAt;
 }
 
+function isSameProfileOwner(left, right) {
+  return !!left && !!right &&
+    left.pid === right.pid &&
+    left.createdAt === right.createdAt &&
+    left.startedAt === right.startedAt;
+}
+
 export function parsePosixProcessSnapshot(output) {
   return String(output || '').split(/\r?\n/).flatMap(line => {
     // Repeating PID creates a reliable boundary after a comm value that may
@@ -410,10 +417,53 @@ export function removeManagedBrowserProfile(profileDir, options = {}) {
   }
   if (!fs.existsSync(inspected.path)) return { removed: true, alreadyMissing: true };
 
-  if (options.requireOwnershipMarker) {
-    const ownership = inspectProfileOwner(inspected.path);
+  let ownership = null;
+  if (options.requireOwnershipMarker || typeof options.revalidateBeforeRemove === 'function') {
+    ownership = inspectProfileOwner(inspected.path);
     if (!ownership.valid) {
       return { removed: false, reason: ownership.reason, unsafe: true };
+    }
+  }
+
+  if (typeof options.revalidateBeforeRemove === 'function') {
+    let revalidation;
+    try {
+      revalidation = options.revalidateBeforeRemove({
+        path: inspected.path,
+        owner: ownership.owner
+      });
+    } catch (err) {
+      return {
+        removed: false,
+        reason: `Profile cleanup revalidation failed: ${err.message}`,
+        revalidationFailed: true
+      };
+    }
+    if (!revalidation || revalidation.safeToRemove !== true) {
+      return {
+        removed: false,
+        reason: revalidation?.reason || 'Profile cleanup revalidation did not permit removal',
+        active: revalidation?.active === true,
+        revalidationFailed: revalidation?.revalidationFailed === true
+      };
+    }
+
+    const finalInspection = inspectManagedProfilePath(inspected.path, tempDir);
+    if (!finalInspection.safe) {
+      return { removed: false, reason: finalInspection.reason, unsafe: true };
+    }
+    if (!fs.existsSync(finalInspection.path)) return { removed: true, alreadyMissing: true };
+
+    const finalOwnership = inspectProfileOwner(finalInspection.path);
+    if (!finalOwnership.valid) {
+      return { removed: false, reason: finalOwnership.reason, unsafe: true };
+    }
+    if (!isSameProfileOwner(ownership.owner, finalOwnership.owner)) {
+      return {
+        removed: false,
+        reason: 'Profile ownership changed during cleanup revalidation',
+        revalidationFailed: true
+      };
     }
   }
 
@@ -440,19 +490,38 @@ export function removeManagedBrowserProfile(profileDir, options = {}) {
 export function cleanupStaleBrowserProfiles(options = {}) {
   const tempDir = path.resolve(options.tempDir || os.tmpdir());
   const result = { removed: [], skippedActive: [], failed: [] };
-  let snapshot;
-  try {
-    snapshot = options.processSnapshot || getProcessSnapshot();
-  } catch (err) {
-    result.failed.push({ path: tempDir, reason: `Could not inspect running processes: ${err.message}` });
-    return result;
-  }
 
   let entries;
   try {
     entries = fs.readdirSync(tempDir, { withFileTypes: true });
   } catch (err) {
     result.failed.push({ path: tempDir, reason: err.message });
+    return result;
+  }
+
+  let processSnapshotProvider;
+  if (Object.hasOwn(options, 'processSnapshotProvider')) {
+    if (typeof options.processSnapshotProvider !== 'function') {
+      result.failed.push({ path: tempDir, reason: 'Process snapshot provider must be a function' });
+      return result;
+    }
+    processSnapshotProvider = options.processSnapshotProvider;
+  } else if (Object.hasOwn(options, 'processSnapshot')) {
+    processSnapshotProvider = () => options.processSnapshot;
+  } else {
+    processSnapshotProvider = getProcessSnapshot;
+  }
+  const inspectProcesses = () => {
+    const snapshot = processSnapshotProvider();
+    if (!Array.isArray(snapshot)) throw new Error('Process snapshot provider must return an array');
+    return snapshot;
+  };
+
+  let snapshot;
+  try {
+    snapshot = inspectProcesses();
+  } catch (err) {
+    result.failed.push({ path: tempDir, reason: `Could not inspect running processes: ${err.message}` });
     return result;
   }
 
@@ -474,9 +543,32 @@ export function cleanupStaleBrowserProfiles(options = {}) {
     const cleanup = removeManagedBrowserProfile(profileDir, {
       ...options,
       tempDir,
-      requireOwnershipMarker: true
+      requireOwnershipMarker: true,
+      revalidateBeforeRemove: ({ path: revalidatedPath, owner }) => {
+        let refreshedSnapshot;
+        try {
+          refreshedSnapshot = inspectProcesses();
+        } catch (err) {
+          return {
+            safeToRemove: false,
+            revalidationFailed: true,
+            reason: `Could not refresh running processes: ${err.message}`
+          };
+        }
+
+        const refreshedRelatedPids = collectRelatedProcessIds(refreshedSnapshot, revalidatedPath);
+        if (isProfileOwnerActive(owner, refreshedSnapshot) || refreshedRelatedPids.size > 0) {
+          return {
+            safeToRemove: false,
+            active: true,
+            reason: 'Profile became active before cleanup'
+          };
+        }
+        return { safeToRemove: true };
+      }
     });
     if (cleanup.removed) result.removed.push(profileDir);
+    else if (cleanup.active) result.skippedActive.push(profileDir);
     else result.failed.push({ path: profileDir, reason: cleanup.reason || 'Unknown cleanup failure' });
   }
 

@@ -1938,6 +1938,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-370 — Medium — Startup cleanup can delete a concurrently created live browser profile
 
+- Status: **Fixed**.
+- Resolution: Cleanup now enumerates candidates before its initial process observation and, inside the final removal boundary, revalidates the managed path and ownership around a fresh process snapshot. A live owner, related browser, changed marker, or failed refresh preserves the profile.
+
 - Evidence: `cleanupStaleBrowserProfiles()` captures one process snapshot before enumerating profile directories at `src/interceptors/browser-lifecycle.js:272-296`; owner verification and related-process detection for every later directory use only that earlier snapshot.
 - Impact: another FreeKit instance that starts and creates a marked browser profile after the snapshot can have its live profile deleted as stale, disrupting activation or leaving its browser on a recreated markerless profile.
 - Reproduction: capture the cleanup process snapshot, start a live FreeKit child that creates a managed profile, then let cleanup enumerate; the child is absent from the snapshot and its live profile is removed.
