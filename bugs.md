@@ -1414,6 +1414,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-233 — Medium — Existing Terminal instructions omit advertised client support
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/terminal-interceptors.js:179-181` sets only uppercase HTTP/HTTPS proxy, `NODE_EXTRA_CA_CERTS`, and Node TLS bypass. It omits lowercase proxy names plus SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE despite advertising general/Python/Docker processes.
 - Impact: curl can bypass HTTP and curl/Python HTTPS can reject FreeKit's CA on macOS/Linux; the instructions effectively support Node only.
 - Reproduction: follow Existing Terminal instructions and use curl/Python without adding variables manually.

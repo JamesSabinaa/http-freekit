@@ -35,26 +35,28 @@ function cmdSet(variable, value) {
   return `set "${variable}=${String(value)}"`;
 }
 
-export function buildExistingTerminalInstructions(proxyUrl, certPath) {
+function buildTerminalEnvironment(proxyUrl, certPath) {
   return {
-    bash: [
-      `export HTTP_PROXY=${shellQuote(proxyUrl)}`,
-      `HTTPS_PROXY=${shellQuote(proxyUrl)}`,
-      `NODE_EXTRA_CA_CERTS=${shellQuote(certPath)}`,
-      'NODE_TLS_REJECT_UNAUTHORIZED=0'
-    ].join(' '),
-    powershell: [
-      `$env:HTTP_PROXY=${powerShellQuote(proxyUrl)}`,
-      `$env:HTTPS_PROXY=${powerShellQuote(proxyUrl)}`,
-      `$env:NODE_EXTRA_CA_CERTS=${powerShellQuote(certPath)}`,
-      `$env:NODE_TLS_REJECT_UNAUTHORIZED='0'`
-    ].join('; '),
-    cmd: [
-      cmdSet('HTTP_PROXY', proxyUrl),
-      cmdSet('HTTPS_PROXY', proxyUrl),
-      cmdSet('NODE_EXTRA_CA_CERTS', certPath),
-      cmdSet('NODE_TLS_REJECT_UNAUTHORIZED', '0')
-    ].join('&& ')
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+    SSL_CERT_FILE: certPath,
+    NODE_EXTRA_CA_CERTS: certPath,
+    REQUESTS_CA_BUNDLE: certPath,
+    CURL_CA_BUNDLE: certPath,
+    NODE_TLS_REJECT_UNAUTHORIZED: '0'
+  };
+}
+
+export function buildExistingTerminalInstructions(proxyUrl, certPath) {
+  const environment = Object.entries(buildTerminalEnvironment(proxyUrl, certPath));
+  return {
+    bash: `export ${environment.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
+    powershell: environment
+      .map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
+      .join('; '),
+    cmd: environment.map(([name, value]) => cmdSet(name, value)).join('&& ')
   };
 }
 
@@ -181,15 +183,8 @@ export class FreshTerminalInterceptor {
   _buildPosixShellCommand(proxyUrl, certPath, pidFile) {
     return [
       `printf '%s' "$$" > ${shellQuote(pidFile)}`,
-      `export HTTP_PROXY=${shellQuote(proxyUrl)}`,
-      `export HTTPS_PROXY=${shellQuote(proxyUrl)}`,
-      `export http_proxy=${shellQuote(proxyUrl)}`,
-      `export https_proxy=${shellQuote(proxyUrl)}`,
-      `export SSL_CERT_FILE=${shellQuote(certPath)}`,
-      `export NODE_EXTRA_CA_CERTS=${shellQuote(certPath)}`,
-      `export REQUESTS_CA_BUNDLE=${shellQuote(certPath)}`,
-      `export CURL_CA_BUNDLE=${shellQuote(certPath)}`,
-      'export NODE_TLS_REJECT_UNAUTHORIZED=0',
+      ...Object.entries(buildTerminalEnvironment(proxyUrl, certPath))
+        .map(([name, value]) => `export ${name}=${shellQuote(value)}`),
       `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`,
       'exec "${SHELL:-/bin/sh}" -l'
     ].join('; ');
@@ -224,16 +219,7 @@ export class FreshTerminalInterceptor {
 
     const env = {
       ...process.env,
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      SSL_CERT_FILE: certPath,
-      NODE_EXTRA_CA_CERTS: certPath,
-      REQUESTS_CA_BUNDLE: certPath,
-      CURL_CA_BUNDLE: certPath,
-      // Disable strict SSL in common tools
-      NODE_TLS_REJECT_UNAUTHORIZED: '0',
+      ...buildTerminalEnvironment(proxyUrl, certPath)
     };
 
     let proc;
