@@ -7,7 +7,8 @@ const runtimeInterceptors = [
   'src/interceptors/browser-interceptor.js',
   'src/interceptors/docker-interceptor.js',
   'src/interceptors/jvm-interceptor.js',
-  'src/interceptors/android-adb-interceptor.js'
+  'src/interceptors/android-adb-interceptor.js',
+  'src/interceptors/terminal-interceptors.js'
 ];
 
 test('runtime interceptor discovery does not use synchronous child processes', () => {

@@ -1425,6 +1425,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-234 — Low/Medium — Fresh Terminal is advertised on unsupported Linux systems
 
+- Status: **Fixed**.
+
 - Evidence: `src/interceptors/terminal-interceptors.js:32-34` always returns true from `isActivable()`, while Linux activation supports only gnome-terminal, xterm, and konsole at `:88-107` and otherwise throws.
 - Impact: headless and minimal Linux installations show an available actionable interceptor that cannot activate.
 - Reproduction: run on Linux with none of the three launchers installed and refresh interceptor metadata.

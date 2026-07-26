@@ -3,6 +3,21 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+const LINUX_TERMINAL_LAUNCHERS = [
+  {
+    command: 'gnome-terminal',
+    buildArgs: shellCommand => ['--wait', '--', 'sh', '-c', shellCommand]
+  },
+  {
+    command: 'xterm',
+    buildArgs: shellCommand => ['-e', 'sh', '-c', shellCommand]
+  },
+  {
+    command: 'konsole',
+    buildArgs: shellCommand => ['--separate', '--nofork', '-e', 'sh', '-c', shellCommand]
+  }
+];
+
 function spawnDetached(command, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, options);
@@ -74,6 +89,52 @@ export class FreshTerminalInterceptor {
 
   _platform() {
     return process.platform;
+  }
+
+  _environment() {
+    return process.env;
+  }
+
+  _workingDirectory() {
+    return process.cwd();
+  }
+
+  _linuxTerminalLaunchers() {
+    return LINUX_TERMINAL_LAUNCHERS;
+  }
+
+  async _isExecutablePath(executablePath) {
+    try {
+      const stats = await fs.promises.stat(executablePath);
+      if (!stats.isFile()) return false;
+      await fs.promises.access(executablePath, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async _resolveLinuxLauncher(command) {
+    const environment = this._environment();
+    // Node uses /usr/bin:/bin to resolve commands on Unix when PATH is absent.
+    const pathValue = environment.PATH == null ? '/usr/bin:/bin' : String(environment.PATH);
+    for (const directory of pathValue.split(path.posix.delimiter)) {
+      const executablePath = path.posix.resolve(
+        this._workingDirectory(),
+        directory || '.',
+        command
+      );
+      if (await this._isExecutablePath(executablePath)) return executablePath;
+    }
+    return null;
+  }
+
+  async _availableLinuxTerminalLaunchers() {
+    const launchers = this._linuxTerminalLaunchers();
+    const resolvedPaths = await Promise.all(
+      launchers.map(launcher => this._resolveLinuxLauncher(launcher.command))
+    );
+    return launchers.filter((launcher, index) => resolvedPaths[index] !== null);
   }
 
   _spawnDetached(command, args, options) {
@@ -206,7 +267,9 @@ export class FreshTerminalInterceptor {
   }
 
   async isActivable() {
-    return true; // Terminals are always available
+    const platform = this._platform();
+    if (platform === 'win32' || platform === 'darwin') return true;
+    return (await this._availableLinuxTerminalLaunchers()).length > 0;
   }
 
   async isActive() {
@@ -260,18 +323,17 @@ export class FreshTerminalInterceptor {
       ({ proc, shellPid } = await this._launchTrackedPosixTerminal('osascript', ['-e', script], env, pidFile));
     } else {
       // Linux: try common terminals
-      const terminals = ['gnome-terminal', 'xterm', 'konsole'];
-
-      for (const terminal of terminals) {
+      for (const terminal of this._linuxTerminalLaunchers()) {
         const pidFile = this._createPidFilePath();
         const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, pidFile);
-        const args = terminal === 'gnome-terminal'
-          ? ['--wait', '--', 'sh', '-c', shellCommand]
-          : terminal === 'xterm'
-            ? ['-e', 'sh', '-c', shellCommand]
-            : ['--separate', '--nofork', '-e', 'sh', '-c', shellCommand];
+        const args = terminal.buildArgs(shellCommand);
         try {
-          ({ proc, shellPid } = await this._launchTrackedPosixTerminal(terminal, args, env, pidFile));
+          ({ proc, shellPid } = await this._launchTrackedPosixTerminal(
+            terminal.command,
+            args,
+            env,
+            pidFile
+          ));
           break;
         } catch {
           continue;
