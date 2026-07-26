@@ -7336,15 +7336,16 @@
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
-    // ============ MOCK RULE IMPORT / EXPORT ============
+    // ============ RULE IMPORT / EXPORT ============
     function exportMockRules() {
-      if (mockRules.length === 0) {
+      if (mockRules.length === 0 && breakpointRules.length === 0) {
         toast('No rules to export', 'error');
         return;
       }
       const blob = new Blob([JSON.stringify({
-        version: 1,
-        rules: mockRules
+        version: 2,
+        mockRules,
+        breakpointRules
       }, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -7365,6 +7366,41 @@
         try {
           const text = await file.text();
           const data = JSON.parse(text);
+          if (data?.version === 2) {
+            if (!Array.isArray(data.mockRules) || !Array.isArray(data.breakpointRules)) {
+              throw new Error('Invalid version 2 rule backup');
+            }
+            const existingRuleCount = mockRules.length + breakpointRules.length;
+            const importedRuleCount = data.mockRules.length + data.breakpointRules.length;
+            const shouldReplace = existingRuleCount > 0 &&
+              confirm('Replace existing rules? Click OK to replace, Cancel to append.');
+            const response = await fetch(API_BASE + '/api/rules', {
+              method: 'PUT',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({
+                mockRules: data.mockRules,
+                breakpointRules: data.breakpointRules,
+                ...(existingRuleCount > 0 && !shouldReplace ? { mode: 'append' } : {})
+              })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.error || 'Server rejected imported rules');
+            }
+            if (result?.success !== true || !Array.isArray(result.mockRules) ||
+                !Array.isArray(result.breakpointRules)) {
+              throw new Error('Server returned invalid imported rule collections');
+            }
+            if (shouldReplace || existingRuleCount === 0) {
+              mockDraftRules.clear();
+              mockNewDraftIds.clear();
+            }
+            toast((shouldReplace ? 'Replaced with ' : 'Imported ') + importedRuleCount + ' rules', 'success');
+            loadMockRules();
+            loadBreakpointRules();
+            return;
+          }
+
           const rules = data.rules || data;
           if (!Array.isArray(rules)) throw new Error('Invalid format');
 

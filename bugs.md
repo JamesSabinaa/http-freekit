@@ -2774,6 +2774,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-341 — Low/Medium — Rule exports omit every breakpoint rule
 
+- Status: **Fixed**.
+- Resolution: Rule backups now use a version 2 format containing both persisted mock and breakpoint collections. Version 2 imports validate and commit both collections atomically in one settings write with full in-memory rollback, while version 1 and raw-array imports retain their mock-only behavior.
+
 - Evidence: renderer counts and empty-state logic include both `mockRules` and `breakpointRules` at `src/ui/app.js:5068-5078`, but `exportMockRules()` refuses when `mockRules` alone is empty and serializes only `{ rules: mockRules }` at `:6483-6491`. The UI labels the action generically as Export Rules at `src/ui/index.html:199`.
 - Impact: users cannot back up breakpoint-only configurations, and mixed exports silently omit every breakpoint despite the interface presenting both kinds as rules.
 - Reproduction: configure only a breakpoint and click Export Rules; the UI reports “No rules to export” and creates no backup.

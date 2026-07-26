@@ -96,6 +96,14 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
   };
 }
 
+function normalizeImportedBreakpointRule(rule) {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
+  const normalizedRule = structuredClone(rule);
+  delete normalizedRule.id;
+  normalizedRule.enabled = rule.enabled !== false;
+  return normalizedRule;
+}
+
 export class ApiServer {
   constructor(proxyServer, certificateAuthority, interceptorManager, options = {}) {
     this.proxy = proxyServer;
@@ -214,6 +222,24 @@ export class ApiServer {
       persist: () => this._persistSettings({ [settingKey]: this.proxy[property] }),
       restore: previous => this._restoreRuleCollection(property, previous),
       ...(shouldPersist ? { shouldPersist } : {})
+    });
+  }
+
+  _mutateRuleCollections(apply) {
+    return this._runPersistedMutation({
+      capture: () => ({
+        mockRules: this._captureRuleCollection('mockRules'),
+        breakpointRules: this._captureRuleCollection('breakpointRules')
+      }),
+      apply,
+      persist: () => this._persistSettings({
+        mockRules: this.proxy.mockRules,
+        breakpointRules: this.proxy.breakpointRules
+      }),
+      restore: previous => {
+        this._restoreRuleCollection('mockRules', previous.mockRules);
+        this._restoreRuleCollection('breakpointRules', previous.breakpointRules);
+      }
     });
   }
 
@@ -1232,6 +1258,65 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Mock rules
     router.get('/api/mock-rules', (req, res) => {
       res.json({ rules: this.proxy.mockRules });
+    });
+
+    // Version 2 rule backups contain both persisted rule collections. Validate
+    // both completely before replacing either, then save them in one settings
+    // transaction so mixed imports cannot partially commit.
+    router.put('/api/rules', (req, res) => {
+      if (!Array.isArray(req.body?.mockRules) || !Array.isArray(req.body?.breakpointRules)) {
+        return res.status(400).json({ error: 'mockRules and breakpointRules arrays are required' });
+      }
+      const mode = req.body.mode === undefined ? 'replace' : req.body.mode;
+      if (mode !== 'replace' && mode !== 'append') {
+        return res.status(400).json({ error: 'mode must be replace or append' });
+      }
+
+      const importedMockRules = req.body.mockRules.map(rule => normalizeImportedMockRule(rule));
+      if (importedMockRules.some(rule => !rule)) {
+        return res.status(400).json({ error: 'Every imported mock rule must be valid' });
+      }
+
+      const importedBreakpointRules = req.body.breakpointRules.map(rule =>
+        normalizeImportedBreakpointRule(rule));
+      if (importedBreakpointRules.some(rule => !rule)) {
+        return res.status(400).json({ error: 'Every imported breakpoint rule must be valid' });
+      }
+      const breakpointValidationError = importedBreakpointRules
+        .map(rule => this.proxy.validateBreakpointRule(rule))
+        .find(Boolean);
+      if (breakpointValidationError) {
+        return res.status(400).json({ error: breakpointValidationError });
+      }
+
+      const nextMockRules = mode === 'append'
+        ? [...this.proxy.mockRules, ...importedMockRules]
+        : importedMockRules;
+      const nextBreakpointRules = mode === 'append'
+        ? [...this.proxy.breakpointRules, ...importedBreakpointRules]
+        : importedBreakpointRules;
+
+      try {
+        this._mutateRuleCollections(() => {
+          this.proxy.loadMockRules(nextMockRules);
+          const restoredBreakpoints = this.proxy.loadBreakpoints(nextBreakpointRules);
+          if (restoredBreakpoints.discarded > 0) {
+            throw new Error('Every imported breakpoint rule must be valid');
+          }
+          return {
+            mockRules: this.proxy.mockRules,
+            breakpointRules: this.proxy.breakpointRules
+          };
+        });
+      } catch (err) {
+        return res.status(500).json({ error: err.message || 'Failed to persist imported rules' });
+      }
+
+      res.json({
+        success: true,
+        mockRules: this.proxy.mockRules,
+        breakpointRules: this.proxy.breakpointRules
+      });
     });
 
     router.post('/api/mock-rules', (req, res) => {
