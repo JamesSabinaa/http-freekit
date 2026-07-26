@@ -2259,6 +2259,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-369 — Low/Medium — Send silently drops the valid header name `__proto__`
 
+- Status: **Fixed**.
+- Resolution: Send header rows now aggregate into a null-prototype container before JSON serialization, so every syntactically valid own header name, including `__proto__`, survives without changing case-insensitive duplicate merging, repeated values, disabled-row handling, or backend header validation.
+
 - Evidence: `syncSendHeadersToHidden()` builds a normal object and assigns each user header with `obj[key] = value` at `src/ui/app.js:7164-7180`. Assigning `__proto__` invokes the inherited legacy setter rather than creating an own property, so `JSON.stringify()` omits the visible row.
 - Impact: a syntactically valid request header disappears before `/api/send`, making the editor and actual wire request disagree without an error.
 - Reproduction: add an enabled `__proto__: kept` row and send to a raw-header echo server; the row remains visible but is absent on the wire.

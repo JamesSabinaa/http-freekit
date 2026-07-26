@@ -8199,7 +8199,7 @@
     }
 
     function syncSendHeadersToHidden() {
-      const obj = {};
+      const obj = Object.create(null);
       sendHeadersList.forEach(h => {
         if (h.enabled !== false && h.key.trim()) {
           const key = h.key.trim();
