@@ -394,7 +394,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
   _maybeAutoRotateProxyOnError(data) {
     const config = this._getAutoRotateProxyConfig();
     const reason = this._getAutoRotateProxyReason(data);
-    if (!config.enabled || !this.proxy.upstreamProxy || !reason) return;
+    if (!config.enabled || !this.proxy.upstreamProxy || !reason || data?.usedUpstreamProxy === false) return;
 
     const currentGeneration = this.proxy.getUpstreamProxyGeneration?.();
     if (data?.upstreamProxyGeneration !== undefined &&

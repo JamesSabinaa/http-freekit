@@ -919,6 +919,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-293 — Medium — Bypassed direct traffic triggers upstream-proxy rotation and retry
 
+- Status: **Fixed**.
+- Resolution: Retry helpers now require the route decision from the failed attempt, and every retrying H1/mock/H2-fallback path recomputes that decision per attempt so provider changes are re-resolved. Captured 410 and failure records carry the same route fact into API auto-rotation, preventing bypassed direct traffic from rotating or replaying while retaining safe retries for genuinely proxied requests.
 - Evidence: `_shouldRetryAfterUpstreamResponse()` and `_shouldRetryAfterUpstreamError()` at `src/proxy/proxy-server.js:69-145` gate on the global `upstreamProxy`, but their call sites do not pass whether `_shouldUseUpstreamProxy()` selected that proxy for the request.
 - Impact: a response or transient failure from an intentionally direct destination can rotate or consume the proxy provider and replay the request unnecessarily.
 - Reproduction: configure an upstream proxy with `example.com` in `noProxy`, make a direct GET to that host return 410, and observe the upstream retry hook and a second request.
