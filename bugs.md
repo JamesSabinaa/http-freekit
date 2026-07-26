@@ -1786,6 +1786,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-319 — Medium — Ambiguous Android adapters cannot be selected in the UI
 
+- Status: **Fixed**.
+- Resolution: Android discovery and fallback activation now return structured, per-device reachable host-adapter candidates; the UI requests a choice only for ambiguous global-proxy fallbacks and submits the exact selected local `hostIp` for server validation.
 - Evidence: Android activation at `src/interceptors/android-adb-interceptor.js:400-430,462,522` rejects equally reachable adapters unless the caller supplies `hostIp`, but `activateAndroidDevice()` at `src/ui/app.js:4077,4091-4104` posts only `deviceId` and renders no adapter choice.
 - Impact: the visible Android fallback is unusable on common dual-homed systems where Ethernet and Wi-Fi are equally suitable for the device subnet.
 - Reproduction: expose two host adapters on the device's subnet and activate through the UI; the API requires `hostIp`, but the interface offers no way to provide it.

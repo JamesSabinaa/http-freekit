@@ -56,6 +56,15 @@ function netmaskPrefixLength(netmask) {
   return mask.toString(2).replace(/0/g, '').length;
 }
 
+function createHostIpSelectionError(candidates) {
+  const error = new Error(
+    `Multiple host adapters can reach the Android device; select a host IP (${candidates.map(candidate => candidate.address).join(', ')})`
+  );
+  error.code = 'ANDROID_HOST_IP_SELECTION_REQUIRED';
+  error.hostIpCandidates = candidates;
+  return error;
+}
+
 export class AndroidAdbInterceptor {
   constructor(options = {}) {
     this.id = 'android-adb';
@@ -321,7 +330,7 @@ export class AndroidAdbInterceptor {
   }
 
   async getMetadata() {
-    const devices = await this._getConnectedDevices();
+    const devices = await this._getConnectedDevicesWithHostIpMetadata();
     return {
       devices,
       activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
@@ -331,6 +340,38 @@ export class AndroidAdbInterceptor {
       httpToolkitAppPackage: HTTP_TOOLKIT_ANDROID_PACKAGE,
       prefersHttpToolkitApp: true
     };
+  }
+
+  async _getConnectedDevicesWithHostIpMetadata() {
+    const devices = await this._getConnectedDevices();
+    return await Promise.all(devices.map(async device => {
+      if (device.status !== 'device' || device.serial.startsWith('emulator-')) return device;
+
+      let appInstalled;
+      try {
+        appInstalled = await this._queryHttpToolkitAppInstalled(device.serial);
+      } catch {
+        // Do not ask for fallback configuration when the preferred app path
+        // could not be checked. Activation will return structured choices if
+        // it eventually needs the global-proxy fallback.
+        return device;
+      }
+      if (appInstalled) {
+        return { ...device, httpToolkitAppInstalled: true };
+      }
+
+      try {
+        const hostIpCandidates = await this._getReachableHostIpCandidates(device.serial);
+        return {
+          ...device,
+          httpToolkitAppInstalled: false,
+          hostIpCandidates,
+          requiresHostIpSelection: hostIpCandidates.length > 1
+        };
+      } catch {
+        return { ...device, httpToolkitAppInstalled: false };
+      }
+    }));
   }
 
   async _isAdbAvailable() {
@@ -712,30 +753,47 @@ export class AndroidAdbInterceptor {
       return '10.0.2.2';
     }
 
-    const hostInterfaces = this._getHostInterfaces();
     if (requestedHostIp) {
+      const hostInterfaces = this._getHostInterfaces();
       if (!hostInterfaces.some(iface => iface.address === requestedHostIp)) {
         throw new Error(`Android proxy host ${requestedHostIp} is not a local IPv4 address`);
       }
       return requestedHostIp;
     }
 
+    const candidates = await this._getReachableHostIpCandidates(deviceId);
+    if (candidates.length === 0) {
+      throw new Error('Could not find a host network adapter reachable from the Android device');
+    }
+    if (candidates.length !== 1) {
+      throw createHostIpSelectionError(candidates);
+    }
+    return candidates[0].address;
+  }
+
+  async _getReachableHostIpCandidates(deviceId) {
+    const hostInterfaces = this._getHostInterfaces();
     const deviceAddresses = await this._getDeviceIpv4Addresses(deviceId);
     const matches = hostInterfaces
       .filter(iface => deviceAddresses.some(address => sharesSubnet(iface.address, address, iface.netmask)))
-      .sort((first, second) => second.prefixLength - first.prefixLength);
-    if (matches.length === 0) {
-      throw new Error('Could not find a host network adapter reachable from the Android device');
-    }
+      .sort((first, second) =>
+        second.prefixLength - first.prefixLength ||
+        (ipv4ToInteger(first.address) ?? 0) - (ipv4ToInteger(second.address) ?? 0) ||
+        first.name.localeCompare(second.name)
+      );
+    if (matches.length === 0) return [];
 
     const bestPrefixLength = matches[0].prefixLength;
-    const bestAddresses = [...new Set(
-      matches.filter(iface => iface.prefixLength === bestPrefixLength).map(iface => iface.address)
-    )];
-    if (bestAddresses.length !== 1) {
-      throw new Error(`Multiple host adapters can reach the Android device; specify hostIp (${bestAddresses.join(', ')})`);
+    const candidatesByAddress = new Map();
+    for (const iface of matches) {
+      if (iface.prefixLength !== bestPrefixLength || candidatesByAddress.has(iface.address)) continue;
+      candidatesByAddress.set(iface.address, {
+        name: iface.name,
+        address: iface.address,
+        prefixLength: iface.prefixLength
+      });
     }
-    return bestAddresses[0];
+    return [...candidatesByAddress.values()];
   }
 
   async _getDeviceIpv4Addresses(deviceId) {
@@ -811,7 +869,7 @@ export class AndroidAdbInterceptor {
 
     if (!deviceId) {
       // No specific device — return metadata with device list for UI selection
-      const devices = await this._getConnectedDevices();
+      const devices = await this._getConnectedDevicesWithHostIpMetadata();
       const qrMetadata = await this._getQrMetadata(proxyPort);
       return {
         success: true,
@@ -908,7 +966,40 @@ export class AndroidAdbInterceptor {
     }
 
     if (mode !== 'http-toolkit-app') {
-      hostIp = await this._getHostIp(deviceId, requestedHostIp);
+      try {
+        hostIp = await this._getHostIp(deviceId, requestedHostIp);
+      } catch (err) {
+        if (err?.code !== 'ANDROID_HOST_IP_SELECTION_REQUIRED' ||
+            !Array.isArray(err.hostIpCandidates)) {
+          throw err;
+        }
+        const hostIpCandidates = err.hostIpCandidates;
+        return {
+          success: false,
+          error: err.message,
+          metadata: {
+            deviceId,
+            model: device.model,
+            devices: devices.map(candidateDevice => candidateDevice.serial === deviceId
+              ? {
+                  ...candidateDevice,
+                  httpToolkitAppInstalled: appInstalled,
+                  requiresHostIpSelection: true,
+                  hostIpCandidates
+                }
+              : candidateDevice),
+            activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
+              serial,
+              ...info
+            })),
+            requiresHostIpSelection: true,
+            hostIpCandidates,
+            httpToolkitAppInstalled: appInstalled,
+            httpToolkitAppError: appActivationError,
+            ...qrMetadata
+          }
+        };
+      }
       const currentProxy = await this._getProxy(deviceId);
       if (!currentProxy.success) {
         return { success: false, error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}` };

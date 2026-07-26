@@ -1941,6 +1941,7 @@
       align-items: center;
       gap: 10px;
       min-width: 0;
+      flex: 1;
     }
 
     .android-device-info > i.ph {
@@ -1978,6 +1979,34 @@
       color: #4caf7d;
       font-weight: 600;
       margin-top: 2px;
+    }
+
+    .android-host-ip-choice {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
+    .android-host-ip-choice label {
+      color: var(--text-main);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .android-host-ip-choice select {
+      width: min(260px, 100%);
+      padding: 5px 7px;
+      color: var(--text-main);
+      background: var(--bg-main);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      font: 11px var(--font-mono);
+    }
+
+    .android-host-ip-choice span {
+      color: var(--text-watermark);
+      font-size: 10px;
     }
 
     .android-device-actions {

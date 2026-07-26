@@ -3880,6 +3880,7 @@
     let expandedInterceptorMetadata = null;
     let interceptorSelectionGeneration = 0;
     const interceptorOperationGenerations = new Map();
+    const androidHostIpSelections = new Map();
 
     function beginInterceptorOperation(id) {
       const operationGeneration = (interceptorOperationGenerations.get(id) || 0) + 1;
@@ -4423,12 +4424,42 @@
           <h3>Connected Devices</h3>
           <p class="android-setup-note">Uses the HTTP Toolkit Android VPN app when installed, then falls back to Android's global proxy setting.</p>
           <div class="android-device-list">
-            ${devices.map(d => {
+            ${devices.map((d, index) => {
               const isActivated = activatedSerials.has(d.serial);
               const activation = activationBySerial.get(d.serial);
               const isUnauthorized = d.status === 'unauthorized';
               const isOffline = d.status === 'offline';
               const modeLabel = activation?.mode === 'http-toolkit-app' ? 'VPN app' : 'Global proxy';
+              const hostIpCandidates = Array.isArray(d.hostIpCandidates)
+                ? d.hostIpCandidates.filter(candidate =>
+                    candidate && typeof candidate.address === 'string' &&
+                    typeof candidate.name === 'string')
+                : [];
+              const requiresHostIpSelection = d.requiresHostIpSelection === true &&
+                hostIpCandidates.length > 1;
+              let selectedHostIp = androidHostIpSelections.get(d.serial) || '';
+              if (!hostIpCandidates.some(candidate => candidate.address === selectedHostIp)) {
+                androidHostIpSelections.delete(d.serial);
+                selectedHostIp = '';
+              }
+              const hostIpChoice = requiresHostIpSelection
+                ? `
+                  <div class="android-host-ip-choice">
+                    <label for="androidHostIp-${index}">Host network adapter</label>
+                    <select id="androidHostIp-${index}"
+                            onclick="event.stopPropagation();"
+                            onchange="event.stopPropagation(); selectAndroidHostIp(this.closest('.android-device-item')?.dataset.deviceId, this.value);">
+                      <option value="">Choose an adapter…</option>
+                      ${hostIpCandidates.map(candidate => `
+                        <option value="${esc(candidate.address)}"${candidate.address === selectedHostIp ? ' selected' : ''}>
+                          ${esc(candidate.name)} · ${esc(candidate.address)}
+                        </option>
+                      `).join('')}
+                    </select>
+                    <span>Select the adapter connected to this Android device.</span>
+                  </div>
+                `
+                : '';
               return `
                 <div class="android-device-item${isActivated ? ' activated' : ''}" data-device-id="${esc(d.serial)}">
                   <div class="android-device-info">
@@ -4437,6 +4468,7 @@
                       <span class="android-device-model">${esc(d.model || d.serial)}</span>
                       <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
                       ${isActivated ? `<span class="android-device-mode">${esc(modeLabel)}</span>` : ''}
+                      ${hostIpChoice}
                     </div>
                   </div>
                   <div class="android-device-actions">
@@ -4446,7 +4478,7 @@
                         ? '<span class="android-device-status status-warning">Unauthorized</span>'
                         : isOffline
                           ? '<span class="android-device-status status-offline">Offline</span>'
-                          : `<button class="android-device-activate" onclick="event.stopPropagation(); activateAndroidDevice('${esc(d.serial)}');">Activate</button>`
+                          : `<button class="android-device-activate"${requiresHostIpSelection && !selectedHostIp ? ' disabled' : ''} onclick="event.stopPropagation(); activateAndroidDevice('${esc(d.serial)}');">Activate</button>`
                     }
                   </div>
                 </div>
@@ -4460,8 +4492,31 @@
       `;
     }
 
+    function selectAndroidHostIp(deviceId, hostIp) {
+      const device = expandedInterceptorMetadata?.devices?.find(candidate => candidate.serial === deviceId);
+      const candidates = Array.isArray(device?.hostIpCandidates) ? device.hostIpCandidates : [];
+      if (candidates.some(candidate => candidate?.address === hostIp)) {
+        androidHostIpSelections.set(deviceId, hostIp);
+      } else {
+        androidHostIpSelections.delete(deviceId);
+      }
+      const container = document.getElementById('interceptConfig-android-adb');
+      if (container) renderAndroidConfig(container);
+    }
+
     async function activateAndroidDevice(deviceId) {
       if (interceptorsInProgress.has('android-adb')) return;
+      const device = expandedInterceptorMetadata?.devices?.find(candidate => candidate.serial === deviceId);
+      const hostIpCandidates = Array.isArray(device?.hostIpCandidates) ? device.hostIpCandidates : [];
+      const selectedHostIp = androidHostIpSelections.get(deviceId);
+      const requiresHostIpSelection = device?.requiresHostIpSelection === true &&
+        hostIpCandidates.length > 1;
+      if (requiresHostIpSelection &&
+          !hostIpCandidates.some(candidate => candidate?.address === selectedHostIp)) {
+        androidHostIpSelections.delete(deviceId);
+        toast('Choose the host network adapter connected to this Android device', 'error');
+        return;
+      }
       const operation = beginInterceptorOperation('android-adb');
       interceptorsInProgress.add('android-adb');
       filterInterceptors();
@@ -4477,10 +4532,12 @@
         const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId })
+          body: JSON.stringify({
+            deviceId,
+            ...(requiresHostIpSelection ? { hostIp: selectedHostIp } : {})
+          })
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
         if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh device and activation info
@@ -4491,6 +4548,18 @@
             activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
           };
         }
+
+        if (data.metadata?.requiresHostIpSelection === true &&
+            Array.isArray(data.metadata.hostIpCandidates) &&
+            data.metadata.hostIpCandidates.length > 1) {
+          androidHostIpSelections.delete(deviceId);
+          const container = document.getElementById('interceptConfig-android-adb');
+          if (container) renderAndroidConfig(container);
+          toast('Choose the host network adapter connected to this Android device', 'error');
+          return;
+        }
+        if (res.ok === false || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        androidHostIpSelections.delete(deviceId);
 
         // Re-render the config area
         const container = document.getElementById('interceptConfig-android-adb');
