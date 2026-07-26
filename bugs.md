@@ -2241,6 +2241,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-223 — Low/Medium — URL-encoded body views decode values twice
 
+- Status: **Fixed**.
+- Resolution: Both compact and decoded body views now render the names and values already decoded once by `URLSearchParams`, passing them directly through the existing HTML escaping. Literal percent text, plus-to-space conversion, repeated fields, and decoded-view text copying are preserved.
+
 - Evidence: `URLSearchParams` already decodes entries, but both body formatters call `decodeURIComponent()` again at `src/ui/app.js:2319-2330,3145-3162`.
 - Impact: displayed/copied form values differ from the request and can throw for percent text after the first decode.
 - Reproduction: inspect `token=%252Fadmin`; the UI shows `/admin` instead of `%2Fadmin`.

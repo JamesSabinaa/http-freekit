@@ -2482,9 +2482,9 @@
           const params = new URLSearchParams(body);
           let result = '';
           for (const [key, value] of params) {
-            result += '<span style="color:#4caf7d;">' + esc(decodeURIComponent(key)) + '</span>';
+            result += '<span style="color:#4caf7d;">' + esc(key) + '</span>';
             result += '<span style="color:var(--text-watermark);"> = </span>';
-            result += '<span style="color:#ff8c38;">' + esc(decodeURIComponent(value)) + '</span>\n';
+            result += '<span style="color:#ff8c38;">' + esc(value) + '</span>\n';
           }
           return result || esc(body);
         } catch (e) { console.error('[Error]', e.message); }
@@ -3309,8 +3309,8 @@
             let html = '<div class="url-decoded-params">';
             for (const [key, value] of params) {
               html += '<div class="url-decoded-row">';
-              const dk = esc(decodeURIComponent(key));
-              const dv = esc(decodeURIComponent(value));
+              const dk = esc(key);
+              const dv = esc(value);
               html += '<div class="url-decoded-key"><div class="url-decoded-label">Name <button class="url-decoded-copy" onclick="navigator.clipboard.writeText(this.closest(\'.url-decoded-key\').querySelector(\'.url-decoded-value\').textContent).then(()=>toast(\'Copied\',\'success\'))" title="Copy name">&#128203;</button></div><div class="url-decoded-value">' + dk + '</div></div>';
               html += '<div class="url-decoded-val"><div class="url-decoded-label">Value <button class="url-decoded-copy" onclick="navigator.clipboard.writeText(this.closest(\'.url-decoded-val\').querySelector(\'.url-decoded-value\').textContent).then(()=>toast(\'Copied\',\'success\'))" title="Copy value">&#128203;</button></div><div class="url-decoded-value">' + dv + '</div></div>';
               html += '</div>';
