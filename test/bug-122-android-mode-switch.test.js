@@ -14,6 +14,12 @@ function configuredInterceptor() {
     deviceName: 'test'
   }];
   interceptor._getQrMetadata = async () => ({});
+  interceptor._prepareHttpToolkitAppActivation = async () => ({
+    success: true,
+    appInstalled: true,
+    connectUrl: 'https://android.httptoolkit.tech/connect/?data=test',
+    previousReverseMapping: null
+  });
   return interceptor;
 }
 

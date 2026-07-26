@@ -69,7 +69,7 @@ function configureFailedCompanion(interceptor) {
 
 function expectedReverseOnlyJournal() {
   return {
-    version: 2,
+    version: 3,
     devices: [{
       serial: DEVICE_ID,
       mode: 'reverse-cleanup',
@@ -133,7 +133,7 @@ test('failed companion cleanup transfers reverse ownership to fallback and Stop 
   assert.equal(activation.metadata.mode, 'global-proxy');
   assert.equal(interceptor.activatedDevices.get(DEVICE_ID).previousReverseMapping, PREVIOUS_MAPPING);
   assert.deepEqual(readJournal(interceptor), {
-    version: 2,
+    version: 3,
     devices: [{
       serial: DEVICE_ID,
       mode: 'global-proxy',

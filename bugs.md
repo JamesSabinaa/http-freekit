@@ -1821,6 +1821,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-330 — Medium — Failed Android mode replacement destroys the working mode
 
+- Status: **Fixed**.
+- Resolution: Same-device replacement now completes read-only validation, prerequisite checks, and reverse-mapping preparation before touching the working mode. Cleanup failures retain the old ownership for retry, while replacement mutations are journaled before they start; an ambiguous companion commit remains recoverable as `app-uncertain` and blocks global fallback until Stop confirms cleanup, preventing overlapping Android modes.
+
 - Evidence: Android replacement cleans and deletes the current activation at `src/interceptors/android-adb-interceptor.js:509-518` before validating the new mode's host selection and prerequisites later in `activate()`.
 - Impact: a typo, ambiguous/unreachable adapter, missing companion prerequisite, or other replacement error stops a working interception even though the requested replacement reports failure.
 - Reproduction: activate the companion mode, request global replacement with an invalid `hostIp`, and observe that activation throws after the companion was stopped and its ownership removed.

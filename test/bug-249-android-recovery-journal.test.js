@@ -62,7 +62,7 @@ test('a restarted manager adopts global-proxy cleanup ownership and can Stop it'
   });
   assert.equal(activation.success, true);
   assert.deepEqual(readJournal(original), {
-    version: 2,
+    version: 3,
     devices: [validJournalEntry({ deviceName: 'device-1-device' })]
   });
 
@@ -173,7 +173,7 @@ test('malformed or untrusted journals are not adopted or used for device command
   const recoveryFile = path.join(dataDir, 'android-adb-global-proxy-recovery.json');
   const invalidJournals = [
     '{not-json',
-    JSON.stringify({ version: 3, devices: [validJournalEntry()] }),
+    JSON.stringify({ version: 4, devices: [validJournalEntry()] }),
     JSON.stringify({
       version: 1,
       devices: [validJournalEntry(), validJournalEntry({ serial: '--all' })]
