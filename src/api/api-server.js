@@ -823,8 +823,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Clear traffic
     router.post('/api/traffic/clear', (req, res) => {
-      this._clearTraffic();
-      res.json({ success: true });
+      const clearId = this._clearTraffic();
+      res.json({ success: true, clearId });
     });
 
     // Export traffic (JSON)
@@ -1956,10 +1956,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _clearTraffic() {
+    const clearId = crypto.randomUUID();
     for (const id of this._pendingTrafficIds) this._clearedPendingTrafficIds.add(id);
     this._pendingTrafficIds.clear();
     this.trafficLog = [];
-    this._broadcast({ type: 'traffic-cleared' });
+    this._broadcast({ type: 'traffic-cleared', clearId });
+    return clearId;
   }
 
   _persistMockRules() {

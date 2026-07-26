@@ -2347,6 +2347,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-240 — Low — Clear Traffic silently no-ops while WebSocket is disconnected
 
+- Status: **Fixed**.
+- Resolution: Clear Traffic now uses the authenticated REST endpoint, reports confirmed success or failure, and shares an ID-deduplicated local state update with WebSocket broadcasts so disconnected and connected clients stay consistent without duplicate clearing.
+
 - Evidence: `clearTraffic()` sends only when `ws.readyState === 1` and has no REST fallback or error state at `src/ui/app.js:7540-7544`; the button remains enabled.
 - Impact: the user believes traffic was cleared, but reconnect restores every server record without any feedback.
 - Reproduction: disconnect the management WebSocket, click Clear, and reconnect.

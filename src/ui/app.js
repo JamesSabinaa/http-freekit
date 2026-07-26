@@ -181,6 +181,26 @@
       showDetail(selectedRequest);
     }
 
+    const appliedTrafficClearIds = new Set();
+
+    function applyTrafficCleared(clearId) {
+      if (clearId && appliedTrafficClearIds.has(clearId)) return false;
+      if (clearId) {
+        appliedTrafficClearIds.add(clearId);
+        if (appliedTrafficClearIds.size > 32) {
+          appliedTrafficClearIds.delete(appliedTrafficClearIds.values().next().value);
+        }
+      }
+
+      requests = requests.filter(request => request.pinned);
+      requestCounter = requests.length;
+      vsRenderStart = -1;
+      vsRenderEnd = -1;
+      applyFilter();
+      if (!requests.find(request => request.id === selectedRequestId)) closeDetail();
+      return true;
+    }
+
     function connectWebSocket() {
       const wsUrl = authenticatedApiUrl(`ws://${window.location.hostname}:${window.location.port}/ws`);
       ws = new WebSocket(wsUrl);
@@ -295,14 +315,7 @@
           handleInterceptorStatusEvent(msg.data);
           break;
         case 'traffic-cleared':
-          requests = requests.filter(r => r.pinned);
-          wsFramesByParent = {};
-          filteredRequests = [];
-          requestCounter = requests.length;
-          vsRenderStart = -1;
-          vsRenderEnd = -1;
-          renderTraffic();
-          if (!requests.find(r => r.id === selectedRequestId)) closeDetail();
+          applyTrafficCleared(msg.clearId);
           break;
         case 'traffic-dump':
           restoreTrafficDump(msg.requests);
@@ -8442,9 +8455,23 @@
     }
 
     // ============ ACTIONS ============
-    function clearTraffic() {
-      if (ws?.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'clear-traffic' }));
+    let trafficClearInFlight = false;
+
+    async function clearTraffic() {
+      if (trafficClearInFlight) return;
+      trafficClearInFlight = true;
+      try {
+        const response = await fetch(API_BASE + '/api/traffic/clear', { method: 'POST' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success !== true || typeof data.clearId !== 'string') {
+          throw new Error(data.error || `Clear Traffic returned HTTP ${response.status}`);
+        }
+        applyTrafficCleared(data.clearId);
+        toast('Traffic cleared', 'success');
+      } catch (err) {
+        toast('Failed to clear traffic: ' + err.message, 'error');
+      } finally {
+        trafficClearInFlight = false;
       }
     }
 
