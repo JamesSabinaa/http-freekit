@@ -1549,9 +1549,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-277 — Low/Medium — Global Chrome activation bypasses URL validation
 
+- Status: **Fixed**.
 - Evidence: isolated browsers normalize activation URLs, but `src/interceptors/existing-browser-interceptor.js:45-46` appends arbitrary `options.url` directly to Chromium arguments.
 - Impact: activation accepts strings beginning with `--` as switches and accepts local/custom schemes rejected by the browser-open path.
 - Reproduction: activate Global Chrome with URL `--incognito` or a file URL.
+- Resolution: Global Chrome now normalizes its activation URL before browser discovery or process checks, allowing only valid HTTP(S) URLs and passing the canonical trimmed URL as a single launch argument. Invalid values fail before any browser process is inspected or spawned.
 
 ### BUG-283 — Medium — Java 8 JDKs are falsely reported unavailable
 

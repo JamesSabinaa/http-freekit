@@ -3,6 +3,7 @@ import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { getProcessSnapshotAsync } from './browser-lifecycle.js';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
+import { normalizeBrowserUrl } from './browser-url.js';
 
 export class ExistingBrowserInterceptor {
   constructor(id, name, browserType) {
@@ -64,6 +65,11 @@ export class ExistingBrowserInterceptor {
   }
 
   async activate(proxyPort, options = {}) {
+    const launchOptions = { ...options };
+    if (launchOptions.url) {
+      launchOptions.url = normalizeBrowserUrl(launchOptions.url);
+    }
+
     if (this.active || this.process) {
       throw new Error(`${this.name} is already running`);
     }
@@ -91,8 +97,8 @@ export class ExistingBrowserInterceptor {
       );
     }
 
-    if (options.url) {
-      args.push(options.url);
+    if (launchOptions.url) {
+      args.push(launchOptions.url);
     }
     const launchArgs = ensureChromiumLoopbackProxying(args);
 
