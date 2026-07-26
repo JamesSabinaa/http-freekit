@@ -4065,9 +4065,12 @@
     }
 
     function activateInterceptorCardOnKeyboard(event) {
-      if (event.key !== 'Enter' || event.repeat || event.defaultPrevented ||
+      const isSpace = event.key === ' ';
+      if ((!isSpace && event.key !== 'Enter') || event.defaultPrevented ||
           event.target !== event.currentTarget) return;
-      event.preventDefault();
+      if (isSpace) event.preventDefault();
+      if (event.repeat) return;
+      if (!isSpace) event.preventDefault();
       event.currentTarget.click();
     }
 

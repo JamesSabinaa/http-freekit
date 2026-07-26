@@ -2789,6 +2789,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-343 — Low — Button-role interceptor cards ignore Space
 
+- Status: **Fixed**.
+
 - Evidence: custom and manual interceptor cards declare `role="button"` and `tabindex="0"`, but their key handlers activate only for Enter at `src/ui/app.js:3808-3826,3854-3862`.
 - Impact: the controls violate expected button keyboard behavior; pressing Space scrolls or does nothing instead of expanding or activating the focused card.
 - Reproduction: focus a collapsed interceptor card with Tab and press Space; the advertised button does not activate.
