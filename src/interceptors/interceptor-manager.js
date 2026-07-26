@@ -12,6 +12,7 @@ export class InterceptorManager {
   constructor(ca, options = {}) {
     this.interceptors = new Map();
     this.operationsInProgress = new Map();
+    this.statusOperations = new Map();
     this.ca = ca;
     this.onStatusChange = null;
 
@@ -49,11 +50,83 @@ export class InterceptorManager {
 
   _register(interceptor) {
     interceptor.onStatusChange = (event) => {
-      if (typeof this.onStatusChange === 'function') {
-        this.onStatusChange(event);
-      }
+      const operation = this.statusOperations?.get(interceptor.id);
+      if (operation) operation.events.push(event);
+      else this._publishStatus(event);
     };
     this.interceptors.set(interceptor.id, interceptor);
+  }
+
+  _publishStatus(event) {
+    if (typeof this.onStatusChange === 'function') {
+      this.onStatusChange(event);
+    }
+  }
+
+  async _getActiveState(interceptor) {
+    if (typeof interceptor.isActive === 'function') {
+      return Boolean(await interceptor.isActive());
+    }
+    return Boolean(interceptor.active);
+  }
+
+  _publishFailureEvents(events, activeBeforeOperation) {
+    for (const event of events) {
+      const reportsSuccessfulTransition = event?.reason === 'active'
+        || event?.reason === 'inactive'
+        || Boolean(event?.active) !== activeBeforeOperation;
+      if (!reportsSuccessfulTransition) {
+        this._publishStatus(event);
+      }
+    }
+  }
+
+  async _runStateTransition(interceptor, operation) {
+    const wasActive = await this._getActiveState(interceptor);
+    const statusOperation = { events: [] };
+    this.statusOperations ||= new Map();
+    this.statusOperations.set(interceptor.id, statusOperation);
+
+    try {
+      let result;
+      try {
+        result = await operation();
+      } catch (err) {
+        this._publishFailureEvents(statusOperation.events, wasActive);
+        throw err;
+      }
+
+      if (result?.success === false) {
+        this._publishFailureEvents(statusOperation.events, wasActive);
+        return result;
+      }
+
+      const active = await this._getActiveState(interceptor);
+      if (active === wasActive) return result;
+
+      const emittedTransition = statusOperation.events
+        .filter(event => Boolean(event?.active) === active)
+        .at(-1);
+      if (emittedTransition) {
+        this._publishStatus(emittedTransition);
+      } else {
+        const snapshot = typeof interceptor.toJSON === 'function'
+          ? interceptor.toJSON()
+          : {};
+        this._publishStatus({
+          ...snapshot,
+          id: interceptor.id,
+          name: interceptor.name,
+          active,
+          reason: active ? 'active' : 'inactive'
+        });
+      }
+      return result;
+    } finally {
+      if (this.statusOperations.get(interceptor.id) === statusOperation) {
+        this.statusOperations.delete(interceptor.id);
+      }
+    }
   }
 
   async getAll() {
@@ -78,14 +151,21 @@ export class InterceptorManager {
       const activable = await interceptor.isActivable();
       if (!activable) throw new Error(`${interceptor.name} is not available on this system`);
 
-      return await interceptor.activate(proxyPort, options);
+      return await this._runStateTransition(
+        interceptor,
+        () => interceptor.activate(proxyPort, options)
+      );
     });
   }
 
   async deactivate(id, options = {}) {
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
-    return await this._runExclusive(id, interceptor, () => interceptor.deactivate(options));
+    return await this._runExclusive(
+      id,
+      interceptor,
+      () => this._runStateTransition(interceptor, () => interceptor.deactivate(options))
+    );
   }
 
   async _runExclusive(id, interceptor, operation) {

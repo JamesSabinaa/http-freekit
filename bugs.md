@@ -1363,6 +1363,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-207 — Medium — Non-browser interceptor transitions are never broadcast
 
+- Status: **Fixed**.
+- Resolution: Interceptor operations now compare aggregate active state before and after successful activation or deactivation. The manager synthesizes a status event when callback-free interceptors transition, coalesces callbacks from process interceptors that already report lifecycle changes, and suppresses metadata-only, no-op, partial-target, and unsuccessful transitions.
+
 - Evidence: `src/interceptors/interceptor-manager.js:47-52` installs `onStatusChange`, and the API broadcasts only callbacks it receives. Android, JVM, System Proxy, Docker, Electron, and terminal implementations do not invoke normal activate/deactivate status callbacks, and their API routes do not publish after success.
 - Impact: other open UI sessions remain indefinitely stale after one client starts or stops these interceptors and can offer invalid actions against outdated state.
 - Reproduction: open two UI sessions, activate System Proxy or Android in one, and observe no connected-source change in the other until reload.
