@@ -4748,6 +4748,8 @@
     let mockEditingRule = null;
     let mockEditDraft = null;
     let mockDragId = null;
+    let mockReorderGeneration = 0;
+    let mockReorderQueue = Promise.resolve();
     let mockRenamingRuleId = null;
 
     async function loadBreakpointRules() {
@@ -4815,6 +4817,106 @@
       }
     }
 
+    function _replaceMockRulesFromServer(rules) {
+      mockRules = rules;
+      // Re-add new drafts and overlay edits without changing their unsaved state.
+      for (const [draftId, draft] of mockDraftRules) {
+        if (mockNewDraftIds.has(draftId)) {
+          if (!mockRules.some(r => r.id === draftId)) mockRules.push(draft);
+        } else {
+          _applyDraftToLocal(draftId, draft);
+        }
+      }
+    }
+
+    function _restoreMockRuleOrder(ids) {
+      const currentById = new Map(mockRules.map(rule => [rule.id, rule]));
+      const restored = [];
+      for (const id of ids) {
+        const rule = currentById.get(id);
+        if (!rule) continue;
+        restored.push(rule);
+        currentById.delete(id);
+      }
+      // Preserve drafts or other rules added while the reorder request was pending.
+      for (const rule of mockRules) {
+        if (currentById.has(rule.id)) {
+          restored.push(rule);
+          currentById.delete(rule.id);
+        }
+      }
+      mockRules = restored;
+    }
+
+    async function _readMockRulesResponse(res, action) {
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(action + ' returned invalid JSON');
+      }
+      if (!res.ok) {
+        throw new Error(data?.error || action + ' failed with HTTP ' + res.status);
+      }
+      return data;
+    }
+
+    async function _reloadMockRulesAfterRejectedReorder(operation) {
+      const res = await fetch(API_BASE + '/api/mock-rules');
+      const data = await _readMockRulesResponse(res, 'Reloading mock rules');
+      if (!Array.isArray(data?.rules)) {
+        throw new Error('Reloading mock rules returned an invalid response');
+      }
+      if (operation !== mockReorderGeneration) return false;
+      _replaceMockRulesFromServer(data.rules);
+      updateMockSaveButtons();
+      renderMockRules();
+      return true;
+    }
+
+    async function _persistMockRuleOrder(operation, ids, previousIds) {
+      try {
+        const res = await fetch(API_BASE + '/api/mock-rules/reorder', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ ids })
+        });
+        const data = await _readMockRulesResponse(res, 'Reordering mock rules');
+        if (data?.success !== true || !Array.isArray(data.rules)) {
+          throw new Error('Reordering mock rules returned an invalid response');
+        }
+        if (operation !== mockReorderGeneration) return;
+        _replaceMockRulesFromServer(data.rules);
+        updateMockSaveButtons();
+        renderMockRules();
+      } catch (err) {
+        // A newer optimistic reorder owns the visible state and is queued to run next.
+        if (operation !== mockReorderGeneration) return;
+
+        _restoreMockRuleOrder(previousIds);
+        renderMockRules();
+
+        let reloadError = null;
+        try {
+          await _reloadMockRulesAfterRejectedReorder(operation);
+        } catch (reloadErr) {
+          reloadError = reloadErr;
+          console.error('Mock rule reload failed:', reloadErr);
+        }
+        if (operation !== mockReorderGeneration) return;
+
+        const errorMessage = err && typeof err.message === 'string' ? err.message : String(err);
+        const detail = reloadError
+          ? ' Previous order restored; server reload failed: ' + (
+              reloadError && typeof reloadError.message === 'string'
+                ? reloadError.message
+                : String(reloadError)
+            )
+          : ' Server order restored.';
+        toast('Rule reorder failed: ' + errorMessage + '.' + detail, 'error');
+      }
+    }
+
     function mockDrop(e, targetId) {
       e.preventDefault();
       if (!mockDragId || mockDragId === targetId) return;
@@ -4831,18 +4933,21 @@
       const toIdx = mockRules.findIndex(r => r.id === targetId);
       if (fromIdx === -1 || toIdx === -1) return;
 
+      const previousIds = mockRules.map(r => r.id);
       const [moved] = mockRules.splice(fromIdx, 1);
       mockRules.splice(toIdx, 0, moved);
 
       const ids = mockRules.map(r => r.id);
-      fetch(API_BASE + '/api/mock-rules/reorder', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ ids })
-      }).catch(err => console.error('Reorder failed:', err));
+      const operation = ++mockReorderGeneration;
+      const reorderRequest = mockReorderQueue.then(
+        () => _persistMockRuleOrder(operation, ids, previousIds)
+      );
+      // Keep later writes ordered even if an unexpected implementation error escapes.
+      mockReorderQueue = reorderRequest.catch(() => {});
 
       renderMockRules();
       document.querySelectorAll('.mock-rule-card').forEach(c => c.classList.remove('mock-drag-over', 'mock-drag-combine', 'mock-rule-dragging'));
+      return reorderRequest;
     }
 
     async function combineRulesAsGroup(ruleId1, ruleId2) {
@@ -4935,19 +5040,7 @@
       try {
         const res = await fetch(`${API_BASE}/api/mock-rules`);
         const data = await res.json();
-        mockRules = data.rules || [];
-        // Re-add any new draft rules that haven't been saved to server yet
-        for (const [draftId, draft] of mockDraftRules) {
-          if (mockNewDraftIds.has(draftId)) {
-            // New draft not on server — add to local list
-            if (!mockRules.some(r => r.id === draftId)) {
-              mockRules.push(draft);
-            }
-          } else {
-            // Existing rule with unsaved changes — overlay draft onto local copy
-            _applyDraftToLocal(draftId, draft);
-          }
-        }
+        _replaceMockRulesFromServer(data.rules || []);
         updateMockSaveButtons();
         await loadBreakpointRules();
         renderMockRules();

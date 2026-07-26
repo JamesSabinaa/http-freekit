@@ -2148,6 +2148,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-208 — Medium — Failed mock reorder leaves renderer and proxy priority inconsistent
 
+- Status: **Fixed**.
+- Resolution: Mock reorders now validate HTTP and JSON responses, serialize overlapping optimistic writes, and reconcile only the latest rejected order from the server while retaining unsaved drafts. Failures restore a safe prior order and report whether authoritative reload also failed.
+
 - Evidence: `mockDrop()` mutates the local `mockRules` order before posting at `src/ui/app.js:4493-4508`. A rejected reorder is only logged; the old order is neither restored nor reloaded.
 - Impact: the UI displays one priority order while proxy matching continues with the server's previous order.
 - Reproduction: make `/api/mock-rules/reorder` fail and drag a rule.
