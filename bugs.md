@@ -2326,6 +2326,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-238 — Low — Connection timeout is documented as configurable but is not
 
+- Status: **Fixed**.
+- Resolution: README now describes the built-in 15-second upstream connection and 30-second idle-response limits without claiming that users can configure them.
+
 - Evidence: README calls the 30-second connection timeout configurable, while values are constructor defaults at `src/proxy/proxy-server.js:60-61`; no CLI option, API route, persisted setting, or UI control changes them.
 - Impact: users cannot tune the documented setting for slow or failure-testing environments.
 - Reproduction: search Settings, CLI help, and management routes for timeout configuration.

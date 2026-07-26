@@ -106,7 +106,7 @@ http-freekit/
 - **Upstream proxy** chaining (HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h)
 - **Body decompression** (gzip, brotli, deflate, zstd)
 - **Source detection** from User-Agent (Chrome, Firefox, cURL, Python, Node.js, Go, Java, etc.)
-- **Connection timeout** (30s default, configurable)
+- **Upstream request timeouts** — built-in 15s connection and 30s idle-response limits
 
 ## Mock Rules
 
