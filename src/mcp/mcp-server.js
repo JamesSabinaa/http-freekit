@@ -134,8 +134,12 @@ export class McpServerBridge {
 
   // ========== Tool Handlers ==========
 
+  _getHttpRequestTraffic() {
+    return this.apiServer.trafficLog.filter(record => record?.protocol !== 'ws-frame');
+  }
+
   _handleSearchTraffic({ query, method, status, host, limit }) {
-    let results = this.apiServer.trafficLog;
+    let results = this._getHttpRequestTraffic();
     const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 50;
     const max = Math.min(Math.max(requestedLimit, 1), 500);
 
@@ -223,7 +227,7 @@ export class McpServerBridge {
   }
 
   _handleGetTrafficStats() {
-    const log = this.apiServer.trafficLog;
+    const log = this._getHttpRequestTraffic();
     const byMethod = {};
     const byStatus = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0, 'other': 0 };
     const byHost = {};
@@ -402,7 +406,7 @@ export class McpServerBridge {
 
     const summary = {
       proxyPort: this.proxy.port,
-      totalCapturedRequests: this.apiServer.trafficLog.length,
+      totalCapturedRequests: this._getHttpRequestTraffic().length,
       activeConnections: proxyStats.activeConnections,
       mockRulesCount: proxyStats.mockRules,
       breakpointRules: proxyStats.breakpointRules || 0,

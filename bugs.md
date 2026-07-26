@@ -803,6 +803,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-245 — Low/Medium — MCP request tools count WebSocket frames as HTTP requests
 
+- Status: **Fixed**.
+- Resolution: MCP request search, traffic statistics, and live captured-request totals now share a non-mutating HTTP-request view that excludes WebSocket frame records. Frames remain available in the traffic log and through request-detail/UI workflows.
+
 - Evidence: MCP search, stats, and live summary start from the raw traffic log without protocol filtering (`src/mcp/mcp-server.js:132-133,220-221` and live-summary handler).
 - Impact: frames inflate request totals and bandwidth, create undefined methods and other statuses, and appear in tools whose contracts describe HTTP requests.
 - Reproduction: capture one WebSocket handshake plus frames, then call search, stats, and live summary.
