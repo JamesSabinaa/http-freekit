@@ -175,25 +175,39 @@
       const restoredServerRequests = (Array.isArray(serverRequests) ? serverRequests : [])
         .map(request => mergeServerTrafficRequest(currentById.get(request?.id), request));
       const serverIds = new Set(restoredServerRequests.map(request => request.id));
-      const rendererOnlyPins = existingRequests.filter(request =>
-        request?.pinned && request._rendererOnly === true && !serverIds.has(request.id)
-      );
-      return [...restoredServerRequests, ...rendererOnlyPins];
+      const rendererOnlyPins = [];
+      const restoredPinIds = new Set();
+      for (let index = existingRequests.length - 1; index >= 0; index--) {
+        const request = existingRequests[index];
+        if (
+          request?.pinned &&
+          request._rendererOnly === true &&
+          !serverIds.has(request.id) &&
+          !restoredPinIds.has(request.id)
+        ) {
+          restoredPinIds.add(request.id);
+          rendererOnlyPins.push(request);
+        }
+      }
+      rendererOnlyPins.reverse();
+      return [...restoredServerRequests, ...rendererOnlyPins].slice(-10_000);
     }
 
     function restoreTrafficDump(serverRequests) {
       requests = mergeTrafficDumpPins(requests, serverRequests);
       requestCounter = requests.length;
+      const selectedRequest = selectedRequestId === null
+        ? null
+        : requests.find(request => request.id === selectedRequestId);
+      if (
+        selectedRequestId !== null &&
+        !selectedRequest
+      ) {
+        closeDetail(false);
+      }
       applyFilter();
 
-      if (!selectedRequestId) return;
-      const selectedRequest = requests.find(request => request.id === selectedRequestId);
-      if (!selectedRequest) {
-        closeDetail();
-        return;
-      }
-
-      showDetail(selectedRequest);
+      if (selectedRequest) showDetail(selectedRequest);
     }
 
     const appliedTrafficClearIds = new Set();
@@ -392,11 +406,11 @@
         wsFramesByParent[req.parentId].push(req);
       }
 
-      // Keep max 10000
-      const evictedRequest = requests.length > 10000 ? requests.shift() : null;
+      // Keep the newest 10,000 rows, even if prior state was already oversized.
+      const excess = requests.length - 10_000;
+      if (excess > 0) requests.splice(0, excess);
       if (
         selectedRequestId !== null &&
-        evictedRequest?.id === selectedRequestId &&
         !requests.some(request => request.id === selectedRequestId)
       ) {
         closeDetail(false);

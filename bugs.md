@@ -2363,6 +2363,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-374 — Low/Medium — Pinned renderer-only traffic bypasses the row cap
 
+- Status: **Fixed**.
+- Resolution: Traffic-dump merges now append deduplicated renderer-only pins and retain only the newest 10,000 combined rows, while every live add removes the full excess from any oversized state. Selection is closed only when its final row is evicted, and the existing filter pass rebuilds filtered and WebSocket-frame indexes from the capped collection.
+
 - Evidence: `mergeTrafficDumpPins()` appends every pinned renderer-only row after the complete server dump at `src/ui/app.js:139-152`, without applying the 10,000-row renderer limit. `addRequest()` at `:343-355` removes only one row when oversized, so it cannot restore the cap after a dump has already exceeded it.
 - Impact: each add, pin, and reconnect cycle can retain another local Send/import record beyond the cap. Renderer memory and the cost of filtering, sorting, rendering, and exporting can grow indefinitely even though the backend log remains bounded.
 - Reproduction: start with a 10,000-row server dump, add and pin one renderer-only Send record, then reconnect; the array has 10,001 rows. Repeat the add/pin/reconnect cycle and observe 10,002, 10,003, and higher rather than a stable maximum.
