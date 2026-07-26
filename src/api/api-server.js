@@ -2203,8 +2203,29 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           }
           try {
             wss.handleUpgrade(request, socket, head, (ws) => {
+              let terminated = false;
+              const removeTrackedClient = () => {
+                if (!this.clients.delete(ws)) return;
+                console.log(`[API] WebSocket client disconnected (${this.clients.size} total)`);
+              };
+              const terminatePeer = () => {
+                if (terminated) return;
+                terminated = true;
+                try { ws.terminate(); } catch {}
+              };
+
+              // Protocol/parser failures are peer-scoped WebSocket errors. Attach
+              // this before emitting `connection` so even malformed upgrade head
+              // bytes cannot become an unhandled EventEmitter error.
+              ws.on('error', (error) => {
+                console.warn(`[API] WebSocket client error: ${error.message}`);
+                removeTrackedClient();
+                terminatePeer();
+              });
+              ws.on('close', removeTrackedClient);
+
               if (this._stopping || this.httpServer !== server || this.wss !== wss) {
-                ws.terminate();
+                terminatePeer();
                 return;
               }
               wss.emit('connection', ws, request);
@@ -2233,11 +2254,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           proxyPort: this.proxy.port,
           apiPort: this.port
         }));
-
-        ws.on('close', () => {
-          this.clients.delete(ws);
-          console.log(`[API] WebSocket client disconnected (${this.clients.size} total)`);
-        });
 
         ws.on('message', (message) => {
           try {

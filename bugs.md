@@ -910,6 +910,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-289 — Medium — Malformed management WebSocket frames crash the server
 
+- Status: **Fixed**.
+- Resolution: Every authenticated management WebSocket receives a peer-scoped error listener at the earliest post-upgrade point, before connection dispatch or initialization. Protocol/parser failures remove and terminate only that peer, while shared close cleanup remains idempotent and normal HTTP/WebSocket clients continue operating.
+
 - Evidence: accepted WebSocket peers receive close and message listeners but no error listener at `src/api/api-server.js:1487-1508`; parser/protocol errors are emitted as unhandled error events.
 - Impact: one malformed peer frame can terminate the server abruptly and bypass graceful interceptor/proxy cleanup.
 - Reproduction: complete an authenticated `/ws` upgrade and send an unmasked client text frame such as bytes `81 01 61`.
