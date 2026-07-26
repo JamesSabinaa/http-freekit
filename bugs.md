@@ -2417,6 +2417,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-258 — Low — Documented pane-focus shortcuts are no-ops
 
+- Status: **Fixed**.
+- Resolution: The shortcuts now address the rendered traffic-list and detail containers directly, and both labeled pane regions are programmatically focusable without adding them to the normal Tab order.
+
 - Evidence: the list shortcut searches for nonexistent `#trafficList`/`.traffic-list` at `src/ui/app.js:8965-8970`; the actual container is `#trafficTableWrapper`. The detail shortcut focuses a non-focusable div without tabindex at `:8973-8979`.
 - Impact: Ctrl+[ and Ctrl+] do not move keyboard focus as documented.
 - Reproduction: press both and inspect `document.activeElement`.

@@ -10349,7 +10349,7 @@
       // Ctrl+[: Focus traffic list pane (left side)
       if (e.key === '[' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
         e.preventDefault();
-        const trafficList = document.getElementById('trafficList') || document.querySelector('.traffic-list');
+        const trafficList = document.getElementById('trafficTableWrapper');
         if (trafficList) trafficList.focus();
         return;
       }
@@ -10357,7 +10357,7 @@
       // Ctrl+]: Focus detail pane (right side)
       if (e.key === ']' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
         e.preventDefault();
-        const detailPane = document.getElementById('detailPanel') || document.querySelector('.detail-pane');
+        const detailPane = document.getElementById('detailPanel');
         if (detailPane) detailPane.focus();
         return;
       }
