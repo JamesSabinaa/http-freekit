@@ -8935,9 +8935,9 @@
       const label = document.getElementById('upstreamDetailsLabel');
       const input = document.getElementById('upstreamDetails');
 
-      if (type === 'none' || type === 'system') {
+      if (type === 'none') {
         fields.style.display = 'none';
-        // Auto-save when selecting "none" or "system"
+        // Auto-save when selecting a direct connection.
         saveUpstreamProxy();
       } else {
         fields.style.display = 'block';
@@ -8961,21 +8961,16 @@
       if (type === 'none') {
         // Disable upstream proxy
         try {
-          await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
-          setSettingsStatus(statusEl, 'Direct connection (no proxy)', 'var(--status-2xx)');
-          toast('Upstream proxy disabled', 'success');
-        } catch (err) { toast('Error: ' + err.message, 'error'); }
-        return;
-      }
-
-      if (type === 'system') {
-        try {
           const res = await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          setSettingsStatus(statusEl, 'Using system proxy settings', 'var(--text-lowlight)');
-          toast('Using system proxy settings', 'success');
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.success === false) {
+            throw new Error(data.error || `HTTP ${res.status}`);
+          }
+          updateUpstreamProxyUi(null);
+          toast('Upstream proxy disabled', 'success');
         } catch (err) {
-          toast('Could not disable the custom proxy: ' + err.message, 'error');
+          toast('Error: ' + err.message, 'error');
+          await loadUpstreamProxy();
         }
         return;
       }
@@ -9019,9 +9014,19 @@
 
     function updateUpstreamProxyUi(proxy, provider) {
       const typeEl = document.getElementById('upstreamType');
+      const fieldsEl = document.getElementById('upstreamDetailsFields');
       const detailsEl = document.getElementById('upstreamDetails');
       const noProxyEl = document.getElementById('upstreamNoProxy');
       const statusEl = document.getElementById('upstreamStatus');
+
+      if (!proxy) {
+        if (typeEl) typeEl.value = 'none';
+        if (fieldsEl) fieldsEl.style.display = 'none';
+        if (detailsEl) detailsEl.value = '';
+        if (noProxyEl) noProxyEl.value = '';
+        setSettingsStatus(statusEl, 'Direct connection (no upstream proxy)', 'var(--status-2xx)');
+        return;
+      }
 
       if (typeEl) typeEl.value = proxy.type || 'http';
       updateUpstreamFields();
@@ -9146,10 +9151,11 @@
       try {
         const res = await fetch(API_BASE + '/api/upstream-proxy');
         const data = await res.json();
-        if (data.upstreamProxy) {
-          const p = data.upstreamProxy;
-          updateUpstreamProxyUi(p);
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!Object.hasOwn(data, 'upstreamProxy')) {
+          throw new Error('Upstream proxy response was incomplete');
         }
+        updateUpstreamProxyUi(data.upstreamProxy);
       } catch (e) {
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');

@@ -2531,6 +2531,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-285 — Medium — Use system settings actually connects directly
 
+- Status: **Fixed**.
+- Resolution: Removed the unsupported upstream “Use system settings” option and its misleading DELETE-and-success path. A null upstream configuration is now rendered explicitly as a direct connection, including after startup and failed changes; the separate downstream System Proxy interceptor remains unchanged.
 - Evidence: the setting is advertised as using OS proxy configuration, but the UI implements it by deleting `/api/upstream-proxy`; the API sets `upstreamProxy` to null, which the proxy treats as direct. No backend/Electron path reads OS proxy settings.
 - Impact: users behind corporate/VPN system proxies are told the mode is active while traffic bypasses it or fails directly.
 - Reproduction: configure a counting OS proxy, choose Use system settings, and make a proxied request; upstream configuration is null and the OS proxy receives nothing.

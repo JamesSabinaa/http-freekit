@@ -457,7 +457,6 @@
     <label>Upstream Proxy</label>
     <select id="upstreamType" onchange="updateUpstreamFields()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-size:13px;cursor:pointer;width:100%;">
       <option value="none">Connect directly (no upstream proxy)</option>
-      <option value="system">Use system settings</option>
       <option value="http">Use an HTTP proxy</option>
       <option value="https">Use an HTTPS proxy</option>
       <option value="socks4">Use a SOCKS4 proxy</option>
@@ -491,7 +490,7 @@
   </div>
   <div id="upstreamStatus" style="margin-top:8px;font-size:12px;color:var(--text-lowlight);"></div>
   <p style="font-size:11px;color:var(--text-lowlight);margin-top:12px;line-height:1.4;">
-    Configure how intercepted traffic is forwarded. You can route traffic through an upstream proxy for corporate networks, VPNs, or Tor.
+    Configure how intercepted traffic is forwarded. System proxy settings are not imported automatically; configure an upstream proxy explicitly for corporate networks, VPNs, or Tor.
   </p>
 </div>
           <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
