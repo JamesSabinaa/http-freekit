@@ -39,7 +39,7 @@ export class InterceptorManager {
     systemProxy.recoverStaleSettings();
     this._register(systemProxy);
     this._register(new DockerInterceptor());
-    this._register(new ElectronInterceptor());
+    this._register(new ElectronInterceptor({ dataDir: options.dataDir }));
     this._register(new AndroidAdbInterceptor({ dataDir: options.dataDir }));
     this._register(new JvmInterceptor({ dataDir: options.dataDir }));
 

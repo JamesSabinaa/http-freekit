@@ -1842,6 +1842,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-333 — Medium — Electron child ownership is lost across a FreeKit restart
 
+- Status: **Fixed**.
+
 - Evidence: Electron applications are spawned with `detached: false` but no exit-time kill guarantee or recovery record at `src/interceptors/electron-interceptor.js:90-100`. A new interceptor starts with `process = null` at `:4-11`, and `deactivate()` can kill only that stored handle at `:123-131`.
 - Impact: a child that survives a server crash or restart continues using FreeKit proxy and certificate-bypass switches, while the new instance reports inactive and Stop leaves it running.
 - Reproduction: launch a long-lived child, terminate only the FreeKit Node process, construct a fresh interceptor, and call Stop; the child remains alive and the new interceptor never adopts it.
