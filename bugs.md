@@ -2609,6 +2609,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-304 — Low — Custom context menus cannot be operated by keyboard
 
+- Status: **Fixed**.
+- Resolution: Traffic and request/response header context-menu targets are now focusable and expose menu semantics. Shift+F10 or the Context Menu key opens the menu at the focused target, whose roving focus supports Arrow Up/Down, Home/End, Enter/Space, and Escape with focus restoration. Pointer positioning and actions remain unchanged, while editable and unrelated surfaces are excluded from the shortcut.
+
 - Evidence: `showContextMenu()` at `src/ui/app.js:8581-8604` creates items as plain `div` elements with only `onclick`; it provides no menu roles, focus targets, arrow-key handling, or Enter/Space activation. Traffic exposes the menu only through pointer context-menu handlers.
 - Impact: keyboard-only users cannot access actions such as Copy URL, Copy as cURL, or header-copy operations.
 - Reproduction: select a Traffic row with the keyboard, press Shift+F10/Menu, and try to focus or activate a menu item; no usable keyboard menu is available.

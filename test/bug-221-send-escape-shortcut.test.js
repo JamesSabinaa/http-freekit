@@ -140,7 +140,7 @@ test('Escape retains menu and detail behavior when no active Send request owns i
   assert.equal(controller.abortCalls, 0);
   assert.equal(inactivePanel.state.closeCalls, 1);
 
-  assert.match(appSource, /if \(e\.key === 'Escape'\) hideContextMenu\(\)/);
+  assert.match(appSource, /if \(event\.key === 'Escape'\)[\s\S]*?hideContextMenu\(\{ restoreFocus: true \}\)/);
 });
 
 test('the URL field relies on the document Escape path instead of an inline duplicate', () => {

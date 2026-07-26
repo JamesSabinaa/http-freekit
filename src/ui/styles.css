@@ -3666,8 +3666,13 @@
       align-items: center;
       gap: 8px;
     }
-    .context-menu-item:hover {
+    .context-menu-item:hover,
+    .context-menu-item:focus {
       background: var(--bg-highlight);
+    }
+    .context-menu-item:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }
     .context-menu-separator {
       height: 1px;

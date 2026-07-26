@@ -730,7 +730,8 @@
         }
       }
 
-      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+      const rowTabIndex = req.id === selectedRequestId || (!selectedRequestId && index === 0) ? 0 : -1;
+      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="${rowTabIndex}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
         <td role="gridcell">${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
@@ -2493,7 +2494,7 @@
           const val = Array.isArray(v) ? v.join(', ') : String(v);
           const hid = 'hdr-' + k.replace(/[^a-zA-Z0-9]/g, '_') + '-' + i;
           const safeKey = k.replace(/'/g, "\\'");
-          const ctxMenu = section ? ` oncontextmenu="showHeaderContextMenu(event, '${safeKey}', '${section}')"` : '';
+          const ctxMenu = section ? ` role="button" tabindex="0" aria-haspopup="menu" data-context-header-key="${esc(k)}" data-context-section="${esc(section)}" oncontextmenu="showHeaderContextMenu(event, '${safeKey}', '${section}')"` : '';
           const desc = HEADER_DOCS[k.toLowerCase()] || '';
           const descHtml = desc
             ? '<p style="color:var(--text-lowlight);font-size:12px;line-height:1.5;padding:8px 0;">' + esc(desc) + '</p>'
@@ -10021,22 +10022,35 @@
     // ============ CONTEXT MENUS ============
     let activeContextMenu = null;
 
-    function showContextMenu(x, y, items) {
+    function showContextMenu(x, y, items, options = {}) {
       hideContextMenu();
       const menu = document.createElement('div');
       menu.className = 'context-menu';
+      menu.setAttribute('role', 'menu');
+      menu._contextMenuInvoker = options.invoker || null;
+      let firstMenuItem = null;
 
       items.forEach(item => {
         if (item.separator) {
           const sep = document.createElement('div');
           sep.className = 'context-menu-separator';
+          sep.setAttribute('role', 'separator');
           menu.appendChild(sep);
           return;
         }
         const el = document.createElement('div');
         el.className = 'context-menu-item';
+        el.setAttribute('role', 'menuitem');
+        el.tabIndex = firstMenuItem ? -1 : 0;
         el.textContent = item.label;
-        el.onclick = () => { hideContextMenu(); item.action(); };
+        let activated = false;
+        el.addEventListener('click', () => {
+          if (activated) return;
+          activated = true;
+          hideContextMenu();
+          item.action();
+        });
+        if (!firstMenuItem) firstMenuItem = el;
         menu.appendChild(el);
       });
 
@@ -10050,21 +10064,119 @@
       menu.style.top = y + 'px';
 
       activeContextMenu = menu;
+      if (options.focusFirst && firstMenuItem) firstMenuItem.focus();
+      return menu;
     }
 
-    function hideContextMenu() {
+    function hideContextMenu(options = {}) {
       if (activeContextMenu) {
-        activeContextMenu.remove();
+        const menu = activeContextMenu;
+        const invoker = menu._contextMenuInvoker;
+        menu.remove();
         activeContextMenu = null;
+        if (options.restoreFocus && invoker?.focus && invoker.isConnected !== false) {
+          invoker.focus();
+        }
       }
     }
 
-    // Close context menu on click anywhere or Escape
+    function focusContextMenuItem(menu, item) {
+      menu.querySelectorAll('[role="menuitem"]').forEach(menuItem => {
+        menuItem.tabIndex = menuItem === item ? 0 : -1;
+      });
+      item.focus();
+    }
+
+    function consumeContextMenuKey(event) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+    }
+
+    function handleActiveContextMenuKeydown(event) {
+      const menu = activeContextMenu;
+      if (!menu) return false;
+
+      if (event.key === 'Escape') {
+        consumeContextMenuKey(event);
+        hideContextMenu({ restoreFocus: true });
+        return true;
+      }
+
+      const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      if (menuItems.length === 0) return false;
+      const currentIndex = menuItems.indexOf(document.activeElement);
+      let nextItem = null;
+
+      if (event.key === 'ArrowDown') {
+        nextItem = menuItems[(currentIndex + 1) % menuItems.length];
+      } else if (event.key === 'ArrowUp') {
+        nextItem = menuItems[currentIndex <= 0 ? menuItems.length - 1 : currentIndex - 1];
+      } else if (event.key === 'Home') {
+        nextItem = menuItems[0];
+      } else if (event.key === 'End') {
+        nextItem = menuItems[menuItems.length - 1];
+      } else if ((event.key === 'Enter' || event.key === ' ') && currentIndex !== -1) {
+        consumeContextMenuKey(event);
+        menuItems[currentIndex].click();
+        return true;
+      } else {
+        return false;
+      }
+
+      consumeContextMenuKey(event);
+      focusContextMenuItem(menu, nextItem);
+      return true;
+    }
+
+    function isContextMenuKeyboardEvent(event) {
+      if (event.ctrlKey || event.metaKey || event.altKey) return false;
+      return event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
+    }
+
+    function contextMenuAnchorFor(invoker) {
+      const rect = invoker?.getBoundingClientRect?.();
+      if (!rect) return { x: 0, y: 0 };
+      return { x: rect.left, y: rect.bottom };
+    }
+
+    function selectedTrafficRow() {
+      if (!selectedRequestId) return null;
+      return Array.from(document.querySelectorAll('#trafficBody tr[data-id]'))
+        .find(row => row.dataset.id === selectedRequestId) || null;
+    }
+
+    function handleContextMenuShortcut(event) {
+      if (!isContextMenuKeyboardEvent(event) || isEditableKeyboardTarget(event.target)) return false;
+
+      const trafficPanel = document.getElementById('panel-traffic');
+      if (!trafficPanel?.classList.contains('active')) return false;
+
+      const headerTarget = event.target?.closest?.('[data-context-header-key][data-context-section]');
+      if (headerTarget && trafficPanel.contains(headerTarget)) {
+        consumeContextMenuKey(event);
+        showHeaderContextMenu(event, headerTarget.dataset.contextHeaderKey, headerTarget.dataset.contextSection, headerTarget);
+        return true;
+      }
+
+      const wrapper = document.getElementById('trafficTableWrapper');
+      let row = event.target?.closest?.('#trafficBody tr[data-id]') || null;
+      if (!row && event.target === wrapper) row = selectedTrafficRow();
+      if (!row || row.dataset.id !== selectedRequestId) return false;
+
+      consumeContextMenuKey(event);
+      showTrafficContextMenu(event, selectedRequestId, row);
+      return true;
+    }
+
+    // One document-level listener handles click-away, menu navigation and scoped invocation.
     document.addEventListener('click', hideContextMenu);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideContextMenu(); });
+    document.addEventListener('keydown', (event) => {
+      if (handleActiveContextMenuKeydown(event)) return;
+      handleContextMenuShortcut(event);
+    });
 
     // --- Traffic row context menu ---
-    function showTrafficContextMenu(e, requestId) {
+    function showTrafficContextMenu(e, requestId, menuInvoker) {
       e.preventDefault();
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
@@ -10073,7 +10185,10 @@
         selectRequest(requestId);
       }
 
-      showContextMenu(e.clientX, e.clientY, [
+      const invoker = menuInvoker || e.currentTarget || e.target;
+      const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
+      const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
+      showContextMenu(anchor.x, anchor.y, [
         { label: 'Copy URL', action: () => navigator.clipboard.writeText(req.url).then(() => toast('URL copied', 'success')) },
         { label: 'Copy as cURL', action: () => {
           const snippet = generateExportSnippet(req, 'curl');
@@ -10086,7 +10201,7 @@
         { separator: true },
         { label: 'Pin exchange', action: () => togglePinRequest(requestId) },
         { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId) },
-      ]);
+      ], { invoker, focusFirst: keyboardInvoked });
     }
 
     function copyResponseHeadersForMock(headers) {
@@ -10179,16 +10294,19 @@
     // Store current detail headers for safe lookup (avoids quote-escaping issues in inline handlers)
     window._detailHeaders = { request: {}, response: {} };
 
-    function showHeaderContextMenu(e, headerKey, section) {
+    function showHeaderContextMenu(e, headerKey, section, menuInvoker) {
       e.preventDefault();
       e.stopPropagation();
       const headers = section === 'request' ? window._detailHeaders.request : window._detailHeaders.response;
       const value = headers ? (Array.isArray(headers[headerKey]) ? headers[headerKey].join(', ') : String(headers[headerKey] || '')) : '';
-      showContextMenu(e.clientX, e.clientY, [
+      const invoker = menuInvoker || e.currentTarget || e.target;
+      const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
+      const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
+      showContextMenu(anchor.x, anchor.y, [
         { label: 'Copy header value', action: () => navigator.clipboard.writeText(value).then(() => toast('Value copied', 'success')) },
         { label: 'Copy header name', action: () => navigator.clipboard.writeText(headerKey).then(() => toast('Name copied', 'success')) },
         { label: 'Copy as "name: value"', action: () => navigator.clipboard.writeText(headerKey + ': ' + value).then(() => toast('Header copied', 'success')) },
-      ]);
+      ], { invoker, focusFirst: keyboardInvoked });
     }
 
     // ============ HELPERS ============
