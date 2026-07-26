@@ -24,6 +24,7 @@ module.exports = {
     'src/**/*',
     'build/icon.png',
     'build/icons/**/*',
+    'LICENSE',
     'package.json',
     '!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}',
     '!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}',

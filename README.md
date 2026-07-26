@@ -315,4 +315,4 @@ The proxy generates a CA certificate on first run (`data/ca.pem`). For browsers 
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -2642,6 +2642,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-314 — Low — Distributions declare MIT but include no license terms
 
+- Status: **Fixed**.
+- Resolution: added the canonical MIT terms in `LICENSE`, linked them from the README, and explicitly included the file in Electron packages; npm includes the conventional license file automatically.
 - Evidence: `package.json:45` and `README.md:322-324` declare the MIT license, but the repository has no LICENSE, COPYING, or NOTICE file. `npm pack --dry-run --json` includes no license text, and Electron packaging has none available to bundle.
 - Impact: downstream and offline recipients do not receive the permission grant and conditions represented by the package metadata.
 - Reproduction: run `git ls-files | rg -i '(^|/)(licen[sc]e|copying|notice)(\.|$)'`; it returns no files.
