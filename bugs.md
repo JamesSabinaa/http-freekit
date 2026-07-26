@@ -1313,6 +1313,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-199 — Medium — Windows Fresh Terminal can open an unproxied tab
 
+- Status: **Fixed**.
+- Resolution: Windows Terminal launches now pass the supported `new-tab --inheritEnvironment` option so a tab opened in an existing instance inherits FreeKit's supplied proxy and CA environment. PowerShell and Command Prompt fallbacks are unchanged.
+
 - Evidence: `src/interceptors/terminal-interceptors.js:44-56,64,69-77` supplies transient proxy variables to `wt.exe` but invokes only `new-tab`, without `--inheritEnvironment` or an explicit shell command.
 - Impact: Windows Terminal can create the shell from a freshly loaded environment, dropping FreeKit's proxy/CA variables while activation reports success and skips later fallbacks.
 - Reproduction: use an existing Windows Terminal window, activate Fresh Terminal, and inspect `HTTP_PROXY` in the new tab.

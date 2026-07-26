@@ -212,7 +212,7 @@ export class FreshTerminalInterceptor {
     if (platform === 'win32') {
       // Open Windows Terminal, PowerShell, or cmd
       const terminals = [
-        { cmd: 'wt.exe', args: ['new-tab'] },
+        { cmd: 'wt.exe', args: ['new-tab', '--inheritEnvironment'] },
         { cmd: 'powershell.exe', args: ['-NoExit', '-Command', `Write-Host "HTTP FreeKit proxy active on ${proxyUrl}" -ForegroundColor Green`] },
         { cmd: 'cmd.exe', args: ['/K', `echo HTTP FreeKit proxy active on ${proxyUrl}`] },
       ];
