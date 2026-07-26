@@ -1017,6 +1017,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-359 — Low — Prototype keys corrupt MCP traffic counters
 
+- Status: **Fixed**.
+- Resolution: MCP traffic statistics now accumulate method and host counts in prototype-safe maps, converting method counts to a normal object only when constructing the JSON response.
+
 - Evidence: `_handleGetTrafficStats()` stores method and host counters in ordinary objects at `src/mcp/mcp-server.js:220-243`; inherited keys are read before incrementing.
 - Impact: imported traffic whose method or host is `constructor`, `toString`, or another prototype key produces function-text counts instead of numbers, corrupting MCP statistics.
 - Reproduction: seed one record with method `constructor` and host `toString`, then call `get_traffic_stats`; both counts contain native-function text followed by `1`.

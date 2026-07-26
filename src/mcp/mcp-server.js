@@ -228,9 +228,9 @@ export class McpServerBridge {
 
   _handleGetTrafficStats() {
     const log = this._getHttpRequestTraffic();
-    const byMethod = {};
+    const byMethod = new Map();
     const byStatus = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0, 'other': 0 };
-    const byHost = {};
+    const byHost = new Map();
     let totalDuration = 0;
     let durationCount = 0;
     let totalBandwidth = 0;
@@ -238,7 +238,7 @@ export class McpServerBridge {
 
     for (const r of log) {
       // By method
-      byMethod[r.method] = (byMethod[r.method] || 0) + 1;
+      byMethod.set(r.method, (byMethod.get(r.method) || 0) + 1);
 
       // By status range
       if (r.statusCode >= 100 && r.statusCode < 200) byStatus['1xx']++;
@@ -249,7 +249,7 @@ export class McpServerBridge {
       else byStatus['other']++;
 
       // By host
-      if (r.host) byHost[r.host] = (byHost[r.host] || 0) + 1;
+      if (r.host) byHost.set(r.host, (byHost.get(r.host) || 0) + 1);
 
       // Duration
       if (r.duration != null) {
@@ -264,7 +264,7 @@ export class McpServerBridge {
     }
 
     // Top hosts (by count)
-    const topHosts = Object.entries(byHost)
+    const topHosts = Array.from(byHost.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 20)
       .map(([host, count]) => ({ host, count }));
@@ -277,7 +277,7 @@ export class McpServerBridge {
 
     const stats = {
       totalRequests: log.length,
-      byMethod,
+      byMethod: Object.fromEntries(byMethod),
       byStatusRange: byStatus,
       topHosts,
       averageResponseTime: durationCount > 0 ? Math.round(totalDuration / durationCount) + 'ms' : 'N/A',
