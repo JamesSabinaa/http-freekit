@@ -84,7 +84,8 @@ export class ProxyServer {
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
     this.filterSafeFonts = false;
-    // HTTP/2 upstream session cache: Map<"host:port", {session, timer, pending?}>
+    // HTTP/2 upstream session cache:
+    // Map<"host:port", {session, timer, pending?, attempt, abortPending?}>
     this._h2Sessions = new Map();
     // Set of origins known not to support h2: Set<"host:port">
     this._h2Blacklist = new Set();
@@ -4116,98 +4117,135 @@ export class ProxyServer {
     if (cached && !cached.session.destroyed && !cached.session.closed) {
       // Reset idle timer
       clearTimeout(cached.timer);
-      cached.timer = setTimeout(() => this._evictH2Session(origin), 60000);
+      cached.timer = setTimeout(
+        () => this._evictH2Session(origin, cached.session, cached.attempt),
+        60000
+      );
       return Promise.resolve(cached.session);
+    }
+    if (cached) {
+      this._evictH2Session(origin, cached.session, cached.attempt);
     }
 
     // Create new session
+    const attempt = Symbol('h2-session-attempt');
+    let attemptEntry;
     const pending = new Promise((resolve) => {
       const url = `https://${urlHostname}:${port}`;
       let settled = false;
+      let connectTimeout;
 
       const session = http2.connect(url, {
         ...this._getUpstreamTlsOptions(hostname),
         ALPNProtocols: ['h2']
       });
 
-      const timer = setTimeout(() => this._evictH2Session(origin), 60000);
+      attemptEntry = { session, timer: null, pending: null, attempt };
+      const isCurrentAttempt = () => {
+        const current = this._h2Sessions.get(origin);
+        return current === attemptEntry &&
+          current.session === session && current.attempt === attempt;
+      };
+      const settlePendingFailure = ({ destroy = false } = {}) => {
+        if (settled) return false;
+        settled = true;
+        clearTimeout(connectTimeout);
+        clearTimeout(attemptEntry.timer);
+        if (isCurrentAttempt()) {
+          // Delete ownership before destruction can synchronously emit more events.
+          this._h2Sessions.delete(origin);
+          this._h2Blacklist.add(origin);
+        }
+        if (destroy && !session.destroyed) session.destroy();
+        resolve(null);
+        return true;
+      };
+      attemptEntry.abortPending = () => settlePendingFailure();
 
       session.on('connect', () => {
         if (settled) return;
         settled = true;
-        this._h2Sessions.set(origin, { session, timer });
+        clearTimeout(connectTimeout);
+        if (!isCurrentAttempt()) {
+          if (!session.destroyed && !session.closed) session.close();
+          resolve(null);
+          return;
+        }
+        attemptEntry.pending = null;
+        attemptEntry.abortPending = null;
+        attemptEntry.timer = setTimeout(
+          () => this._evictH2Session(origin, session, attempt),
+          60000
+        );
         resolve(session);
       });
 
-      session.on('error', (err) => {
+      session.on('error', () => {
         if (!settled) {
-          settled = true;
-          this._h2Blacklist.add(origin);
-          this._h2Sessions.delete(origin);
-          clearTimeout(timer);
-          resolve(null);
+          settlePendingFailure();
         } else {
           // Session died after initial connect — evict
-          this._evictH2Session(origin);
+          this._evictH2Session(origin, session, attempt);
         }
       });
 
       session.on('close', () => {
-        this._evictH2Session(origin);
+        if (!settled) settlePendingFailure();
+        else this._evictH2Session(origin, session, attempt);
       });
 
       session.on('goaway', () => {
-        this._evictH2Session(origin);
+        this._evictH2Session(origin, session, attempt);
       });
 
       // Timeout for initial connect
-      const connectTimeout = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          this._h2Blacklist.add(origin);
-          this._h2Sessions.delete(origin);
-          clearTimeout(timer);
-          session.destroy();
-          resolve(null);
-        }
-      }, 5000);
-
-      session.on('connect', () => clearTimeout(connectTimeout));
-      session.on('error', () => clearTimeout(connectTimeout));
+      connectTimeout = setTimeout(() => settlePendingFailure({ destroy: true }), 5000);
 
       // The pending promise is attached immediately after construction below.
       // Referencing it here would hit its temporal dead zone because Promise
       // executors run synchronously.
-      this._h2Sessions.set(origin, { session, timer });
+      this._h2Sessions.set(origin, attemptEntry);
     });
 
     // Update cache entry with the pending promise
-    const entry = this._h2Sessions.get(origin);
-    if (entry) entry.pending = pending;
+    const cachedEntry = this._h2Sessions.get(origin);
+    if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
 
     return pending;
   }
 
-  _evictH2Session(origin) {
+  _evictH2Session(origin, expectedSession = null, expectedAttempt = null) {
     const cached = this._h2Sessions.get(origin);
-    if (cached) {
-      clearTimeout(cached.timer);
-      if (cached.session && !cached.session.destroyed) {
-        cached.session.close();
-      }
-      this._h2Sessions.delete(origin);
+    if (!cached ||
+        (expectedSession && cached.session !== expectedSession) ||
+        (expectedAttempt && cached.attempt !== expectedAttempt)) {
+      return false;
     }
+
+    // Remove this exact owner first: close() may synchronously emit callbacks
+    // or cause a replacement to be installed for the same origin.
+    this._h2Sessions.delete(origin);
+    clearTimeout(cached.timer);
+    cached.abortPending?.();
+    if (cached.session && !cached.session.destroyed && !cached.session.closed) {
+      cached.session.close();
+    }
+    return true;
   }
 
   _closeAllH2Sessions() {
-    for (const [origin, cached] of this._h2Sessions) {
+    const cachedSessions = [...this._h2Sessions.values()];
+    // Invalidate every attempt before close() can synchronously fire one of
+    // its listeners or install a replacement session.
+    this._h2Sessions.clear();
+    this._h2Blacklist.clear();
+    for (const cached of cachedSessions) {
       clearTimeout(cached.timer);
-      if (cached.session && !cached.session.destroyed) {
+      cached.abortPending?.();
+      if (cached.session && !cached.session.destroyed && !cached.session.closed) {
         cached.session.close();
       }
     }
-    this._h2Sessions.clear();
-    this._h2Blacklist.clear();
   }
 
   // Make an HTTP/2 request via a cached session. Returns a promise that resolves to

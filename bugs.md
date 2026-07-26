@@ -936,6 +936,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-339 — Medium — Stale HTTP/2 session events evict a valid replacement
 
+- Status: **Fixed**.
+
 - Evidence: `_getH2Session()` registers each session's close and post-connect error listeners to call `_evictH2Session(origin)` at `src/proxy/proxy-server.js:3099-3118`. Eviction at `:3148-3156` closes and deletes whichever session is currently cached for that origin without checking that it is the session that emitted the event.
 - Impact: after session A receives GOAWAY and session B replaces it, A's delayed close event destroys B. Requests on the healthy replacement fail or fall back unnecessarily and can interact with replay-sensitive request handling.
 - Reproduction: cache session A, evict it on GOAWAY, cache connected replacement B, then emit A's delayed close; B is closed and removed from the cache.
