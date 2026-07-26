@@ -142,7 +142,5 @@ test('startup restores and writes back migrated breakpoint settings', async () =
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(path.join(process.cwd(), 'src', 'index.js'), 'utf8');
 
-  assert.match(source, /settings\.get\('breakpointRules'\)/);
-  assert.match(source, /proxy\.loadBreakpoints\(savedBreakpointRules\)/);
-  assert.match(source, /if \(restored\.migrated\) settings\.set\('breakpointRules', restored\.rules\)/);
+  assert.match(source, /restoreSavedRuleSettings\(proxy, settings\)/);
 });

@@ -18,6 +18,7 @@ import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 import { startWithValidatedApiPort } from './startup-config.js';
+import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,18 +114,7 @@ async function initializeApplication(apiPort) {
   if (savedHttpsWhitelist) proxy.setHttpsWhitelist(savedHttpsWhitelist);
   const savedTlsFingerprint = settings.get('tlsFingerprint');
   if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
-  const savedMockRules = settings.get('mockRules');
-  if (savedMockRules && Array.isArray(savedMockRules) && savedMockRules.length > 0) {
-    const restored = proxy.loadMockRules(savedMockRules);
-    if (restored.migrated) settings.set('mockRules', restored.rules);
-    console.log(`[Boot] Restored ${restored.rules.length} mock rules from settings`);
-  }
-  const savedBreakpointRules = settings.get('breakpointRules');
-  if (savedBreakpointRules !== undefined) {
-    const restored = proxy.loadBreakpoints(savedBreakpointRules);
-    if (restored.migrated) settings.set('breakpointRules', restored.rules);
-    console.log(`[Boot] Restored ${restored.rules.length} breakpoint rules from settings`);
-  }
+  restoreSavedRuleSettings(proxy, settings);
 
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, {

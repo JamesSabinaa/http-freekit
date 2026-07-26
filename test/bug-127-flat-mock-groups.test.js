@@ -121,8 +121,7 @@ test('loading persisted rules flattens nested groups for the renderer', () => {
   assert.equal(result.rules[0].items[2].enabled, false);
 });
 
-test('startup persists the flattened legacy group migration', () => {
+test('startup delegates legacy group restoration to guarded migration persistence', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'index.js'), 'utf8');
-  assert.match(source, /proxy\.loadMockRules\(savedMockRules\)/);
-  assert.match(source, /if \(restored\.migrated\) settings\.set\('mockRules', restored\.rules\)/);
+  assert.match(source, /restoreSavedRuleSettings\(proxy, settings\)/);
 });

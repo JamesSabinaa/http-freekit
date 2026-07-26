@@ -953,6 +953,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-345 — Low/Medium — Legacy-rule migration write failure aborts startup
 
+- Status: **Fixed**.
+
 - Evidence: startup successfully flattens saved nested groups with `proxy.loadMockRules()`, then immediately calls `settings.set('mockRules', restored.rules)` when migration occurred at `src/index.js:101-106`. A read-only/full settings directory makes that persistence call throw into `main().catch`, even though the usable normalized rules are already loaded in memory.
 - Impact: an installation that previously started with readable legacy rules now exits before proxy/API startup solely because it cannot persist the optional migration result.
 - Reproduction: save a nested legacy group, make settings replacement fail, and start FreeKit; migration succeeds in memory but the process terminates on the write error.
