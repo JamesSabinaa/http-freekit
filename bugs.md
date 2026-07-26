@@ -821,9 +821,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-263 — Medium — HAR export mistakes literal data-URI text for binary
 
+- Status: **Fixed**.
 - Evidence: `toHarBody()` at `src/api/har-converter.js:95-107` treats every string matching `data:...;base64,...` as internal binary representation and exports only the suffix with base64 encoding, without separate encoding metadata or content-type context.
 - Impact: a legitimate text body equal to a data URI changes semantically on export/replay from that literal string to its decoded bytes.
 - Reproduction: capture `text/plain` body `data:text/plain;base64,SGVsbG8=` and inspect the HAR text/encoding.
+- Resolution: captured traffic and both HAR import paths now attach explicit request/response body-encoding provenance. HAR export unwraps internal base64 data URIs only when that metadata marks genuine binary data, while literal data-URI-shaped text remains unchanged.
 
 ### BUG-264 — Medium — Generated certificates are not backdated for clock skew
 

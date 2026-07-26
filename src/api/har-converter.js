@@ -32,8 +32,16 @@ export function trafficToHar(requests, options = {}) {
 
         const reqContentType = getHeaderValue(req.requestHeaders, 'content-type');
         const resContentType = getHeaderValue(req.responseHeaders, 'content-type');
-        const requestBody = toHarBody(req.requestBody, req.requestBodyTruncated && req.requestBodyCapturedSize === 0);
-        const responseBody = toHarBody(req.responseBody, req.responseBodyTruncated && req.responseBodyCapturedSize === 0);
+        const requestBody = toHarBody(
+          req.requestBody,
+          req.requestBodyEncoding,
+          req.requestBodyTruncated && req.requestBodyCapturedSize === 0
+        );
+        const responseBody = toHarBody(
+          req.responseBody,
+          req.responseBodyEncoding,
+          req.responseBodyTruncated && req.responseBodyCapturedSize === 0
+        );
         const requestTruncation = toHarTruncation(req, 'request', requestBody);
         const responseTruncation = toHarTruncation(req, 'response', responseBody);
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
@@ -101,13 +109,15 @@ function parseQueryString(url) {
   } catch { return []; }
 }
 
-function toHarBody(body, omitted = false) {
+function toHarBody(body, bodyEncoding, omitted = false) {
   if (omitted) return null;
   if (!body) return null;
   if (typeof body !== 'string') body = String(body);
 
-  const dataUriMatch = body.match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]*)$/);
-  if (dataUriMatch) {
+  const dataUriMatch = String(bodyEncoding || '').toLowerCase() === 'base64'
+    ? body.match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]*)$/)
+    : null;
+  if (dataUriMatch !== null) {
     return {
       text: dataUriMatch[2].replace(/\s+/g, ''),
       encoding: 'base64'

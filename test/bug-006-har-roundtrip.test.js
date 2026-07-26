@@ -43,6 +43,8 @@ test('HAR import and export preserve base64 bodies and duplicate headers', async
   });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
+  const literalRequestBody = 'data:text/plain;base64,SGVsbG8=';
+  const literalResponseBody = 'data:text/plain;base64,V29ybGQ=';
   const har = {
     log: {
       entries: [{
@@ -68,6 +70,25 @@ test('HAR import and export preserve base64 bodies and duplicate headers', async
           ],
           content: { mimeType: 'application/octet-stream', text: 'BAUG', encoding: 'base64', size: 3 }
         }
+      }, {
+        startedDateTime: '2026-01-01T00:00:01.000Z',
+        time: 2,
+        request: {
+          method: 'POST',
+          url: 'https://example.test/literal',
+          headers: [{ name: 'Content-Type', value: 'text/plain' }],
+          postData: { mimeType: 'text/plain', text: literalRequestBody }
+        },
+        response: {
+          status: 200,
+          statusText: 'OK',
+          headers: [{ name: 'Content-Type', value: 'text/plain' }],
+          content: {
+            mimeType: 'text/plain',
+            text: literalResponseBody,
+            size: Buffer.byteLength(literalResponseBody)
+          }
+        }
       }]
     }
   };
@@ -78,8 +99,15 @@ test('HAR import and export preserve base64 bodies and duplicate headers', async
   assert.deepEqual(api.trafficLog[0].responseHeaders['set-cookie'], ['a=1; Path=/', 'b=2; Path=/']);
   assert.equal(api.trafficLog[0].requestBody, 'data:application/octet-stream;base64,AQID');
   assert.equal(api.trafficLog[0].responseBody, 'data:application/octet-stream;base64,BAUG');
+  assert.equal(api.trafficLog[0].requestBodyEncoding, 'base64');
+  assert.equal(api.trafficLog[0].responseBodyEncoding, 'base64');
+  assert.equal(api.trafficLog[1].requestBody, literalRequestBody);
+  assert.equal(api.trafficLog[1].responseBody, literalResponseBody);
+  assert.equal(api.trafficLog[1].requestBodyEncoding, 'utf8');
+  assert.equal(api.trafficLog[1].responseBodyEncoding, 'utf8');
 
-  const exported = trafficToHar(api.trafficLog, { maskSensitive: false }).log.entries[0];
+  const exportedEntries = trafficToHar(api.trafficLog, { maskSensitive: false }).log.entries;
+  const exported = exportedEntries[0];
   assert.deepEqual(exported.request.headers.filter(header => header.name === 'x-value'), [
     { name: 'x-value', value: 'one' },
     { name: 'x-value', value: 'two' }
@@ -95,4 +123,8 @@ test('HAR import and export preserve base64 bodies and duplicate headers', async
   });
   assert.equal(exported.response.content.text, 'BAUG');
   assert.equal(exported.response.content.encoding, 'base64');
+  assert.equal(exportedEntries[1].request.postData.text, literalRequestBody);
+  assert.equal(Object.hasOwn(exportedEntries[1].request.postData, 'encoding'), false);
+  assert.equal(exportedEntries[1].response.content.text, literalResponseBody);
+  assert.equal(Object.hasOwn(exportedEntries[1].response.content, 'encoding'), false);
 });

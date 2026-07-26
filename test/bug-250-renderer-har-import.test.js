@@ -4,6 +4,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { trafficToHar } from '../src/api/har-converter.js';
+
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
 function sourceBetween(startMarker, endMarker) {
@@ -199,6 +201,8 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.deepEqual(Array.from(imported.responseHeaders['set-cookie']), ['a=1', 'b=2']);
   assert.equal(imported.requestBody, 'data:application/octet-stream;base64,AQID');
   assert.equal(imported.responseBody, 'data:application/octet-stream;base64,BAUG');
+  assert.equal(imported.requestBodyEncoding, 'base64');
+  assert.equal(imported.responseBodyEncoding, 'base64');
   assert.equal(imported.requestBodySize, 4);
   assert.equal(imported.responseBodySize, 6);
   assert.equal(imported.duration, 25.5);
@@ -210,8 +214,42 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.equal(harness.added[1].requestBodySize, 0);
   assert.equal(harness.added[1].responseBodySize, 0);
 
+  const reexported = trafficToHar([imported], { maskSensitive: false }).log.entries[0];
+  assert.equal(reexported.request.postData.text, 'AQID');
+  assert.equal(reexported.request.postData.encoding, 'base64');
+  assert.equal(reexported.response.content.text, 'BAUG');
+  assert.equal(reexported.response.content.encoding, 'base64');
+
   assert.doesNotThrow(() => harness.context.matchesRawFilterForTest(imported, 'method:post'));
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:post'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'rich-token'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'header:x-repeated=two'), true);
+});
+
+test('visible HAR import preserves literal data-URI request and response text', async () => {
+  const requestText = 'data:text/plain;base64,SGVsbG8=';
+  const responseText = 'data:text/plain;base64,V29ybGQ=';
+  const entry = validEntry();
+  entry.request.postData = { mimeType: 'text/plain', text: requestText };
+  entry.response.content = {
+    mimeType: 'text/plain',
+    text: responseText,
+    size: Buffer.byteLength(responseText)
+  };
+  const harness = createRendererHarness();
+
+  await harness.importDocument(har([entry]));
+
+  assert.equal(harness.added.length, 1);
+  const imported = harness.added[0];
+  assert.equal(imported.requestBody, requestText);
+  assert.equal(imported.requestBodyEncoding, 'utf8');
+  assert.equal(imported.responseBody, responseText);
+  assert.equal(imported.responseBodyEncoding, 'utf8');
+
+  const exported = trafficToHar([imported], { maskSensitive: false }).log.entries[0];
+  assert.equal(exported.request.postData.text, requestText);
+  assert.equal(Object.hasOwn(exported.request.postData, 'encoding'), false);
+  assert.equal(exported.response.content.text, responseText);
+  assert.equal(Object.hasOwn(exported.response.content, 'encoding'), false);
 });

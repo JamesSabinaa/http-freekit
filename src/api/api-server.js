@@ -34,11 +34,18 @@ function harHeadersToObject(headers = []) {
 }
 
 function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
-  if (!body || body.text === undefined || body.text === null) return '';
+  if (!body || body.text === undefined || body.text === null) {
+    return { body: '', encoding: 'utf8' };
+  }
   const text = String(body.text);
-  if (String(body.encoding || '').toLowerCase() !== 'base64') return text;
+  if (String(body.encoding || '').toLowerCase() !== 'base64') {
+    return { body: text, encoding: 'utf8' };
+  }
   const mimeType = String(body.mimeType || fallbackMimeType).replace(/[\r\n,]/g, '') || fallbackMimeType;
-  return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
+  return {
+    body: `data:${mimeType};base64,${text.replace(/\s+/g, '')}`,
+    encoding: 'base64'
+  };
 }
 
 function normalizeHarBodySize(value) {
@@ -386,7 +393,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     if (!Array.isArray(requests)) return 'requests must be an array';
     const textFields = [
       'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
-      'statusMessage', 'protocol', 'source'
+      'requestBodyEncoding', 'responseBodyEncoding', 'statusMessage', 'protocol', 'source'
     ];
     const numberFields = ['statusCode', 'duration', 'requestBodySize', 'responseBodySize'];
 
@@ -419,6 +426,12 @@ print(json.dumps({"providers": get_proxy_providers()}))
       for (const field of ['duration', 'requestBodySize', 'responseBodySize']) {
         if (request[field] !== undefined && request[field] !== null && request[field] < 0) {
           return `requests[${index}].${field} must be non-negative`;
+        }
+      }
+      for (const field of ['requestBodyEncoding', 'responseBodyEncoding']) {
+        if (request[field] !== undefined && request[field] !== null &&
+            request[field] !== 'utf8' && request[field] !== 'base64') {
+          return `requests[${index}].${field} must be utf8 or base64`;
         }
       }
       for (const field of ['requestHeaders', 'responseHeaders']) {
@@ -933,6 +946,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           const parsedTimestamp = entry.startedDateTime === null || entry.startedDateTime === undefined
             ? NaN
             : new Date(entry.startedDateTime).getTime();
+          const requestBody = harBodyToTraffic(entry.request.postData);
+          const responseBody = harBodyToTraffic(entry.response?.content);
 
           return {
             id: crypto.randomUUID(),
@@ -944,7 +959,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             host,
             path: pathname + search,
             requestHeaders: harHeadersToObject(entry.request.headers),
-            requestBody: harBodyToTraffic(entry.request.postData),
+            requestBody: requestBody.body,
+            requestBodyEncoding: requestBody.encoding,
             requestCookies: Array.isArray(entry.request.cookies) ? entry.request.cookies : [],
             requestPostDataParams: Array.isArray(entry.request.postData?.params)
               ? entry.request.postData.params
@@ -955,7 +971,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             statusCode: entry.response?.status || 0,
             statusMessage: entry.response?.statusText || '',
             responseHeaders: harHeadersToObject(entry.response?.headers),
-            responseBody: harBodyToTraffic(entry.response?.content),
+            responseBody: responseBody.body,
+            responseBodyEncoding: responseBody.encoding,
             responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
             responseContentMimeType: entry.response?.content?.mimeType || '',
             responseHttpVersion: entry.response?.httpVersion || '',

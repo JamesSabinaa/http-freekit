@@ -43,6 +43,13 @@ class TruncatedBodyString extends String {
   }
 }
 
+class EncodedBodyString extends String {
+  constructor(value, encoding) {
+    super(value);
+    this.encoding = encoding;
+  }
+}
+
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
@@ -5813,12 +5820,20 @@ export class ProxyServer {
   _normalizeCapturedBodies(data) {
     for (const side of ['request', 'response']) {
       const field = `${side}Body`;
+      const encodingField = `${field}Encoding`;
       const body = data[field];
-      if (!(body instanceof TruncatedBodyString)) continue;
-      data[field] = body.toString();
-      data[`${field}Truncated`] = true;
-      data[`${field}CapturedSize`] = body.capturedSize;
-      data[`${field}DecodedSize`] = body.decodedSize;
+      if (body instanceof EncodedBodyString) {
+        data[field] = body.toString();
+        data[encodingField] = body.encoding;
+      } else if (body instanceof TruncatedBodyString) {
+        data[field] = body.toString();
+        data[`${field}Truncated`] = true;
+        data[`${field}CapturedSize`] = body.capturedSize;
+        data[`${field}DecodedSize`] = body.decodedSize;
+      }
+      if (typeof data[field] === 'string' && data[encodingField] === undefined) {
+        data[encodingField] = 'utf8';
+      }
     }
   }
 
@@ -5891,12 +5906,18 @@ export class ProxyServer {
       ct.includes('x-protobuffer');
     if (isProtobufLike && decoded.length < 2 * 1024 * 1024) {
       const mimeType = ct.split(';')[0].trim() || 'application/x-protobuf';
-      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+      return new EncodedBodyString(
+        `data:${mimeType};base64,${decoded.toString('base64')}`,
+        'base64'
+      );
     }
 
     if (ct.startsWith('image/') && decoded.length < 2 * 1024 * 1024) { // up to 2MB images
       const mimeType = ct.split(';')[0].trim();
-      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+      return new EncodedBodyString(
+        `data:${mimeType};base64,${decoded.toString('base64')}`,
+        'base64'
+      );
     }
 
     // Check if it looks like text
@@ -5921,7 +5942,10 @@ export class ProxyServer {
 
     if (decoded.length < 2 * 1024 * 1024) {
       const mimeType = ct.split(';')[0].trim() || 'application/octet-stream';
-      return `data:${mimeType};base64,${decoded.toString('base64')}`;
+      return new EncodedBodyString(
+        `data:${mimeType};base64,${decoded.toString('base64')}`,
+        'base64'
+      );
     }
 
     return new TruncatedBodyString(`[Binary data: ${buffer.length} bytes]`, 0, decoded.length);

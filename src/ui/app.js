@@ -8608,21 +8608,24 @@
     }
 
     function normalizeHarBody(body, fieldPath) {
-      if (body === undefined) return '';
+      if (body === undefined) return { body: '', encoding: 'utf8' };
       assertHarObject(body, fieldPath);
-      if (body.text === undefined) return '';
+      if (body.text === undefined) return { body: '', encoding: 'utf8' };
       const text = normalizeHarString(body.text, `${fieldPath}.text`, { allowEmpty: true });
       const encoding = normalizeHarString(body.encoding, `${fieldPath}.encoding`, {
         optional: true,
         allowEmpty: true
       });
-      if (encoding.toLowerCase() !== 'base64') return text;
+      if (encoding.toLowerCase() !== 'base64') return { body: text, encoding: 'utf8' };
       const mimeType = normalizeHarString(body.mimeType, `${fieldPath}.mimeType`, {
         optional: true,
         allowEmpty: true,
         defaultValue: 'application/octet-stream'
       }).replace(/[\r\n,]/g, '') || 'application/octet-stream';
-      return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
+      return {
+        body: `data:${mimeType};base64,${text.replace(/\s+/g, '')}`,
+        encoding: 'base64'
+      };
     }
 
     function normalizeHarEntry(entry, index) {
@@ -8684,6 +8687,14 @@
             optional: true,
             allowEmpty: true
           });
+      const normalizedRequestBody = normalizeHarBody(
+        requestPostData,
+        `${entryPath}.request.postData`
+      );
+      const normalizedResponseBody = normalizeHarBody(
+        content,
+        `${entryPath}.response.content`
+      );
 
       return {
         id: crypto.randomUUID(),
@@ -8695,7 +8706,8 @@
         host: parsedUrl.hostname,
         path: parsedUrl.pathname + parsedUrl.search,
         requestHeaders: normalizeHarHeaders(request.headers, `${entryPath}.request.headers`),
-        requestBody: normalizeHarBody(requestPostData, `${entryPath}.request.postData`),
+        requestBody: normalizedRequestBody.body,
+        requestBodyEncoding: normalizedRequestBody.encoding,
         requestCookies: Array.isArray(request.cookies) ? request.cookies : [],
         requestPostDataParams: Array.isArray(requestPostData?.params) ? requestPostData.params : undefined,
         requestPostDataMimeType,
@@ -8704,7 +8716,8 @@
         statusCode: status,
         statusMessage,
         responseHeaders: normalizeHarHeaders(response.headers, `${entryPath}.response.headers`),
-        responseBody: normalizeHarBody(content, `${entryPath}.response.content`),
+        responseBody: normalizedResponseBody.body,
+        responseBodyEncoding: normalizedResponseBody.encoding,
         responseCookies: Array.isArray(response.cookies) ? response.cookies : [],
         responseContentMimeType,
         responseHttpVersion,
