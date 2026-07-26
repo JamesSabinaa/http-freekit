@@ -1251,31 +1251,31 @@
         const breakpointFields = responsePhase ? `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Status</span>
-                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'status')">${draft.status}</span>
+                <span id="breakpoint-edit-status" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit response status" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'status')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'status')">${draft.status}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Headers</span>
-                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+                <pre id="breakpoint-edit-headers" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Body</span>
-                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'body')">${esc(draft.body || '')}</pre>
+                <pre id="breakpoint-edit-body" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'body')">${esc(draft.body || '')}</pre>
               </div>` : `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Method</span>
-                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'method')">${esc(draft.method)}</span>
+                <span id="breakpoint-edit-method" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request method" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'method')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'method')">${esc(draft.method)}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">URL</span>
-                <span class="breakpoint-edit-value" ondblclick="editBreakpointField('${req.id}', 'url')">${esc(draft.url)}</span>
+                <span id="breakpoint-edit-url" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request URL" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'url')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'url')">${esc(draft.url)}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Headers</span>
-                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+                <pre id="breakpoint-edit-headers" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Body</span>
-                <pre class="breakpoint-edit-value breakpoint-edit-pre" ondblclick="editBreakpointField('${req.id}', 'body')">${esc(draft.body || '')}</pre>
+                <pre id="breakpoint-edit-body" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'body')">${esc(draft.body || '')}</pre>
               </div>`;
         html += `<div class="detail-card" style="border-left:4px solid #f1971f;background:#f1971f11;">
           <div class="detail-card-body" style="padding:16px 20px;">
@@ -1283,7 +1283,7 @@
               <span style="font-size:20px;">&#9208;</span>
               <div style="flex:1;">
                 <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">${responsePhase ? 'Response' : 'Request'} Paused at Breakpoint</div>
-                <div style="font-size:12px;color:var(--text-lowlight);">Double-click a field to edit it before resuming.</div>
+                <div id="breakpoint-edit-instructions" style="font-size:12px;color:var(--text-lowlight);">Double-click a field, or focus it and press Enter or Space, to edit before resuming.</div>
               </div>
               <button class="btn btn-primary" onclick="resumeBreakpointRequest('${req.id}')" style="padding:8px 20px;">
                 Resume
@@ -10291,6 +10291,13 @@
       return draft;
     }
 
+    function activateBreakpointFieldOnKeyboard(event, requestId, field) {
+      if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      editBreakpointField(requestId, field);
+    }
+
     function editBreakpointField(requestId, field) {
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
@@ -10337,6 +10344,7 @@
       }
 
       renderDetailCards(req);
+      document.getElementById('breakpoint-edit-' + field)?.focus();
     }
 
     async function resumeBreakpointRequest(requestId) {

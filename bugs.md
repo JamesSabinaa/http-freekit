@@ -2598,6 +2598,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-303 — Low — Breakpoint fields are keyboard-inaccessible
 
+- Status: **Fixed**.
+- Resolution: Every request- and response-phase breakpoint field now exposes a named, focusable button interaction while retaining double-click editing. Enter and Space activate the same edit flow once, Space cannot scroll the page, and successful edits restore focus after the detail card rerenders; the visible instructions describe both mouse and keyboard operation.
+
 - Evidence: `src/ui/app.js:1093-1122` renders every editable breakpoint field as a `span` or `pre` with only an `ondblclick` handler and no tabindex, semantic role, or keyboard handler.
 - Impact: keyboard-only users can resume a paused request but cannot edit its method, URL, status, headers, or body first.
 - Reproduction: pause a request and Tab through the detail card; focus reaches Resume but skips every editable field.
