@@ -61,7 +61,10 @@ test('Linux Fresh Terminal promptly tries the next candidate after startup failu
   interceptor._launcherStartupGraceMs = () => 5;
   interceptor._createPidFilePath = () => '/tmp/freekit-bug-164.pid';
   interceptor._waitForShellPid = async () => 4153;
-  interceptor._isSessionRunning = () => true;
+  interceptor._inspectSessionIdentity = async pid => ({
+    state: 'running',
+    identity: { pid, startTime: '400', executable: '/bin/sh' }
+  });
   interceptor._spawnDetached = async command => {
     commands.push(command);
     return commands.length === 1 ? failed : working;

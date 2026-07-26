@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -97,7 +97,7 @@ export class FreshTerminalInterceptor {
     this.name = 'Fresh Terminal';
     this.active = false;
     this.processes = [];
-    this.sessionPids = new Set();
+    this.sessions = new Map();
     this.ca = null;
     this.onStatusChange = null;
     this.statusMonitor = null;
@@ -218,25 +218,152 @@ export class FreshTerminalInterceptor {
     throw new Error('Terminal shell did not report its process ID');
   }
 
-  _isSessionRunning(pid) {
+  _probeSessionPid(pid) {
     try {
       process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
+      return 'running';
+    } catch (err) {
+      if (err?.code === 'EPERM') return 'running';
+      if (err?.code === 'ESRCH') return 'absent';
+      return 'unknown';
     }
+  }
+
+  _identityInspectionTimeoutMs() {
+    return 1000;
+  }
+
+  _execFile(command, args, options) {
+    return new Promise((resolve, reject) => {
+      execFile(command, args, options, (err, stdout, stderr) => {
+        if (err) {
+          err.stderr = stderr;
+          reject(err);
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+    });
+  }
+
+  _normalizeExecutableIdentity(executable) {
+    const value = String(executable || '').trim();
+    if (!value) throw new Error('Process executable identity is empty');
+    const platformPath = this._platform() === 'win32' ? path.win32 : path.posix;
+    return platformPath.normalize(value).normalize('NFC');
+  }
+
+  _parseLinuxProcessStart(stat, pid) {
+    const commandEnd = stat.lastIndexOf(')');
+    if (!stat.startsWith(`${pid} (`) || commandEnd < 0) {
+      throw new Error('Linux process metadata is ambiguous');
+    }
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    const startTime = fields[19];
+    if (!/^\d+$/.test(startTime || '')) {
+      throw new Error('Linux process start time is unavailable');
+    }
+    return startTime;
+  }
+
+  async _inspectLinuxSessionIdentity(pid) {
+    const procDirectory = `/proc/${pid}`;
+    const statBefore = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+    const startTime = this._parseLinuxProcessStart(statBefore, pid);
+    const executable = await fs.promises.readlink(path.join(procDirectory, 'exe'));
+    const statAfter = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+    if (this._parseLinuxProcessStart(statAfter, pid) !== startTime) {
+      throw new Error('Process identity changed during inspection');
+    }
+    return {
+      pid,
+      startTime,
+      executable: this._normalizeExecutableIdentity(executable)
+    };
+  }
+
+  async _inspectDarwinSessionIdentity(pid) {
+    const { stdout } = await this._execFile(
+      '/bin/ps',
+      ['-ww', '-p', String(pid), '-o', 'pid=', '-o', 'lstart=', '-o', 'comm='],
+      {
+        timeout: this._identityInspectionTimeoutMs(),
+        maxBuffer: 16 * 1024,
+        windowsHide: true,
+        env: { ...this._environment(), LC_ALL: 'C' }
+      }
+    );
+    const lines = String(stdout).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length !== 1) throw new Error('macOS process metadata is ambiguous');
+    const match = lines[0].match(/^(\d+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
+    if (!match || Number(match[1]) !== pid) throw new Error('macOS process metadata is invalid');
+    const startTime = Date.parse(match[2]);
+    if (!Number.isFinite(startTime)) throw new Error('macOS process start time is unavailable');
+    return {
+      pid,
+      startTime: String(startTime),
+      executable: this._normalizeExecutableIdentity(match[3])
+    };
+  }
+
+  async _inspectSessionIdentity(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return { state: 'unknown' };
+    try {
+      const identity = this._platform() === 'darwin'
+        ? await this._inspectDarwinSessionIdentity(pid)
+        : await this._inspectLinuxSessionIdentity(pid);
+      return { state: 'running', identity };
+    } catch (error) {
+      const state = this._probeSessionPid(pid);
+      return state === 'absent' ? { state } : { state: 'unknown', error };
+    }
+  }
+
+  async _observeSessionIdentity(pid) {
+    try {
+      return await this._inspectSessionIdentity(pid);
+    } catch (error) {
+      return { state: 'unknown', error };
+    }
+  }
+
+  _isSameSession(expected, observation) {
+    const actual = observation?.state === 'running' ? observation.identity : null;
+    return Boolean(
+      expected?.startTime &&
+      expected?.executable &&
+      actual &&
+      actual.pid === expected.pid &&
+      actual.startTime === expected.startTime &&
+      actual.executable === expected.executable
+    );
+  }
+
+  async _adoptSession(pid) {
+    const observation = await this._observeSessionIdentity(pid);
+    const identity = observation?.state === 'running' ? observation.identity : null;
+    if (
+      !identity ||
+      identity.pid !== pid ||
+      !identity.startTime ||
+      !identity.executable
+    ) return null;
+    return Object.freeze({ ...identity });
   }
 
   _killSession(pid) {
     process.kill(pid, 'SIGTERM');
   }
 
-  _refreshActiveState(reason = 'exited', extra = {}) {
+  async _refreshActiveState(reason = 'exited', extra = {}) {
     const wasActive = this.active;
-    for (const pid of this.sessionPids) {
-      if (!this._isSessionRunning(pid)) this.sessionPids.delete(pid);
+    for (const [pid, identity] of [...this.sessions]) {
+      const observation = await this._observeSessionIdentity(pid);
+      if (!this._isSameSession(identity, observation) && this.sessions.get(pid) === identity) {
+        this.sessions.delete(pid);
+      }
     }
-    this.active = this.sessionPids.size > 0 || this.processes.some(isProcessRunning);
+    this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
     if (wasActive && !this.active) {
       this._stopStatusMonitor();
       this._emitStatus(reason, extra);
@@ -246,7 +373,7 @@ export class FreshTerminalInterceptor {
 
   _startStatusMonitor() {
     this._stopStatusMonitor();
-    this.statusMonitor = setInterval(() => this._refreshActiveState(), 1000);
+    this.statusMonitor = setInterval(() => { void this._refreshActiveState(); }, 1000);
     this.statusMonitor.unref?.();
   }
 
@@ -289,7 +416,7 @@ export class FreshTerminalInterceptor {
   }
 
   async isActive() {
-    return this._refreshActiveState();
+    return await this._refreshActiveState();
   }
 
   async activate(proxyPort) {
@@ -362,36 +489,39 @@ export class FreshTerminalInterceptor {
       throw new Error('No supported terminal found');
     }
 
+    const sessionIdentity = shellPid ? await this._adoptSession(shellPid) : null;
     this.processes.push(proc);
-    if (shellPid) this.sessionPids.add(shellPid);
-    this.active = true;
+    if (sessionIdentity) this.sessions.set(sessionIdentity.pid, sessionIdentity);
+    this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
     this._emitStatus('active');
-    this._startStatusMonitor();
+    if (this.active) this._startStatusMonitor();
 
     proc.on('exit', () => {
       this.processes = this.processes.filter(p => p !== proc);
-      this._refreshActiveState('exited', { pid: shellPid || proc.pid });
+      void this._refreshActiveState('exited', { pid: sessionIdentity?.pid || proc.pid });
     });
 
     proc.on('error', (err) => {
       console.error('[Interceptor] Fresh terminal error:', err.message);
       this.processes = this.processes.filter(p => p !== proc);
-      this._refreshActiveState('error', { pid: shellPid || proc.pid, error: err.message });
+      void this._refreshActiveState('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
     });
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
-    return { success: true, pid: shellPid || proc.pid };
+    return { success: true, pid: sessionIdentity?.pid || proc.pid };
   }
 
   async deactivate() {
     this._stopStatusMonitor();
-    for (const pid of this.sessionPids) {
+    for (const [pid, identity] of this.sessions) {
+      const observation = await this._observeSessionIdentity(pid);
+      if (!this._isSameSession(identity, observation)) continue;
       try { this._killSession(pid); } catch {}
     }
     for (const proc of this.processes) {
       try { proc.kill(); } catch {}
     }
-    this.sessionPids.clear();
+    this.sessions.clear();
     this.processes = [];
     this.active = false;
     this._emitStatus('inactive');
@@ -399,7 +529,7 @@ export class FreshTerminalInterceptor {
 
   _emitStatus(reason, extra = {}) {
     if (typeof this.onStatusChange !== 'function') return;
-    const sessionPid = this.sessionPids.values().next().value;
+    const sessionPid = this.sessions.keys().next().value;
     this.onStatusChange({
       id: this.id,
       name: this.name,
@@ -412,7 +542,7 @@ export class FreshTerminalInterceptor {
   }
 
   toJSON() {
-    const sessionPid = this.sessionPids.values().next().value;
+    const sessionPid = this.sessions.keys().next().value;
     return {
       id: this.id,
       name: this.name,

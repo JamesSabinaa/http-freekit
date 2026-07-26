@@ -34,15 +34,15 @@ test('Electron child exit publishes an inactive status event', async () => {
   assert.equal(events.at(-1).pid, 5101);
 });
 
-test('Fresh Terminal session exit publishes an inactive status event', () => {
+test('Fresh Terminal session exit publishes an inactive status event', async () => {
   const interceptor = new FreshTerminalInterceptor();
   interceptor.active = true;
-  interceptor.sessionPids.add(6201);
-  interceptor._isSessionRunning = () => false;
+  interceptor.sessions.set(6201, { pid: 6201, startTime: '300', executable: '/bin/sh' });
+  interceptor._inspectSessionIdentity = async () => ({ state: 'absent' });
   const events = [];
   interceptor.onStatusChange = event => events.push(event);
 
-  interceptor._refreshActiveState();
+  await interceptor._refreshActiveState();
 
   assert.equal(events.length, 1);
   assert.equal(events[0].reason, 'exited');

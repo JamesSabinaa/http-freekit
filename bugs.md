@@ -1705,6 +1705,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-307 — High — Fresh Terminal PID reuse can kill an unrelated process
 
+- Status: **Fixed**.
+- Resolution: POSIX terminal sessions now retain a validated process identity containing the reported PID, OS start time, and normalized executable identity. Linux uses stable `/proc` observations and macOS uses a bounded `ps` lookup; refresh and Stop fail closed unless every identity field still matches, while identity-acquisition failures retain at most the known launcher handle and never authorize signalling the reported shell PID.
+
 - Evidence: Fresh Terminal stores only the reported shell PID; `_isSessionRunning()` at `src/interceptors/terminal-interceptors.js:64-80` accepts any process answering `kill(pid, 0)`, and Stop sends SIGTERM to that PID at `:213-220` without checking executable identity or start time.
 - Impact: after the terminal closes and its PID is reused, Refresh continues to report the interceptor active and Stop can terminate an unrelated user process.
 - Reproduction: close a tracked shell, arrange for another long-lived process to reuse its PID, then refresh and Stop; the unrelated process receives SIGTERM.

@@ -22,7 +22,10 @@ test('macOS terminal activation tracks the interactive shell after osascript exi
   interceptor._platform = () => 'darwin';
   interceptor._createPidFilePath = () => '/tmp/freekit-shell.pid';
   interceptor._waitForShellPid = async () => 4321;
-  interceptor._isSessionRunning = pid => pid === 4321;
+  interceptor._inspectSessionIdentity = async pid => ({
+    state: 'running',
+    identity: { pid, startTime: '100', executable: '/bin/zsh' }
+  });
   const launcher = fakeLauncher();
   let launch;
   interceptor._spawnDetached = async (command, args, options) => {
@@ -52,7 +55,10 @@ test('Linux terminal commands wait for and identify their interactive shell', as
   interceptor._platform = () => 'linux';
   interceptor._createPidFilePath = () => '/tmp/freekit-linux-shell.pid';
   interceptor._waitForShellPid = async () => 9876;
-  interceptor._isSessionRunning = () => true;
+  interceptor._inspectSessionIdentity = async pid => ({
+    state: 'running',
+    identity: { pid, startTime: '200', executable: '/bin/bash' }
+  });
   const launcher = fakeLauncher();
   let launch;
   interceptor._spawnDetached = async (command, args, options) => {
