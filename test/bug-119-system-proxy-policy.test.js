@@ -3,7 +3,7 @@ import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
 test('system proxy activation rejects machine-wide proxy policy', async () => {
-  const interceptor = new SystemProxyInterceptor();
+  const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => true;
   interceptor._readCurrentSettings = () => assert.fail('HKCU must not be read under machine policy');

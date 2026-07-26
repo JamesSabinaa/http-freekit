@@ -1482,6 +1482,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-253 — High/Medium — System Proxy activates without working HTTPS trust
 
+- Status: **Fixed**.
+- Resolution: Windows System Proxy discovery and activation now require confirmed FreeKit CA installation while recovery and Stop remain available independently.
+
 - Evidence: Windows CA installation failures are treated as non-critical at `src/index.js:49-60`, leaving system trust false. `SystemProxyInterceptor.isActivable()` and activation check only the platform and registry writes at `src/interceptors/system-proxy-interceptor.js:13-15,72-80`.
 - Impact: the UI reports active system interception while HTTPS clients reject every generated certificate.
 - Reproduction: force Windows CA installation to fail, then activate System Proxy and browse HTTPS.

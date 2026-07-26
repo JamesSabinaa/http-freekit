@@ -3,7 +3,7 @@ import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
 test('system proxy activation and restoration notify WinINet clients', async () => {
-  const interceptor = new SystemProxyInterceptor();
+  const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ enabled: false, server: null, override: null });

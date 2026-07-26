@@ -32,7 +32,7 @@ export class InterceptorManager {
     this._register(new BrowserInterceptor('brave', 'Brave', 'brave'));
     this._register(new FreshTerminalInterceptor());
     this._register(new ExistingTerminalInterceptor());
-    const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir });
+    const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });
     systemProxy.recoverStaleSettings();
     this._register(systemProxy);
     this._register(new DockerInterceptor());

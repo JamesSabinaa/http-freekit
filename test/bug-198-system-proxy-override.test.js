@@ -52,7 +52,10 @@ test('activation clears bypasses and normal Stop restores the exact populated va
     server: 'corporate.proxy:8080',
     override: 'intranet.example;<local>'
   };
-  const interceptor = new SystemProxyInterceptor({ dataDir });
+  const interceptor = new SystemProxyInterceptor({
+    dataDir,
+    ca: { systemTrustInstalled: true }
+  });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ ...settings });
@@ -133,7 +136,10 @@ test('activation failure rolls back a previously missing bypass value', async t 
   const dataDir = makeDataDir(t);
   const settings = { enabled: false, server: 'old.proxy:8080', override: null };
   let failed = false;
-  const interceptor = new SystemProxyInterceptor({ dataDir });
+  const interceptor = new SystemProxyInterceptor({
+    dataDir,
+    ca: { systemTrustInstalled: true }
+  });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ ...settings });

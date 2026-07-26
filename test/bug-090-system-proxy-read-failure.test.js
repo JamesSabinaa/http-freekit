@@ -3,7 +3,7 @@ import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
 test('system proxy activation does not mutate settings after a failed snapshot', async () => {
-  const interceptor = new SystemProxyInterceptor();
+  const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   const commands = [];

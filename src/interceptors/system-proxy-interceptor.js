@@ -12,6 +12,7 @@ export class SystemProxyInterceptor {
     this.previousSettings = null;
     this.activeProxyServer = null;
     this.pendingRecovery = null;
+    this.ca = options.ca || null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'system-proxy-recovery.json')
       : options.recoveryFile || null;
@@ -22,7 +23,7 @@ export class SystemProxyInterceptor {
   }
 
   async isActivable() {
-    return this._isWindows();
+    return this._isWindows() && this.ca?.systemTrustInstalled === true;
   }
 
   async isActive() {
@@ -242,6 +243,9 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
 
   async activate(proxyPort) {
     if (this._isWindows()) {
+      if (this.ca?.systemTrustInstalled !== true) {
+        throw new Error('System Proxy requires the HTTP FreeKit CA to be installed in the Windows trust store');
+      }
       try {
         if (this._usesPerMachineProxyPolicy()) {
           throw new Error('System Proxy cannot change a machine-wide proxy policy; ask an administrator to enable per-user proxy settings');

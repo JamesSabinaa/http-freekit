@@ -23,6 +23,7 @@ function createManager(interceptor) {
 }
 
 function configureWindowsInterceptor(interceptor, settings, proxyServerFailures) {
+  interceptor.ca = { systemTrustInstalled: true };
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ ...settings });

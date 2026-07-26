@@ -8,7 +8,10 @@ import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interce
 test('system proxy activation journals settings and normal stop removes the journal', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  const interceptor = new SystemProxyInterceptor({ dataDir });
+  const interceptor = new SystemProxyInterceptor({
+    dataDir,
+    ca: { systemTrustInstalled: true }
+  });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({
