@@ -3971,6 +3971,13 @@
       filterInterceptors();
     }
 
+    function activateInterceptorCardOnKeyboard(event) {
+      if (event.key !== 'Enter' || event.repeat || event.defaultPrevented ||
+          event.target !== event.currentTarget) return;
+      event.preventDefault();
+      event.currentTarget.click();
+    }
+
     function filterInterceptors() {
       const query = (document.getElementById('interceptSearch')?.value || '').toLowerCase().trim();
       let filtered = [...allInterceptors];
@@ -4058,7 +4065,7 @@
           } else {
             card.onclick = () => toggleInterceptor(i.id, i.active);
           }
-          card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
+          card.onkeydown = activateInterceptorCardOnKeyboard;
         } else if (BROWSER_DOWNLOAD_URLS[i.id]) {
           // Not installed — offer to download
           card.classList.remove('disabled');
@@ -4066,7 +4073,7 @@
           card.setAttribute('role', 'button');
           card.style.cursor = 'pointer';
           card.onclick = () => downloadBrowser(i.id, i.name);
-          card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
+          card.onkeydown = activateInterceptorCardOnKeyboard;
         }
 
         const isLoading = interceptorsInProgress.has(i.id);
@@ -4103,7 +4110,7 @@
         interceptorSelectionGeneration++;
         toast(`Proxy: 127.0.0.1:${proxyPort} - Configure any HTTP client to use this proxy`, 'success');
       };
-      manualCard.onkeydown = (e) => { if (e.key === 'Enter') manualCard.click(); };
+      manualCard.onkeydown = activateInterceptorCardOnKeyboard;
       manualCard.innerHTML =
         `<div class="intercept-card-bg-icon">${MANUAL_SETUP_ICON}</div>` +
         `<h1>Anything</h1>` +

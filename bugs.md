@@ -2742,6 +2742,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-335 — Low/Medium — Enter inside interceptor controls activates the parent card
 
+- Status: **Fixed**.
+- Resolution: Activable, download, and manual interceptor cards now synthesize a click only for a non-repeated, unhandled Enter targeted directly at the card. Enter events bubbling from expanded inputs, selectors, links, and action controls keep their native behavior without toggling the parent card.
+
 - Evidence: every activable card installs a bubbling keydown handler that calls `card.click()` for Enter without checking the event target at `src/ui/app.js:3818`. Expanded Electron, Android, and JVM cards insert inputs and buttons inside that card at `:3935-3949,4111-4155,4267-4304`; their click-only propagation guards do not stop the earlier keydown from bubbling.
 - Impact: pressing Enter in a path field or on Browse, Launch, Refresh, or process/device actions instead invokes the expanded parent, collapses it, and destroys the current configuration before the intended control behavior completes.
 - Reproduction: expand Electron, enter an application path, focus the input or Launch button, and press Enter; the card collapses and the path/control is removed.
