@@ -866,6 +866,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-269 — Low — Invalid API ports reach server startup unchecked
 
+- Status: **Fixed**.
 - Evidence: `src/index.js` uses unchecked `parseInt(API_PORT) || 8001`; truthy out-of-range values reach `httpServer.listen()` in `src/api/api-server.js`.
 - Impact: a simple port typo terminates startup with ERR_SOCKET_BAD_PORT after proxy initialization instead of a validation error/fallback.
 - Reproduction: start with `API_PORT=70000` or `API_PORT=-1`.

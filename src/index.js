@@ -17,6 +17,7 @@ import {
 import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
+import { startWithValidatedApiPort } from './startup-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,7 +28,6 @@ const DATA_DIR = process.env.ELECTRON
   ? path.join(process.env.APPDATA || process.env.HOME || __dirname, 'http-freekit', 'data')
   : path.join(__dirname, '..', 'data');
 const UI_DIR = path.join(__dirname, 'ui');
-const API_PORT = parseInt(process.env.API_PORT) || 8001;
 const MCP_STDIO_ENABLED = process.argv.includes('--mcp-stdio');
 const MCP_RUNTIME_DESCRIPTOR_PATH = process.env.HTTP_FREEKIT_MCP_DESCRIPTOR_PATH
   || path.join(DATA_DIR, 'mcp-runtime.json');
@@ -38,6 +38,10 @@ if (MCP_STDIO_ENABLED) {
 }
 
 async function main() {
+  return startWithValidatedApiPort(process.env.API_PORT, initializeApplication);
+}
+
+async function initializeApplication(apiPort) {
   console.log('');
   console.log('  ╔══════════════════════════════════════╗');
   console.log('  ║          HTTP FreeKit v1.0.0          ║');
@@ -124,7 +128,7 @@ async function main() {
 
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, {
-    port: API_PORT,
+    port: apiPort,
     authToken: process.env.AUTH_TOKEN || null
   });
   api.settings = settings; // Give API server access to persist settings
@@ -174,7 +178,7 @@ async function main() {
   const mcpRuntimeInstanceId = crypto.randomUUID();
   writeMcpRuntimeDescriptor({
     descriptorPath: MCP_RUNTIME_DESCRIPTOR_PATH,
-    sseUrl: `http://127.0.0.1:${API_PORT}/mcp/sse`,
+    sseUrl: `http://127.0.0.1:${apiPort}/mcp/sse`,
     authToken: process.env.AUTH_TOKEN || null,
     instanceId: mcpRuntimeInstanceId
   });
@@ -191,9 +195,9 @@ async function main() {
   console.log('');
   console.log('  ┌─────────────────────────────────────┐');
   const proxyStr = `http://127.0.0.1:${proxy.port}`;
-  const uiStr = `http://127.0.0.1:${API_PORT}`;
-  const apiStr = `http://127.0.0.1:${API_PORT}/api`;
-  const mcpStr = `http://127.0.0.1:${API_PORT}/mcp/sse`;
+  const uiStr = `http://127.0.0.1:${apiPort}`;
+  const apiStr = `http://127.0.0.1:${apiPort}/api`;
+  const mcpStr = `http://127.0.0.1:${apiPort}/mcp/sse`;
   console.log(`  │  Proxy:  ${proxyStr.padEnd(26)}│`);
   console.log(`  │  UI:     ${uiStr.padEnd(26)}│`);
   console.log(`  │  API:    ${apiStr.padEnd(26)}│`);
