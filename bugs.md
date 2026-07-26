@@ -1570,9 +1570,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-284 — Medium — Chromium interceptors disable all certificate validation
 
+- Status: **Fixed**.
 - Evidence: isolated and Global Chrome argument construction adds the scoped SPKI trust flag plus unconditional `--ignore-certificate-errors`; macOS/Linux commonly use this path because system CA installation is Windows-only.
 - Impact: these browsers accept expired, self-signed, hostname-invalid, and passthrough/direct certificates unrelated to FreeKit; Global Chrome can apply this to the user's normal session.
 - Reproduction: activate on macOS/Linux and visit an invalid-certificate origin through passthrough/direct access.
+- Resolution: Isolated Chromium browsers now use only the FreeKit CA's SPKI allowlist with their explicit managed user-data directory; broad certificate-error, insecure-localhost, and test-mode switches were removed. Because [Chromium requires an explicit user-data-dir for scoped SPKI trust](https://chromium.googlesource.com/chromium/src/+/HEAD/services/network/ignore_errors_cert_verifier.h), Global Chrome's default-profile mode is now available and activatable only when the FreeKit CA is confirmed in system trust, and its launch needs no certificate bypass flags.
 
 ### BUG-286 — Medium — Terminal interceptors disable all Node TLS verification
 

@@ -17,7 +17,7 @@ export class ExistingBrowserInterceptor {
   }
 
   async isActivable() {
-    return this._findBrowserPath() !== null;
+    return this.ca?.systemTrustInstalled === true && this._findBrowserPath() !== null;
   }
 
   async isActive() {
@@ -73,6 +73,12 @@ export class ExistingBrowserInterceptor {
     if (this.active || this.process) {
       throw new Error(`${this.name} is already running`);
     }
+    if (this.ca?.systemTrustInstalled !== true) {
+      throw new Error(
+        `${this.name} requires the HTTP FreeKit CA to be installed in the system trust store; ` +
+        'scoped Chromium certificate trust requires an isolated user-data directory'
+      );
+    }
     const browserPath = this._findBrowserPath();
     if (!browserPath) {
       throw new Error(`${this.name} not found on this system`);
@@ -86,16 +92,6 @@ export class ExistingBrowserInterceptor {
     const args = [
       `--proxy-server=127.0.0.1:${proxyPort}`,
     ];
-
-    if (!this.ca?.systemTrustInstalled) {
-      const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-      args.push(
-        '--ignore-certificate-errors',
-        `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
-        '--test-type',
-        '--allow-insecure-localhost'
-      );
-    }
 
     if (launchOptions.url) {
       args.push(launchOptions.url);

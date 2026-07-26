@@ -63,7 +63,7 @@ test('isolated Chrome, Edge, and Brave launch with one literal loopback override
   }
 });
 
-test('Global Chrome passes the override as one argument without replacing launch flags', async () => {
+test('system-trusted Global Chrome passes the override without certificate bypass flags', async () => {
   const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
   let launch;
   interceptor._findBrowserPath = () => '/browsers/chrome';
@@ -72,20 +72,13 @@ test('Global Chrome passes the override as one argument without replacing launch
     launch = { browserPath, args, options };
     return fakeChild(8201);
   };
-  interceptor.ca = {
-    systemTrustInstalled: false,
-    getSpkiFingerprint: () => 'test-spki'
-  };
+  interceptor.ca = { systemTrustInstalled: true };
 
   await interceptor.activate(9090, { url: 'http://127.0.0.1:4000/' });
 
   assert.deepEqual(launch.args, [
     '--proxy-server=127.0.0.1:9090',
     LOOPBACK_OVERRIDE,
-    '--ignore-certificate-errors',
-    '--ignore-certificate-errors-spki-list=test-spki',
-    '--test-type',
-    '--allow-insecure-localhost',
     'http://127.0.0.1:4000/'
   ]);
   assert.equal(launch.args.filter(arg => arg === LOOPBACK_OVERRIDE).length, 1);

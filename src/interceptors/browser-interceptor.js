@@ -195,12 +195,10 @@ export class BrowserInterceptor {
 
     if (!this.ca?.systemTrustInstalled) {
       const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-      args.push(
-        '--ignore-certificate-errors',
-        `--ignore-certificate-errors-spki-list=${spkiFingerprint}`,
-        '--test-type',
-        '--allow-insecure-localhost'
-      );
+      if (!spkiFingerprint) {
+        throw new Error('FreeKit CA SPKI fingerprint is unavailable for scoped Chromium trust');
+      }
+      args.push(`--ignore-certificate-errors-spki-list=${spkiFingerprint}`);
     }
 
     if (options.url) {
