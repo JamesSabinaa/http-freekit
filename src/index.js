@@ -224,6 +224,7 @@ async function initializeApplication(apiPort) {
   const shutdown = () => {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
+        interceptors.beginShutdown();
         console.log('\n[Shutdown] Stopping servers...');
         removeOwnMcpRuntimeDescriptor();
         await mcpBridge.stop();

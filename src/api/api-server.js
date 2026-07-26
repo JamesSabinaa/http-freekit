@@ -104,6 +104,12 @@ function normalizeImportedBreakpointRule(rule) {
   return normalizedRule;
 }
 
+function interceptorOperationErrorStatus(error, fallbackStatus) {
+  if (error?.code === 'INTERCEPTOR_MANAGER_CLOSING') return 503;
+  if (error?.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS') return 409;
+  return fallbackStatus;
+}
+
 export class ApiServer {
   constructor(proxyServer, certificateAuthority, interceptorManager, options = {}) {
     this.proxy = proxyServer;
@@ -1214,7 +1220,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         const result = await this.interceptors.activate(req.params.id, this.proxy.port, req.body);
         res.status(result?.success === false ? 422 : 200).json(result);
       } catch (err) {
-        res.status(err.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS' ? 409 : 500).json({ error: err.message });
+        res.status(interceptorOperationErrorStatus(err, 500)).json({ error: err.message });
       }
     });
 
@@ -1223,7 +1229,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         await this.interceptors.deactivate(req.params.id, req.body || {});
         res.json({ success: true });
       } catch (err) {
-        res.status(err.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS' ? 409 : 500).json({ error: err.message });
+        res.status(interceptorOperationErrorStatus(err, 500)).json({ error: err.message });
       }
     });
 
@@ -1232,7 +1238,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         const result = await this.interceptors.focus(req.params.id);
         res.json({ success: true, ...(result || {}) });
       } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(interceptorOperationErrorStatus(err, 500)).json({ error: err.message });
       }
     });
 
@@ -1251,7 +1257,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         );
         res.json({ success: true, ...(result || {}) });
       } catch (err) {
-        res.status(400).json({ error: err.message });
+        res.status(interceptorOperationErrorStatus(err, 400)).json({ error: err.message });
       }
     });
 

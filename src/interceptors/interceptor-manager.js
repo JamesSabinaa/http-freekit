@@ -11,11 +11,15 @@ import { AndroidAdbInterceptor } from './android-adb-interceptor.js';
 import { JvmInterceptor } from './jvm-interceptor.js';
 import { cleanupStaleBrowserProfiles } from './browser-lifecycle.js';
 
+export const INTERCEPTOR_MANAGER_CLOSING_ERROR_CODE = 'INTERCEPTOR_MANAGER_CLOSING';
+export const INTERCEPTOR_MANAGER_CLOSING_ERROR_MESSAGE = 'Interceptor manager is shutting down';
+
 export class InterceptorManager {
   constructor(ca, options = {}) {
     this.interceptors = new Map();
     this.operationsInProgress = new Map();
     this.statusOperations = new Map();
+    this.closing = false;
     this.ca = ca;
     this.onStatusChange = null;
 
@@ -146,7 +150,19 @@ export class InterceptorManager {
     return results;
   }
 
+  beginShutdown() {
+    this.closing = true;
+  }
+
+  _assertAcceptingOperations() {
+    if (!this.closing) return;
+    const error = new Error(INTERCEPTOR_MANAGER_CLOSING_ERROR_MESSAGE);
+    error.code = INTERCEPTOR_MANAGER_CLOSING_ERROR_CODE;
+    throw error;
+  }
+
   async activate(id, proxyPort, options = {}) {
+    this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
 
@@ -168,16 +184,23 @@ export class InterceptorManager {
   }
 
   async deactivate(id, options = {}) {
+    this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
+    return await this._deactivateInterceptor(interceptor, options);
+  }
+
+  async _deactivateInterceptor(interceptor, options = {}, runOptions = {}) {
     return await this._runExclusive(
-      id,
+      interceptor.id,
       interceptor,
-      () => this._runStateTransition(interceptor, () => interceptor.deactivate(options))
+      () => this._runStateTransition(interceptor, () => interceptor.deactivate(options)),
+      runOptions
     );
   }
 
-  async _runExclusive(id, interceptor, operation) {
+  async _runExclusive(id, interceptor, operation, { allowWhileClosing = false } = {}) {
+    if (!allowWhileClosing) this._assertAcceptingOperations();
     this.operationsInProgress ||= new Map();
     if (this.operationsInProgress.has(id)) {
       const error = new Error(`${interceptor.name} already has an operation in progress`);
@@ -197,6 +220,7 @@ export class InterceptorManager {
   }
 
   async focus(id) {
+    this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
     if (typeof interceptor.focus !== 'function') {
@@ -206,6 +230,7 @@ export class InterceptorManager {
   }
 
   async openUrl(id, proxyPort, url) {
+    this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
     if (typeof interceptor.openUrl !== 'function') {
@@ -234,6 +259,7 @@ export class InterceptorManager {
   }
 
   async deactivateAll() {
+    this.beginShutdown();
     for (const interceptor of this.interceptors.values()) {
       try {
         await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});
@@ -241,7 +267,9 @@ export class InterceptorManager {
           ? await interceptor.needsDeactivation()
           : await interceptor.isActive();
         if (needsDeactivation) {
-          await this.deactivate(interceptor.id);
+          // Shutdown owns this admission. It bypasses only the external
+          // closing gate and retains the ordinary per-ID lock and status flow.
+          await this._deactivateInterceptor(interceptor, {}, { allowWhileClosing: true });
         }
       } catch (err) {
         console.error(`[Interceptor] Error deactivating ${interceptor.name}:`, err.message);

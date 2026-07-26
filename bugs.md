@@ -1891,6 +1891,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-346 — High/Medium — Shutdown accepts activations after their cleanup turn
 
+- Status: **Fixed**.
+- Resolution: The interceptor manager now enters a permanent closing state synchronously when shutdown begins and rejects every new lifecycle admission. Shutdown drains operations admitted before that boundary and uses the normal exclusive Stop path for active or cleanup-only ownership, including retryable failures, before server exit.
+
 - Evidence: `deactivateAll()` walks interceptors sequentially and waits only for the operation already registered for the current ID at `src/interceptors/interceptor-manager.js:133-145`. It sets no global closing flag, and `_runExclusive()` at `:87-105` continues admitting new work for IDs whose turn has passed while the API remains available.
 - Impact: graceful shutdown can finish with a newly activated browser, terminal, device proxy, or attached process still active and unowned by the exiting server.
 - Reproduction: let shutdown finish the first interceptor and block on a later one, then start activation for the first ID; release the blocker and observe shutdown complete without deactivating the new state.
