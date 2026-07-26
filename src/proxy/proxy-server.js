@@ -14,6 +14,7 @@ import { Duplex, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
+import { getApiSpecBaseHost, isObjectRecord } from '../api/openapi-validation.js';
 
 const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'ECONNABORTED',
@@ -5983,28 +5984,51 @@ export class ProxyServer {
   }
 
   matchApiSpec(method, path, host) {
-    for (const spec of this.apiSpecs) {
-      if (spec.baseUrl && !host.includes(spec.baseUrl.replace(/^https?:\/\//, '').split('/')[0])) continue;
+    if (typeof method !== 'string' || typeof path !== 'string' || typeof host !== 'string') return null;
+    const normalizedMethod = method.toLowerCase();
+    const testPath = path.split('?')[0];
+    const normalizedHost = host.toLowerCase();
+    const specs = Array.isArray(this.apiSpecs) ? this.apiSpecs : [];
 
-      const paths = spec.spec?.paths || {};
-      for (const [pathPattern, pathItem] of Object.entries(paths)) {
-        const operation = pathItem[method.toLowerCase()];
-        if (!operation) continue;
+    for (const spec of specs) {
+      try {
+        if (!isObjectRecord(spec)) continue;
+        const baseHost = getApiSpecBaseHost(spec.baseUrl ?? '');
+        if (baseHost === null || (baseHost && !normalizedHost.includes(baseHost))) continue;
 
-        // Convert OpenAPI path pattern to regex: /users/{id} -> /users/[^/]+
-        let regex;
-        try { regex = new RegExp('^' + pathPattern.replace(/\{[^}]+\}/g, '[^/]+') + '$'); } catch { continue; }
-        const testPath = path.split('?')[0];
-        if (regex.test(testPath)) {
-          return {
-            operationId: operation.operationId || method + ' ' + pathPattern,
-            summary: operation.summary || '',
-            description: operation.description || '',
-            parameters: operation.parameters || pathItem.parameters || [],
-            pathPattern,
-            tags: operation.tags || []
-          };
+        const paths = spec.spec?.paths;
+        if (!isObjectRecord(paths)) continue;
+        for (const [pathPattern, pathItem] of Object.entries(paths)) {
+          if (!isObjectRecord(pathItem)) continue;
+          const operation = pathItem[normalizedMethod];
+          if (!isObjectRecord(operation)) continue;
+
+          // Convert OpenAPI path pattern to regex: /users/{id} -> /users/[^/]+
+          let regex;
+          try { regex = new RegExp('^' + pathPattern.replace(/\{[^}]+\}/g, '[^/]+') + '$'); } catch { continue; }
+          if (regex.test(testPath)) {
+            const operationParameters = Array.isArray(operation.parameters)
+              ? operation.parameters.filter(isObjectRecord)
+              : null;
+            const pathParameters = Array.isArray(pathItem.parameters)
+              ? pathItem.parameters.filter(isObjectRecord)
+              : [];
+            return {
+              operationId: typeof operation.operationId === 'string' && operation.operationId
+                ? operation.operationId
+                : method + ' ' + pathPattern,
+              summary: typeof operation.summary === 'string' ? operation.summary : '',
+              description: typeof operation.description === 'string' ? operation.description : '',
+              parameters: operationParameters || pathParameters,
+              pathPattern,
+              tags: Array.isArray(operation.tags)
+                ? operation.tags.filter(tag => typeof tag === 'string')
+                : []
+            };
+          }
         }
+      } catch {
+        continue;
       }
     }
     return null;

@@ -677,6 +677,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-204 — Medium — Malformed OpenAPI documents can suppress traffic capture
 
+- Status: **Fixed**.
+- Resolution: The API now rejects OpenAPI submissions whose base URL, document, paths, path items, or consumed operation metadata have incompatible shapes. Matching skips malformed legacy entries, and traffic capture continues even if enrichment unexpectedly fails.
+
 - Evidence: the API accepts any truthy spec and arbitrary baseUrl; `matchApiSpec()` assumes baseUrl is a string and every path entry is an object (`src/api/api-server.js` spec route; `src/proxy/proxy-server.js:4188-4208`). `onTrafficEvent()` calls it before inserting/broadcasting the exchange, and the proxy emitter only logs callback exceptions.
 - Impact: one accepted spec can blind UI/API/MCP capture for every request or a matching path while traffic still forwards normally.
 - Reproduction: POST a spec with `baseUrl: {}` or a matching `paths` value of null, then proxy traffic.

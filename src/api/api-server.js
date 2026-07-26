@@ -8,6 +8,7 @@ import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
+import { validateOpenApiSubmission } from './openapi-validation.js';
 import { validatePortRange } from '../proxy/port-range.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 
@@ -1406,9 +1407,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/specs', (req, res) => {
-      const { title, baseUrl, spec } = req.body;
-      if (!spec) return res.status(400).json({ error: 'spec is required' });
-      const result = this.proxy.addApiSpec({ title: title || 'Untitled API', baseUrl: baseUrl || '', spec });
+      const validation = validateOpenApiSubmission(req.body);
+      if (validation.error) return res.status(400).json({ error: validation.error });
+      const result = this.proxy.addApiSpec(validation.value);
       res.json({ success: true, spec: { id: result.id, title: result.title, baseUrl: result.baseUrl } });
     });
 
@@ -1697,7 +1698,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   onTrafficEvent(data) {
     // Enrich with API spec match
-    const apiMatch = this.proxy.matchApiSpec(data.method, data.path, data.host);
+    let apiMatch = null;
+    try {
+      apiMatch = this.proxy.matchApiSpec(data.method, data.path, data.host);
+    } catch (err) {
+      console.warn(
+        '[API] Could not match traffic against API specs:',
+        err instanceof Error ? err.message : String(err)
+      );
+    }
     if (apiMatch) data.apiMatch = apiMatch;
 
     if (data._update) {
