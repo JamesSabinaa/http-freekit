@@ -33,22 +33,37 @@
       }
     }
 
-    function safeLocalStorageSet(key, value) {
+    let localStoragePersistenceWarningShown = false;
+
+    function warnLocalStoragePersistenceFailure() {
+      if (localStoragePersistenceWarningShown) return;
+      if (typeof toast !== 'function' || typeof document === 'undefined' ||
+          !document.getElementById?.('toastContainer')) return;
+      localStoragePersistenceWarningShown = true;
+      toast(
+        'Changes could not be saved locally. Check storage permissions or free up browser storage.',
+        'error'
+      );
+    }
+
+    function safeLocalStorageSet(key, value, notifyUser = true) {
       try {
         window.localStorage.setItem(key, value);
         return true;
       } catch (err) {
         console.warn('[Storage] Could not save ' + key + ': ' + err.message);
+        if (notifyUser) warnLocalStoragePersistenceFailure();
         return false;
       }
     }
 
-    function safeLocalStorageRemove(key) {
+    function safeLocalStorageRemove(key, notifyUser = true) {
       try {
         window.localStorage.removeItem(key);
         return true;
       } catch (err) {
         console.warn('[Storage] Could not remove ' + key + ': ' + err.message);
+        if (notifyUser) warnLocalStoragePersistenceFailure();
         return false;
       }
     }
@@ -2837,9 +2852,15 @@
       rebuildProtobufRoot();
     }
 
-    function saveProtobufSchemas() {
-      safeLocalStorageSet(PROTOBUF_SCHEMA_STORAGE_KEY, JSON.stringify(protobufSchemaFiles));
+    function saveProtobufSchemas(nextSchemaFiles) {
+      if (!safeLocalStorageSet(
+        PROTOBUF_SCHEMA_STORAGE_KEY,
+        JSON.stringify(nextSchemaFiles),
+        false
+      )) return false;
+      protobufSchemaFiles = nextSchemaFiles;
       rebuildProtobufRoot();
+      return true;
     }
 
     function refreshVisibleBodyViewers() {
@@ -2864,8 +2885,13 @@
           }
           const byName = new Map(protobufSchemaFiles.map(file => [file.name, file]));
           for (const file of imported) byName.set(file.name, file);
-          protobufSchemaFiles = Array.from(byName.values());
-          saveProtobufSchemas();
+          if (!saveProtobufSchemas(Array.from(byName.values()))) {
+            toast(
+              'Schema import failed: local storage is unavailable. Check storage permissions or free up space.',
+              'error'
+            );
+            return;
+          }
           if (protobufSchemaError) {
             toast('Schema import failed: ' + protobufSchemaError, 'error');
           } else {
@@ -2880,11 +2906,17 @@
     }
 
     function clearProtobufSchemas() {
+      if (!safeLocalStorageRemove(PROTOBUF_SCHEMA_STORAGE_KEY, false)) {
+        toast(
+          'Could not clear protobuf schemas: local storage is unavailable. Check storage permissions or free up space.',
+          'error'
+        );
+        return;
+      }
       protobufSchemaFiles = [];
       protobufRoot = null;
       protobufSchemaError = '';
       for (const key of Object.keys(bodySchemaTypeOverrides)) delete bodySchemaTypeOverrides[key];
-      safeLocalStorageRemove(PROTOBUF_SCHEMA_STORAGE_KEY);
       updateProtobufSchemaStatus();
       refreshVisibleBodyViewers();
       toast('Protobuf schemas cleared', 'success');
@@ -11844,11 +11876,35 @@
             toast('No recognized CSS variable overrides found in theme file', 'error');
             return;
           }
-          // Save and apply
-          safeLocalStorageSet('http-freekit-custom-theme', JSON.stringify(sanitizedTheme));
+          // Persist both values before applying the theme in memory. If the
+          // second write fails, restore the previous custom theme best-effort.
+          var previousCustomTheme = safeLocalStorageGet('http-freekit-custom-theme');
+          if (!safeLocalStorageSet(
+            'http-freekit-custom-theme',
+            JSON.stringify(sanitizedTheme),
+            false
+          )) {
+            toast(
+              'Custom theme was not saved: local storage is unavailable. Check storage permissions or free up space.',
+              'error'
+            );
+            return;
+          }
+          if (!safeLocalStorageSet('http-freekit-theme', 'custom', false)) {
+            if (previousCustomTheme === null) {
+              safeLocalStorageRemove('http-freekit-custom-theme', false);
+            } else {
+              safeLocalStorageSet('http-freekit-custom-theme', previousCustomTheme, false);
+            }
+            toast(
+              'Custom theme was not saved: local storage is unavailable. Check storage permissions or free up space.',
+              'error'
+            );
+            return;
+          }
           applyCustomThemeData(sanitizedTheme);
           renderCustomThemeSwatches(sanitizedTheme);
-          setTheme('custom');
+          setTheme('custom', false);
           var removeBtn = document.getElementById('removeCustomThemeBtn');
           if (removeBtn) removeBtn.style.display = '';
           toast('Custom theme loaded (' + validCount + ' overrides applied)', 'success');
@@ -11863,7 +11919,16 @@
      * Remove the current custom theme and revert to dark.
      */
     function removeCustomTheme() {
-      safeLocalStorageRemove('http-freekit-custom-theme');
+      var previousTheme = safeLocalStorageGet('http-freekit-theme', 'dark');
+      if (!safeLocalStorageSet('http-freekit-theme', 'dark', false) ||
+          !safeLocalStorageRemove('http-freekit-custom-theme', false)) {
+        safeLocalStorageSet('http-freekit-theme', previousTheme, false);
+        toast(
+          'Custom theme was not removed: local storage is unavailable. Check storage permissions or free up space.',
+          'error'
+        );
+        return;
+      }
       if (_customThemeStyleEl) {
         _customThemeStyleEl.remove();
         _customThemeStyleEl = null;
@@ -11872,7 +11937,7 @@
       if (swatches) { swatches.innerHTML = ''; swatches.style.display = 'none'; }
       var removeBtn = document.getElementById('removeCustomThemeBtn');
       if (removeBtn) removeBtn.style.display = 'none';
-      setTheme('dark');
+      setTheme('dark', false);
       toast('Custom theme removed', 'success');
     }
 
@@ -11896,8 +11961,8 @@
       }
     }
 
-    function setTheme(theme) {
-      safeLocalStorageSet('http-freekit-theme', theme);
+    function setTheme(theme, persist = true) {
+      if (persist) safeLocalStorageSet('http-freekit-theme', theme);
       var resolved = theme;
       if (theme === 'auto') {
         resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -11933,13 +11998,13 @@
       if (saved === 'custom' && !safeLocalStorageGet('http-freekit-custom-theme')) {
         saved = 'dark';
       }
-      setTheme(saved);
+      setTheme(saved, false);
     }
 
     // Re-apply theme when OS color scheme changes (for "auto" mode)
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function() {
       var saved = safeLocalStorageGet('http-freekit-theme', 'dark');
-      if (saved === 'auto') setTheme('auto');
+      if (saved === 'auto') setTheme('auto', false);
     });
 
     loadTheme();

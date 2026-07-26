@@ -2192,6 +2192,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-354 — Low — Guarded storage failures report success and silently lose state
 
+- Status: **Fixed**.
+- Resolution: Explicit schema and custom-theme actions now commit storage before changing live state or reporting success, while routine autosave/navigation failures produce one actionable warning per renderer session without interrupting startup.
+
 - Evidence: `safeLocalStorageSet()` and `safeLocalStorageRemove()` return `false` on blocked or quota-exceeded storage, but every caller ignores the result. Protobuf schema and custom-theme actions still show success or apply in memory; Send tabs, active tab, settings section, theme, and Traffic scroll state likewise continue without reporting that persistence failed.
 - Impact: users believe state was saved or cleared, but reload restores the previous state or discards the apparent change without any warning.
 - Reproduction: make `Storage.prototype.setItem` and `removeItem` throw, import or clear a protobuf schema or save/remove a custom theme, observe the success/applied UI, then reload and see the change disappear or the removed data return.
