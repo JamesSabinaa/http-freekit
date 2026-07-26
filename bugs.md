@@ -2370,6 +2370,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-250 — Low/Medium — Malformed HAR primitives poison renderer search
 
+- Status: **Fixed**.
+- Resolution: Renderer HAR import now validates and normalizes every entry before atomically adding safe traffic records.
+
 - Evidence: `importHar()` checks only for a truthy entries value and preserves fields such as method without type validation at `src/ui/app.js:7498-7534`; filtering later calls `req.method?.toLowerCase()` at `:374,400`, which still throws when method is a number.
 - Impact: a HAR reported as successfully imported can make Traffic search fail on every keystroke until the row is removed or cleared.
 - Reproduction: import a complete entry with `request.method: 1`, then type a method/plain filter.
