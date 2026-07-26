@@ -10743,6 +10743,20 @@
       return Boolean(element?.closest?.('.monaco-editor, [contenteditable]:not([contenteditable="false"])'));
     }
 
+    function isTrafficNavigationKeyboardTarget(element) {
+      if (isEditableKeyboardTarget(element)) return false;
+      const tagName = element?.tagName?.toUpperCase();
+      if (tagName === 'BUTTON' || tagName === 'SUMMARY') return false;
+      if (tagName === 'A' && element?.hasAttribute?.('href')) return false;
+      return !element?.closest?.([
+        'button', 'a[href]', 'summary', 'audio[controls]', 'video[controls]',
+        '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+        '[role="option"]', '[role="radio"]', '[role="scrollbar"]',
+        '[role="separator"]', '[role="slider"]', '[role="spinbutton"]',
+        '[role="tab"]', '[role="treeitem"]', '[tabindex]:not([tabindex="-1"])'
+      ].join(', '));
+    }
+
     function isClearTrafficShortcut(event, activeElement, trafficPanelActive) {
       return event.key === 'Delete'
         && (event.ctrlKey || event.metaKey)
@@ -10782,6 +10796,7 @@
       const activeEl = document.activeElement;
       const isInput = isEditableKeyboardTarget(activeEl);
       const trafficPanelActive = document.getElementById('panel-traffic')?.classList.contains('active') === true;
+      const trafficNavigationTarget = e.target?.closest ? e.target : activeEl;
 
       if (e.key === 'Escape') {
         if (!handleSendEscapeShortcut(e)) closeDetail();
@@ -10887,8 +10902,9 @@
         return;
       }
 
-      // Arrow / vim navigation for traffic rows (only when not in an input)
-      if (!isInput) {
+      // Arrow / vim navigation applies only to the active Traffic panel's
+      // non-interactive surface. Controls retain their native key behavior.
+      if (trafficPanelActive && isTrafficNavigationKeyboardTarget(trafficNavigationTarget)) {
         if (e.key === 'ArrowDown' || e.key === 'j') {
           e.preventDefault();
           selectRequestByIndex(1);

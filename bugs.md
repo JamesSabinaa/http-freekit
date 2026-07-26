@@ -2633,6 +2633,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-313 — Low/Medium — Traffic navigation keys hijack every panel
 
+- Status: **Fixed**.
+- Resolution: Traffic row navigation keys now run only while the Traffic panel is active and the event target is a non-editable, non-interactive surface; other panels, Monaco/editable fields, native controls, menus, tabs, and resizers retain their own keyboard behavior.
+
 - Evidence: the global key handler at `src/ui/app.js:8987-8990` excludes only input-like elements, while the unscoped block at `:9101-9126` prevents Arrow Up/Down, `j`/`k`, Page Up/Down, Home, and End and drives Traffic selection without checking which panel is active.
 - Impact: normal keyboard scrolling and navigation is blocked in Settings, Intercept, Mock, and Send, and captured traffic can be selected invisibly behind those panels.
 - Reproduction: open a long Settings page, focus its background or a button, and press Page Down, Home, or End; the page does not perform its normal keyboard navigation.
