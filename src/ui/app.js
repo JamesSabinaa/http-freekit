@@ -9462,6 +9462,21 @@
       ]);
     }
 
+    function copyResponseHeadersForMock(headers) {
+      const skipHeaders = new Set([
+        'transfer-encoding', 'connection', 'keep-alive', 'proxy-connection',
+        'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade',
+        'content-encoding', 'content-length'
+      ]);
+      const copiedHeaders = {};
+      for (const [name, value] of Object.entries(headers || {})) {
+        if (!skipHeaders.has(name.toLowerCase())) {
+          copiedHeaders[name] = Array.isArray(value) ? [...value] : value;
+        }
+      }
+      return copiedHeaders;
+    }
+
     function createMockFromRequest(requestId) {
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
@@ -9494,17 +9509,7 @@
       }
 
       // Build the response headers from the actual response, excluding hop-by-hop headers
-      const skipHeaders = ['transfer-encoding', 'connection', 'keep-alive', 'proxy-connection',
-        'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade',
-        'content-encoding', 'content-length'];
-      const respHeaders = {};
-      if (req.responseHeaders) {
-        for (const [k, v] of Object.entries(req.responseHeaders)) {
-          if (!skipHeaders.includes(k.toLowerCase())) {
-            respHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-          }
-        }
-      }
+      const respHeaders = copyResponseHeadersForMock(req.responseHeaders);
 
       // Build the action — use fixed-response with the actual response data
       // Request body goes into matchers (above), response data goes into the action

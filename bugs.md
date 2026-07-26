@@ -2235,6 +2235,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-222 — Medium — Create Mock corrupts repeated response headers
 
+- Status: **Fixed**.
+- Resolution: Create Mock now copies repeated response headers into distinct, independent arrays while preserving scalar headers and continuing to omit hop-by-hop, content-encoding, and content-length fields.
+
 - Evidence: mock-from-exchange flattens response header arrays with `join(", ")` at `src/ui/app.js:8580-8600`, including Set-Cookie, although the fixed-response path can preserve arrays.
 - Impact: replay turns distinct cookie fields into one comma-combined value with different semantics.
 - Reproduction: capture two Set-Cookie fields, create a mock, and trigger it.
