@@ -3768,6 +3768,7 @@
     function downloadBrowser(id, name) {
       const url = BROWSER_DOWNLOAD_URLS[id];
       if (!url) return;
+      interceptorSelectionGeneration++;
       if (confirm(`${name} is not installed. Would you like to download it now?`)) {
         window.open(url, '_blank');
         toast(`Opening ${name} download page...`, 'success');
@@ -3797,6 +3798,24 @@
     let interceptorsInProgress = new Set();
     let expandedInterceptorId = null;
     let expandedInterceptorMetadata = null;
+    let interceptorSelectionGeneration = 0;
+    const interceptorOperationGenerations = new Map();
+
+    function beginInterceptorOperation(id) {
+      const operationGeneration = (interceptorOperationGenerations.get(id) || 0) + 1;
+      interceptorOperationGenerations.set(id, operationGeneration);
+      return {
+        id,
+        operationGeneration,
+        selectionGeneration: interceptorSelectionGeneration
+      };
+    }
+
+    function isCurrentInterceptorOperation(operation, requireExpandedCard = true) {
+      return interceptorOperationGenerations.get(operation.id) === operation.operationGeneration &&
+        operation.selectionGeneration === interceptorSelectionGeneration &&
+        (!requireExpandedCard || expandedInterceptorId === operation.id);
+    }
 
     // Interceptors that have expandable config components
     const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'electron', 'android-adb', 'jvm']);
@@ -3985,6 +4004,7 @@
       manualCard.setAttribute('tabindex', '0');
       manualCard.setAttribute('role', 'button');
       manualCard.onclick = () => {
+        interceptorSelectionGeneration++;
         toast(`Proxy: 127.0.0.1:${proxyPort} - Configure any HTTP client to use this proxy`, 'success');
       };
       manualCard.onkeydown = (e) => { if (e.key === 'Enter') manualCard.click(); };
@@ -4005,6 +4025,9 @@
         return;
       }
 
+      interceptorSelectionGeneration++;
+      const operation = beginInterceptorOperation(id);
+
       // Activate if not already active, then expand
       // Always refresh for android-adb (device list may change)
       if (id !== 'electron' && (!isActive || id === 'android-adb' || id === 'jvm')) {
@@ -4018,29 +4041,36 @@
           });
           const data = await res.json();
           if (data.error) throw new Error(data.error);
+          if (!isCurrentInterceptorOperation(operation, false)) return;
           expandedInterceptorMetadata = data.metadata || null;
         } catch (err) {
-          interceptorsInProgress.delete(id);
-          filterInterceptors();
-          toast(`Error: ${err.message}`, 'error');
+          if (isCurrentInterceptorOperation(operation, false)) {
+            toast(`Error: ${err.message}`, 'error');
+          }
           return;
         } finally {
           interceptorsInProgress.delete(id);
+          filterInterceptors();
         }
         // Refresh interceptor state
         try {
           const res = await fetch(`${API_BASE}/api/interceptors`);
           const data = await res.json();
+          if (!isCurrentInterceptorOperation(operation, false)) return;
           allInterceptors = data.interceptors;
           renderConnectedSources(allInterceptors);
-        } catch (e) { console.error('[Error]', e.message); }
+        } catch (e) {
+          if (isCurrentInterceptorOperation(operation, false)) console.error('[Error]', e.message);
+        }
       }
 
+      if (!isCurrentInterceptorOperation(operation, false)) return;
       expandedInterceptorId = id;
       filterInterceptors();
     }
 
     function collapseInterceptorCard() {
+      interceptorSelectionGeneration++;
       expandedInterceptorId = null;
       expandedInterceptorMetadata = null;
       filterInterceptors();
@@ -4101,6 +4131,7 @@
         return;
       }
       if (interceptorsInProgress.has('electron')) return;
+      const operation = beginInterceptorOperation('electron');
 
       try {
         interceptorsInProgress.add('electron');
@@ -4114,13 +4145,14 @@
         if (!response.ok || data.error || data.success === false) {
           throw new Error(data.error || `HTTP ${response.status}`);
         }
+        if (!isCurrentInterceptorOperation(operation)) return;
         toast('Electron application launched', 'success');
         collapseInterceptorCard();
         const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
         if (trafficTab) switchPanel(trafficTab, 'traffic');
         setTimeout(loadInterceptors, 300);
       } catch (err) {
-        toast(`Error: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation)) toast(`Error: ${err.message}`, 'error');
       } finally {
         interceptorsInProgress.delete('electron');
         filterInterceptors();
@@ -4289,6 +4321,7 @@
 
     async function activateAndroidDevice(deviceId) {
       if (interceptorsInProgress.has('android-adb')) return;
+      const operation = beginInterceptorOperation('android-adb');
       interceptorsInProgress.add('android-adb');
       filterInterceptors();
 
@@ -4307,6 +4340,7 @@
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+        if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh device and activation info
         if (data.metadata) {
@@ -4327,16 +4361,23 @@
         try {
           const r = await fetch(`${API_BASE}/api/interceptors`);
           const d = await r.json();
+          if (!isCurrentInterceptorOperation(operation)) return;
           allInterceptors = d.interceptors;
           renderConnectedSources(allInterceptors);
-        } catch (e) { console.error('[Error]', e.message); }
+        } catch (e) {
+          if (isCurrentInterceptorOperation(operation)) console.error('[Error]', e.message);
+        }
 
-        toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+        }
       } catch (err) {
-        toast(`Error: ${err.message}`, 'error');
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = 'Activate';
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`Error: ${err.message}`, 'error');
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = 'Activate';
+          }
         }
       } finally {
         interceptorsInProgress.delete('android-adb');
@@ -4345,6 +4386,7 @@
     }
 
     async function refreshAndroidDevices() {
+      const operation = beginInterceptorOperation('android-adb');
       try {
         const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
           method: 'POST',
@@ -4352,6 +4394,7 @@
           body: JSON.stringify({})
         });
         const data = await res.json();
+        if (!isCurrentInterceptorOperation(operation)) return;
         if (data.metadata) {
           expandedInterceptorMetadata = {
             ...expandedInterceptorMetadata,
@@ -4365,7 +4408,9 @@
         }
         toast('Device list refreshed', 'success');
       } catch (err) {
-        toast(`Error refreshing devices: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`Error refreshing devices: ${err.message}`, 'error');
+        }
       }
     }
 
@@ -4438,6 +4483,7 @@
 
     async function activateJvmProcess(pid) {
       if (interceptorsInProgress.has('jvm')) return;
+      const operation = beginInterceptorOperation('jvm');
       interceptorsInProgress.add('jvm');
       filterInterceptors();
 
@@ -4456,6 +4502,7 @@
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+        if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh process and activation info
         if (data.metadata) {
@@ -4476,16 +4523,23 @@
         try {
           const r = await fetch(`${API_BASE}/api/interceptors`);
           const d = await r.json();
+          if (!isCurrentInterceptorOperation(operation)) return;
           allInterceptors = d.interceptors;
           renderConnectedSources(allInterceptors);
-        } catch (e) { console.error('[Error]', e.message); }
+        } catch (e) {
+          if (isCurrentInterceptorOperation(operation)) console.error('[Error]', e.message);
+        }
 
-        toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`JVM process ${data.metadata?.name || pid} attached`, 'success');
+        }
       } catch (err) {
-        toast(`Error: ${err.message}`, 'error');
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = 'Attach';
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`Error: ${err.message}`, 'error');
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = 'Attach';
+          }
         }
       } finally {
         interceptorsInProgress.delete('jvm');
@@ -4494,6 +4548,7 @@
     }
 
     async function refreshJvmProcesses() {
+      const operation = beginInterceptorOperation('jvm');
       try {
         const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
           method: 'POST',
@@ -4501,6 +4556,7 @@
           body: JSON.stringify({})
         });
         const data = await res.json();
+        if (!isCurrentInterceptorOperation(operation)) return;
         if (data.metadata) {
           expandedInterceptorMetadata = {
             ...expandedInterceptorMetadata,
@@ -4514,24 +4570,30 @@
         }
         toast('Process list refreshed', 'success');
       } catch (err) {
-        toast(`Error refreshing processes: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation)) {
+          toast(`Error refreshing processes: ${err.message}`, 'error');
+        }
       }
     }
 
     async function focusInterceptor(id) {
+      interceptorSelectionGeneration++;
+      const operation = beginInterceptorOperation(id);
       const interceptor = allInterceptors.find(i => i.id === id);
       const name = interceptor?.name || id;
       try {
         const res = await fetch(`${API_BASE}/api/interceptors/${id}/focus`, { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-        toast(`Focused ${name}`, 'success');
+        if (isCurrentInterceptorOperation(operation, false)) toast(`Focused ${name}`, 'success');
       } catch (err) {
-        toast(`Could not focus ${name}: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation, false)) {
+          toast(`Could not focus ${name}: ${err.message}`, 'error');
+        }
       }
     }
 
-    async function deactivateInterceptor(id) {
+    async function deactivateInterceptor(id, operation = null) {
       if (interceptorsInProgress.has(id)) return;
 
       const interceptor = allInterceptors.find(i => i.id === id);
@@ -4542,10 +4604,14 @@
         const res = await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-        toast(`Stopped ${name}`, 'success');
-        setTimeout(loadInterceptors, 300);
+        if (!operation || isCurrentInterceptorOperation(operation, false)) {
+          toast(`Stopped ${name}`, 'success');
+          setTimeout(loadInterceptors, 300);
+        }
       } catch (err) {
-        toast(`Error: ${err.message}`, 'error');
+        if (!operation || isCurrentInterceptorOperation(operation, false)) {
+          toast(`Error: ${err.message}`, 'error');
+        }
       } finally {
         interceptorsInProgress.delete(id);
         filterInterceptors();
@@ -4554,10 +4620,12 @@
 
     async function toggleInterceptor(id, isActive) {
       if (interceptorsInProgress.has(id)) return;
+      interceptorSelectionGeneration++;
+      const operation = beginInterceptorOperation(id);
 
       try {
         if (isActive) {
-          await deactivateInterceptor(id);
+          await deactivateInterceptor(id, operation);
         } else {
           interceptorsInProgress.add(id);
           filterInterceptors(); // re-render to show loading overlay
@@ -4569,6 +4637,7 @@
             });
             const data = await res.json();
             if (data.error) throw new Error(data.error);
+            if (!isCurrentInterceptorOperation(operation, false)) return;
 
             toast(`Launched ${id}`, 'success');
             // Auto-switch to Traffic view on successful activation (like HTTP Toolkit)
@@ -4578,11 +4647,11 @@
             interceptorsInProgress.delete(id);
           }
         }
-        setTimeout(loadInterceptors, 500);
+        if (isCurrentInterceptorOperation(operation, false)) setTimeout(loadInterceptors, 500);
       } catch (err) {
         interceptorsInProgress.delete(id);
         filterInterceptors();
-        toast(`Error: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation, false)) toast(`Error: ${err.message}`, 'error');
       }
     }
 

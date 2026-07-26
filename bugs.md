@@ -1322,6 +1322,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-200 — Medium — Concurrent interceptor-card responses restore the wrong card
 
+- Status: **Fixed**.
+- Resolution: Interceptor card selections and per-card operations now carry generation tokens. Stale activation, failure, child action, and metadata-refresh completions cannot replace a newer selection or emit obsolete UI feedback, while independent cards retain separate progress and may operate concurrently.
+
 - Evidence: `src/ui/app.js:3853-3892` uses one shared `expandedInterceptorMetadata` and `expandedInterceptorId`; every asynchronous response overwrites both without verifying that its card is still the latest selection, and earlier requests are not aborted.
 - Impact: a slow earlier activation/metadata response can replace the user's newer expanded card and contents.
 - Reproduction: delay Android's response, click Android and then JVM; when Android finishes, it switches the UI back.
