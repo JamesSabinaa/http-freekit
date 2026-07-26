@@ -7,7 +7,7 @@ import vm from 'node:vm';
 
 const mainSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.cjs'), 'utf8');
 const requestStart = mainSource.indexOf('function requestOpenInProxiedChrome(url)');
-const requestEnd = mainSource.indexOf('function handleDeepLink(value)', requestStart);
+const requestEnd = mainSource.indexOf('function handleDeepLink(', requestStart);
 assert.ok(requestStart >= 0 && requestEnd > requestStart, 'deep-link request functions must be present');
 const requestSource = mainSource.slice(requestStart, requestEnd);
 

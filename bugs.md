@@ -2190,6 +2190,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-213 — Low — Deep-link launch failures leave the desktop window hidden
 
+- Status: **Fixed**.
+- Resolution: Startup and queued launch links now carry a startup-only failure-recovery flag through parsing and proxied-browser requests. A failure reveals and focuses the main window immediately when ready, or queues that reveal until `ready-to-show`; successful startup links remain hidden and later links retain their existing behavior.
+
 - Evidence: any startup deep-link sets `showOnReady: false` at `electron/main.cjs:425-429`. Parse/request failure paths at `:152-159,196-208` report the error but never call `showMainWindow()`.
 - Impact: after dismissing a failed startup link, the main window remains hidden and must be recovered from the tray.
 - Reproduction: launch the stopped app with an invalid target or force proxied-Chrome opening to fail.

@@ -14,6 +14,8 @@ const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 
 let mainWindow = null;
+let mainWindowReadyToShow = false;
+let showMainWindowWhenReady = false;
 let serverProcess = null;
 let apiPort = null;
 let isShuttingDown = false;
@@ -152,17 +154,30 @@ function registerProtocolHandler() {
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindowReadyToShow) {
+    showMainWindowWhenReady = true;
+    return;
+  }
+  showMainWindowWhenReady = false;
   if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
 }
 
-function reportDeepLinkError(err) {
+function handleMainWindowReady(windowForReady, showOnReady) {
+  if (mainWindow !== windowForReady || windowForReady.isDestroyed()) return;
+  mainWindowReadyToShow = true;
+  if (showMainWindowWhenReady) showMainWindow();
+  else if (showOnReady) windowForReady.show();
+}
+
+function reportDeepLinkError(err, { revealWindow = false } = {}) {
   const message = err?.message || String(err);
   if (app.isReady()) {
     dialog.showErrorBox('HTTP FreeKit — Could Not Open Link', message);
   } else {
     console.error('[Deep Link]', message);
   }
+  if (revealWindow) showMainWindow();
 }
 
 function requestOpenInProxiedChrome(url) {
@@ -223,18 +238,18 @@ function requestOpenInProxiedChrome(url) {
   });
 }
 
-function scheduleDeepLink(targetUrl) {
+function scheduleDeepLink(targetUrl, { revealWindowOnFailure = false } = {}) {
   deepLinkProcessing = deepLinkProcessing
     .then(() => requestOpenInProxiedChrome(targetUrl))
-    .catch(reportDeepLinkError);
+    .catch(err => reportDeepLinkError(err, { revealWindow: revealWindowOnFailure }));
 }
 
-function handleDeepLink(value) {
+function handleDeepLink(value, { revealWindowOnFailure = false } = {}) {
   let targetUrl;
   try {
     targetUrl = parseOpenDeepLink(value);
   } catch (err) {
-    reportDeepLinkError(err);
+    reportDeepLinkError(err, { revealWindow: revealWindowOnFailure });
     return;
   }
 
@@ -242,12 +257,12 @@ function handleDeepLink(value) {
     pendingDeepLinks.push(targetUrl);
     return;
   }
-  scheduleDeepLink(targetUrl);
+  scheduleDeepLink(targetUrl, { revealWindowOnFailure });
 }
 
-function flushPendingDeepLinks() {
+function flushPendingDeepLinks({ revealWindowOnFailure = false } = {}) {
   for (const targetUrl of pendingDeepLinks.splice(0)) {
-    scheduleDeepLink(targetUrl);
+    scheduleDeepLink(targetUrl, { revealWindowOnFailure });
   }
 }
 
@@ -339,6 +354,9 @@ function createWindow({ showOnReady = true } = {}) {
       preload: path.join(__dirname, 'preload.cjs')
     }
   });
+  mainWindowReadyToShow = false;
+  showMainWindowWhenReady = false;
+  const windowForReady = mainWindow;
 
   windowState.manage(mainWindow);
 
@@ -363,16 +381,16 @@ function createWindow({ showOnReady = true } = {}) {
     return { action: 'deny' };
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${apiPort}/?authToken=${authToken}`);
+  mainWindow.once('ready-to-show', () => {
+    handleMainWindowReady(windowForReady, showOnReady);
+  });
 
-  if (showOnReady) {
-    mainWindow.once('ready-to-show', () => {
-      mainWindow.show();
-    });
-  }
+  mainWindow.loadURL(`http://127.0.0.1:${apiPort}/?authToken=${authToken}`);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    mainWindowReadyToShow = false;
+    showMainWindowWhenReady = false;
   });
 }
 
@@ -499,8 +517,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const startupDeepLink = findDeepLinkArg(process.argv);
     const launchedFromDeepLink = !!startupDeepLink || pendingDeepLinks.length > 0;
     createWindow({ showOnReady: !launchedFromDeepLink });
-    if (startupDeepLink) handleDeepLink(startupDeepLink);
-    flushPendingDeepLinks();
+    if (startupDeepLink) {
+      handleDeepLink(startupDeepLink, { revealWindowOnFailure: launchedFromDeepLink });
+    }
+    flushPendingDeepLinks({ revealWindowOnFailure: launchedFromDeepLink });
 
     // Set up application menu
     const appMenu = buildAppMenu(mainWindow);
