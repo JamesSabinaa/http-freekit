@@ -652,7 +652,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-190 — Low/Medium — HAR unknown-size sentinels corrupt MCP bandwidth stats
 
 - Status: **Fixed**.
-- Resolution: HAR imports now normalize unknown or malformed body sizes to zero, and MCP bandwidth aggregation and formatting ignore invalid legacy byte counts safely while preserving finite non-negative values.
+- Resolution: HAR imports preserve the standard `-1` unknown-size sentinel for lossless export while normalizing malformed sizes to zero. MCP bandwidth aggregation and formatting ignore unknown or invalid byte counts safely while preserving finite non-negative values.
 
 - Evidence: HAR import preserves the standard `bodySize: -1` sentinel because it is truthy; MCP adds it directly to bandwidth and `formatBytes()` applies `Math.log(bytes)` without a negative guard (`src/api/api-server.js` HAR import; `src/mcp/mcp-server.js:253-274,518-523`).
 - Impact: a valid unknown size produces negative totals, `NaN undefined`, or undercounting when combined with other traffic.
@@ -859,6 +859,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: make settings persistence fail, POST a new upstream or mock, then query/use runtime state.
 
 ### BUG-268 — Low/Medium — HAR conversion conflates wire and decoded body sizes
+
+- Status: **Fixed**.
 
 - Evidence: HAR import stores `response.content.size` as internal responseBodySize and ignores `response.bodySize`; export writes that one value into both fields (`src/api/api-server.js` HAR mapping; `src/api/har-converter.js:66,73`).
 - Impact: compressed responses lose the distinction between transfer size and decoded content size, corrupting round trips and bandwidth analysis.

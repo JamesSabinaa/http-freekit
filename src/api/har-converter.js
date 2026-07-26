@@ -44,6 +44,12 @@ export function trafficToHar(requests, options = {}) {
         );
         const requestTruncation = toHarTruncation(req, 'request', requestBody);
         const responseTruncation = toHarTruncation(req, 'response', responseBody);
+        const requestWireBodySize = toHarSize(req.requestBodySize);
+        const responseWireBodySize = toHarSize(req.responseBodySize);
+        const responseDecodedBodySize = toHarSize(
+          req.responseBodyDecodedSize,
+          responseWireBodySize
+        );
         const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
         const requestHttpVersion = req.requestHttpVersion || httpVersion;
         const responseHttpVersion = req.responseHttpVersion || httpVersion;
@@ -70,7 +76,7 @@ export function trafficToHar(requests, options = {}) {
               ...(requestTruncation || {})
             } : undefined,
             headersSize: -1,
-            bodySize: req.requestBodySize || 0
+            bodySize: requestWireBodySize
           },
           response: {
             status: req.statusCode || 0,
@@ -79,7 +85,7 @@ export function trafficToHar(requests, options = {}) {
             cookies: Array.isArray(req.responseCookies) ? req.responseCookies : [],
             headers: resHeaders,
             content: {
-              size: responseTruncation?._capturedSize ?? (req.responseBodySize || 0),
+              size: responseTruncation?._capturedSize ?? responseDecodedBodySize,
               mimeType: req.responseContentMimeType || resContentType,
               text: responseBody?.text || '',
               ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {}),
@@ -87,7 +93,7 @@ export function trafficToHar(requests, options = {}) {
             },
             redirectURL: getHeaderValue(req.responseHeaders, 'location'),
             headersSize: -1,
-            bodySize: req.responseBodySize || 0
+            bodySize: responseWireBodySize
           },
           cache: {},
           timings: {
@@ -127,6 +133,12 @@ function toHarBody(body, bodyEncoding, omitted = false) {
   return { text: body };
 }
 
+function toHarSize(value, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
+    ? value
+    : fallback;
+}
+
 function toHarTruncation(request, side, body) {
   if (request[`${side}BodyTruncated`] !== true) return null;
   const capturedSize = Number.isFinite(request[`${side}BodyCapturedSize`])
@@ -134,9 +146,10 @@ function toHarTruncation(request, side, body) {
     : body?.encoding === 'base64'
       ? Buffer.byteLength(body.text, 'base64')
       : Buffer.byteLength(body?.text || '');
-  const originalSize = Number.isFinite(request[`${side}BodyDecodedSize`])
-    ? request[`${side}BodyDecodedSize`]
-    : request[`${side}BodySize`] || 0;
+  const originalSize = toHarSize(
+    request[`${side}BodyDecodedSize`],
+    toHarSize(request[`${side}BodySize`])
+  );
   return {
     comment: `Body capture truncated: ${capturedSize} of ${originalSize} bytes retained`,
     _truncated: true,

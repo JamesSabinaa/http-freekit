@@ -49,7 +49,9 @@ function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
 }
 
 function normalizeHarBodySize(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+  return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
+    ? value
+    : 0;
 }
 
 function hasCompleteMockMatchers(matchers) {
@@ -395,7 +397,12 @@ print(json.dumps({"providers": get_proxy_providers()}))
       'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
       'requestBodyEncoding', 'responseBodyEncoding', 'statusMessage', 'protocol', 'source'
     ];
-    const numberFields = ['statusCode', 'duration', 'requestBodySize', 'responseBodySize'];
+    const bodySizeFields = [
+      'requestBodySize', 'responseBodySize',
+      'requestBodyDecodedSize', 'responseBodyDecodedSize'
+    ];
+    const capturedSizeFields = ['requestBodyCapturedSize', 'responseBodyCapturedSize'];
+    const numberFields = ['statusCode', 'duration', ...bodySizeFields, ...capturedSizeFields];
 
     for (let index = 0; index < requests.length; index++) {
       const request = requests[index];
@@ -423,7 +430,16 @@ print(json.dumps({"providers": get_proxy_providers()}))
            (request.statusCode !== 0 && (request.statusCode < 100 || request.statusCode > 999)))) {
         return `requests[${index}].statusCode must be 0 or an integer from 100 to 999`;
       }
-      for (const field of ['duration', 'requestBodySize', 'responseBodySize']) {
+      if (request.duration !== undefined && request.duration !== null && request.duration < 0) {
+        return `requests[${index}].duration must be non-negative`;
+      }
+      for (const field of bodySizeFields) {
+        if (request[field] !== undefined && request[field] !== null &&
+            request[field] < 0 && request[field] !== -1) {
+          return `requests[${index}].${field} must be non-negative or -1 for an unknown size`;
+        }
+      }
+      for (const field of capturedSizeFields) {
         if (request[field] !== undefined && request[field] !== null && request[field] < 0) {
           return `requests[${index}].${field} must be non-negative`;
         }
@@ -948,6 +964,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             : new Date(entry.startedDateTime).getTime();
           const requestBody = harBodyToTraffic(entry.request.postData);
           const responseBody = harBodyToTraffic(entry.response?.content);
+          const responseBodyDecodedSize = entry.response?.content?.size === undefined
+            ? undefined
+            : normalizeHarBodySize(entry.response.content.size);
 
           return {
             id: crypto.randomUUID(),
@@ -976,7 +995,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
             responseContentMimeType: entry.response?.content?.mimeType || '',
             responseHttpVersion: entry.response?.httpVersion || '',
-            responseBodySize: normalizeHarBodySize(entry.response?.content?.size),
+            responseBodySize: normalizeHarBodySize(entry.response?.bodySize),
+            ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
             duration: entry.time || 0,
             timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : importTimestamp,
             source: 'import'

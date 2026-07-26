@@ -8543,7 +8543,9 @@
 
     // ============ HAR IMPORT ============
     function normalizeHarBodySize(value) {
-      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+      return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
+        ? value
+        : 0;
     }
 
     function assertHarObject(value, fieldPath) {
@@ -8658,9 +8660,12 @@
         `${entryPath}.request.bodySize`
       );
       const responseBodySize = normalizeHarSize(
-        content?.size,
-        `${entryPath}.response.content.size`
+        response.bodySize,
+        `${entryPath}.response.bodySize`
       );
+      const responseBodyDecodedSize = content?.size === undefined
+        ? undefined
+        : normalizeHarSize(content.size, `${entryPath}.response.content.size`);
       const timestamp = normalizeHarTimestamp(entry.startedDateTime, `${entryPath}.startedDateTime`);
       const duration = normalizeHarNonNegativeNumber(entry.time, `${entryPath}.time`, { optional: true });
       const requestPostData = request.postData === undefined
@@ -8722,6 +8727,7 @@
         responseContentMimeType,
         responseHttpVersion,
         responseBodySize,
+        ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
         duration,
         timestamp,
         source: 'import',
@@ -10033,7 +10039,7 @@
     }
 
     function formatSize(bytes) {
-      if (bytes == null || bytes === 0) return '-';
+      if (bytes == null || bytes <= 0) return '-';
       if (bytes < 1024) return bytes + 'B';
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
       return (bytes / (1024 * 1024)).toFixed(1) + 'MB';

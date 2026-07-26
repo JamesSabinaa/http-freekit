@@ -33,7 +33,7 @@ function postHar(port, body) {
   });
 }
 
-function harEntry(requestBodySize, responseBodySize) {
+function harEntry(requestBodySize, responseBodySize, responseDecodedSize = responseBodySize) {
   return {
     startedDateTime: '2026-01-01T00:00:00.000Z',
     time: 1,
@@ -47,12 +47,13 @@ function harEntry(requestBodySize, responseBodySize) {
       status: 200,
       statusText: 'OK',
       headers: [],
-      content: { size: responseBodySize }
+      bodySize: responseBodySize,
+      content: { size: responseDecodedSize }
     }
   };
 }
 
-test('API HAR import normalizes unknown and malformed body sizes', async t => {
+test('API HAR import preserves unknown body sizes and normalizes malformed sizes', async t => {
   const proxy = {
     port: 8081,
     mockRules: [],
@@ -80,10 +81,14 @@ test('API HAR import normalizes unknown and malformed body sizes', async t => {
   });
 
   assert.equal(response.statusCode, 200, response.body);
-  assert.deepEqual(api.trafficLog.map(record => [record.requestBodySize, record.responseBodySize]), [
-    [0, 0],
-    [0, 1024],
-    [0, 0]
+  assert.deepEqual(api.trafficLog.map(record => [
+    record.requestBodySize,
+    record.responseBodySize,
+    record.responseBodyDecodedSize
+  ]), [
+    [-1, -1, -1],
+    [0, 1024, 1024],
+    [0, 0, 0]
   ]);
 });
 
@@ -108,7 +113,7 @@ test('renderer HAR mapping applies the same body-size normalization', () => {
     ];
   `, context);
 
-  assert.deepEqual(Array.from(context.results), [0, 0, 0, 0, 0, 1024]);
+  assert.deepEqual(Array.from(context.results), [-1, 0, 0, 0, 0, 1024]);
 });
 
 test('MCP bandwidth stats ignore invalid legacy sizes without undercounting valid bytes', () => {

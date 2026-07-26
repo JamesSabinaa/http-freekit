@@ -166,6 +166,7 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
     status: 201,
     statusText: 'Created',
     httpVersion: 'HTTP/2',
+    bodySize: 6,
     cookies: [{ name: 'response-cookie', value: 'two' }],
     headers: [
       { name: 'Set-Cookie', value: 'a=1' },
@@ -180,6 +181,7 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   };
   const unknownSizes = validEntry();
   unknownSizes.request.bodySize = -1;
+  unknownSizes.response.bodySize = -1;
   unknownSizes.response.content.size = -1;
   unknownSizes.request.url = 'http://size-default.example/';
   const harness = createRendererHarness();
@@ -205,14 +207,16 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.equal(imported.responseBodyEncoding, 'base64');
   assert.equal(imported.requestBodySize, 4);
   assert.equal(imported.responseBodySize, 6);
+  assert.equal(imported.responseBodyDecodedSize, 6);
   assert.equal(imported.duration, 25.5);
   assert.equal(imported.timestamp, Date.parse(rich.startedDateTime));
   assert.equal(imported.requestHttpVersion, 'HTTP/2');
   assert.equal(imported.responseHttpVersion, 'HTTP/2');
   assert.equal(imported.requestPostDataMimeType, 'application/octet-stream');
   assert.equal(imported.responseContentMimeType, 'application/octet-stream');
-  assert.equal(harness.added[1].requestBodySize, 0);
-  assert.equal(harness.added[1].responseBodySize, 0);
+  assert.equal(harness.added[1].requestBodySize, -1);
+  assert.equal(harness.added[1].responseBodySize, -1);
+  assert.equal(harness.added[1].responseBodyDecodedSize, -1);
 
   const reexported = trafficToHar([imported], { maskSensitive: false }).log.entries[0];
   assert.equal(reexported.request.postData.text, 'AQID');

@@ -170,8 +170,9 @@ test('valid rich HAR entries retain normalization, metadata, bodies, and generat
   assert.equal(response.body.imported, 1);
   assert.equal(api.trafficLog[0].id, 'stable-har-id');
   assert.equal(api.trafficLog[0].protocol, 'h2');
-  assert.equal(api.trafficLog[0].requestBodySize, 0);
-  assert.equal(api.trafficLog[0].responseBodySize, 0);
+  assert.equal(api.trafficLog[0].requestBodySize, -1);
+  assert.equal(api.trafficLog[0].responseBodySize, -1);
+  assert.equal(api.trafficLog[0].responseBodyDecodedSize, -1);
   assert.deepEqual(api.trafficLog[0].requestHeaders['x-repeated'], ['one', 'two']);
   assert.deepEqual(api.trafficLog[0].responseHeaders['set-cookie'], ['a=1', 'b=2']);
   assert.equal(api.trafficLog[0].requestBody, 'data:application/octet-stream;base64,AQID');
@@ -183,4 +184,7 @@ test('valid rich HAR entries retain normalization, metadata, bodies, and generat
   assert.deepEqual(exported.request.postData.params, params);
   assert.equal(exported.request.postData.encoding, 'base64');
   assert.equal(exported.response.content.encoding, 'base64');
+  assert.equal(exported.request.bodySize, -1);
+  assert.equal(exported.response.bodySize, -1);
+  assert.equal(exported.response.content.size, -1);
 });
