@@ -713,6 +713,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-216 — Low/Medium — Traffic import permits duplicate and colliding IDs
 
+- Status: **Fixed**.
+- Resolution: Imported traffic now retains unique nonconflicting IDs and remaps batch or current-log collisions to fresh UUIDs without mutating submitted records. UUID allocation reserves current, submitted, retained, and newly generated IDs, while capped imports preserve only the addressable tail.
+
 - Evidence: JSON validation requires only a nonempty string ID and appends records unchanged at `src/api/api-server.js:295-339,765-780`, including duplicates and collisions with existing traffic. Detail/API/MCP consumers use the first match.
 - Impact: later records become unaddressable, selection is ambiguous, and ID-keyed renderer state can alias unrelated exchanges.
 - Reproduction: import two valid records with `id: "dup"` and request `/api/traffic/dup` or select it through MCP.

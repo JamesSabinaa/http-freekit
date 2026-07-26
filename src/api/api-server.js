@@ -1630,12 +1630,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const incomingStart = Math.max(0, requests.length - limit);
     const incomingCount = requests.length - incomingStart;
     const existingCount = Math.min(this.trafficLog.length, limit - incomingCount);
+    const existingIds = new Set(this.trafficLog.map(request => request.id));
+    const reservedIds = new Set(existingIds);
+    for (const request of requests) reservedIds.add(request.id);
 
     if (this.trafficLog.length > existingCount) {
       this.trafficLog.splice(0, this.trafficLog.length - existingCount);
     }
+    const assignedIds = new Set(this.trafficLog.map(request => request.id));
     for (let index = incomingStart; index < requests.length; index++) {
-      this.trafficLog.push(requests[index]);
+      const request = requests[index];
+      let id = request.id;
+      if (existingIds.has(id) || assignedIds.has(id)) {
+        do {
+          id = crypto.randomUUID();
+        } while (reservedIds.has(id) || assignedIds.has(id));
+      }
+      reservedIds.add(id);
+      assignedIds.add(id);
+      this.trafficLog.push({ ...request, id });
     }
   }
 
