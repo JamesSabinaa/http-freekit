@@ -1759,6 +1759,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-316 — Low/Medium — Global Chrome detection false-positives on command arguments
 
+- Status: **Fixed**.
+- Resolution: Browser process snapshots now keep command lines for profile-tree tracking while separately exposing sanitized Windows executable paths and POSIX command names plus argv0. Global browser detection compares only those executable identities with platform-correct path and case rules, never later command arguments.
+
 - Evidence: `_isBrowserRunning()` at `src/interceptors/existing-browser-interceptor.js:33-42` searches each entire process command line for the selected browser's full path or executable basename instead of checking the process executable/argv0.
 - Impact: an unrelated editor, installer, or script that merely mentions `chrome.exe` can block Global Chrome activation with an instruction to close a browser that is not running.
 - Reproduction: return a process snapshot containing `notepad.exe "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"`; `_isBrowserRunning()` returns true.

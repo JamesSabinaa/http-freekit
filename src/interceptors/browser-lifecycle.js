@@ -7,6 +7,18 @@ import { execFileAsync } from './command-runner.js';
 const PROFILE_MARKER = '.http-freekit-profile.json';
 const MANAGED_PROFILE_PATTERN = /^http-freekit-(?:chrome|firefox|edge|brave)-[A-Za-z0-9._-]+$/;
 const PROCESS_START_TOLERANCE_MS = 2000;
+const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = `
+$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+  [pscustomobject]@{
+    pid = [int]$_.ProcessId
+    ppid = [int]$_.ParentProcessId
+    command = [string]$_.CommandLine
+    executablePath = [string]$_.ExecutablePath
+    startedAt = if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
+  }
+})
+[Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
+`;
 const BROWSER_PROCESS_NAMES = {
   win32: {
     chromium: new Set([
@@ -89,6 +101,17 @@ function splitProcessCommandLine(commandLine, platform) {
 
   if (started) args.push(current);
   return args;
+}
+
+function sanitizeProcessIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const sanitized = value.trim();
+  if (!sanitized || sanitized.length > 32768 || /[\0\r\n]/.test(sanitized)) return null;
+  return sanitized;
+}
+
+export function getProcessArgv0(commandLine, platform = process.platform) {
+  return sanitizeProcessIdentity(splitProcessCommandLine(commandLine, platform)[0]);
 }
 
 /** Match only browser launch arguments that select this exact profile. */
@@ -252,54 +275,62 @@ function isProfileOwnerActive(owner, processes) {
   return startedAt <= owner.createdAt;
 }
 
-function parsePosixProcessSnapshot(output) {
-  return output.split(/\r?\n/).flatMap(line => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*(.*)$/);
+export function parsePosixProcessSnapshot(output) {
+  return String(output || '').split(/\r?\n/).flatMap(line => {
+    // Repeating PID creates a reliable boundary after a comm value that may
+    // itself contain spaces, while keeping comm and args in one ps snapshot.
+    const match = line.match(/^\s*(\d+)\s+(.*?)\s+\1\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*(.*)$/);
     if (!match) return [];
-    const startedAt = Date.parse(match[3]);
+    const startedAt = Date.parse(match[4]);
+    const pid = Number(match[1]);
+    const command = match[5] || '';
     return [{
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
+      pid,
+      ppid: Number(match[3]),
       startedAt: Number.isFinite(startedAt) ? startedAt : null,
-      command: match[4] || ''
+      command,
+      executablePath: null,
+      commandName: sanitizeProcessIdentity(match[2]),
+      argv0: getProcessArgv0(command, 'linux')
     }];
   });
 }
 
+export function parseWindowsProcessSnapshot(output) {
+  const serialized = String(output || '').trim();
+  if (!serialized) return [];
+  const parsed = JSON.parse(serialized);
+  return (Array.isArray(parsed) ? parsed : [parsed]).map(item => {
+    const command = String(item.command || '');
+    return {
+      pid: Number(item.pid),
+      ppid: Number(item.ppid),
+      startedAt: Date.parse(item.startedAt),
+      command,
+      executablePath: sanitizeProcessIdentity(item.executablePath),
+      commandName: null,
+      argv0: getProcessArgv0(command, 'win32')
+    };
+  });
+}
+
 function getWindowsProcessSnapshot() {
-  const script = `
-$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
-  [pscustomobject]@{
-    pid = [int]$_.ProcessId
-    ppid = [int]$_.ParentProcessId
-    command = [string]$_.CommandLine
-    startedAt = if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
-  }
-})
-[Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
-`;
   const output = execFileSync(
     'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_PROCESS_SNAPSHOT_SCRIPT],
     { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 5 * 1024 * 1024 }
-  ).trim();
-  if (!output) return [];
-  const parsed = JSON.parse(output);
-  return (Array.isArray(parsed) ? parsed : [parsed]).map(item => ({
-    pid: Number(item.pid),
-    ppid: Number(item.ppid),
-    startedAt: Date.parse(item.startedAt),
-    command: String(item.command || '')
-  }));
+  );
+  return parseWindowsProcessSnapshot(output);
 }
 
 function getPosixProcessSnapshot() {
-  const output = execFileSync('ps', ['-eo', 'pid=,ppid=,lstart=,args='], {
+  const options = {
     encoding: 'utf8',
     timeout: 5000,
     maxBuffer: 5 * 1024 * 1024,
     env: { ...process.env, LC_ALL: 'C' }
-  });
+  };
+  const output = execFileSync('ps', ['-eo', 'pid=,comm=,pid=,ppid=,lstart=,args='], options);
   return parsePosixProcessSnapshot(output);
 }
 
@@ -309,38 +340,25 @@ export function getProcessSnapshot() {
 
 export async function getProcessSnapshotAsync() {
   if (process.platform === 'win32') {
-    const script = `
-$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
-  [pscustomobject]@{
-    pid = [int]$_.ProcessId
-    ppid = [int]$_.ParentProcessId
-    command = [string]$_.CommandLine
-    startedAt = if ($null -ne $_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
-  }
-})
-[Console]::Out.Write((ConvertTo-Json -InputObject $items -Compress))
-`;
     const output = String(await execFileAsync(
       'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_PROCESS_SNAPSHOT_SCRIPT],
       { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 5 * 1024 * 1024 }
-    )).trim();
-    if (!output) return [];
-    const parsed = JSON.parse(output);
-    return (Array.isArray(parsed) ? parsed : [parsed]).map(item => ({
-      pid: Number(item.pid),
-      ppid: Number(item.ppid),
-      startedAt: Date.parse(item.startedAt),
-      command: String(item.command || '')
-    }));
+    ));
+    return parseWindowsProcessSnapshot(output);
   }
 
-  const output = String(await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart=,args='], {
+  const options = {
     encoding: 'utf8',
     timeout: 5000,
     maxBuffer: 5 * 1024 * 1024,
     env: { ...process.env, LC_ALL: 'C' }
-  }));
+  };
+  const output = String(await execFileAsync(
+    'ps',
+    ['-eo', 'pid=,comm=,pid=,ppid=,lstart=,args='],
+    options
+  ));
   return parsePosixProcessSnapshot(output);
 }
 

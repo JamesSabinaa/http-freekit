@@ -18,6 +18,7 @@ test('Global Chrome refuses activation while Chrome is already running', async (
 
 test('browser process detection recognizes the selected executable', async () => {
   const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
+  interceptor._getPlatform = () => 'win32';
   interceptor._getProcessSnapshot = async () => [{
     command: '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --type=browser'
   }];

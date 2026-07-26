@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
-import { getProcessSnapshotAsync } from './browser-lifecycle.js';
+import { getProcessArgv0, getProcessSnapshotAsync } from './browser-lifecycle.js';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 
@@ -35,15 +35,41 @@ export class ExistingBrowserInterceptor {
     return getProcessSnapshotAsync();
   }
 
+  _getPlatform() {
+    return process.platform;
+  }
+
   async _isBrowserRunning(browserPath) {
-    const normalizedPath = String(browserPath).replace(/\\/g, '/').toLowerCase();
-    const executableName = path.basename(browserPath).toLowerCase();
-    const escapedName = executableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const executablePattern = new RegExp(`(^|[\\s/\\\\"])${escapedName}(?=$|\\s|\")`, 'i');
+    const platform = this._getPlatform();
+    const pathApi = platform === 'win32' ? path.win32 : path.posix;
+    const normalize = value => {
+      const normalized = pathApi.normalize(String(value));
+      return platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
+    const selectedPath = normalize(browserPath);
+    const selectedName = normalize(pathApi.basename(browserPath));
+    const selectedIsAbsolute = pathApi.isAbsolute(browserPath);
+    const identityMatches = identity => {
+      if (typeof identity !== 'string' || !identity || /[\0\r\n]/.test(identity)) return false;
+      const value = identity.trim();
+      if (!value) return false;
+      if (pathApi.isAbsolute(value)) {
+        return selectedIsAbsolute
+          ? normalize(value) === selectedPath
+          : normalize(pathApi.basename(value)) === selectedName;
+      }
+      return normalize(pathApi.basename(value)) === selectedName;
+    };
     const processes = await this._getProcessSnapshot();
-    return processes.some(({ command }) => {
-      const normalizedCommand = String(command || '').replace(/\\/g, '/').toLowerCase();
-      return normalizedCommand.includes(normalizedPath) || executablePattern.test(normalizedCommand);
+    return processes.some(processInfo => {
+      if (processInfo.executablePath) {
+        // A full OS-reported executable path is authoritative. Do not let a
+        // same-named executable elsewhere, or its arguments, override it.
+        return identityMatches(processInfo.executablePath);
+      }
+      if (platform !== 'win32' && identityMatches(processInfo.commandName)) return true;
+      const argv0 = processInfo.argv0 || getProcessArgv0(processInfo.command, platform);
+      return identityMatches(argv0);
     });
   }
 
