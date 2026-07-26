@@ -2714,6 +2714,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-328 — Low — Electron Browse failures are unhandled
 
+- Status: **Fixed**.
+- Resolution: Electron application Browse now catches both synchronous bridge failures and rejected picker Promises, reports a clear error toast, and resolves the inline handler without an unhandled rejection. Successful selections remain unchanged and cancellation stays silent.
+
 - Evidence: `browseElectronApp()` at `src/ui/app.js:3953-3965` directly awaits `window.electronApi.selectFilePath()` without try/catch, unlike the caught and toasted certificate picker path.
 - Impact: an IPC or native dialog rejection becomes an unhandled renderer Promise and gives the user no error feedback.
 - Reproduction: make `selectFilePath()` reject and click Browse; no toast appears and the renderer reports an unhandled rejection.

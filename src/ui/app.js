@@ -4213,10 +4213,15 @@
         toast('Enter the Electron executable path', 'success');
         return;
       }
-      const selectedPath = await window.electronApi.selectFilePath({
-        title: 'Select Electron application'
-      });
-      if (selectedPath) input.value = selectedPath;
+      try {
+        const selectedPath = await window.electronApi.selectFilePath({
+          title: 'Select Electron application'
+        });
+        if (selectedPath) input.value = selectedPath;
+      } catch (err) {
+        toast('Could not select Electron application: ' +
+          (err?.message || String(err || 'unknown error')), 'error');
+      }
     }
 
     async function launchElectronApp() {
