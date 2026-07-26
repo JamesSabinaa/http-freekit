@@ -999,6 +999,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-358 — Low/Medium — Scalar partial-JSON matchers match every JSON body
 
+- Status: **Fixed**.
+- Resolution: Partial-JSON matchers now compare scalar values, `null`, and empty containers exactly, while preserving top-level partial matching for non-empty objects and arrays.
+
 - Evidence: `json-body-includes` parses the expected value and checks `Object.keys(expected).every(...)` at `src/proxy/proxy-server.js:3920-3926`, without requiring an object with at least one property.
 - Impact: scalar expectations such as `1` or `true`, and an empty array, have no enumerable keys and therefore match every syntactically valid JSON body.
 - Reproduction: evaluate `json-body-includes` with matcher values `1`, `true`, or `[]` against body `2`; every evaluation returns true.

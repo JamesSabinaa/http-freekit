@@ -5306,8 +5306,18 @@ export class ProxyServer {
         try {
           const actual = JSON.parse(body);
           const expected = JSON.parse(matcher.value);
+          const expectedKeys = expected !== null && typeof expected === 'object'
+            ? Object.keys(expected)
+            : [];
+
+          // Scalars and empty containers have no partial structure to compare.
+          // Treat them as exact JSON values instead of matching vacuously.
+          if (expectedKeys.length === 0) {
+            return JSON.stringify(actual) === JSON.stringify(expected);
+          }
+
           // Check that all keys in expected exist in actual with matching values
-          return Object.keys(expected).every(k => JSON.stringify(actual[k]) === JSON.stringify(expected[k]));
+          return expectedKeys.every(k => JSON.stringify(actual[k]) === JSON.stringify(expected[k]));
         } catch { return false; }
       }
       case 'port': {
