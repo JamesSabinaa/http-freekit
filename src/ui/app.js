@@ -7220,19 +7220,30 @@
           if (!Array.isArray(rules)) throw new Error('Invalid format');
 
           const shouldReplace = mockRules.length > 0 && confirm('Replace existing rules? Click OK to replace, Cancel to append.');
+          const hasTopLevelGroups = rules.some(rule => rule?.type === 'group');
+          const useAtomicTreeImport = shouldReplace || hasTopLevelGroups;
 
-          if (shouldReplace) {
+          if (useAtomicTreeImport) {
+            const appendToExistingTree = hasTopLevelGroups && mockRules.length > 0 && !shouldReplace;
             const response = await fetch(API_BASE + '/api/mock-rules', {
               method: 'PUT',
               headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({ rules })
+              body: JSON.stringify({
+                rules,
+                ...(appendToExistingTree ? { mode: 'append' } : {})
+              })
             });
+            const result = await response.json().catch(() => ({}));
             if (!response.ok) {
-              const result = await response.json().catch(() => ({}));
               throw new Error(result.error || 'Server rejected imported rules');
             }
-            mockDraftRules.clear();
-            mockNewDraftIds.clear();
+            if (result?.success !== true || !Array.isArray(result.rules)) {
+              throw new Error('Server returned an invalid imported rule tree');
+            }
+            if (!appendToExistingTree) {
+              mockDraftRules.clear();
+              mockNewDraftIds.clear();
+            }
           } else {
             for (const rule of rules) {
               const response = await fetch(API_BASE + '/api/mock-rules', {
@@ -7240,9 +7251,12 @@
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify(rule)
               });
+              const result = await response.json().catch(() => ({}));
               if (!response.ok) {
-                const result = await response.json().catch(() => ({}));
                 throw new Error(result.error || 'Server rejected an imported rule');
+              }
+              if (result?.success !== true || !result.rule) {
+                throw new Error('Server returned an invalid imported rule');
               }
             }
           }

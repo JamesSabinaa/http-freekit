@@ -927,6 +927,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-334 — Medium — Rule-group exports cannot be imported back
 
+- Status: **Fixed**.
+- Resolution: Group-bearing imports now use the validated atomic rule-tree endpoint: empty and Replace imports replace the tree, while Append merges into the server's authoritative top-level tree without flattening groups or partially applying the file.
+
 - Evidence: `exportMockRules()` includes top-level groups. Replacement import now accepts them through the atomic PUT route, but `importMockRules()` selects Replace only when a mock already exists; an empty app necessarily uses append mode, which posts each group to the ordinary `/api/mock-rules` route and receives 400.
 - Impact: a valid `.htkrules` group backup still cannot restore into the normal empty-state destination. The failure is now reported instead of falsely toasted as success, but the group and all of its children remain absent.
 - Reproduction: export a group containing a rule, clear every mock, and import the file; append POST rejects the group and nothing is restored. Add an unrelated mock first, choose Replace, and the same file succeeds.

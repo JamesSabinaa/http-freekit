@@ -1276,13 +1276,20 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!Array.isArray(req.body?.rules)) {
         return res.status(400).json({ error: 'rules array is required' });
       }
+      const mode = req.body.mode === undefined ? 'replace' : req.body.mode;
+      if (mode !== 'replace' && mode !== 'append') {
+        return res.status(400).json({ error: 'mode must be replace or append' });
+      }
 
       const rules = req.body.rules.map(rule => normalizeImportedMockRule(rule));
       if (rules.some(rule => !rule)) {
         return res.status(400).json({ error: 'Every imported mock rule must be valid' });
       }
 
-      this._mutateRules('mockRules', 'mockRules', () => this.proxy.loadMockRules(rules));
+      const nextRules = mode === 'append'
+        ? [...this.proxy.mockRules, ...rules]
+        : rules;
+      this._mutateRules('mockRules', 'mockRules', () => this.proxy.loadMockRules(nextRules));
       res.json({ success: true, rules: this.proxy.mockRules });
     });
 
