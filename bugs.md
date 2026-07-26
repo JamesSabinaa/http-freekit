@@ -1677,6 +1677,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-302 — Low/Medium — Uninstalling the Android companion app makes Stop fail forever
 
+- Status: **Fixed**.
+- Resolution: Companion-app cleanup now treats only a confirmed missing package as already deactivated and still restores or removes FreeKit's reverse tunnel. Package-query and ADB transport failures remain retryable failures with device and tunnel ownership preserved.
+
 - Evidence: `_deactivateHttpToolkitApp()` at `src/interceptors/android-adb-interceptor.js:247-267` treats an absent package as a failed app deactivation even when tunnel cleanup succeeds. Deactivation then retains the record and throws at `:525-554`, so every retry repeats the same false failure.
 - Impact: uninstalling the companion app after activation leaves FreeKit permanently reporting that device as active and can make graceful shutdown report cleanup failure although the app/VPN is already gone.
 - Reproduction: activate a device through the companion app, uninstall `tech.httptoolkit.android.v1`, and click Stop; the interceptor remains active on every retry.

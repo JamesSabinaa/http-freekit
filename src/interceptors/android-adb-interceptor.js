@@ -25,6 +25,15 @@ function getActivityLaunchError(output) {
     : 'Android activity launch did not report Status: ok';
 }
 
+function reportsMissingHttpToolkitPackage(output) {
+  const escapedPackage = HTTP_TOOLKIT_ANDROID_PACKAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const text = String(output || '');
+  return new RegExp(
+    `(?:package\\s+${escapedPackage}\\s+(?:was\\s+)?not\\s+found|unknown\\s+package:?\\s*${escapedPackage})`,
+    'i'
+  ).test(text);
+}
+
 function ipv4ToInteger(address) {
   const parts = String(address).split('.').map(Number);
   if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
@@ -279,11 +288,33 @@ export class AndroidAdbInterceptor {
     });
   }
 
-  async _isHttpToolkitAppInstalled(deviceId) {
+  async _queryHttpToolkitAppInstalled(deviceId) {
     try {
-      await this._adb(deviceId, ['shell', 'pm', 'path', HTTP_TOOLKIT_ANDROID_PACKAGE], { timeout: 5000 });
-      return true;
-    } catch {
+      const output = await this._adb(
+        deviceId,
+        ['shell', 'pm', 'path', HTTP_TOOLKIT_ANDROID_PACKAGE],
+        { timeout: 5000 }
+      );
+      const packageOutput = String(output || '').trim();
+      if (!packageOutput || reportsMissingHttpToolkitPackage(packageOutput)) return false;
+      if (packageOutput.split(/\r?\n/).some(line => /^package:\S+\s*$/.test(line.trim()))) {
+        return true;
+      }
+      throw new Error(`Unexpected package query response for ${HTTP_TOOLKIT_ANDROID_PACKAGE}`);
+    } catch (err) {
+      const errorOutput = [err?.stdout, err?.stderr, err?.message]
+        .filter(value => value !== undefined && value !== null)
+        .join('\n');
+      if (reportsMissingHttpToolkitPackage(errorOutput)) return false;
+      throw err;
+    }
+  }
+
+  async _isHttpToolkitAppInstalled(deviceId, options = {}) {
+    try {
+      return await this._queryHttpToolkitAppInstalled(deviceId);
+    } catch (err) {
+      if (options.requireConfirmedResult) throw err;
       return false;
     }
   }
@@ -454,9 +485,13 @@ export class AndroidAdbInterceptor {
   }
 
   async _deactivateHttpToolkitApp(deviceId, proxyPort) {
-    let appDeactivated = false;
+    let appDeactivated;
     try {
-      if (await this._isHttpToolkitAppInstalled(deviceId)) {
+      const appInstalled = await this._isHttpToolkitAppInstalled(deviceId, {
+        requireConfirmedResult: true
+      });
+      appDeactivated = !appInstalled;
+      if (appInstalled) {
         await this._bringHttpToolkitAppToFront(deviceId);
         const output = await this._adb(deviceId, [
           'shell',
