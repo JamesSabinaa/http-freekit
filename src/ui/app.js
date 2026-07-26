@@ -9719,9 +9719,30 @@
     }
 
     async function removeApiSpec(id) {
-      await fetch(API_BASE + '/api/specs/' + id, { method: 'DELETE' });
-      loadApiSpecs();
-      toast('Spec removed', 'success');
+      try {
+        const response = await fetch(
+          API_BASE + '/api/specs/' + encodeURIComponent(String(id)),
+          { method: 'DELETE' }
+        );
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          throw new Error(response.ok
+            ? 'Server returned an invalid deletion response'
+            : `API spec deletion returned HTTP ${response.status}`);
+        }
+        if (!response.ok) {
+          throw new Error(result?.error || `API spec deletion returned HTTP ${response.status}`);
+        }
+        if (result?.success !== true) {
+          throw new Error(result?.error || 'Server did not confirm API spec deletion');
+        }
+        await loadApiSpecs();
+        toast('Spec removed', 'success');
+      } catch (err) {
+        toast('Failed to remove spec: ' + (err?.message || String(err)), 'error');
+      }
     }
 
     function togglePause() {

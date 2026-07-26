@@ -2500,6 +2500,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-279 — Low — API-spec deletion failures are invisible
 
+- Status: **Fixed**.
+- Resolution: API-spec removal now requires an HTTP-successful, valid `{success:true}` response before reloading the list and showing success. Network, HTTP, malformed-response, and explicit server failures keep the existing list and display the reported error.
 - Evidence: `src/ui/app.js:8250-8253` awaits DELETE without try/catch/finally; the fetch wrapper rejects non-2xx/network errors.
 - Impact: removal failure produces no toast or reload, leaving the user unaware that the spec remains.
 - Reproduction: disconnect the server or force DELETE 500 and click remove.
