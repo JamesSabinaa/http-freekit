@@ -1348,6 +1348,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-206 — Medium — Android activation can fail after committing active state
 
+- Status: **Fixed**.
+- Resolution: Device-specific activation now generates fallible QR response metadata immediately after device validation and before replacement cleanup or device mutation. The successful response reuses that metadata and the validated device list, so no response-only await remains after activation ownership is committed.
+
 - Evidence: `src/interceptors/android-adb-interceptor.js:454-465` records the device and sets active after configuring proxy/VPN, but response construction still awaits `_getQrMetadata()` at `:481`; QR generation can reject at `:181-189`. The API then returns an error without rollback.
 - Impact: UI/API reports failure while the device proxy, VPN/reverse tunnel, and in-memory activation remain active.
 - Reproduction: force `QRCode.toDataURL()` to reject during a valid activation and inspect `isActive()` and `activatedDevices` afterward.

@@ -539,6 +539,11 @@ export class AndroidAdbInterceptor {
       };
     }
 
+    // Build response-only metadata before replacing an existing activation or
+    // changing device state. QR generation is fallible and must not turn a
+    // committed activation into an API failure with live, untracked changes.
+    const qrMetadata = await this._getQrMetadata(proxyPort);
+
     const previousActivation = this.activatedDevices.get(deviceId);
     if (previousActivation) {
       if (!await this._cleanupActivatedDevice(deviceId, previousActivation)) {
@@ -631,14 +636,14 @@ export class AndroidAdbInterceptor {
         httpToolkitAppInstalled: appInstalled,
         httpToolkitTunnelActive: tunnelActive,
         httpToolkitAppError: appActivationError,
-        ...(await this._getQrMetadata(proxyPort)),
+        ...qrMetadata,
         certPushed: !!remoteCertPath,
         certInstallNote: mode === 'http-toolkit-app'
           ? 'HTTP Toolkit Android app launched. Accept the VPN/certificate prompts on the device if shown.'
           : remoteCertPath
           ? 'CA certificate pushed to device. Install it via Settings > Security > Install from storage > /data/local/tmp/http-freekit-ca.pem'
           : 'No CA certificate available. HTTPS interception will show certificate warnings.',
-        devices: await this._getConnectedDevices(),
+        devices,
         activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
           serial,
           ...info
