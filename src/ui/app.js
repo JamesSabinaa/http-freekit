@@ -2026,6 +2026,38 @@
       });
     }
 
+    function isValidExportBase64(value) {
+      return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+    }
+
+    function getExportRequestBody(req) {
+      if (req.requestBodyTruncated === true) {
+        return {
+          kind: 'unavailable',
+          reason: 'The captured request body is incomplete, so its original bytes cannot be replayed.'
+        };
+      }
+
+      const value = String(req.requestBody ?? '');
+      if (String(req.requestBodyEncoding || '').toLowerCase() !== 'base64') {
+        return { kind: 'text', value };
+      }
+
+      const match = /^data:[^,\r\n]*;base64,([A-Za-z0-9+/=]*)$/i.exec(value);
+      if (!match || !isValidExportBase64(match[1])) {
+        return {
+          kind: 'unavailable',
+          reason: 'The captured request body has invalid base64 metadata, so its original bytes cannot be replayed.'
+        };
+      }
+      return { kind: 'base64', value: match[1] };
+    }
+
+    function generateUnavailableExportSnippet(format, reason) {
+      const prefix = ['javascript-fetch', 'javascript-node', 'php', 'go'].includes(format) ? '//' : '#';
+      return `${prefix} EXACT REPLAY UNAVAILABLE\n${prefix} ${reason}\n${prefix} No request was generated.`;
+    }
+
     function generateMultipartExportSnippet(req, format) {
       const fields = getExportFormFields(req);
       const headers = getExportHeaders(req, true);
@@ -2193,13 +2225,25 @@
         getExportFormFields(req).forEach(field => params.append(field.key, field.value || ''));
         const headers = { ...(req.requestHeaders || {}) };
         if (!findHeaderKey(headers, 'Content-Type')) headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        return generateExportSnippet({ ...req, bodyType: 'raw', requestHeaders: headers, requestBody: params.toString() }, format);
+        return generateExportSnippet({
+          ...req,
+          bodyType: 'raw',
+          requestHeaders: headers,
+          requestBody: params.toString(),
+          requestBodyEncoding: 'utf8',
+          requestBodyTruncated: false
+        }, format);
       }
       if (req.bodyType === 'multipart') return generateMultipartExportSnippet(req, format);
 
       const method = String(req.method || 'GET');
       const url = String(req.url || '');
-      const body = String(req.requestBody ?? '');
+      const exportBody = getExportRequestBody(req);
+      if (exportBody.kind === 'unavailable') {
+        return generateUnavailableExportSnippet(format, exportBody.reason);
+      }
+      const body = exportBody.value;
+      const isBinaryBody = exportBody.kind === 'base64' && body.length > 0;
       const headers = getExportHeaders(req);
       const hasBody = body.length > 0;
 
@@ -2209,16 +2253,24 @@
           for (const [key, value] of headers) {
             cmd += ` \\\n  -H '${shellSingleQuote(`${key}: ${value}`)}'`;
           }
-          if (hasBody) cmd += ` \\\n  -d '${shellSingleQuote(body)}'`;
+          if (hasBody && isBinaryBody) {
+            cmd = `printf '%s' '${shellSingleQuote(body)}' | base64 --decode | ${cmd} \\\n  --data-binary @-`;
+          } else if (hasBody) {
+            cmd += ` \\\n  -d '${shellSingleQuote(body)}'`;
+          }
           return cmd;
         }
         case 'python': {
-          let code = `import requests\n\n`;
+          let code = isBinaryBody ? `import base64\nimport requests\n\n` : `import requests\n\n`;
           code += `response = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
           if (headers.length) {
             code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
           }
-          if (hasBody) code += `,\n    data=${JSON.stringify(body)}`;
+          if (hasBody) {
+            code += isBinaryBody
+              ? `,\n    data=base64.b64decode(${JSON.stringify(body)})`
+              : `,\n    data=${JSON.stringify(body)}`;
+          }
           code += `\n)\n\nprint(response.status_code)\nprint(response.text)`;
           return code;
         }
@@ -2227,7 +2279,11 @@
           if (headers.length) {
             code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
           }
-          if (hasBody) code += `,\n  body: ${JSON.stringify(body)}`;
+          if (hasBody) {
+            code += isBinaryBody
+              ? `,\n  body: Uint8Array.from(atob(${JSON.stringify(body)}), character => character.charCodeAt(0))`
+              : `,\n  body: ${JSON.stringify(body)}`;
+          }
           code += `\n});\n\nconst data = await response.text();\nconsole.log(response.status, data);`;
           return code;
         }
@@ -2239,7 +2295,11 @@
             code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
           }
           code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
-          if (hasBody) code += `request.write(${JSON.stringify(body)});\n`;
+          if (hasBody) {
+            code += isBinaryBody
+              ? `request.write(Buffer.from(${JSON.stringify(body)}, 'base64'));\n`
+              : `request.write(${JSON.stringify(body)});\n`;
+          }
           code += `request.end();`;
           return code;
         }
@@ -2249,7 +2309,11 @@
             code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`;
           }
           code += `\n$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers`;
-          if (hasBody) code += ` -Body ${powerShellStringLiteral(body)}`;
+          if (hasBody) {
+            code += isBinaryBody
+              ? ` -Body ([Convert]::FromBase64String(${powerShellStringLiteral(body)}))`
+              : ` -Body ${powerShellStringLiteral(body)}`;
+          }
           code += `\n$response.StatusCode\n$response.Content`;
           return code;
         }
@@ -2258,25 +2322,44 @@
           for (const [key, value] of headers) {
             cmd += ` \\\n  --header='${shellSingleQuote(`${key}: ${value}`)}'`;
           }
-          if (hasBody) cmd += ` \\\n  --body-data='${shellSingleQuote(body)}'`;
+          if (hasBody && isBinaryBody) {
+            cmd = `body_file=$(mktemp) || exit 1\ntrap 'rm -f "$body_file"' EXIT\ntrap 'exit 1' HUP INT TERM\nprintf '%s' '${shellSingleQuote(body)}' | base64 --decode > "$body_file" || exit 1\n\n${cmd} \\\n  --body-file="$body_file"`;
+          } else if (hasBody) {
+            cmd += ` \\\n  --body-data='${shellSingleQuote(body)}'`;
+          }
           cmd += ` \\\n  '${shellSingleQuote(url)}'`;
           return cmd;
         }
         case 'php': {
-          let code = `<?php\n$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, ${phpStringLiteral(url)});\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
+          let code = '<?php\n';
+          if (hasBody && isBinaryBody) {
+            code += `$body = base64_decode(${phpStringLiteral(body)}, true);\nif ($body === false) {\n    throw new RuntimeException('Invalid captured request body');\n}\n`;
+          }
+          code += `$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, ${phpStringLiteral(url)});\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
           if (headers.length) {
             code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
           }
-          if (hasBody) code += `curl_setopt($ch, CURLOPT_POSTFIELDS, ${phpStringLiteral(body)});\n`;
+          if (hasBody) {
+            code += isBinaryBody
+              ? 'curl_setopt($ch, CURLOPT_POSTFIELDS, $body);\n'
+              : `curl_setopt($ch, CURLOPT_POSTFIELDS, ${phpStringLiteral(body)});\n`;
+          }
           code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
           return code;
         }
         case 'go': {
           let code = `package main\n\nimport (\n\t"fmt"\n\t"io"\n\t"net/http"\n`;
-          if (hasBody) code += `\t"strings"\n`;
+          if (hasBody && isBinaryBody) code += `\t"bytes"\n\t"encoding/base64"\n`;
+          else if (hasBody) code += `\t"strings"\n`;
           code += `)\n\nfunc main() {\n`;
           if (hasBody) {
-            code += `\tbody := strings.NewReader(${JSON.stringify(body)})\n`;
+            if (isBinaryBody) {
+              code += `\tbodyBytes, err := base64.StdEncoding.DecodeString(${JSON.stringify(body)})\n`;
+              code += `\tif err != nil {\n\t\tpanic(err)\n\t}\n`;
+              code += `\tbody := bytes.NewReader(bodyBytes)\n`;
+            } else {
+              code += `\tbody := strings.NewReader(${JSON.stringify(body)})\n`;
+            }
             code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, body)\n`;
           } else {
             code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, nil)\n`;

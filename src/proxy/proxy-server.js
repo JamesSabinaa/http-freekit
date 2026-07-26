@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { isUtf8 } from 'node:buffer';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'http';
 import http2 from 'http2';
@@ -6185,7 +6186,8 @@ export class ProxyServer {
       }
     }
 
-    if (isText) {
+    // Only expose text when converting it to UTF-8 preserves every captured byte.
+    if (isText && isUtf8(decoded)) {
       const maxSize = 512 * 1024;
       if (decoded.length > maxSize) {
         const text = decoded.subarray(0, maxSize).toString('utf8');

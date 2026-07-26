@@ -2808,6 +2808,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-348 — Medium — Request snippets replay display text instead of original bytes
 
+- Status: **Fixed**.
+
 - Evidence: `_safeBodyString()` converts binary bodies to data URIs, truncates large text, substitutes large-binary placeholders, and decompresses encoded bodies for display at `src/proxy/proxy-server.js:4620-4669`. All eight raw snippet generators use `requestBody` literally while retaining the original request headers at `src/ui/app.js:2014-2110`.
 - Impact: copied replays send data-URI text, truncated text, or a placeholder rather than the captured bytes. Compressed request bytes are normally represented as display text while the original `Content-Encoding` header remains, so the destination cannot decode the replay correctly.
 - Reproduction: capture bytes `00 ff 41 80 0a` and generate any raw snippet; its body is the literal `data:application/octet-stream;base64,AP9BgAo=` string. A compressed request likewise replays the display representation with its encoding header intact.
