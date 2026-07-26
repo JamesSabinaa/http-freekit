@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { normalizeBrowserUrl } from './browser-url.js';
+import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import {
   createManagedBrowserProfile,
   getRelatedProcessIdsAsync,
@@ -208,7 +209,7 @@ export class BrowserInterceptor {
       args.push('about:blank');
     }
 
-    return args;
+    return ensureChromiumLoopbackProxying(args);
   }
 
   async _getFirefoxArgs(proxyPort, options) {

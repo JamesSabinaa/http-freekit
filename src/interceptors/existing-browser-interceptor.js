@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { getProcessSnapshotAsync } from './browser-lifecycle.js';
+import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 
 export class ExistingBrowserInterceptor {
   constructor(id, name, browserType) {
@@ -93,9 +94,10 @@ export class ExistingBrowserInterceptor {
     if (options.url) {
       args.push(options.url);
     }
+    const launchArgs = ensureChromiumLoopbackProxying(args);
 
     console.log(`[Interceptor] Launching ${this.name} (existing profile) with proxy on port ${proxyPort}`);
-    const launchedProcess = this._spawn(browserPath, args, {
+    const launchedProcess = this._spawn(browserPath, launchArgs, {
       detached: false,
       stdio: 'ignore'
     });

@@ -1433,6 +1433,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-246 — High — Chromium interceptors silently bypass localhost traffic
 
+- Status: **Fixed**.
+
 - Evidence: isolated Chromium arguments at `src/interceptors/browser-interceptor.js:136-160` and Global Chrome at `existing-browser-interceptor.js:31-47` set proxy-server but omit Chromium's `--proxy-bypass-list=<-loopback>` override.
 - Impact: Chrome, Edge, Brave, and Global Chrome bypass common localhost and link-local development traffic while reporting successful interception.
 - Reproduction: activate an affected browser and request a localhost service.
