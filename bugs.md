@@ -2541,6 +2541,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-288 — Low — Android/JVM Refresh ignores API failures
 
+- Status: **Fixed**.
+- Resolution: Android and JVM refreshes now require an HTTP-success response with `success: true` and complete array metadata before replacing the visible lists or showing success. HTTP, server-reported, malformed/incomplete, and network failures preserve the last-known lists and report an error; valid empty lists clear stale entries normally.
 - Evidence: `refreshAndroidDevices()` and `refreshJvmProcesses()` at `src/ui/app.js:4143-4165,4285-4307` parse JSON without testing `res.ok` or `data.error`, then always toast refreshed.
 - Impact: a 500/network-shape error retains stale device/process data while reporting success.
 - Reproduction: force the metadata endpoint to return 500 with `{ "error": "failed" }` and click Refresh.

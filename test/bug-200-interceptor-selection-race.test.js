@@ -123,7 +123,10 @@ test('metadata refresh completion cannot overwrite a newly selected card', async
   await harness.context.handleExpandableCardClick('android-adb', false);
   assert.equal(harness.state().expandedInterceptorId, 'android-adb');
 
-  staleJvmRefresh.resolve(response({ metadata: { card: 'jvm', processes: ['stale'] } }));
+  staleJvmRefresh.resolve(response({
+    success: true,
+    metadata: { card: 'jvm', processes: ['stale'], activatedProcesses: [] }
+  }));
   await refresh;
 
   assert.deepEqual(harness.state(), {

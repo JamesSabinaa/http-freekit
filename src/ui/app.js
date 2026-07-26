@@ -4514,6 +4514,32 @@
       }
     }
 
+    async function readInterceptorRefreshMetadata(response, listKey, activatedListKey) {
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        throw new Error('Refresh response was not valid JSON');
+      }
+
+      const serverError = typeof data?.error === 'string' && data.error.trim()
+        ? data.error.trim()
+        : null;
+      if (!response.ok) throw new Error(serverError || `HTTP ${response.status}`);
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('Refresh response was malformed');
+      }
+      if (serverError) throw new Error(serverError);
+      if (data.success === false) throw new Error('Interceptor refresh failed');
+      if (data.success !== true || !data.metadata || typeof data.metadata !== 'object' ||
+          Array.isArray(data.metadata) || !Array.isArray(data.metadata[listKey]) ||
+          !Array.isArray(data.metadata[activatedListKey])) {
+        throw new Error('Refresh response was incomplete');
+      }
+      return data.metadata;
+    }
+
     async function refreshAndroidDevices() {
       const operation = beginInterceptorOperation('android-adb');
       try {
@@ -4522,15 +4548,13 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-        const data = await res.json();
+        const metadata = await readInterceptorRefreshMetadata(res, 'devices', 'activatedDevices');
         if (!isCurrentInterceptorOperation(operation)) return;
-        if (data.metadata) {
-          expandedInterceptorMetadata = {
-            ...expandedInterceptorMetadata,
-            devices: data.metadata.devices || [],
-            activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
-          };
-        }
+        expandedInterceptorMetadata = {
+          ...expandedInterceptorMetadata,
+          devices: metadata.devices,
+          activatedDevices: metadata.activatedDevices
+        };
         const container = document.getElementById('interceptConfig-android-adb');
         if (container) {
           renderAndroidConfig(container);
@@ -4684,15 +4708,13 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-        const data = await res.json();
+        const metadata = await readInterceptorRefreshMetadata(res, 'processes', 'activatedProcesses');
         if (!isCurrentInterceptorOperation(operation)) return;
-        if (data.metadata) {
-          expandedInterceptorMetadata = {
-            ...expandedInterceptorMetadata,
-            processes: data.metadata.processes || [],
-            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
-          };
-        }
+        expandedInterceptorMetadata = {
+          ...expandedInterceptorMetadata,
+          processes: metadata.processes,
+          activatedProcesses: metadata.activatedProcesses
+        };
         const container = document.getElementById('interceptConfig-jvm');
         if (container) {
           renderJvmConfig(container);
