@@ -2379,6 +2379,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-251 — Low/Medium — Failed MCP toggles leave the switch inverted
 
+- Status: **Fixed**.
+- Resolution: MCP toggles now disable the switch while one request is active, validate the confirmed server state, restore the last authoritative checkbox state on any request or response failure, and refresh status only after a confirmed success.
 - Evidence: the checkbox passes its new state directly to `toggleMcp()`; success reloads authoritative status, but the failure branch at `src/ui/app.js:8175-8187` only shows a toast and never restores the control.
 - Impact: Settings can show Running with an unchecked switch or Stopped with a checked switch after a rejected request.
 - Reproduction: force the MCP toggle POST to fail and click the switch.

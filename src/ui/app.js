@@ -9342,10 +9342,15 @@
     }
 
     // ============ MCP SERVER ============
+    let mcpAuthoritativeEnabled = null;
+    let mcpToggleInFlight = null;
+
     async function loadMcpStatus() {
       try {
         const res = await fetch(API_BASE + '/api/mcp/status');
         const data = await res.json();
+        if (typeof data.enabled !== 'boolean') throw new Error('MCP status returned an invalid response');
+        mcpAuthoritativeEnabled = data.enabled;
         const statusEl = document.getElementById('mcpStatus');
         if (statusEl) {
           statusEl.textContent = data.enabled ? 'Running' : 'Stopped';
@@ -9370,16 +9375,46 @@
     }
 
     async function toggleMcp(enabled) {
+      const toggleEl = document.getElementById('mcpEnabledToggle');
+      if (mcpToggleInFlight) {
+        if (toggleEl) {
+          toggleEl.checked = mcpToggleInFlight.enabled;
+          toggleEl.disabled = true;
+        }
+        return;
+      }
+
+      const requestedEnabled = enabled === true;
+      const previousEnabled = typeof mcpAuthoritativeEnabled === 'boolean'
+        ? mcpAuthoritativeEnabled
+        : !requestedEnabled;
+      mcpToggleInFlight = { enabled: requestedEnabled };
+      if (toggleEl) {
+        toggleEl.checked = requestedEnabled;
+        toggleEl.disabled = true;
+      }
+
       try {
-        await fetch(API_BASE + '/api/mcp/toggle', {
+        const response = await fetch(API_BASE + '/api/mcp/toggle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled })
+          body: JSON.stringify({ enabled: requestedEnabled })
         });
-        toast(enabled ? 'MCP server enabled' : 'MCP server disabled', 'success');
-        loadMcpStatus();
+        const data = await response.json().catch(() => null);
+        if (!response.ok || data?.success !== true || data.enabled !== requestedEnabled) {
+          throw new Error(data?.error || 'MCP toggle returned an invalid response');
+        }
+        mcpAuthoritativeEnabled = data.enabled;
+        if (toggleEl) toggleEl.checked = data.enabled;
+        toast(requestedEnabled ? 'MCP server enabled' : 'MCP server disabled', 'success');
+        await loadMcpStatus();
       } catch (err) {
+        mcpAuthoritativeEnabled = previousEnabled;
+        if (toggleEl) toggleEl.checked = previousEnabled;
         toast('Error: ' + err.message, 'error');
+      } finally {
+        mcpToggleInFlight = null;
+        if (toggleEl) toggleEl.disabled = false;
       }
     }
 
