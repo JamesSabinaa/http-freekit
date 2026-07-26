@@ -37,6 +37,10 @@ function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
   return `data:${mimeType};base64,${text.replace(/\s+/g, '')}`;
 }
 
+function normalizeHarBodySize(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function hasCompleteMockMatchers(matchers) {
   if (!Array.isArray(matchers) || matchers.length === 0) return false;
   const nameMatchers = new Set(['header', 'query', 'cookie', 'form-data', 'multipart-form-data']);
@@ -922,7 +926,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
               : undefined,
             requestPostDataMimeType: entry.request.postData?.mimeType || '',
             requestHttpVersion: entry.request.httpVersion || '',
-            requestBodySize: entry.request.bodySize || 0,
+            requestBodySize: normalizeHarBodySize(entry.request.bodySize),
             statusCode: entry.response?.status || 0,
             statusMessage: entry.response?.statusText || '',
             responseHeaders: harHeadersToObject(entry.response?.headers),
@@ -930,7 +934,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
             responseContentMimeType: entry.response?.content?.mimeType || '',
             responseHttpVersion: entry.response?.httpVersion || '',
-            responseBodySize: entry.response?.content?.size || 0,
+            responseBodySize: normalizeHarBodySize(entry.response?.content?.size),
             duration: entry.time || 0,
             timestamp: new Date(entry.startedDateTime).getTime() || Date.now(),
             source: 'import'

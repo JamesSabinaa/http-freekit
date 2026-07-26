@@ -7918,6 +7918,10 @@
     }
 
     // ============ HAR IMPORT ============
+    function normalizeHarBodySize(value) {
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+    }
+
     function importHar() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -7939,12 +7943,12 @@
             path: new URL(entry.request.url).pathname + new URL(entry.request.url).search,
             requestHeaders: Object.fromEntries(entry.request.headers.map(h => [h.name.toLowerCase(), h.value])),
             requestBody: entry.request.postData?.text || '',
-            requestBodySize: entry.request.bodySize || 0,
+            requestBodySize: normalizeHarBodySize(entry.request.bodySize),
             statusCode: entry.response.status,
             statusMessage: entry.response.statusText,
             responseHeaders: Object.fromEntries(entry.response.headers.map(h => [h.name.toLowerCase(), h.value])),
             responseBody: entry.response.content?.text || '',
-            responseBodySize: entry.response.content?.size || 0,
+            responseBodySize: normalizeHarBodySize(entry.response.content?.size),
             duration: entry.time || 0,
             timestamp: new Date(entry.startedDateTime).getTime(),
             source: 'import',

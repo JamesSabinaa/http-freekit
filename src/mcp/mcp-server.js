@@ -251,7 +251,8 @@ export class McpServerBridge {
       }
 
       // Bandwidth
-      totalBandwidth += (r.requestBodySize || 0) + (r.responseBodySize || 0);
+      totalBandwidth = addByteCount(totalBandwidth, r.requestBodySize);
+      totalBandwidth = addByteCount(totalBandwidth, r.responseBodySize);
     }
 
     // Top hosts (by count)
@@ -535,10 +536,20 @@ export class McpServerBridge {
   }
 }
 
+function normalizeByteCount(bytes) {
+  return typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0 ? bytes : 0;
+}
+
+function addByteCount(total, bytes) {
+  const count = normalizeByteCount(bytes);
+  return total > Number.MAX_VALUE - count ? Number.MAX_VALUE : total + count;
+}
+
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  const normalizedBytes = normalizeByteCount(bytes);
+  if (normalizedBytes === 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
+  const i = Math.min(Math.floor(Math.log(normalizedBytes) / Math.log(k)), sizes.length - 1);
+  return parseFloat((normalizedBytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }

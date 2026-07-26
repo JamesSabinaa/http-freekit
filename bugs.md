@@ -649,6 +649,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-190 — Low/Medium — HAR unknown-size sentinels corrupt MCP bandwidth stats
 
+- Status: **Fixed**.
+- Resolution: HAR imports now normalize unknown or malformed body sizes to zero, and MCP bandwidth aggregation and formatting ignore invalid legacy byte counts safely while preserving finite non-negative values.
+
 - Evidence: HAR import preserves the standard `bodySize: -1` sentinel because it is truthy; MCP adds it directly to bandwidth and `formatBytes()` applies `Math.log(bytes)` without a negative guard (`src/api/api-server.js` HAR import; `src/mcp/mcp-server.js:253-274,518-523`).
 - Impact: a valid unknown size produces negative totals, `NaN undefined`, or undercounting when combined with other traffic.
 - Reproduction: import a HAR with `request.bodySize: -1` and invoke MCP `get_traffic_stats`.
