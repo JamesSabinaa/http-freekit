@@ -2181,6 +2181,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-212 — Low/Medium — Truncated deep-link responses block every later link
 
+- Status: **Fixed**.
+- Resolution: Desktop deep-link requests now settle through one guarded path for normal completion, aborts, response errors, premature closes, request errors, and timeouts. A truncated response rejects the current link so the serialized queue can continue with later links.
+
 - Evidence: `requestOpenInProxiedChrome()` listens only for response data/end at `electron/main.cjs:161-193`, with no response aborted, error, or close rejection. Later links serialize behind that promise at `:196-199`.
 - Impact: a partial local API response that closes early leaves the first promise pending forever and permanently queues subsequent desktop links.
 - Reproduction: return headers plus partial JSON and destroy the response, then open a second `http-freekit:` link.

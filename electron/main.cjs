@@ -167,6 +167,14 @@ function reportDeepLinkError(err) {
 
 function requestOpenInProxiedChrome(url) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    const resolveOnce = value => settle(resolve, value);
+    const rejectOnce = err => settle(reject, err);
     const body = JSON.stringify({ url });
     const req = http.request({
       hostname: '127.0.0.1',
@@ -180,21 +188,36 @@ function requestOpenInProxiedChrome(url) {
       }
     }, (res) => {
       const chunks = [];
+      let responseEnded = false;
       res.on('data', chunk => chunks.push(chunk));
+      res.once('aborted', () => {
+        rejectOnce(new Error('Server response was aborted before completion'));
+      });
+      res.once('error', rejectOnce);
+      res.once('close', () => {
+        if (!responseEnded) {
+          rejectOnce(new Error('Server response closed before completion'));
+        }
+      });
       res.on('end', () => {
+        responseEnded = true;
+        if (!res.complete) {
+          rejectOnce(new Error('Server response ended before completion'));
+          return;
+        }
         const responseText = Buffer.concat(chunks).toString('utf8');
         let response = {};
         try { response = responseText ? JSON.parse(responseText) : {}; } catch {}
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(response);
+          resolveOnce(response);
         } else {
-          reject(new Error(response.error || `Server returned HTTP ${res.statusCode}`));
+          rejectOnce(new Error(response.error || `Server returned HTTP ${res.statusCode}`));
         }
       });
     });
 
-    req.once('error', reject);
+    req.once('error', rejectOnce);
     req.setTimeout(15000, () => req.destroy(new Error('Timed out opening the link')));
     req.end(body);
   });
