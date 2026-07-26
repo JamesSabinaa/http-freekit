@@ -17,7 +17,10 @@ function fakeChild(pid) {
 
 test('a second Electron activation is rejected while the first child is active', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const first = fakeChild(1001);
   let spawnCount = 0;
   interceptor._spawn = () => {
@@ -39,7 +42,10 @@ test('a second Electron activation is rejected while the first child is active',
 
 test('events from a stopped Electron child cannot deactivate its replacement', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const first = fakeChild(1001);
   const second = fakeChild(1002);
   const children = [first, second];

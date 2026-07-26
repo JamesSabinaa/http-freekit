@@ -14,7 +14,10 @@ function fakeChild(pid) {
 
 test('Electron child exit publishes an inactive status event', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const child = fakeChild(5101);
   interceptor._spawn = () => {
     queueMicrotask(() => child.emit('spawn'));

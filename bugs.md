@@ -1608,6 +1608,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-291 — Medium — Electron interception disables all Node TLS verification
 
+- Status: **Fixed**.
+- Resolution: Electron main processes now receive the same stable public-roots-plus-FreeKit CA bundle as terminal interception through `NODE_EXTRA_CA_CERTS`, while any inherited `NODE_TLS_REJECT_UNAUTHORIZED` value is removed. App launch fails before spawn if that bundle cannot be refreshed or read, preserving normal certificate and hostname validation without changing renderer launch flags.
 - Evidence: `src/interceptors/electron-interceptor.js:35-47` injects `NODE_TLS_REJECT_UNAUTHORIZED=0` into the launched application.
 - Impact: main-process HTTPS clients accept expired, self-signed, and wrong-host certificates for direct/bypassed destinations unrelated to FreeKit.
 - Reproduction: activate an Electron test app and have its main process request a wrong-host/self-signed endpoint.

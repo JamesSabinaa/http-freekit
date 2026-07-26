@@ -16,7 +16,10 @@ function fakeChild(pid = 1234) {
 
 test('Electron activation rejects an asynchronous spawn failure', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const child = fakeChild();
   interceptor._spawn = () => {
     queueMicrotask(() => child.emit('error', Object.assign(new Error('not found'), { code: 'ENOENT' })));
@@ -35,7 +38,10 @@ test('Electron activation rejects an asynchronous spawn failure', async () => {
 
 test('Electron activation does not resolve before the spawn event', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const child = fakeChild();
   interceptor._spawn = () => child;
   let settled = false;
@@ -57,7 +63,10 @@ test('Electron activation does not resolve before the spawn event', async () => 
 
 test('overlapping Electron activation is rejected while spawn is pending', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'test-spki' };
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
   const child = fakeChild();
   interceptor._spawn = () => child;
 

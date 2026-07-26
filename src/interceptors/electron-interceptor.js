@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
 
 export class ElectronInterceptor {
   constructor() {
@@ -70,6 +71,48 @@ export class ElectronInterceptor {
     ];
   }
 
+  _getMainProcessCaBundlePath() {
+    try {
+      if (typeof this.ca?.getTerminalCaBundlePath !== 'function') {
+        throw new Error('the combined public and FreeKit CA bundle is not configured');
+      }
+      const bundlePath = this.ca.getTerminalCaBundlePath();
+      if (typeof bundlePath !== 'string' || !bundlePath.trim()) {
+        throw new Error('the combined public and FreeKit CA bundle path is empty');
+      }
+      const stats = fs.statSync(bundlePath);
+      if (!stats.isFile() || stats.size === 0) {
+        throw new Error('the combined public and FreeKit CA bundle is not a readable file');
+      }
+      fs.accessSync(bundlePath, fs.constants.R_OK);
+      return bundlePath;
+    } catch (err) {
+      throw new Error(`FreeKit CA trust bundle is unavailable for Electron launch: ${err.message}`);
+    }
+  }
+
+  _environment() {
+    return process.env;
+  }
+
+  _getLaunchEnvironment(proxyPort, caBundlePath) {
+    const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+    const env = {
+      ...this._environment(),
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl
+    };
+    for (const name of Object.keys(env)) {
+      const normalizedName = name.toUpperCase();
+      if (normalizedName === 'NODE_TLS_REJECT_UNAUTHORIZED' ||
+          normalizedName === 'NODE_EXTRA_CA_CERTS') {
+        delete env[name];
+      }
+    }
+    env.NODE_EXTRA_CA_CERTS = caBundlePath;
+    return env;
+  }
+
   _spawn(appPath, args, options) {
     return spawn(appPath, args, options);
   }
@@ -102,9 +145,9 @@ export class ElectronInterceptor {
     }
 
     const appPath = options.appPath;
-    const launchArgs = this._getLaunchArgs(proxyPort);
     if (!appPath) {
       // Return instructions for manual setup
+      const launchArgs = this._getLaunchArgs(proxyPort);
       return {
         success: true,
         metadata: {
@@ -113,12 +156,9 @@ export class ElectronInterceptor {
       };
     }
 
-    const env = {
-      ...process.env,
-      HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
-      HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
-      NODE_TLS_REJECT_UNAUTHORIZED: '0',
-    };
+    const caBundlePath = this._getMainProcessCaBundlePath();
+    const launchArgs = this._getLaunchArgs(proxyPort);
+    const env = this._getLaunchEnvironment(proxyPort, caBundlePath);
 
     console.log(`[Interceptor] Launching Electron app: ${appPath}`);
     this.activating = true;
