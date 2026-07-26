@@ -977,6 +977,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-352 — Medium — Client-certificate item workflow cannot configure encrypted PFX files
 
+- Status: **Fixed**.
+- Resolution: The client-certificate form now accepts an optional passphrase, and the item API validates, persists, and restores the exact supplied string without returning it in certificate-list responses.
+
 - Evidence: the client-certificate UI has no passphrase input, and the item POST route stores only `host` and `pfxPath`, silently discarding a supplied `passphrase`. The proxy loader supports a passphrase and the legacy bulk route can retain one, but the normal item workflow cannot provide it.
 - Impact: adding a password-protected PKCS#12 file appears to succeed, but every matching mTLS connection fails when Node attempts to load the encrypted PFX without its password.
 - Reproduction: add an encrypted PFX through the UI, or include `passphrase` in the item POST, then connect to its host; the saved entry has no passphrase and TLS setup fails.

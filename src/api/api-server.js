@@ -67,6 +67,14 @@ function hasCompleteMockMatchers(matchers) {
   });
 }
 
+function publicClientCertificates(certificates) {
+  if (!Array.isArray(certificates)) return [];
+  return certificates.map(certificate => ({
+    host: certificate?.host,
+    pfxPath: certificate?.pfxPath
+  }));
+}
+
 function normalizeImportedMockRule(rule, allowGroup = true) {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
   const normalizedRule = { ...rule };
@@ -1704,7 +1712,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Client certificates
     router.get('/api/client-certificates', (req, res) => {
-      res.json({ certificates: this.proxy.clientCertificates });
+      res.json({ certificates: publicClientCertificates(this.proxy.clientCertificates) });
     });
     router.post('/api/client-certificates', (req, res) => {
       this._mutateProxySetting({
@@ -1718,41 +1726,59 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const host = String(req.body?.host || '').trim();
       const pfxPath = String(req.body?.pfxPath || '').trim();
       if (!host || !pfxPath) return res.status(400).json({ error: 'host and pfxPath are required' });
+      const hasPassphrase = Object.prototype.hasOwnProperty.call(req.body || {}, 'passphrase');
+      if (hasPassphrase && typeof req.body.passphrase !== 'string') {
+        return res.status(400).json({ error: 'passphrase must be a string' });
+      }
       const hostKey = this.proxy._getClientCertificateHostKey(host);
-      const matchingCertificates = hostKey
-        ? this.proxy.clientCertificates.filter(
-          cert => this.proxy._getClientCertificateHostKey(cert?.host) === hostKey
-        )
-        : [];
-      const exactPairExists = this.proxy.clientCertificates.some(
-        cert => cert?.host === host && cert?.pfxPath === pfxPath
+      const matchesHost = certificate => hostKey
+        ? this.proxy._getClientCertificateHostKey(certificate?.host) === hostKey
+        : certificate?.host === host;
+      const matchingCertificates = this.proxy.clientCertificates.filter(matchesHost);
+      const exactPair = matchingCertificates.find(
+        certificate => certificate?.host === host && certificate?.pfxPath === pfxPath
       );
-      const alreadyConfigured = hostKey
-        ? matchingCertificates.length === 1 && exactPairExists
-        : exactPairExists;
+      const alreadyConfigured = matchingCertificates.length === 1 && exactPair &&
+        (!hasPassphrase || exactPair.passphrase === req.body.passphrase);
       if (!alreadyConfigured) {
+        const retainedPassphrase = !hasPassphrase
+          ? matchingCertificates.find(certificate =>
+            certificate?.pfxPath === pfxPath &&
+            Object.prototype.hasOwnProperty.call(certificate, 'passphrase')
+          )?.passphrase
+          : undefined;
+        const replacement = {
+          host,
+          pfxPath,
+          ...(hasPassphrase
+            ? { passphrase: req.body.passphrase }
+            : retainedPassphrase !== undefined
+              ? { passphrase: retainedPassphrase }
+              : {})
+        };
         this._mutateProxySetting({
           property: 'clientCertificates',
           apply: () => {
             const certificates = [];
             let replacementAdded = false;
             for (const certificate of this.proxy.clientCertificates) {
-              const matchesHost = hostKey &&
-                this.proxy._getClientCertificateHostKey(certificate?.host) === hostKey;
-              if (!matchesHost) {
+              if (!matchesHost(certificate)) {
                 certificates.push(certificate);
               } else if (!replacementAdded) {
-                certificates.push({ host, pfxPath });
+                certificates.push(replacement);
                 replacementAdded = true;
               }
             }
-            if (!replacementAdded) certificates.push({ host, pfxPath });
+            if (!replacementAdded) certificates.push(replacement);
             return this.proxy.setClientCertificates(certificates);
           },
           restore: previous => this.proxy.setClientCertificates(previous)
         });
       }
-      res.json({ success: true, certificates: this.proxy.clientCertificates });
+      res.json({
+        success: true,
+        certificates: publicClientCertificates(this.proxy.clientCertificates)
+      });
     });
     router.delete('/api/client-certificates/items', (req, res) => {
       const host = String(req.body?.host || '').trim();
@@ -1766,7 +1792,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         apply: () => this.proxy.setClientCertificates(certificates),
         restore: previous => this.proxy.setClientCertificates(previous)
       });
-      res.json({ success: true, certificates: this.proxy.clientCertificates });
+      res.json({
+        success: true,
+        certificates: publicClientCertificates(this.proxy.clientCertificates)
+      });
     });
 
     // Trusted CAs

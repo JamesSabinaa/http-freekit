@@ -502,6 +502,7 @@
   <div style="display:flex;gap:8px;">
     <input type="text" id="clientCertHost" placeholder="hostname (or * for all hosts)" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
     <input type="text" id="clientCertPath" placeholder="No file selected" readonly style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;cursor:pointer;" onclick="browseClientCert()">
+    <input type="password" id="clientCertPassphrase" placeholder="Passphrase (optional)" autocomplete="off" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
     <button class="btn" onclick="browseClientCert()" style="font-size:11px;">Browse</button>
     <button class="btn" onclick="addClientCert()" style="font-size:11px;">Add</button>
   </div>

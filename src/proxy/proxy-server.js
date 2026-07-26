@@ -77,7 +77,7 @@ export class ProxyServer {
     this.upstreamProxy = null;
     this.tlsPassthrough = []; // hostnames to skip MITM for
     this.http2Enabled = 'disabled'; // 'all', 'h2-only', 'disabled'
-    this.clientCertificates = []; // [{host, pfxPath}]
+    this.clientCertificates = []; // [{host, pfxPath, passphrase?}]
     this.trustedCAs = []; // [certPath]
     this._clientCertificateOptions = [];
     this._trustedCaCertificates = [];

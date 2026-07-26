@@ -9854,16 +9854,23 @@
     async function addClientCert() {
       const host = document.getElementById('clientCertHost')?.value?.trim();
       const path = document.getElementById('clientCertPath')?.value?.trim();
+      const passphraseInput = document.getElementById('clientCertPassphrase');
+      const passphrase = passphraseInput?.value ?? '';
       if (!host || !path) { toast('Both host and path required', 'error'); return; }
       try {
         const response = await fetch(API_BASE + '/api/client-certificates/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host, pfxPath: path })
+          body: JSON.stringify({
+            host,
+            pfxPath: path,
+            ...(passphrase === '' ? {} : { passphrase })
+          })
         });
         if (!response.ok) throw new Error((await response.json()).error || 'Could not add certificate');
         document.getElementById('clientCertHost').value = '';
         document.getElementById('clientCertPath').value = '';
+        if (passphraseInput) passphraseInput.value = '';
         loadClientCerts();
         toast('Client certificate added', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
