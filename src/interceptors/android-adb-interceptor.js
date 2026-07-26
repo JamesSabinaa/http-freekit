@@ -10,7 +10,8 @@ const HTTP_TOOLKIT_ANDROID_DEACTIVATE = 'tech.httptoolkit.android.DEACTIVATE';
 const HTTP_TOOLKIT_ANDROID_CONNECT_URL = 'https://android.httptoolkit.tech/connect/';
 const EMULATOR_HOST_IPS = ['10.0.2.2', '10.0.3.2'];
 const ANDROID_CA_STAGING_PATH = '/data/local/tmp/http-freekit-ca.pem';
-const ANDROID_RECOVERY_VERSION = 1;
+const ANDROID_LEGACY_RECOVERY_VERSION = 1;
+const ANDROID_RECOVERY_VERSION = 2;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 
 function getActivityLaunchError(output) {
@@ -75,23 +76,61 @@ export class AndroidAdbInterceptor {
     return typeof value === 'string' && value.length <= maxLength && !/[\0\r\n]/.test(value);
   }
 
-  _normalizeJournalDevice(entry) {
+  _isSafeReverseEndpoint(value) {
+    if (!this._isSafeJournalString(value, 1024) || /\s/.test(value)) return false;
+    const tcpMatch = value.match(/^tcp:(\d{1,5})$/);
+    if (tcpMatch) {
+      const port = Number(tcpMatch[1]);
+      return port >= 1 && port <= 65535;
+    }
+    const jdwpMatch = value.match(/^jdwp:(\d{1,10})$/);
+    if (jdwpMatch) return Number(jdwpMatch[1]) <= 0xffffffff;
+    const vsockMatch = value.match(/^vsock:(\d{1,10}):(\d{1,5})$/);
+    if (vsockMatch) {
+      return Number(vsockMatch[1]) <= 0xffffffff &&
+        Number(vsockMatch[2]) >= 1 && Number(vsockMatch[2]) <= 65535;
+    }
+    return /^(?:localabstract|localreserved|localfilesystem|dev):[^\s]{1,1000}$/.test(value);
+  }
+
+  _normalizeJournalDevice(entry, version = ANDROID_RECOVERY_VERSION) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const allowedFields = new Set([
-      'serial', 'mode', 'previousProxy', 'hostIp', 'proxyPort',
-      'remoteCertPath', 'model', 'deviceName'
-    ]);
+    const allowedModes = version === ANDROID_RECOVERY_VERSION
+      ? ['global-proxy', 'staging-cleanup', 'reverse-cleanup']
+      : ['global-proxy', 'staging-cleanup'];
+    if (!allowedModes.includes(entry.mode)) return null;
+    const reverseOnly = entry.mode === 'reverse-cleanup';
+    const allowedFields = new Set(reverseOnly
+      ? ['serial', 'mode', 'proxyPort', 'previousReverseMapping', 'model', 'deviceName']
+      : [
+          'serial', 'mode', 'previousProxy', 'hostIp', 'proxyPort',
+          'remoteCertPath', 'model', 'deviceName',
+          ...(version === ANDROID_RECOVERY_VERSION ? ['previousReverseMapping'] : [])
+        ]);
     if (Object.keys(entry).some(field => !allowedFields.has(field))) return null;
     if (!this._isSafeJournalString(entry.serial, 255) ||
         !/^(?!-)[A-Za-z0-9._:[\]-]+$/.test(entry.serial)) return null;
-    if (!['global-proxy', 'staging-cleanup'].includes(entry.mode)) return null;
-    if (!this._isSafeJournalString(entry.previousProxy)) return null;
-    if (ipv4ToInteger(entry.hostIp) === null) return null;
     if (!Number.isInteger(entry.proxyPort) || entry.proxyPort < 1 || entry.proxyPort > 65535) return null;
-    if (entry.remoteCertPath !== ANDROID_CA_STAGING_PATH) return null;
     for (const field of ['model', 'deviceName']) {
       if (entry[field] !== undefined && !this._isSafeJournalString(entry[field], 512)) return null;
     }
+    const hasReverseCleanup = Object.prototype.hasOwnProperty.call(entry, 'previousReverseMapping');
+    if (reverseOnly && !hasReverseCleanup) return null;
+    if (hasReverseCleanup && entry.previousReverseMapping !== null &&
+        !this._isSafeReverseEndpoint(entry.previousReverseMapping)) return null;
+    if (reverseOnly) {
+      return {
+        serial: entry.serial,
+        mode: entry.mode,
+        proxyPort: entry.proxyPort,
+        previousReverseMapping: entry.previousReverseMapping,
+        ...(entry.model !== undefined ? { model: entry.model } : {}),
+        ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {})
+      };
+    }
+    if (!this._isSafeJournalString(entry.previousProxy)) return null;
+    if (ipv4ToInteger(entry.hostIp) === null) return null;
+    if (entry.remoteCertPath !== ANDROID_CA_STAGING_PATH) return null;
     return {
       serial: entry.serial,
       mode: entry.mode,
@@ -100,7 +139,8 @@ export class AndroidAdbInterceptor {
       proxyPort: entry.proxyPort,
       remoteCertPath: entry.remoteCertPath,
       ...(entry.model !== undefined ? { model: entry.model } : {}),
-      ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {})
+      ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {}),
+      ...(hasReverseCleanup ? { previousReverseMapping: entry.previousReverseMapping } : {})
     };
   }
 
@@ -113,7 +153,8 @@ export class AndroidAdbInterceptor {
       }
       const parsed = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
-          parsed.version !== ANDROID_RECOVERY_VERSION || !Array.isArray(parsed.devices) ||
+          ![ANDROID_LEGACY_RECOVERY_VERSION, ANDROID_RECOVERY_VERSION].includes(parsed.version) ||
+          !Array.isArray(parsed.devices) ||
           parsed.devices.length > 128 ||
           Object.keys(parsed).some(field => !['version', 'devices'].includes(field))) {
         throw new Error('Recovery journal has an invalid schema');
@@ -121,7 +162,7 @@ export class AndroidAdbInterceptor {
 
       const adopted = new Map();
       for (const rawEntry of parsed.devices) {
-        const entry = this._normalizeJournalDevice(rawEntry);
+        const entry = this._normalizeJournalDevice(rawEntry, parsed.version);
         if (!entry || adopted.has(entry.serial)) {
           throw new Error('Recovery journal contains an invalid device entry');
         }
@@ -132,6 +173,11 @@ export class AndroidAdbInterceptor {
       this.journaledGlobalDevices = adopted;
       for (const [serial, entry] of adopted) {
         this.activatedDevices.set(serial, { ...entry, recovered: true });
+        if (Object.prototype.hasOwnProperty.call(entry, 'previousReverseMapping')) {
+          const key = `${serial}:${entry.proxyPort}`;
+          this.reverseTunnels.add(key);
+          this.previousReverseMappings.set(key, entry.previousReverseMapping);
+        }
       }
       this.active = true;
     } catch (err) {
@@ -174,6 +220,21 @@ export class AndroidAdbInterceptor {
   }
 
   _journalEntry(serial, activeInfo) {
+    const identity = {
+      ...(this._isSafeJournalString(activeInfo.model, 512) ? { model: activeInfo.model } : {}),
+      ...(this._isSafeJournalString(activeInfo.deviceName, 512)
+        ? { deviceName: activeInfo.deviceName }
+        : {})
+    };
+    if (activeInfo.mode === 'reverse-cleanup') {
+      return {
+        serial,
+        mode: activeInfo.mode,
+        proxyPort: activeInfo.proxyPort,
+        previousReverseMapping: activeInfo.previousReverseMapping,
+        ...identity
+      };
+    }
     return {
       serial,
       mode: activeInfo.mode,
@@ -181,9 +242,9 @@ export class AndroidAdbInterceptor {
       hostIp: activeInfo.hostIp,
       proxyPort: activeInfo.proxyPort,
       remoteCertPath: ANDROID_CA_STAGING_PATH,
-      ...(this._isSafeJournalString(activeInfo.model, 512) ? { model: activeInfo.model } : {}),
-      ...(this._isSafeJournalString(activeInfo.deviceName, 512)
-        ? { deviceName: activeInfo.deviceName }
+      ...identity,
+      ...(Object.prototype.hasOwnProperty.call(activeInfo, 'previousReverseMapping')
+        ? { previousReverseMapping: activeInfo.previousReverseMapping }
         : {})
     };
   }
@@ -475,11 +536,16 @@ export class AndroidAdbInterceptor {
       };
     } catch (err) {
       const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
+      const tunnelStillOwned = tunnelActive && !tunnelRemoved;
+      const key = `${deviceId}:${proxyPort}`;
       return {
         success: false,
         error: err.message,
         appInstalled: true,
-        tunnelActive: tunnelActive && !tunnelRemoved
+        tunnelActive: tunnelStillOwned,
+        ...(tunnelStillOwned
+          ? { previousReverseMapping: this.previousReverseMappings.get(key) }
+          : {})
       };
     }
   }
@@ -706,7 +772,12 @@ export class AndroidAdbInterceptor {
       return await this._deactivateHttpToolkitApp(serial, activeInfo.proxyPort);
     }
     if (activeInfo?.mode === 'staging-cleanup') {
-      return await this._removeCaCert(serial);
+      const certificateRemoved = await this._removeCaCert(serial);
+      if (!certificateRemoved) return false;
+      return await this._cleanupRetainedReverseTunnel(serial, activeInfo);
+    }
+    if (activeInfo?.mode === 'reverse-cleanup') {
+      return await this._cleanupRetainedReverseTunnel(serial, activeInfo);
     }
     const ownedProxy = ipv4ToInteger(activeInfo?.hostIp) !== null &&
       Number.isInteger(activeInfo?.proxyPort) &&
@@ -719,7 +790,20 @@ export class AndroidAdbInterceptor {
       ownedProxy
     );
     const certificateRemoved = await this._removeCaCert(serial);
-    return proxyRestored && certificateRemoved;
+    if (!proxyRestored || !certificateRemoved) return false;
+    return await this._cleanupRetainedReverseTunnel(serial, activeInfo);
+  }
+
+  async _cleanupRetainedReverseTunnel(serial, activeInfo) {
+    if (!Object.prototype.hasOwnProperty.call(activeInfo || {}, 'previousReverseMapping')) {
+      return true;
+    }
+    const key = `${serial}:${activeInfo.proxyPort}`;
+    if (!this.reverseTunnels.has(key)) this.reverseTunnels.add(key);
+    if (!this.previousReverseMappings.has(key)) {
+      this.previousReverseMappings.set(key, activeInfo.previousReverseMapping);
+    }
+    return await this._removeReverseTunnel(serial, activeInfo.proxyPort);
   }
 
   async activate(proxyPort, options = {}) {
@@ -781,6 +865,7 @@ export class AndroidAdbInterceptor {
     let appInstalled = false;
     let tunnelActive = false;
     let appActivationError = null;
+    let previousReverseMapping;
     let remoteCertPath = null;
     let previousProxy = null;
 
@@ -792,8 +877,33 @@ export class AndroidAdbInterceptor {
       if (appActivation.success) {
         mode = 'http-toolkit-app';
       } else {
+        if (tunnelActive) {
+          if (!Object.prototype.hasOwnProperty.call(appActivation, 'previousReverseMapping') ||
+              (appActivation.previousReverseMapping !== null &&
+                !this._isSafeReverseEndpoint(appActivation.previousReverseMapping))) {
+            throw new Error(`Failed companion reverse tunnel cleanup for ${deviceId} could not be tracked safely`);
+          }
+          previousReverseMapping = appActivation.previousReverseMapping;
+        }
         appActivationError = appActivation.error;
         console.warn(`[Interceptor] HTTP Toolkit Android app activation unavailable for ${deviceId}: ${appActivationError}`);
+        if (tunnelActive) {
+          // The reverse mapping already exists, so own it before any fallible
+          // fallback discovery. This state deliberately claims no proxy or CA.
+          const reverseCleanup = {
+            model: device.model,
+            deviceName: device.deviceName,
+            proxyPort,
+            mode: 'reverse-cleanup',
+            appInstalled,
+            tunnelActive,
+            appActivationError,
+            previousReverseMapping
+          };
+          this.activatedDevices.set(deviceId, reverseCleanup);
+          this.active = true;
+          this._rememberGlobalProxyOwnership(deviceId, reverseCleanup);
+        }
       }
     }
 
@@ -818,7 +928,8 @@ export class AndroidAdbInterceptor {
         appInstalled,
         tunnelActive,
         appActivationError,
-        previousProxy
+        previousProxy,
+        ...(tunnelActive ? { previousReverseMapping } : {})
       };
       this._rememberGlobalProxyOwnership(deviceId, pendingGlobalActivation);
       this.activatedDevices.set(deviceId, pendingGlobalActivation);
@@ -832,7 +943,10 @@ export class AndroidAdbInterceptor {
 
       if (!proxySet) {
         const certificateRemoved = !remoteCertPath || await this._removeCaCert(deviceId);
-        if (!certificateRemoved) {
+        const reverseTunnelRemoved = certificateRemoved
+          ? await this._cleanupRetainedReverseTunnel(deviceId, pendingGlobalActivation)
+          : false;
+        if (!certificateRemoved || !reverseTunnelRemoved) {
           const stagingCleanup = {
             ...pendingGlobalActivation,
             remoteCertPath,
@@ -848,9 +962,9 @@ export class AndroidAdbInterceptor {
         }
         return {
           success: false,
-          error: certificateRemoved
+          error: certificateRemoved && reverseTunnelRemoved
             ? `Failed to set proxy on ${deviceId}`
-            : `Failed to set proxy on ${deviceId} and remove its staged CA; reconnect it and retry Stop`
+            : `Failed to set proxy on ${deviceId} and finish fallback cleanup; reconnect it and retry Stop`
         };
       }
     }
@@ -865,7 +979,8 @@ export class AndroidAdbInterceptor {
       appInstalled,
       tunnelActive,
       appActivationError,
-      previousProxy
+      previousProxy,
+      ...(tunnelActive ? { previousReverseMapping } : {})
     });
     this.active = true;
 

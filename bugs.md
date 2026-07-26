@@ -1720,6 +1720,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-309 — Medium — Android fallback can strand a failed companion reverse tunnel
 
+- Status: **Fixed**.
+- Resolution: Failed companion cleanup now immediately transfers the prior reverse mapping into a reverse-only cleanup state before fallible fallback discovery. The v2 recovery journal durably records that minimal ownership (or adds it to later fallback ownership) while continuing to accept valid v1 proxy-only journals, and Stop clears ownership only after every applicable proxy, staged CA, and reverse restoration succeeds.
+
 - Evidence: companion activation creates and tracks the reverse tunnel at `src/interceptors/android-adb-interceptor.js:211`; on intent failure, cleanup at `:235-241` ignores a false tunnel-removal result. Activation can then commit global-proxy fallback at `:463-493`, whose Stop path at `:527-533` never retries reverse-tunnel removal.
 - Impact: a partial companion failure can leave an ADB reverse mapping active after the successful fallback is stopped, exposing or conflicting with the reused device port.
 - Reproduction: let reverse creation succeed, make the companion intent and reverse removal fail, allow global-proxy fallback to succeed, then Stop; the interceptor becomes inactive while the reverse mapping remains tracked and installed.
