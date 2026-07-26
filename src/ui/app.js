@@ -352,7 +352,14 @@
       }
 
       // Keep max 10000
-      if (requests.length > 10000) requests.shift();
+      const evictedRequest = requests.length > 10000 ? requests.shift() : null;
+      if (
+        selectedRequestId !== null &&
+        evictedRequest?.id === selectedRequestId &&
+        !requests.some(request => request.id === selectedRequestId)
+      ) {
+        closeDetail(false);
+      }
       applyFilter();
     }
 
@@ -857,15 +864,20 @@
       renderDetailCards(req);
     }
 
-    function closeDetail() {
+    function closeDetail(renderSelection = true) {
+      const panel = document.getElementById('detailPanel');
       const emptyEl = document.getElementById('detailEmptyState');
       const activeEl = document.getElementById('detailActive');
+      if (panel) panel._request = null;
       if (emptyEl) emptyEl.style.display = 'flex';
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
+      updateTrafficActiveDescendant(null);
       // Re-render to remove selection highlight
-      vsForceRender = true;
-      renderVirtualRows();
+      if (renderSelection) {
+        vsForceRender = true;
+        renderVirtualRows();
+      }
       if (window.location.hash.startsWith('#/view/')) {
         history.replaceState(null, '', '#/view');
       }

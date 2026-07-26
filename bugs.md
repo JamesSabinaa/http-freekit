@@ -2105,6 +2105,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-195 — Low — Traffic eviction leaves orphaned selected details
 
+- Status: **Fixed**.
+- Resolution: Capacity eviction now detects when the selected exchange was actually removed and resets its detail reference, visibility, hash, and active-descendant state before the normal filter render. Retained selections remain open, and WebSocket frame indexing continues through the existing filter pass.
+
 - Evidence: `addRequest()` evicts the oldest of 10,000 rows with unconditional `requests.shift()` at `src/ui/app.js:260-273`, without clearing `selectedRequestId` or closing the detail panel.
 - Impact: the evicted row disappears while stale details remain selected and later actions cannot resolve it in the request array.
 - Reproduction: select the oldest record at capacity and capture one more exchange.
