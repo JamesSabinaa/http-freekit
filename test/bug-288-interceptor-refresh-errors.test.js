@@ -49,6 +49,8 @@ function createHarness(target, fetch) {
     },
     renderAndroidConfig: () => { renders++; },
     renderJvmConfig: () => { renders++; },
+    updateAndroidInterceptorFromMetadata: () => {},
+    renderConnectedSources: () => {},
     toast: (message, type) => toasts.push({ message, type })
   };
   vm.createContext(context);

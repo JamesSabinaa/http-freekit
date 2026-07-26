@@ -3915,8 +3915,100 @@
 
     // Interceptors that have expandable config components
     const EXPANDABLE_INTERCEPTORS = new Set(['docker', 'existing-terminal', 'electron', 'android-adb', 'jvm']);
+
+    const ANDROID_INTERCEPTOR_SUMMARY_FIELDS = [
+      'interceptionActive',
+      'interceptionDeviceCount',
+      'activationUncertain',
+      'uncertainDeviceCount',
+      'cleanupPending',
+      'cleanupDeviceCount'
+    ];
+
+    function getAndroidSummaryFields(value) {
+      const fields = {};
+      for (const field of ANDROID_INTERCEPTOR_SUMMARY_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(value || {}, field)) fields[field] = value[field];
+      }
+      return fields;
+    }
+
+    function getAndroidInterceptorSummary(interceptor) {
+      const hasSummary = ANDROID_INTERCEPTOR_SUMMARY_FIELDS.some(
+        field => Object.prototype.hasOwnProperty.call(interceptor || {}, field)
+      );
+      if (!hasSummary) {
+        return {
+          interceptionActive: interceptor?.active === true,
+          interceptionDeviceCount: interceptor?.active === true ? 1 : 0,
+          activationUncertain: false,
+          uncertainDeviceCount: 0,
+          cleanupPending: false,
+          cleanupDeviceCount: 0
+        };
+      }
+
+      const count = (field, enabled) => Number.isInteger(interceptor?.[field]) && interceptor[field] >= 0
+        ? interceptor[field]
+        : enabled ? 1 : 0;
+      const interceptionActive = interceptor?.interceptionActive === true;
+      const activationUncertain = interceptor?.activationUncertain === true;
+      const cleanupPending = interceptor?.cleanupPending === true;
+      return {
+        interceptionActive,
+        interceptionDeviceCount: count('interceptionDeviceCount', interceptionActive),
+        activationUncertain,
+        uncertainDeviceCount: count('uncertainDeviceCount', activationUncertain),
+        cleanupPending,
+        cleanupDeviceCount: count('cleanupDeviceCount', cleanupPending)
+      };
+    }
+
+    function renderAndroidInterceptorStatusPills(interceptor) {
+      const summary = getAndroidInterceptorSummary(interceptor);
+      const statuses = [];
+      if (summary.interceptionActive) {
+        statuses.push({ label: 'Activated', count: summary.interceptionDeviceCount, className: 'pill-active' });
+      }
+      if (summary.activationUncertain) {
+        statuses.push({ label: 'Activation uncertain', count: summary.uncertainDeviceCount, className: 'pill-warning' });
+      }
+      if (summary.cleanupPending) {
+        statuses.push({ label: 'Cleanup pending', count: summary.cleanupDeviceCount, className: 'pill-warning' });
+      }
+      if (statuses.length === 0 && interceptor?.active) {
+        statuses.push({ label: 'State uncertain', count: 1, className: 'pill-warning' });
+      }
+
+      const showCounts = statuses.length > 1;
+      return `<div class="intercept-pill-group">${statuses.map(status => {
+        const suffix = showCounts || status.count > 1 ? ` · ${status.count}` : '';
+        return `<span class="intercept-pill ${status.className}">${status.label}${suffix}</span>`;
+      }).join('')}</div>`;
+    }
+
+    function isConnectedInterceptorSource(interceptor) {
+      if (!interceptor?.active) return false;
+      if (interceptor.id !== 'android-adb') return true;
+      return getAndroidInterceptorSummary(interceptor).interceptionActive;
+    }
+
+    function updateAndroidInterceptorFromMetadata(metadata) {
+      if (!metadata || typeof metadata !== 'object') return;
+      const summaryFields = getAndroidSummaryFields(metadata);
+      if (Object.keys(summaryFields).length === 0) return;
+      const index = allInterceptors.findIndex(interceptor => interceptor.id === 'android-adb');
+      if (index === -1) return;
+      const summary = getAndroidInterceptorSummary(summaryFields);
+      allInterceptors[index] = {
+        ...allInterceptors[index],
+        ...summaryFields,
+        active: summary.interceptionActive || summary.activationUncertain || summary.cleanupPending
+      };
+    }
+
     function renderConnectedSources(interceptors = allInterceptors) {
-      const active = interceptors.filter(i => i.active);
+      const active = interceptors.filter(isConnectedInterceptorSource);
       const sourcesList = document.getElementById('connectedSourcesList');
       if (!sourcesList) return;
 
@@ -3961,7 +4053,8 @@
       allInterceptors[idx] = {
         ...allInterceptors[idx],
         active: !!event.active,
-        pid: event.pid || null
+        pid: event.pid || null,
+        ...(event.id === 'android-adb' ? getAndroidSummaryFields(event) : {})
       };
       if (!event.active && expandedInterceptorId === event.id) {
         collapseInterceptorCard();
@@ -4025,9 +4118,8 @@
 
         let pillHtml = '';
         if (i.active) {
-          if (i.id === 'android-adb' && expandedInterceptorMetadata?.activatedDevices?.length > 0) {
-            const deviceNames = expandedInterceptorMetadata.activatedDevices.map(d => d.model || d.serial).join(', ');
-            pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(deviceNames)}</span>`;
+          if (i.id === 'android-adb') {
+            pillHtml = renderAndroidInterceptorStatusPills(i);
           } else if (i.id === 'jvm' && expandedInterceptorMetadata?.activatedProcesses?.length > 0) {
             const procNames = expandedInterceptorMetadata.activatedProcesses.map(p => p.name || p.pid).join(', ');
             pillHtml = `<span class="intercept-pill pill-active">Activated \u00b7 ${esc(procNames)}</span>`;
@@ -4409,13 +4501,45 @@
       });
     }
 
+    function getAndroidActivationPresentation(mode) {
+      switch (mode) {
+        case 'global-proxy':
+          return { category: 'active', modeLabel: 'Global proxy', statusLabel: 'Activated' };
+        case 'http-toolkit-app':
+          return { category: 'active', modeLabel: 'VPN app', statusLabel: 'Activated' };
+        case 'proxy-uncertain':
+          return {
+            category: 'warning',
+            modeLabel: 'Global proxy state uncertain',
+            statusLabel: 'Activation uncertain'
+          };
+        case 'app-uncertain':
+          return {
+            category: 'warning',
+            modeLabel: 'VPN app state uncertain',
+            statusLabel: 'Activation uncertain'
+          };
+        case 'staging-cleanup':
+          return {
+            category: 'warning',
+            modeLabel: 'Certificate cleanup pending',
+            statusLabel: 'Cleanup pending'
+          };
+        case 'reverse-cleanup':
+          return {
+            category: 'warning',
+            modeLabel: 'ADB tunnel cleanup pending',
+            statusLabel: 'Cleanup pending'
+          };
+        default:
+          return { category: 'warning', modeLabel: 'Android state uncertain', statusLabel: 'State uncertain' };
+      }
+    }
+
     function renderAndroidConfig(container) {
       const meta = expandedInterceptorMetadata;
       const devices = meta?.devices || [];
       const activatedDevices = meta?.activatedDevices || [];
-      const activatedSerials = new Set(
-        activatedDevices.map(d => d.serial)
-      );
       const activationBySerial = new Map(activatedDevices.map(d => [d.serial, d]));
       const qrHtml = meta?.qrAvailable && meta?.qrImageDataUrl
         ? `
@@ -4463,11 +4587,14 @@
           <p class="android-setup-note">Uses the HTTP Toolkit Android VPN app when installed, then falls back to Android's global proxy setting.</p>
           <div class="android-device-list">
             ${devices.map((d, index) => {
-              const isActivated = activatedSerials.has(d.serial);
               const activation = activationBySerial.get(d.serial);
+              const activationPresentation = activation
+                ? getAndroidActivationPresentation(activation.mode)
+                : null;
+              const isActivated = activationPresentation?.category === 'active';
+              const hasOwnedState = activationPresentation !== null;
               const isUnauthorized = d.status === 'unauthorized';
               const isOffline = d.status === 'offline';
-              const modeLabel = activation?.mode === 'http-toolkit-app' ? 'VPN app' : 'Global proxy';
               const hostIpCandidates = Array.isArray(d.hostIpCandidates)
                 ? d.hostIpCandidates.filter(candidate =>
                     candidate && typeof candidate.address === 'string' &&
@@ -4499,19 +4626,19 @@
                 `
                 : '';
               return `
-                <div class="android-device-item${isActivated ? ' activated' : ''}" data-device-id="${esc(d.serial)}">
+                <div class="android-device-item${isActivated ? ' activated' : hasOwnedState ? ' warning' : ''}" data-device-id="${esc(d.serial)}">
                   <div class="android-device-info">
                     <i class="ph ph-device-mobile"></i>
                     <div class="android-device-details">
                       <span class="android-device-model">${esc(d.model || d.serial)}</span>
                       <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
-                      ${isActivated ? `<span class="android-device-mode">${esc(modeLabel)}</span>` : ''}
+                      ${hasOwnedState ? `<span class="android-device-mode${isActivated ? '' : ' warning'}">${esc(activationPresentation.modeLabel)}</span>` : ''}
                       ${hostIpChoice}
                     </div>
                   </div>
                   <div class="android-device-actions">
-                    ${isActivated
-                      ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
+                    ${hasOwnedState
+                      ? `<span class="intercept-pill ${isActivated ? 'pill-active' : 'pill-warning'}" style="margin:0;">${esc(activationPresentation.statusLabel)}</span>`
                       : isUnauthorized
                         ? '<span class="android-device-status status-warning">Unauthorized</span>'
                         : isOffline
@@ -4582,9 +4709,12 @@
         if (data.metadata) {
           expandedInterceptorMetadata = {
             ...expandedInterceptorMetadata,
+            ...data.metadata,
             devices: data.metadata.devices || expandedInterceptorMetadata?.devices || [],
             activatedDevices: data.metadata.activatedDevices || expandedInterceptorMetadata?.activatedDevices || []
           };
+          updateAndroidInterceptorFromMetadata(data.metadata);
+          renderConnectedSources(allInterceptors);
         }
 
         if (data.metadata?.requiresHostIpSelection === true &&
@@ -4625,6 +4755,19 @@
           if (btn) {
             btn.disabled = false;
             btn.innerHTML = 'Activate';
+          }
+          // A failed activation can still retain uncertain or cleanup-only
+          // ownership. Refresh the lifecycle snapshot so Stop stays available
+          // even when the error response could not include metadata.
+          try {
+            const response = await fetch(`${API_BASE}/api/interceptors`);
+            const data = await response.json();
+            if (isCurrentInterceptorOperation(operation)) {
+              allInterceptors = data.interceptors;
+              renderConnectedSources(allInterceptors);
+            }
+          } catch (refreshError) {
+            if (isCurrentInterceptorOperation(operation)) console.error('[Error]', refreshError.message);
           }
         }
       } finally {
@@ -4671,9 +4814,12 @@
         if (!isCurrentInterceptorOperation(operation)) return;
         expandedInterceptorMetadata = {
           ...expandedInterceptorMetadata,
+          ...metadata,
           devices: metadata.devices,
           activatedDevices: metadata.activatedDevices
         };
+        updateAndroidInterceptorFromMetadata(metadata);
+        renderConnectedSources(allInterceptors);
         const container = document.getElementById('interceptConfig-android-adb');
         if (container) {
           renderAndroidConfig(container);

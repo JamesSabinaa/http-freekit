@@ -1746,6 +1746,22 @@
       color: #4caf7d;
     }
 
+    .intercept-pill.pill-warning {
+      background-color: rgba(241,151,31,0.3);
+      color: #f1971f;
+    }
+
+    .intercept-pill-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: auto;
+    }
+
+    .intercept-pill-group .intercept-pill {
+      margin-top: 0;
+    }
+
     .intercept-pill.pill-unavailable {
       background-color: rgba(154,157,168,0.3);
       color: #9a9da8;
@@ -1941,6 +1957,10 @@
       border-left-color: #4caf7d;
     }
 
+    .android-device-item.warning {
+      border-left-color: #f1971f;
+    }
+
     .android-device-info {
       display: flex;
       align-items: center;
@@ -1984,6 +2004,10 @@
       color: #4caf7d;
       font-weight: 600;
       margin-top: 2px;
+    }
+
+    .android-device-mode.warning {
+      color: #f1971f;
     }
 
     .android-host-ip-choice {

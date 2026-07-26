@@ -14,6 +14,8 @@ const ANDROID_LEGACY_RECOVERY_VERSION = 1;
 const ANDROID_REVERSE_RECOVERY_VERSION = 2;
 const ANDROID_RECOVERY_VERSION = 3;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
+const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
+const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
 
 function getActivityLaunchError(output) {
   const statuses = String(output || '')
@@ -295,6 +297,33 @@ export class AndroidAdbInterceptor {
     return this.active && this.activatedDevices.size > 0;
   }
 
+  _getInterceptionSummary() {
+    let interceptionDeviceCount = 0;
+    let uncertainDeviceCount = 0;
+    let cleanupDeviceCount = 0;
+
+    for (const info of this.activatedDevices.values()) {
+      if (ANDROID_INTERCEPTING_MODES.has(info?.mode)) {
+        interceptionDeviceCount++;
+      } else if (ANDROID_CLEANUP_MODES.has(info?.mode)) {
+        cleanupDeviceCount++;
+      } else {
+        // Known uncertain modes, and any future state not yet understood by an
+        // older renderer, must never be presented as definitely intercepting.
+        uncertainDeviceCount++;
+      }
+    }
+
+    return {
+      interceptionActive: interceptionDeviceCount > 0,
+      interceptionDeviceCount,
+      activationUncertain: uncertainDeviceCount > 0,
+      uncertainDeviceCount,
+      cleanupPending: cleanupDeviceCount > 0,
+      cleanupDeviceCount
+    };
+  }
+
   /**
    * Parse `adb devices -l` output into a list of connected devices.
    */
@@ -347,6 +376,7 @@ export class AndroidAdbInterceptor {
         serial,
         ...info
       })),
+      ...this._getInterceptionSummary(),
       httpToolkitAppPackage: HTTP_TOOLKIT_ANDROID_PACKAGE,
       prefersHttpToolkitApp: true
     };
@@ -986,6 +1016,17 @@ export class AndroidAdbInterceptor {
     // changing device state. QR generation is fallible and must not turn a
     // committed activation into an API failure with live, untracked changes.
     const qrMetadata = await this._getQrMetadata(proxyPort);
+    const currentStateMetadata = () => ({
+      deviceId,
+      model: device.model,
+      devices,
+      activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
+        serial,
+        ...info
+      })),
+      ...this._getInterceptionSummary(),
+      ...qrMetadata
+    });
 
     let hostIp = null;
     let mode = 'global-proxy';
@@ -1018,6 +1059,7 @@ export class AndroidAdbInterceptor {
             serial,
             ...info
           })),
+          ...this._getInterceptionSummary(),
           requiresHostIpSelection: true,
           hostIpCandidates,
           httpToolkitAppInstalled: appInstalled,
@@ -1160,7 +1202,8 @@ export class AndroidAdbInterceptor {
             this.active = true;
             return {
               success: false,
-              error: `Failed to confirm companion activation cleanup on ${deviceId}; reconnect it and retry Stop`
+              error: `Failed to confirm companion activation cleanup on ${deviceId}; reconnect it and retry Stop`,
+              metadata: currentStateMetadata()
             };
           }
           this._forgetGlobalProxyOwnership(deviceId);
@@ -1215,7 +1258,11 @@ export class AndroidAdbInterceptor {
       }
       const currentProxy = await this._getProxy(deviceId);
       if (!currentProxy.success) {
-        return { success: false, error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}` };
+        return {
+          success: false,
+          error: `Failed to read existing proxy on ${deviceId}: ${currentProxy.error}`,
+          metadata: currentStateMetadata()
+        };
       }
       previousProxy = currentProxy.value;
 
@@ -1276,12 +1323,14 @@ export class AndroidAdbInterceptor {
             success: false,
             error: certificateRemoved && reverseTunnelRemoved
               ? `Failed to set proxy on ${deviceId}`
-              : `Failed to set proxy on ${deviceId} and finish fallback cleanup; reconnect it and retry Stop`
+              : `Failed to set proxy on ${deviceId} and finish fallback cleanup; reconnect it and retry Stop`,
+            metadata: currentStateMetadata()
           };
         } else {
           return {
             success: false,
-            error: `Failed to set proxy on ${deviceId} and could not verify whether it was applied; reconnect it and retry Stop`
+            error: `Failed to set proxy on ${deviceId} and could not verify whether it was applied; reconnect it and retry Stop`,
+            metadata: currentStateMetadata()
           };
         }
       }
@@ -1335,7 +1384,8 @@ export class AndroidAdbInterceptor {
         activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
           serial,
           ...info
-        }))
+        })),
+        ...this._getInterceptionSummary()
       }
     };
   }
@@ -1387,6 +1437,7 @@ export class AndroidAdbInterceptor {
       name: this.name,
       type: 'android-adb',
       active: this.active,
+      ...this._getInterceptionSummary(),
       pid: null
     };
   }

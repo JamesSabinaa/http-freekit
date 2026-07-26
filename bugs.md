@@ -1878,6 +1878,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-338 — Medium — Android cleanup-only state is displayed as an active proxy
 
+- Status: **Fixed**.
+- Resolution: Android lifecycle ownership now exposes separate definite-interception, uncertain-activation, and cleanup-pending summaries. The renderer uses mode-aware warning labels for uncertain and cleanup-only device state, excludes non-intercepting ownership from Connected Sources, and retains Stop for every owned state.
 - Evidence: when proxy setup and staged-CA removal both fail, the interceptor records `mode: 'staging-cleanup'` and sets itself active at `src/interceptors/android-adb-interceptor.js:554-568`. The renderer maps every non-companion mode to “Global proxy” and displays “Activated” at `src/ui/app.js:4126-4143`.
 - Impact: an activation that explicitly failed without configuring a proxy appears as a successful global interception; the only retained state is a cleanup retry for a staged certificate.
 - Reproduction: fail `_setProxy()` and `_removeCaCert()`, refresh Android metadata, and inspect the device row; it shows an activated Global proxy despite having no proxy configured.
