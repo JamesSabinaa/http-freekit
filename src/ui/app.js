@@ -4384,11 +4384,11 @@
         <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(caBundleDescription)}</p>
         <div class="config-section">
           <h3>Docker Run</h3>
-          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(runCmd)}</div>
+          <div class="config-code-block" role="button" tabindex="0" aria-label="Copy Docker Run command" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(runCmd)}</div>
         </div>
         <div class="config-section">
           <h3>Docker Compose</h3>
-          <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(composeCmd)}</div>
+          <div class="config-code-block" role="button" tabindex="0" aria-label="Copy Docker Compose configuration" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(composeCmd)}</div>
         </div>
       `;
     }
@@ -4473,7 +4473,7 @@
             <button class="config-tab${defaultTab === 'powershell' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'powershell')">PowerShell</button>
             <button class="config-tab${defaultTab === 'cmd' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'cmd')">CMD</button>
           </div>
-          <div class="config-code-block" id="terminalConfigCode" onclick="copyConfigCode(this)" title="Click to copy">${esc(instructions[defaultTab])}</div>
+          <div class="config-code-block" id="terminalConfigCode" role="button" tabindex="0" aria-label="Copy terminal command" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(instructions[defaultTab])}</div>
         </div>
       `;
 
@@ -4494,7 +4494,7 @@
 
     function copyConfigCode(el) {
       const text = el.textContent.trim();
-      navigator.clipboard.writeText(text).then(() => {
+      return navigator.clipboard.writeText(text).then(() => {
         toast('Copied to clipboard!', 'success');
       }).catch(() => {
         toast('Failed to copy', 'error');
@@ -4549,7 +4549,7 @@
               <img class="android-qr-image" src="${esc(meta.qrImageDataUrl)}" alt="Android setup QR code">
               <div class="android-qr-details">
                 <p class="android-setup-note">Open the HTTP Toolkit Android app and scan this code.</p>
-                <div class="config-code-block android-qr-url" onclick="copyConfigCode(this)" title="Click to copy">${esc(meta.qrConnectUrl || '')}</div>
+                <div class="config-code-block android-qr-url" role="button" tabindex="0" aria-label="Copy Android QR connection URL" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(meta.qrConnectUrl || '')}</div>
               </div>
             </div>
           </div>
@@ -4853,7 +4853,7 @@
             </ul>
             <div class="config-section" style="margin-top: 12px;">
               <h3>Or launch with proxy flags</h3>
-              <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+              <div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM proxy flags" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>
             </div>
             <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
               <i class="ph ph-arrows-clockwise"></i> Refresh
@@ -4890,7 +4890,7 @@
           </div>
           <div class="config-section" style="margin-top: 12px;">
             <h3>Or launch with proxy flags</h3>
-            <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(fallbackCmd)}</div>
+            <div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM proxy flags" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>
           </div>
           <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
             <i class="ph ph-arrows-clockwise"></i> Refresh Processes

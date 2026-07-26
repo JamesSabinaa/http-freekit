@@ -2780,6 +2780,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-342 — Low — Interceptor copy controls are unavailable from the keyboard
 
+- Status: **Fixed**.
+- Resolution: All six interceptor copy blocks now expose button semantics, keyboard focus, accessible names, Enter/Space activation, and scoped click handling. Copy success and failure feedback is preserved, and switching terminal tabs updates the text copied by the same accessible control.
+
 - Evidence: terminal, Docker, Android, and JVM instructions render “Click to copy” `.config-code-block` divs with only `onclick` handlers at `src/ui/app.js:4011,4015,4044,4088,4265,4302`. They have no focusability, role, or key handler and sit inside a non-selectable interceptor card.
 - Impact: keyboard-only users cannot focus, select, or invoke the controls that copy proxy URLs, commands, and setup instructions.
 - Reproduction: expand each interceptor and navigate with Tab; focus skips every copy block and no keyboard action calls `copyConfigCode()`.
