@@ -1465,6 +1465,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-248 — High/Medium — Browser shutdown can kill unrelated substring matches
 
+- Status: **Fixed**.
+- Resolution: Browser process ownership now requires a supported browser executable plus an exact Chromium `--user-data-dir=<profile>` or Firefox `-profile <profile>` launch argument, with quote-aware parsing and Windows-only case folding. Explicit launch roots and their descendant trees remain tracked, while suffixes, prefixes, and incidental or diagnostic uses of the profile are excluded from shutdown and startup-cleanup decisions.
 - Evidence: `collectRelatedProcessIds()` at `src/interceptors/browser-lifecycle.js:138-168` treats any command containing the profile path substring as owned and recursively includes descendants; shutdown kills every returned PID.
 - Impact: backup, indexing, or diagnostic commands mentioning `<profile>-backup` can be terminated with their process trees.
 - Reproduction: run an unrelated process whose argument contains the managed profile path plus a suffix, then stop the browser interceptor.

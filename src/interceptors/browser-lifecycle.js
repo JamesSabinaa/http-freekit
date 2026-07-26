@@ -7,10 +7,117 @@ import { execFileAsync } from './command-runner.js';
 const PROFILE_MARKER = '.http-freekit-profile.json';
 const MANAGED_PROFILE_PATTERN = /^http-freekit-(?:chrome|firefox|edge|brave)-[A-Za-z0-9._-]+$/;
 const PROCESS_START_TOLERANCE_MS = 2000;
+const BROWSER_PROCESS_NAMES = {
+  win32: {
+    chromium: new Set([
+      'chrome',
+      'chrome.exe',
+      'chromium',
+      'chromium.exe',
+      'msedge',
+      'msedge.exe',
+      'brave',
+      'brave.exe'
+    ]),
+    firefox: new Set(['firefox', 'firefox.exe'])
+  },
+  darwin: {
+    chromium: new Set(['Google Chrome', 'chrome', 'Microsoft Edge', 'Brave Browser']),
+    firefox: new Set(['firefox'])
+  },
+  linux: {
+    chromium: new Set([
+      'chrome',
+      'google-chrome',
+      'google-chrome-stable',
+      'chromium',
+      'chromium-browser',
+      'microsoft-edge',
+      'microsoft-edge-stable',
+      'msedge',
+      'brave',
+      'brave-browser',
+      'brave-browser-stable'
+    ]),
+    firefox: new Set(['firefox', 'firefox-bin'])
+  }
+};
 
 function normalizePathForComparison(value) {
   const resolved = path.resolve(value);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function splitProcessCommandLine(commandLine, platform) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  let started = false;
+  const command = String(commandLine || '');
+
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index];
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else if (platform !== 'win32' && quote === '"' && character === '\\' && index + 1 < command.length) {
+        current += command[++index];
+      } else {
+        current += character;
+      }
+      started = true;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      if (started) {
+        args.push(current);
+        current = '';
+        started = false;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      started = true;
+    } else if (platform !== 'win32' && character === '\\' && index + 1 < command.length) {
+      current += command[++index];
+      started = true;
+    } else {
+      current += character;
+      started = true;
+    }
+  }
+
+  if (started) args.push(current);
+  return args;
+}
+
+/** Match only browser launch arguments that select this exact profile. */
+export function commandUsesBrowserProfile(commandLine, profileDir, platform = process.platform) {
+  if (typeof profileDir !== 'string' || !profileDir) return false;
+
+  const platformNames = BROWSER_PROCESS_NAMES[platform] || BROWSER_PROCESS_NAMES.linux;
+  const compare = platform === 'win32'
+    ? value => String(value).toLowerCase()
+    : value => String(value);
+  const expectedProfile = compare(profileDir);
+  const args = splitProcessCommandLine(commandLine, platform);
+  if (args.length === 0) return false;
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const executableName = compare(pathApi.basename(args[0]));
+
+  for (let index = 0; index < args.length; index++) {
+    const argument = compare(args[index]);
+    if (platformNames.chromium.has(executableName) && argument.startsWith('--user-data-dir=')) {
+      if (argument.slice('--user-data-dir='.length) === expectedProfile) return true;
+      continue;
+    }
+    if (platformNames.firefox.has(executableName) && argument === '-profile' && index + 1 < args.length) {
+      if (compare(args[index + 1]) === expectedProfile) return true;
+      index += 1;
+    }
+  }
+
+  return false;
 }
 
 /** Verify that a recursive-delete target is one of our direct temp children. */
@@ -241,21 +348,15 @@ $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
  * Find every process using a profile and all descendants of those processes.
  * Descendant tracking catches Chromium subprocesses that omit --user-data-dir.
  */
-export function collectRelatedProcessIds(processes, profileDir, rootPids = []) {
+export function collectRelatedProcessIds(processes, profileDir, rootPids = [], platform = process.platform) {
   const rows = Array.isArray(processes) ? processes : [];
-  const pathNeedle = process.platform === 'win32'
-    ? String(profileDir || '').toLowerCase()
-    : String(profileDir || '');
   const explicitRoots = new Set(
     rootPids.filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
   );
-  const related = new Set();
+  const related = new Set(explicitRoots);
 
   for (const row of rows) {
-    const command = process.platform === 'win32'
-      ? String(row.command || '').toLowerCase()
-      : String(row.command || '');
-    if (explicitRoots.has(row.pid) || (pathNeedle && command.includes(pathNeedle))) {
+    if (explicitRoots.has(row.pid) || commandUsesBrowserProfile(row.command, profileDir, platform)) {
       if (row.pid > 0 && row.pid !== process.pid) related.add(row.pid);
     }
   }
