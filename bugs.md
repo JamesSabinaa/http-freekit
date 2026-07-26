@@ -2694,6 +2694,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-324 — Low — Packaged UI version text is hard-coded
 
+- Status: **Fixed**.
+- Resolution: Stable logo and About-value hooks now hydrate after DOM availability from the existing validated desktop IPC bridge. Only a bounded SemVer-style string updates the tooltip via `setAttribute()` and the visible value via `textContent`; missing elements, browser mode, malformed or absent responses, synchronous errors, and rejected requests all retain the static fallback without an unhandled rejection.
+
 - Evidence: `src/ui/index.html:19,590` embeds `1.0.0`. Although the preload exposes `getDesktopVersion()` and main returns `app.getVersion()`, the renderer never requests it.
 - Impact: after any release bump, Settings and the logo tooltip report an obsolete version while native About and the updater report the actual one.
 - Reproduction: package version 1.0.1 and launch it; both renderer locations still display 1.0.0.
