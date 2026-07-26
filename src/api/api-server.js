@@ -1113,6 +1113,60 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ success: true, group });
     });
 
+    // Atomically replace two existing rules with one complete group
+    router.post('/api/mock-rules/combine', (req, res) => {
+      const { ruleIds } = req.body || {};
+      if (!Array.isArray(ruleIds) || ruleIds.length !== 2 ||
+          ruleIds.some(id => typeof id !== 'string' || !id)) {
+        return res.status(400).json({ error: 'Exactly two rule IDs are required' });
+      }
+      if (ruleIds[0] === ruleIds[1]) {
+        return res.status(400).json({ error: 'Rule IDs must be distinct' });
+      }
+
+      const sourceRules = ruleIds.map(ruleId => this._findRuleById(ruleId));
+      if (sourceRules.some(rule => !rule)) {
+        return res.status(404).json({ error: 'Rule not found' });
+      }
+      if (sourceRules.some(rule => rule.type === 'group')) {
+        return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
+      }
+
+      let groupId;
+      do {
+        groupId = crypto.randomUUID();
+      } while (this._findRuleById(groupId));
+
+      const sourceIds = new Set(ruleIds);
+      const removeSources = rules => rules.reduce((remaining, rule) => {
+        if (sourceIds.has(rule.id)) return remaining;
+        remaining.push(rule.type === 'group'
+          ? { ...rule, items: removeSources(rule.items || []) }
+          : rule);
+        return remaining;
+      }, []);
+      const group = {
+        id: groupId,
+        type: 'group',
+        title: req.body.title || 'New Group',
+        enabled: true,
+        items: sourceRules,
+        collapsed: false
+      };
+      const previousRules = this.proxy.mockRules;
+      const combinedRules = [...removeSources(previousRules), group];
+
+      this.proxy.mockRules = combinedRules;
+      try {
+        this._persistMockRules();
+      } catch (err) {
+        this.proxy.mockRules = previousRules;
+        return res.status(500).json({ error: err.message || 'Failed to persist mock rules' });
+      }
+
+      res.json({ success: true, group, rules: combinedRules });
+    });
+
     // Move a rule into a group
     router.post('/api/mock-rules/move-to-group', (req, res) => {
       const { ruleId, groupId } = req.body;

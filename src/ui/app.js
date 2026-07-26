@@ -4952,31 +4952,23 @@
 
     async function combineRulesAsGroup(ruleId1, ruleId2) {
       try {
-        // Create a new group
-        const res = await fetch(API_BASE + '/api/mock-rules/group', {
+        const res = await fetch(API_BASE + '/api/mock-rules/combine', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ title: 'New Group' })
+          body: JSON.stringify({ title: 'New Group', ruleIds: [ruleId1, ruleId2] })
         });
         const data = await res.json();
-        const groupId = data.group?.id;
-        if (!groupId) throw new Error('Failed to create group');
+        if (!res.ok || data.error) throw new Error(data.error || 'Failed to combine rules');
+        if (data.success !== true || !data.group?.id || !Array.isArray(data.rules)) {
+          throw new Error('Server returned an incomplete combined group');
+        }
 
-        // Move both rules into the group
-        await fetch(API_BASE + '/api/mock-rules/move-to-group', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ ruleId: ruleId1, groupId })
-        });
-        await fetch(API_BASE + '/api/mock-rules/move-to-group', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ ruleId: ruleId2, groupId })
-        });
-
+        _replaceMockRulesFromServer(data.rules);
+        updateMockSaveButtons();
+        renderMockRules();
         toast('Rules combined into a group (hold Shift + drop)', 'success');
-        loadMockRules();
       } catch (err) {
+        await loadMockRules();
         toast('Error: ' + err.message, 'error');
       }
     }

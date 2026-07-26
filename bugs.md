@@ -2157,6 +2157,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-209 — Medium — Shift-combine leaves hidden partial server mutations
 
+- Status: **Fixed**.
+- Resolution: Shift-combine now calls one atomic server operation that validates both distinct source rules before constructing the complete group, persists the final rule tree once, and restores the prior in-memory tree on persistence failure. The renderer consumes the returned authoritative rules on success and reloads them after failure.
+
 - Evidence: `combineRulesAsGroup()` creates a group and moves two rules through three independent requests at `src/ui/app.js:4512-4540`; the API persists each step separately, and the catch path does not reload.
 - Impact: failure after one move leaves a persisted partial group while the UI keeps showing the old layout until reload.
 - Reproduction: delay the operation and delete the second rule before its move completes.
