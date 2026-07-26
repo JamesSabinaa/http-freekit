@@ -2708,6 +2708,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-327 — Low/Medium — Electron launcher paths are destroyed by rerenders
 
+- Status: **Fixed**.
+- Resolution: The Electron launcher now owns its path in an in-memory renderer draft, updates that draft while typing and before launch, and restores each rebuilt input through its DOM `value` property. Picker completion updates the draft and the current input rather than its potentially detached pre-dialog element, so search, status, loading, failure, and other card rerenders preserve the path without interpolating filesystem data into HTML.
+
 - Evidence: the selected path exists only in the input created by `renderElectronConfig()` at `src/ui/app.js:3934-3951`. `filterInterceptors()` recreates the cards, and `launchElectronApp()` invokes it immediately after capturing the path and again in `finally` at `:3975-3996`; status and search rerenders do the same.
 - Impact: every failed launch returns to an empty field and forces the user to browse or type again; a rerender while the native picker is open can make its result write into a detached input and disappear.
 - Reproduction: enter a path, force activation to fail, and click Launch; the error toast appears but the path field has been reset.

@@ -18,8 +18,12 @@ function createHarness(selectFilePath) {
   };
   const toasts = [];
   const context = {
+    electronAppPathDraft: '',
     document: {
       getElementById: id => id === 'electronAppPath' ? input : null
+    },
+    rememberElectronAppPath(value) {
+      context.electronAppPathDraft = value;
     },
     window: {
       electronApi: { selectFilePath }

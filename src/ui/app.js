@@ -3895,6 +3895,7 @@
     let interceptorSelectionGeneration = 0;
     const interceptorOperationGenerations = new Map();
     const androidHostIpSelections = new Map();
+    let electronAppPathDraft = '';
 
     function beginInterceptorOperation(id) {
       const operationGeneration = (interceptorOperationGenerations.get(id) || 0) + 1;
@@ -4195,7 +4196,7 @@
           <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
           <div style="display:flex;gap:8px;align-items:center;">
             <input id="electronAppPath" type="text" placeholder="Path to Electron executable" aria-label="Electron application path"
-              onclick="event.stopPropagation();" style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:7px 9px;font-family:var(--font-mono);font-size:12px;">
+              onclick="event.stopPropagation();" oninput="rememberElectronAppPath(this.value);" style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:7px 9px;font-family:var(--font-mono);font-size:12px;">
             <button class="android-refresh-btn" onclick="event.stopPropagation(); browseElectronApp();">Browse</button>
           </div>
           <button class="jvm-process-activate" style="margin-top:10px;" onclick="event.stopPropagation(); launchElectronApp();">
@@ -4203,6 +4204,12 @@
           </button>
         </div>
       `;
+      const input = container.querySelector('#electronAppPath');
+      if (input) input.value = electronAppPathDraft;
+    }
+
+    function rememberElectronAppPath(value) {
+      electronAppPathDraft = value;
     }
 
     async function browseElectronApp() {
@@ -4217,7 +4224,11 @@
         const selectedPath = await window.electronApi.selectFilePath({
           title: 'Select Electron application'
         });
-        if (selectedPath) input.value = selectedPath;
+        if (selectedPath) {
+          rememberElectronAppPath(selectedPath);
+          const currentInput = document.getElementById('electronAppPath');
+          if (currentInput) currentInput.value = electronAppPathDraft;
+        }
       } catch (err) {
         toast('Could not select Electron application: ' +
           (err?.message || String(err || 'unknown error')), 'error');
@@ -4226,6 +4237,7 @@
 
     async function launchElectronApp() {
       const input = document.getElementById('electronAppPath');
+      if (input) rememberElectronAppPath(input.value);
       const appPath = input?.value.trim();
       if (!appPath) {
         toast('Select an Electron application first', 'error');
