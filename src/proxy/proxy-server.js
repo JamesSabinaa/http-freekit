@@ -271,6 +271,69 @@ export class ProxyServer {
     };
   }
 
+  _trackRequestBodyCompletion(target, onIncomplete) {
+    let settled = false;
+
+    const cleanup = () => {
+      target?.removeListener?.('aborted', onAborted);
+      target?.removeListener?.('error', onError);
+      target?.removeListener?.('close', onClose);
+    };
+    const settle = (completed, error = null) => {
+      if (settled) return false;
+      settled = true;
+      cleanup();
+      if (!completed) onIncomplete(error);
+      return true;
+    };
+    const onAborted = () => settle(false);
+    const onError = (error) => settle(false, error);
+    const onClose = () => settle(false);
+
+    target?.once?.('aborted', onAborted);
+    target?.once?.('error', onError);
+    target?.once?.('close', onClose);
+
+    if (target?.aborted || (target?.destroyed && !target?.readableEnded)) {
+      settle(false);
+    }
+
+    return {
+      complete() {
+        if (target?.aborted) {
+          settle(false);
+          return false;
+        }
+        return settle(true);
+      }
+    };
+  }
+
+  _emitIncompleteUpload(data, bodyCollector, receivedBytes) {
+    const message = 'Client disconnected before completing the request body';
+    const requestBody = bodyCollector.exceeded
+      ? `[Request body omitted after exceeding ${bodyCollector.limit} bytes]`
+      : this._safeBodyString(this._concatBody(bodyCollector));
+    this._emitRequest({
+      ...data,
+      requestBody,
+      requestBodySize: receivedBytes,
+      statusCode: 0,
+      statusMessage: 'Client Upload Aborted',
+      responseHeaders: {},
+      responseBody: '',
+      responseBodySize: 0,
+      duration: Date.now() - data.timestamp,
+      error: message,
+      errorCode: 'ERR_REQUEST_BODY_ABORTED',
+      errorPhase: 'request-body',
+      ...(bodyCollector.exceeded ? {
+        requestBodyTruncated: true,
+        requestBodyCapturedSize: 0
+      } : {})
+    });
+  }
+
   _destroyUpstreamAgent() {
     this._upstreamAgent?.destroy?.();
     this._upstreamAgent = null;
@@ -1157,8 +1220,28 @@ export class ProxyServer {
     }
 
     const requestBody = this._createBodyCollector();
-    clientReq.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
+    let requestBodySize = 0;
+    const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
+      this._emitIncompleteUpload({
+        id: requestId,
+        protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
+        method: clientReq.method,
+        url: targetUrl.href,
+        host: targetUrl.hostname,
+        path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers,
+        timestamp: startTime,
+        source: 'proxy',
+        tls: null,
+        remote: null
+      }, requestBody, requestBodySize);
+    });
+    clientReq.on('data', chunk => {
+      requestBodySize += chunk.length;
+      this._appendBodyChunk(requestBody, chunk);
+    });
     clientReq.on('end', async () => {
+      if (!requestBodyCompletion.complete()) return;
       if (requestBody.exceeded) {
         clientRes.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
         clientRes.end('Request body too large');
@@ -1753,8 +1836,28 @@ export class ProxyServer {
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
       const requestBody = this._createBodyCollector();
-      req.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
-    req.on('end', async () => {
+      let requestBodySize = 0;
+      const requestBodyCompletion = this._trackRequestBodyCompletion(req, () => {
+        this._emitIncompleteUpload({
+          id: requestId,
+          protocol: 'https',
+          method: req.method,
+          url: fullUrl,
+          host: hostname,
+          path: req.url,
+          requestHeaders: req.headers,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null
+        }, requestBody, requestBodySize);
+      });
+      req.on('data', chunk => {
+        requestBodySize += chunk.length;
+        this._appendBodyChunk(requestBody, chunk);
+      });
+      req.on('end', async () => {
+        if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
           res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
           res.end('Request body too large');
@@ -2525,12 +2628,37 @@ export class ProxyServer {
       let upstreamHostname = hostname;
       let upstreamPort = targetPort;
 
+      const reqHeaders = {};
+      for (const [key, value] of Object.entries(headers)) {
+        if (!key.startsWith(':')) reqHeaders[key] = value;
+      }
+
       // Collect request body
       const requestBody = this._createBodyCollector();
+      let requestBodySize = 0;
       let requestTrailers = {};
-      stream.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
+      const requestBodyCompletion = this._trackRequestBodyCompletion(stream, () => {
+        this._emitIncompleteUpload({
+          id: requestId,
+          protocol: 'h2',
+          method,
+          url: fullUrl,
+          host: authority,
+          path,
+          requestHeaders: reqHeaders,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null
+        }, requestBody, requestBodySize);
+      });
+      stream.on('data', chunk => {
+        requestBodySize += chunk.length;
+        this._appendBodyChunk(requestBody, chunk);
+      });
       stream.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
       stream.on('end', async () => {
+        if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
           if (!stream.destroyed && !stream.closed) {
             stream.respond({ ':status': 413, 'content-type': 'text/plain' });
@@ -2543,10 +2671,6 @@ export class ProxyServer {
 
         // Convert h2 pseudo-headers to regular headers for matching
         const downstream = this._trackDownstreamCancellation(stream, { http2Stream: true });
-        const reqHeaders = {};
-        for (const [k, v] of Object.entries(headers)) {
-          if (!k.startsWith(':')) reqHeaders[k] = v;
-        }
         const matcherBody = this._requestBodyForMatching(body, reqHeaders);
 
         // Emit pending request immediately so it appears in the UI
@@ -2877,8 +3001,28 @@ export class ProxyServer {
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
 
       const requestBody = this._createBodyCollector();
-      req.on('data', chunk => this._appendBodyChunk(requestBody, chunk));
+      let requestBodySize = 0;
+      const requestBodyCompletion = this._trackRequestBodyCompletion(req, () => {
+        this._emitIncompleteUpload({
+          id: requestId,
+          protocol: 'https',
+          method: req.method,
+          url: fullUrl,
+          host: hostname,
+          path: req.url,
+          requestHeaders: req.headers,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null
+        }, requestBody, requestBodySize);
+      });
+      req.on('data', chunk => {
+        requestBodySize += chunk.length;
+        this._appendBodyChunk(requestBody, chunk);
+      });
       req.on('end', async () => {
+        if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
           res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
           res.end('Request body too large');

@@ -683,6 +683,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-205 — Low/Medium — Client-aborted uploads vanish from traffic
 
+- Status: **Fixed**.
+- Resolution: All four inbound request-body paths now finalize aborted, errored, or pre-end-closed uploads through a shared one-shot lifecycle. The terminal record includes the received partial body and byte count plus a consistent request-body abort diagnostic, while completed uploads retain their existing pending/forwarding flow.
+
 - Evidence: plain H1, intercepted H1, H2, and H1-on-H2 collect request bodies using only data/end at `src/proxy/proxy-server.js:588-590,1043-1045,1692-1695,1938-1940`; pending emission and forwarding occur only inside end, with no aborted/pre-end close completion.
 - Impact: partial uploads and client resets are absent from capture despite incrementing request counters, defeating diagnosis and leaving no terminal record.
 - Reproduction: declare a large Content-Length, send a short prefix, and close the client socket.
