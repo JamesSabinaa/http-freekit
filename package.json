@@ -16,7 +16,7 @@
     "build:win": "node --no-deprecation ./node_modules/electron-builder/cli.js --win --config electron-builder.config.cjs",
     "build:mac": "node --no-deprecation ./node_modules/electron-builder/cli.js --mac --config electron-builder.config.cjs",
     "build:linux": "node --no-deprecation ./node_modules/electron-builder/cli.js --linux --config electron-builder.config.cjs",
-    "build": "node --no-deprecation ./node_modules/electron-builder/cli.js --win --mac --linux --config electron-builder.config.cjs"
+    "build": "node scripts/build.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

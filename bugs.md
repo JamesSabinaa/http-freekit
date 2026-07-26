@@ -2387,9 +2387,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-252 — Low/Medium — The all-platform build always fails on Windows
 
+- Status: **Fixed**.
 - Evidence: README calls `npm run build` an all-platform command, while `package.json` always requests win, mac, and linux; electron-builder rejects macOS targets when running on Windows.
 - Impact: the documented aggregate release command cannot complete on the project's Windows development platform.
 - Reproduction: run `npm run build` on Windows and observe the macOS-target rejection.
+- Resolution: the default build now selects only the electron-builder target supported by the current host, reports unsupported hosts clearly, and the README documents its host-specific behavior while retaining the explicit platform commands.
 
 ### BUG-256 — Medium — Failed Revert destroys mock draft ownership
 

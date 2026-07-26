@@ -42,11 +42,15 @@ npm run electron
 ### Build Desktop Installers
 
 ```bash
+npm run build        # Installer(s) for the current operating system
 npm run build:win    # Windows .exe installer
 npm run build:mac    # macOS .dmg
 npm run build:linux  # Linux .AppImage, .deb, .rpm
-npm run build        # All platforms
 ```
+
+The default build selects the target supported by the current host. Use the
+platform-specific commands on a compatible host when building release artifacts
+for that platform.
 
 ### Custom Ports
 
