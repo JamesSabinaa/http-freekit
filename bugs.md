@@ -846,6 +846,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-266 — Medium — Wildcard client certificates never match a host
 
+- Status: **Fixed**.
+
 - Evidence: the UI accepts `*` for all hosts at `src/ui/index.html:498`, and `setClientCertificates()` stores it, but `_getClientCertificateOptions()` uses exact host equality only at `src/proxy/proxy-server.js:251-265,308-311`.
 - Impact: an accepted all-host PFX is never sent, so every protected mTLS origin fails while exact-host entries work.
 - Reproduction: configure client certificate host `*` and connect to an mTLS origin.

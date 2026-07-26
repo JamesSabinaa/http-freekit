@@ -797,15 +797,22 @@ export class ProxyServer {
   setClientCertificates(certs) {
     this.clientCertificates = Array.isArray(certs) ? certs : [];
     this._clientCertificateOptions = this.clientCertificates.flatMap((config) => {
-      if (!config?.host || !config?.pfxPath) return [];
+      const configuredHost = typeof config?.host === 'string' ? config.host.trim() : '';
+      const pfxPath = typeof config?.pfxPath === 'string' ? config.pfxPath.trim() : '';
+      if (!configuredHost || !pfxPath) return [];
+      // The UI supports exact hostnames or a single all-hosts wildcard. Reject
+      // partial/malformed wildcards before normalization (for example "*.").
+      if (configuredHost.includes('*') && configuredHost !== '*') return [];
+      const host = this._normalizeTlsHostname(configuredHost);
+      if (!host) return [];
       try {
         return [{
-          host: this._normalizeTlsHostname(config.host),
-          pfx: fs.readFileSync(config.pfxPath),
+          host,
+          pfx: fs.readFileSync(pfxPath),
           ...(config.passphrase ? { passphrase: config.passphrase } : {})
         }];
       } catch (err) {
-        console.error(`[Proxy] Failed to load client certificate ${config.pfxPath}: ${err.message}`);
+        console.error(`[Proxy] Failed to load client certificate ${pfxPath}: ${err.message}`);
         return [];
       }
     });
@@ -853,7 +860,9 @@ export class ProxyServer {
 
   _getClientCertificateOptions(hostname) {
     const target = this._normalizeTlsHostname(hostname);
-    const match = this._clientCertificateOptions.find(config => config.host === target);
+    if (!target) return {};
+    const match = this._clientCertificateOptions.find(config => config.host === target) ||
+      this._clientCertificateOptions.find(config => config.host === '*');
     return match ? { pfx: match.pfx, ...(match.passphrase ? { passphrase: match.passphrase } : {}) } : {};
   }
 
