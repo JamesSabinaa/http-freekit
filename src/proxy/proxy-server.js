@@ -535,6 +535,39 @@ export class ProxyServer {
       : value;
   }
 
+  _formatHttpsAuthority(hostname, port = 443) {
+    const connectionHostname = this._normalizeConnectionHostname(hostname);
+    const urlHostname = net.isIP(connectionHostname) === 6
+      ? `[${connectionHostname}]`
+      : connectionHostname;
+    return Number(port) === 443 ? urlHostname : `${urlHostname}:${port}`;
+  }
+
+  _getConnectH2Authority(authority, scheme, hostname, targetPort) {
+    if (scheme !== undefined && (typeof scheme !== 'string' || scheme.toLowerCase() !== 'https')) {
+      return null;
+    }
+
+    const targetAuthority = this._formatHttpsAuthority(hostname, targetPort);
+    if (authority === undefined || authority === '') return targetAuthority;
+    if (typeof authority !== 'string' || authority !== authority.trim() || /[\\/?#@]/.test(authority)) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(`https://${authority}`);
+      if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+
+      const requestedHostname = this._normalizeConnectionHostname(parsed.hostname).toLowerCase();
+      const connectionHostname = this._normalizeConnectionHostname(hostname).toLowerCase();
+      const requestedPort = parseInt(parsed.port, 10) || 443;
+      if (requestedHostname !== connectionHostname || requestedPort !== Number(targetPort)) return null;
+      return targetAuthority;
+    } catch {
+      return null;
+    }
+  }
+
   _assertSupportedOutboundUrl(url, label = 'URL') {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new Error(`Unsupported ${label} protocol: ${url.protocol}`);
@@ -2617,15 +2650,29 @@ export class ProxyServer {
     h2Server.on('stream', (stream, headers) => {
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
+
+      let authority = this._getConnectH2Authority(
+        headers[':authority'], headers[':scheme'], hostname, targetPort
+      );
+      if (!authority) {
+        const message = 'Misdirected Request';
+        stream.respond({
+          ':status': 421,
+          'content-type': 'text/plain',
+          'content-length': String(Buffer.byteLength(message))
+        });
+        stream.end(message);
+        stream.resume();
+        return;
+      }
+
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
 
       let method = headers[':method'];
       let path = headers[':path'];
-      let authority = headers[':authority'] || hostname;
-      const scheme = headers[':scheme'] || 'https';
-      let fullUrl = `${scheme}://${authority}${path}`;
+      let fullUrl = `https://${authority}${path}`;
       let upstreamHostname = hostname;
       let upstreamPort = targetPort;
 
@@ -2633,6 +2680,9 @@ export class ProxyServer {
       for (const [key, value] of Object.entries(headers)) {
         if (!key.startsWith(':')) reqHeaders[key] = value;
       }
+      // `:authority` is authoritative in HTTP/2. Keep captured, matched, and
+      // forwarded regular headers aligned with the CONNECT origin too.
+      this._setTargetHostHeader(reqHeaders, authority);
 
       // Collect request body
       const requestBody = this._createBodyCollector();
@@ -2729,12 +2779,12 @@ export class ProxyServer {
             try {
               const nextUrl = new URL(modifications.url);
               if (nextUrl.protocol === 'https:') {
-                fullUrl = nextUrl.href;
-                authority = nextUrl.host;
                 path = nextUrl.pathname + nextUrl.search;
-                upstreamHostname = nextUrl.hostname;
+                upstreamHostname = this._normalizeConnectionHostname(nextUrl.hostname);
                 upstreamPort = parseInt(nextUrl.port, 10) || 443;
-                reqHeaders.host = nextUrl.host;
+                authority = this._formatHttpsAuthority(upstreamHostname, upstreamPort);
+                fullUrl = `https://${authority}${path}`;
+                this._setTargetHostHeader(reqHeaders, authority);
               }
             } catch { /* keep original */ }
           }
@@ -2752,12 +2802,7 @@ export class ProxyServer {
         // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
         if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
-        if (!upstreamHeaders.host) {
-          const upstreamUrlHostname = net.isIP(upstreamHostname) === 6 ? `[${upstreamHostname}]` : upstreamHostname;
-          upstreamHeaders.host = upstreamPort === 443
-            ? upstreamUrlHostname
-            : `${upstreamUrlHostname}:${upstreamPort}`;
-        }
+        this._setTargetHostHeader(upstreamHeaders, authority);
 
         const source = this._detectSource(reqHeaders);
 
@@ -3835,9 +3880,7 @@ export class ProxyServer {
         ':method': method,
         ':path': path,
         ':scheme': 'https',
-        ':authority': port === 443
-          ? (net.isIP(hostname) === 6 ? `[${hostname}]` : hostname)
-          : `${net.isIP(hostname) === 6 ? `[${hostname}]` : hostname}:${port}`
+        ':authority': this._formatHttpsAuthority(hostname, port)
       };
 
       // Copy regular headers, filtering out h1-specific ones

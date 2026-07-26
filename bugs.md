@@ -722,6 +722,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-217 — Medium — HTTP/2 capture authority differs from actual upstream routing
 
+- Status: **Fixed**.
+- Resolution: CONNECT-tunneled HTTP/2 streams now accept only HTTPS pseudo-headers whose normalized hostname and effective port match the CONNECT origin. Equivalent default-port and IPv6 authorities are canonicalized; misdirected streams receive 421 before body collection, matching, breakpoints, or capture. Breakpoint URL edits continue to reroute explicitly, with the final authority, Host header, and capture metadata updated together.
+
 - Evidence: CONNECT-H2 uses inbound `:authority` and `:scheme` for `fullUrl`, capture, and matching at `src/proxy/proxy-server.js:1688-1710`, but opens the upstream session to the original CONNECT target and `_makeH2Request()` rewrites both pseudo-fields to that target at `:1802-1806,2656-2667`.
 - Impact: a coalesced/custom H2 request can be logged and mocked as origin B while it is actually delivered to origin A.
 - Reproduction: CONNECT to local origin A, negotiate H2, then send `:authority: b.test`; observe capture and destination disagree.

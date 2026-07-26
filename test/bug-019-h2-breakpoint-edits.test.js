@@ -35,12 +35,14 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   await ca.initialize();
   const originCert = await ca.generateCertForHost('127.0.0.1');
   const origin = https.createServer({ key: originCert.key, cert: originCert.cert }, (req, res) => {
-    res.end(`${req.method} ${req.url}`);
+    res.end(`${req.method} ${req.url} ${req.headers.host}`);
   });
   const originPort = await listen(origin);
 
+  const captures = [];
   let proxy;
   proxy = new ProxyServer(ca, {
+    onRequest: event => captures.push(event),
     port: 0,
     onBreakpoint: (event) => {
       if (event.type !== 'breakpoint-hit') return;
@@ -85,5 +87,8 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   request.end();
   await once(request, 'end');
 
-  assert.equal(Buffer.concat(chunks).toString('utf8'), 'POST /edited?yes=1');
+  const editedAuthority = `127.0.0.1:${originPort}`;
+  assert.equal(Buffer.concat(chunks).toString('utf8'), `POST /edited?yes=1 ${editedAuthority}`);
+  assert.equal(captures.at(-1).url, `https://${editedAuthority}/edited?yes=1`);
+  assert.equal(captures.at(-1).host, editedAuthority);
 });
