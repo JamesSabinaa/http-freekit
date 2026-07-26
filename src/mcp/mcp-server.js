@@ -7,6 +7,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { trafficToHar } from '../api/har-converter.js';
 
+const MCP_HAR_EXPORT_MAX_BYTES = 200 * 1024;
+const MCP_HAR_JSON_PREFIX = '{"log":{"version":"1.2","creator":{"name":"HTTP FreeKit","version":"1.0.0"},"entries":[';
+const MCP_HAR_JSON_SUFFIX = ']}}';
+
 const TOOL_DEFINITIONS = [
   {
     name: 'search_traffic',
@@ -371,16 +375,14 @@ export class McpServerBridge {
       }
     }
 
-    const har = trafficToHar(filtered);
-    const json = JSON.stringify(har, null, 2);
-
-    if (json.length > 200 * 1024) {
+    const json = serializeHarWithinLimit(filtered, MCP_HAR_EXPORT_MAX_BYTES);
+    if (json === null) {
       return {
+        isError: true,
         content: [{
           type: 'text',
-          text: `HAR export is ${formatBytes(json.length)} (${filtered.length} requests). ` +
-            `This is very large. Consider narrowing with method/host/status filters.\n\n` +
-            `First 50KB:\n${json.substring(0, 50 * 1024)}\n... [truncated]`
+          text: `HAR export exceeds the ${formatBytes(MCP_HAR_EXPORT_MAX_BYTES)} MCP response limit ` +
+            `(${filtered.length} matching requests). Narrow the export with method, host, or status filters.`
         }]
       };
     }
@@ -534,6 +536,157 @@ export class McpServerBridge {
       claudeDesktopConfig: this.launchConfig
     };
   }
+}
+
+function serializeHarWithinLimit(requests, maxBytes) {
+  const chunks = [MCP_HAR_JSON_PREFIX];
+  let usedBytes = Buffer.byteLength(MCP_HAR_JSON_PREFIX) + Buffer.byteLength(MCP_HAR_JSON_SUFFIX);
+
+  if (usedBytes > maxBytes) return null;
+
+  for (let index = 0; index < requests.length; index++) {
+    const separator = index === 0 ? '' : ',';
+    const remainingBytes = maxBytes - usedBytes - separator.length;
+
+    // Body text is already the dominant part of large captures. Reject it before
+    // trafficToHar can parse/copy it or JSON serialization can allocate it again.
+    if (hasBodyDefinitelyLargerThan(requests[index], remainingBytes)) return null;
+
+    const entry = trafficToHar([requests[index]]).log.entries[0];
+    const entryBytes = measureJsonBytes(entry, remainingBytes);
+    if (entryBytes > remainingBytes) return null;
+
+    const entryJson = JSON.stringify(entry);
+    const serializedBytes = Buffer.byteLength(entryJson);
+    if (serializedBytes > remainingBytes) return null;
+
+    if (separator) chunks.push(separator);
+    chunks.push(entryJson);
+    usedBytes += separator.length + serializedBytes;
+  }
+
+  chunks.push(MCP_HAR_JSON_SUFFIX);
+  return chunks.join('');
+}
+
+function hasBodyDefinitelyLargerThan(request, remainingBytes) {
+  return minimumHarBodyTextBytes(request, 'request') > remainingBytes ||
+    minimumHarBodyTextBytes(request, 'response') > remainingBytes;
+}
+
+function minimumHarBodyTextBytes(request, side) {
+  if (request[`${side}BodyTruncated`] && request[`${side}BodyCapturedSize`] === 0) return 0;
+
+  const body = request[`${side}Body`];
+  if (!body || typeof body !== 'string') return 0;
+
+  const base64PayloadLength = getBase64DataUriPayloadLength(body);
+  return base64PayloadLength === null ? body.length : base64PayloadLength;
+}
+
+function getBase64DataUriPayloadLength(body) {
+  if (!body.startsWith('data:')) return null;
+
+  const marker = ';base64,';
+  const markerIndex = body.lastIndexOf(marker);
+  if (markerIndex <= 5 || body[5] === ';' || body[5] === ',' || body.indexOf(',', 5) < markerIndex) {
+    return null;
+  }
+
+  let payloadLength = 0;
+  for (let index = markerIndex + marker.length; index < body.length; index++) {
+    const code = body.charCodeAt(index);
+    const isBase64 = (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 || code === 47 || code === 61;
+    if (isBase64) {
+      payloadLength++;
+    } else if (code !== 10 && code !== 13) {
+      return null;
+    }
+  }
+  return payloadLength;
+}
+
+function measureJsonBytes(value, maxBytes) {
+  if (maxBytes < 0) return Infinity;
+  if (value === null) return 4;
+
+  switch (typeof value) {
+    case 'string':
+      return measureJsonStringBytes(value, maxBytes);
+    case 'number':
+      return Number.isFinite(value) ? String(value).length : 4;
+    case 'boolean':
+      return value ? 4 : 5;
+    case 'object':
+      break;
+    default:
+      return 0;
+  }
+
+  let bytes = 2;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      if (index > 0) bytes++;
+      const item = value[index];
+      const itemBytes = item === undefined || typeof item === 'function' || typeof item === 'symbol'
+        ? 4
+        : measureJsonBytes(item, maxBytes - bytes);
+      bytes += itemBytes;
+      if (bytes > maxBytes) return Infinity;
+    }
+    return bytes;
+  }
+
+  let includedProperties = 0;
+  for (const key of Object.keys(value)) {
+    const item = value[key];
+    if (item === undefined || typeof item === 'function' || typeof item === 'symbol') continue;
+
+    if (includedProperties++ > 0) bytes++;
+    bytes += measureJsonStringBytes(key, maxBytes - bytes) + 1;
+    if (bytes > maxBytes) return Infinity;
+    bytes += measureJsonBytes(item, maxBytes - bytes);
+    if (bytes > maxBytes) return Infinity;
+  }
+  return bytes;
+}
+
+function measureJsonStringBytes(value, maxBytes) {
+  if (maxBytes < 0) return Infinity;
+  let bytes = 2;
+  if (value.length + bytes > maxBytes) return Infinity;
+
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 34 || code === 92 || code === 8 || code === 9 || code === 10 || code === 12 || code === 13) {
+      bytes += 2;
+    } else if (code < 32) {
+      bytes += 6;
+    } else if (code < 128) {
+      bytes++;
+    } else if (code < 2048) {
+      bytes += 2;
+    } else if (code >= 0xD800 && code <= 0xDBFF && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        bytes += 4;
+        index++;
+      } else {
+        bytes += 6;
+      }
+    } else if (code >= 0xD800 && code <= 0xDFFF) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+
+    if (bytes > maxBytes) return Infinity;
+  }
+
+  return bytes;
 }
 
 function normalizeByteCount(bytes) {

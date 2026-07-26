@@ -704,6 +704,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-215 — Medium — MCP HAR export returns invalid truncation after full allocation
 
+- Status: **Fixed**.
+- Resolution: MCP HAR export now converts and serializes entries incrementally against the response cap. It rejects a definitely oversized body before conversion, stops before converting later entries when many small entries exceed the cap, and returns a small MCP error with filter-narrowing advice instead of a truncated HAR fragment.
+
 - Evidence: the tool promises HAR 1.2 but builds and pretty-serializes the complete result before its size check at `src/mcp/mcp-server.js:48,358-374`; above 200 KiB it returns prose plus only the first 50 KiB of JSON at `:375-383`.
 - Impact: large filtered exports are not parseable HAR, and the guard does not prevent large memory/event-loop work for up to the full traffic cap.
 - Reproduction: export one exchange over 200 KiB and pass the returned text to `JSON.parse()`.
