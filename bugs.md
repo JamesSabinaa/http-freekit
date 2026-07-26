@@ -2223,6 +2223,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-363 — Low/Medium — Breakpoint timeout leaves an outdated pause banner
 
+- Status: **Fixed**.
+- Resolution: The identity-guarded timeout now resolves and removes the pending breakpoint before publishing one `breakpoint-resumed` event with reason `timeout`, so existing renderer refresh handling clears the stale pause banner without changing manual or client-disconnect resumes.
+
 - Evidence: `_setBreakpointTimeout()` resolves and removes an expired breakpoint without publishing a resumed event, while the renderer refreshes its banner only for breakpoint-hit and breakpoint-resumed messages or manual resume actions.
 - Impact: the interface continues showing a paused request after it resumed automatically, and a later Resume attempt fails because the pending breakpoint no longer exists.
 - Reproduction: leave a paused request untouched until its five-minute timeout expires; the server removes it but the pause banner remains visible.

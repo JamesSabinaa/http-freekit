@@ -6519,6 +6519,11 @@ export class ProxyServer {
       if (this.pendingBreakpoints.get(requestId) === bp) {
         bp.resolve({});
         this.pendingBreakpoints.delete(requestId);
+        try {
+          this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'timeout' });
+        } catch (err) {
+          console.error('[Proxy] Error in breakpoint handler:', err.message);
+        }
       }
     }, 5 * 60 * 1000); // 5 min timeout
     const origResolve = bp.resolve;
