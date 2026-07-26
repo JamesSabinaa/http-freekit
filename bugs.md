@@ -2214,6 +2214,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-362 — Low/Medium — Cancelled automatic proxy rotation leaves the interface stale
 
+- Status: **Fixed**.
+- Resolution: Cancelled rotations now apply the server's authoritative upstream-proxy snapshot, including direct mode, and show neutral cancellation feedback without changing rotation generation protections.
+
 - Evidence: the server broadcasts `proxy-auto-rotate` with status `cancelled` and the current proxy, but `handleProxyAutoRotateEvent()` handles only `started`, `success`, and `error`.
 - Impact: the interface announces that rotation started but never confirms cancellation or refreshes to the current proxy configuration. A window that did not originate the intervening manual change can display the old proxy until reload.
 - Reproduction: start automatic rotation, change the proxy before lookup finishes, and let the rotation cancel; the backend retains and broadcasts the new manual proxy, but the renderer performs no cancellation update.

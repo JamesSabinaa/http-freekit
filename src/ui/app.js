@@ -9580,6 +9580,13 @@
         toast('BottingTools proxy auto-rotated', 'success');
         return;
       }
+      if (msg.status === 'cancelled') {
+        if (Object.hasOwn(msg, 'upstreamProxy')) {
+          updateUpstreamProxyUi(msg.upstreamProxy);
+        }
+        toast('Auto proxy rotation cancelled; current proxy settings retained', 'info');
+        return;
+      }
       if (msg.status === 'error') {
         toast('Auto proxy rotation failed: ' + (msg.error || 'unknown error'), 'error');
       }
