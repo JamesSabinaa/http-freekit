@@ -15,6 +15,7 @@ import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 // A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
 export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
 
 function harHeadersToObject(headers = []) {
   const result = {};
@@ -127,6 +128,12 @@ export class ApiServer {
     this.shutdownTimeoutMs = Number.isSafeInteger(options.shutdownTimeoutMs) && options.shutdownTimeoutMs > 0
       ? options.shutdownTimeoutMs
       : 1000;
+    const managementRequestTimeoutMs = options.managementRequestTimeoutMs ??
+      DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS;
+    this.managementRequestTimeoutMs = Number.isSafeInteger(managementRequestTimeoutMs) &&
+      managementRequestTimeoutMs > 0 && managementRequestTimeoutMs <= 0x7fffffff
+      ? managementRequestTimeoutMs
+      : DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS;
     const maxWsBufferedBytes = options.maxWsBufferedBytes ?? DEFAULT_MAX_WS_BUFFERED_BYTES;
     this.maxWsBufferedBytes = Number.isSafeInteger(maxWsBufferedBytes) && maxWsBufferedBytes >= 0
       ? maxWsBufferedBytes
@@ -901,13 +908,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       next();
     });
 
-    this.app.use(express.json({ limit: '50mb' }));
-
-    // Request timeout
+    // Install the idle timeout before body parsing so incomplete uploads cannot
+    // occupy an authenticated management connection indefinitely.
     this.app.use((req, res, next) => {
-      req.setTimeout(30000);
+      req.setTimeout(this.managementRequestTimeoutMs, () => req.destroy());
       next();
     });
+
+    this.app.use(express.json({ limit: '50mb' }));
   }
 
   _setupRoutes() {

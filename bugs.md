@@ -885,9 +885,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-274 — Low/Medium — Management timeout starts after JSON upload parsing
 
+- Status: **Fixed**.
 - Evidence: `express.json({ limit: "50mb" })` runs before middleware calling `req.setTimeout(30000)` at `src/api/api-server.js:612-618`, so the timeout is not installed until the complete body has arrived.
 - Impact: a slow or incomplete authenticated upload can hold a connection far beyond the advertised 30 seconds.
 - Reproduction: send part of a declared JSON body and hold the socket open beyond 30 seconds.
+- Resolution: the validated, configurable management request timeout is now installed after CORS/authentication but before JSON parsing, and its timeout handler terminates stalled uploads. The default remains 30 seconds and the existing 50 MiB JSON limit is unchanged.
 
 ### BUG-281 — Medium — Fragmented WebSocket messages are captured as separate frames
 
