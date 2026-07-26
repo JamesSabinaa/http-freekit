@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'http';
 import http2 from 'http2';
 import https from 'https';
@@ -80,6 +81,7 @@ export class ProxyServer {
     this._upstreamConnectTimeoutMs = options.upstreamConnectTimeoutMs ?? 15000;
     this._upstreamIdleTimeoutMs = options.upstreamIdleTimeoutMs ?? 30000;
     this._upstreamRetryDelayMs = options.upstreamRetryDelayMs ?? 200;
+    this._dnsLookup = options.dnsLookup || dnsLookup;
     this.maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 32 * 1024 * 1024;
     this.maxDecompressedBodyBytes = options.maxDecompressedBodyBytes ?? 32 * 1024 * 1024;
   }
@@ -4635,15 +4637,46 @@ export class ProxyServer {
   // Create a raw TCP socket through a SOCKS proxy (used for plain HTTP only)
   async _connectViaSocks(hostname, targetPort) {
     const proxy = this.upstreamProxy;
+    const originalDestinationHost = this._normalizeConnectionHostname(hostname);
+    const literalFamily = net.isIP(originalDestinationHost);
+    const isSocks4 = proxy.type === 'socks4' || proxy.type === 'socks4a';
+    const usesLocalDns = proxy.type === 'socks4' || proxy.type === 'socks5';
+    if (isSocks4 && literalFamily === 6) {
+      const error = new Error(`${proxy.type.toUpperCase()} does not support IPv6 destinations`);
+      error.code = 'EAFNOSUPPORT';
+      throw error;
+    }
+
+    let destinationHost = originalDestinationHost;
+    if (usesLocalDns && literalFamily === 0) {
+      const result = await this._dnsLookup(
+        originalDestinationHost,
+        isSocks4 ? { family: 4 } : {}
+      );
+      destinationHost = typeof result === 'string' ? result : result?.address;
+      const resolvedFamily = net.isIP(destinationHost);
+      if (isSocks4 && resolvedFamily !== 4) {
+        const error = new Error(`${proxy.type.toUpperCase()} requires an IPv4 destination`);
+        error.code = 'EAFNOSUPPORT';
+        throw error;
+      }
+      if (resolvedFamily === 0) {
+        const error = new Error(`DNS lookup for ${originalDestinationHost} did not return an IP address`);
+        error.code = 'ENOTFOUND';
+        error.hostname = originalDestinationHost;
+        throw error;
+      }
+    }
+
     const socksOptions = {
       proxy: {
         host: this._normalizeConnectionHostname(proxy.host),
         port: proxy.port,
-        type: (proxy.type === 'socks4' || proxy.type === 'socks4a') ? 4 : 5,
+        type: isSocks4 ? 4 : 5,
       },
       command: 'connect',
       destination: {
-        host: this._normalizeConnectionHostname(hostname),
+        host: destinationHost,
         port: targetPort,
       },
       timeout: this._upstreamConnectTimeoutMs,

@@ -788,6 +788,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-244 — Low/Medium — Plain HTTP collapses SOCKS local/remote DNS variants
 
+- Status: **Fixed**.
+- Resolution: Plain HTTP SOCKS connections now resolve destination hostnames asynchronously on the client for `socks4` and `socks5`, while `socks4a` and `socks5h` preserve hostnames for proxy-side DNS. Literal addresses bypass lookup, and SOCKS4 variants reject unsupported IPv6 destinations explicitly.
+
 - Evidence: `_connectViaSocks()` at `src/proxy/proxy-server.js:3129-3150` maps socks4/socks4a to one type and socks5/socks5h to one type, then always passes the unresolved hostname. HTTPS uses an agent that distinguishes local-DNS and remote-DNS schemes.
 - Impact: SOCKS4 effectively behaves as SOCKS4a and SOCKS5 delegates DNS remotely, violating configured semantics and cross-protocol parity.
 - Reproduction: use hostname-only targets with socks4 versus socks4a and compare DNS behavior for HTTP and HTTPS.
