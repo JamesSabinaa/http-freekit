@@ -2445,6 +2445,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-261 — Medium — Server-log write failures can crash Electron
 
+- Status: **Fixed**.
+- Resolution: Electron now waits for the log destination and startup banner before spawning, races startup against later log/pipe failures, and safely disables failed logging after readiness. Child output pipes no longer independently end the shared stream, and every failure/exit path unpipes and closes or destroys the destination while startup failures terminate the child and reach the existing startup dialog.
+
 - Evidence: `startServer()` creates a WriteStream and pipes/writes to it at `electron/main.cjs:90-112` and later process handlers, but never registers a log-stream error handler; asynchronous stream errors escape the startup catch.
 - Impact: an unwritable or full log destination can terminate the desktop shell instead of showing a startup failure.
 - Reproduction: make the logs path unwritable or simulate ENOSPC and launch Electron.

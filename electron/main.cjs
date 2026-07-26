@@ -12,6 +12,7 @@ const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
+const { createServerLogLifecycle } = require('./server-log.cjs');
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -93,8 +94,11 @@ async function startServer() {
   fs.mkdirSync(logsDir, { recursive: true });
 
   const logPath = path.join(logsDir, 'server.log');
-  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  logStream.write(`\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`);
+  const serverLog = createServerLogLifecycle({
+    logPath,
+    initialMessage: `\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`
+  });
+  await serverLog.ready;
 
   // Server files are in app.asar.unpacked (via asarUnpack config)
   let serverScript = path.join(__dirname, '..', 'src', 'index.js');
@@ -102,46 +106,74 @@ async function startServer() {
     serverScript = serverScript.replace('app.asar', 'app.asar.unpacked');
   }
 
-  serverProcess = spawn(process.execPath, [serverScript], {
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      API_PORT: String(apiPort),
-      AUTH_TOKEN: authToken,
-      ELECTRON: '1',
-      HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
-      HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
-      HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    cwd: path.dirname(serverScript)
+  let proc = null;
+  let processStartupComplete = false;
+  let rejectProcessStartup;
+  const processStartupFailure = new Promise((_, reject) => {
+    rejectProcessStartup = reject;
   });
+  processStartupFailure.catch(() => {});
 
-  serverProcess.stdout.pipe(logStream);
-  serverProcess.stderr.pipe(logStream);
+  try {
+    proc = spawn(process.execPath, [serverScript], {
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        API_PORT: String(apiPort),
+        AUTH_TOKEN: authToken,
+        ELECTRON: '1',
+        HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
+        HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
+        HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: path.dirname(serverScript)
+    });
+    serverProcess = proc;
+    serverLog.attachProcess(proc);
 
-  serverProcess.on('error', (err) => {
-    logStream.write(`--- Server error: ${err.message} ---\n`);
-  });
+    proc.on('error', (err) => {
+      serverLog.write(`--- Server error: ${err.message} ---\n`);
+      if (!processStartupComplete) rejectProcessStartup(err);
+      else console.error('[Electron] Server process error:', err.message);
+    });
 
-  serverProcess.on('exit', (code, signal) => {
-    const msg = `Server exited (code=${code}, signal=${signal})`;
-    logStream.write(`--- ${msg} at ${new Date().toISOString()} ---\n`);
-    serverProcess = null;
-    serverReady = false;
+    proc.on('exit', (code, signal) => {
+      const msg = `Server exited (code=${code}, signal=${signal})`;
+      serverLog.write(`--- ${msg} at ${new Date().toISOString()} ---\n`);
+      if (serverProcess === proc) serverProcess = null;
+      serverReady = false;
 
-    // If server exits unexpectedly, notify and quit
-    if (!isShuttingDown && mainWindow) {
-      dialog.showErrorBox(
-        'HTTP FreeKit',
-        'The server process has unexpectedly exited. The application will now close.'
-      );
-      app.quit();
+      // If server exits unexpectedly, notify and quit
+      if (!isShuttingDown && mainWindow) {
+        dialog.showErrorBox(
+          'HTTP FreeKit',
+          'The server process has unexpectedly exited. The application will now close.'
+        );
+        app.quit();
+      }
+    });
+
+    await Promise.race([
+      waitForServer(apiPort, proc),
+      serverLog.startupFailure,
+      processStartupFailure
+    ]);
+    processStartupComplete = true;
+    serverLog.completeStartup();
+    serverReady = true;
+  } catch (error) {
+    serverLog.close();
+    let terminationRequested = false;
+    if (proc && !proc.killed) {
+      try { terminationRequested = proc.kill('SIGKILL'); } catch {}
     }
-  });
-
-  await waitForServer(apiPort, serverProcess);
-  serverReady = true;
+    if (serverProcess === proc && (!proc || proc.killed || terminationRequested)) {
+      serverProcess = null;
+    }
+    serverReady = false;
+    throw error;
+  }
 }
 
 function registerProtocolHandler() {
