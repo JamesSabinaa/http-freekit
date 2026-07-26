@@ -1000,6 +1000,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-357 — Low/Medium — Prototype-named cookie matchers match absent cookies
 
+- Status: **Fixed**.
+
 - Evidence: the cookie matcher builds a normal-prototype object with `Object.fromEntries()` and tests presence using `matcher.name in cookies` at `src/proxy/proxy-server.js:3934-3939`.
 - Impact: presence matchers named `constructor`, `toString`, or `__proto__` match requests containing no such cookie, potentially applying a mock to unrelated traffic.
 - Reproduction: evaluate `{ type: "cookie", name: "constructor", value: "" }` against empty headers; `_evaluateMatcher()` returns true.

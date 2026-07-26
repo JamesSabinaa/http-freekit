@@ -5360,10 +5360,16 @@ export class ProxyServer {
       }
       case 'cookie': {
         const cookieHeader = headers['cookie'] || '';
-        const cookies = Object.fromEntries(cookieHeader.split(';').map(c => c.trim().split('=').map(p => p.trim())));
+        const cookies = new Map();
+        for (const cookie of cookieHeader.split(';')) {
+          const separatorIndex = cookie.indexOf('=');
+          const name = (separatorIndex === -1 ? cookie : cookie.slice(0, separatorIndex)).trim();
+          const value = separatorIndex === -1 ? undefined : cookie.slice(separatorIndex + 1).trim();
+          cookies.set(name, value);
+        }
         if (!matcher.name) return false;
-        if (matcher.value) return cookies[matcher.name] === matcher.value;
-        return matcher.name in cookies;
+        if (matcher.value) return cookies.get(matcher.name) === matcher.value;
+        return cookies.has(matcher.name);
       }
       case 'form-data': {
         // Match URL-encoded form field
