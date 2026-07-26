@@ -2437,9 +2437,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-260 — Medium — Visible HAR import still discards standard metadata
 
+- Status: **Fixed**.
 - Evidence: the UI uses its own mapping at `src/ui/app.js:7498-7534` rather than the corrected server importer. `Object.fromEntries()` collapses repeated headers, while cookies, form params, HTTP versions, MIME metadata, and base64 encoding are omitted.
 - Impact: importing through the visible control loses cookies, repeated Set-Cookie, structured forms, protocol information, and binary body encoding.
 - Reproduction: import a HAR containing all of those fields through Traffic and inspect/re-export it.
+- Resolution: BUG-250's validated renderer importer already preserves duplicate request and response headers, request and response cookies, post-data parameters, both HTTP versions, request and response MIME metadata, and base64 request and response bodies through the visible file-import flow.
 
 ### BUG-261 — Medium — Server-log write failures can crash Electron
 
