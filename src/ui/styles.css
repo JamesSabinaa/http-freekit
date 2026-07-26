@@ -3518,7 +3518,7 @@
         border-right: none;
         border-bottom: 1px solid var(--border-color);
       }
-      .send-resizer {
+      #panel-send .send-resizer {
         width: 100%;
         height: 11px;
         cursor: row-resize;

@@ -2517,6 +2517,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-280 — Low — Split-pane resizers are mouse-only
 
+- Status: **Fixed**.
+- Resolution: Both split-pane handles are focusable ARIA separators with labelled controls, live orientation/range/value state, spatial Arrow-key movement, Home/End bounds, and clamped mouse resizing. Their axis follows the parent flex direction, including the distinct responsive Traffic and Send stacking breakpoints.
 - Evidence: the two resizers are plain divs without separator role, tabindex, or value ARIA at `src/ui/index.html:118,317`; handlers at `src/ui/app.js:8817-8840,9596-9624` listen only for mouse events.
 - Impact: keyboard users cannot resize Traffic detail or Send response panes.
 - Reproduction: attempt to focus and resize either separator with the keyboard.

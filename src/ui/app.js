@@ -10364,30 +10364,186 @@
       }, 2700);
     }
 
-    // ============ RESIZE DETAIL ============
-    (function setupResizer() {
-      const resizer = document.getElementById('detailResizer');
-      let startX, startWidth;
+    function setupSplitPaneResizer(options) {
+      const resizer = options.resizer;
+      const pane = options.pane;
+      if (!resizer || !pane || !resizer.parentElement) return null;
+      const container = resizer.parentElement;
+      const keyboardStep = options.keyboardStep || 10;
+      const originalStyle = {
+        flex: pane.style.flex || '',
+        width: pane.style.width || '',
+        height: pane.style.height || ''
+      };
+      const axisSizes = { x: null, y: null };
+      let activeAxis = null;
+      let drag = null;
 
-      resizer.addEventListener('mousedown', (e) => {
-        const panel = document.getElementById('detailPanel');
-        startX = e.clientX;
-        startWidth = panel.offsetWidth;
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-        e.preventDefault();
-      });
+      function prepareAxis() {
+        const flexDirection = getComputedStyle(container).flexDirection || 'row';
+        const axis = flexDirection.startsWith('column') ? 'y' : 'x';
+        if (axis !== activeAxis) {
+          const sizeProperty = axis === 'x' ? 'width' : 'height';
+          const otherSizeProperty = axis === 'x' ? 'height' : 'width';
+          pane.style[otherSizeProperty] = originalStyle[otherSizeProperty];
+          if (axisSizes[axis] === null) {
+            pane.style.flex = originalStyle.flex;
+            pane.style[sizeProperty] = originalStyle[sizeProperty];
+          } else {
+            pane.style.flex = 'none';
+            pane.style[sizeProperty] = `${Math.round(axisSizes[axis])}px`;
+          }
+          activeAxis = axis;
+        }
+        return axis;
+      }
 
-      function onMouseMove(e) {
-        const panel = document.getElementById('detailPanel');
-        const diff = startX - e.clientX;
-        panel.style.width = Math.max(300, startWidth + diff) + 'px';
+      function metrics() {
+        const axis = prepareAxis();
+        const isHorizontalSeparator = axis === 'y';
+        const totalProperty = axis === 'x' ? 'clientWidth' : 'clientHeight';
+        const offsetProperty = axis === 'x' ? 'offsetWidth' : 'offsetHeight';
+        const sizeProperty = axis === 'x' ? 'width' : 'height';
+        const otherSizeProperty = axis === 'x' ? 'height' : 'width';
+        const minControlled = axis === 'x' ? options.minWidth : options.minHeight;
+        const minOther = axis === 'x' ? options.otherMinWidth : options.otherMinHeight;
+        const initialSize = axis === 'x' ? options.initialWidth : options.initialHeight;
+        const maxFraction = axis === 'x' ? options.maxWidthFraction : options.maxHeightFraction;
+        const separatorSize = Number(resizer[offsetProperty]) || 11;
+        const renderedPaneSize = Number(pane[offsetProperty]) || initialSize || minControlled;
+        let totalSize = Number(container[totalProperty]);
+        if (!Number.isFinite(totalSize) || totalSize <= separatorSize) {
+          totalSize = Math.max(renderedPaneSize, minControlled) + minOther + separatorSize;
+        }
+        let maxControlled = Math.max(minControlled, totalSize - minOther - separatorSize);
+        if (Number.isFinite(maxFraction)) {
+          maxControlled = Math.max(
+            minControlled,
+            Math.min(maxControlled, Math.floor(totalSize * maxFraction))
+          );
+        }
+        const minPosition = options.controlledAfter
+          ? totalSize - separatorSize - maxControlled
+          : minControlled;
+        const maxPosition = options.controlledAfter
+          ? totalSize - separatorSize - minControlled
+          : maxControlled;
+        const renderedPosition = options.controlledAfter
+          ? totalSize - separatorSize - renderedPaneSize
+          : renderedPaneSize;
+        const position = Math.min(maxPosition, Math.max(minPosition, renderedPosition));
+        return {
+          axis,
+          orientation: isHorizontalSeparator ? 'horizontal' : 'vertical',
+          totalSize,
+          separatorSize,
+          sizeProperty,
+          otherSizeProperty,
+          minPosition,
+          maxPosition,
+          position
+        };
+      }
+
+      function updateAria(currentMetrics, position) {
+        const controlledSize = options.controlledAfter
+          ? currentMetrics.totalSize - currentMetrics.separatorSize - position
+          : position;
+        resizer.setAttribute('aria-orientation', currentMetrics.orientation);
+        resizer.setAttribute('aria-valuemin', String(Math.round(currentMetrics.minPosition)));
+        resizer.setAttribute('aria-valuemax', String(Math.round(currentMetrics.maxPosition)));
+        resizer.setAttribute('aria-valuenow', String(Math.round(position)));
+        resizer.setAttribute('aria-valuetext', `${Math.round(controlledSize)} pixels`);
+      }
+
+      function applyPosition(position, currentMetrics = metrics()) {
+        const clampedPosition = Math.min(
+          currentMetrics.maxPosition,
+          Math.max(currentMetrics.minPosition, position)
+        );
+        const controlledSize = options.controlledAfter
+          ? currentMetrics.totalSize - currentMetrics.separatorSize - clampedPosition
+          : clampedPosition;
+        pane.style.flex = 'none';
+        pane.style[currentMetrics.otherSizeProperty] = '';
+        pane.style[currentMetrics.sizeProperty] = `${Math.round(controlledSize)}px`;
+        axisSizes[currentMetrics.axis] = controlledSize;
+        updateAria(currentMetrics, clampedPosition);
+      }
+
+      function syncAria() {
+        const currentMetrics = metrics();
+        if (axisSizes[currentMetrics.axis] === null) {
+          updateAria(currentMetrics, currentMetrics.position);
+        } else {
+          applyPosition(currentMetrics.position, currentMetrics);
+        }
+      }
+
+      function onMouseMove(event) {
+        if (!drag) return;
+        const coordinate = drag.axis === 'x' ? event.clientX : event.clientY;
+        applyPosition(drag.position + coordinate - drag.coordinate, drag.metrics);
       }
 
       function onMouseUp() {
+        drag = null;
+        resizer.classList.remove('active');
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+        syncAria();
       }
+
+      resizer.addEventListener('mousedown', (event) => {
+        const currentMetrics = metrics();
+        drag = {
+          axis: currentMetrics.axis,
+          coordinate: currentMetrics.axis === 'x' ? event.clientX : event.clientY,
+          position: currentMetrics.position,
+          metrics: currentMetrics
+        };
+        resizer.classList.add('active');
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        event.preventDefault();
+      });
+
+      resizer.addEventListener('keydown', (event) => {
+        const currentMetrics = metrics();
+        let nextPosition = currentMetrics.position;
+        if (event.key === 'Home') nextPosition = currentMetrics.minPosition;
+        else if (event.key === 'End') nextPosition = currentMetrics.maxPosition;
+        else if (currentMetrics.axis === 'x' && event.key === 'ArrowLeft') nextPosition -= keyboardStep;
+        else if (currentMetrics.axis === 'x' && event.key === 'ArrowRight') nextPosition += keyboardStep;
+        else if (currentMetrics.axis === 'y' && event.key === 'ArrowUp') nextPosition -= keyboardStep;
+        else if (currentMetrics.axis === 'y' && event.key === 'ArrowDown') nextPosition += keyboardStep;
+        else return;
+        applyPosition(nextPosition, currentMetrics);
+        event.preventDefault();
+      });
+
+      window.addEventListener('resize', syncAria);
+      if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(syncAria).observe(container);
+      }
+      syncAria();
+      return { sync: syncAria, applyPosition };
+    }
+
+    // ============ RESIZE DETAIL ============
+    (function setupResizer() {
+      setupSplitPaneResizer({
+        resizer: document.getElementById('detailResizer'),
+        pane: document.getElementById('detailPanel'),
+        controlledAfter: true,
+        minWidth: 300,
+        otherMinWidth: 300,
+        minHeight: 150,
+        otherMinHeight: 200,
+        initialWidth: 300,
+        initialHeight: 250,
+        maxHeightFraction: 0.5
+      });
     })();
 
     // Virtual scroll: re-render visible rows on scroll + auto-scroll detection
@@ -11360,33 +11516,18 @@
       }
     });
 
-    // Draggable resizer for Send panel split pane
+    // Resizer for Send panel split pane
     (function setupSendResizer() {
-      var resizer = document.getElementById('sendResizer');
-      if (!resizer) return;
-      var startX, leftWidth;
-
-      resizer.addEventListener('mousedown', function(e) {
-        var leftPane = resizer.previousElementSibling;
-        startX = e.clientX;
-        leftWidth = leftPane.offsetWidth;
-
-        function onMouseMove(ev) {
-          var diff = ev.clientX - startX;
-          var newWidth = Math.max(250, leftWidth + diff);
-          leftPane.style.flex = 'none';
-          leftPane.style.width = newWidth + 'px';
-        }
-
-        function onMouseUp() {
-          resizer.classList.remove('active');
-          document.removeEventListener('mousemove', onMouseMove);
-          document.removeEventListener('mouseup', onMouseUp);
-        }
-
-        resizer.classList.add('active');
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-        e.preventDefault();
+      const resizer = document.getElementById('sendResizer');
+      setupSplitPaneResizer({
+        resizer,
+        pane: resizer?.previousElementSibling,
+        controlledAfter: false,
+        minWidth: 250,
+        otherMinWidth: 250,
+        minHeight: 200,
+        otherMinHeight: 200,
+        initialWidth: 350,
+        initialHeight: 300
       });
     })();
