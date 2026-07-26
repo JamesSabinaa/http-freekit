@@ -1842,6 +1842,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-332 — Medium — JVM interception ownership is lost across a FreeKit restart
 
+- Status: **Fixed**.
+- Resolution: JVM ownership is atomically journaled with strong process identity before attach, re-adopted after restart, and revalidated before any restore attempt.
+
 - Evidence: the Java agent's proxy properties and SSL defaults persist inside the target JVM, but a new `JvmInterceptor` constructs an empty in-memory `activatedProcesses` map at `src/interceptors/jvm-interceptor.js:8-15`. `isActive()` and `deactivate()` consult only that map at `:32-36,501-531`; there is no journal or target-side adoption handshake.
 - Impact: after FreeKit restarts while the target JVM survives, the UI reports it inactive and Stop cannot restore the target's original proxy and trust state.
 - Reproduction: attach to a JVM, terminate and restart only FreeKit, then refresh and Stop; the target remains configured while the new interceptor has no tracked PID to detach.

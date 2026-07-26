@@ -9,6 +9,9 @@ const AGENT_BYTECODE_POLICY = Object.freeze({
   preferredJavacArgs: ['--release', '8'],
   legacyJavacArgs: ['-source', '8', '-target', '8']
 });
+const JVM_RECOVERY_VERSION = 1;
+const MAX_JVM_RECOVERY_BYTES = 128 * 1024;
+const MAX_JVM_RECOVERY_PROCESSES = 128;
 
 export class JvmInterceptor {
   constructor(options = {}) {
@@ -18,10 +21,304 @@ export class JvmInterceptor {
     this.ca = null;
     this.activatedProcesses = new Map(); // pid -> { name, mainClass, activationUncertain? }
     this.processDiscoveryFailed = false;
+    this.recoveryFile = options.dataDir
+      ? path.join(options.dataDir, 'jvm-interceptor-recovery.json')
+      : options.recoveryFile || null;
+    this._processIdentityLookup = options.processIdentityLookup
+      || (pid => this._inspectTargetIdentity(pid));
     this.agentDir = options.agentDir
       || (options.dataDir
         ? path.join(options.dataDir, 'jvm-agent')
         : path.join(os.tmpdir(), `http-freekit-jvm-agent-${process.pid}`));
+    this._adoptRecoveryJournal();
+  }
+
+  _platform() {
+    return process.platform;
+  }
+
+  _isSafeJournalString(value, maxLength = 2048) {
+    return typeof value === 'string' && value.length > 0 && value.length <= maxLength &&
+      !/[\0\r\n]/.test(value);
+  }
+
+  _normalizeExecutableIdentity(executable) {
+    const value = String(executable || '').trim();
+    if (!this._isSafeJournalString(value)) {
+      throw new Error('Process executable identity is missing or invalid');
+    }
+    if (path.win32.isAbsolute(value)) return path.win32.normalize(value).toLowerCase();
+    if (path.posix.isAbsolute(value)) return path.posix.normalize(value);
+    throw new Error('Process executable identity is not absolute');
+  }
+
+  _normalizeTargetIdentity(identity, expectedPid) {
+    const pid = Number(expectedPid);
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity) ||
+        !Number.isSafeInteger(identity.pid) || identity.pid !== pid || pid <= 0 ||
+        pid > 0xffffffff) {
+      throw new Error('Process identity PID is missing, invalid, or unexpected');
+    }
+    const startTime = String(identity.startTime || '').trim();
+    const stableStartTime = /^\d{1,32}$/.test(startTime) ||
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(startTime);
+    if (!this._isSafeJournalString(startTime, 128) || !stableStartTime) {
+      throw new Error('Process start identity is missing or invalid');
+    }
+    return Object.freeze({
+      pid,
+      startTime,
+      executable: this._normalizeExecutableIdentity(identity.executable)
+    });
+  }
+
+  _parseLinuxProcessStart(stat, pid) {
+    const commandEnd = stat.lastIndexOf(')');
+    if (!stat.startsWith(`${pid} (`) || commandEnd < 0) {
+      throw new Error('Linux process metadata is ambiguous');
+    }
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    const startTime = fields[19];
+    if (!/^\d+$/.test(startTime || '')) {
+      throw new Error('Linux process start time is unavailable');
+    }
+    return startTime;
+  }
+
+  async _inspectLinuxTargetIdentity(pid) {
+    const procDirectory = `/proc/${pid}`;
+    const statBefore = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+    const startTime = this._parseLinuxProcessStart(statBefore, pid);
+    const executable = await fs.promises.readlink(path.join(procDirectory, 'exe'));
+    const statAfter = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+    if (this._parseLinuxProcessStart(statAfter, pid) !== startTime) {
+      throw new Error('Process identity changed during inspection');
+    }
+    return { pid, startTime, executable };
+  }
+
+  async _inspectDarwinTargetIdentity(pid) {
+    const output = await execFileAsync(
+      '/bin/ps',
+      ['-ww', '-p', String(pid), '-o', 'pid=', '-o', 'lstart=', '-o', 'comm='],
+      {
+        encoding: 'utf8',
+        timeout: 1000,
+        maxBuffer: 16 * 1024,
+        windowsHide: true,
+        env: { ...process.env, LC_ALL: 'C' }
+      }
+    );
+    const lines = String(output).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length !== 1) throw new Error('macOS process metadata is ambiguous');
+    const match = lines[0].match(/^(\d+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
+    if (!match || Number(match[1]) !== pid) throw new Error('macOS process metadata is invalid');
+    const startedAt = Date.parse(match[2]);
+    if (!Number.isFinite(startedAt)) throw new Error('macOS process start time is unavailable');
+    return { pid, startTime: String(startedAt), executable: match[3] };
+  }
+
+  async _inspectWindowsTargetIdentity(pid) {
+    const output = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `$target = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop | Select-Object -First 1
+if ($null -eq $target) { [Console]::Out.Write('null') } else {
+  $identity = [PSCustomObject]@{
+    pid = [int]$target.ProcessId
+    startTime = ([DateTime]$target.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    executable = [string]$target.ExecutablePath
+  }
+  [Console]::Out.Write(($identity | ConvertTo-Json -Compress))
+}`
+      ],
+      { encoding: 'utf8', timeout: 3000, windowsHide: true, maxBuffer: 16 * 1024 }
+    );
+    const serialized = String(output).trim();
+    if (!serialized) throw new Error('Windows process identity query returned no result');
+    const identity = JSON.parse(serialized);
+    return identity === null ? null : identity;
+  }
+
+  _probeTargetPid(pid) {
+    try {
+      process.kill(pid, 0);
+      return 'running';
+    } catch (err) {
+      if (err?.code === 'EPERM') return 'running';
+      if (err?.code === 'ESRCH') return 'absent';
+      return 'unknown';
+    }
+  }
+
+  async _inspectTargetIdentity(pid) {
+    try {
+      let identity;
+      if (this._platform() === 'win32') identity = await this._inspectWindowsTargetIdentity(pid);
+      else if (this._platform() === 'darwin') identity = await this._inspectDarwinTargetIdentity(pid);
+      else identity = await this._inspectLinuxTargetIdentity(pid);
+      return identity === null
+        ? { state: 'absent' }
+        : { state: 'running', identity };
+    } catch (error) {
+      const state = this._probeTargetPid(pid);
+      return state === 'absent' ? { state } : { state: 'unknown', error };
+    }
+  }
+
+  async _observeTargetIdentity(pid) {
+    try {
+      const observation = await this._processIdentityLookup(Number(pid));
+      if (observation === null || observation?.state === 'absent') return { state: 'absent' };
+      if (observation?.state === 'unknown') return observation;
+      const rawIdentity = observation?.state === 'running'
+        ? observation.identity
+        : observation;
+      return {
+        state: 'running',
+        identity: this._normalizeTargetIdentity(rawIdentity, Number(pid))
+      };
+    } catch (error) {
+      return { state: 'unknown', error };
+    }
+  }
+
+  _sameTargetIdentity(left, right) {
+    return Boolean(left && right && left.pid === right.pid &&
+      left.startTime === right.startTime && left.executable === right.executable);
+  }
+
+  _normalizeJournalProcess(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        Object.keys(entry).some(field => ![
+          'pid', 'name', 'mainClass', 'state', 'identity'
+        ].includes(field)) ||
+        !/^\d{1,10}$/.test(entry.pid || '') ||
+        String(Number(entry.pid)) !== entry.pid ||
+        !this._isSafeJournalString(entry.name, 512) ||
+        !this._isSafeJournalString(entry.mainClass, 1024) ||
+        !['pending', 'active', 'uncertain'].includes(entry.state) ||
+        !entry.identity || typeof entry.identity !== 'object' || Array.isArray(entry.identity) ||
+        Object.keys(entry.identity).some(field => ![
+          'pid', 'startTime', 'executable'
+        ].includes(field))) {
+      return null;
+    }
+    let identity;
+    try {
+      identity = this._normalizeTargetIdentity(entry.identity, Number(entry.pid));
+    } catch {
+      return null;
+    }
+    return {
+      name: entry.name,
+      mainClass: entry.mainClass,
+      targetIdentity: identity,
+      recoveryState: entry.state,
+      ...(entry.state === 'active' ? {} : { activationUncertain: true })
+    };
+  }
+
+  _journalProcess(pid, info) {
+    return {
+      pid,
+      name: info.name,
+      mainClass: info.mainClass,
+      state: info.recoveryState,
+      identity: info.targetIdentity
+    };
+  }
+
+  _adoptRecoveryJournal() {
+    if (!this.recoveryFile || !fs.existsSync(this.recoveryFile)) return;
+    try {
+      const stats = fs.lstatSync(this.recoveryFile);
+      if (!stats.isFile() || stats.size > MAX_JVM_RECOVERY_BYTES) {
+        throw new Error('Recovery journal is not a trusted regular file');
+      }
+      const parsed = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+          parsed.version !== JVM_RECOVERY_VERSION || !Array.isArray(parsed.processes) ||
+          parsed.processes.length === 0 ||
+          parsed.processes.length > MAX_JVM_RECOVERY_PROCESSES ||
+          Object.keys(parsed).some(field => !['version', 'processes'].includes(field))) {
+        throw new Error('Recovery journal has an invalid schema');
+      }
+      const adopted = new Map();
+      for (const rawEntry of parsed.processes) {
+        const info = this._normalizeJournalProcess(rawEntry);
+        if (!info || adopted.has(rawEntry.pid)) {
+          throw new Error('Recovery journal contains an invalid process entry');
+        }
+        adopted.set(rawEntry.pid, {
+          ...info,
+          recovered: true,
+          identityUncertain: true
+        });
+      }
+      this.activatedProcesses = adopted;
+      this.active = adopted.size > 0;
+    } catch (err) {
+      console.warn('[Interceptor] Ignoring invalid JVM recovery journal:', err.message);
+    }
+  }
+
+  _writeRecoveryJournal(processes) {
+    if (!this.recoveryFile) return;
+    if (processes.size === 0) {
+      try {
+        fs.unlinkSync(this.recoveryFile);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      return;
+    }
+    const payload = {
+      version: JVM_RECOVERY_VERSION,
+      processes: Array.from(processes.entries()).map(([pid, info]) => this._journalProcess(pid, info))
+    };
+    const serialized = JSON.stringify(payload, null, 2);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_JVM_RECOVERY_BYTES) {
+      throw new Error('JVM recovery journal exceeds its size limit');
+    }
+    fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
+    const tempPath = path.join(
+      path.dirname(this.recoveryFile),
+      `.${path.basename(this.recoveryFile)}.${process.pid}.${Date.now()}.tmp`
+    );
+    try {
+      fs.writeFileSync(tempPath, serialized, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+        flush: true
+      });
+      fs.renameSync(tempPath, this.recoveryFile);
+    } catch (err) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw err;
+    }
+  }
+
+  _setTrackedOwnership(pid, info) {
+    const next = new Map(this.activatedProcesses);
+    next.set(pid, info);
+    this._writeRecoveryJournal(next);
+    this.activatedProcesses = next;
+    this.active = true;
+  }
+
+  _forgetTrackedOwnership(pid) {
+    if (!this.activatedProcesses.has(pid)) return;
+    const next = new Map(this.activatedProcesses);
+    next.delete(pid);
+    this._writeRecoveryJournal(next);
+    this.activatedProcesses = next;
+    this.active = next.size > 0;
   }
 
   _runAvailabilityCommand(file, args, options) {
@@ -41,7 +338,7 @@ export class JvmInterceptor {
 
   async isActive() {
     const processes = await this._getRunningProcesses();
-    this._syncActivatedProcesses(processes);
+    await this._syncActivatedProcesses(processes);
     return this.active && this.activatedProcesses.size > 0;
   }
 
@@ -106,24 +403,34 @@ export class JvmInterceptor {
 
   async getMetadata() {
     const processes = await this._getRunningProcesses();
-    this._syncActivatedProcesses(processes);
+    await this._syncActivatedProcesses(processes);
     return {
       processes,
       activatedProcesses: this._getActivatedProcessMetadata(),
-      activationUncertain: this._hasUncertainActivation()
+      activationUncertain: this._hasUncertainActivation(),
+      recoveryUncertain: this._hasRecoveryUncertainty()
     };
   }
 
   _getActivatedProcessMetadata() {
     return Array.from(this.activatedProcesses.entries()).map(([pid, info]) => ({
       pid,
-      ...info
+      name: info.name,
+      mainClass: info.mainClass,
+      ...(info.activationUncertain ? { activationUncertain: true } : {}),
+      ...(info.recovered ? { recovered: true } : {}),
+      ...(info.identityUncertain ? { recoveryUncertain: true } : {})
     }));
   }
 
   _hasUncertainActivation() {
     return Array.from(this.activatedProcesses.values())
       .some(info => info.activationUncertain === true);
+  }
+
+  _hasRecoveryUncertainty() {
+    return Array.from(this.activatedProcesses.values())
+      .some(info => info.identityUncertain === true);
   }
 
   /**
@@ -316,13 +623,60 @@ public class ProxyAgent {
 `;
   }
 
-  _syncActivatedProcesses(processes) {
-    if (this.processDiscoveryFailed) return;
-    const runningByPid = new Map(processes.map(process_ => [String(process_.pid), process_]));
-    for (const [pid, activated] of this.activatedProcesses) {
-      const running = runningByPid.get(String(pid));
-      if (!running || running.mainClass !== activated.mainClass) {
-        this.activatedProcesses.delete(pid);
+  async _classifyTrackedTarget(pid, activated, processes) {
+    const running = processes.find(process_ => String(process_.pid) === String(pid));
+    if (!activated.targetIdentity) {
+      if (this.processDiscoveryFailed) return 'unknown';
+      if (!running) return 'gone';
+      return running.mainClass === activated.mainClass ? 'same' : 'replaced';
+    }
+
+    const jvmState = this.processDiscoveryFailed || !running
+      ? 'unknown'
+      : running.mainClass === activated.mainClass ? 'same' : 'replaced';
+
+    // Keep the strong OS observation last so a matching result immediately
+    // precedes any restore attach authorized by this classification.
+    const observation = await this._observeTargetIdentity(pid);
+    if (observation.state === 'absent') return 'gone';
+    if (observation.state !== 'running') return 'unknown';
+    if (!this._sameTargetIdentity(activated.targetIdentity, observation.identity)) {
+      return 'replaced';
+    }
+    return jvmState;
+  }
+
+  async _authorizeTrackedTarget(pid, activated) {
+    const state = await this._classifyTrackedTarget(
+      pid,
+      activated,
+      await this._getRunningProcesses()
+    );
+    if (state === 'same') return;
+    const error = new Error(
+      `JVM process ${pid} is not an exact verified target immediately before attach`
+    );
+    error.code = 'JVM_TARGET_AUTHORIZATION_FAILED';
+    error.targetState = state;
+    throw error;
+  }
+
+  async _syncActivatedProcesses(processes) {
+    for (const [pid, activated] of Array.from(this.activatedProcesses.entries())) {
+      const state = await this._classifyTrackedTarget(pid, activated, processes);
+      if (state === 'gone' || state === 'replaced') {
+        try {
+          this._forgetTrackedOwnership(pid);
+        } catch (err) {
+          console.warn(`[Interceptor] Could not clear stale JVM recovery for PID ${pid}:`, err.message);
+          this.activatedProcesses.set(pid, { ...activated, identityUncertain: true });
+        }
+      } else if (state === 'unknown' && activated.targetIdentity && !activated.identityUncertain) {
+        this.activatedProcesses.set(pid, { ...activated, identityUncertain: true });
+      } else if (state === 'same' && activated.identityUncertain) {
+        const verified = { ...activated };
+        delete verified.identityUncertain;
+        this.activatedProcesses.set(pid, verified);
       }
     }
     this.active = this.activatedProcesses.size > 0;
@@ -493,7 +847,7 @@ public class AttachProxy {
   /**
    * Attach the agent to a running JVM process using the Attach API.
    */
-  async _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
+  async _attachAgent(pid, proxyHost, proxyPort, action = 'activate', options = {}) {
     const agentJar = await this._getAgentJarPath();
     if (!agentJar) {
       return {
@@ -511,6 +865,20 @@ public class AttachProxy {
     } catch (err) {
       console.error(`[Interceptor] Failed to prepare JVM attach helper for PID ${pid}:`, err.message);
       return { success: false, error: err.message, targetMutationPossible: false };
+    }
+
+    if (typeof options.authorizeBeforeRun === 'function') {
+      try {
+        await options.authorizeBeforeRun();
+      } catch (err) {
+        console.error(`[Interceptor] Refusing JVM attach to PID ${pid}:`, err.message);
+        return {
+          success: false,
+          error: err.message,
+          targetMutationPossible: false,
+          ...(err.targetState ? { authorizationState: err.targetState } : {})
+        };
+      }
     }
 
     let helperStarted = false;
@@ -559,21 +927,116 @@ public class AttachProxy {
       return { success: false, error: `JVM process ${pid} not found` };
     }
 
-    // Attempt to attach the agent
     const proxyHost = '127.0.0.1';
-    const attachResult = await this._attachAgent(pid, proxyHost, proxyPort);
+    const fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
+    let pendingOwnership = null;
+    if (this.recoveryFile) {
+      const observation = await this._observeTargetIdentity(pid);
+      if (observation.state !== 'running') {
+        return {
+          success: false,
+          error: `Could not verify the identity of JVM process ${pid}; no attach was attempted`,
+          metadata: {
+            fallbackCommand,
+            processes,
+            activatedProcesses: this._getActivatedProcessMetadata(),
+            activationUncertain: this._hasUncertainActivation(),
+            recoveryUncertain: this._hasRecoveryUncertainty()
+          }
+        };
+      }
+      pendingOwnership = {
+        name: process_.name,
+        mainClass: process_.mainClass,
+        targetIdentity: observation.identity,
+        recoveryState: 'pending',
+        activationUncertain: true
+      };
+      if (!this._normalizeJournalProcess(this._journalProcess(pid, pendingOwnership))) {
+        return { success: false, error: `JVM process ${pid} has invalid recovery identity metadata` };
+      }
+      try {
+        this._setTrackedOwnership(pid, pendingOwnership);
+      } catch (err) {
+        return {
+          success: false,
+          error: `Could not persist JVM recovery ownership before attach: ${err.message}`,
+          metadata: {
+            fallbackCommand,
+            processes,
+            activatedProcesses: this._getActivatedProcessMetadata(),
+            activationUncertain: this._hasUncertainActivation(),
+            recoveryUncertain: this._hasRecoveryUncertainty()
+          }
+        };
+      }
+
+      const currentProcesses = await this._getRunningProcesses();
+      const targetState = await this._classifyTrackedTarget(pid, pendingOwnership, currentProcesses);
+      if (targetState !== 'same') {
+        let discardError = null;
+        try {
+          this._forgetTrackedOwnership(pid);
+        } catch (err) {
+          discardError = err;
+          this.activatedProcesses.set(pid, { ...pendingOwnership, identityUncertain: true });
+          this.active = true;
+        }
+        return {
+          success: false,
+          error: `JVM process ${pid} could not be revalidated before attach; no attach was attempted` +
+            (discardError ? `, and pending recovery ownership could not be cleared: ${discardError.message}` : ''),
+          metadata: {
+            fallbackCommand,
+            processes: currentProcesses,
+            activatedProcesses: this._getActivatedProcessMetadata(),
+            activationUncertain: this._hasUncertainActivation(),
+            recoveryUncertain: this._hasRecoveryUncertainty()
+          }
+        };
+      }
+    }
+
+    // Attempt to attach only after any durable recovery record is in place.
+    const attachResult = pendingOwnership
+      ? await this._attachAgent(pid, proxyHost, proxyPort, 'activate', {
+          authorizeBeforeRun: () => this._authorizeTrackedTarget(pid, pendingOwnership)
+        })
+      : await this._attachAgent(pid, proxyHost, proxyPort);
 
     if (!attachResult.success) {
       if (attachResult.targetMutationPossible) {
-        this.activatedProcesses.set(pid, {
+        const uncertainOwnership = {
           name: process_.name,
           mainClass: process_.mainClass,
+          ...(pendingOwnership ? {
+            targetIdentity: pendingOwnership.targetIdentity,
+            recoveryState: 'uncertain'
+          } : {}),
           activationUncertain: true
-        });
+        };
+        if (pendingOwnership) {
+          try {
+            this._setTrackedOwnership(pid, uncertainOwnership);
+          } catch (err) {
+            console.warn(`[Interceptor] Could not promote uncertain JVM recovery for PID ${pid}:`, err.message);
+            this.activatedProcesses.set(pid, uncertainOwnership);
+            this.active = true;
+          }
+        } else {
+          this.activatedProcesses.set(pid, uncertainOwnership);
+        }
+      } else if (pendingOwnership) {
+        try {
+          this._forgetTrackedOwnership(pid);
+        } catch (err) {
+          console.warn(`[Interceptor] Could not discard pending JVM recovery for PID ${pid}:`, err.message);
+          this.activatedProcesses.set(pid, { ...pendingOwnership, identityUncertain: true });
+          this.active = true;
+        }
       }
       this.active = this.activatedProcesses.size > 0;
 
-      const fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
       const uncertaintyNotice = attachResult.targetMutationPossible
         ? ' The attach helper started before failing, so the target may have changed; Stop will retry restoration.'
         : '';
@@ -584,16 +1047,42 @@ public class AttachProxy {
           fallbackCommand,
           processes: await this._getRunningProcesses(),
           activatedProcesses: this._getActivatedProcessMetadata(),
-          activationUncertain: this._hasUncertainActivation()
+          activationUncertain: this._hasUncertainActivation(),
+          recoveryUncertain: this._hasRecoveryUncertainty()
         }
       };
     }
 
-    this.activatedProcesses.set(pid, {
+    const activeOwnership = {
       name: process_.name,
-      mainClass: process_.mainClass
-    });
-    this.active = true;
+      mainClass: process_.mainClass,
+      ...(pendingOwnership ? {
+        targetIdentity: pendingOwnership.targetIdentity,
+        recoveryState: 'active'
+      } : {})
+    };
+    try {
+      if (pendingOwnership) this._setTrackedOwnership(pid, activeOwnership);
+      else {
+        this.activatedProcesses.set(pid, activeOwnership);
+        this.active = true;
+      }
+    } catch (err) {
+      const uncertainOwnership = { ...pendingOwnership, activationUncertain: true };
+      this.activatedProcesses.set(pid, uncertainOwnership);
+      this.active = true;
+      return {
+        success: false,
+        error: `Attached to PID ${pid}, but could not finalize durable recovery ownership: ${err.message}. Stop will retry restoration.`,
+        metadata: {
+          fallbackCommand,
+          processes: await this._getRunningProcesses(),
+          activatedProcesses: this._getActivatedProcessMetadata(),
+          activationUncertain: true,
+          recoveryUncertain: this._hasRecoveryUncertainty()
+        }
+      };
+    }
 
     console.log(`[Interceptor] JVM interceptor activated for PID ${pid} (${process_.name})`);
 
@@ -606,19 +1095,71 @@ public class AttachProxy {
         proxyUrl: `http://${proxyHost}:${proxyPort}`,
         processes: await this._getRunningProcesses(),
         activatedProcesses: this._getActivatedProcessMetadata(),
-        activationUncertain: this._hasUncertainActivation()
+        activationUncertain: this._hasUncertainActivation(),
+        recoveryUncertain: this._hasRecoveryUncertainty()
       }
     };
   }
 
   async deactivate(options = {}) {
-    const { pid } = options;
+    const pid = options.pid == null ? null : String(options.pid);
     const deactivatePid = async processId => {
-      const result = await this._attachAgent(processId, null, null, 'deactivate');
+      const tracked = this.activatedProcesses.get(processId);
+      if (!tracked) return null;
+      if (tracked.targetIdentity) {
+        const targetState = await this._classifyTrackedTarget(
+          processId,
+          tracked,
+          await this._getRunningProcesses()
+        );
+        if (targetState === 'gone' || targetState === 'replaced') {
+          try {
+            this._forgetTrackedOwnership(processId);
+          } catch (err) {
+            return `PID ${processId}: stale recovery ownership could not be cleared: ${err.message}`;
+          }
+          console.log(`[Interceptor] Cleared stale JVM recovery ownership for PID ${processId}`);
+          return null;
+        }
+        if (targetState !== 'same') {
+          this.activatedProcesses.set(processId, { ...tracked, identityUncertain: true });
+          this.active = true;
+          return `PID ${processId}: target identity could not be verified; no restore was attempted and Stop can be retried`;
+        }
+        if (tracked.identityUncertain) {
+          const verified = { ...tracked };
+          delete verified.identityUncertain;
+          this.activatedProcesses.set(processId, verified);
+        }
+      }
+
+      const result = tracked.targetIdentity
+        ? await this._attachAgent(processId, null, null, 'deactivate', {
+            authorizeBeforeRun: () => this._authorizeTrackedTarget(processId, tracked)
+          })
+        : await this._attachAgent(processId, null, null, 'deactivate');
       if (!result.success) {
+        if (result.authorizationState === 'gone' || result.authorizationState === 'replaced') {
+          try {
+            this._forgetTrackedOwnership(processId);
+          } catch (err) {
+            return `PID ${processId}: stale recovery ownership could not be cleared: ${err.message}`;
+          }
+          console.log(`[Interceptor] Cleared stale JVM recovery ownership for PID ${processId}`);
+          return null;
+        }
+        if (result.authorizationState === 'unknown') {
+          this.activatedProcesses.set(processId, { ...tracked, identityUncertain: true });
+          this.active = true;
+          return `PID ${processId}: target identity could not be verified immediately before attach; no restore was attempted and Stop can be retried`;
+        }
         return `PID ${processId}: ${result.error}`;
       }
-      this.activatedProcesses.delete(processId);
+      try {
+        this._forgetTrackedOwnership(processId);
+      } catch (err) {
+        return `PID ${processId}: target was restored but recovery ownership could not be cleared: ${err.message}`;
+      }
       console.log(`[Interceptor] JVM interceptor deactivated for PID ${processId}`);
       return null;
     };
@@ -651,6 +1192,7 @@ public class AttachProxy {
       type: 'jvm',
       active: this.active,
       activationUncertain: this._hasUncertainActivation(),
+      ...(this._hasRecoveryUncertainty() ? { recoveryUncertain: true } : {}),
       pid: null
     };
   }
