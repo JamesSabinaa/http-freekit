@@ -4807,6 +4807,8 @@
     let mockReorderGeneration = 0;
     let mockReorderQueue = Promise.resolve();
     let mockRenamingRuleId = null;
+    let mockRulesLoadGeneration = 0;
+    let mockRevertInProgress = false;
 
     async function loadBreakpointRules() {
       try {
@@ -4917,14 +4919,19 @@
       return data;
     }
 
-    async function _reloadMockRulesAfterRejectedReorder(operation) {
+    async function _fetchAuthoritativeMockRules(action) {
       const res = await fetch(API_BASE + '/api/mock-rules');
-      const data = await _readMockRulesResponse(res, 'Reloading mock rules');
+      const data = await _readMockRulesResponse(res, action);
       if (!Array.isArray(data?.rules)) {
-        throw new Error('Reloading mock rules returned an invalid response');
+        throw new Error(action + ' returned an invalid response');
       }
+      return data.rules;
+    }
+
+    async function _reloadMockRulesAfterRejectedReorder(operation) {
+      const rules = await _fetchAuthoritativeMockRules('Reloading mock rules');
       if (operation !== mockReorderGeneration) return false;
-      _replaceMockRulesFromServer(data.rules);
+      _replaceMockRulesFromServer(rules);
       updateMockSaveButtons();
       renderMockRules();
       return true;
@@ -5085,14 +5092,19 @@
     }
 
     async function loadMockRules() {
+      const operation = ++mockRulesLoadGeneration;
       try {
-        const res = await fetch(`${API_BASE}/api/mock-rules`);
-        const data = await res.json();
-        _replaceMockRulesFromServer(data.rules || []);
+        const rules = await _fetchAuthoritativeMockRules('Loading mock rules');
+        if (operation !== mockRulesLoadGeneration) return false;
+        _replaceMockRulesFromServer(rules);
         updateMockSaveButtons();
         await loadBreakpointRules();
         renderMockRules();
-      } catch (e) { console.error('[Error]', e.message); }
+        return true;
+      } catch (e) {
+        if (operation === mockRulesLoadGeneration) console.error('[Error]', e.message);
+        return false;
+      }
     }
 
     async function ensureDefaultMockRules() {
@@ -6640,6 +6652,7 @@
     /** Send ALL draft rules to the server */
     async function saveAllMockRules() {
       if (!hasUnsavedMockChanges() || mockSaveInProgress) return;
+      if (mockRevertInProgress) return;
       mockSaveInProgress = true;
       updateMockSaveButtons();
       try {
@@ -6716,15 +6729,81 @@
       }
     }
 
-    /** Revert all unsaved draft changes (reload from server) */
-    function revertMockRules() {
-      if (!hasUnsavedMockChanges()) return;
+    function _mockRevertStateToken() {
+      return JSON.stringify({
+        rules: mockRules,
+        drafts: Array.from(mockDraftRules.entries()),
+        newDraftIds: Array.from(mockNewDraftIds),
+        editingRule: mockEditingRule,
+        editDraft: mockEditDraft,
+        renamingRuleId: mockRenamingRuleId
+      });
+    }
+
+    function _captureMockRevertState() {
+      return {
+        rules: mockRules,
+        drafts: Array.from(mockDraftRules.entries()),
+        newDraftIds: Array.from(mockNewDraftIds),
+        editingRule: mockEditingRule,
+        editDraft: mockEditDraft,
+        renamingRuleId: mockRenamingRuleId
+      };
+    }
+
+    function _restoreMockRevertState(state) {
+      mockRules = state.rules;
       mockDraftRules.clear();
+      for (const [draftId, draft] of state.drafts) mockDraftRules.set(draftId, draft);
       mockNewDraftIds.clear();
-      mockEditingRule = null;
-      mockEditDraft = null;
-      toast('All unsaved changes discarded', 'success');
-      loadMockRules();
+      for (const draftId of state.newDraftIds) mockNewDraftIds.add(draftId);
+      mockEditingRule = state.editingRule;
+      mockEditDraft = state.editDraft;
+      mockRenamingRuleId = state.renamingRuleId;
+    }
+
+    /** Revert all unsaved draft changes after loading authoritative server state. */
+    async function revertMockRules() {
+      if (!hasUnsavedMockChanges() || mockRevertInProgress || mockSaveInProgress) return;
+
+      const startingState = _mockRevertStateToken();
+      const operation = ++mockRulesLoadGeneration;
+      mockRevertInProgress = true;
+      updateMockSaveButtons();
+      try {
+        const rules = await _fetchAuthoritativeMockRules('Reverting mock rules');
+        if (operation !== mockRulesLoadGeneration
+          || _mockRevertStateToken() !== startingState) {
+          throw new Error('Mock rules changed while Revert was loading');
+        }
+
+        const rollbackState = _captureMockRevertState();
+        try {
+          mockDraftRules.clear();
+          mockNewDraftIds.clear();
+          mockEditingRule = null;
+          mockEditDraft = null;
+          mockRenamingRuleId = null;
+          mockRules = rules;
+          updateMockSaveButtons();
+          renderMockRules();
+        } catch (commitError) {
+          _restoreMockRevertState(rollbackState);
+          try {
+            updateMockSaveButtons();
+            renderMockRules();
+          } catch (rollbackRenderError) {
+            console.error('Could not re-render restored mock rules:', rollbackRenderError);
+          }
+          throw commitError;
+        }
+        toast('All unsaved changes discarded', 'success');
+      } catch (err) {
+        toast('Error reverting rules: ' + err.message, 'error');
+      } finally {
+        mockRevertInProgress = false;
+        updateMockSaveButtons();
+      }
     }
 
     /** Update Save All / Revert button visibility based on draft state */
@@ -6734,8 +6813,9 @@
       const unsavedBadge = document.getElementById('mockUnsavedBadge');
       const hasDrafts = hasUnsavedMockChanges();
       if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
-      if (saveAllBtn) saveAllBtn.disabled = mockSaveInProgress;
+      if (saveAllBtn) saveAllBtn.disabled = mockSaveInProgress || mockRevertInProgress;
       if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
+      if (revertBtn) revertBtn.disabled = mockSaveInProgress || mockRevertInProgress;
       if (unsavedBadge) {
         unsavedBadge.style.display = hasDrafts ? '' : 'none';
         unsavedBadge.textContent = mockDraftRules.size + ' unsaved change' + (mockDraftRules.size !== 1 ? 's' : '');

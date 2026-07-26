@@ -2402,6 +2402,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-256 — Medium — Failed Revert destroys mock draft ownership
 
+- Status: **Fixed**.
+- Resolution: Revert now fetches and validates authoritative rules before discarding draft/editor ownership, rejects overlapping or stale completions, and rolls the exact local state back if replacement rendering fails.
+
 - Evidence: `revertMockRules()` clears every draft before asynchronously calling `loadMockRules()` at `src/ui/app.js:6226-6234`. Existing drafts have already mutated local `mockRules`; if GET fails, the loader only logs at `:4604-4625`.
 - Impact: unsaved changes remain displayed as if clean, Save/Revert controls disappear, and the recoverable draft is lost while the server retains old data.
 - Reproduction: edit a rule into a draft, fail the rules GET, and click Revert.
