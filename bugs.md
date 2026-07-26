@@ -2679,6 +2679,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-322 — Low — Toast feedback is silent to screen readers
 
+- Status: **Fixed**.
+- Resolution: The persistent toast container is now a polite, non-atomic status live region that announces added or updated text but ignores removals. Ordinary success/error messages and updater action toasts are announced without per-toast live roles, duplicate output, timing changes, or focus movement.
+
 - Evidence: the toast container at `src/ui/index.html:616` has no status/alert role, `aria-live`, or `aria-atomic`. `toast()` at `src/ui/app.js:8922-8933` and updater notifications at `:9678-9704` insert non-focusable messages and remove them shortly afterward without another announcement mechanism.
 - Impact: blind users receive no confirmation or error for many saves, activations, copies, and update actions.
 - Reproduction: trigger a failed activation or save while using a screen reader; the visible toast appears but no live-region announcement or focus change occurs.
