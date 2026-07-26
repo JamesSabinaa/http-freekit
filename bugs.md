@@ -758,6 +758,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-231 — Medium — Rewrite pre-steps behave differently across HTTPS and H2
 
+- Status: **Fixed**.
+- Resolution: URL and method pre-steps now update parsed destinations, paths, Host/authority values, and capture metadata consistently across plain H1, intercepted HTTPS H1, native H2, and H1-on-H2 fallback handling. Relative rewrites resolve against the current request URL, while invalid or unsupported rewrites leave it unchanged.
+
 - Evidence: plain H1 mutates URL/method and forwards them at `src/proxy/proxy-server.js:3369-3377,3430+`. HTTPS `rewrite-url` changes only displayed `fullUrl`, not hostname, port, or `req.url`, at `:1092-1101,1153-1177`; native H2 pre-steps at `:2207-2221` omit URL and method rewrite entirely.
 - Impact: one advertised rule routes differently by negotiated protocol, and HTTPS can log a rewritten destination while sending the original.
 - Reproduction: rewrite `/old` to another local origin/path and compare plain H1, intercepted H1, and native H2.

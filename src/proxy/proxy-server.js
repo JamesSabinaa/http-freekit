@@ -789,6 +789,16 @@ export class ProxyServer {
     return headers;
   }
 
+  _resolveRewriteUrl(currentUrl, value) {
+    try {
+      const rewrittenUrl = new URL(String(value), currentUrl);
+      this._assertSupportedOutboundUrl(rewrittenUrl, 'rewrite URL');
+      return rewrittenUrl;
+    } catch {
+      return null;
+    }
+  }
+
   _toH2ResponseHeaders(statusCode, headers) {
     const converted = { ':status': statusCode };
     for (const [name, value] of Object.entries(headers || {})) {
@@ -1820,6 +1830,8 @@ export class ProxyServer {
   }
 
   _handleTlsConnection(tlsSocket, hostname, targetPort) {
+    const tunnelHostname = hostname;
+    const tunnelTargetPort = targetPort;
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
     // TLS details are unavailable until the server-side handshake completes.
     let tlsDetails = null;
@@ -1861,6 +1873,10 @@ export class ProxyServer {
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
     const virtualServer = http.createServer((req, res) => {
+      // URL rewrites are scoped to this request and must not retarget later
+      // requests that reuse the same intercepted CONNECT tunnel.
+      let hostname = tunnelHostname;
+      let targetPort = tunnelTargetPort;
       captureTlsDetails();
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
@@ -1948,7 +1964,14 @@ export class ProxyServer {
                 break;
               case 'rewrite-url':
                 if (step.value) {
-                  try { fullUrl = step.value; } catch { /* keep original */ }
+                  const rewrittenUrl = this._resolveRewriteUrl(fullUrl, step.value);
+                  if (rewrittenUrl) {
+                    fullUrl = rewrittenUrl.href;
+                    hostname = this._normalizeConnectionHostname(rewrittenUrl.hostname);
+                    targetPort = parseInt(rewrittenUrl.port, 10) || (rewrittenUrl.protocol === 'https:' ? 443 : 80);
+                    req.url = rewrittenUrl.pathname + rewrittenUrl.search;
+                    this._setTargetHostHeader(req.headers, rewrittenUrl.host);
+                  }
                 }
                 break;
               case 'rewrite-method':
@@ -3443,6 +3466,8 @@ export class ProxyServer {
     };
 
     // Capture original request data before pre-steps modify it
+    const origMethod = method;
+    const origUrl = fullUrl;
     const origHeaders = { ...reqHeaders };
 
     // Execute pre-steps
@@ -3458,13 +3483,29 @@ export class ProxyServer {
         case 'remove-header':
           if (step.name) delete reqHeaders[step.name.toLowerCase()];
           break;
+        case 'rewrite-url':
+          if (step.value) {
+            const rewrittenUrl = this._resolveRewriteUrl(fullUrl, step.value);
+            if (rewrittenUrl) {
+              fullUrl = rewrittenUrl.href;
+              authority = rewrittenUrl.host;
+              path = rewrittenUrl.pathname + rewrittenUrl.search;
+              this._setTargetHostHeader(reqHeaders, authority);
+            }
+          }
+          break;
+        case 'rewrite-method':
+          if (step.value) method = step.value;
+          break;
       }
     }
 
     // Detect if pre-steps transformed the request
-    const transformed = JSON.stringify(origHeaders) !== JSON.stringify(reqHeaders);
+    const transformed = origMethod !== method ||
+      origUrl !== fullUrl ||
+      JSON.stringify(origHeaders) !== JSON.stringify(reqHeaders);
     const originalRequest = transformed ? {
-      method, url: fullUrl, headers: origHeaders,
+      method: origMethod, url: origUrl, headers: origHeaders,
       body: this._safeBodyString(body)
     } : null;
     const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
@@ -4892,7 +4933,11 @@ export class ProxyServer {
           break;
         case 'rewrite-url':
           if (step.value) {
-            try { targetUrl = new URL(step.value); } catch { /* keep original */ }
+            const rewrittenUrl = this._resolveRewriteUrl(targetUrl, step.value);
+            if (rewrittenUrl) {
+              targetUrl = rewrittenUrl;
+              this._setTargetHostHeader(clientReq.headers, targetUrl.host);
+            }
           }
           break;
         case 'rewrite-method':
