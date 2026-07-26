@@ -1473,6 +1473,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-249 — High — Restart loses ownership of persistent Android interception
 
+- Status: **Fixed**.
+- Resolution: Android global-proxy activation now atomically journals validated per-device cleanup ownership under the configured data directory before staging the CA or changing proxy settings. New manager instances adopt valid records, retain them across failed cleanup, and remove them only after restoring the exact prior proxy and removing the staged CA; invalid journals are ignored safely.
+
 - Evidence: global activation writes persistent `settings global http_proxy` at `src/interceptors/android-adb-interceptor.js:308-319`, but ownership exists only in constructor maps and activation records. Startup performs browser cleanup only and never detects/adopts Android proxy/VPN state.
 - Impact: after a crash/hard restart, the device remains proxied while FreeKit reports Android inactive and Stop cannot restore it.
 - Reproduction: activate global Android interception, hard-kill the server, restart, and inspect status/device proxy.

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import os from 'os';
+import path from 'path';
 import QRCode from 'qrcode';
 import { execFileAsync } from './command-runner.js';
 
@@ -8,6 +9,9 @@ const HTTP_TOOLKIT_ANDROID_ACTIVATE = 'tech.httptoolkit.android.ACTIVATE';
 const HTTP_TOOLKIT_ANDROID_DEACTIVATE = 'tech.httptoolkit.android.DEACTIVATE';
 const HTTP_TOOLKIT_ANDROID_CONNECT_URL = 'https://android.httptoolkit.tech/connect/';
 const EMULATOR_HOST_IPS = ['10.0.2.2', '10.0.3.2'];
+const ANDROID_CA_STAGING_PATH = '/data/local/tmp/http-freekit-ca.pem';
+const ANDROID_RECOVERY_VERSION = 1;
+const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 
 function getActivityLaunchError(output) {
   const statuses = String(output || '')
@@ -43,7 +47,7 @@ function netmaskPrefixLength(netmask) {
 }
 
 export class AndroidAdbInterceptor {
-  constructor() {
+  constructor(options = {}) {
     this.id = 'android-adb';
     this.name = 'Android Device (ADB)';
     this.active = false;
@@ -51,6 +55,147 @@ export class AndroidAdbInterceptor {
     this.activatedDevices = new Map(); // deviceId -> { serial, model }
     this.reverseTunnels = new Set(); // `${deviceId}:${proxyPort}`
     this.previousReverseMappings = new Map(); // `${deviceId}:${proxyPort}` -> prior remote endpoint or null
+    this.recoveryFile = options.dataDir
+      ? path.join(options.dataDir, 'android-adb-global-proxy-recovery.json')
+      : options.recoveryFile || null;
+    this.journaledGlobalDevices = new Map();
+    this._adoptJournaledGlobalDevices();
+  }
+
+  _isSafeJournalString(value, maxLength = 2048) {
+    return typeof value === 'string' && value.length <= maxLength && !/[\0\r\n]/.test(value);
+  }
+
+  _normalizeJournalDevice(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const allowedFields = new Set([
+      'serial', 'mode', 'previousProxy', 'hostIp', 'proxyPort',
+      'remoteCertPath', 'model', 'deviceName'
+    ]);
+    if (Object.keys(entry).some(field => !allowedFields.has(field))) return null;
+    if (!this._isSafeJournalString(entry.serial, 255) ||
+        !/^(?!-)[A-Za-z0-9._:[\]-]+$/.test(entry.serial)) return null;
+    if (!['global-proxy', 'staging-cleanup'].includes(entry.mode)) return null;
+    if (!this._isSafeJournalString(entry.previousProxy)) return null;
+    if (ipv4ToInteger(entry.hostIp) === null) return null;
+    if (!Number.isInteger(entry.proxyPort) || entry.proxyPort < 1 || entry.proxyPort > 65535) return null;
+    if (entry.remoteCertPath !== ANDROID_CA_STAGING_PATH) return null;
+    for (const field of ['model', 'deviceName']) {
+      if (entry[field] !== undefined && !this._isSafeJournalString(entry[field], 512)) return null;
+    }
+    return {
+      serial: entry.serial,
+      mode: entry.mode,
+      previousProxy: entry.previousProxy,
+      hostIp: entry.hostIp,
+      proxyPort: entry.proxyPort,
+      remoteCertPath: entry.remoteCertPath,
+      ...(entry.model !== undefined ? { model: entry.model } : {}),
+      ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {})
+    };
+  }
+
+  _adoptJournaledGlobalDevices() {
+    if (!this.recoveryFile || !fs.existsSync(this.recoveryFile)) return;
+    try {
+      const stats = fs.lstatSync(this.recoveryFile);
+      if (!stats.isFile() || stats.size > MAX_ANDROID_RECOVERY_BYTES) {
+        throw new Error('Recovery journal is not a trusted regular file');
+      }
+      const parsed = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+          parsed.version !== ANDROID_RECOVERY_VERSION || !Array.isArray(parsed.devices) ||
+          parsed.devices.length > 128 ||
+          Object.keys(parsed).some(field => !['version', 'devices'].includes(field))) {
+        throw new Error('Recovery journal has an invalid schema');
+      }
+
+      const adopted = new Map();
+      for (const rawEntry of parsed.devices) {
+        const entry = this._normalizeJournalDevice(rawEntry);
+        if (!entry || adopted.has(entry.serial)) {
+          throw new Error('Recovery journal contains an invalid device entry');
+        }
+        adopted.set(entry.serial, entry);
+      }
+      if (adopted.size === 0) throw new Error('Recovery journal contains no devices');
+
+      this.journaledGlobalDevices = adopted;
+      for (const [serial, entry] of adopted) {
+        this.activatedDevices.set(serial, { ...entry, recovered: true });
+      }
+      this.active = true;
+    } catch (err) {
+      console.warn('[Interceptor] Ignoring invalid Android recovery journal:', err.message);
+    }
+  }
+
+  _writeGlobalProxyJournal(devices) {
+    if (!this.recoveryFile) return;
+    if (devices.size === 0) {
+      try {
+        fs.unlinkSync(this.recoveryFile);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
+    const tempPath = path.join(
+      path.dirname(this.recoveryFile),
+      `.${path.basename(this.recoveryFile)}.${process.pid}.${Date.now()}.tmp`
+    );
+    const payload = {
+      version: ANDROID_RECOVERY_VERSION,
+      devices: Array.from(devices.values())
+    };
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+        flush: true
+      });
+      fs.renameSync(tempPath, this.recoveryFile);
+    } catch (err) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw err;
+    }
+  }
+
+  _journalEntry(serial, activeInfo) {
+    return {
+      serial,
+      mode: activeInfo.mode,
+      previousProxy: activeInfo.previousProxy,
+      hostIp: activeInfo.hostIp,
+      proxyPort: activeInfo.proxyPort,
+      remoteCertPath: ANDROID_CA_STAGING_PATH,
+      ...(this._isSafeJournalString(activeInfo.model, 512) ? { model: activeInfo.model } : {}),
+      ...(this._isSafeJournalString(activeInfo.deviceName, 512)
+        ? { deviceName: activeInfo.deviceName }
+        : {})
+    };
+  }
+
+  _rememberGlobalProxyOwnership(serial, activeInfo) {
+    const entry = this._journalEntry(serial, activeInfo);
+    if (!this._normalizeJournalDevice(entry)) {
+      throw new Error('Refusing to persist invalid Android cleanup ownership');
+    }
+    const next = new Map(this.journaledGlobalDevices);
+    next.set(serial, entry);
+    this._writeGlobalProxyJournal(next);
+    this.journaledGlobalDevices = next;
+  }
+
+  _forgetGlobalProxyOwnership(serial) {
+    if (!this.journaledGlobalDevices.has(serial)) return;
+    const next = new Map(this.journaledGlobalDevices);
+    next.delete(serial);
+    this._writeGlobalProxyJournal(next);
+    this.journaledGlobalDevices = next;
   }
 
   async isActivable() {
@@ -354,7 +499,7 @@ export class AndroidAdbInterceptor {
 
     // Android needs DER format cert for user certificate store
     // First push the PEM cert to the device
-    const remotePath = '/data/local/tmp/http-freekit-ca.pem';
+    const remotePath = ANDROID_CA_STAGING_PATH;
 
     try {
       await this._adb(deviceId, ['push', certPath, remotePath], {
@@ -427,7 +572,7 @@ export class AndroidAdbInterceptor {
    */
   async _removeCaCert(deviceId) {
     try {
-      await this._adb(deviceId, ['shell', 'rm', '-f', '/data/local/tmp/http-freekit-ca.pem'], {
+      await this._adb(deviceId, ['shell', 'rm', '-f', ANDROID_CA_STAGING_PATH], {
         stdio: 'ignore',
         timeout: 5000
       });
@@ -566,6 +711,7 @@ export class AndroidAdbInterceptor {
       if (!await this._cleanupActivatedDevice(deviceId, previousActivation)) {
         throw new Error(`Could not clean up the existing Android interception for ${deviceId}; reconnect it and retry`);
       }
+      this._forgetGlobalProxyOwnership(deviceId);
       this.activatedDevices.delete(deviceId);
       this.active = this.activatedDevices.size > 0;
     }
@@ -599,6 +745,25 @@ export class AndroidAdbInterceptor {
       }
       previousProxy = currentProxy.value;
 
+      // Persist cleanup ownership before the first durable device mutation. The
+      // staged path is safe to remove with `rm -f` even if the following push
+      // never creates it.
+      const pendingGlobalActivation = {
+        model: device.model,
+        deviceName: device.deviceName,
+        hostIp,
+        remoteCertPath: ANDROID_CA_STAGING_PATH,
+        proxyPort,
+        mode: 'global-proxy',
+        appInstalled,
+        tunnelActive,
+        appActivationError,
+        previousProxy
+      };
+      this._rememberGlobalProxyOwnership(deviceId, pendingGlobalActivation);
+      this.activatedDevices.set(deviceId, pendingGlobalActivation);
+      this.active = true;
+
       // Push CA certificate for the global proxy fallback.
       remoteCertPath = await this._pushCaCert(deviceId);
 
@@ -608,13 +773,18 @@ export class AndroidAdbInterceptor {
       if (!proxySet) {
         const certificateRemoved = !remoteCertPath || await this._removeCaCert(deviceId);
         if (!certificateRemoved) {
-          this.activatedDevices.set(deviceId, {
-            model: device.model,
-            deviceName: device.deviceName,
+          const stagingCleanup = {
+            ...pendingGlobalActivation,
             remoteCertPath,
             mode: 'staging-cleanup'
-          });
+          };
+          this._rememberGlobalProxyOwnership(deviceId, stagingCleanup);
+          this.activatedDevices.set(deviceId, stagingCleanup);
           this.active = true;
+        } else {
+          this._forgetGlobalProxyOwnership(deviceId);
+          this.activatedDevices.delete(deviceId);
+          this.active = this.activatedDevices.size > 0;
         }
         return {
           success: false,
@@ -680,15 +850,23 @@ export class AndroidAdbInterceptor {
         this.active = this.activatedDevices.size > 0;
         throw new Error(`Failed to clean up Android device ${deviceId}; reconnect it and retry Stop`);
       }
+      this._forgetGlobalProxyOwnership(deviceId);
       this.activatedDevices.delete(deviceId);
       console.log(`[Interceptor] Android ADB interceptor deactivated for ${deviceId}`);
     } else {
       // Deactivate all devices
       const failures = [];
       for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
-        if (await this._cleanupActivatedDevice(serial, activeInfo)) {
-          this.activatedDevices.delete(serial);
-        } else {
+        try {
+          if (await this._cleanupActivatedDevice(serial, activeInfo)) {
+            this._forgetGlobalProxyOwnership(serial);
+            this.activatedDevices.delete(serial);
+            continue;
+          }
+        } catch (err) {
+          console.warn(`[Interceptor] Failed to finalize Android cleanup for ${serial}:`, err.message);
+        }
+        if (this.activatedDevices.has(serial)) {
           failures.push(serial);
         }
       }

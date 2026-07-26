@@ -37,7 +37,7 @@ export class InterceptorManager {
     this._register(systemProxy);
     this._register(new DockerInterceptor());
     this._register(new ElectronInterceptor());
-    this._register(new AndroidAdbInterceptor());
+    this._register(new AndroidAdbInterceptor({ dataDir: options.dataDir }));
     this._register(new JvmInterceptor({ dataDir: options.dataDir }));
 
     // Give all interceptors that need it a reference to the CA
