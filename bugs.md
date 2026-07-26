@@ -1827,6 +1827,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-331 — High/Medium — A timed-out JVM attach can leave an untracked interception
 
+- Status: **Fixed**.
+- Resolution: JVM attach failures after the helper starts retain explicitly uncertain PID ownership so Stop can retry restoration; build and pre-launch failures remain untracked.
+
 - Evidence: `_runAttachHelper()` kills the helper after 15 seconds at `src/interceptors/jvm-interceptor.js:396-403`, even though the target's `agentmain()` may already have applied proxy and SSL changes before the helper exits. `_attachAgent()` converts that timeout into failure at `:407-425`, and `activate()` records the PID only after a successful result at `:458-481`.
 - Impact: activation reports failure and FreeKit retains no ownership, but the live target can remain routed through FreeKit with its default SSL state replaced; Stop performs no detach and cannot restore it.
 - Reproduction: make the attach helper apply the agent and then exceed its host timeout; activation returns false with an empty `activatedProcesses` map, while the target is configured and Stop issues no deactivate attach.

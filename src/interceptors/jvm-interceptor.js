@@ -16,7 +16,7 @@ export class JvmInterceptor {
     this.name = 'Java/JVM Application';
     this.active = false;
     this.ca = null;
-    this.activatedProcesses = new Map(); // pid -> { name, mainClass }
+    this.activatedProcesses = new Map(); // pid -> { name, mainClass, activationUncertain? }
     this.processDiscoveryFailed = false;
     this.agentDir = options.agentDir
       || (options.dataDir
@@ -109,11 +109,21 @@ export class JvmInterceptor {
     this._syncActivatedProcesses(processes);
     return {
       processes,
-      activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([pid, info]) => ({
-        pid,
-        ...info
-      }))
+      activatedProcesses: this._getActivatedProcessMetadata(),
+      activationUncertain: this._hasUncertainActivation()
     };
+  }
+
+  _getActivatedProcessMetadata() {
+    return Array.from(this.activatedProcesses.entries()).map(([pid, info]) => ({
+      pid,
+      ...info
+    }));
+  }
+
+  _hasUncertainActivation() {
+    return Array.from(this.activatedProcesses.values())
+      .some(info => info.activationUncertain === true);
   }
 
   /**
@@ -472,11 +482,11 @@ public class AttachProxy {
     return attachDir;
   }
 
-  _runAttachHelper(attachDir, pid, agentJar, agentArgs) {
+  _runAttachHelper(attachDir, pid, agentJar, agentArgs, onSpawn) {
     return execFileAsync(
       'java',
       ['-cp', attachDir, 'AttachProxy', String(pid), agentJar, agentArgs],
-      { encoding: 'utf8', timeout: 15000, cwd: attachDir }
+      { encoding: 'utf8', timeout: 15000, cwd: attachDir, onSpawn }
     );
   }
 
@@ -486,21 +496,38 @@ public class AttachProxy {
   async _attachAgent(pid, proxyHost, proxyPort, action = 'activate') {
     const agentJar = await this._getAgentJarPath();
     if (!agentJar) {
-      return { success: false, error: 'Failed to build proxy agent JAR' };
+      return {
+        success: false,
+        error: 'Failed to build proxy agent JAR',
+        targetMutationPossible: false
+      };
     }
 
     const agentArgs = this._getAgentArgs(proxyHost, proxyPort, action);
 
+    let attachDir;
     try {
-      const attachDir = await this._ensureAttachHelper();
+      attachDir = await this._ensureAttachHelper();
+    } catch (err) {
+      console.error(`[Interceptor] Failed to prepare JVM attach helper for PID ${pid}:`, err.message);
+      return { success: false, error: err.message, targetMutationPossible: false };
+    }
 
+    let helperStarted = false;
+    try {
       // Run the attach program
-      const result = await this._runAttachHelper(attachDir, pid, agentJar, agentArgs);
+      const result = await this._runAttachHelper(
+        attachDir,
+        pid,
+        agentJar,
+        agentArgs,
+        () => { helperStarted = true; }
+      );
       console.log('[Interceptor] JVM attach result:', result.trim());
       return { success: true };
     } catch (err) {
       console.error(`[Interceptor] Failed to attach agent to PID ${pid}:`, err.message);
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, targetMutationPossible: helperStarted };
     }
   }
 
@@ -516,10 +543,8 @@ public class AttachProxy {
         success: true,
         metadata: {
           processes,
-          activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
-            pid: p,
-            ...info
-          })),
+          activatedProcesses: this._getActivatedProcessMetadata(),
+          activationUncertain: this._hasUncertainActivation(),
           fallbackCommand: this._getFallbackCommand(proxyHost, proxyPort),
           requiresProcessSelection: true
         }
@@ -539,19 +564,27 @@ public class AttachProxy {
     const attachResult = await this._attachAgent(pid, proxyHost, proxyPort);
 
     if (!attachResult.success) {
-      // Even if agent attach fails, we can note the process as targeted
-      // The user may need to restart the JVM with -javaagent flag instead
+      if (attachResult.targetMutationPossible) {
+        this.activatedProcesses.set(pid, {
+          name: process_.name,
+          mainClass: process_.mainClass,
+          activationUncertain: true
+        });
+      }
+      this.active = this.activatedProcesses.size > 0;
+
       const fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
+      const uncertaintyNotice = attachResult.targetMutationPossible
+        ? ' The attach helper started before failing, so the target may have changed; Stop will retry restoration.'
+        : '';
       return {
         success: false,
-        error: `Could not attach to PID ${pid}: ${attachResult.error}. Try launching the JVM with: ${fallbackCommand}`,
+        error: `Could not attach to PID ${pid}: ${attachResult.error}.${uncertaintyNotice} Try launching the JVM with: ${fallbackCommand}`,
         metadata: {
           fallbackCommand,
           processes: await this._getRunningProcesses(),
-          activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
-            pid: p,
-            ...info
-          }))
+          activatedProcesses: this._getActivatedProcessMetadata(),
+          activationUncertain: this._hasUncertainActivation()
         }
       };
     }
@@ -572,10 +605,8 @@ public class AttachProxy {
         mainClass: process_.mainClass,
         proxyUrl: `http://${proxyHost}:${proxyPort}`,
         processes: await this._getRunningProcesses(),
-        activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
-          pid: p,
-          ...info
-        }))
+        activatedProcesses: this._getActivatedProcessMetadata(),
+        activationUncertain: this._hasUncertainActivation()
       }
     };
   }
@@ -619,6 +650,7 @@ public class AttachProxy {
       name: this.name,
       type: 'jvm',
       active: this.active,
+      activationUncertain: this._hasUncertainActivation(),
       pid: null
     };
   }
