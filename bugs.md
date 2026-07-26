@@ -2472,6 +2472,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-271 — Medium — Monaco load failures stall every text editor forever
 
+- Status: **Fixed**.
+
 - Evidence: `src/ui/index.html:617-623` assumes the AMD loader exists, while `monacoReady` at `src/ui/app.js:9014-9110` has no reject path, loader error callback, timeout, or resolution when require is unavailable. Editors wait on it at `:9132-9134`, after body fallback is hidden.
 - Impact: a missing/corrupt packaged asset leaves Send editing and captured text/JSON views blank forever with no fallback or error.
 - Reproduction: remove or block Monaco's editor main asset and open Send or a captured JSON body.

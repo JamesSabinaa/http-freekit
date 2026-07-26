@@ -26,6 +26,6 @@ test('Send state is loaded synchronously and stored bodies survive pre-Monaco ta
   const saveSource = source.slice(saveStart, saveEnd);
 
   assert.ok(initSource.indexOf('loadSendTabState(startupTab)') < initSource.indexOf('setTimeout'));
-  assert.match(saveSource, /if \(sendBodyEditor\) tab\.body = getSendBodyValue\(\)/);
+  assert.match(saveSource, /tab\.body = getSendBodyValue\(\)/);
   assert.match(source, /restoreSendTabs\(\);\s*initializeSendTabs\(\);/);
 });

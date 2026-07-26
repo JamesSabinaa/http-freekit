@@ -284,7 +284,10 @@
                 </div>
               </div>
               <div id="sendBodyBody">
-                <div id="sendBody-monaco-container" style="width:100%;min-height:150px;height:200px;border:1px solid var(--text-input-border);border-radius:4px;overflow:hidden;box-sizing:border-box;"></div>
+                <div id="sendRawBodyEditor">
+                  <div id="sendBody-monaco-container" style="display:none;width:100%;min-height:150px;height:200px;border:1px solid var(--text-input-border);border-radius:4px;overflow:hidden;box-sizing:border-box;"></div>
+                  <textarea id="sendBody-fallback" data-body-initialized="false" aria-label="Raw request body" spellcheck="false" oninput="scheduleSendExportUpdate()" onkeydown="handleSendBodyFallbackKeydown(event)" style="display:block;width:100%;min-height:150px;height:200px;resize:vertical;border:1px solid var(--text-input-border);border-radius:4px;box-sizing:border-box;background:var(--bg-input);color:var(--text-main);padding:8px;font:12px/1.5 var(--font-mono);"></textarea>
+                </div>
                 <div id="sendFormBodyEditor" style="display:none;">
                   <div id="sendFormBodyRows"></div>
                   <button class="btn" onclick="addSendFormField()" style="margin-top:6px;padding:4px 10px;font-size:11px;" title="Add form field">+ Add field</button>
@@ -619,7 +622,15 @@
   <div class="toast-container" id="toastContainer"></div>
   <script src="/vendor/monaco/vs/loader.js"></script>
   <script>
-    require.config({ paths: { vs: '/vendor/monaco/vs' } });
+    try {
+      if (typeof window.require === 'function' && typeof window.require.config === 'function') {
+        window.require.config({ paths: { vs: '/vendor/monaco/vs' } });
+      } else {
+        console.warn('[Monaco] AMD loader unavailable; using fallback editors');
+      }
+    } catch (error) {
+      console.warn('[Monaco] AMD loader configuration failed; using fallback editors', error);
+    }
   </script>
   <script src="/vendor/protobufjs/protobuf.min.js"></script>
   <script src="/vendor/pako/pako.umd.min.js"></script>

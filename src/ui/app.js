@@ -1360,7 +1360,10 @@
                 </span>
               </div>
               <div class="detail-card-body">
-                <div id="wsFramePayload-monaco" style="min-height:80px;"></div>
+                <div id="wsFramePayload" data-view-mode="text">
+                  <div id="wsFramePayload-monaco" style="display:none;min-height:80px;"></div>
+                  <pre class="body-content" id="wsFramePayload-fallback" style="display:block;">${formatBodyAs(req.requestBody, 'text/plain', 'text')}</pre>
+                </div>
               </div>
             </div>`;
           } else if (isBinaryFrame) {
@@ -1403,7 +1406,7 @@
           // Detect language from content (try JSON first)
           let lang = 'plaintext';
           try { JSON.parse(req.requestBody); lang = 'json'; } catch (e) { /* expected for non-JSON */ }
-          initBodyMonacoEditor('wsFramePayload-monaco', req.requestBody, 'text/plain', lang === 'json' ? 'json' : 'text');
+          renderBodyViewer('wsFramePayload', req.requestBody, 'text/plain', lang === 'json' ? 'json' : 'text');
         }
         return;
       }
@@ -2293,9 +2296,11 @@
       const fallback = document.getElementById('exportSnippetContent-fallback');
       if (fallback) {
         fallback.textContent = snippet;
-        fallback.style.display = 'none';
+        fallback.style.display = 'block';
       }
       disposeBodyEditor(monacoId);
+      const monacoContainer = document.getElementById(monacoId);
+      if (monacoContainer) monacoContainer.style.display = 'none';
       const language = exportFormatToMonacoLanguage(format);
       createMonacoEditor(monacoId, {
         value: snippet,
@@ -2312,10 +2317,15 @@
           return;
         }
         activeBodyEditors[monacoId] = editor;
+        if (monacoContainer) monacoContainer.style.display = 'block';
         if (fallback) fallback.style.display = 'none';
         const container = document.getElementById(monacoId);
         if (!container) return;
         autoSizeExportEditor(editor, container);
+      }).catch(error => {
+        console.warn('[Monaco] Export viewer failed; keeping fallback viewer', error);
+        if (monacoContainer) monacoContainer.style.display = 'none';
+        if (fallback) fallback.style.display = 'block';
       });
     }
 
@@ -2378,32 +2388,44 @@
       }
       if (sendExportCreating) return;
 
+      container.style.display = 'none';
+      fallback.style.display = 'block';
       sendExportCreating = true;
-      const editor = await createMonacoEditor('sendExportContent-monaco', {
-        value: snippet,
-        language: exportFormatToMonacoLanguage(format),
-        readOnly: true,
-        minimap: false,
-        lineNumbers: true,
-        wordWrap: 'on',
-        folding: true,
-      });
-      sendExportCreating = false;
+      let editor = null;
+      try {
+        editor = await createMonacoEditor('sendExportContent-monaco', {
+          value: snippet,
+          language: exportFormatToMonacoLanguage(format),
+          readOnly: true,
+          minimap: false,
+          lineNumbers: true,
+          wordWrap: 'on',
+          folding: true,
+        });
 
-      if (!editor || !isMonacoEditorCurrent('sendExportContent-monaco', editor)) {
+        if (!editor || !isMonacoEditorCurrent('sendExportContent-monaco', editor)) {
+          disposeMonacoEditor(editor);
+          return;
+        }
+
+        activeBodyEditors['sendExportContent-monaco'] = editor;
+        const latestFormat = document.getElementById('sendExportFormat')?.value || 'curl';
+        const latestSnippet = generateExportSnippet(getCurrentSendExportRequest(), latestFormat);
+        editor.setValue(latestSnippet);
+        if (monacoApi) monacoApi.editor.setModelLanguage(editor.getModel(), exportFormatToMonacoLanguage(latestFormat));
+        container.style.display = 'block';
+        fallback.style.display = 'none';
+        autoSizeExportEditor(editor, container);
+      } catch (error) {
+        console.warn('[Monaco] Send export viewer failed; keeping fallback viewer', error);
         disposeMonacoEditor(editor);
-        container.style.display = 'none';
-        fallback.style.display = 'block';
-        return;
+      } finally {
+        sendExportCreating = false;
+        if (!editor || !isMonacoEditorCurrent('sendExportContent-monaco', editor)) {
+          container.style.display = 'none';
+          fallback.style.display = 'block';
+        }
       }
-
-      activeBodyEditors['sendExportContent-monaco'] = editor;
-      const latestFormat = document.getElementById('sendExportFormat')?.value || 'curl';
-      const latestSnippet = generateExportSnippet(getCurrentSendExportRequest(), latestFormat);
-      editor.setValue(latestSnippet);
-      if (monacoApi) monacoApi.editor.setModelLanguage(editor.getModel(), exportFormatToMonacoLanguage(latestFormat));
-      fallback.style.display = 'none';
-      autoSizeExportEditor(editor, container);
     }
 
     function copySendExportSnippet() {
@@ -3428,7 +3450,7 @@
       disposeBodyEditor(containerId);
 
       const container = document.getElementById(containerId);
-      if (!container) return;
+      if (!container) return null;
 
       const language = viewModeToMonacoLanguage(mode, contentType);
       const value = getMonacoBodyValue(body, mode, { ...context, contentType });
@@ -3443,21 +3465,27 @@
         folding: true,
       });
 
-      if (!editor) return;
+      if (!editor) return null;
       if (!isMonacoEditorCurrent(containerId, editor)) {
         disposeMonacoEditor(editor);
-        return;
+        return null;
       }
       activeBodyEditors[containerId] = editor;
 
-      // Auto-size editor height based on content (capped at 70vh)
-      const lineCount = editor.getModel().getLineCount();
-      const lineHeight = 18;
-      const padding = 16;
-      const maxHeight = Math.round(window.innerHeight * 0.7);
-      const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), maxHeight);
-      container.style.height = desiredHeight + 'px';
-      editor.layout();
+      try {
+        // Auto-size editor height based on content (capped at 70vh)
+        const lineCount = editor.getModel().getLineCount();
+        const lineHeight = 18;
+        const padding = 16;
+        const maxHeight = Math.round(window.innerHeight * 0.7);
+        const desiredHeight = Math.min(Math.max(lineCount * lineHeight + padding, 80), maxHeight);
+        container.style.height = desiredHeight + 'px';
+        return editor;
+      } catch (error) {
+        console.warn('[Monaco] Body editor initialization failed; using fallback viewer', error);
+        disposeMonacoEditor(editor);
+        return null;
+      }
     }
 
     function renderBodyViewer(elementId, body, contentType, mode, context = {}) {
@@ -3473,13 +3501,27 @@
 
       // Both request and response body use Monaco for text-based modes
       if (isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
-        // Show Monaco container, hide fallback
         const monacoEl = document.getElementById(monacoId);
         const fallbackEl = document.getElementById(fallbackId);
-        if (monacoEl) monacoEl.style.display = 'block';
-        if (fallbackEl) fallbackEl.style.display = 'none';
+        // Keep a complete viewer visible until editor creation has actually succeeded.
+        if (monacoEl) monacoEl.style.display = 'none';
+        if (fallbackEl) {
+          fallbackEl.style.display = 'block';
+          fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
+        }
 
-        initBodyMonacoEditor(monacoId, body, ct, mode, renderContext);
+        initBodyMonacoEditor(monacoId, body, ct, mode, renderContext).then(editor => {
+          if (!editor || !isMonacoEditorCurrent(monacoId, editor) ||
+              document.getElementById(elementId) !== wrapper || wrapper.dataset.viewMode !== mode) {
+            disposeMonacoEditor(editor);
+            return;
+          }
+          if (monacoEl) monacoEl.style.display = 'block';
+          if (fallbackEl) fallbackEl.style.display = 'none';
+          editor.layout();
+        }).catch(error => {
+          console.warn('[Monaco] Body editor failed; keeping fallback viewer', error);
+        });
       } else {
         // Dispose any active Monaco editor
         const monacoId2 = elementId + '-monaco';
@@ -7330,7 +7372,7 @@
       if (sendBodyEditor) {
         return sendBodyEditor.getValue();
       }
-      return '';
+      return document.getElementById('sendBody-fallback')?.value || '';
     }
 
     /**
@@ -7338,9 +7380,21 @@
      * @param {string} value
      */
     function setSendBodyValue(value) {
-      if (sendBodyEditor) {
-        sendBodyEditor.setValue(value || '');
+      const normalizedValue = value || '';
+      const fallback = document.getElementById('sendBody-fallback');
+      if (fallback) {
+        fallback.value = normalizedValue;
+        fallback.dataset.bodyInitialized = 'true';
       }
+      if (sendBodyEditor) {
+        sendBodyEditor.setValue(normalizedValue);
+      }
+    }
+
+    function handleSendBodyFallbackKeydown(event) {
+      if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      sendRequest();
     }
 
     function registerSendEditorShortcuts(editor) {
@@ -7363,18 +7417,26 @@
     async function initSendBodyEditor(initialValue, format) {
       const containerId = 'sendBody-monaco-container';
       const container = document.getElementById(containerId);
-      if (!container) return;
+      const fallback = document.getElementById('sendBody-fallback');
+      if (!container || !fallback) return null;
 
       // Dispose previous instance if any
       if (sendBodyEditor) {
         disposeMonacoEditor(sendBodyEditor);
       }
       container.innerHTML = '';
+      const startingValue = fallback.dataset.bodyInitialized === 'true'
+        ? fallback.value
+        : (initialValue || '');
+      fallback.value = startingValue;
+      fallback.dataset.bodyInitialized = 'true';
+      fallback.style.display = 'block';
+      container.style.display = 'none';
 
       const language = sendFormatToMonacoLanguage(format || 'text');
 
       const editor = await createMonacoEditor(containerId, {
-        value: initialValue || '',
+        value: startingValue,
         language: language,
         readOnly: false,
         minimap: false,
@@ -7383,16 +7445,33 @@
         folding: true,
       });
 
-      if (!editor) return;
+      if (!editor) return null;
       if (!isMonacoEditorCurrent(containerId, editor)) {
         disposeMonacoEditor(editor);
-        return;
+        return null;
       }
-      sendBodyEditor = editor;
+      try {
+        // Keep edits made in the textarea while Monaco was loading.
+        if (editor.getValue() !== fallback.value) editor.setValue(fallback.value);
+        sendBodyEditor = editor;
 
-      editor.onDidChangeModelContent(() => scheduleSendExportUpdate());
+        editor.onDidChangeModelContent(() => {
+          fallback.value = editor.getValue();
+          scheduleSendExportUpdate();
+        });
 
-      registerSendEditorShortcuts(editor);
+        registerSendEditorShortcuts(editor);
+        container.style.display = 'block';
+        fallback.style.display = 'none';
+        editor.layout();
+        return editor;
+      } catch (error) {
+        console.warn('[Monaco] Send editor initialization failed; using textarea fallback', error);
+        disposeMonacoEditor(editor);
+        container.style.display = 'none';
+        fallback.style.display = 'block';
+        return null;
+      }
     }
 
     /**
@@ -7414,23 +7493,29 @@
     function toggleSendBodyView() {}
 
     function formatSendBody() {
-      if (!sendBodyEditor) return;
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      const value = sendBodyEditor.getValue().trim();
+      const value = getSendBodyValue().trim();
       if (!value) return;
 
       try {
         if (format === 'json') {
           const parsed = JSON.parse(value);
-          sendBodyEditor.setValue(JSON.stringify(parsed, null, 2));
+          setSendBodyValue(JSON.stringify(parsed, null, 2));
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
-          sendBodyEditor.setValue(beautifyMarkup(value));
+          setSendBodyValue(beautifyMarkup(value));
+          toast('Formatted', 'success');
+        } else if (format === 'javascript') {
+          setSendBodyValue(beautifyJs(value));
+          toast('Formatted', 'success');
+        } else if (format === 'css') {
+          setSendBodyValue(beautifyCss(value));
           toast('Formatted', 'success');
         } else {
           // Try Monaco's built-in formatter for other languages
-          sendBodyEditor.getAction('editor.action.formatDocument')?.run();
+          sendBodyEditor?.getAction('editor.action.formatDocument')?.run();
         }
+        scheduleSendExportUpdate();
       } catch (err) {
         toast('Format error: ' + err.message, 'error');
       }
@@ -7451,7 +7536,9 @@
 
     function updateSendBodyType() {
       const bodyType = getSendBodyType();
-      const rawEditor = document.getElementById('sendBody-monaco-container');
+      const rawEditor = document.getElementById('sendRawBodyEditor');
+      const monacoEditor = document.getElementById('sendBody-monaco-container');
+      const fallbackEditor = document.getElementById('sendBody-fallback');
       const formEditor = document.getElementById('sendFormBodyEditor');
       const formatSelect = document.getElementById('sendBodyFormat');
       const formatButton = document.getElementById('sendBodyFormatBtn');
@@ -7468,7 +7555,12 @@
         if (bodyType === 'multipart' && !sendMultipartBoundary) sendMultipartBoundary = createMultipartBoundary();
         renderSendFormFields();
       } else if (sendBodyEditor) {
+        if (monacoEditor) monacoEditor.style.display = 'block';
+        if (fallbackEditor) fallbackEditor.style.display = 'none';
         sendBodyEditor.layout();
+      } else {
+        if (monacoEditor) monacoEditor.style.display = 'none';
+        if (fallbackEditor) fallbackEditor.style.display = 'block';
       }
 
       scheduleSendExportUpdate();
@@ -8051,8 +8143,7 @@
       tab.method = document.getElementById('sendMethod')?.value || 'GET';
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
-      // Monaco loads asynchronously; preserve the stored body until an editor exists.
-      if (sendBodyEditor) tab.body = getSendBodyValue();
+      tab.body = getSendBodyValue();
       tab.bodyType = getSendBodyType();
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
       tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
@@ -10473,11 +10564,34 @@
     // ============ MONACO EDITOR ============
     /** @type {typeof import('monaco-editor')|null} */
     let monacoApi = null;
-    /** @type {Promise<typeof import('monaco-editor')>} */
+    const MONACO_LOAD_TIMEOUT_MS = 5000;
+    /** @type {Promise<typeof import('monaco-editor')|null>} */
     const monacoReady = new Promise((resolve) => {
-      if (typeof require !== 'undefined' && typeof require.config === 'function') {
+      let settled = false;
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(value);
+      };
+      const timeoutId = setTimeout(() => {
+        console.warn(`[Monaco] Load timed out after ${MONACO_LOAD_TIMEOUT_MS}ms; using fallback editors`);
+        settle(null);
+      }, MONACO_LOAD_TIMEOUT_MS);
+
+      if (typeof require !== 'function') {
+        console.warn('[Monaco] AMD require unavailable; using fallback editors');
+        settle(null);
+        return;
+      }
+
+      try {
         require(['vs/editor/editor.main'], function (monaco) {
-          monacoApi = monaco;
+          if (settled) return;
+          try {
+            if (!monaco?.editor?.create || !monaco.editor.defineTheme) {
+              throw new Error('Monaco editor API is incomplete');
+            }
 
           // Define custom dark theme matching HTTP Toolkit
           monaco.editor.defineTheme('httptoolkit-dark', {
@@ -10567,8 +10681,21 @@
             }
           });
 
-          resolve(monaco);
+            monacoApi = monaco;
+            settle(monaco);
+          } catch (error) {
+            monacoApi = null;
+            console.warn('[Monaco] Initialization failed; using fallback editors', error);
+            settle(null);
+          }
+        }, function (error) {
+          if (settled) return;
+          console.warn('[Monaco] AMD load failed; using fallback editors', error);
+          settle(null);
         });
+      } catch (error) {
+        console.warn('[Monaco] AMD loader threw; using fallback editors', error);
+        settle(null);
       }
     });
 
@@ -10636,7 +10763,11 @@
 
       if (!disposedMonacoEditors.has(editor)) {
         disposedMonacoEditors.add(editor);
-        editor.dispose();
+        try {
+          editor.dispose();
+        } catch (error) {
+          console.warn('[Monaco] Editor cleanup failed', error);
+        }
       }
     }
 
@@ -10687,56 +10818,67 @@
         : options.lineNumbers === true ? 'on'
         : (options.lineNumbers || 'on');
 
-      const editor = monaco.editor.create(container, {
-        value: options.value || '',
-        language: options.language || 'plaintext',
-        readOnly: options.readOnly || false,
-        theme: resolvedTheme,
-        minimap: { enabled: options.minimap === true },
-        lineNumbers: lineNumbers,
-        wordWrap: options.wordWrap || 'on',
-        folding: options.folding !== false,
-        automaticLayout: false,
-        scrollBeyondLastLine: false,
-        fontSize: 12,
-        fontFamily: "'DM Mono', monospace",
-        renderLineHighlight: 'none',
-        overviewRulerBorder: false,
-        hideCursorInOverviewRuler: true,
-        scrollbar: {
-          verticalScrollbarSize: 10,
-          horizontalScrollbarSize: 10,
-        },
-        padding: { top: 8, bottom: 8 },
-      });
+      let editor = null;
+      let resizeObserver = null;
+      let mutationObserver = null;
+      try {
+        editor = monaco.editor.create(container, {
+          value: options.value || '',
+          language: options.language || 'plaintext',
+          readOnly: options.readOnly || false,
+          theme: resolvedTheme,
+          minimap: { enabled: options.minimap === true },
+          lineNumbers: lineNumbers,
+          wordWrap: options.wordWrap || 'on',
+          folding: options.folding !== false,
+          automaticLayout: false,
+          scrollBeyondLastLine: false,
+          fontSize: 12,
+          fontFamily: "'DM Mono', monospace",
+          renderLineHighlight: 'none',
+          overviewRulerBorder: false,
+          hideCursorInOverviewRuler: true,
+          scrollbar: {
+            verticalScrollbarSize: 10,
+            horizontalScrollbarSize: 10,
+          },
+          padding: { top: 8, bottom: 8 },
+        });
 
-      // Auto-resize when container resizes
-      const resizeObserver = new ResizeObserver(() => {
-        if (!disposedMonacoEditors.has(editor)) editor.layout();
-      });
-      resizeObserver.observe(container);
+        // Auto-resize when container resizes
+        resizeObserver = new ResizeObserver(() => {
+          if (!disposedMonacoEditors.has(editor)) editor.layout();
+        });
+        resizeObserver.observe(container);
 
-      // Track instance for theme switching and cleanup
-      const instance = {
-        editor,
-        container,
-        containerId,
-        generation,
-        resizeObserver,
-        mutationObserver: null
-      };
-      monacoInstances.push(instance);
+        // Track instance for theme switching and cleanup
+        const instance = {
+          editor,
+          container,
+          containerId,
+          generation,
+          resizeObserver,
+          mutationObserver: null
+        };
+        monacoInstances.push(instance);
 
-      // Cleanup when container is removed from DOM
-      const mutationObserver = new MutationObserver(() => {
-        if (!document.body.contains(container)) {
-          disposeMonacoEditor(editor);
-        }
-      });
-      instance.mutationObserver = mutationObserver;
-      mutationObserver.observe(document.body, { childList: true, subtree: true });
+        // Cleanup when container is removed from DOM
+        mutationObserver = new MutationObserver(() => {
+          if (!document.body.contains(container)) {
+            disposeMonacoEditor(editor);
+          }
+        });
+        instance.mutationObserver = mutationObserver;
+        mutationObserver.observe(document.body, { childList: true, subtree: true });
 
-      return editor;
+        return editor;
+      } catch (error) {
+        console.warn('[Monaco] Editor creation failed; using fallback editor', error);
+        resizeObserver?.disconnect();
+        mutationObserver?.disconnect();
+        disposeMonacoEditor(editor);
+        return null;
+      }
     }
 
     /**
