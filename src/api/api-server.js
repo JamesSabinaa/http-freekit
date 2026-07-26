@@ -896,6 +896,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           return res.status(400).json({ error: 'Invalid HAR format: missing log.entries' });
         }
 
+        const importTimestamp = Date.now();
         const imported = har.log.entries.map(entry => {
           let host, pathname, search;
           try {
@@ -908,6 +909,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             pathname = entry.request.url;
             search = '';
           }
+          const parsedTimestamp = entry.startedDateTime === null || entry.startedDateTime === undefined
+            ? NaN
+            : new Date(entry.startedDateTime).getTime();
 
           return {
             id: crypto.randomUUID(),
@@ -936,7 +940,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseHttpVersion: entry.response?.httpVersion || '',
             responseBodySize: normalizeHarBodySize(entry.response?.content?.size),
             duration: entry.time || 0,
-            timestamp: new Date(entry.startedDateTime).getTime() || Date.now(),
+            timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : importTimestamp,
             source: 'import'
           };
         });

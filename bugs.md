@@ -660,6 +660,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-191 — Low — Unix-epoch HAR timestamps are replaced with import time
 
+- Status: **Fixed**.
+- Resolution: HAR import now distinguishes every finite parsed timestamp, including zero and negative pre-epoch values, from invalid or missing dates. Invalid dates in one import use a single deterministic import-time fallback.
+
 - Evidence: HAR import uses `new Date(entry.startedDateTime).getTime() || Date.now()`, so the valid numeric timestamp zero triggers the fallback (`src/api/api-server.js` HAR mapping).
 - Impact: epoch captures receive false current dates and ordering.
 - Reproduction: import `startedDateTime: "1970-01-01T00:00:00.000Z"` and inspect the record timestamp.
