@@ -105,6 +105,11 @@ export class ApiServer {
     this.httpServer = null;
     this.wss = null;
     this.clients = new Set();
+    this._httpSockets = new Set();
+    this._startPromise = null;
+    this._cancelStart = null;
+    this._stopPromise = null;
+    this._stopping = false;
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
@@ -119,6 +124,9 @@ export class ApiServer {
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
     this.sendMaxResponseBytes = options.sendMaxResponseBytes ?? 32 * 1024 * 1024;
+    this.shutdownTimeoutMs = Number.isSafeInteger(options.shutdownTimeoutMs) && options.shutdownTimeoutMs > 0
+      ? options.shutdownTimeoutMs
+      : 1000;
     const maxWsBufferedBytes = options.maxWsBufferedBytes ?? DEFAULT_MAX_WS_BUFFERED_BYTES;
     this.maxWsBufferedBytes = Number.isSafeInteger(maxWsBufferedBytes) && maxWsBufferedBytes >= 0
       ? maxWsBufferedBytes
@@ -2126,20 +2134,48 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   start() {
-    return new Promise((resolve, reject) => {
-      this.httpServer = http.createServer(this.app);
+    if (this._stopPromise) return this._stopPromise.then(() => this.start());
+    if (this._startPromise) return this._startPromise;
+    if (this.httpServer?.listening && !this._stopping) return Promise.resolve(this.port);
 
-      this.httpServer.on('error', (err) => {
+    this._stopping = false;
+    const server = http.createServer(this.app);
+    const wss = new WebSocketServer({ noServer: true });
+    this.httpServer = server;
+    this.wss = wss;
+
+    const startPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      const resolveStart = () => {
+        if (settled) return;
+        settled = true;
+        resolve(this.port);
+      };
+      const rejectStart = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      this._cancelStart = () => rejectStart(new Error('API server startup cancelled by shutdown'));
+
+      server.on('connection', (socket) => {
+        this._httpSockets.add(socket);
+        socket.once('close', () => this._httpSockets.delete(socket));
+        if (this._stopping || this.httpServer !== server) socket.destroy();
+      });
+
+      server.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
           console.error(`[API] Port ${this.port} is already in use. Try: API_PORT=<other_port> npm start`);
         }
-        reject(err);
+        rejectStart(err);
       });
 
-      // WebSocket server for live traffic streaming
-      this.wss = new WebSocketServer({ noServer: true });
-
-      this.httpServer.on('upgrade', (request, socket, head) => {
+      server.on('upgrade', (request, socket, head) => {
+        if (this._stopping || this.httpServer !== server || this.wss !== wss) {
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
         let pathname;
         try {
           pathname = new URL(request.url, 'http://127.0.0.1').pathname;
@@ -2157,15 +2193,27 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
             return;
           }
-          this.wss.handleUpgrade(request, socket, head, (ws) => {
-            this.wss.emit('connection', ws, request);
-          });
+          try {
+            wss.handleUpgrade(request, socket, head, (ws) => {
+              if (this._stopping || this.httpServer !== server || this.wss !== wss) {
+                ws.terminate();
+                return;
+              }
+              wss.emit('connection', ws, request);
+            });
+          } catch {
+            socket.destroy();
+          }
         } else {
           socket.destroy();
         }
       });
 
-      this.wss.on('connection', (ws) => {
+      wss.on('connection', (ws) => {
+        if (this._stopping || this.wss !== wss) {
+          ws.terminate();
+          return;
+        }
         this.clients.add(ws);
         console.log(`[API] WebSocket client connected (${this.clients.size} total)`);
 
@@ -2193,12 +2241,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         });
       });
 
-      this.httpServer.listen(this.port, '127.0.0.1', () => {
+      server.listen(this.port, '127.0.0.1', () => {
         console.log(`[API] Management API listening on http://127.0.0.1:${this.port}`);
         console.log(`[API] WebSocket available at ws://127.0.0.1:${this.port}/ws`);
-        resolve(this.port);
+        resolveStart();
       });
     });
+
+    this._startPromise = startPromise;
+    void startPromise.then(
+      () => {
+        if (this._startPromise === startPromise) this._startPromise = null;
+        this._cancelStart = null;
+      },
+      () => {
+        if (this._startPromise === startPromise) this._startPromise = null;
+        this._cancelStart = null;
+        if (this.httpServer === server) this.httpServer = null;
+        if (this.wss === wss) this.wss = null;
+        try { wss.close(); } catch {}
+      }
+    );
+    return startPromise;
   }
 
   _handleWsMessage(ws, msg) {
@@ -2235,15 +2299,58 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   stop() {
-    return new Promise((resolve) => {
-      for (const client of this.clients) {
-        client.close();
-      }
-      if (this.httpServer) {
-        this.httpServer.close(() => resolve());
-      } else {
-        resolve();
-      }
+    if (this._stopPromise) return this._stopPromise;
+    this._stopping = true;
+    this._cancelStart?.();
+    const server = this.httpServer;
+    const wss = this.wss;
+
+    if (!server && !wss) {
+      this._stopping = false;
+      return Promise.resolve();
+    }
+
+    const closePromise = Promise.all([
+      new Promise((resolve) => {
+        if (!wss) {
+          resolve();
+          return;
+        }
+        const clients = new Set([...this.clients, ...wss.clients]);
+        for (const client of clients) {
+          try { client.close(1001, 'Server shutting down'); } catch {}
+          try { client.terminate(); } catch {}
+        }
+        this.clients.clear();
+        try { wss.close(() => resolve()); } catch { resolve(); }
+      }),
+      new Promise((resolve) => {
+        if (!server) {
+          resolve();
+          return;
+        }
+        try { server.close(() => resolve()); } catch { resolve(); }
+        for (const socket of this._httpSockets) socket.destroy();
+        server.closeAllConnections?.();
+      })
+    ]).then(() => undefined);
+    let shutdownTimer;
+    const stopPromise = Promise.race([
+      closePromise,
+      new Promise(resolve => {
+        shutdownTimer = setTimeout(resolve, this.shutdownTimeoutMs);
+      })
+    ]).finally(() => clearTimeout(shutdownTimer));
+
+    this._stopPromise = stopPromise;
+    void stopPromise.then(() => {
+      if (this.httpServer === server) this.httpServer = null;
+      if (this.wss === wss) this.wss = null;
+      this._httpSockets.clear();
+      this.clients.clear();
+      this._stopping = false;
+      if (this._stopPromise === stopPromise) this._stopPromise = null;
     });
+    return stopPromise;
   }
 }

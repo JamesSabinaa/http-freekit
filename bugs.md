@@ -877,6 +877,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-273 — Medium — Management WebSocket peers delay graceful shutdown
 
+- Status: **Fixed**.
+- Resolution: API shutdown now rejects upgrade races, closes and terminates every management WebSocket peer, closes the WebSocket server alongside the HTTP listener, and destroys tracked HTTP sockets. Concurrent stop calls share one bounded cleanup and the server can be started again after shutdown.
 - Evidence: `ApiServer.stop()` sends `client.close()` and then waits on `httpServer.close()` at `src/api/api-server.js:1552-1559`; it does not terminate peers or explicitly close the WebSocket server. Application shutdown awaits that promise.
 - Impact: a peer that ignores the close frame keeps the upgraded socket active until the library's roughly 30-second close timeout, stalling shutdown.
 - Reproduction: connect an authenticated raw WebSocket client that ignores close frames and call graceful shutdown.
