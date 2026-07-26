@@ -2494,6 +2494,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-278 — Low/Medium — Canceling the OpenAPI prompt still uploads the spec
 
+- Status: **Fixed**.
+- Resolution: Canceling the base-URL prompt now exits before issuing a request, while submitting an intentionally empty value is preserved. Upload success is reported only after a successful HTTP response containing the API's success result; error payloads and status failures stay on the failure path without refreshing the spec list.
+
 - Evidence: the UI does not test `prompt()` for null before POST at `src/ui/app.js:8232-8241`; the API converts null baseUrl to an empty string, which matches any host.
 - Impact: clicking Cancel reports the spec loaded and can annotate unrelated traffic.
 - Reproduction: select a valid spec file and cancel the base-URL prompt.

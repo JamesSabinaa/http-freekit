@@ -9685,6 +9685,17 @@
       ).join('');
     }
 
+    async function readApiSpecUploadResponse(response) {
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'API spec upload failed with HTTP ' + response.status);
+      }
+      if (!data || data.success !== true) {
+        throw new Error(data?.error || 'API spec upload returned an invalid response');
+      }
+      return data;
+    }
+
     function uploadApiSpec() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -9703,12 +9714,14 @@
           const title = spec.info?.title || file.name;
           const baseUrl = prompt('Base URL for this API (e.g. https://api.example.com):',
             spec.servers?.[0]?.url || spec.host || '');
+          if (baseUrl === null) return;
 
-          await fetch(API_BASE + '/api/specs', {
+          const response = await fetch(API_BASE + '/api/specs', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ title, baseUrl, spec })
           });
+          await readApiSpecUploadResponse(response);
           toast('API spec loaded: ' + title, 'success');
           loadApiSpecs();
         } catch (err) {
