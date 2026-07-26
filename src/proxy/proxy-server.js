@@ -807,17 +807,36 @@ export class ProxyServer {
     console.log(`[Proxy] HTTP/2: ${mode}`);
   }
 
+  _getClientCertificateHostKey(value) {
+    const configuredHost = typeof value === 'string' ? value.trim() : '';
+    if (!configuredHost || (configuredHost.includes('*') && configuredHost !== '*')) return '';
+    return this._normalizeTlsHostname(configuredHost);
+  }
+
+  _canonicalizeClientCertificates(certs) {
+    if (!Array.isArray(certs)) return [];
+    const firstIndexes = new Map();
+    const winners = new Map();
+    for (const [index, config] of certs.entries()) {
+      const hostKey = this._getClientCertificateHostKey(config?.host);
+      if (!hostKey) continue;
+      if (!firstIndexes.has(hostKey)) firstIndexes.set(hostKey, index);
+      winners.set(hostKey, config);
+    }
+    return certs.flatMap((config, index) => {
+      const hostKey = this._getClientCertificateHostKey(config?.host);
+      if (!hostKey) return [config];
+      if (firstIndexes.get(hostKey) !== index) return [];
+      return [winners.get(hostKey)];
+    });
+  }
+
   setClientCertificates(certs) {
-    this.clientCertificates = Array.isArray(certs) ? certs : [];
+    this.clientCertificates = this._canonicalizeClientCertificates(certs);
     this._clientCertificateOptions = this.clientCertificates.flatMap((config) => {
-      const configuredHost = typeof config?.host === 'string' ? config.host.trim() : '';
       const pfxPath = typeof config?.pfxPath === 'string' ? config.pfxPath.trim() : '';
-      if (!configuredHost || !pfxPath) return [];
-      // The UI supports exact hostnames or a single all-hosts wildcard. Reject
-      // partial/malformed wildcards before normalization (for example "*.").
-      if (configuredHost.includes('*') && configuredHost !== '*') return [];
-      const host = this._normalizeTlsHostname(configuredHost);
-      if (!host) return [];
+      const host = this._getClientCertificateHostKey(config?.host);
+      if (!host || !pfxPath) return [];
       try {
         return [{
           host,

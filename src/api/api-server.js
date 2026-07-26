@@ -1718,14 +1718,37 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const host = String(req.body?.host || '').trim();
       const pfxPath = String(req.body?.pfxPath || '').trim();
       if (!host || !pfxPath) return res.status(400).json({ error: 'host and pfxPath are required' });
-      const exists = this.proxy.clientCertificates.some(cert => cert.host === host && cert.pfxPath === pfxPath);
-      if (!exists) {
+      const hostKey = this.proxy._getClientCertificateHostKey(host);
+      const matchingCertificates = hostKey
+        ? this.proxy.clientCertificates.filter(
+          cert => this.proxy._getClientCertificateHostKey(cert?.host) === hostKey
+        )
+        : [];
+      const exactPairExists = this.proxy.clientCertificates.some(
+        cert => cert?.host === host && cert?.pfxPath === pfxPath
+      );
+      const alreadyConfigured = hostKey
+        ? matchingCertificates.length === 1 && exactPairExists
+        : exactPairExists;
+      if (!alreadyConfigured) {
         this._mutateProxySetting({
           property: 'clientCertificates',
-          apply: () => this.proxy.setClientCertificates([
-            ...this.proxy.clientCertificates,
-            { host, pfxPath }
-          ]),
+          apply: () => {
+            const certificates = [];
+            let replacementAdded = false;
+            for (const certificate of this.proxy.clientCertificates) {
+              const matchesHost = hostKey &&
+                this.proxy._getClientCertificateHostKey(certificate?.host) === hostKey;
+              if (!matchesHost) {
+                certificates.push(certificate);
+              } else if (!replacementAdded) {
+                certificates.push({ host, pfxPath });
+                replacementAdded = true;
+              }
+            }
+            if (!replacementAdded) certificates.push({ host, pfxPath });
+            return this.proxy.setClientCertificates(certificates);
+          },
           restore: previous => this.proxy.setClientCertificates(previous)
         });
       }

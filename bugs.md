@@ -969,6 +969,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-351 — Medium — Adding a replacement client certificate leaves the old one active
 
+- Status: **Fixed**.
+- Resolution: Client certificates now have a single normalized-host ownership key. Item additions replace every existing entry for that host in its original UI position, while legacy duplicate configurations are canonicalized last-wins before certificate loading so a superseded certificate cannot remain active or return after restart.
 - Evidence: the item route deduplicates only the exact `{host,pfxPath}` pair and appends a different path for the same host. `_getClientCertificateOptions()` then uses the first normalized-host match, so the older entry wins indefinitely.
 - Impact: the API and UI report that the new certificate was added, but mTLS connections keep presenting the superseded certificate and continue to fail after certificate rotation.
 - Reproduction: add two different PFX paths for the same host, with the old certificate first, then connect to that host; FreeKit loads the first PFX rather than the newly added one.
