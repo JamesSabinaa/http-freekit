@@ -2268,6 +2268,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-226 — Low — The 100,000-row claim contradicts the 10,000-record cap
 
+- Status: **Fixed**.
+- Resolution: README now describes the virtualized traffic table as supporting up to 10,000 retained rows, matching the API and renderer caps without changing product behavior.
+
 - Evidence: `README.md:13` promises a table handling 100,000+ rows, while the API caps traffic at 10,000 and the renderer independently evicts beyond 10,000 (`src/api/api-server.js:51`; `src/ui/app.js:277-278`).
 - Impact: the advertised scale is impossible because older records are discarded before the table can contain them.
 - Reproduction: capture or import more than 10,000 exchanges and observe eviction.
