@@ -1803,6 +1803,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-325 — High/Medium — Android proxy setup can apply but be treated as untracked failure
 
+- Status: **Fixed**.
+- Resolution: Global-proxy fallback is now journaled as uncertain before mutation and promoted to an active proxy only after command success or exact readback. A failed command whose write is confirmed is tracked as successful; a confirmed different value triggers only owned CA/reverse cleanup; failed or ambiguous readback retains restart-safe ownership for a later Stop to verify without overwriting external changes.
+
 - Evidence: `_setProxy()` collapses every ADB timeout or disconnect into `false`, even when the device applied the command first. The failure branch at `src/interceptors/android-adb-interceptor.js:533-551` rolls back only the staged CA and discards the already captured `previousProxy` without recording the device.
 - Impact: activation can return failure and remain locally inactive while the device continues pointing at FreeKit; Stop then has no ownership record with which to restore the prior proxy.
 - Reproduction: make the ADB settings command apply FreeKit's proxy and then time out so `_setProxy()` returns false; activation fails, the map stays empty, and Stop leaves the changed device proxy in place.

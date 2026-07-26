@@ -105,7 +105,7 @@ export class AndroidAdbInterceptor {
   _normalizeJournalDevice(entry, version = ANDROID_RECOVERY_VERSION) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const allowedModes = version === ANDROID_RECOVERY_VERSION
-      ? ['global-proxy', 'staging-cleanup', 'reverse-cleanup']
+      ? ['global-proxy', 'proxy-uncertain', 'staging-cleanup', 'reverse-cleanup']
       : ['global-proxy', 'staging-cleanup'];
     if (!allowedModes.includes(entry.mode)) return null;
     const reverseOnly = entry.mode === 'reverse-cleanup';
@@ -1015,7 +1015,7 @@ export class AndroidAdbInterceptor {
         hostIp,
         remoteCertPath: ANDROID_CA_STAGING_PATH,
         proxyPort,
-        mode: 'global-proxy',
+        mode: 'proxy-uncertain',
         appInstalled,
         tunnelActive,
         appActivationError,
@@ -1033,31 +1033,53 @@ export class AndroidAdbInterceptor {
       const proxySet = await this._setProxy(deviceId, hostIp, proxyPort);
 
       if (!proxySet) {
-        const certificateRemoved = !remoteCertPath || await this._removeCaCert(deviceId);
-        const reverseTunnelRemoved = certificateRemoved
-          ? await this._cleanupRetainedReverseTunnel(deviceId, pendingGlobalActivation)
-          : false;
-        if (!certificateRemoved || !reverseTunnelRemoved) {
-          const stagingCleanup = {
-            ...pendingGlobalActivation,
-            remoteCertPath,
-            mode: 'staging-cleanup'
+        const intendedProxy = `${hostIp}:${proxyPort}`;
+        const currentProxy = await this._getProxy(deviceId);
+        const proxyReadbackConfirmed = currentProxy?.success === true &&
+          this._isSafeJournalString(currentProxy.value);
+
+        if (proxyReadbackConfirmed && currentProxy.value === intendedProxy) {
+          console.warn(`[Interceptor] Proxy write result was uncertain on ${deviceId}, but readback confirmed ${intendedProxy}`);
+        } else if (proxyReadbackConfirmed) {
+          const certificateRemoved = !remoteCertPath || await this._removeCaCert(deviceId);
+          const reverseTunnelRemoved = certificateRemoved
+            ? await this._cleanupRetainedReverseTunnel(deviceId, pendingGlobalActivation)
+            : false;
+          if (!certificateRemoved || !reverseTunnelRemoved) {
+            const stagingCleanup = {
+              ...pendingGlobalActivation,
+              remoteCertPath,
+              mode: 'staging-cleanup'
+            };
+            this._rememberGlobalProxyOwnership(deviceId, stagingCleanup);
+            this.activatedDevices.set(deviceId, stagingCleanup);
+            this.active = true;
+          } else {
+            this._forgetGlobalProxyOwnership(deviceId);
+            this.activatedDevices.delete(deviceId);
+            this.active = this.activatedDevices.size > 0;
+          }
+          return {
+            success: false,
+            error: certificateRemoved && reverseTunnelRemoved
+              ? `Failed to set proxy on ${deviceId}`
+              : `Failed to set proxy on ${deviceId} and finish fallback cleanup; reconnect it and retry Stop`
           };
-          this._rememberGlobalProxyOwnership(deviceId, stagingCleanup);
-          this.activatedDevices.set(deviceId, stagingCleanup);
-          this.active = true;
         } else {
-          this._forgetGlobalProxyOwnership(deviceId);
-          this.activatedDevices.delete(deviceId);
-          this.active = this.activatedDevices.size > 0;
+          return {
+            success: false,
+            error: `Failed to set proxy on ${deviceId} and could not verify whether it was applied; reconnect it and retry Stop`
+          };
         }
-        return {
-          success: false,
-          error: certificateRemoved && reverseTunnelRemoved
-            ? `Failed to set proxy on ${deviceId}`
-            : `Failed to set proxy on ${deviceId} and finish fallback cleanup; reconnect it and retry Stop`
-        };
       }
+
+      // The command completed, or an ambiguous command result was resolved by
+      // exact readback. Only now may durable state claim the proxy is active.
+      this._rememberGlobalProxyOwnership(deviceId, {
+        ...pendingGlobalActivation,
+        remoteCertPath,
+        mode: 'global-proxy'
+      });
     }
 
     this.activatedDevices.set(deviceId, {
