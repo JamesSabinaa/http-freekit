@@ -1016,6 +1016,10 @@
       };
       sendTabs.push(newTab);
       activeSendTab = newTab.id;
+      if (typeof safeLocalStorageSet === 'function') {
+        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
+      }
+      if (typeof persistSendTabs === 'function') persistSendTabs([newTab]);
 
       // Switch to Send panel and load the new tab
       const sendPanelBtn = document.querySelector('.sidebar-item[data-panel="send"]');
@@ -7585,6 +7589,11 @@
         }));
     }
 
+    const SEND_TABS_LEGACY_KEY = 'http-freekit-send-tabs';
+    const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
+    const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace';
+    let sendTabPersistenceQueue = Promise.resolve();
+
     function normalizeSendHeaderRows(headers) {
       const rows = [];
       if (Array.isArray(headers)) {
@@ -7608,9 +7617,13 @@
     function parseSendTabId(id) {
       if (typeof id !== 'string') return null;
       const match = /^tab-([1-9]\d*)$/.exec(id);
-      if (!match) return null;
-      const numericId = Number(match[1]);
-      return Number.isSafeInteger(numericId) ? numericId : null;
+      if (match) {
+        const numericId = Number(match[1]);
+        return Number.isSafeInteger(numericId) ? numericId : null;
+      }
+      return /^tab-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)
+        ? 0
+        : null;
     }
 
     function normalizeSendTab(tab, fallbackId, { includeFiles = true, includeResponse = true } = {}) {
@@ -7661,6 +7674,22 @@
 
     function allocateSendTabId() {
       const usedIds = new Set(sendTabs.map(tab => tab.id));
+      // A remote tab or permanent tombstone may not have reached this renderer's
+      // in-memory snapshot yet. Never allocate an identity already present in
+      // the shared workspace, because a tombstoned upsert is intentionally ignored.
+      try {
+        const storedWorkspace = readStoredSendWorkspace();
+        storedWorkspace.tabs.forEach(tab => usedIds.add(tab.id));
+        storedWorkspace.deletedTabIds.forEach(id => usedIds.add(id));
+      } catch {}
+      const randomUUID = globalThis.crypto?.randomUUID;
+      if (typeof randomUUID === 'function') {
+        for (let attempts = 0; attempts < 10; attempts++) {
+          const id = `tab-${randomUUID.call(globalThis.crypto)}`;
+          if (!usedIds.has(id)) return id;
+        }
+      }
+
       let candidate = Number.isSafeInteger(sendTabCounter) && sendTabCounter >= 0
         ? sendTabCounter + 1
         : 1;
@@ -7694,6 +7723,149 @@
       };
     }
 
+    function serializeSendTab(tab) {
+      const normalized = normalizeSendTab(tab, tab?.id, {
+        includeFiles: false,
+        includeResponse: false
+      });
+      if (!normalized || parseSendTabId(normalized.id) === null) return null;
+      delete normalized.response;
+      return normalized;
+    }
+
+    function normalizeStoredSendWorkspace(workspace) {
+      if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace) || workspace.version !== 2) {
+        return null;
+      }
+      const deletedTabIds = Array.from(new Set(
+        (Array.isArray(workspace.deletedTabIds) ? workspace.deletedTabIds : [])
+          .filter(id => parseSendTabId(id) !== null)
+      ));
+      const deletedIds = new Set(deletedTabIds);
+      return {
+        version: 2,
+        tabs: normalizeStoredSendTabs(workspace.tabs).filter(tab => !deletedIds.has(tab.id)),
+        deletedTabIds
+      };
+    }
+
+    // Each renderer writes only its tab-level changes. The cross-window lock
+    // serializes read/merge/write operations, and permanent tombstones make
+    // deletion win over any later write from a stale renderer.
+    function readStoredSendWorkspace() {
+      const savedWorkspace = safeLocalStorageGet(SEND_TABS_WORKSPACE_KEY);
+      if (savedWorkspace) {
+        try {
+          const workspace = normalizeStoredSendWorkspace(JSON.parse(savedWorkspace));
+          if (workspace) return workspace;
+        } catch {}
+      }
+
+      const savedLegacyTabs = safeLocalStorageGet(SEND_TABS_LEGACY_KEY);
+      if (savedLegacyTabs) {
+        try {
+          return {
+            version: 2,
+            tabs: normalizeStoredSendTabs(JSON.parse(savedLegacyTabs)),
+            deletedTabIds: []
+          };
+        } catch {}
+      }
+      return { version: 2, tabs: [], deletedTabIds: [] };
+    }
+
+    function mergeStoredSendWorkspace(workspace, upserts = [], deletedTabIds = []) {
+      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace) || {
+        version: 2,
+        tabs: [],
+        deletedTabIds: []
+      };
+      const deletedIds = new Set(normalizedWorkspace.deletedTabIds);
+      for (const id of deletedTabIds) {
+        if (parseSendTabId(id) !== null) deletedIds.add(id);
+      }
+
+      const tabs = normalizedWorkspace.tabs.filter(tab => !deletedIds.has(tab.id));
+      for (const candidate of upserts) {
+        const tab = serializeSendTab(candidate);
+        if (!tab || deletedIds.has(tab.id)) continue;
+        const existingIndex = tabs.findIndex(existing => existing.id === tab.id);
+        if (existingIndex === -1) tabs.push(tab);
+        else tabs[existingIndex] = tab;
+      }
+
+      return { version: 2, tabs, deletedTabIds: Array.from(deletedIds) };
+    }
+
+    function withSendTabStorageLock(callback) {
+      const locks = globalThis.navigator?.locks;
+      return locks && typeof locks.request === 'function'
+        ? locks.request(SEND_TABS_LOCK_NAME, callback)
+        : Promise.resolve().then(callback);
+    }
+
+    function persistSendTabs() {
+      const tabsToUpsert = arguments[0] ?? [];
+      const deletedTabIds = arguments[1] ?? [];
+      const upserts = (Array.isArray(tabsToUpsert) ? tabsToUpsert : [])
+        .map(serializeSendTab)
+        .filter(Boolean);
+      const deletions = Array.isArray(deletedTabIds) ? deletedTabIds.slice() : [];
+      const persist = () => withSendTabStorageLock(() => {
+        const workspace = mergeStoredSendWorkspace(readStoredSendWorkspace(), upserts, deletions);
+        safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace));
+        return workspace;
+      });
+      const pending = sendTabPersistenceQueue.then(persist, persist);
+      sendTabPersistenceQueue = pending.catch(() => {});
+      return pending;
+    }
+
+    function preserveSendTabTransientState(storedTab, liveTab) {
+      if (!liveTab) return storedTab;
+      const merged = { ...storedTab, response: liveTab.response || null };
+      for (const fieldName of ['urlEncodedFields', 'multipartFields']) {
+        merged[fieldName] = storedTab[fieldName].map((field, index) => {
+          const liveField = liveTab[fieldName]?.[index];
+          return liveField?.file && liveField.key === field.key && liveField.type === field.type
+            ? { ...field, file: liveField.file }
+            : field;
+        });
+      }
+      return merged;
+    }
+
+    function applyStoredSendWorkspace(workspace) {
+      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace);
+      if (!normalizedWorkspace) return;
+      const previousActiveId = activeSendTab;
+      const liveTabs = new Map(sendTabs.map(tab => [tab.id, tab]));
+      sendTabs = normalizedWorkspace.tabs.map(tab =>
+        preserveSendTabTransientState(tab, liveTabs.get(tab.id))
+      );
+      if (sendTabs.length === 0) sendTabs = [createEmptySendTab()];
+      sendTabCounter = sendTabs.reduce(
+        (max, tab) => Math.max(max, parseSendTabId(tab.id) || 0),
+        0
+      );
+
+      if (!sendTabs.some(tab => tab.id === activeSendTab)) {
+        activeSendTab = sendTabs[0].id;
+        loadSendTabState(sendTabs[0]);
+      }
+      renderSendTabs();
+      if (previousActiveId !== activeSendTab) {
+        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
+      }
+    }
+
+    function handleSendTabStorageEvent(event) {
+      if (event.key !== SEND_TABS_WORKSPACE_KEY || !event.newValue) return;
+      try {
+        applyStoredSendWorkspace(JSON.parse(event.newValue));
+      } catch {}
+    }
+
     function saveSendTabState() {
       const tab = sendTabs.find(t => t.id === activeSendTab);
       if (!tab) return;
@@ -7708,38 +7880,20 @@
       tab.multipartFields = cloneSendFormFields(sendMultipartFields);
       tab.multipartBoundary = sendMultipartBoundary;
       // Persist tabs to localStorage
-      persistSendTabs();
-    }
-
-    function persistSendTabs() {
-      try {
-        const toSave = sendTabs.map(t => ({
-          id: t.id, method: t.method, url: t.url,
-          headers: t.headers, body: t.body, bodyType: t.bodyType || 'raw', bodyFormat: t.bodyFormat,
-          urlEncodedFields: cloneSendFormFields(t.urlEncodedFields, false),
-          multipartFields: cloneSendFormFields(t.multipartFields, false),
-          multipartBoundary: t.multipartBoundary || ''
-        }));
-        safeLocalStorageSet('http-freekit-send-tabs', JSON.stringify(toSave));
-        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
-      } catch {}
+      persistSendTabs([tab]);
     }
 
     function restoreSendTabs() {
       try {
-        const saved = safeLocalStorageGet('http-freekit-send-tabs');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          const restoredTabs = normalizeStoredSendTabs(parsed);
-          if (restoredTabs.length > 0) {
-            sendTabs = restoredTabs;
-            sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, parseSendTabId(tab.id) || 0), 0);
-            const savedActive = safeLocalStorageGet('http-freekit-send-active');
-            if (savedActive && sendTabs.find(t => t.id === savedActive)) {
-              activeSendTab = savedActive;
-            } else {
-              activeSendTab = sendTabs[0].id;
-            }
+        const workspace = readStoredSendWorkspace();
+        if (workspace.tabs.length > 0) {
+          sendTabs = workspace.tabs;
+          sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, parseSendTabId(tab.id) || 0), 0);
+          const savedActive = safeLocalStorageGet('http-freekit-send-active');
+          if (savedActive && sendTabs.find(t => t.id === savedActive)) {
+            activeSendTab = savedActive;
+          } else {
+            activeSendTab = sendTabs[0].id;
           }
         }
       } catch {}
@@ -7808,6 +7962,7 @@
     function switchSendTab(tabId) {
       saveSendTabState();
       activeSendTab = tabId;
+      safeLocalStorageSet('http-freekit-send-active', activeSendTab);
       const tab = sendTabs.find(t => t.id === tabId);
       if (tab) loadSendTabState(tab);
       renderSendTabs();
@@ -7818,6 +7973,8 @@
       const newTab = createEmptySendTab();
       sendTabs.push(newTab);
       activeSendTab = newTab.id;
+      safeLocalStorageSet('http-freekit-send-active', activeSendTab);
+      persistSendTabs([newTab]);
       loadSendTabState(newTab);
       renderSendTabs();
     }
@@ -7830,18 +7987,20 @@
         const newTab = createEmptySendTab();
         sendTabs = [newTab];
         activeSendTab = newTab.id;
+        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
         loadSendTabState(newTab);
         renderSendTabs();
-        persistSendTabs();
+        persistSendTabs([newTab], [tabId]);
         return;
       }
       sendTabs.splice(idx, 1);
       if (activeSendTab === tabId) {
         activeSendTab = sendTabs[Math.min(idx, sendTabs.length - 1)].id;
+        safeLocalStorageSet('http-freekit-send-active', activeSendTab);
         loadSendTabState(sendTabs.find(t => t.id === activeSendTab));
       }
       renderSendTabs();
-      persistSendTabs();
+      persistSendTabs([], [tabId]);
     }
 
     function initializeSendTabs() {
@@ -10078,6 +10237,7 @@
     // Restore send tabs from localStorage
     restoreSendTabs();
     initializeSendTabs();
+    window.addEventListener('storage', handleSendTabStorageEvent);
 
     // Apply hash-based routing on initial page load
     if (window.location.hash) {

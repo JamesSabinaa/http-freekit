@@ -2184,6 +2184,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-211 — Medium — Browser tabs overwrite the shared Send workspace
 
+- Status: **Fixed**.
+- Resolution: New Send tabs now use UUID identities and a versioned shared workspace updated through locked tab-level merges instead of whole-window snapshots. Cross-window storage events synchronize additions, updates, and deletion tombstones; tombstones prevent stale renderers from resurrecting closed tabs, while legacy arrays still migrate and persisted multipart fields still omit local file objects.
+
 - Evidence: each renderer owns an independent `sendTabs` array, while `persistSendTabs()` replaces the shared localStorage value wholesale at `src/ui/app.js:7047-7074`. Switching, creating, closing, and sending all trigger writes without storage-event synchronization or merging.
 - Impact: any stale UI tab can overwrite another tab's complete Send workspace, losing requests on reload.
 - Reproduction: create different Send requests in two browser tabs, then switch or send from the stale tab and reload both.
