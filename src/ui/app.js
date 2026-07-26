@@ -4243,11 +4243,14 @@
     function renderDockerConfig(container) {
       const meta = expandedInterceptorMetadata;
       const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
-      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
-      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1`;
+      const caBundleDescription = meta?.caBundleDescription
+        || 'Activate Docker interception to generate a read-only combined public-roots-plus-FreeKit CA bundle mount. This proxy-only fallback does not change TLS verification.';
 
       container.innerHTML = `
         <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.nodeProxyNote || NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
+        <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(caBundleDescription)}</p>
         <div class="config-section">
           <h3>Docker Run</h3>
           <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(runCmd)}</div>

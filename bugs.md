@@ -1726,6 +1726,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-310 — Medium — Docker CA configuration replaces public trust roots
 
+- Status: **Fixed**.
+- Resolution: Docker activation now refreshes and validates the shared PEM bundle containing Node's public roots plus the current FreeKit CA before it can become active. Generated run and Compose settings mount that combined bundle read-only and use it for OpenSSL, Requests, curl, and Node while preserving certificate and hostname verification; the renderer's pre-activation fallback is explicitly proxy-only and no longer disables Node TLS verification.
+
 - Evidence: generated Docker setup at `src/interceptors/docker-interceptor.js:59-64` mounts a file containing only the FreeKit CA and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it. Those variables replace the clients' normal trust bundles; only `NODE_EXTRA_CA_CERTS` is additive.
 - Impact: direct, bypassed, or passthrough public HTTPS requests from OpenSSL, Requests, and curl can fail issuer validation even though their normal system roots trust the destination.
 - Reproduction: start a container with the generated configuration and request a public HTTPS origin through a direct/no-proxy path; the client cannot build the issuer chain from the one-certificate bundle.
