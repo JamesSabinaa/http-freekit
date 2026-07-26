@@ -944,6 +944,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-344 — Medium — WebSocket upgrades merge repeated response headers
 
+- Status: **Fixed**.
+- Resolution: Accepted WebSocket handshakes now serialize the parser-validated raw response header pairs in their original order and casing, writing the complete header block as Latin-1 before relaying any buffered first frame. Normalized headers remain unchanged for traffic capture.
+
 - Evidence: `_handleHttpUpgrade()` rebuilds the upstream 101 response by iterating `proxyRes.headers` and string-interpolating each value at `src/proxy/proxy-server.js:643-648`. Node represents repeated headers such as `set-cookie` as arrays, which interpolation joins with commas into one field line.
 - Impact: handshake metadata loses field boundaries; multiple cookies become a single potentially invalid cookie, especially when an `Expires` attribute itself contains a comma.
 - Reproduction: return two `Set-Cookie` fields from a WebSocket origin and inspect the raw proxied 101 response; it contains one comma-joined `set-cookie` line.

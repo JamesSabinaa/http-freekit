@@ -1215,12 +1215,14 @@ export class ProxyServer {
       });
 
       // Send upgrade response back to client
-      let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
-      for (const [key, value] of Object.entries(proxyRes.headers)) {
-        responseStr += `${key}: ${value}\r\n`;
+      const responseLines = [
+        `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}`
+      ];
+      for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+        responseLines.push(`${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}`);
       }
-      responseStr += '\r\n';
-      socket.write(responseStr);
+      responseLines.push('', '');
+      socket.write(Buffer.from(responseLines.join('\r\n'), 'latin1'));
 
       // Track message counts and bytes
       let clientMessages = 0;
