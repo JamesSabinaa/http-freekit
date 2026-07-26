@@ -76,12 +76,20 @@ export class BrowserInterceptor {
   }
 
   async isActive() {
-    if (this.cleanupPending) return true;
     if (!this.active) return false;
     const lifecycle = this._captureLifecycle();
     const running = await this._isBrowserStillRunning(lifecycle);
-    if (!this._isLifecycleCurrent(lifecycle)) return this.cleanupPending || this.active;
+    if (!this._isLifecycleCurrent(lifecycle)) return this.active;
+    if (!running) this.active = false;
     return running;
+  }
+
+  needsDeactivation() {
+    return this.active
+      || this.cleanupPending
+      || Boolean(this.process)
+      || Boolean(this.profileDir)
+      || this.trackedProcessIds.size > 0;
   }
 
   _captureLifecycle() {
@@ -134,7 +142,6 @@ export class BrowserInterceptor {
       ? this._cleanup(profileDir)
       : { removed: true, alreadyMissing: true };
     if (cleanupResult.removed !== true) {
-      this.active = true;
       this.cleanupPending = true;
       this._emitStatus('cleanup-failed', {
         pid: launcherPid,
@@ -199,7 +206,7 @@ export class BrowserInterceptor {
         if (cleanupResult.removed === true) {
           this._clearLifecycleState();
         } else {
-          this.active = true;
+          this.active = false;
           this.process = null;
           this.cleanupPending = true;
           this._emitStatus('cleanup-failed', {
@@ -252,6 +259,13 @@ export class BrowserInterceptor {
    */
   async openUrl(url) {
     const normalizedUrl = normalizeBrowserUrl(url);
+    if (this.cleanupPending) {
+      const cleanupError = new Error(
+        `Could not reopen ${this.name}; its previous profile cleanup is still pending`
+      );
+      cleanupError.code = 'BROWSER_CLEANUP_PENDING';
+      throw cleanupError;
+    }
     if (!(await this.isActive())) {
       if (this.active || this.profileDir) this._markInactive('closed');
       if (this.cleanupPending) {
@@ -426,7 +440,9 @@ export class BrowserInterceptor {
     }
 
     if (remainingIds === null || remainingIds.size > 0 || cleanupResult.removed !== true) {
-      this.active = true;
+      // An unknown or surviving process is still conservatively live. If all
+      // processes are confirmed dead, retain only cleanup ownership.
+      this.active = remainingIds === null || remainingIds.size > 0;
       this.cleanupPending = true;
       this._emitStatus('cleanup-failed', {
         remainingProcessCount: remainingIds?.size ?? null,
@@ -454,7 +470,6 @@ export class BrowserInterceptor {
     this.active = false;
     const cleanupResult = this._cleanup(profileDir);
     if (cleanupResult.removed !== true) {
-      this.active = true;
       this.cleanupPending = true;
       this._emitStatus('cleanup-failed', {
         pid: launcherPid,
@@ -731,7 +746,8 @@ exit 1
       type: this.browserType,
       active: this.active,
       pid: this.process?.pid || null,
-      focusable: this.canFocus()
+      focusable: this.active && this.canFocus(),
+      cleanupPending: this.cleanupPending
     };
   }
 }

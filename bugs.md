@@ -1768,6 +1768,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-317 — Medium — Cleanup-only browser state is accepted as a live browser
 
+- Status: **Fixed**.
+- Resolution: Isolated-browser liveness now comes only from a running or conservatively unverified process, while failed profile removal remains separately retryable cleanup ownership. Cleanup-only state is reported inactive and non-focusable, direct Open cannot reuse it, Stop and graceful shutdown still detect it, and a later activation can replace it only after the retained profile is removed.
+
 - Evidence: `BrowserInterceptor.isActive()` at `src/interceptors/browser-interceptor.js:54-55` returns true solely for `cleanupPending`. `openUrl()` at `:129-154` therefore spawns an opener with the retained profile even when the tracked browser is dead; `toJSON()` also exposes the state as active and focusable without identifying cleanup failure.
 - Impact: the UI claims interception is Connected/Activated, and an open trigger can relaunch an untracked browser into the profile that Stop was trying to clean. Focus can instead target a dead PID or an ordinary unproxied browser.
 - Reproduction: make profile cleanup fail after child exit, then invoke browser-open; it returns success and launches an opener while cleanup remains pending and the original tracked process is dead.

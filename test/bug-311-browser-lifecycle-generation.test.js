@@ -258,7 +258,7 @@ test('replacement stops before profile creation when old profile cleanup needs r
   );
   assert.equal(browser.profileDir, 'locked-old-profile');
   assert.equal(browser.process, oldChild);
-  assert.equal(browser.active, true);
+  assert.equal(browser.active, false);
   assert.equal(browser.cleanupPending, true);
   assert.equal(statusEvents.at(-1).reason, 'cleanup-failed');
 });
