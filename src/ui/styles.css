@@ -3374,6 +3374,11 @@
     .mock-group.mock-rule-draft {
       border-left: 3px solid #e8a030;
     }
+    .mock-group.mock-drag-over {
+      outline: 2px dashed var(--pop-color);
+      outline-offset: -2px;
+      background: rgba(225, 66, 31, 0.05);
+    }
     .mock-group-header {
       display: flex;
       align-items: center;

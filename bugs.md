@@ -2411,6 +2411,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-257 — Low/Medium — Existing mock groups cannot receive or release rules in the UI
 
+- Status: **Fixed**.
+- Resolution: Mock groups are now drop targets for existing rules, and grouped rules expose an action that moves them back to the top level.
+
 - Evidence: empty groups instruct users to drag or use a move option at `src/ui/app.js:4937`, but group markup has no drop handler and no move/ungroup controls are rendered. `moveRuleToGroup()` and `ungroupRule()` exist only as unreachable definitions at `:6354-6378`.
 - Impact: toolbar groups stay empty, and rules in imported/combined groups cannot move to another group or back to top level.
 - Reproduction: create a group and try every visible action to move an existing rule into it.

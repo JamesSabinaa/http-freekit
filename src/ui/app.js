@@ -4833,6 +4833,12 @@
       return null;
     }
 
+    function _findContainingMockGroup(ruleId) {
+      return mockRules.find(item =>
+        item.type === 'group' && (item.items || []).some(rule => rule.id === ruleId)
+      ) || null;
+    }
+
     async function clearAllMockRules() {
       if (mockRules.length === 0) return;
       try {
@@ -4873,6 +4879,36 @@
           card.classList.add('mock-drag-over');
         }
       }
+    }
+
+    function mockGroupDragOver(e, groupId) {
+      if (!mockDragId || _findContainingMockGroup(mockDragId)?.id === groupId) return;
+      if (e.target.closest('.mock-rule-card')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('.mock-group').forEach(group => {
+        group.classList.toggle('mock-drag-over', group === e.currentTarget);
+      });
+    }
+
+    function mockGroupDragLeave(e) {
+      if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget)) {
+        e.currentTarget.classList.remove('mock-drag-over');
+      }
+    }
+
+    function mockGroupDrop(e, groupId) {
+      if (!mockDragId || _findContainingMockGroup(mockDragId)?.id === groupId) return;
+      if (e.target.closest('.mock-rule-card')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const ruleId = mockDragId;
+      mockDragId = null;
+      document.querySelectorAll('.mock-rule-card, .mock-group').forEach(item => {
+        item.classList.remove('mock-drag-over', 'mock-drag-combine', 'mock-rule-dragging');
+      });
+      return moveRuleToGroup(ruleId, groupId);
     }
 
     function _replaceMockRulesFromServer(rules) {
@@ -5038,7 +5074,7 @@
 
     function mockDragEnd(e) {
       mockDragId = null;
-      document.querySelectorAll('.mock-rule-card').forEach(c => c.classList.remove('mock-drag-over', 'mock-drag-combine', 'mock-rule-dragging'));
+      document.querySelectorAll('.mock-rule-card, .mock-group').forEach(c => c.classList.remove('mock-drag-over', 'mock-drag-combine', 'mock-rule-dragging'));
     }
 
     function renameMockRule(ruleId) {
@@ -5287,6 +5323,7 @@
 
     function renderMockRuleRow(rule) {
       const nr = normalizeMockRule(rule);
+      const containingGroup = _findContainingMockGroup(rule.id);
       const isExpanded = mockExpandedRules.has(rule.id);
       const isEditing = mockEditingRule === rule.id;
       const isDraft = mockDraftRules.has(rule.id);
@@ -5359,6 +5396,12 @@
       html += '<i class="ph ph-copy-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
+      if (containingGroup) {
+        html += '<button class="mock-toggle-btn" onclick="ungroupRule(\'' + rule.id + '\')" title="Move rule to top level" aria-label="Move rule to top level">';
+        html += '<i class="ph ph-arrow-up" style="font-size:14px;"></i>';
+        html += '</button>';
+      }
+
       // 6. Delete
       html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
@@ -5382,7 +5425,7 @@
       const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
-      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '" aria-expanded="' + !isCollapsed + '">';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '" aria-expanded="' + !isCollapsed + '" ondragover="mockGroupDragOver(event, \'' + group.id + '\')" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, \'' + group.id + '\')">';
 
       // Group header
       html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
@@ -5417,7 +5460,7 @@
       // Group items
       if (!isCollapsed) {
         if ((group.items || []).length === 0) {
-          html += '<div class="mock-group-empty">No rules in this group. Drag rules here or use the move-to-group option.</div>';
+          html += '<div class="mock-group-empty">No rules in this group. Drag a rule here.</div>';
         } else {
           html += '<div class="mock-group-items">';
           for (const rule of (group.items || [])) {
