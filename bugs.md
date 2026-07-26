@@ -2238,6 +2238,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-367 — Low — Core Send and Settings controls lack accessible names
 
+- Status: **Fixed**.
+- Resolution: Core Send and Settings form controls now expose programmatic names through explicit label associations, wrapping labels, or concise ARIA names for compact fields, without changing their layout or event behavior.
+
 - Evidence: The Send method and URL controls and multiple Settings toggles, selects, and port fields use adjacent text rather than associated `<label for>` elements, wrapping labels, or ARIA names at `src/ui/index.html:230,235,363-371,393-398,416-440,530-538,578-580`; renderer code never assigns names programmatically.
 - Impact: screen-reader users hear only generic control roles and current values, without the purpose of essential request and configuration controls.
 - Reproduction: inspect `hideTunnelRequestsToggle.labels.length` and its ARIA attributes, or navigate Send and Settings with a screen reader; the control purpose is not announced.

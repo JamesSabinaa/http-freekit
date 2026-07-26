@@ -230,12 +230,12 @@
             <div class="card" style="margin-bottom:0;">
               <div style="display:flex;gap:0;margin-bottom:16px;box-shadow:0 2px 3px 0 rgba(0,0,0,0.12);">
                 <div style="position:relative;flex:0 0 105px;">
-                  <select id="sendMethod" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:pointer;width:100%;height:100%;appearance:none;-webkit-appearance:none;border-left:5px solid #4caf7d;" onchange="updateSendMethodColor();scheduleSendExportUpdate()">
+                  <select id="sendMethod" aria-label="Request method" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:pointer;width:100%;height:100%;appearance:none;-webkit-appearance:none;border-left:5px solid #4caf7d;" onchange="updateSendMethodColor();scheduleSendExportUpdate()">
                     <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option>
                   </select>
                   <i class="ph ph-caret-down" style="font-size:12px;position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"></i>
                 </div>
-                <input type="url" id="sendUrl" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" oninput="scheduleSendExportUpdate()" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest();" onfocus="prepopulateSendUrl(this)">
+                <input type="url" id="sendUrl" aria-label="Request URL" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" oninput="scheduleSendExportUpdate()" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest();" onfocus="prepopulateSendUrl(this)">
                 <button class="btn btn-primary" onclick="sendRequest()" id="sendBtn" style="border-radius:0;padding:10px 18px;" title="Send this request (Ctrl+Enter)" aria-label="Send request">
                   <i id="sendBtnArrow" class="ph ph-arrow-right" style="font-size:16px;"></i>
                   <i id="sendBtnSpinner" class="ph ph-circle-notch" style="font-size:16px;display:none;animation:spin 1s linear infinite;"></i>
@@ -366,14 +366,14 @@
           <div class="card settings-card" data-settings-section="traffic" style="margin-bottom:20px;">
             <div class="card-header">Traffic View</div>
             <div class="settings-row">
-              <span class="settings-label">Hide TUNNEL / CONNECT requests</span>
+              <label class="settings-label" for="hideTunnelRequestsToggle">Hide TUNNEL / CONNECT requests</label>
               <span class="settings-value"><input type="checkbox" id="hideTunnelRequestsToggle" onchange="saveHideTunnelRequests(this.checked)" checked style="cursor:pointer;width:18px;height:18px;"></span>
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
               Hides low-level CONNECT tunnel rows from the traffic list while keeping the captured HTTP requests visible.
             </p>
             <div class="settings-row">
-              <span class="settings-label">Filter Safe Fonts</span>
+              <label class="settings-label" for="filterSafeFontsToggle">Filter Safe Fonts</label>
               <span class="settings-value"><input type="checkbox" id="filterSafeFontsToggle" onchange="saveFilterSafeFonts(this.checked)" style="cursor:pointer;width:18px;height:18px;"></span>
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
@@ -398,9 +398,9 @@
 <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:12px 0;">
   <span class="settings-label">Port Range</span>
   <div style="display:flex;gap:8px;align-items:center;">
-    <input type="number" id="settingsMinPort" min="1" max="65535" placeholder="Min" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
+    <input type="number" id="settingsMinPort" aria-label="Minimum proxy port" min="1" max="65535" placeholder="Min" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
     <span style="color:var(--text-watermark);">to</span>
-    <input type="number" id="settingsMaxPort" min="1" max="65535" placeholder="Max" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
+    <input type="number" id="settingsMaxPort" aria-label="Maximum proxy port" min="1" max="65535" placeholder="Max" style="width:80px;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 8px;font-family:var(--font-mono);font-size:13px;">
     <button class="btn" onclick="savePortConfig()" style="font-size:11px;padding:4px 10px;">Save</button>
   </div>
   <p style="font-size:11px;color:var(--text-lowlight);line-height:1.4;">When starting, the proxy will use the first available port in this range. Changes take effect on restart.</p>
@@ -413,14 +413,14 @@
   </p>
   <div id="tlsPassthroughList" style="margin-bottom:8px;"></div>
   <div style="display:flex;gap:8px;">
-    <input type="text" id="tlsPassthroughInput" placeholder="A hostname whose TLS should not be intercepted" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <input type="text" id="tlsPassthroughInput" aria-label="TLS passthrough hostname" placeholder="A hostname whose TLS should not be intercepted" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
     <button class="btn" onclick="addTlsPassthrough()" style="font-size:11px;padding:4px 10px;">Add</button>
   </div>
 </div>
           <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;">
   <div class="card-header">HTTP/2</div>
   <div class="settings-row">
-    <span class="settings-label">HTTP/2 Support</span>
+    <label class="settings-label" for="http2Mode">HTTP/2 Support</label>
     <select id="http2Mode" onchange="saveHttp2Config()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
       <option value="all">Enabled for all clients</option>
       <option value="h2-only">Enabled only for HTTP/2-only clients</option>
@@ -434,7 +434,7 @@
           <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
   <div class="card-header">TLS Fingerprint</div>
   <div class="settings-row">
-    <span class="settings-label">Upstream TLS Profile</span>
+    <label class="settings-label" for="tlsFingerprint">Upstream TLS Profile</label>
     <select id="tlsFingerprint" onchange="saveTlsFingerprint()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
       <option value="passthrough">Passthrough (mirror client)</option>
       <option value="chrome-136">Chrome 136</option>
@@ -454,7 +454,7 @@
           <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;">
   <div class="card-header">Connection Settings</div>
   <div class="form-group" style="margin-bottom:12px;">
-    <label>Upstream Proxy</label>
+    <label for="upstreamType">Upstream Proxy</label>
     <select id="upstreamType" onchange="updateUpstreamFields()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-size:13px;cursor:pointer;width:100%;">
       <option value="none">Connect directly (no upstream proxy)</option>
       <option value="http">Use an HTTP proxy</option>
@@ -467,18 +467,18 @@
   </div>
   <div id="upstreamDetailsFields" style="display:none;">
     <div class="form-group" style="margin-bottom:12px;">
-      <label id="upstreamDetailsLabel">Proxy details</label>
+      <label id="upstreamDetailsLabel" for="upstreamDetails">Proxy details</label>
       <input type="text" id="upstreamDetails" placeholder="hostname:port or user:pass@hostname:port" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
     </div>
     <div class="form-group" style="margin-bottom:12px;">
-      <label>Non-proxied hosts (optional, comma-separated)</label>
+      <label for="upstreamNoProxy">Non-proxied hosts (optional, comma-separated)</label>
       <input type="text" id="upstreamNoProxy" placeholder="localhost, 127.0.0.1, *.internal.com" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:12px;width:100%;box-sizing:border-box;">
     </div>
     <button class="btn btn-primary" onclick="saveUpstreamProxy()" style="font-size:12px;">Save proxy settings</button>
   </div>
   <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--text-input-border);">
     <div class="form-group" style="margin-bottom:10px;">
-      <label>BottingTools provider</label>
+      <label for="bottingToolsProvider">BottingTools provider</label>
       <input type="text" id="bottingToolsProvider" list="bottingToolsProviders" value="lemonprime" placeholder="lemonprime" onchange="saveAutoRotateProxyOnError(false)" onblur="saveAutoRotateProxyOnError(false)" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:8px 10px;font-family:var(--font-mono);font-size:13px;width:100%;box-sizing:border-box;">
       <datalist id="bottingToolsProviders"></datalist>
     </div>
@@ -534,7 +534,7 @@
           <div class="card settings-card is-active" data-settings-section="general" style="margin-bottom:20px;">
             <div class="card-header">Theme</div>
             <div class="settings-row">
-              <span class="settings-label">Appearance</span>
+              <label class="settings-label" for="themeSelect">Appearance</label>
               <select id="themeSelect" onchange="setTheme(this.value)" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
                 <option value="auto">Automatic (follow system)</option>
                 <option value="dark">Dark</option>
@@ -582,7 +582,7 @@
               <span class="settings-value" id="mcpClientCount">0</span>
             </div>
             <div class="settings-row">
-              <span class="settings-label">Enable MCP</span>
+              <label class="settings-label" for="mcpEnabledToggle">Enable MCP</label>
               <span class="settings-value"><input type="checkbox" id="mcpEnabledToggle" onchange="toggleMcp(this.checked)" checked style="cursor:pointer;width:18px;height:18px;"></span>
             </div>
             <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
