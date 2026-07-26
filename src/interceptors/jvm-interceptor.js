@@ -24,11 +24,15 @@ export class JvmInterceptor {
         : path.join(os.tmpdir(), `http-freekit-jvm-agent-${process.pid}`));
   }
 
+  _runAvailabilityCommand(file, args, options) {
+    return execFileAsync(file, args, options);
+  }
+
   async isActivable() {
     try {
-      await execFileAsync('java', ['-version'], { timeout: 5000 });
+      await this._runAvailabilityCommand('java', ['-version'], { timeout: 5000 });
       // Check if jps is available (comes with JDK)
-      await execFileAsync('jps', ['-h'], { timeout: 3000 });
+      await this._runAvailabilityCommand('jps', ['-q'], { timeout: 3000 });
       return true;
     } catch {
       return false;

@@ -1559,9 +1559,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-283 — Medium — Java 8 JDKs are falsely reported unavailable
 
+- Status: **Fixed**.
 - Evidence: `src/interceptors/jvm-interceptor.js:14-22` probes with `jps -h`; OpenJDK 8 supports `-?`/`-help` but rejects `-h` nonzero, which `isActivable()` converts to false.
 - Impact: a normal Java 8 JDK on PATH cannot use JVM interception despite providing Java and jps.
 - Reproduction: put JDK 8 first on PATH, run `jps -h`, and refresh interceptor status.
+- Resolution: JVM discovery retains its bounded `java -version` check but now probes `jps -q`, the quiet process-list option documented by the [Java SE 8 tools reference](https://docs.oracle.com/javase/8/docs/technotes/tools/windows/jps.html). A successful probe is accepted even when its output is empty, while missing or failing Java/JPS tools still make the interceptor unavailable.
 
 ### BUG-284 — Medium — Chromium interceptors disable all certificate validation
 
