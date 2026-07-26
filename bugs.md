@@ -2116,6 +2116,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-196 — Low/Medium — UI tabs overwrite unrelated display settings
 
+- Status: **Fixed**.
+- Resolution: Each display toggle now sends only its changed field, validates the save response, and synchronizes both cached values and controls from the server's canonical settings. Optimistic filtering remains immediate, while failed saves restore the prior local state and cannot display a success toast.
+
 - Evidence: each settings toggle submits both locally cached values at `src/ui/app.js:7419-7442`; the server persists both supplied fields at `src/api/api-server.js:647-656`.
 - Impact: changing one setting in a stale tab reverts a different setting that another tab changed later.
 - Reproduction: change Filter Safe Fonts in tab A, then change Hide Tunnel Requests in stale tab B.

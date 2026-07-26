@@ -7878,50 +7878,84 @@
       }
     }
 
+    let uiSettingsSaveGeneration = 0;
+
+    async function parseUiSettingsResponse(response, requireSaveConfirmation = false) {
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error('UI settings response was not valid JSON');
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || `UI settings returned HTTP ${response.status}`);
+      }
+      if (requireSaveConfirmation && data?.success !== true) {
+        throw new Error(data?.error || 'UI settings save was not confirmed');
+      }
+      if (typeof data?.hideTunnelRequests !== 'boolean' || typeof data?.filterSafeFonts !== 'boolean') {
+        throw new Error('UI settings response was incomplete');
+      }
+      return data;
+    }
+
+    function synchronizeUiSettings(data) {
+      hideTunnelRequests = data.hideTunnelRequests;
+      filterSafeFonts = data.filterSafeFonts;
+      const toggle = document.getElementById('hideTunnelRequestsToggle');
+      if (toggle) toggle.checked = hideTunnelRequests;
+      const fontsToggle = document.getElementById('filterSafeFontsToggle');
+      if (fontsToggle) fontsToggle.checked = filterSafeFonts;
+      applyFilter();
+    }
+
     async function loadUiSettings() {
+      const loadGeneration = uiSettingsSaveGeneration;
       try {
         const res = await fetch(API_BASE + '/api/ui-settings');
-        const data = await res.json();
-        hideTunnelRequests = data.hideTunnelRequests !== false;
-        filterSafeFonts = data.filterSafeFonts === true;
-        const toggle = document.getElementById('hideTunnelRequestsToggle');
-        if (toggle) toggle.checked = hideTunnelRequests;
-        const fontsToggle = document.getElementById('filterSafeFontsToggle');
-        if (fontsToggle) fontsToggle.checked = filterSafeFonts;
-        applyFilter();
+        const data = await parseUiSettingsResponse(res);
+        if (loadGeneration === uiSettingsSaveGeneration) synchronizeUiSettings(data);
       } catch (e) {
         console.error('[Error]', e.message);
       }
     }
 
-    async function saveHideTunnelRequests(enabled) {
-      hideTunnelRequests = !!enabled;
-      applyFilter();
+    async function saveUiSettingsChange(changes, previousSettings, saveGeneration) {
       try {
-        await fetch(API_BASE + '/api/ui-settings', {
+        const response = await fetch(API_BASE + '/api/ui-settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hideTunnelRequests, filterSafeFonts })
+          body: JSON.stringify(changes)
         });
+        const data = await parseUiSettingsResponse(response, true);
+        if (saveGeneration !== uiSettingsSaveGeneration) return;
+        synchronizeUiSettings(data);
         toast('Traffic display setting saved', 'success');
       } catch (err) {
+        if (saveGeneration !== uiSettingsSaveGeneration) return;
+        synchronizeUiSettings(previousSettings);
         toast('Error: ' + err.message, 'error');
       }
     }
 
-    async function saveFilterSafeFonts(enabled) {
-      filterSafeFonts = !!enabled;
+    async function saveHideTunnelRequests(enabled) {
+      const previousSettings = { hideTunnelRequests, filterSafeFonts };
+      const saveGeneration = ++uiSettingsSaveGeneration;
+      hideTunnelRequests = !!enabled;
+      const toggle = document.getElementById('hideTunnelRequestsToggle');
+      if (toggle) toggle.checked = hideTunnelRequests;
       applyFilter();
-      try {
-        await fetch(API_BASE + '/api/ui-settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hideTunnelRequests, filterSafeFonts })
-        });
-        toast('Traffic display setting saved', 'success');
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-      }
+      await saveUiSettingsChange({ hideTunnelRequests }, previousSettings, saveGeneration);
+    }
+
+    async function saveFilterSafeFonts(enabled) {
+      const previousSettings = { hideTunnelRequests, filterSafeFonts };
+      const saveGeneration = ++uiSettingsSaveGeneration;
+      filterSafeFonts = !!enabled;
+      const toggle = document.getElementById('filterSafeFontsToggle');
+      if (toggle) toggle.checked = filterSafeFonts;
+      applyFilter();
+      await saveUiSettingsChange({ filterSafeFonts }, previousSettings, saveGeneration);
     }
 
     // ============ ROW NAVIGATION ============
