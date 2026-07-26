@@ -13,6 +13,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { Duplex, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
+import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 
 const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'ECONNABORTED',
@@ -445,31 +446,22 @@ export class ProxyServer {
 
 
   setUpstreamProxy(config) {
-    this._destroyUpstreamAgent();
-    this._upstreamProxyGeneration++;
-    if (!config || !config.host) {
+    if (config === null || config === undefined) {
+      this._destroyUpstreamAgent();
+      this._upstreamProxyGeneration++;
       this.upstreamProxy = null;
       console.log('[Proxy] Upstream proxy disabled');
       return;
     }
-    const type = config.type || 'http';
-    const defaultPort = type === 'https' ? 443 : type.startsWith('socks') ? 1080 : 8080;
-    this.upstreamProxy = {
-      host: config.host,
-      port: parseInt(config.port) || defaultPort,
-      auth: config.auth || null, // "user:pass" or null
-      type,
-      noProxy: this._normalizeNoProxyEntries(config.noProxy)
-    };
-    console.log(`[Proxy] Upstream proxy set to ${type.toUpperCase()} ${this.upstreamProxy.host}:${this.upstreamProxy.port}`);
+    const normalized = normalizeUpstreamProxyConfig(config);
+    this._destroyUpstreamAgent();
+    this._upstreamProxyGeneration++;
+    this.upstreamProxy = normalized;
+    console.log(`[Proxy] Upstream proxy set to ${normalized.type.toUpperCase()} ${normalized.host}:${normalized.port}`);
   }
 
   _normalizeNoProxyEntries(value) {
-    const values = Array.isArray(value) ? value : String(value || '').split(',');
-    return values
-      .flatMap(entry => String(entry).split(','))
-      .map(entry => entry.trim())
-      .filter(Boolean);
+    return normalizeNoProxyEntries(value);
   }
 
   _normalizeConnectionHostname(hostname) {

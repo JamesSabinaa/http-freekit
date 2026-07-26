@@ -669,8 +669,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-203 — High/Medium — Malformed persisted network settings crash later connections
 
-- Status: **Partially fixed**.
-- Resolution: TLS-passthrough entries are now string-normalized before matching, removing the original non-string crash. Upstream proxy port and type remain insufficiently validated and can still fail later request construction.
+- Status: **Fixed**.
+- Resolution: TLS-passthrough entries are string-normalized before matching. Upstream proxy configuration now accepts only supported types, valid hosts, and integer ports in range, applies documented defaults only when the port is omitted, and validates before mutating live state. Invalid API submissions return 400 without persistence, while invalid saved settings are ignored and safely cleared during startup.
 - Evidence: `/api/upstream-proxy` accepts arbitrary port/type and persists it; `setUpstreamProxy()` accepts any truthy parsed port, after which the async H1 path calls `http.request()` without a synchronous exception boundary (`src/api/api-server.js` upstream route; `src/proxy/proxy-server.js:220-235,590-810`). TLS passthrough validates only the outer array, then CONNECT calls `.startsWith()` on each element at `proxy-server.js:863-865`.
 - Impact: accepted persisted values such as port 70000 or passthrough host `1` throw in later request handlers, and the crash repeats after restart.
 - Reproduction: persist upstream `{ "host":"127.0.0.1", "port":70000 }` and proxy a request, or store passthrough `{ "hosts":[1] }` and issue CONNECT.

@@ -16,6 +16,7 @@ import {
 } from './mcp/launch-config.js';
 import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
+import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,8 +96,7 @@ async function main() {
   });
 
   // Restore saved proxy settings
-  const savedUpstream = settings.get('upstreamProxy');
-  if (savedUpstream) proxy.setUpstreamProxy(savedUpstream);
+  restoreUpstreamProxySetting(proxy, settings);
   const savedTlsPassthrough = settings.get('tlsPassthrough');
   if (savedTlsPassthrough) proxy.setTlsPassthrough(savedTlsPassthrough);
   const savedHttp2 = settings.get('http2Enabled');

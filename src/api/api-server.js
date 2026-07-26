@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
 import { validatePortRange } from '../proxy/port-range.js';
+import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 
@@ -1219,10 +1220,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/upstream-proxy', (req, res) => {
-      const { host, port, auth, type, noProxy } = req.body;
-      this.proxy.setUpstreamProxy(host ? { host, port, auth, type, noProxy } : null);
-      this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
-      res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
+      const { host, port, auth, type, noProxy } = req.body || {};
+      try {
+        this.proxy.setUpstreamProxy({ host, port, auth, type, noProxy });
+        this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
+        res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
+      } catch (error) {
+        if (error instanceof UpstreamProxyConfigError) {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
     });
 
     router.delete('/api/upstream-proxy', (req, res) => {
