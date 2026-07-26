@@ -893,6 +893,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-281 — Medium — Fragmented WebSocket messages are captured as separate frames
 
+- Status: **Fixed**.
+- Resolution: WebSocket capture now assembles continuation frames into one bounded logical text/binary message per direction while retaining the initial opcode and timestamp. Interleaved control frames remain independently captured, application-message counts increment only when a complete message is emitted, and malformed or oversized fragmentation disables capture for that direction without affecting raw relay.
+
 - Evidence: `src/proxy/ws-frame-parser.js:47-121` parses individual frames but never assembles continuation frames or retains the initial opcode. Proxy capture increments message counters and emits each parsed frame independently.
 - Impact: one logical fragmented text/binary message appears as multiple incomplete messages with incorrect counts and no inspectable reconstructed payload.
 - Reproduction: send TEXT FIN=0 `hel`, then CONTINUATION FIN=1 `lo`; capture shows two records instead of `hello`.

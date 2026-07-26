@@ -13,7 +13,13 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { Duplex, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
-import { WsFrameParser, WS_OPCODE, WS_OPCODE_NAMES, parseClosePayload } from './ws-frame-parser.js';
+import {
+  DEFAULT_MAX_WS_MESSAGE_PAYLOAD,
+  WsFrameParser,
+  WS_OPCODE,
+  WS_OPCODE_NAMES,
+  parseClosePayload
+} from './ws-frame-parser.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 import { getApiSpecBaseHost, isObjectRecord } from '../api/openapi-validation.js';
 
@@ -91,6 +97,7 @@ export class ProxyServer {
     this._dnsLookup = options.dnsLookup || dnsLookup;
     this.maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 32 * 1024 * 1024;
     this.maxDecompressedBodyBytes = options.maxDecompressedBodyBytes ?? 32 * 1024 * 1024;
+    this.maxWsCapturedMessageBytes = options.maxWsCapturedMessageBytes ?? DEFAULT_MAX_WS_MESSAGE_PAYLOAD;
   }
 
   async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
@@ -1217,15 +1224,15 @@ export class ProxyServer {
 
       // Frame parser for client -> server direction
       const clientParser = new WsFrameParser((frame) => {
-        clientMessages++;
+        if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) clientMessages++;
         this._emitWsFrame(frame, 'client', requestId, ++frameSequence);
-      });
+      }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
 
       // Frame parser for server -> client direction
       const serverParser = new WsFrameParser((frame) => {
-        serverMessages++;
+        if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) serverMessages++;
         this._emitWsFrame(frame, 'server', requestId, ++frameSequence);
-      });
+      }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
 
       const stopRelays = this._startWebSocketRelay(
         socket,
@@ -1343,11 +1350,11 @@ export class ProxyServer {
   }
 
   /**
-   * Emit a single WebSocket frame as a traffic event.
+   * Emit a complete WebSocket application message or control frame as a traffic event.
    * @param {{ fin: boolean, opcode: number, masked: boolean, payload: Buffer, timestamp: number }} frame
    * @param {'client'|'server'} direction
    * @param {string} parentId - The WS connection request ID
-   * @param {number} sequence - Frame sequence number within the connection
+   * @param {number} sequence - Capture sequence number within the connection
    */
   _emitWsFrame(frame, direction, parentId, sequence) {
     const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
@@ -1397,7 +1404,11 @@ export class ProxyServer {
       fin: frame.fin,
       masked: frame.masked,
       parentId,
-      sequence
+      sequence,
+      ...(frame.fragmented ? {
+        fragmented: true,
+        fragmentCount: frame.fragmentCount
+      } : {})
     });
   }
 

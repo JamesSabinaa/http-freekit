@@ -1,8 +1,9 @@
 /**
- * WebSocket frame parser per RFC 6455 Section 5.2.
+ * WebSocket frame parser per RFC 6455 Sections 5.2, 5.4, and 5.5.
  *
- * Accepts streaming chunks of data and emits parsed frames via a callback.
- * Handles continuation frames, masking, and all standard opcodes.
+ * Accepts streaming chunks of data and emits complete application messages or
+ * individual control frames via a callback. Fragment payloads are retained only
+ * until their logical message completes, subject to bounded capture limits.
  */
 
 // Opcode constants
@@ -25,23 +26,28 @@ export const WS_OPCODE_NAMES = {
 };
 
 export const DEFAULT_MAX_WS_FRAME_PAYLOAD = 16 * 1024 * 1024;
+export const DEFAULT_MAX_WS_MESSAGE_PAYLOAD = DEFAULT_MAX_WS_FRAME_PAYLOAD;
+export const DEFAULT_MAX_WS_MESSAGE_FRAGMENTS = 1024;
 
 export class WsFrameParser {
   /**
-   * @param {function} onFrame - Called with each parsed frame object:
-   *   { fin, opcode, masked, payload: Buffer, timestamp }
+   * @param {function} onFrame - Called with each complete application message
+   *   or control frame: { fin, opcode, masked, payload: Buffer, timestamp }
    */
   constructor(onFrame, options = {}) {
     this.onFrame = onFrame;
     this.maxPayloadLength = options.maxPayloadLength ?? DEFAULT_MAX_WS_FRAME_PAYLOAD;
+    this.maxMessagePayloadLength = options.maxMessagePayloadLength ?? this.maxPayloadLength;
+    this.maxMessageFragments = options.maxMessageFragments ?? DEFAULT_MAX_WS_MESSAGE_FRAGMENTS;
     this._chunks = [];
     this._bufferedLength = 0;
+    this._fragment = null;
     this._disabled = false;
   }
 
   /**
    * Feed a chunk of data into the parser.
-   * May emit zero or more frames via the onFrame callback.
+   * May emit zero or more complete messages/control frames via the callback.
    * @param {Buffer} chunk
    */
   push(chunk) {
@@ -55,8 +61,84 @@ export class WsFrameParser {
     while (this._bufferedLength >= 2) {
       const frame = this._tryParseFrame();
       if (!frame) break; // not enough data yet
-      this.onFrame(frame);
+      this._handleFrame(frame);
     }
+  }
+
+  _handleFrame(frame) {
+    const isApplicationFrame = frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY;
+    const isControlFrame = frame.opcode === WS_OPCODE.CLOSE ||
+      frame.opcode === WS_OPCODE.PING || frame.opcode === WS_OPCODE.PONG;
+
+    if (isControlFrame) {
+      if (!frame.fin || frame.payload.length > 125) {
+        this._rejectMalformedControlFrame();
+      }
+      // Control frames may be interleaved in a fragmented message and do not
+      // alter its assembly state.
+      this.onFrame(frame);
+      return;
+    }
+
+    if (frame.opcode === WS_OPCODE.CONTINUATION) {
+      if (!this._fragment) {
+        this._rejectMalformedFragmentation('continuation frame without an open message');
+      }
+      this._appendFragment(frame.payload);
+      this._fragment.fragmentCount++;
+      if (this._fragment.fragmentCount > this.maxMessageFragments) {
+        this._rejectTooManyFragments(this._fragment.fragmentCount);
+      }
+      if (!frame.fin) return;
+
+      const fragment = this._fragment;
+      this._fragment = null;
+      this.onFrame({
+        fin: true,
+        opcode: fragment.opcode,
+        masked: fragment.masked,
+        payload: Buffer.concat(fragment.chunks, fragment.length),
+        timestamp: fragment.timestamp,
+        fragmented: true,
+        fragmentCount: fragment.fragmentCount
+      });
+      return;
+    }
+
+    if (!isApplicationFrame) {
+      this._rejectMalformedFragmentation(`unsupported opcode 0x${frame.opcode.toString(16)}`);
+    }
+    if (this._fragment) {
+      this._rejectMalformedFragmentation('new data frame before the open message completed');
+    }
+    if (frame.payload.length > this.maxMessagePayloadLength) {
+      this._rejectOversizedMessage(frame.payload.length);
+    }
+    if (frame.fin) {
+      this.onFrame(frame);
+      return;
+    }
+
+    this._fragment = {
+      opcode: frame.opcode,
+      masked: frame.masked,
+      timestamp: frame.timestamp,
+      chunks: frame.payload.length > 0 ? [frame.payload] : [],
+      length: frame.payload.length,
+      fragmentCount: 1
+    };
+    if (this._fragment.fragmentCount > this.maxMessageFragments) {
+      this._rejectTooManyFragments(this._fragment.fragmentCount);
+    }
+  }
+
+  _appendFragment(payload) {
+    const nextLength = this._fragment.length + payload.length;
+    if (nextLength > this.maxMessagePayloadLength) {
+      this._rejectOversizedMessage(nextLength);
+    }
+    if (payload.length > 0) this._fragment.chunks.push(payload);
+    this._fragment.length = nextLength;
   }
 
   /**
@@ -161,13 +243,46 @@ export class WsFrameParser {
   }
 
   _rejectOversizedFrame(payloadLength) {
-    this._chunks = [];
-    this._bufferedLength = 0;
-    this._disabled = true;
     const error = new RangeError(
       `WebSocket frame payload ${payloadLength} exceeds the ${this.maxPayloadLength} byte capture limit`
     );
     error.code = 'ERR_WS_FRAME_TOO_LARGE';
+    this._disableCapture(error);
+  }
+
+  _rejectOversizedMessage(payloadLength) {
+    const error = new RangeError(
+      `WebSocket message payload ${payloadLength} exceeds the ${this.maxMessagePayloadLength} byte capture limit`
+    );
+    error.code = 'ERR_WS_MESSAGE_TOO_LARGE';
+    this._disableCapture(error);
+  }
+
+  _rejectTooManyFragments(fragmentCount) {
+    const error = new RangeError(
+      `WebSocket message has ${fragmentCount} fragments, exceeding the ${this.maxMessageFragments} fragment capture limit`
+    );
+    error.code = 'ERR_WS_TOO_MANY_FRAGMENTS';
+    this._disableCapture(error);
+  }
+
+  _rejectMalformedFragmentation(detail) {
+    const error = new SyntaxError(`Malformed WebSocket fragmentation: ${detail}`);
+    error.code = 'ERR_WS_INVALID_FRAGMENTATION';
+    this._disableCapture(error);
+  }
+
+  _rejectMalformedControlFrame() {
+    const error = new SyntaxError('Malformed WebSocket control frame');
+    error.code = 'ERR_WS_INVALID_CONTROL_FRAME';
+    this._disableCapture(error);
+  }
+
+  _disableCapture(error) {
+    this._chunks = [];
+    this._bufferedLength = 0;
+    this._fragment = null;
+    this._disabled = true;
     throw error;
   }
 }
