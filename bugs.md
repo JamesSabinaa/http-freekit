@@ -634,6 +634,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-188 — Low/Medium — Informational HTTP responses are dropped
 
+- Status: **Fixed**.
+- Resolution: Upstream HTTP/1 `information` events and HTTP/2 informational header blocks are now forwarded immediately with protocol-appropriate HTTP/1 or HTTP/2 writers across plain HTTP, intercepted HTTPS, ALPN fallback, and mock-forward paths. Final responses remain buffered as before, and an upstream 100 is suppressed when Node has already sent the downstream automatic `100 Continue`.
 - Evidence: H1 forwarding listens only for the final response at `src/proxy/proxy-server.js:700-754` and analogous HTTPS paths, with no `information` listener. H2 listens for `response` but not interim `headers` at `:2675-2682`.
 - Impact: 100 Continue metadata and 103 Early Hints do not reach clients, defeating preload behavior and observability.
 - Reproduction: have an origin call `writeEarlyHints()` before its 200; the direct client sees 103 while the proxied client does not.

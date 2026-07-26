@@ -382,6 +382,67 @@ export class ProxyServer {
     stream.end(body);
   }
 
+  _cleanInformationalHeaders(headers) {
+    const clean = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      const lower = name.toLowerCase();
+      if (lower.startsWith(':') || value === undefined ||
+          ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade'].includes(lower)) {
+        continue;
+      }
+      clean[lower] = value;
+    }
+    return clean;
+  }
+
+  _forwardH1Informational(response, info) {
+    const statusCode = Number(info?.statusCode ?? info?.[':status']);
+    if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode >= 200 ||
+        statusCode === 101 || response.destroyed || response.headersSent) {
+      return false;
+    }
+
+    try {
+      if (statusCode === 100) {
+        // Node's HTTP server automatically answers Expect: 100-continue before
+        // dispatching the request. Do not echo the upstream 100 a second time.
+        if (response._sent100) return false;
+        response.writeContinue();
+        return true;
+      }
+      if (statusCode === 102 && typeof response.writeProcessing === 'function') {
+        response.writeProcessing();
+        return true;
+      }
+      if (statusCode === 103 && typeof response.writeEarlyHints === 'function') {
+        response.writeEarlyHints(this._cleanInformationalHeaders(info.headers));
+        return true;
+      }
+    } catch {
+      // The downstream may have closed between the state check and the write.
+    }
+    return false;
+  }
+
+  _forwardH2Informational(stream, info) {
+    const statusCode = Number(info?.statusCode ?? info?.[':status']);
+    if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode >= 200 ||
+        statusCode === 101 || stream.destroyed || stream.closed || stream.headersSent) {
+      return false;
+    }
+
+    try {
+      stream.additionalHeaders({
+        ':status': statusCode,
+        ...this._cleanInformationalHeaders(info.headers)
+      });
+      return true;
+    } catch {
+      // The downstream may have closed between the state check and the write.
+      return false;
+    }
+  }
+
 
   setUpstreamProxy(config) {
     this._destroyUpstreamAgent();
@@ -1380,6 +1441,9 @@ export class ProxyServer {
           });
         });
         proxyReq._upstreamProxyGeneration = proxyGeneration;
+        proxyReq.on('information', info => {
+          if (!downstream.aborted) this._forwardH1Informational(clientRes, info);
+        });
         this._configureUpstreamRequest(proxyReq);
 
         proxyReq.once('error', async (err) => {
@@ -1869,6 +1933,7 @@ export class ProxyServer {
                   });
                 });
               });
+              fwdReq.on('information', info => this._forwardH1Informational(res, info));
               fwdReq.on('error', (err) => {
                 try {
                   res.writeHead(502, { 'Content-Type': 'text/plain' });
@@ -2196,7 +2261,10 @@ export class ProxyServer {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
-                downstream.signal
+                downstream.signal,
+                info => {
+                  if (!downstream.aborted) this._forwardH1Informational(res, info);
+                }
               );
               if (downstream.aborted) return;
               let finalResponse = {
@@ -2328,6 +2396,9 @@ export class ProxyServer {
 
           const attemptReq = proxyReq;
           attemptReq._upstreamProxyGeneration = proxyGeneration;
+          attemptReq.on('information', info => {
+            if (!downstream.aborted) this._forwardH1Informational(res, info);
+          });
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
             if (downstream.aborted) return;
@@ -2614,7 +2685,10 @@ export class ProxyServer {
             if (h2Session) {
               const h2Res = await this._makeH2Request(
                 h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers,
-                downstream.signal
+                downstream.signal,
+                info => {
+                  if (!downstream.aborted) this._forwardH2Informational(stream, info);
+                }
               );
               if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
@@ -2766,6 +2840,9 @@ export class ProxyServer {
 
           const attemptReq = proxyReq;
           attemptReq._upstreamProxyGeneration = proxyGeneration;
+          attemptReq.on('information', info => {
+            if (!downstream.aborted) this._forwardH2Informational(stream, info);
+          });
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
             if (downstream.aborted) return;
@@ -2933,7 +3010,10 @@ export class ProxyServer {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
-                downstream.signal
+                downstream.signal,
+                info => {
+                  if (!downstream.aborted) this._forwardH1Informational(res, info);
+                }
               );
               if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
@@ -3078,6 +3158,9 @@ export class ProxyServer {
 
           const attemptReq = proxyReq;
           attemptReq._upstreamProxyGeneration = proxyGeneration;
+          attemptReq.on('information', info => {
+            if (!downstream.aborted) this._forwardH1Informational(res, info);
+          });
           this._configureUpstreamRequest(attemptReq);
           attemptReq.once('error', async (err) => {
             if (downstream.aborted) return;
@@ -3281,6 +3364,7 @@ export class ProxyServer {
             });
           });
         });
+        fwdReq.on('information', info => this._forwardH2Informational(stream, info));
         fwdReq.on('error', (err) => {
           try {
             if (!stream.destroyed && !stream.closed) {
@@ -3600,7 +3684,10 @@ export class ProxyServer {
 
   // Make an HTTP/2 request via a cached session. Returns a promise that resolves to
   // { statusCode, headers, body: Buffer, trailers } or null if the request can't be made via h2.
-  _makeH2Request(session, method, hostname, port, path, headers, body, trailers = {}, signal = null) {
+  _makeH2Request(
+    session, method, hostname, port, path, headers, body, trailers = {}, signal = null,
+    onInformational = null
+  ) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         reject(this._createDownstreamAbortError());
@@ -3662,6 +3749,27 @@ export class ProxyServer {
           if (!k.startsWith(':')) {
             responseHeaders[k] = v;
           }
+        }
+      });
+
+      stream.on('headers', (hdrs) => {
+        const informationalStatus = Number(hdrs[':status']);
+        if (!Number.isInteger(informationalStatus) || informationalStatus < 100 ||
+            informationalStatus >= 200 || informationalStatus === 101) {
+          return;
+        }
+        const informationalHeaders = {};
+        for (const [k, v] of Object.entries(hdrs)) {
+          if (!k.startsWith(':')) informationalHeaders[k] = v;
+        }
+        try {
+          onInformational?.({
+            statusCode: informationalStatus,
+            statusMessage: '',
+            headers: informationalHeaders
+          });
+        } catch {
+          // Informational forwarding must not disrupt the final response.
         }
       });
 
@@ -4718,6 +4826,7 @@ export class ProxyServer {
             });
           });
         });
+        proxyReq.on('information', info => this._forwardH1Informational(clientRes, info));
         proxyReq.on('error', (err) => {
           clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
           clientRes.end(`Forward Error: ${err.message}`);
