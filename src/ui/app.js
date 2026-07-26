@@ -442,6 +442,19 @@
       return filters.every(f => matchesFilter(req, f));
     }
 
+    function findHeaderValues(headers, targetName) {
+      if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null;
+      const values = [];
+      let present = false;
+      for (const [name, value] of Object.entries(headers)) {
+        if (name.toLowerCase() !== targetName) continue;
+        present = true;
+        const headerValues = Array.isArray(value) ? value : [value];
+        values.push(...headerValues.map(item => String(item ?? '')));
+      }
+      return present ? values : null;
+    }
+
     function matchesFilter(req, filter) {
       const val = filter.value.toLowerCase();
       switch (filter.type) {
@@ -464,12 +477,14 @@
           return (req.responseBody || '').toLowerCase().includes(val) ||
                  (req.requestBody || '').toLowerCase().includes(val);
         case 'header': {
-          const [hName, hVal] = val.split('=');
-          if (hVal !== undefined) {
-            const reqHeader = req.requestHeaders?.[hName] || req.responseHeaders?.[hName] || '';
-            return reqHeader.toLowerCase().includes(hVal);
-          }
-          return !!(req.requestHeaders?.[hName] || req.responseHeaders?.[hName]);
+          const separatorIndex = val.indexOf('=');
+          const hName = separatorIndex === -1 ? val : val.slice(0, separatorIndex);
+          const hVal = separatorIndex === -1 ? null : val.slice(separatorIndex + 1);
+          const requestValues = findHeaderValues(req.requestHeaders, hName);
+          const responseValues = findHeaderValues(req.responseHeaders, hName);
+          if (hVal === null) return requestValues !== null || responseValues !== null;
+          return [...(requestValues || []), ...(responseValues || [])]
+            .some(value => value.toLowerCase().includes(hVal));
         }
         case 'text':
         default:

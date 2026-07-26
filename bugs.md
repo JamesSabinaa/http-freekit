@@ -2076,6 +2076,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-192 — Medium — Header filtering crashes on multi-valued headers
 
+- Status: **Fixed**.
+- Resolution: Header filters now look up names case-insensitively across both request and response collections, distinguish absent headers from empty values, safely search scalar and multi-valued headers, and preserve equals signs in filter values.
+
 - Evidence: `matchesFilter()` calls `.toLowerCase()` directly on header values at `src/ui/app.js:383-387`, although fields such as `set-cookie` can be arrays. It also chooses a same-named request header before the response header.
 - Impact: a valid multi-cookie response can make `header:` filtering throw, and a request header can mask a matching response value.
 - Reproduction: capture multiple Set-Cookie values and filter with `header:set-cookie=value`.
