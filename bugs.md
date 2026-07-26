@@ -2253,6 +2253,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-368 — Medium — Request snippets merge repeated header fields
 
+- Status: **Fixed**.
+- Resolution: Export headers now flatten captured arrays into ordered scalar field pairs. cURL, Node.js, wget, PHP, and Go preserve repeated fields with their native repeat-capable forms, while Requests, browser Fetch, and Invoke-WebRequest return the existing exact-replay-unavailable result instead of merging them; the same policy applies to raw, URL-encoded, and multipart bodies.
+
 - Evidence: `getExportHeaders()` returns each array-valued header as one `[name, array]` pair at `src/ui/app.js:1874-1878`; all eight raw request snippet generators interpolate or stringify that array at `:2058-2139`, producing one comma-delimited scalar instead of repeated fields.
 - Impact: copied cURL, Python, JavaScript, PowerShell, wget, PHP, and Go replays differ from the request shown and sent by FreeKit. Headers that are not safely comma-combinable can change meaning or become invalid.
 - Reproduction: add two `X-Test` rows with values `one` and `two`, open the request snippet exporter, and inspect every format; each contains one `X-Test: one,two` value instead of two fields.

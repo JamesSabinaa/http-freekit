@@ -2035,10 +2035,40 @@
     }
 
     function getExportHeaders(req, omitContentType = false) {
-      return Object.entries(req.requestHeaders || {}).filter(([key]) => {
+      const headers = [];
+      Object.entries(req.requestHeaders || {}).forEach(([key, value]) => {
         const lowerKey = key.toLowerCase();
-        return lowerKey !== 'host' && lowerKey !== 'proxy-connection' && (!omitContentType || lowerKey !== 'content-type');
+        if (lowerKey === 'host' || lowerKey === 'proxy-connection' || (omitContentType && lowerKey === 'content-type')) return;
+        const values = Array.isArray(value) ? value : [value];
+        values.forEach(item => headers.push([key, item]));
       });
+      return headers;
+    }
+
+    function getRepeatedExportHeaderName(headers) {
+      const seen = new Set();
+      for (const [key] of headers) {
+        const lowerKey = key.toLowerCase();
+        if (seen.has(lowerKey)) return key;
+        seen.add(lowerKey);
+      }
+      return '';
+    }
+
+    function getRepeatedHeaderUnavailableReason(format, headers) {
+      const apiName = {
+        python: 'Python Requests',
+        'javascript-fetch': 'the browser Fetch API',
+        powershell: 'Invoke-WebRequest'
+      }[format];
+      if (!apiName || !getRepeatedExportHeaderName(headers)) return '';
+      return `${apiName} cannot guarantee that repeated request header values are sent as separate wire fields.`;
+    }
+
+    function renderNodeExportHeaders(headers, additionalEntries = []) {
+      const entries = headers.map(([key, value]) => `${JSON.stringify(key)}, ${JSON.stringify(String(value))}`);
+      entries.push(...additionalEntries);
+      return `[\n${entries.map(entry => `    ${entry}`).join(',\n')}\n  ]`;
     }
 
     function isValidExportBase64(value) {
@@ -2078,6 +2108,8 @@
       const headers = getExportHeaders(req, true);
       const method = String(req.method || 'POST');
       const url = String(req.url || '');
+      const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
+      if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
 
       if (format === 'curl') {
         let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
@@ -2151,9 +2183,11 @@
           }
         });
         code += `append('--' + boundary + '--\\r\\n');\nconst body = Buffer.concat(chunks);\nconst target = new URL(${JSON.stringify(url)});\n`;
-        code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  port: target.port || undefined,\n  path: target.pathname + target.search,\n  headers: {\n`;
-        headers.forEach(([key, value]) => { code += `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))},\n`; });
-        code += `    'Content-Type': 'multipart/form-data; boundary=' + boundary,\n    'Content-Length': body.length\n  }\n};\n\n`;
+        const nodeHeaders = renderNodeExportHeaders(headers, [
+          `${JSON.stringify('Content-Type')}, 'multipart/form-data; boundary=' + boundary`,
+          `${JSON.stringify('Content-Length')}, String(body.length)`
+        ]);
+        code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  port: target.port || undefined,\n  path: target.pathname + target.search,\n  headers: ${nodeHeaders}\n};\n\n`;
         code += `const request = (target.protocol === 'https:' ? https : http).request(options, response => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\nrequest.write(body);\nrequest.end();`;
         return code;
       }
@@ -2226,7 +2260,7 @@
           }
         });
         code += `\twriter.Close()\n\n\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, &body)\n`;
-        headers.forEach(([key, value]) => { code += `\treq.Header.Set(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`; });
+        headers.forEach(([key, value]) => { code += `\treq.Header.Add(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`; });
         code += '\treq.Header.Set("Content-Type", writer.FormDataContentType())\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tfmt.Println(resp.StatusCode)\n}';
         return code;
       }
@@ -2261,6 +2295,8 @@
       const isBinaryBody = exportBody.kind === 'base64' && body.length > 0;
       const headers = getExportHeaders(req);
       const hasBody = body.length > 0;
+      const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
+      if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
 
       switch (format) {
         case 'curl': {
@@ -2307,7 +2343,7 @@
           code += `const target = new URL(${JSON.stringify(url)});\n`;
           code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  path: target.pathname + target.search,\n  port: target.port || undefined`;
           if (headers.length) {
-            code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
+            code += `,\n  headers: ${renderNodeExportHeaders(headers)}`;
           }
           code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
           if (hasBody) {
@@ -2380,7 +2416,7 @@
             code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, nil)\n`;
           }
           for (const [key, value] of headers) {
-            code += `\treq.Header.Set(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`;
+            code += `\treq.Header.Add(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`;
           }
           code += `\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tdata, _ := io.ReadAll(resp.Body)\n\tfmt.Println(resp.StatusCode, string(data))\n}`;
           return code;
