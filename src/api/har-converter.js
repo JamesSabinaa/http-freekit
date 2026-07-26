@@ -15,6 +15,16 @@ export function trafficToHar(requests, options = {}) {
     return values.map(item => ({ name, value: maskHeaderValue(name, item) }));
   });
 
+  const toHarCookies = cookies => {
+    if (!Array.isArray(cookies)) return [];
+    if (!maskSensitive) return cookies;
+
+    return cookies.map(cookie => {
+      if (cookie === null || typeof cookie !== 'object' || Array.isArray(cookie)) return cookie;
+      return { ...cookie, value: '[REDACTED]' };
+    });
+  };
+
   const firstHeaderValue = value => Array.isArray(value) ? (value[0] || '') : (value || '');
   const getHeaderValue = (headers, name) => {
     const normalizedName = name.toLowerCase();
@@ -65,7 +75,7 @@ export function trafficToHar(requests, options = {}) {
             method: req.method || 'GET',
             url: req.url || '',
             httpVersion: requestHttpVersion,
-            cookies: Array.isArray(req.requestCookies) ? req.requestCookies : [],
+            cookies: toHarCookies(req.requestCookies),
             headers: reqHeaders,
             queryString: parseQueryString(req.url),
             postData: hasPostData ? {
@@ -82,7 +92,7 @@ export function trafficToHar(requests, options = {}) {
             status: req.statusCode || 0,
             statusText: req.statusMessage || '',
             httpVersion: responseHttpVersion,
-            cookies: Array.isArray(req.responseCookies) ? req.responseCookies : [],
+            cookies: toHarCookies(req.responseCookies),
             headers: resHeaders,
             content: {
               size: responseTruncation?._capturedSize ?? responseDecodedBodySize,

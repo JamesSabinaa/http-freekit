@@ -899,9 +899,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-282 — Medium — Sensitive HAR masking leaks structured cookies
 
+- Status: **Fixed**.
 - Evidence: `src/api/har-converter.js:1-16` masks Cookie/Set-Cookie header values, but structured requestCookies/responseCookies are copied verbatim at `:47,63`. MCP export enables masking by default and HAR import preserves these arrays.
 - Impact: default masked MCP HAR exports expose secret structured cookie values in cleartext.
 - Reproduction: import a cookie array containing a secret and call MCP `export_traffic` with default masking.
+- Resolution: Masked HAR conversion now clones every structured request and response cookie with a redacted value while preserving its name and metadata. Unmasked API/UI exports retain the original cookie data, malformed cookie fields remain safe to convert, and neither mode mutates captured traffic.
 
 ### BUG-289 — Medium — Malformed management WebSocket frames crash the server
 
