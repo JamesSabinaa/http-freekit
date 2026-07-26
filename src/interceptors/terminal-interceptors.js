@@ -50,6 +50,15 @@ function cmdSet(variable, value) {
   return `set "${variable}=${String(value)}"`;
 }
 
+function getTerminalCaPath(ca) {
+  if (!ca) return '';
+  if (typeof ca.getTerminalCaBundlePath === 'function') {
+    return ca.getTerminalCaBundlePath();
+  }
+  const certInfo = ca.getCertInfo();
+  return certInfo.terminalCaBundlePath || certInfo.certificatePath || '';
+}
+
 function buildTerminalEnvironment(proxyUrl, certPath) {
   return {
     HTTP_PROXY: proxyUrl,
@@ -61,19 +70,19 @@ function buildTerminalEnvironment(proxyUrl, certPath) {
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
-    CURL_CA_BUNDLE: certPath,
-    NODE_TLS_REJECT_UNAUTHORIZED: '0'
+    CURL_CA_BUNDLE: certPath
   };
 }
 
 export function buildExistingTerminalInstructions(proxyUrl, certPath) {
   const environment = Object.entries(buildTerminalEnvironment(proxyUrl, certPath));
   return {
-    bash: `export ${environment.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
-    powershell: environment
-      .map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
-      .join('; '),
-    cmd: environment.map(([name, value]) => cmdSet(name, value)).join('&& ')
+    bash: `unset NODE_TLS_REJECT_UNAUTHORIZED; export ${environment.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
+    powershell: [
+      'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue',
+      ...environment.map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
+    ].join('; '),
+    cmd: [cmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''), ...environment.map(([name, value]) => cmdSet(name, value))].join('&& ')
   };
 }
 
@@ -279,13 +288,14 @@ export class FreshTerminalInterceptor {
   }
 
   async activate(proxyPort) {
-    const certPath = this.ca ? this.ca.getCertInfo().certificatePath : '';
+    const certPath = getTerminalCaPath(this.ca);
     const proxyUrl = `http://127.0.0.1:${proxyPort}`;
 
     const env = {
       ...this._environment(),
       ...buildTerminalEnvironment(proxyUrl, certPath)
     };
+    delete env.NODE_TLS_REJECT_UNAUTHORIZED;
 
     let proc;
     const platform = this._platform();
@@ -428,7 +438,7 @@ export class ExistingTerminalInterceptor {
   async activate(proxyPort) {
     this.proxyPort = proxyPort;
     this.active = false;
-    const certPath = this.ca ? this.ca.getCertInfo().certificatePath : '';
+    const certPath = getTerminalCaPath(this.ca);
     const proxyUrl = `http://127.0.0.1:${proxyPort}`;
 
     console.log(`[Interceptor] Existing terminal interceptor activated — users should set proxy env vars`);

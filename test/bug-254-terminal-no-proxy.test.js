@@ -20,8 +20,7 @@ const expectedEnvironment = {
   SSL_CERT_FILE: certPath,
   NODE_EXTRA_CA_CERTS: certPath,
   REQUESTS_CA_BUNDLE: certPath,
-  CURL_CA_BUNDLE: certPath,
-  NODE_TLS_REJECT_UNAUTHORIZED: '0'
+  CURL_CA_BUNDLE: certPath
 };
 
 function fakeLauncher(pid) {
@@ -46,11 +45,12 @@ function powerShellQuote(value) {
 function expectedInstructions(environment) {
   const entries = Object.entries(environment);
   return {
-    bash: `export ${entries.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
-    powershell: entries
-      .map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
-      .join('; '),
-    cmd: entries.map(([name, value]) => `set "${name}=${value}"`).join('&& ')
+    bash: `unset NODE_TLS_REJECT_UNAUTHORIZED; export ${entries.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
+    powershell: [
+      'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue',
+      ...entries.map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
+    ].join('; '),
+    cmd: [`set "NODE_TLS_REJECT_UNAUTHORIZED="`, ...entries.map(([name, value]) => `set "${name}=${value}"`)].join('&& ')
   };
 }
 

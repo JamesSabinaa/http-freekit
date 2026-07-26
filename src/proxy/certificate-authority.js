@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import net from 'net';
+import { refreshTerminalCaBundle, terminalCaBundlePath } from './terminal-ca-bundle.js';
 
 const { pki, md, asn1 } = forge;
 
@@ -11,6 +12,7 @@ export class CertificateAuthority {
     this.dataDir = dataDir;
     this.caKeyPath = path.join(dataDir, 'ca.key');
     this.caCertPath = path.join(dataDir, 'ca.pem');
+    this.terminalCaBundlePath = terminalCaBundlePath(this.caCertPath);
     this.caKey = null;
     this.caCert = null;
     this.certCache = new Map();
@@ -207,7 +209,14 @@ export class CertificateAuthority {
       certificateContent: pki.certificateToPem(this.caCert),
       certificateFingerprint: this._getFingerprint(),
       certificateSpkiFingerprint: this.getSpkiFingerprint(),
-      certificateExpiry: this.caCert.validity.notAfter.getTime()
+      certificateExpiry: this.caCert.validity.notAfter.getTime(),
+      terminalCaBundlePath: this.terminalCaBundlePath
     };
+  }
+
+  getTerminalCaBundlePath() {
+    // This stable file is shared by independently managed terminals. It is
+    // refreshed atomically and intentionally persists beyond deactivation.
+    return refreshTerminalCaBundle(this.caCertPath);
   }
 }

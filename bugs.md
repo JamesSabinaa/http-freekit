@@ -1521,6 +1521,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-270 — Medium — Fresh Terminal replaces public CA trust
 
+- Status: **Fixed**.
+- Resolution: Terminal certificate variables now share an atomically refreshed PEM bundle, written with restrictive permissions, containing Node's bundled public roots followed by the current FreeKit CA. The stable bundle survives terminal deactivation, and terminal setup restores normal Node certificate verification instead of disabling it.
 - Evidence: `src/interceptors/terminal-interceptors.js:50-53` points SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE directly at FreeKit's one-certificate CA file; those variables override rather than extend the clients' normal trust bundles.
 - Impact: curl/Python can validate intercepted certificates but reject genuine public certificates for TLS-passthrough hosts.
 - Reproduction: configure a public host for TLS passthrough, activate Fresh Terminal on Linux, and access it with curl or Requests.

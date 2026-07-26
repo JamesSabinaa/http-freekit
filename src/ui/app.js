@@ -4227,6 +4227,7 @@
     function buildTerminalFallbackInstructions(proxyUrl, certPath) {
       return {
         bash: [
+          'unset NODE_TLS_REJECT_UNAUTHORIZED;',
           `export HTTP_PROXY=${quoteTerminalBashValue(proxyUrl)}`,
           `HTTPS_PROXY=${quoteTerminalBashValue(proxyUrl)}`,
           `http_proxy=${quoteTerminalBashValue(proxyUrl)}`,
@@ -4236,10 +4237,10 @@
           `SSL_CERT_FILE=${quoteTerminalBashValue(certPath)}`,
           `NODE_EXTRA_CA_CERTS=${quoteTerminalBashValue(certPath)}`,
           `REQUESTS_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`,
-          `CURL_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`,
-          `NODE_TLS_REJECT_UNAUTHORIZED=${quoteTerminalBashValue('0')}`
+          `CURL_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`
         ].join(' '),
         powershell: [
+          'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue',
           `$env:HTTP_PROXY=${quoteTerminalPowerShellValue(proxyUrl)}`,
           `$env:HTTPS_PROXY=${quoteTerminalPowerShellValue(proxyUrl)}`,
           `$env:http_proxy=${quoteTerminalPowerShellValue(proxyUrl)}`,
@@ -4249,10 +4250,10 @@
           `$env:SSL_CERT_FILE=${quoteTerminalPowerShellValue(certPath)}`,
           `$env:NODE_EXTRA_CA_CERTS=${quoteTerminalPowerShellValue(certPath)}`,
           `$env:REQUESTS_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`,
-          `$env:CURL_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`,
-          `$env:NODE_TLS_REJECT_UNAUTHORIZED='0'`
+          `$env:CURL_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`
         ].join('; '),
         cmd: [
+          terminalCmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''),
           terminalCmdSet('HTTP_PROXY', proxyUrl),
           terminalCmdSet('HTTPS_PROXY', proxyUrl),
           terminalCmdSet('http_proxy', proxyUrl),
@@ -4262,8 +4263,7 @@
           terminalCmdSet('SSL_CERT_FILE', certPath),
           terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
           terminalCmdSet('REQUESTS_CA_BUNDLE', certPath),
-          terminalCmdSet('CURL_CA_BUNDLE', certPath),
-          terminalCmdSet('NODE_TLS_REJECT_UNAUTHORIZED', '0')
+          terminalCmdSet('CURL_CA_BUNDLE', certPath)
         ].join('&& ')
       };
     }
