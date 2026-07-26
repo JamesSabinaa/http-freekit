@@ -731,6 +731,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-227 — High/Medium — Mock forward actions bypass the configured upstream proxy
 
+- Status: **Fixed**.
+- Resolution: All mock-forward paths now share the established outbound routing policy: destination-aware noProxy selection, authenticated HTTP/HTTPS proxying, SOCKS connections, destination/proxy TLS options, proxy-header sanitization, request timeouts and downstream cancellation, and safe-method-only retry. Plain H1, intercepted HTTPS H1, native H2, and the H1-on-H2 delegate retain their protocol-specific response and capture handling.
+
 - Evidence: HTTPS H1, native H2, and plain H1 forward actions directly call `fwdLib.request()` for the destination at `src/proxy/proxy-server.js:1153-1215,2253-2323,3430-3499`, without `_getUpstreamAgent()`, SOCKS handling, or any `this.upstreamProxy` branch.
 - Impact: a forward rule leaks the host's direct network identity or fails in networks where destinations are reachable only through the configured upstream.
 - Reproduction: configure a counting upstream proxy, create a forward rule, and trigger it through H1/HTTPS/H2; the destination is contacted directly.

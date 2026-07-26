@@ -221,6 +221,155 @@ export class ProxyServer {
     response.once('error', (err) => request.destroy(err));
   }
 
+  _requestMockForward({
+    forwardUrl, path, method, headers, body, trailers = {}, signal = null, onInformational = null
+  }) {
+    const isHttps = forwardUrl.protocol === 'https:';
+    const targetHostname = this._normalizeConnectionHostname(forwardUrl.hostname);
+    const targetPort = parseInt(forwardUrl.port, 10) || (isHttps ? 443 : 80);
+    const targetPath = path || '/';
+    const requestUrl = forwardUrl.origin + (targetPath.startsWith('/') ? targetPath : `/${targetPath}`);
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (callback) => {
+        if (settled) return;
+        settled = true;
+        callback();
+      };
+      const abortError = () => signal?.reason instanceof Error
+        ? signal.reason
+        : this._createDownstreamAbortError();
+
+      const sendRequest = (attempt = 0) => {
+        if (settled) return;
+        if (signal?.aborted) {
+          settle(() => reject(abortError()));
+          return;
+        }
+
+        const proxyGeneration = this._upstreamProxyGeneration;
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+        const requestHeaders = this._stripUpstreamHeaders(headers);
+        this._setTargetHostHeader(requestHeaders, forwardUrl.host);
+        const options = {
+          hostname: targetHostname,
+          port: targetPort,
+          path: targetPath,
+          method,
+          headers: requestHeaders,
+          insecureHTTPParser: true,
+          ...(signal ? { signal } : {})
+        };
+        let requestLib = isHttps ? https : http;
+
+        if (isHttps) {
+          Object.assign(options, this._getUpstreamTlsOptions(targetHostname));
+          if (useUpstreamProxy) options.agent = this._getUpstreamAgent();
+        } else if (useUpstreamProxy && this._isSocksProxy()) {
+          options.createConnection = (_connectOptions, oncreate) => {
+            this._connectViaSocks(targetHostname, targetPort)
+              .then(socket => oncreate(null, socket))
+              .catch(error => oncreate(error));
+          };
+        } else if (useUpstreamProxy) {
+          options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
+          options.port = this.upstreamProxy.port;
+          options.path = requestUrl;
+          if (this.upstreamProxy.auth) {
+            options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+          }
+          requestLib = this.upstreamProxy.type === 'https' ? https : http;
+          if (requestLib === https) {
+            Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+          }
+        }
+
+        let request;
+        try {
+          request = requestLib.request(options, (response) => {
+            if (signal?.aborted) {
+              response.destroy();
+              return;
+            }
+            this._forwardUpstreamResponseErrors(response, request);
+            const responseBody = this._createBodyCollector();
+            response.on('data', chunk => {
+              if (!this._appendBodyChunk(responseBody, chunk)) {
+                request.destroy(this._bodyLimitError('Mock forward response body'));
+              }
+            });
+            response.on('end', async () => {
+              if (settled) return;
+              if (signal?.aborted) {
+                settle(() => reject(abortError()));
+                return;
+              }
+              const responseBuffer = this._concatBody(responseBody);
+              const shouldRetry = await this._shouldRetryAfterUpstreamResponse(response, {
+                attempt, proxyGeneration, method, url: requestUrl, host: targetHostname
+              });
+              if (settled) return;
+              if (signal?.aborted) {
+                settle(() => reject(abortError()));
+                return;
+              }
+              if (shouldRetry) {
+                sendRequest(attempt + 1);
+                return;
+              }
+
+              const responseHeaders = { ...response.headers };
+              if (response.statusCode !== 407) delete responseHeaders['proxy-authenticate'];
+              delete responseHeaders['proxy-authorization'];
+              delete responseHeaders['proxy-connection'];
+              settle(() => resolve({
+                statusCode: response.statusCode,
+                statusMessage: response.statusMessage,
+                headers: responseHeaders,
+                body: responseBuffer,
+                trailers: response.trailers,
+                remote: { address: request.socket?.remoteAddress, port: request.socket?.remotePort }
+              }));
+            });
+          });
+        } catch (error) {
+          settle(() => reject(error));
+          return;
+        }
+
+        request._upstreamProxyGeneration = proxyGeneration;
+        request.on('information', info => onInformational?.(info));
+        this._configureUpstreamRequest(request);
+        request.once('error', async (error) => {
+          if (settled) return;
+          if (signal?.aborted) {
+            settle(() => reject(abortError()));
+            return;
+          }
+          const shouldRetry = await this._shouldRetryAfterUpstreamError(error, {
+            attempt, proxyGeneration, method, url: requestUrl, host: targetHostname
+          });
+          if (settled) return;
+          if (signal?.aborted) {
+            settle(() => reject(abortError()));
+            return;
+          }
+          if (shouldRetry) {
+            sendRequest(attempt + 1);
+            return;
+          }
+          error.upstreamProxyGeneration = proxyGeneration;
+          error.upstreamProxyConnect = request._upstreamProxyConnect || null;
+          settle(() => reject(error));
+        });
+        this._endH1Request(request, body, trailers);
+      };
+
+      sendRequest();
+    });
+  }
+
   _createDownstreamAbortError() {
     const error = new Error('Downstream client disconnected');
     error.code = 'ERR_DOWNSTREAM_ABORTED';
@@ -1300,7 +1449,9 @@ export class ProxyServer {
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
       const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
       if (mockRule && !mockBreakpointPhase) {
-        this._serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime);
+        await this._serveMockResponse(
+          requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, { downstream }
+        );
         return;
       }
 
@@ -2031,84 +2182,78 @@ export class ProxyServer {
 
           // Forward action
           if (action.type === 'forward' && action.forwardTo) {
+            let forwardUrl;
+            let reqHeaders;
             try {
-              const forwardUrl = new URL(action.forwardTo);
+              forwardUrl = new URL(action.forwardTo);
               this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
-              const isForwardHttps = forwardUrl.protocol === 'https:';
-              const fwdLib = isForwardHttps ? https : http;
-              const reqHeaders = this._currentHeadersWithRawCase(req.rawHeaders, req.headers);
+              reqHeaders = this._currentHeadersWithRawCase(req.rawHeaders, req.headers);
               if (action.addRequestHeaders) {
                 for (const [k, v] of Object.entries(action.addRequestHeaders)) {
                   reqHeaders[k] = v;
                 }
               }
-              // Update Host to match forward target
-              const hostKey = Object.keys(reqHeaders).find(k => k.toLowerCase() === 'host') || 'Host';
-              reqHeaders[hostKey] = forwardUrl.host;
-
-              const fwdReq = fwdLib.request({
-                hostname: forwardUrl.hostname,
-                port: forwardUrl.port || (isForwardHttps ? 443 : 80),
-                path: req.url,
-                method: req.method,
-                headers: reqHeaders,
-                ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
-              }, (fwdRes) => {
-                const responseBody = this._createBodyCollector();
-                fwdRes.on('data', chunk => {
-                  if (!this._appendBodyChunk(responseBody, chunk)) {
-                    fwdReq.destroy(this._bodyLimitError('Mock forward response body'));
-                  }
-                });
-                fwdRes.on('end', () => {
-                  const resBody = this._concatBody(responseBody);
-                  const resHeaders = { ...fwdRes.headers };
-                  if (action.addResponseHeaders) {
-                    for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-                      resHeaders[k.toLowerCase()] = v;
-                    }
-                  }
-                  try {
-                    this._sendH1Response(res, fwdRes.statusCode, resHeaders, resBody, fwdRes.trailers);
-                  } catch (e) { /* client gone */ }
-                  this._emitRequest({
-                    id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-                    host: hostname, path: req.url, requestHeaders: req.headers,
-                    requestBody: this._safeBodyString(body), requestBodySize: body.length,
-                    statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
-                    responseHeaders: resHeaders,
-                    responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
-                    responseBodySize: resBody.length, duration: Date.now() - startTime,
-                    timestamp: startTime, source: 'mock',
-                    tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
-                    originalRequest, transformedBy
-                  });
-                });
-              });
-              fwdReq.on('information', info => this._forwardH1Informational(res, info));
-              fwdReq.on('error', (err) => {
-                try {
-                  res.writeHead(502, { 'Content-Type': 'text/plain' });
-                  res.end(`Forward Error: ${err.message}`);
-                } catch (e) { /* client gone */ }
-                this._emitRequest({
-                  id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-                  host: hostname, path: req.url, requestHeaders: req.headers,
-                  requestBody: this._safeBodyString(body), requestBodySize: body.length,
-                  statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-                  responseBody: `Forward Error: ${err.message}`, responseBodySize: 0,
-                  duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-                  error: err.message,
-                  tls: tlsDetails, remote: null,
-                  originalRequest, transformedBy
-                });
-              });
-              this._endH1Request(fwdReq, body, req.trailers);
             } catch (err) {
+              downstream.complete();
               try {
                 res.writeHead(500, { 'Content-Type': 'text/plain' });
                 res.end(`Forward setup error: ${err.message}`);
               } catch (e) { /* client gone */ }
+              return;
+            }
+
+            try {
+              const fwdRes = await this._requestMockForward({
+                forwardUrl,
+                path: req.url,
+                method: req.method,
+                headers: reqHeaders,
+                body,
+                trailers: req.trailers,
+                signal: downstream.signal,
+                onInformational: info => this._forwardH1Informational(res, info)
+              });
+              if (downstream.aborted) return;
+              const resHeaders = { ...fwdRes.headers };
+              if (action.addResponseHeaders) {
+                for (const [k, v] of Object.entries(action.addResponseHeaders)) {
+                  resHeaders[k.toLowerCase()] = v;
+                }
+              }
+              downstream.complete();
+              try {
+                this._sendH1Response(res, fwdRes.statusCode, resHeaders, fwdRes.body, fwdRes.trailers);
+              } catch (e) { /* client gone */ }
+              this._emitRequest({
+                id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+                host: hostname, path: req.url, requestHeaders: req.headers,
+                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
+                responseHeaders: resHeaders,
+                responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
+                responseBodySize: fwdRes.body.length, duration: Date.now() - startTime,
+                timestamp: startTime, source: 'mock',
+                tls: tlsDetails, remote: fwdRes.remote,
+                originalRequest, transformedBy
+              });
+            } catch (err) {
+              if (downstream.aborted) return;
+              downstream.complete();
+              try {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end(`Forward Error: ${err.message}`);
+              } catch (e) { /* client gone */ }
+              this._emitRequest({
+                id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+                host: hostname, path: req.url, requestHeaders: req.headers,
+                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
+                responseBody: `Forward Error: ${err.message}`, responseBodySize: 0,
+                duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
+                error: err.message,
+                tls: tlsDetails, remote: null,
+                originalRequest, transformedBy
+              });
             }
             return;
           }
@@ -2761,7 +2906,7 @@ export class ProxyServer {
         if (mockRule && !mockBreakpointPhase) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
-            requestTrailers, startTime, tlsDetails
+            requestTrailers, startTime, tlsDetails, downstream
           });
           return;
         }
@@ -3115,7 +3260,8 @@ export class ProxyServer {
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         if (mockRule && !mockBreakpointPhase) {
           await this._serveMockResponseH1OnH2(
-            requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails
+            requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
+            downstream
           );
           return;
         }
@@ -3454,7 +3600,7 @@ export class ProxyServer {
 
   // Handle mock responses for HTTP/2 streams
   async _handleH2MockResponse(stream, mockRule, ctx) {
-    const { requestId, requestTrailers, startTime, tlsDetails } = ctx;
+    const { requestId, requestTrailers, startTime, tlsDetails, downstream } = ctx;
     let { method, fullUrl, authority, path, reqHeaders, body } = ctx;
 
     const action = mockRule.action || {
@@ -3533,87 +3679,83 @@ export class ProxyServer {
 
     // Forward action
     if (action.type === 'forward' && action.forwardTo) {
+      let forwardUrl;
+      let fwdHeaders;
       try {
-        const forwardUrl = new URL(action.forwardTo);
+        forwardUrl = new URL(action.forwardTo);
         this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
-        const isForwardHttps = forwardUrl.protocol === 'https:';
-        const fwdLib = isForwardHttps ? https : http;
-        const fwdHeaders = { ...reqHeaders };
+        fwdHeaders = { ...reqHeaders };
         if (action.addRequestHeaders) {
           for (const [k, v] of Object.entries(action.addRequestHeaders)) {
             fwdHeaders[k.toLowerCase()] = v;
           }
         }
-        fwdHeaders.host = forwardUrl.host;
-
-        const fwdReq = fwdLib.request({
-          hostname: forwardUrl.hostname,
-          port: forwardUrl.port || (isForwardHttps ? 443 : 80),
-          path,
-          method,
-          headers: fwdHeaders,
-          ...(isForwardHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
-        }, (fwdRes) => {
-          const responseBody = this._createBodyCollector();
-          fwdRes.on('data', chunk => {
-            if (!this._appendBodyChunk(responseBody, chunk)) {
-              fwdReq.destroy(this._bodyLimitError('Mock forward response body'));
-            }
-          });
-          fwdRes.on('end', () => {
-            const resBody = this._concatBody(responseBody);
-            const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, fwdRes.headers);
-            if (action.addResponseHeaders) {
-              for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-                resHeaders[k.toLowerCase()] = v;
-              }
-            }
-            try {
-              if (!stream.destroyed && !stream.closed) {
-                this._sendH2Response(stream, resHeaders, resBody, fwdRes.trailers);
-              }
-            } catch (e) { /* stream closed */ }
-            this._emitRequest({
-              id: requestId, protocol: 'h2', method, url: fullUrl,
-              host: authority, path, requestHeaders: reqHeaders,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
-              statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
-              responseHeaders: fwdRes.headers,
-              responseBody: this._safeBodyString(resBody, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
-              responseBodySize: resBody.length, duration: Date.now() - startTime,
-              timestamp: startTime, source: 'mock',
-              tls: tlsDetails, remote: { address: fwdReq.socket?.remoteAddress, port: fwdReq.socket?.remotePort },
-              originalRequest, transformedBy
-            });
-          });
-        });
-        fwdReq.on('information', info => this._forwardH2Informational(stream, info));
-        fwdReq.on('error', (err) => {
-          try {
-            if (!stream.destroyed && !stream.closed) {
-              stream.respond({ ':status': 502 });
-              stream.end('Forward Error: ' + err.message);
-            }
-          } catch (e) { /* stream closed */ }
-          this._emitRequest({
-            id: requestId, protocol: 'h2', method, url: fullUrl,
-            host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: 'Forward Error: ' + err.message, responseBodySize: 0,
-            duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-            error: err.message, tls: tlsDetails, remote: null,
-            originalRequest, transformedBy
-          });
-        });
-        this._endH1Request(fwdReq, body, requestTrailers);
       } catch (err) {
+        downstream?.complete();
         try {
           if (!stream.destroyed && !stream.closed) {
             stream.respond({ ':status': 500 });
             stream.end('Forward setup error: ' + err.message);
           }
         } catch (e) { /* stream closed */ }
+        return;
+      }
+
+      try {
+        const fwdRes = await this._requestMockForward({
+          forwardUrl,
+          path,
+          method,
+          headers: fwdHeaders,
+          body,
+          trailers: requestTrailers,
+          signal: downstream?.signal,
+          onInformational: info => this._forwardH2Informational(stream, info)
+        });
+        if (downstream?.aborted) return;
+        const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, fwdRes.headers);
+        if (action.addResponseHeaders) {
+          for (const [k, v] of Object.entries(action.addResponseHeaders)) {
+            resHeaders[k.toLowerCase()] = v;
+          }
+        }
+        downstream?.complete();
+        try {
+          if (!stream.destroyed && !stream.closed) {
+            this._sendH2Response(stream, resHeaders, fwdRes.body, fwdRes.trailers);
+          }
+        } catch (e) { /* stream closed */ }
+        this._emitRequest({
+          id: requestId, protocol: 'h2', method, url: fullUrl,
+          host: authority, path, requestHeaders: reqHeaders,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
+          responseHeaders: fwdRes.headers,
+          responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
+          responseBodySize: fwdRes.body.length, duration: Date.now() - startTime,
+          timestamp: startTime, source: 'mock',
+          tls: tlsDetails, remote: fwdRes.remote,
+          originalRequest, transformedBy
+        });
+      } catch (err) {
+        if (downstream?.aborted) return;
+        downstream?.complete();
+        try {
+          if (!stream.destroyed && !stream.closed) {
+            stream.respond({ ':status': 502 });
+            stream.end('Forward Error: ' + err.message);
+          }
+        } catch (e) { /* stream closed */ }
+        this._emitRequest({
+          id: requestId, protocol: 'h2', method, url: fullUrl,
+          host: authority, path, requestHeaders: reqHeaders,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
+          responseBody: 'Forward Error: ' + err.message, responseBodySize: 0,
+          duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
+          error: err.message, tls: tlsDetails, remote: null,
+          originalRequest, transformedBy
+        });
       }
       return;
     }
@@ -3783,13 +3925,17 @@ export class ProxyServer {
   }
 
   // Helper for HTTP/1.1 mock responses on the h2 fallback server
-  async _serveMockResponseH1OnH2(requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails) {
+  async _serveMockResponseH1OnH2(
+    requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
+    downstream
+  ) {
     // allowHTTP1 provides normal IncomingMessage/ServerResponse objects, so the
     // complete H1 mock engine can preserve every action and pre-step.
     const targetUrl = new URL(fullUrl);
     await this._serveMockResponse(requestId, req, res, targetUrl, body, mockRule, startTime, {
       protocol: 'https',
-      tls: tlsDetails
+      tls: tlsDetails,
+      ...(downstream ? { downstream } : {})
     });
   }
 
@@ -4898,6 +5044,7 @@ export class ProxyServer {
   async _serveMockResponse(requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, capture = {}) {
     const captureProtocol = capture.protocol || 'http';
     const captureTls = capture.tls || null;
+    const downstream = capture.downstream || null;
     // Determine action — support both new format (action) and legacy format (response)
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -4997,80 +5144,75 @@ export class ProxyServer {
 
     // Forward action — proxy to a different host
     if (action.type === 'forward' && action.forwardTo) {
+      let forwardUrl;
+      let reqHeaders;
       try {
-        const forwardUrl = new URL(action.forwardTo);
+        forwardUrl = new URL(action.forwardTo);
         this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
-        const isHttps = forwardUrl.protocol === 'https:';
-        const lib = isHttps ? https : http;
-        const reqHeaders = this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers);
+        reqHeaders = this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers);
         if (action.addRequestHeaders) {
           for (const [k, v] of Object.entries(action.addRequestHeaders)) {
             reqHeaders[k] = v;
           }
         }
-        const hostKey = Object.keys(reqHeaders).find(k => k.toLowerCase() === 'host') || 'Host';
-        reqHeaders[hostKey] = forwardUrl.host;
+      } catch (err) {
+        downstream?.complete();
+        clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
+        clientRes.end(`Forward setup error: ${err.message}`);
+        return;
+      }
 
-        const proxyReq = lib.request({
-          hostname: forwardUrl.hostname,
-          port: forwardUrl.port || (isHttps ? 443 : 80),
+      try {
+        const proxyRes = await this._requestMockForward({
+          forwardUrl,
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,
           headers: reqHeaders,
-          ...(isHttps ? this._getUpstreamTlsOptions(forwardUrl.hostname) : {})
-        }, (proxyRes) => {
-          const responseBody = this._createBodyCollector();
-          proxyRes.on('data', chunk => {
-            if (!this._appendBodyChunk(responseBody, chunk)) {
-              proxyReq.destroy(this._bodyLimitError('Mock forward response body'));
-            }
-          });
-          proxyRes.on('end', () => {
-            const resBody = this._concatBody(responseBody);
-            const resHeaders = { ...proxyRes.headers };
-            const trailers = proxyRes.trailers;
-            // Apply response header modifications
-            if (action.addResponseHeaders) {
-              for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-                resHeaders[k.toLowerCase()] = v;
-              }
-            }
-            this._sendH1Response(clientRes, proxyRes.statusCode, resHeaders, resBody, trailers);
-            this._emitRequest({
-              id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
-              host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-              requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-              requestBodySize: body.length, statusCode: proxyRes.statusCode,
-              statusMessage: proxyRes.statusMessage, responseHeaders: resHeaders,
-              responseBody: this._safeBodyString(resBody, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
-              responseBodySize: resBody.length, duration: Date.now() - startTime,
-              timestamp: startTime, source: 'mock',
-              tls: captureTls, remote: { address: proxyReq.socket?.remoteAddress, port: proxyReq.socket?.remotePort },
-              trailers: Object.keys(trailers || {}).length > 0 ? trailers : null,
-              originalRequest, transformedBy
-            });
-          });
+          body,
+          trailers: clientReq.trailers,
+          signal: downstream?.signal,
+          onInformational: info => this._forwardH1Informational(clientRes, info)
         });
-        proxyReq.on('information', info => this._forwardH1Informational(clientRes, info));
-        proxyReq.on('error', (err) => {
-          clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
-          clientRes.end(`Forward Error: ${err.message}`);
-          this._emitRequest({
-            id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
-            host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-            requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-            requestBodySize: body.length, statusCode: 502, statusMessage: 'Bad Gateway',
-            responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
-            responseBodySize: 0, duration: Date.now() - startTime,
-            timestamp: startTime, source: 'mock', error: err.message,
-            tls: captureTls, remote: null,
-            originalRequest, transformedBy
-          });
+        if (downstream?.aborted) return;
+        const resHeaders = { ...proxyRes.headers };
+        const trailers = proxyRes.trailers;
+        // Apply response header modifications
+        if (action.addResponseHeaders) {
+          for (const [k, v] of Object.entries(action.addResponseHeaders)) {
+            resHeaders[k.toLowerCase()] = v;
+          }
+        }
+        downstream?.complete();
+        this._sendH1Response(clientRes, proxyRes.statusCode, resHeaders, proxyRes.body, trailers);
+        this._emitRequest({
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
+          host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestBodySize: body.length, statusCode: proxyRes.statusCode,
+          statusMessage: proxyRes.statusMessage, responseHeaders: resHeaders,
+          responseBody: this._safeBodyString(proxyRes.body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+          responseBodySize: proxyRes.body.length, duration: Date.now() - startTime,
+          timestamp: startTime, source: 'mock',
+          tls: captureTls, remote: proxyRes.remote,
+          trailers: Object.keys(trailers || {}).length > 0 ? trailers : null,
+          originalRequest, transformedBy
         });
-        this._endH1Request(proxyReq, body, clientReq.trailers);
       } catch (err) {
-        clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
-        clientRes.end(`Forward setup error: ${err.message}`);
+        if (downstream?.aborted) return;
+        downstream?.complete();
+        clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
+        clientRes.end(`Forward Error: ${err.message}`);
+        this._emitRequest({
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
+          host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestBodySize: body.length, statusCode: 502, statusMessage: 'Bad Gateway',
+          responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
+          responseBodySize: 0, duration: Date.now() - startTime,
+          timestamp: startTime, source: 'mock', error: err.message,
+          tls: captureTls, remote: null,
+          originalRequest, transformedBy
+        });
       }
       return;
     }
