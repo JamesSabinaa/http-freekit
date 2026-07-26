@@ -931,12 +931,12 @@
       }
     }
 
-    function togglePinRequest() {
-      if (!selectedRequestId) return;
-      const req = requests.find(r => r.id === selectedRequestId);
+    function togglePinRequest(requestId = selectedRequestId) {
+      if (!requestId) return;
+      const req = requests.find(r => r.id === requestId);
       if (req) {
         req.pinned = !req.pinned;
-        updatePinIcon(req.pinned);
+        if (selectedRequestId === requestId) updatePinIcon(req.pinned);
         renderTraffic();
         toast(req.pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
       }
@@ -947,15 +947,15 @@
       if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
     }
 
-    function deleteSelectedRequest() {
-      if (!selectedRequestId) return;
-      const idx = requests.findIndex(r => r.id === selectedRequestId);
+    function deleteSelectedRequest(requestId = selectedRequestId) {
+      if (!requestId) return;
+      const idx = requests.findIndex(r => r.id === requestId);
       if (idx !== -1) {
         const req = requests[idx];
         if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
         if (!confirm('Are you sure you want to delete this request?')) return;
         requests.splice(idx, 1);
-        closeDetail();
+        if (selectedRequestId === requestId) closeDetail();
         applyFilter();
         toast('Exchange deleted', 'success');
       }
@@ -9438,10 +9438,10 @@
         { separator: true },
         { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId) },
         { label: 'Create mock rule', action: () => createMockFromRequest(requestId) },
-        { label: 'Create breakpoint', action: () => createBreakpointFromRequest() },
+        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId) },
         { separator: true },
-        { label: 'Pin exchange', action: () => togglePinRequest() },
-        { label: 'Delete exchange', action: () => deleteSelectedRequest() },
+        { label: 'Pin exchange', action: () => togglePinRequest(requestId) },
+        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId) },
       ]);
     }
 
@@ -9700,9 +9700,9 @@
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
-    function createBreakpointFromRequest() {
-      if (!selectedRequestId) return;
-      const req = requests.find(r => r.id === selectedRequestId);
+    function createBreakpointFromRequest(requestId = selectedRequestId) {
+      if (!requestId) return;
+      const req = requests.find(r => r.id === requestId);
       if (!req) return;
 
       fetch(API_BASE + '/api/breakpoints', {

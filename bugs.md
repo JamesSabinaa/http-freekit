@@ -2211,6 +2211,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-220 — Medium — Traffic context actions can target a different row
 
+- Status: **Fixed**.
+- Resolution: Every row-specific context action now passes the request ID captured when the menu opens. Breakpoint, pin, and delete helpers accept that explicit target while retaining selected-row defaults for toolbar and keyboard callers; pinning or deleting another row no longer changes the selected detail panel or its pin icon.
+
 - Evidence: the menu captures `requestId`, but Create Breakpoint, Pin, and Delete call selection-global functions at `src/ui/app.js:8524-8545`; only Resend and Create Mock pass the captured ID.
 - Impact: keyboard navigation while the menu is open can make a destructive action operate on another selected exchange.
 - Reproduction: right-click row A, press Arrow Down to select B, then choose Delete or Pin.
