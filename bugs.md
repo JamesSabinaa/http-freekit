@@ -1627,6 +1627,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-296 — High — Node core HTTP(S) bypasses every environment-based Node interceptor
 
+- Status: **Fixed**.
+- Resolution: Fresh and Existing Terminal, automatic Electron launches, and generated Docker settings now enable Node's built-in environment proxy agent, explicitly clear bypasses, and disclose the Node 22.21.0+/24.5.0+ requirement and explicit-agent fallback for older runtimes. The renderer fallbacks mirror the generated settings.
+
 - Evidence: Fresh Terminal sets proxy and TLS environment variables at `src/interceptors/terminal-interceptors.js:44-56`, Existing Terminal at `:179-181`, Electron at `src/interceptors/electron-interceptor.js:47-52`, and Docker in its generated commands at `src/interceptors/docker-interceptor.js:52-53`; none enables Node's environment-proxy support or installs a proxy agent.
 - Impact: built-in `node:http` and `node:https` requests from terminal children, Electron main processes, and containers connect directly and never appear in FreeKit despite those paths being advertised for Node interception.
 - Reproduction: activate any affected path and issue a request with `node:http.get()` and no custom agent; the origin receives it directly, while enabling `NODE_USE_ENV_PROXY=1` on a supporting Node release routes it through the proxy.

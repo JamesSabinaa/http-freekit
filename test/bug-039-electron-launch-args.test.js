@@ -45,7 +45,7 @@ test('Electron interception passes Chromium proxy switches as process arguments'
   assert.equal('NODE_TLS_REJECT_UNAUTHORIZED' in spawned.options.env, false);
   assert.equal('node_tls_reject_unauthorized' in spawned.options.env, false);
   assert.equal('Node_Extra_Ca_Certs' in spawned.options.env, false);
-  assert.equal('NODE_USE_ENV_PROXY' in spawned.options.env, false);
+  assert.equal(spawned.options.env.NODE_USE_ENV_PROXY, '1');
 });
 
 test('manual Electron instructions use real command-line arguments', async () => {

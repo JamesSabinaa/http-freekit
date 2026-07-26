@@ -3788,6 +3788,8 @@
       }
     }
 
+    const NODE_ENV_PROXY_SUPPORT_NOTE = 'Built-in node:http and node:https proxying requires Node.js 22.21.0+ or 24.5.0+; older Node.js versions need an explicit proxy agent.';
+
     const INTERCEPTOR_ICONS = {
       chrome: '<svg viewBox="0 0 24 24" width="36" height="36"><circle cx="12" cy="12" r="10" fill="none" stroke="#1da462" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="#1da462"/><path d="M12 2a10 10 0 0 1 8.66 5h-5.66" stroke="#1da462" stroke-width="1.5" fill="none"/></svg>',
       'existing-chrome': '<svg viewBox="0 0 24 24" width="36" height="36"><circle cx="12" cy="12" r="10" fill="none" stroke="#1da462" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="#1da462"/><circle cx="19" cy="5" r="4.5" fill="var(--bg-main)" stroke="#1da462" stroke-width="1"/><circle cx="19" cy="5" r="2.5" fill="none" stroke="#1da462" stroke-width="1"/><line x1="17.5" y1="6.5" x2="21" y2="3" stroke="#1da462" stroke-width="1"/></svg>',
@@ -3809,11 +3811,11 @@
       firefox: ['Intercept a fresh independent Firefox window.', 'Uses a separate temporary profile.'],
       edge: ['Intercept a fresh independent Edge window.', 'Separate from your normal browser profile.'],
       brave: ['Intercept a fresh independent Brave window.', 'Uses a separate temporary profile.'],
-      'fresh-terminal': ['Intercept host commands and processes launched from a new terminal.', 'Sets proxy and certificate environment variables; use the Docker interceptor for container traffic.'],
-      'existing-terminal': ['Configure future processes in an existing terminal window.', 'Instructions only: unset the variables or close that shell to stop.'],
+      'fresh-terminal': ['Intercept host commands and processes launched from a new terminal.', `Sets proxy and certificate environment variables; use the Docker interceptor for container traffic. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
+      'existing-terminal': ['Configure future processes in an existing terminal window.', `Instructions only: unset the variables or close that shell to stop. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
-      'docker': ['Intercept traffic from Docker containers.', 'Set proxy environment variables when running containers.'],
-      'electron': ['Launch an Electron application with traffic intercepted.', 'Uses proxy and certificate flags to intercept all HTTPS traffic.'],
+      'docker': ['Intercept traffic from Docker containers.', `Set proxy environment variables when running containers. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
+      'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy and certificate flags to intercept all HTTPS traffic. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.'],
       'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
     };
@@ -4174,6 +4176,7 @@
           <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">
             Select the application executable to launch with FreeKit's proxy flags.
           </p>
+          <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
           <div style="display:flex;gap:8px;align-items:center;">
             <input id="electronAppPath" type="text" placeholder="Path to Electron executable" aria-label="Electron application path"
               onclick="event.stopPropagation();" style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:7px 9px;font-family:var(--font-mono);font-size:12px;">
@@ -4239,10 +4242,11 @@
     function renderDockerConfig(container) {
       const meta = expandedInterceptorMetadata;
       const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
-      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
-      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
 
       container.innerHTML = `
+        <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.nodeProxyNote || NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
         <div class="config-section">
           <h3>Docker Run</h3>
           <div class="config-code-block" onclick="copyConfigCode(this)" title="Click to copy">${esc(runCmd)}</div>
@@ -4276,6 +4280,7 @@
           `https_proxy=${quoteTerminalBashValue(proxyUrl)}`,
           `NO_PROXY=${quoteTerminalBashValue('')}`,
           `no_proxy=${quoteTerminalBashValue('')}`,
+          `NODE_USE_ENV_PROXY=${quoteTerminalBashValue('1')}`,
           `SSL_CERT_FILE=${quoteTerminalBashValue(certPath)}`,
           `NODE_EXTRA_CA_CERTS=${quoteTerminalBashValue(certPath)}`,
           `REQUESTS_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`,
@@ -4289,6 +4294,7 @@
           `$env:https_proxy=${quoteTerminalPowerShellValue(proxyUrl)}`,
           `$env:NO_PROXY=${quoteTerminalPowerShellValue('')}`,
           `$env:no_proxy=${quoteTerminalPowerShellValue('')}`,
+          `$env:NODE_USE_ENV_PROXY=${quoteTerminalPowerShellValue('1')}`,
           `$env:SSL_CERT_FILE=${quoteTerminalPowerShellValue(certPath)}`,
           `$env:NODE_EXTRA_CA_CERTS=${quoteTerminalPowerShellValue(certPath)}`,
           `$env:REQUESTS_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`,
@@ -4302,6 +4308,7 @@
           terminalCmdSet('https_proxy', proxyUrl),
           terminalCmdSet('NO_PROXY', ''),
           terminalCmdSet('no_proxy', ''),
+          terminalCmdSet('NODE_USE_ENV_PROXY', '1'),
           terminalCmdSet('SSL_CERT_FILE', certPath),
           terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
           terminalCmdSet('REQUESTS_CA_BUNDLE', certPath),
@@ -4325,6 +4332,7 @@
         <div class="config-section">
           <h3>Paste in your terminal</h3>
           <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.lifecycleNote || 'These variables remain active until you unset them or close this shell.')}</p>
+          <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.nodeProxyNote || NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
           <div class="config-tabs">
             <button class="config-tab${defaultTab === 'bash' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'bash')">Bash / Zsh</button>
             <button class="config-tab${defaultTab === 'powershell' ? ' active' : ''}" onclick="event.stopPropagation(); switchConfigTab(this, 'powershell')">PowerShell</button>

@@ -17,6 +17,7 @@ const expectedEnvironment = {
   https_proxy: proxyUrl,
   NO_PROXY: '',
   no_proxy: '',
+  NODE_USE_ENV_PROXY: '1',
   SSL_CERT_FILE: certPath,
   NODE_EXTRA_CA_CERTS: certPath,
   REQUESTS_CA_BUNDLE: certPath,

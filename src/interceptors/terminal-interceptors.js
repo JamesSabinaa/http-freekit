@@ -2,6 +2,10 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import {
+  NODE_ENV_PROXY_SUPPORT_NOTE,
+  NODE_USE_ENV_PROXY_VALUE
+} from './node-environment-proxy.js';
 
 const LINUX_TERMINAL_LAUNCHERS = [
   {
@@ -67,6 +71,7 @@ function buildTerminalEnvironment(proxyUrl, certPath) {
     https_proxy: proxyUrl,
     NO_PROXY: '',
     no_proxy: '',
+    NODE_USE_ENV_PROXY: NODE_USE_ENV_PROXY_VALUE,
     SSL_CERT_FILE: certPath,
     NODE_EXTRA_CA_CERTS: certPath,
     REQUESTS_CA_BUNDLE: certPath,
@@ -449,6 +454,7 @@ export class ExistingTerminalInterceptor {
       metadata: {
         instructionsOnly: true,
         lifecycleNote: 'These variables remain active in the terminal until you unset them or close that shell.',
+        nodeProxyNote: NODE_ENV_PROXY_SUPPORT_NOTE,
         proxyUrl,
         certPath,
         instructions: buildExistingTerminalInstructions(proxyUrl, certPath)

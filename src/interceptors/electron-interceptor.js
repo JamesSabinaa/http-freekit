@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
+import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
 
 export class ElectronInterceptor {
   constructor() {
@@ -100,7 +101,12 @@ export class ElectronInterceptor {
     const env = {
       ...this._environment(),
       HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl
+      HTTPS_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+      https_proxy: proxyUrl,
+      NO_PROXY: '',
+      no_proxy: '',
+      NODE_USE_ENV_PROXY: NODE_USE_ENV_PROXY_VALUE
     };
     for (const name of Object.keys(env)) {
       const normalizedName = name.toUpperCase();

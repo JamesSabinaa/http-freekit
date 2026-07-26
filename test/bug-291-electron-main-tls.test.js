@@ -177,17 +177,18 @@ test('Electron main-process trust accepts FreeKit certificates and rejects unrel
   assert.equal(launchBundlePath, bundlePath);
   assert.equal(env.NODE_EXTRA_CA_CERTS, bundlePath);
   assert.equal('NODE_TLS_REJECT_UNAUTHORIZED' in env, false);
+  const directTrustTestEnvironment = { ...env, NODE_USE_ENV_PROXY: '0' };
 
-  const valid = await requestWithServer(validCertificate, env);
+  const valid = await requestWithServer(validCertificate, directTrustTestEnvironment);
   assert.equal(valid.code, 0, valid.stderr);
   assert.equal(valid.stdout, 'ok:200');
   assert.doesNotMatch(valid.stderr, /NODE_TLS_REJECT_UNAUTHORIZED/);
 
-  const wrongHost = await requestWithServer(wrongHostCertificate, env);
+  const wrongHost = await requestWithServer(wrongHostCertificate, directTrustTestEnvironment);
   assert.equal(wrongHost.code, 0, wrongHost.stderr);
   assert.equal(wrongHost.stdout, 'error:ERR_TLS_CERT_ALTNAME_INVALID');
 
-  const unrelated = await requestWithServer(unrelatedCertificate, env);
+  const unrelated = await requestWithServer(unrelatedCertificate, directTrustTestEnvironment);
   assert.equal(unrelated.code, 0, unrelated.stderr);
   assert.match(
     unrelated.stdout,

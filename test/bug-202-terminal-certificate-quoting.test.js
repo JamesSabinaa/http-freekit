@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { NODE_ENV_PROXY_SUPPORT_NOTE } from '../src/interceptors/node-environment-proxy.js';
 import {
   ExistingTerminalInterceptor,
   buildExistingTerminalInstructions
@@ -22,7 +23,8 @@ function rendererHarness(metadata) {
     expandedInterceptorMetadata: metadata,
     config: { proxyPort: 9090 },
     navigator: { platform: 'Win32' },
-    esc: value => String(value)
+    esc: value => String(value),
+    NODE_ENV_PROXY_SUPPORT_NOTE
   };
   vm.createContext(context);
   vm.runInContext(`

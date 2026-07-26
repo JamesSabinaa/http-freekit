@@ -1,4 +1,8 @@
 import { execFileAsync } from './command-runner.js';
+import {
+  NODE_ENV_PROXY_SUPPORT_NOTE,
+  NODE_USE_ENV_PROXY_VALUE
+} from './node-environment-proxy.js';
 
 export class DockerInterceptor {
   constructor() {
@@ -67,13 +71,14 @@ export class DockerInterceptor {
       `SSL_CERT_FILE=${containerCertPath}`,
       `REQUESTS_CA_BUNDLE=${containerCertPath}`,
       `CURL_CA_BUNDLE=${containerCertPath}`,
-      `NODE_EXTRA_CA_CERTS=${containerCertPath}`
+      `NODE_EXTRA_CA_CERTS=${containerCertPath}`,
+      `NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY_VALUE}`
     ];
     const runEnvironment = trustEnvironment.map(value => `-e ${value}`).join(' ');
     const composeEnvironment = trustEnvironment.map(value => `  - ${value}`).join('\n');
     const composeMount = JSON.stringify(`${certPath}:${containerCertPath}:ro`);
-    const runInstruction = `docker run ${certMount} -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} ${runEnvironment} <image>`;
-    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n${composeEnvironment}`;
+    const runInstruction = `docker run ${certMount} -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NO_PROXY= ${runEnvironment} <image>`;
+    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NO_PROXY=\n${composeEnvironment}`;
     this.active = true;
 
     console.log(`[Interceptor] Docker interceptor active. Proxy: ${proxyUrl}`);
@@ -86,6 +91,7 @@ export class DockerInterceptor {
         hostIp,
         caPath: certPath,
         containerCaPath: containerCertPath,
+        nodeProxyNote: NODE_ENV_PROXY_SUPPORT_NOTE,
         instructions: {
           run: runInstruction,
           compose: composeInstruction

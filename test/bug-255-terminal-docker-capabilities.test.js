@@ -26,14 +26,14 @@ function fakeLauncher(pid) {
 test('Fresh Terminal copy limits its promise to host processes and directs containers to Docker', () => {
   assert.match(
     uiSource,
-    /'fresh-terminal': \['Intercept host commands and processes launched from a new terminal\.', 'Sets proxy and certificate environment variables; use the Docker interceptor for container traffic\.'\]/
+    /'fresh-terminal': \['Intercept host commands and processes launched from a new terminal\.', `Sets proxy and certificate environment variables; use the Docker interceptor for container traffic\. \$\{NODE_ENV_PROXY_SUPPORT_NOTE\}`\]/
   );
   assert.doesNotMatch(uiSource, /fresh-terminal[^\n]+all processes/i);
   assert.doesNotMatch(uiSource, /'fresh-terminal': \['terminal', 'cli', 'docker'/);
   assert.doesNotMatch(uiSource, /'existing-terminal': \['terminal', 'cli', 'docker'/);
   assert.match(
     uiSource,
-    /'docker': \['Intercept traffic from Docker containers\.', 'Set proxy environment variables when running containers\.'\]/
+    /'docker': \['Intercept traffic from Docker containers\.', `Set proxy environment variables when running containers\. \$\{NODE_ENV_PROXY_SUPPORT_NOTE\}`\]/
   );
   assert.match(
     readme,
