@@ -64,12 +64,19 @@ export class ElectronInterceptor {
   }
 
   _getLaunchArgs(proxyPort) {
-    const spkiFingerprint = this.ca ? this.ca.getSpkiFingerprint() : '';
-    return [
-      `--proxy-server=http://127.0.0.1:${proxyPort}`,
-      '--ignore-certificate-errors',
-      `--ignore-certificate-errors-spki-list=${spkiFingerprint}`
-    ];
+    const args = [`--proxy-server=http://127.0.0.1:${proxyPort}`];
+
+    if (this.ca?.systemTrustInstalled !== true) {
+      const spkiFingerprint = typeof this.ca?.getSpkiFingerprint === 'function'
+        ? this.ca.getSpkiFingerprint()
+        : '';
+      if (typeof spkiFingerprint !== 'string' || !spkiFingerprint.trim()) {
+        throw new Error('FreeKit CA SPKI fingerprint is unavailable for scoped Electron renderer trust');
+      }
+      args.push(`--ignore-certificate-errors-spki-list=${spkiFingerprint.trim()}`);
+    }
+
+    return args;
   }
 
   _getMainProcessCaBundlePath() {

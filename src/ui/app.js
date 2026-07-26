@@ -3815,7 +3815,7 @@
       'existing-terminal': ['Configure future processes in an existing terminal window.', `Instructions only: unset the variables or close that shell to stop. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', `Set proxy environment variables when running containers. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
-      'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy and certificate flags to intercept all HTTPS traffic. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
+      'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy routing plus system trust or a FreeKit-CA-only renderer trust flag. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.'],
       'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
     };

@@ -11,6 +11,7 @@ test('Electron interception passes Chromium proxy switches as process arguments'
   let spawned;
   const interceptor = new ElectronInterceptor();
   interceptor.ca = {
+    systemTrustInstalled: false,
     getSpkiFingerprint: () => 'test-spki',
     getTerminalCaBundlePath: () => process.execPath
   };
@@ -34,7 +35,6 @@ test('Electron interception passes Chromium proxy switches as process arguments'
   assert.equal(spawned.appPath, 'sample-electron-app');
   assert.deepEqual(spawned.args, [
     '--proxy-server=http://127.0.0.1:8080',
-    '--ignore-certificate-errors',
     '--ignore-certificate-errors-spki-list=test-spki'
   ]);
   assert.equal(spawned.options.env.ELECTRON_EXTRA_LAUNCH_ARGS, undefined);
@@ -50,11 +50,15 @@ test('Electron interception passes Chromium proxy switches as process arguments'
 
 test('manual Electron instructions use real command-line arguments', async () => {
   const interceptor = new ElectronInterceptor();
-  interceptor.ca = { getSpkiFingerprint: () => 'manual-spki' };
+  interceptor.ca = {
+    systemTrustInstalled: false,
+    getSpkiFingerprint: () => 'manual-spki'
+  };
 
   const result = await interceptor.activate(9090);
 
   assert.match(result.metadata.instructions, /your-app --proxy-server=http:\/\/127\.0\.0\.1:9090/);
   assert.match(result.metadata.instructions, /--ignore-certificate-errors-spki-list=manual-spki/);
+  assert.doesNotMatch(result.metadata.instructions, /(?:^|\s)--ignore-certificate-errors(?:\s|$)/);
   assert.doesNotMatch(result.metadata.instructions, /ELECTRON_EXTRA_LAUNCH_ARGS/);
 });
