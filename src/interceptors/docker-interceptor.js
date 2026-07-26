@@ -4,13 +4,18 @@ import {
   NODE_ENV_PROXY_SUPPORT_NOTE,
   NODE_USE_ENV_PROXY_VALUE
 } from './node-environment-proxy.js';
+import {
+  canAdvertisedHostReachProxy,
+  createProxyBindUnreachableError
+} from './proxy-bind-reachability.js';
 
 export class DockerInterceptor {
-  constructor() {
+  constructor(options = {}) {
     this.id = 'docker';
     this.name = 'Docker Container';
     this.active = false;
     this.ca = null;
+    this.proxyBindHost = options.proxyBindHost || null;
     this.interceptedContainers = new Set();
   }
 
@@ -83,6 +88,16 @@ export class DockerInterceptor {
 
     // Get host IP that Docker containers can reach
     const hostIp = await this._getDockerHost();
+    if (!canAdvertisedHostReachProxy(this.proxyBindHost, hostIp)) {
+      return {
+        success: false,
+        error: createProxyBindUnreachableError(
+          'Docker containers',
+          this.proxyBindHost,
+          hostIp
+        ).message
+      };
+    }
 
     const proxyUrl = `http://${hostIp}:${proxyPort}`;
     const caBundlePath = this._getCombinedCaBundlePath();

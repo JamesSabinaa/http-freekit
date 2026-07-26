@@ -42,9 +42,12 @@ export class InterceptorManager {
     const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });
     systemProxy.recoverStaleSettings();
     this._register(systemProxy);
-    this._register(new DockerInterceptor());
+    this._register(new DockerInterceptor({ proxyBindHost: options.proxyBindHost }));
     this._register(new ElectronInterceptor({ dataDir: options.dataDir }));
-    this._register(new AndroidAdbInterceptor({ dataDir: options.dataDir }));
+    this._register(new AndroidAdbInterceptor({
+      dataDir: options.dataDir,
+      proxyBindHost: options.proxyBindHost
+    }));
     this._register(new JvmInterceptor({ dataDir: options.dataDir }));
 
     // Give all interceptors that need it a reference to the CA

@@ -19,6 +19,7 @@ import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 import { startWithValidatedApiPort } from './startup-config.js';
 import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
+import { resolveProxyBindAddress } from './interceptors/proxy-bind-reachability.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,12 +82,20 @@ async function initializeApplication(apiPort) {
   const settings = new Settings(DATA_DIR);
   console.log(`[Boot] Settings loaded from ${DATA_DIR}/settings.json`);
 
-  // 3. Initialize Interceptor Manager (pass CA for SPKI fingerprints)
-  const interceptors = new InterceptorManager(ca, { dataDir: DATA_DIR });
+  const proxyPortRange = resolveProxyPortRange(settings, process.env.PROXY_PORT);
+  const configuredProxyBindHost = process.env.PROXY_BIND_HOST ||
+    settings.get('proxyBindHost', '127.0.0.1');
+  // Resolve hostnames once so the proxy and remote interceptors use the exact
+  // same interface address, even when a hostname has multiple DNS results.
+  const proxyBindHost = await resolveProxyBindAddress(configuredProxyBindHost);
+
+  // 3. Initialize Interceptor Manager (pass CA and proxy reachability settings)
+  const interceptors = new InterceptorManager(ca, {
+    dataDir: DATA_DIR,
+    proxyBindHost
+  });
 
   // 4. Initialize Proxy Server
-  const proxyPortRange = resolveProxyPortRange(settings, process.env.PROXY_PORT);
-  const proxyBindHost = process.env.PROXY_BIND_HOST || settings.get('proxyBindHost', '127.0.0.1');
   const rangeLabel = proxyPortRange.minPort === proxyPortRange.maxPort
     ? String(proxyPortRange.minPort)
     : `${proxyPortRange.minPort}-${proxyPortRange.maxPort}`;

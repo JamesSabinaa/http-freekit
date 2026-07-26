@@ -1921,6 +1921,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-353 — High/Medium — Loopback binding makes remote interceptors report unreachable proxies
 
+- Status: **Fixed**.
+- Resolution: Startup now resolves the configured proxy bind hostname once and passes that exact listener address to both the proxy and the Docker/Android interceptors. Remote Docker/global-proxy activation and QR metadata are offered only when their advertised address can reach that listener, with actionable bind errors otherwise; deterministic Android emulator loopback aliases are retained and labeled emulator-only in generic QR setup. Android companion activation remains available when its ADB reverse tunnel can reach host IPv4 loopback, and explicit wildcard or matching-address bindings retain remote behavior.
 - Evidence: `ProxyServer` now listens on `127.0.0.1` by default, while Docker activation still advertises `host.docker.internal` or a bridge-gateway address and Android global-proxy/QR activation still configures a LAN adapter address. The interceptors cannot inspect the bind host and perform no reachability check before returning success.
 - Impact: default Docker bridge/Desktop and physical-device global/QR interception appear activated but cannot connect to FreeKit. The Android companion path remains viable through ADB reverse, and an undocumented-in-UI environment override can make the other paths reachable.
 - Reproduction: start with the default bind, activate Docker or Android global interception, and connect to the advertised gateway/LAN address; the loopback listener refuses or times out while `127.0.0.1` succeeds. Starting with `PROXY_BIND_HOST=0.0.0.0` makes the same advertised address reachable.

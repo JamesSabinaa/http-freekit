@@ -4666,7 +4666,7 @@
             <div class="android-qr-layout">
               <img class="android-qr-image" src="${esc(meta.qrImageDataUrl)}" alt="Android setup QR code">
               <div class="android-qr-details">
-                <p class="android-setup-note">Open the HTTP Toolkit Android app and scan this code.</p>
+                <p class="android-setup-note">${esc(meta.qrAvailabilityNote || 'Open the HTTP Toolkit Android app and scan this code.')}</p>
                 <div class="config-code-block android-qr-url" role="button" tabindex="0" aria-label="Copy Android QR connection URL" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(meta.qrConnectUrl || '')}</div>
               </div>
             </div>
@@ -4713,6 +4713,9 @@
               const hasOwnedState = activationPresentation !== null;
               const isUnauthorized = d.status === 'unauthorized';
               const isOffline = d.status === 'offline';
+              const globalProxyError = d.globalProxyAvailable === false && d.globalProxyError
+                ? `<span class="android-device-mode warning">Global proxy unavailable: ${esc(d.globalProxyError)} The companion app can still be activated through ADB when its tunnel is reachable.</span>`
+                : '';
               const hostIpCandidates = Array.isArray(d.hostIpCandidates)
                 ? d.hostIpCandidates.filter(candidate =>
                     candidate && typeof candidate.address === 'string' &&
@@ -4751,6 +4754,7 @@
                       <span class="android-device-model">${esc(d.model || d.serial)}</span>
                       <span class="android-device-serial">${esc(d.serial)}${d.deviceName ? ' \u00b7 ' + esc(d.deviceName) : ''}</span>
                       ${hasOwnedState ? `<span class="android-device-mode${isActivated ? '' : ' warning'}">${esc(activationPresentation.modeLabel)}</span>` : ''}
+                      ${globalProxyError}
                       ${hostIpChoice}
                     </div>
                   </div>

@@ -3,6 +3,12 @@ import os from 'os';
 import path from 'path';
 import QRCode from 'qrcode';
 import { execFileAsync } from './command-runner.js';
+import {
+  PROXY_BIND_UNREACHABLE_ERROR_CODE,
+  canAdvertisedHostReachProxy,
+  classifyProxyBindHost,
+  createProxyBindUnreachableError
+} from './proxy-bind-reachability.js';
 
 const HTTP_TOOLKIT_ANDROID_PACKAGE = 'tech.httptoolkit.android.v1';
 const HTTP_TOOLKIT_ANDROID_ACTIVATE = 'tech.httptoolkit.android.ACTIVATE';
@@ -77,6 +83,7 @@ export class AndroidAdbInterceptor {
     this.activatedDevices = new Map(); // deviceId -> { serial, model }
     this.reverseTunnels = new Set(); // `${deviceId}:${proxyPort}`
     this.previousReverseMappings = new Map(); // `${deviceId}:${proxyPort}` -> prior remote endpoint or null
+    this.proxyBindHost = options.proxyBindHost || null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'android-adb-global-proxy-recovery.json')
       : options.recoveryFile || null;
@@ -191,7 +198,21 @@ export class AndroidAdbInterceptor {
 
       this.journaledGlobalDevices = adopted;
       for (const [serial, entry] of adopted) {
-        this.activatedDevices.set(serial, { ...entry, recovered: true });
+        const proxyStillReachable = entry.mode !== 'global-proxy' ||
+          this._isProxyHostReachable(entry.hostIp);
+        this.activatedDevices.set(serial, {
+          ...entry,
+          ...(proxyStillReachable
+            ? {}
+            : {
+                mode: 'proxy-uncertain',
+                proxyBindError: this._proxyBindError(
+                  'Recovered Android global proxy',
+                  entry.hostIp
+                ).message
+              }),
+          recovered: true
+        });
         if (Object.prototype.hasOwnProperty.call(entry, 'previousReverseMapping')) {
           const key = `${serial}:${entry.proxyPort}`;
           this.reverseTunnels.add(key);
@@ -295,6 +316,39 @@ export class AndroidAdbInterceptor {
 
   async isActive() {
     return this.active && this.activatedDevices.size > 0;
+  }
+
+  _isProxyHostReachable(host) {
+    const bind = classifyProxyBindHost(this.proxyBindHost);
+    if (EMULATOR_HOST_IPS.includes(host) && bind.host === '127.0.0.1') {
+      // Android Emulator and Genymotion route these special aliases to the
+      // host's IPv4 loopback interface rather than to a normal host adapter.
+      return true;
+    }
+    return canAdvertisedHostReachProxy(this.proxyBindHost, host);
+  }
+
+  _proxyBindError(feature, advertisedHost) {
+    return createProxyBindUnreachableError(feature, this.proxyBindHost, advertisedHost);
+  }
+
+  _assertProxyHostReachable(feature, host) {
+    if (!this._isProxyHostReachable(host)) throw this._proxyBindError(feature, host);
+    return host;
+  }
+
+  _canAdbReverseReachProxy() {
+    // ADB reverse connects back to the host's IPv4 loopback endpoint. A
+    // successfully installed mapping is not a usable route when the proxy is
+    // bound only to a different local address.
+    return canAdvertisedHostReachProxy(this.proxyBindHost, '127.0.0.1');
+  }
+
+  _usesAndroidEmulatorHostAliases(deviceId) {
+    // ADB only identifies the built-in emulator deterministically with this
+    // serial format. TCP and vendor serials can also belong to physical
+    // devices, so conservatively require ADB reverse or a normal host address.
+    return /^emulator-\d+$/.test(String(deviceId));
   }
 
   _getInterceptionSummary() {
@@ -401,7 +455,23 @@ export class AndroidAdbInterceptor {
       }
 
       try {
-        const hostIpCandidates = await this._getReachableHostIpCandidates(device.serial);
+        const discoveredCandidates = await this._getReachableHostIpCandidates(device.serial);
+        const hostIpCandidates = discoveredCandidates.filter(
+          candidate => this._isProxyHostReachable(candidate.address)
+        );
+        if (discoveredCandidates.length > 0 && hostIpCandidates.length === 0) {
+          return {
+            ...device,
+            httpToolkitAppInstalled: false,
+            hostIpCandidates: [],
+            requiresHostIpSelection: false,
+            globalProxyAvailable: false,
+            globalProxyError: this._proxyBindError(
+              'Android global proxy setup',
+              discoveredCandidates[0].address
+            ).message
+          };
+        }
         return {
           ...device,
           httpToolkitAppInstalled: false,
@@ -565,10 +635,13 @@ export class AndroidAdbInterceptor {
     }
   }
 
-  _buildHttpToolkitConnectUrl(proxyPort) {
+  _buildHttpToolkitConnectUrl(
+    proxyPort,
+    addresses = [...EMULATOR_HOST_IPS, ...this._getHostIps()]
+  ) {
     const certInfo = this.ca?.getCertInfo?.();
     const setupParams = {
-      addresses: [...EMULATOR_HOST_IPS, ...this._getHostIps()],
+      addresses,
       port: proxyPort,
       localTunnelPort: proxyPort,
       certFingerprint: certInfo?.certificateSpkiFingerprint || certInfo?.certificateFingerprint
@@ -581,6 +654,14 @@ export class AndroidAdbInterceptor {
     return `${HTTP_TOOLKIT_ANDROID_CONNECT_URL}?data=${encodeURIComponent(data)}`;
   }
 
+  _getReachableRemoteProxyAddresses({ includeEmulatorAliases = true } = {}) {
+    return [
+      ...(includeEmulatorAliases ? EMULATOR_HOST_IPS : []),
+      ...this._getHostIps()
+    ]
+      .filter(address => this._isProxyHostReachable(address));
+  }
+
   async _getQrMetadata(proxyPort) {
     if (!this.ca?.getCertInfo?.()?.certificateSpkiFingerprint) {
       return {
@@ -589,7 +670,21 @@ export class AndroidAdbInterceptor {
       };
     }
 
-    const connectUrl = this._buildHttpToolkitConnectUrl(proxyPort);
+    const emulatorAddresses = EMULATOR_HOST_IPS.filter(
+      address => this._isProxyHostReachable(address)
+    );
+    const hostAddresses = this._getHostIps().filter(
+      address => this._isProxyHostReachable(address)
+    );
+    const qrAddresses = [...emulatorAddresses, ...hostAddresses];
+    if (qrAddresses.length === 0) {
+      return {
+        qrAvailable: false,
+        qrError: this._proxyBindError('Android QR setup').message
+      };
+    }
+
+    const connectUrl = this._buildHttpToolkitConnectUrl(proxyPort, qrAddresses);
     const qrImageDataUrl = await QRCode.toDataURL(connectUrl, {
       errorCorrectionLevel: 'M',
       margin: 1,
@@ -603,7 +698,13 @@ export class AndroidAdbInterceptor {
     return {
       qrAvailable: true,
       qrConnectUrl: connectUrl,
-      qrImageDataUrl
+      qrImageDataUrl,
+      ...(hostAddresses.length === 0 && emulatorAddresses.length > 0
+        ? {
+            qrAvailabilityScope: 'emulator-only',
+            qrAvailabilityNote: 'This QR code is reachable only from an Android emulator through its host-loopback alias. Physical devices require a remotely bound proxy.'
+          }
+        : {})
     };
   }
 
@@ -625,7 +726,12 @@ export class AndroidAdbInterceptor {
     const preparation = {
       success: true,
       appInstalled: true,
-      connectUrl: this._buildHttpToolkitConnectUrl(proxyPort)
+      connectUrl: this._buildHttpToolkitConnectUrl(
+        proxyPort,
+        this._getReachableRemoteProxyAddresses({
+          includeEmulatorAliases: this._usesAndroidEmulatorHostAliases(deviceId)
+        })
+      )
     };
     if (options.prepareReverseMapping) {
       preparation.previousReverseMapping = await this._getReverseMapping(deviceId, proxyPort);
@@ -644,6 +750,29 @@ export class AndroidAdbInterceptor {
       preparation.previousReverseMapping
     );
     const { connectUrl } = preparation;
+    const remotelyReachable = this._getReachableRemoteProxyAddresses({
+      includeEmulatorAliases: this._usesAndroidEmulatorHostAliases(deviceId)
+    });
+    if ((!tunnelActive || !this._canAdbReverseReachProxy()) && remotelyReachable.length === 0) {
+      return {
+        success: false,
+        error: this._proxyBindError(
+          tunnelActive
+            ? 'Android companion setup through an ADB reverse tunnel'
+            : 'Android companion setup without an ADB reverse tunnel'
+        ).message,
+        appInstalled: true,
+        tunnelActive,
+        activationIntentAttempted: false,
+        ...(tunnelActive
+          ? {
+              previousReverseMapping: this.previousReverseMappings.get(
+                `${deviceId}:${proxyPort}`
+              )
+            }
+          : {})
+      };
+    }
 
     await this._bringHttpToolkitAppToFront(deviceId);
 
@@ -666,6 +795,7 @@ export class AndroidAdbInterceptor {
         success: true,
         appInstalled: true,
         tunnelActive,
+        activationIntentAttempted: true,
         connectUrl
       };
     } catch (err) {
@@ -675,6 +805,7 @@ export class AndroidAdbInterceptor {
         error: err.message,
         appInstalled: true,
         tunnelActive,
+        activationIntentAttempted: true,
         ...(tunnelActive
           ? { previousReverseMapping: this.previousReverseMappings.get(key) }
           : {})
@@ -858,8 +989,8 @@ export class AndroidAdbInterceptor {
    */
   async _getHostIp(deviceId, requestedHostIp) {
     // Android emulators typically have serial like "emulator-5554"
-    if (deviceId.startsWith('emulator-')) {
-      return '10.0.2.2';
+    if (this._usesAndroidEmulatorHostAliases(deviceId)) {
+      return this._assertProxyHostReachable('Android global proxy setup', '10.0.2.2');
     }
 
     if (requestedHostIp) {
@@ -867,12 +998,18 @@ export class AndroidAdbInterceptor {
       if (!hostInterfaces.some(iface => iface.address === requestedHostIp)) {
         throw new Error(`Android proxy host ${requestedHostIp} is not a local IPv4 address`);
       }
-      return requestedHostIp;
+      return this._assertProxyHostReachable('Android global proxy setup', requestedHostIp);
     }
 
-    const candidates = await this._getReachableHostIpCandidates(deviceId);
-    if (candidates.length === 0) {
+    const discoveredCandidates = await this._getReachableHostIpCandidates(deviceId);
+    if (discoveredCandidates.length === 0) {
       throw new Error('Could not find a host network adapter reachable from the Android device');
+    }
+    const candidates = discoveredCandidates.filter(
+      candidate => this._isProxyHostReachable(candidate.address)
+    );
+    if (candidates.length === 0) {
+      throw this._proxyBindError('Android global proxy setup', discoveredCandidates[0].address);
     }
     if (candidates.length !== 1) {
       throw createHostIpSelectionError(candidates);
@@ -1068,6 +1205,11 @@ export class AndroidAdbInterceptor {
         }
       };
     };
+    const proxyBindFailureResponse = err => ({
+      success: false,
+      error: err.message,
+      metadata: currentStateMetadata()
+    });
 
     const previousActivation = this.activatedDevices.get(deviceId);
     if (useHttpToolkitApp) {
@@ -1119,6 +1261,9 @@ export class AndroidAdbInterceptor {
             requestedHostIp
           );
         } catch (err) {
+          if (err?.code === PROXY_BIND_UNREACHABLE_ERROR_CODE) {
+            return proxyBindFailureResponse(err);
+          }
           if (err?.code !== 'ANDROID_HOST_IP_SELECTION_REQUIRED' ||
               !Array.isArray(err.hostIpCandidates)) {
             throw err;
@@ -1183,26 +1328,46 @@ export class AndroidAdbInterceptor {
         }
       } else {
         if (pendingAppActivation) {
-          // A failed activation intent is ambiguous. Confirm that the app is
-          // deactivated before considering the global fallback; otherwise
-          // both Android interception modes could be live at once.
-          const appCleanupSucceeded = await this._deactivateHttpToolkitApp(deviceId, proxyPort);
+          // Before the ACTIVATE intent, only the reverse mapping can have been
+          // mutated. Restore that mapping without sending an unrelated
+          // companion DEACTIVATE intent. Once ACTIVATE was attempted, the app
+          // state is ambiguous and requires the full companion cleanup.
+          // Treat legacy/custom activation results without this field as
+          // post-intent failures. Only the explicit false result produced by
+          // the pre-intent route check may skip companion deactivation.
+          const activationIntentAttempted = appActivation.activationIntentAttempted !== false;
+          const appCleanupSucceeded = activationIntentAttempted
+            ? await this._deactivateHttpToolkitApp(deviceId, proxyPort)
+            : await this._removeReverseTunnel(deviceId, proxyPort);
           if (!appCleanupSucceeded) {
             const key = `${deviceId}:${proxyPort}`;
-            const uncertainAppActivation = {
-              ...pendingAppActivation,
-              appActivationError: appActivation.error,
-              tunnelActive: this.reverseTunnels.has(key) || tunnelActive,
-              ...(this.previousReverseMappings.has(key)
-                ? { previousReverseMapping: this.previousReverseMappings.get(key) }
-                : {})
-            };
+            const uncertainAppActivation = activationIntentAttempted
+              ? {
+                  ...pendingAppActivation,
+                  appActivationError: appActivation.error,
+                  tunnelActive: this.reverseTunnels.has(key) || tunnelActive,
+                  ...(this.previousReverseMappings.has(key)
+                    ? { previousReverseMapping: this.previousReverseMappings.get(key) }
+                    : {})
+                }
+              : {
+                  model: device.model,
+                  deviceName: device.deviceName,
+                  proxyPort,
+                  mode: 'reverse-cleanup',
+                  appInstalled,
+                  tunnelActive: this.reverseTunnels.has(key) || tunnelActive,
+                  previousReverseMapping: this.previousReverseMappings.get(key),
+                  appActivationError: appActivation.error
+                };
             this._rememberGlobalProxyOwnership(deviceId, uncertainAppActivation);
             this.activatedDevices.set(deviceId, uncertainAppActivation);
             this.active = true;
             return {
               success: false,
-              error: `Failed to confirm companion activation cleanup on ${deviceId}; reconnect it and retry Stop`,
+              error: activationIntentAttempted
+                ? `Failed to confirm companion activation cleanup on ${deviceId}; reconnect it and retry Stop`
+                : `Failed to restore the companion ADB reverse mapping on ${deviceId}; reconnect it and retry Stop`,
               metadata: currentStateMetadata()
             };
           }
@@ -1249,12 +1414,23 @@ export class AndroidAdbInterceptor {
         try {
           hostIp = await this._getHostIp(deviceId, requestedHostIp);
         } catch (err) {
+          if (err?.code === PROXY_BIND_UNREACHABLE_ERROR_CODE) {
+            return proxyBindFailureResponse(err);
+          }
           if (err?.code !== 'ANDROID_HOST_IP_SELECTION_REQUIRED' ||
               !Array.isArray(err.hostIpCandidates)) {
             throw err;
           }
           return hostIpSelectionResponse(err);
         }
+      }
+      try {
+        this._assertProxyHostReachable('Android global proxy setup', hostIp);
+      } catch (err) {
+        if (err?.code === PROXY_BIND_UNREACHABLE_ERROR_CODE) {
+          return proxyBindFailureResponse(err);
+        }
+        throw err;
       }
       const currentProxy = await this._getProxy(deviceId);
       if (!currentProxy.success) {
