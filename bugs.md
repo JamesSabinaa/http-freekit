@@ -2670,6 +2670,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-321 — Medium — Linux custom update feeds open the wrong download source
 
+- Status: **Fixed**.
+- Resolution: The updater now validates and retains the configured HTTP(S) feed source instead of reading it back through electron-updater's deprecated getter. Linux notices and prompts share one deterministic download URL: a safe release-notes URL takes precedence, GitHub feeds map to their own repository releases, generic custom feeds remain on their exact provider, and only an absent or invalid custom source uses the project default.
+
 - Evidence: `initAutoUpdater()` accepts `UPDATE_URL` at `electron/updater.cjs:111-114`, but `getGitHubReleasesUrl()` at `:205-228` later reads `autoUpdater.getFeedURL()`. Installed `electron-updater` returns the literal deprecated-getter message, URL parsing fails, and the code falls back to the hard-coded project GitHub releases page.
 - Impact: Linux users notified through a custom release channel are sent to an unrelated build instead of the feed or artifact that produced the notification.
 - Reproduction: configure a generic custom `UPDATE_URL` containing a newer Linux release with ordinary text release notes, trigger the update notice, and inspect its link; it targets the hard-coded GitHub latest page.

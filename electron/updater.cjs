@@ -15,6 +15,7 @@ const { shouldForceLinuxUpdateChecks } = require('./update-platform.cjs');
  */
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_LINUX_DOWNLOAD_URL = 'https://github.com/jamessabinaa/http-freekit/releases/latest';
 let mainWindow = null;
 let checkInterval = null;
 let currentCheckIsManual = false;
@@ -23,6 +24,49 @@ let updatePromptOpen = false;
 let lastPromptedVersion = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
+let configuredFeedUrl = null;
+
+function getWebUrl(value) {
+  if (typeof value !== 'string') return null;
+  const source = value.trim();
+  if (!source) return null;
+
+  try {
+    const parsed = new URL(source);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+      ? { source, parsed }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getGitHubDownloadUrl(parsedUrl) {
+  const parts = parsedUrl.pathname.split('/').filter(Boolean);
+  let owner;
+  let repo;
+
+  if (parsedUrl.hostname.toLowerCase() === 'github.com') {
+    [owner, repo] = parts;
+  } else if (parsedUrl.hostname.toLowerCase() === 'api.github.com' && parts[0] === 'repos') {
+    [, owner, repo] = parts;
+  }
+
+  if (!owner || !repo) return null;
+  return `https://github.com/${owner}/${repo.replace(/\.git$/i, '')}/releases/latest`;
+}
+
+function getLinuxDownloadUrl(info = {}) {
+  const releaseNotesUrl = getWebUrl(info.releaseNotes);
+  if (releaseNotesUrl) return releaseNotesUrl.source;
+
+  const configuredSource = getWebUrl(configuredFeedUrl);
+  if (configuredSource) {
+    return getGitHubDownloadUrl(configuredSource.parsed) || configuredSource.source;
+  }
+
+  return DEFAULT_LINUX_DOWNLOAD_URL;
+}
 
 /**
  * Send an updater status event to the renderer.
@@ -56,12 +100,12 @@ async function promptForUpdate(info, options = {}) {
 
   try {
     if (process.platform === 'linux') {
-      const url = options.url || getGitHubReleasesUrl(info);
+      const url = options.url || getLinuxDownloadUrl(info);
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'info',
         title: 'Update Available',
         message: `HTTP FreeKit ${version} is available`,
-        detail: `You are running ${app.getVersion()}.\n\nDownload the latest Linux package from GitHub Releases.`,
+        detail: `You are running ${app.getVersion()}.\n\nDownload the latest Linux package from the release page.`,
         buttons: ['Open Download Page', 'Later'],
         defaultId: 0,
         cancelId: 1
@@ -110,9 +154,12 @@ function initAutoUpdater(win, options = {}) {
     ? options.validateSender
     : () => false;
 
-  // Allow configurable update feed URL via environment variable
-  if (process.env.UPDATE_URL) {
-    autoUpdater.setFeedURL(process.env.UPDATE_URL);
+  // Retain the validated source instead of reading it back through electron-
+  // updater's deprecated getFeedURL() API when building Linux download links.
+  const configuredSource = getWebUrl(process.env.UPDATE_URL);
+  configuredFeedUrl = configuredSource?.source || null;
+  if (configuredFeedUrl) {
+    autoUpdater.setFeedURL(configuredFeedUrl);
   }
 
   // Don't auto-download — we notify the user first
@@ -139,9 +186,9 @@ function initAutoUpdater(win, options = {}) {
 
     if (process.platform === 'linux') {
       // Linux: no auto-install, send download URL for manual update
-      const repoUrl = getGitHubReleasesUrl(info);
-      sendStatus({ status: 'update-available-linux', version, url: repoUrl, manual: wasManual });
-      promptForUpdate(info, { manual: wasManual, url: repoUrl });
+      const downloadUrl = getLinuxDownloadUrl(info);
+      sendStatus({ status: 'update-available-linux', version, url: downloadUrl, manual: wasManual });
+      promptForUpdate(info, { manual: wasManual, url: downloadUrl });
     } else {
       sendStatus({ status: 'update-available', version, manual: wasManual });
       promptForUpdate(info, { manual: wasManual });
@@ -206,36 +253,6 @@ function initAutoUpdater(win, options = {}) {
 }
 
 /**
- * Build a GitHub releases URL from update info.
- * Falls back to the package.json repository or a default.
- */
-function getGitHubReleasesUrl(info) {
-  // If a releaseNotes URL or path is provided, try to use it
-  if (info.releaseNotes && typeof info.releaseNotes === 'string' && info.releaseNotes.startsWith('http')) {
-    return info.releaseNotes;
-  }
-  // Try to derive from the configured feed URL
-  try {
-    const feedUrl = autoUpdater.getFeedURL();
-    if (feedUrl) {
-      const url = new URL(feedUrl);
-      // GitHub releases API: https://github.com/owner/repo/releases
-      if (url.hostname === 'github.com' || url.hostname === 'api.github.com') {
-        const parts = url.pathname.split('/').filter(Boolean);
-        if (parts.length >= 2) {
-          return `https://github.com/${parts[0]}/${parts[1]}/releases/latest`;
-        }
-      }
-      return feedUrl;
-    }
-  } catch {
-    // ignore
-  }
-  // Fallback: generic releases page
-  return `https://github.com/jamessabinaa/http-freekit/releases/latest`;
-}
-
-/**
  * Stop periodic update checks and clean up.
  */
 function stopAutoUpdater() {
@@ -245,6 +262,7 @@ function stopAutoUpdater() {
   }
   mainWindow = null;
   validateIpcSender = () => false;
+  configuredFeedUrl = null;
 }
 
 module.exports = { initAutoUpdater, stopAutoUpdater };
