@@ -26,5 +26,9 @@ test('HTTP/1 fallback in H2 all mode delegates every mock action to the full H1 
   assert.equal(captured[4], body);
   assert.equal(captured[5], rule);
   assert.equal(captured[6], 123);
-  assert.deepEqual(captured[7], { protocol: 'https', tls: { version: 'TLSv1.3' } });
+  assert.deepEqual(captured[7], {
+    protocol: 'https',
+    tls: { version: 'TLSv1.3' },
+    updatePending: true
+  });
 });

@@ -815,6 +815,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-262 — Medium — HTTPS/H2 mocks and breakpoints create duplicate traffic IDs
 
+- Status: **Fixed**.
+- Resolution: Every intercepted HTTPS/H2 path now replaces its pending row with request-update events, including mock terminal actions, errors, and breakpoint transitions; non-pending HTTP mocks remain append-only.
+
 - Evidence: intercepted HTTPS H1 emits a pending record before rule evaluation at `src/proxy/proxy-server.js:1103`, then mock/breakpoint paths emit ordinary records with the same ID at `:1171-1464`. Native H2 and H1-on-H2 repeat this pattern at `:1762,1781,2219-2545` and `:2001,2018,2590`. `ApiServer.onTrafficEvent()` appends every event without `_update`.
 - Impact: totals, exports, MCP results, and detail lookup contain pending plus completed rows sharing one ID; first-match consumers can return stale data.
 - Reproduction: trigger an HTTPS fixed-response mock and inspect `/api/traffic` for duplicate IDs.
