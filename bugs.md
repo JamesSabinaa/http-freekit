@@ -1714,6 +1714,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-308 — Medium — Fresh Terminal Stop forgets shells that survive SIGTERM
 
+- Status: **Fixed**.
+- Resolution: Fresh Terminal Stop now revalidates each strongly owned POSIX session before every signal, waits for confirmed exit through bounded configurable polling, and escalates from SIGTERM to SIGKILL only while the same identity remains. Tracked launcher handles receive equivalent graceful/forced confirmed-exit handling; surviving or ambiguous targets remain active with retryable ownership and a `stop-failed` error instead of being discarded, while exited or PID-replaced sessions are cleared without signalling replacements.
+
 - Evidence: `FreshTerminalInterceptor.deactivate()` at `src/interceptors/terminal-interceptors.js:213-223` sends one SIGTERM, swallows errors, and immediately clears every PID/process handle and reports inactive without waiting for exit or escalating.
 - Impact: a resistant shell remains open with proxy environment variables while FreeKit discards the ownership needed to retry cleanup.
 - Reproduction: activate a POSIX shell that traps or ignores SIGTERM and click Stop; the shell remains alive, but the interceptor becomes inactive and a second Stop has no target.

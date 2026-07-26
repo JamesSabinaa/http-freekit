@@ -39,7 +39,7 @@ function spawnDetached(command, args, options) {
 }
 
 function isProcessRunning(proc) {
-  return proc && !proc.killed && proc.exitCode === null && proc.signalCode === null;
+  return proc && proc.exitCode == null && proc.signalCode == null;
 }
 
 function shellQuote(value) {
@@ -101,6 +101,11 @@ export class FreshTerminalInterceptor {
     this.ca = null;
     this.onStatusChange = null;
     this.statusMonitor = null;
+    this.deactivating = false;
+    this.deactivatingProcesses = new Set();
+    this.gracefulExitTimeoutMs = 2000;
+    this.forceExitTimeoutMs = 2000;
+    this.sessionExitPollIntervalMs = 50;
   }
 
   _platform() {
@@ -330,36 +335,241 @@ export class FreshTerminalInterceptor {
   _isSameSession(expected, observation) {
     const actual = observation?.state === 'running' ? observation.identity : null;
     return Boolean(
-      expected?.startTime &&
-      expected?.executable &&
-      actual &&
-      actual.pid === expected.pid &&
-      actual.startTime === expected.startTime &&
-      actual.executable === expected.executable
+      this._hasCompleteSessionIdentity(expected) &&
+      this._hasCompleteSessionIdentity(actual) &&
+      this._isSameSessionIdentity(expected, actual)
     );
+  }
+
+  _hasCompleteSessionIdentity(identity) {
+    return Boolean(
+      Number.isInteger(identity?.pid) &&
+      identity.pid > 0 &&
+      identity.startTime &&
+      identity.executable
+    );
+  }
+
+  _isSameSessionIdentity(left, right) {
+    return Boolean(
+      left &&
+      right &&
+      left.pid === right.pid &&
+      left.startTime === right.startTime &&
+      left.executable === right.executable
+    );
+  }
+
+  _classifySessionObservation(expected, observation) {
+    if (this._isSameSession(expected, observation)) return 'same';
+    if (observation?.state === 'absent') return 'gone';
+    if (observation?.state === 'running' && this._hasCompleteSessionIdentity(observation.identity)) {
+      return 'replaced';
+    }
+    return 'unknown';
   }
 
   async _adoptSession(pid) {
     const observation = await this._observeSessionIdentity(pid);
     const identity = observation?.state === 'running' ? observation.identity : null;
-    if (
-      !identity ||
-      identity.pid !== pid ||
-      !identity.startTime ||
-      !identity.executable
-    ) return null;
+    if (!this._hasCompleteSessionIdentity(identity) || identity.pid !== pid) return null;
     return Object.freeze({ ...identity });
   }
 
-  _killSession(pid) {
-    process.kill(pid, 'SIGTERM');
+  _killSession(pid, signal = 'SIGTERM') {
+    return process.kill(pid, signal);
+  }
+
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  _markSessionCleanupPending(expected) {
+    const tracked = this.sessions.get(expected.pid);
+    if (!this._isSameSessionIdentity(tracked, expected)) return expected;
+    if (tracked.cleanupPending) return tracked;
+    const pending = Object.freeze({ ...tracked, cleanupPending: true });
+    this.sessions.set(expected.pid, pending);
+    return pending;
+  }
+
+  _removeTrackedSession(expected) {
+    const tracked = this.sessions.get(expected.pid);
+    if (this._isSameSessionIdentity(tracked, expected)) this.sessions.delete(expected.pid);
+  }
+
+  async _waitForSessionChange(expected, timeoutMs) {
+    const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
+    const deadline = Date.now() + boundedTimeout;
+    while (true) {
+      const observation = await this._observeSessionIdentity(expected.pid);
+      const state = this._classifySessionObservation(expected, observation);
+      if (state !== 'same') return { state, observation };
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { state, observation };
+      const pollInterval = Math.max(1, Number(this.sessionExitPollIntervalMs) || 1);
+      await this._sleep(Math.min(pollInterval, remaining));
+    }
+  }
+
+  async _signalOwnedSession(expected, signal) {
+    const observation = await this._observeSessionIdentity(expected.pid);
+    const state = this._classifySessionObservation(expected, observation);
+    if (state !== 'same') return { state, observation, error: null };
+
+    let error = null;
+    try {
+      if (this._killSession(expected.pid, signal) === false) {
+        error = new Error(`${signal} was not delivered`);
+      }
+    } catch (err) {
+      error = err;
+    }
+    return { state: 'signalled', observation, error };
+  }
+
+  async _stopOwnedSession(originalIdentity) {
+    let identity = originalIdentity;
+    const initial = await this._observeSessionIdentity(identity.pid);
+    const initialState = this._classifySessionObservation(identity, initial);
+    if (initialState === 'gone' || initialState === 'replaced') {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    }
+    if (initialState === 'unknown') {
+      this._markSessionCleanupPending(identity);
+      return { stopped: false, error: initial.error || new Error('process identity could not be verified') };
+    }
+
+    identity = this._markSessionCleanupPending(identity);
+    const gracefulSignal = await this._signalOwnedSession(identity, 'SIGTERM');
+    if (gracefulSignal.state === 'gone' || gracefulSignal.state === 'replaced') {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    }
+    if (gracefulSignal.state === 'unknown') {
+      return { stopped: false, error: gracefulSignal.observation?.error || new Error('process identity became ambiguous') };
+    }
+
+    const gracefulWait = await this._waitForSessionChange(identity, this.gracefulExitTimeoutMs);
+    if (gracefulWait.state === 'gone' || gracefulWait.state === 'replaced') {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    }
+    if (gracefulWait.state === 'unknown') {
+      return { stopped: false, error: gracefulWait.observation?.error || gracefulSignal.error };
+    }
+
+    const forcedSignal = await this._signalOwnedSession(identity, 'SIGKILL');
+    if (forcedSignal.state === 'gone' || forcedSignal.state === 'replaced') {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    }
+    if (forcedSignal.state === 'unknown') {
+      return { stopped: false, error: forcedSignal.observation?.error || new Error('process identity became ambiguous') };
+    }
+
+    const forcedWait = await this._waitForSessionChange(identity, this.forceExitTimeoutMs);
+    if (forcedWait.state === 'gone' || forcedWait.state === 'replaced') {
+      this._removeTrackedSession(identity);
+      return { stopped: true };
+    }
+    return {
+      stopped: false,
+      error: forcedWait.observation?.error || forcedSignal.error || gracefulSignal.error ||
+        new Error('terminal shell did not exit')
+    };
+  }
+
+  _hasProcessExited(proc) {
+    return !proc || proc.exitCode != null || proc.signalCode != null;
+  }
+
+  _signalAndWaitForProcessExit(proc, signal, timeoutMs) {
+    if (this._hasProcessExited(proc)) return Promise.resolve({ exited: true, error: null });
+
+    return new Promise(resolve => {
+      let settled = false;
+      let timeout = null;
+      let signalError = null;
+      const finish = (exited, error = signalError) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        proc.removeListener('exit', onExit);
+        proc.removeListener('error', onError);
+        resolve({ exited, error });
+      };
+      const onExit = () => finish(true, null);
+      const onError = error => {
+        signalError = error;
+        if (this._hasProcessExited(proc)) finish(true, error);
+      };
+
+      proc.once('exit', onExit);
+      proc.on('error', onError);
+      if (this._hasProcessExited(proc)) {
+        finish(true, null);
+        return;
+      }
+
+      const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
+      timeout = setTimeout(() => finish(this._hasProcessExited(proc)), boundedTimeout);
+      try {
+        if (proc.kill(signal) === false && !this._hasProcessExited(proc)) {
+          signalError = new Error(`${signal} was not delivered`);
+        }
+        if (this._hasProcessExited(proc)) finish(true, signalError);
+      } catch (error) {
+        signalError = error;
+        if (this._hasProcessExited(proc)) finish(true, error);
+      }
+    });
+  }
+
+  async _stopLauncherProcess(proc) {
+    if (this._hasProcessExited(proc)) {
+      this.processes = this.processes.filter(candidate => candidate !== proc);
+      return { stopped: true };
+    }
+
+    this.deactivatingProcesses.add(proc);
+    const errors = [];
+    try {
+      const gracefulResult = await this._signalAndWaitForProcessExit(
+        proc,
+        'SIGTERM',
+        this.gracefulExitTimeoutMs
+      );
+      if (gracefulResult.error) errors.push(gracefulResult.error);
+      if (!gracefulResult.exited) {
+        const forcedResult = await this._signalAndWaitForProcessExit(
+          proc,
+          'SIGKILL',
+          this.forceExitTimeoutMs
+        );
+        if (forcedResult.error) errors.push(forcedResult.error);
+      }
+
+      if (this._hasProcessExited(proc)) {
+        this.processes = this.processes.filter(candidate => candidate !== proc);
+        return { stopped: true };
+      }
+      return { stopped: false, error: errors.at(-1) || new Error('terminal launcher did not exit') };
+    } finally {
+      this.deactivatingProcesses.delete(proc);
+    }
   }
 
   async _refreshActiveState(reason = 'exited', extra = {}) {
+    if (this.deactivating) return this.active;
     const wasActive = this.active;
     for (const [pid, identity] of [...this.sessions]) {
       const observation = await this._observeSessionIdentity(pid);
-      if (!this._isSameSession(identity, observation) && this.sessions.get(pid) === identity) {
+      const state = this._classifySessionObservation(identity, observation);
+      const retainAmbiguousCleanup = state === 'unknown' && identity.cleanupPending;
+      if (state !== 'same' && !retainAmbiguousCleanup && this.sessions.get(pid) === identity) {
         this.sessions.delete(pid);
       }
     }
@@ -497,14 +707,23 @@ export class FreshTerminalInterceptor {
     if (this.active) this._startStatusMonitor();
 
     proc.on('exit', () => {
+      if (!this.processes.includes(proc) && !this.deactivatingProcesses.has(proc)) return;
       this.processes = this.processes.filter(p => p !== proc);
+      if (this.deactivatingProcesses.has(proc)) return;
       void this._refreshActiveState('exited', { pid: sessionIdentity?.pid || proc.pid });
     });
 
     proc.on('error', (err) => {
+      if (this.deactivatingProcesses.has(proc)) return;
+      if (!this.processes.includes(proc)) return;
       console.error('[Interceptor] Fresh terminal error:', err.message);
-      this.processes = this.processes.filter(p => p !== proc);
-      void this._refreshActiveState('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
+      if (this._hasProcessExited(proc)) {
+        this.processes = this.processes.filter(p => p !== proc);
+        void this._refreshActiveState('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
+      } else {
+        this.active = true;
+        this._emitStatus('error', { pid: sessionIdentity?.pid || proc.pid, error: err.message });
+      }
     });
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
@@ -513,18 +732,42 @@ export class FreshTerminalInterceptor {
 
   async deactivate() {
     this._stopStatusMonitor();
-    for (const [pid, identity] of this.sessions) {
-      const observation = await this._observeSessionIdentity(pid);
-      if (!this._isSameSession(identity, observation)) continue;
-      try { this._killSession(pid); } catch {}
+    this.deactivating = true;
+    const errors = [];
+    try {
+      const sessionResults = await Promise.all(
+        [...this.sessions.values()].map(identity => this._stopOwnedSession(identity))
+      );
+      const processResults = await Promise.all(
+        [...this.processes].map(proc => this._stopLauncherProcess(proc))
+      );
+      for (const result of [...sessionResults, ...processResults]) {
+        if (!result.stopped && result.error) errors.push(result.error);
+      }
+
+      // A launcher exit may also close a shell that survived its own signal sequence.
+      for (const [pid, identity] of [...this.sessions]) {
+        const observation = await this._observeSessionIdentity(pid);
+        const state = this._classifySessionObservation(identity, observation);
+        if (state === 'gone' || state === 'replaced') this._removeTrackedSession(identity);
+      }
+      this.processes = this.processes.filter(proc => !this._hasProcessExited(proc));
+      this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
+
+      if (this.active) {
+        const detail = errors.at(-1)?.message;
+        const message = `Fresh Terminal did not fully exit${detail ? `: ${detail}` : ''}; ` +
+          'its process state was preserved so Stop can be retried';
+        this._emitStatus('stop-failed', { error: message });
+        throw new Error(message);
+      }
+
+      this._emitStatus('inactive');
+    } finally {
+      this.deactivating = false;
+      this.deactivatingProcesses.clear();
+      if (this.active) this._startStatusMonitor();
     }
-    for (const proc of this.processes) {
-      try { proc.kill(); } catch {}
-    }
-    this.sessions.clear();
-    this.processes = [];
-    this.active = false;
-    this._emitStatus('inactive');
   }
 
   _emitStatus(reason, extra = {}) {

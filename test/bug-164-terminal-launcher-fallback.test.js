@@ -10,8 +10,12 @@ function fakeLauncher(pid, exitCode = null) {
   proc.exitCode = null;
   proc.signalCode = null;
   proc.unref = () => {};
-  proc.kill = () => {
+  proc.kill = (signal = 'SIGTERM') => {
     proc.killed = true;
+    if (proc.exitCode == null && proc.signalCode == null) {
+      proc.signalCode = signal;
+      queueMicrotask(() => proc.emit('exit', null, signal));
+    }
     return true;
   };
 
@@ -61,10 +65,17 @@ test('Linux Fresh Terminal promptly tries the next candidate after startup failu
   interceptor._launcherStartupGraceMs = () => 5;
   interceptor._createPidFilePath = () => '/tmp/freekit-bug-164.pid';
   interceptor._waitForShellPid = async () => 4153;
+  let sessionRunning = true;
   interceptor._inspectSessionIdentity = async pid => ({
-    state: 'running',
-    identity: { pid, startTime: '400', executable: '/bin/sh' }
+    ...(sessionRunning ? {
+      state: 'running',
+      identity: { pid, startTime: '400', executable: '/bin/sh' }
+    } : { state: 'absent' })
   });
+  interceptor._killSession = () => {
+    sessionRunning = false;
+    return true;
+  };
   interceptor._spawnDetached = async command => {
     commands.push(command);
     return commands.length === 1 ? failed : working;

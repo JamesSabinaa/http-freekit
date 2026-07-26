@@ -16,8 +16,10 @@ function fakeLauncher(pid) {
   proc.exitCode = null;
   proc.signalCode = null;
   proc.unref = () => {};
-  proc.kill = () => {
+  proc.kill = (signal = 'SIGTERM') => {
     proc.killed = true;
+    proc.signalCode = signal;
+    queueMicrotask(() => proc.emit('exit', null, signal));
     return true;
   };
   return proc;

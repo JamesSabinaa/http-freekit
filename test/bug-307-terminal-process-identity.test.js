@@ -36,20 +36,28 @@ test('a matching terminal owner remains active and is revalidated before SIGTERM
   const owner = identity(7101);
   interceptor.sessions.set(owner.pid, owner);
   interceptor.active = true;
+  interceptor.gracefulExitTimeoutMs = 0;
+  interceptor.forceExitTimeoutMs = 0;
+  interceptor._startStatusMonitor = () => {};
   let inspections = 0;
+  let running = true;
   interceptor._inspectSessionIdentity = async pid => {
     inspections++;
     assert.equal(pid, owner.pid);
-    return running({ ...owner });
+    return running ? { state: 'running', identity: { ...owner } } : { state: 'absent' };
   };
   const signalled = [];
-  interceptor._killSession = pid => signalled.push(pid);
+  interceptor._killSession = pid => {
+    signalled.push(pid);
+    running = false;
+    return true;
+  };
 
   assert.equal(await interceptor.isActive(), true);
   assert.equal(interceptor.toJSON().pid, owner.pid);
   await interceptor.deactivate();
 
-  assert.equal(inspections, 2, 'Stop performs a fresh identity lookup after monitoring');
+  assert.ok(inspections >= 3, 'Stop revalidates immediately before signalling and confirms exit');
   assert.deepEqual(signalled, [owner.pid]);
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.sessions.size, 0);
@@ -110,7 +118,7 @@ test('Stop skips a PID that changed identity after the last successful refresh',
   assert.deepEqual(signalled, [], 'the stale PID is not trusted from the earlier refresh');
 });
 
-test('an ambiguous or failed identity lookup never authorizes a signal', async () => {
+test('an ambiguous or failed identity lookup never authorizes a signal and remains retryable', async () => {
   for (const inspect of [
     async () => ({ state: 'unknown' }),
     async () => ({ state: 'unknown', error: new Error('inspection timed out') }),
@@ -120,14 +128,16 @@ test('an ambiguous or failed identity lookup never authorizes a signal', async (
     const owner = identity(7105);
     interceptor.sessions.set(owner.pid, owner);
     interceptor.active = true;
+    interceptor._startStatusMonitor = () => {};
     interceptor._inspectSessionIdentity = inspect;
     const signalled = [];
     interceptor._killSession = pid => signalled.push(pid);
 
-    await interceptor.deactivate();
+    await assert.rejects(interceptor.deactivate(), /Stop can be retried/);
 
     assert.deepEqual(signalled, []);
-    assert.equal(interceptor.active, false);
+    assert.equal(interceptor.active, true);
+    assert.equal(interceptor.sessions.size, 1);
   }
 });
 
@@ -152,6 +162,12 @@ test('failed identity acquisition tracks only the launcher handle, not the repor
   assert.equal(interceptor.sessions.size, 0);
   assert.equal(interceptor.active, true, 'the known launcher handle may still be tracked');
 
+  launcher.kill = (signal = 'SIGTERM') => {
+    launcher.killed = true;
+    launcher.signalCode = signal;
+    queueMicrotask(() => launcher.emit('exit', null, signal));
+    return true;
+  };
   await interceptor.deactivate();
   assert.deepEqual(signalled, []);
   assert.equal(launcher.killed, true);

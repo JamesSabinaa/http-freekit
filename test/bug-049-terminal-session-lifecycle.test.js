@@ -22,9 +22,12 @@ test('macOS terminal activation tracks the interactive shell after osascript exi
   interceptor._platform = () => 'darwin';
   interceptor._createPidFilePath = () => '/tmp/freekit-shell.pid';
   interceptor._waitForShellPid = async () => 4321;
+  let sessionRunning = true;
   interceptor._inspectSessionIdentity = async pid => ({
-    state: 'running',
-    identity: { pid, startTime: '100', executable: '/bin/zsh' }
+    ...(sessionRunning ? {
+      state: 'running',
+      identity: { pid, startTime: '100', executable: '/bin/zsh' }
+    } : { state: 'absent' })
   });
   const launcher = fakeLauncher();
   let launch;
@@ -33,7 +36,11 @@ test('macOS terminal activation tracks the interactive shell after osascript exi
     return launcher;
   };
   const killed = [];
-  interceptor._killSession = pid => killed.push(pid);
+  interceptor._killSession = pid => {
+    killed.push(pid);
+    sessionRunning = false;
+    return true;
+  };
 
   const result = await interceptor.activate(8080);
   assert.equal(result.pid, 4321);
