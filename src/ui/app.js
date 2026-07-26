@@ -53,6 +53,20 @@
       }
     }
 
+    function buildTrafficViewHash(requestId) {
+      return '#/view/' + encodeURIComponent(requestId);
+    }
+
+    function parseTrafficViewHash(hash) {
+      const match = String(hash || '').match(/^#\/view\/(.+)$/);
+      if (!match) return null;
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return null;
+      }
+    }
+
     // ============ WEBSOCKET FRAMES STATE ============
     /** Map of parentId -> [frame request objects] for WS frame sub-rows */
     let wsFramesByParent = {};
@@ -243,12 +257,11 @@
           loadApiSpecs();
           loadMcpStatus();
           // Check for deep-linked request to auto-select after traffic loads
-          const deepLinkMatch = window.location.hash.match(/^#\/view\/(.+)$/);
-          if (deepLinkMatch) {
-            const deepLinkId = deepLinkMatch[1];
+          const deepLinkId = parseTrafficViewHash(window.location.hash);
+          if (deepLinkId !== null) {
             setTimeout(() => {
               if (requests.find(r => r.id === deepLinkId)) {
-                selectRequest(deepLinkId);
+                selectRequest(deepLinkId, false);
               }
             }, 1500);
           }
@@ -831,7 +844,7 @@
       selectedRequestId = id;
       updateTrafficActiveDescendant(id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
-        history.replaceState(null, '', '#/view/' + id);
+        history.replaceState(null, '', buildTrafficViewHash(id));
       }
       const req = requests.find(r => r.id === id);
       if (!req) return;
@@ -8343,7 +8356,7 @@
       selectedRequestId = req.id;
       updateTrafficActiveDescendant(req.id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
-        history.replaceState(null, '', '#/view/' + req.id);
+        history.replaceState(null, '', buildTrafficViewHash(req.id));
       }
       // Scroll the selected row into view
       scrollRowIntoView(newIdx);
@@ -9353,12 +9366,14 @@
           document.getElementById('panel-traffic').classList.add('active');
         }
         // Try to select the request after traffic loads
-        const requestId = viewMatch[1];
-        setTimeout(() => {
-          if (requests.find(r => r.id === requestId)) {
-            selectRequest(requestId);
-          }
-        }, 1000);
+        const requestId = parseTrafficViewHash(window.location.hash);
+        if (requestId !== null) {
+          setTimeout(() => {
+            if (requests.find(r => r.id === requestId)) {
+              selectRequest(requestId, false);
+            }
+          }, 1000);
+        }
         return;
       }
 

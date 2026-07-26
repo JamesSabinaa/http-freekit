@@ -2253,6 +2253,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-224 — Low — Opaque traffic IDs are not encoded consistently in hashes
 
+- Status: **Fixed**.
+- Resolution: Traffic selection and keyboard navigation now percent-encode each raw request ID exactly once when writing a `#/view/` fragment, while WebSocket initialization and hash-route navigation safely decode it before lookup. Malformed encoded fragments still route to Traffic but skip selection without throwing.
+
 - Evidence: imports accept any nonempty string ID; selection writes it directly into the fragment at `src/ui/app.js:705-713,7469-7470`, while routing compares the browser-encoded fragment directly at `:8429-8445`.
 - Impact: imported IDs containing spaces or fragment-significant characters cannot restore selection after reload.
 - Reproduction: import ID `id with space`, select it, and reload the resulting hash.
