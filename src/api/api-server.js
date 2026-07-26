@@ -411,6 +411,16 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${field} must be a finite number`;
         }
       }
+      if (request.statusCode !== undefined && request.statusCode !== null &&
+          (!Number.isInteger(request.statusCode) ||
+           (request.statusCode !== 0 && (request.statusCode < 100 || request.statusCode > 999)))) {
+        return `requests[${index}].statusCode must be 0 or an integer from 100 to 999`;
+      }
+      for (const field of ['duration', 'requestBodySize', 'responseBodySize']) {
+        if (request[field] !== undefined && request[field] !== null && request[field] < 0) {
+          return `requests[${index}].${field} must be non-negative`;
+        }
+      }
       for (const field of ['requestHeaders', 'responseHeaders']) {
         const headers = request[field];
         if (headers === undefined || headers === null) continue;
@@ -903,6 +913,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (!har?.log?.entries) {
           return res.status(400).json({ error: 'Invalid HAR format: missing log.entries' });
         }
+        if (!Array.isArray(har.log.entries)) {
+          return res.status(400).json({ error: 'Invalid HAR format: log.entries must be an array' });
+        }
 
         const importTimestamp = Date.now();
         const imported = har.log.entries.map(entry => {
@@ -953,6 +966,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           };
         });
 
+        const validationError = this._getTrafficImportValidationError(imported);
+        if (validationError) {
+          return res.status(400).json({ error: `Invalid HAR format: ${validationError}` });
+        }
         this._appendImportedTraffic(imported);
         this._broadcast({ type: 'traffic-imported', count: imported.length });
         res.json({ success: true, imported: imported.length });

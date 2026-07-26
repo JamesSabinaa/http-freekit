@@ -779,6 +779,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-242 — Medium — HAR import bypasses traffic type validation
 
+- Status: **Fixed**.
+- Resolution: HAR entries now pass through the same strict traffic-record validation as JSON imports after normalization and before any traffic-log mutation, eviction, ID remapping, or broadcast. Invalid multi-entry HARs are rejected atomically.
+
 - Evidence: `/api/traffic/import-har` maps method, sizes, duration, and other fields verbatim at `src/api/api-server.js:796-835` and never calls the validator used by JSON import. REST/MCP later call string/number methods on them.
 - Impact: a HAR accepted with object-valued method/time/bodySize can make traffic search and MCP tools throw until cleared.
 - Reproduction: import a HAR with `request.method: {}` and then search by method.
