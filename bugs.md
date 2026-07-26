@@ -1636,6 +1636,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-297 — Medium — Generated Docker configuration makes curl HTTP traffic bypass FreeKit
 
+- Status: **Fixed**.
+- Resolution: Generated Docker run and Compose settings, plus the renderer fallback, now set lowercase `http_proxy` and `https_proxy` to the same container-reachable URL as their uppercase variants. Existing empty `NO_PROXY`, Node environment-proxy enablement, and CA settings remain unchanged, so curl HTTP traffic and clients that prefer uppercase variables share the same proxy configuration.
+
 - Evidence: `src/interceptors/docker-interceptor.js:44,52-53` and the UI fallback at `src/ui/app.js:3937-3938` emit only uppercase `HTTP_PROXY`/`HTTPS_PROXY`. On case-sensitive container environments curl deliberately ignores uppercase `HTTP_PROXY` and recognizes lowercase `http_proxy` for HTTP.
 - Impact: HTTP curl requests launched with the exact displayed Docker run or Compose configuration connect directly and are not captured.
 - Reproduction: use the generated command with `curlimages/curl` against an HTTP origin and observe that the origin, rather than FreeKit, receives the connection.

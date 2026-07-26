@@ -74,11 +74,19 @@ export class DockerInterceptor {
       `NODE_EXTRA_CA_CERTS=${containerCertPath}`,
       `NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY_VALUE}`
     ];
-    const runEnvironment = trustEnvironment.map(value => `-e ${value}`).join(' ');
-    const composeEnvironment = trustEnvironment.map(value => `  - ${value}`).join('\n');
+    const proxyEnvironment = [
+      `HTTP_PROXY=${proxyUrl}`,
+      `HTTPS_PROXY=${proxyUrl}`,
+      `http_proxy=${proxyUrl}`,
+      `https_proxy=${proxyUrl}`,
+      'NO_PROXY='
+    ];
+    const environment = [...proxyEnvironment, ...trustEnvironment];
+    const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
+    const composeEnvironment = environment.map(value => `  - ${value}`).join('\n');
     const composeMount = JSON.stringify(`${certPath}:${containerCertPath}:ro`);
-    const runInstruction = `docker run ${certMount} -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NO_PROXY= ${runEnvironment} <image>`;
-    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NO_PROXY=\n${composeEnvironment}`;
+    const runInstruction = `docker run ${certMount} ${runEnvironment} <image>`;
+    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n${composeEnvironment}`;
     this.active = true;
 
     console.log(`[Interceptor] Docker interceptor active. Proxy: ${proxyUrl}`);

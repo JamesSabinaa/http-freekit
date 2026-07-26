@@ -4242,8 +4242,8 @@
     function renderDockerConfig(container) {
       const meta = expandedInterceptorMetadata;
       const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
-      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
-      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1\n  - NODE_TLS_REJECT_UNAUTHORIZED=0`;
 
       container.innerHTML = `
         <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.nodeProxyNote || NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
