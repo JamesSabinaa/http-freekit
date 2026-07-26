@@ -12,6 +12,14 @@ function makeDataDir(t) {
   return dataDir;
 }
 
+function configureProcessIdentity(interceptor) {
+  interceptor._processIdentityLookup = () => ({
+    pid: process.pid,
+    startedAt: '2026-01-02T03:04:05.000Z',
+    executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+  });
+}
+
 test('registry snapshots distinguish missing, empty, and populated ProxyOverride values', () => {
   const interceptor = new SystemProxyInterceptor();
 
@@ -58,6 +66,7 @@ test('activation clears bypasses and normal Stop restores the exact populated va
   });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
+  configureProcessIdentity(interceptor);
   interceptor._readCurrentSettings = () => ({ ...settings });
   interceptor._setRegistryValue = (name, type, value) => {
     if (name === 'ProxyEnable') settings.enabled = Boolean(value);
@@ -142,6 +151,7 @@ test('activation failure rolls back a previously missing bypass value', async t 
   });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
+  configureProcessIdentity(interceptor);
   interceptor._readCurrentSettings = () => ({ ...settings });
   interceptor._setRegistryValue = (name, type, value) => {
     if (name === 'ProxyOverride' && value === '' && !failed) {

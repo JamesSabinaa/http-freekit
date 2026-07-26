@@ -6,6 +6,11 @@ test('system proxy activation and restoration notify WinINet clients', async () 
   const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
+  interceptor._processIdentityLookup = () => ({
+    pid: process.pid,
+    startedAt: '2026-01-02T03:04:05.000Z',
+    executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+  });
   interceptor._readCurrentSettings = () => ({ enabled: false, server: null, override: null });
   interceptor._persistRecoveryState = () => {};
   interceptor._removeRecoveryState = () => {};

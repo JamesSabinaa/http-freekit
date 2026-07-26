@@ -13,6 +13,8 @@ export class SystemProxyInterceptor {
     this.activeProxyServer = null;
     this.pendingRecovery = null;
     this.ca = options.ca || null;
+    this._processIdentityLookup = options.processIdentityLookup
+      || (pid => this._queryWindowsProcessIdentity(pid));
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'system-proxy-recovery.json')
       : options.recoveryFile || null;
@@ -128,17 +130,114 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
   }
 
   _isProcessRunning(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
+    if (!Number.isInteger(pid) || pid <= 0) {
+      throw new Error('Process ID is missing or invalid');
+    }
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (err?.code === 'ESRCH') return false;
+      throw err;
     }
   }
 
+  _queryWindowsProcessIdentity(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      throw new Error('Process ID is missing or invalid');
+    }
+    const output = this._execPowerShell(`
+$target = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop | Select-Object -First 1
+if ($null -eq $target) {
+  [Console]::Out.Write('null')
+} else {
+  $identity = [PSCustomObject]@{
+    pid = [int]$target.ProcessId
+    startedAt = ([DateTime]$target.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    executablePath = [string]$target.ExecutablePath
+  }
+  [Console]::Out.Write(($identity | ConvertTo-Json -Compress))
+}
+`, { encoding: 'utf8', timeout: 5000 });
+    const serialized = String(output).trim();
+    if (!serialized) throw new Error('Windows process identity query returned no result');
+    try {
+      return JSON.parse(serialized);
+    } catch (err) {
+      throw new Error(`Windows process identity query returned invalid JSON: ${err.message}`);
+    }
+  }
+
+  _normalizeProcessIdentity(identity, expectedPid) {
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+      throw new Error('Process identity is missing or malformed');
+    }
+    if (!Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+        identity.pid > 0xffffffff || identity.pid !== expectedPid) {
+      throw new Error('Process identity PID is missing, invalid, or unexpected');
+    }
+    if (typeof identity.startedAt !== 'string' || !identity.startedAt.trim()) {
+      throw new Error('Process identity start timestamp is missing or invalid');
+    }
+    const startedAt = identity.startedAt.trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/i.test(startedAt)) {
+      throw new Error('Process identity start timestamp is missing or invalid');
+    }
+    const startTime = Date.parse(startedAt);
+    if (!Number.isFinite(startTime)) {
+      throw new Error('Process identity start timestamp is missing or invalid');
+    }
+    if (typeof identity.executablePath !== 'string' || !identity.executablePath.trim()) {
+      throw new Error('Process identity executable path is missing or invalid');
+    }
+    const executablePath = path.win32.normalize(identity.executablePath.trim());
+    if (!path.win32.isAbsolute(executablePath)) {
+      throw new Error('Process identity executable path is not absolute');
+    }
+    return {
+      pid: identity.pid,
+      startedAt: new Date(startTime).toISOString(),
+      executablePath: executablePath.toLowerCase()
+    };
+  }
+
+  _lookupValidatedProcessIdentity(pid) {
+    const identity = this._processIdentityLookup(pid);
+    if (identity === null) return null;
+    return this._normalizeProcessIdentity(identity, pid);
+  }
+
+  _recoveryOwnerIsActive(recovery) {
+    if (Object.prototype.hasOwnProperty.call(recovery, 'owner')) {
+      const owner = this._normalizeProcessIdentity(recovery.owner, recovery.owner?.pid);
+      let currentIdentity;
+      try {
+        currentIdentity = this._lookupValidatedProcessIdentity(owner.pid);
+      } catch (err) {
+        throw new Error(`Recovery owner identity is ambiguous: ${err.message}`);
+      }
+      if (currentIdentity === null) return false;
+      return currentIdentity.pid === owner.pid
+        && currentIdentity.startedAt === owner.startedAt
+        && currentIdentity.executablePath === owner.executablePath;
+    }
+
+    let isRunning;
+    try {
+      isRunning = this._isProcessRunning(recovery.pid);
+    } catch (err) {
+      throw new Error(`Legacy recovery owner is ambiguous: ${err.message}`);
+    }
+    if (isRunning) {
+      throw new Error('Legacy recovery owner is ambiguous: its PID is live but the journal has no strong owner identity');
+    }
+    return false;
+  }
+
   _persistRecoveryState(recovery) {
-    if (!this.recoveryFile) return;
+    if (!this.recoveryFile) {
+      throw new Error('System proxy recovery journal is not configured');
+    }
     fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
     const tempPath = `${this.recoveryFile}.${process.pid}.${Date.now()}.tmp`;
     try {
@@ -179,7 +278,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
       const recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
-      if (this._isProcessRunning(recovery.pid)) return false;
+      if (this._recoveryOwnerIsActive(recovery)) return false;
       if (!recovery.previousSettings || typeof recovery.previousSettings !== 'object') {
         throw new Error('Recovery file does not contain previous proxy settings');
       }
@@ -246,14 +345,19 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       if (this.ca?.systemTrustInstalled !== true) {
         throw new Error('System Proxy requires the HTTP FreeKit CA to be installed in the Windows trust store');
       }
+      let registryMutationStarted = false;
       try {
         if (this._usesPerMachineProxyPolicy()) {
           throw new Error('System Proxy cannot change a machine-wide proxy policy; ask an administrator to enable per-user proxy settings');
         }
+        const owner = this._lookupValidatedProcessIdentity(process.pid);
+        if (owner === null) {
+          throw new Error('Current FreeKit process identity could not be found');
+        }
         if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
         const proxyServer = `127.0.0.1:${proxyPort}`;
         this.pendingRecovery = {
-          pid: process.pid,
+          owner,
           proxyServer,
           ownedSettings: {
             enabled: true,
@@ -263,6 +367,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
           previousSettings: this.previousSettings
         };
         this._persistRecoveryState(this.pendingRecovery);
+        registryMutationStarted = true;
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
         this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
@@ -272,8 +377,11 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
         return { success: true };
       } catch (err) {
-        if (this.previousSettings) {
+        if (registryMutationStarted && this.previousSettings) {
           try { this._restorePreviousSettings(); } catch {}
+        } else if (!this.active) {
+          this.previousSettings = null;
+          this.pendingRecovery = null;
         }
         this.active = false;
         throw new Error(`Failed to set system proxy: ${err.message}`);

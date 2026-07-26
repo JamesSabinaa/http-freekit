@@ -1688,6 +1688,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-305 — Medium — PID reuse prevents stale system-proxy recovery
 
+- Status: **Fixed**.
+- Resolution: New Windows System Proxy recovery journals atomically persist a validated strong owner identity containing the PID, normalized executable path, and process start timestamp obtained through a bounded synchronous Windows process query. Startup skips restoration only when all three fields match the current process; an absent process or identity mismatch is treated as stale and still passes the existing registry-ownership checks before restoration. Query failures or malformed identities preserve both settings and journal for retry, and activation now refuses to mutate the registry unless its own identity was established before journaling. Legacy journals restore only when their PID is definitely dead; a live or ambiguous legacy PID is deliberately preserved without registry access because PID alone cannot prove ownership.
 - Evidence: `_isProcessRunning()` at `src/interceptors/system-proxy-interceptor.js:65-72` checks only `process.kill(pid, 0)`, and `recoverStaleSettings()` at `:101-105` skips restoration whenever that raw PID exists. The recovery journal records no executable identity or process start time.
 - Impact: after FreeKit crashes and Windows reuses its PID for an unrelated long-lived process, every startup treats the stale journal as live and leaves Windows pointing at the dead FreeKit proxy.
 - Reproduction: leave Windows configured for FreeKit, seed `system-proxy-recovery.json` with an unrelated live PID and valid prior settings, then start FreeKit; recovery returns false without restoring the registry.

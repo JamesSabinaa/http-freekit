@@ -5,12 +5,19 @@ import path from 'node:path';
 import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
+const TEST_OWNER = {
+  pid: process.pid,
+  startedAt: '2026-01-02T03:04:05.000Z',
+  executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+};
+
 test('system proxy activation journals settings and normal stop removes the journal', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const interceptor = new SystemProxyInterceptor({
     dataDir,
-    ca: { systemTrustInstalled: true }
+    ca: { systemTrustInstalled: true },
+    processIdentityLookup: () => TEST_OWNER
   });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
@@ -26,7 +33,10 @@ test('system proxy activation journals settings and normal stop removes the jour
 
   assert.equal(fs.existsSync(interceptor.recoveryFile), true);
   const recovery = JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8'));
-  assert.equal(recovery.pid, process.pid);
+  assert.deepEqual(recovery.owner, {
+    ...TEST_OWNER,
+    executablePath: 'c:\\program files\\http freekit\\freekit.exe'
+  });
   assert.equal(recovery.proxyServer, '127.0.0.1:8080');
   assert.deepEqual(recovery.previousSettings, {
     enabled: true,
@@ -75,7 +85,7 @@ test('a new process restores a stale system-proxy journal', (t) => {
   assert.equal(interceptor.previousSettings, null);
 });
 
-test('system-proxy recovery does not interfere with a live owning process', (t) => {
+test('legacy system-proxy recovery conservatively preserves a journal with a live PID', (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const recoveryFile = path.join(dataDir, 'system-proxy-recovery.json');

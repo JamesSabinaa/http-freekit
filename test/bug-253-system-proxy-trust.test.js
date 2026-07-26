@@ -18,6 +18,11 @@ function configureRegistry(interceptor, initialSettings) {
   const operations = [];
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
+  interceptor._processIdentityLookup = () => ({
+    pid: process.pid,
+    startedAt: '2026-01-02T03:04:05.000Z',
+    executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+  });
   interceptor._readCurrentSettings = () => ({ ...settings });
   interceptor._setRegistryValue = (name, type, value) => {
     operations.push(['set', name, type, value]);
@@ -40,7 +45,7 @@ function configureRegistry(interceptor, initialSettings) {
   return { operations, settings };
 }
 
-test('Windows System Proxy discovery and direct activation require confirmed CA trust', async () => {
+test('Windows System Proxy discovery and direct activation require confirmed CA trust', async t => {
   const untrusted = new SystemProxyInterceptor({ ca: { systemTrustInstalled: false } });
   untrusted._isWindows = () => true;
   const unsafeCalls = [];
@@ -59,7 +64,10 @@ test('Windows System Proxy discovery and direct activation require confirmed CA 
   assert.equal(untrusted.active, false);
   assert.equal(untrusted.previousSettings, null);
 
-  const trusted = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
+  const trusted = new SystemProxyInterceptor({
+    dataDir: createDataDir(t),
+    ca: { systemTrustInstalled: true }
+  });
   const { operations } = configureRegistry(trusted, {
     enabled: false,
     server: null,
