@@ -639,15 +639,13 @@ export class AndroidAdbInterceptor {
         connectUrl
       };
     } catch (err) {
-      const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
-      const tunnelStillOwned = tunnelActive && !tunnelRemoved;
       const key = `${deviceId}:${proxyPort}`;
       return {
         success: false,
         error: err.message,
         appInstalled: true,
-        tunnelActive: tunnelStillOwned,
-        ...(tunnelStillOwned
+        tunnelActive,
+        ...(tunnelActive
           ? { previousReverseMapping: this.previousReverseMappings.get(key) }
           : {})
       };
@@ -1030,35 +1028,48 @@ export class AndroidAdbInterceptor {
     };
 
     const previousActivation = this.activatedDevices.get(deviceId);
-    if (previousActivation) {
-      if (useHttpToolkitApp) {
+    if (useHttpToolkitApp) {
+      try {
         preparedAppActivation = await this._prepareHttpToolkitAppActivation(
           deviceId,
           proxyPort,
           {
             prepareReverseMapping: true,
-            requireConfirmedPrerequisites: true
+            requireConfirmedPrerequisites: Boolean(previousActivation)
           }
         );
-        const previousTunnelKey = `${deviceId}:${proxyPort}`;
-        if (preparedAppActivation.success &&
-            previousActivation.proxyPort === proxyPort &&
-            this.reverseTunnels.has(previousTunnelKey) &&
-            this.previousReverseMappings.has(previousTunnelKey)) {
-          // Preparation observes the currently owned mapping. Same-port old
-          // cleanup will restore the mapping that preceded it, which is the
-          // actual baseline the replacement must preserve.
-          preparedAppActivation = {
-            ...preparedAppActivation,
-            previousReverseMapping: this.previousReverseMappings.get(previousTunnelKey)
-          };
-        }
-        appInstalled = preparedAppActivation.appInstalled === true;
-        if (!preparedAppActivation.success) {
-          appActivationError = preparedAppActivation.error;
-        }
+      } catch (err) {
+        // Replacement preparation failures must preserve the current mode.
+        // A first activation has not mutated the device yet, so it can safely
+        // report the companion as unavailable and continue to proxy fallback.
+        if (previousActivation) throw err;
+        preparedAppActivation = {
+          success: false,
+          error: err.message,
+          appInstalled: true
+        };
       }
 
+      const previousTunnelKey = `${deviceId}:${proxyPort}`;
+      if (previousActivation && preparedAppActivation.success &&
+          previousActivation.proxyPort === proxyPort &&
+          this.reverseTunnels.has(previousTunnelKey) &&
+          this.previousReverseMappings.has(previousTunnelKey)) {
+        // Preparation observes the currently owned mapping. Same-port old
+        // cleanup will restore the mapping that preceded it, which is the
+        // actual baseline the replacement must preserve.
+        preparedAppActivation = {
+          ...preparedAppActivation,
+          previousReverseMapping: this.previousReverseMappings.get(previousTunnelKey)
+        };
+      }
+      appInstalled = preparedAppActivation.appInstalled === true;
+      if (!preparedAppActivation.success) {
+        appActivationError = preparedAppActivation.error;
+      }
+    }
+
+    if (previousActivation) {
       if (!useHttpToolkitApp || !preparedAppActivation?.success) {
         try {
           preparedGlobalActivation = await this._prepareGlobalProxyActivation(
@@ -1088,11 +1099,11 @@ export class AndroidAdbInterceptor {
     }
 
     let pendingAppActivation = null;
-    if (previousActivation && useHttpToolkitApp && preparedAppActivation?.success) {
+    if (useHttpToolkitApp && preparedAppActivation?.success) {
       // Companion activation is not atomic: the intent may reach Android even
       // if ADB reports an error. Claim that uncertainty durably before the
-      // first replacement mutation, including the reverse mapping that the
-      // prepared commit may replace.
+      // first mutation, including the reverse mapping that the prepared commit
+      // may replace.
       pendingAppActivation = {
         model: device.model,
         deviceName: device.deviceName,
@@ -1149,7 +1160,7 @@ export class AndroidAdbInterceptor {
             this.active = true;
             return {
               success: false,
-              error: `Failed to confirm companion replacement cleanup on ${deviceId}; reconnect it and retry Stop`
+              error: `Failed to confirm companion activation cleanup on ${deviceId}; reconnect it and retry Stop`
             };
           }
           this._forgetGlobalProxyOwnership(deviceId);

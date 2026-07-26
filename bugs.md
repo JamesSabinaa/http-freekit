@@ -1869,6 +1869,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-337 — High/Medium — Ambiguous Android companion activation can leave an untracked VPN
 
+- Status: **Fixed**.
+- Resolution: Every companion activation is now prepared and recorded as durable app-uncertain ownership before its first device mutation. Ambiguous activation results must complete a confirmed companion deactivation and reverse-tunnel restoration before global-proxy fallback can begin; otherwise restart and Stop retain and recover that cleanup ownership.
+
 - Evidence: `_activateHttpToolkitApp()` treats any ADB exception as failure and removes the reverse tunnel at `src/interceptors/android-adb-interceptor.js:219-260`, even when the activation intent enabled the VPN before the host-side timeout. `activate()` then falls back to global proxy and records only that replacement mode at `:530-580`; later cleanup never sends the companion-app deactivate intent.
 - Impact: activation can report fallback success and Stop can remove every tracked fallback change while the device's companion VPN remains active and unowned.
 - Reproduction: make the activation intent enable the VPN and then time out; allow global fallback to succeed, then Stop. The proxy and reverse tunnel are gone, but the VPN stays active because no companion activation was recorded.

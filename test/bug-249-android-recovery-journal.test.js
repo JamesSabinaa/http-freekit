@@ -230,6 +230,12 @@ test('HTTP Toolkit app activation remains in-memory and does not create the glob
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
   interceptor._getConnectedDevices = async () => [device('device-1')];
   interceptor._getQrMetadata = async () => ({});
+  interceptor._prepareHttpToolkitAppActivation = async () => ({
+    success: true,
+    appInstalled: true,
+    connectUrl: 'https://android.httptoolkit.tech/connect/?data=test',
+    previousReverseMapping: null
+  });
   interceptor._activateHttpToolkitApp = async () => ({
     success: true,
     appInstalled: true,

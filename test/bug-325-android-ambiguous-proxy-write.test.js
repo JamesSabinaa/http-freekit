@@ -53,6 +53,12 @@ function configureAmbiguousWrite(interceptor, postWriteReadback, options = {}) {
   };
 
   if (options.companionReverse) {
+    interceptor._prepareHttpToolkitAppActivation = async () => ({
+      success: true,
+      appInstalled: true,
+      connectUrl: 'https://android.httptoolkit.tech/connect/?data=test',
+      previousReverseMapping: PREVIOUS_MAPPING
+    });
     interceptor._activateHttpToolkitApp = async () => {
       interceptor.reverseTunnels.add(TUNNEL_KEY);
       interceptor.previousReverseMappings.set(TUNNEL_KEY, PREVIOUS_MAPPING);
@@ -64,9 +70,12 @@ function configureAmbiguousWrite(interceptor, postWriteReadback, options = {}) {
         previousReverseMapping: PREVIOUS_MAPPING
       };
     };
-    interceptor._removeReverseTunnel = async () => {
+    interceptor._deactivateHttpToolkitApp = async () => {
       cleanup.reverse += 1;
-      return options.reverseCleanup !== false;
+      if (options.reverseCleanup === false) return false;
+      interceptor.reverseTunnels.delete(TUNNEL_KEY);
+      interceptor.previousReverseMappings.delete(TUNNEL_KEY);
+      return true;
     };
   }
 
@@ -179,7 +188,7 @@ test('failed readback remains uncertain across restart and later Stop preserves 
   assert.equal(fs.existsSync(restarted.recoveryFile), false);
 });
 
-test('ambiguous readback retains companion reverse ownership until Stop verifies the proxy', async t => {
+test('ambiguous readback after confirmed companion cleanup retains only proxy ownership', async t => {
   t.mock.method(console, 'error', () => {});
   t.mock.method(console, 'warn', () => {});
   const dataDir = createDataDir(t);
@@ -196,8 +205,11 @@ test('ambiguous readback retains companion reverse ownership until Stop verifies
 
   assert.equal(activation.success, false);
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'proxy-uncertain');
-  assert.equal(original.activatedDevices.get(DEVICE_ID).previousReverseMapping, PREVIOUS_MAPPING);
-  assert.deepEqual(observed.cleanup, { ca: 0, reverse: 0 });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(original.activatedDevices.get(DEVICE_ID), 'previousReverseMapping'),
+    false
+  );
+  assert.deepEqual(observed.cleanup, { ca: 0, reverse: 1 });
   assert.deepEqual(readJournal(dataDir).devices[0], {
     serial: DEVICE_ID,
     mode: 'proxy-uncertain',
@@ -206,21 +218,16 @@ test('ambiguous readback retains companion reverse ownership until Stop verifies
     proxyPort: PROXY_PORT,
     remoteCertPath: STAGED_CA_PATH,
     model: 'Test Device',
-    deviceName: 'test-device',
-    previousReverseMapping: PREVIOUS_MAPPING
+    deviceName: 'test-device'
   });
 
   const restarted = new AndroidAdbInterceptor({ dataDir });
-  assert.equal(restarted.reverseTunnels.has(TUNNEL_KEY), true);
-  assert.equal(restarted.previousReverseMappings.get(TUNNEL_KEY), PREVIOUS_MAPPING);
+  assert.equal(restarted.reverseTunnels.has(TUNNEL_KEY), false);
   const cleanupOrder = [];
   restarted._getProxy = async () => ({ success: true, value: OWNED_PROXY });
   restarted._adb = async (_serial, args) => {
     if (args[0] === 'shell' && args[1] === 'settings') cleanupOrder.push('proxy');
-    if (args[0] === 'reverse') {
-      cleanupOrder.push('reverse');
-      assert.deepEqual(args, ['reverse', `tcp:${PROXY_PORT}`, PREVIOUS_MAPPING]);
-    }
+    if (args[0] === 'reverse') assert.fail('confirmed companion cleanup must not leak reverse ownership');
     return '';
   };
   restarted._removeCaCert = async () => {
@@ -230,7 +237,7 @@ test('ambiguous readback retains companion reverse ownership until Stop verifies
 
   await restarted.deactivate({ deviceId: DEVICE_ID });
 
-  assert.deepEqual(cleanupOrder, ['proxy', 'ca', 'reverse']);
+  assert.deepEqual(cleanupOrder, ['proxy', 'ca']);
   assert.equal(restarted.reverseTunnels.size, 0);
   assert.equal(restarted.active, false);
   assert.equal(fs.existsSync(restarted.recoveryFile), false);

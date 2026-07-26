@@ -54,6 +54,12 @@ function configureFailedCompanion(interceptor) {
     deviceName: 'test-device'
   }];
   interceptor._getQrMetadata = async () => ({});
+  interceptor._prepareHttpToolkitAppActivation = async () => ({
+    success: true,
+    appInstalled: true,
+    connectUrl: 'https://android.httptoolkit.tech/connect/?data=test',
+    previousReverseMapping: PREVIOUS_MAPPING
+  });
   interceptor._activateHttpToolkitApp = async () => {
     interceptor.reverseTunnels.add(TUNNEL_KEY);
     interceptor.previousReverseMappings.set(TUNNEL_KEY, PREVIOUS_MAPPING);
@@ -65,23 +71,14 @@ function configureFailedCompanion(interceptor) {
       previousReverseMapping: PREVIOUS_MAPPING
     };
   };
-}
-
-function expectedReverseOnlyJournal() {
-  return {
-    version: 3,
-    devices: [{
-      serial: DEVICE_ID,
-      mode: 'reverse-cleanup',
-      proxyPort: PROXY_PORT,
-      previousReverseMapping: PREVIOUS_MAPPING,
-      model: 'Test Device',
-      deviceName: 'test-device'
-    }]
+  interceptor._deactivateHttpToolkitApp = async () => {
+    interceptor.reverseTunnels.delete(TUNNEL_KEY);
+    interceptor.previousReverseMappings.delete(TUNNEL_KEY);
+    return true;
   };
 }
 
-test('failed companion cleanup transfers reverse ownership to fallback and Stop restores it last', async t => {
+test('confirmed companion cleanup restores reverse ownership before fallback and Stop', async t => {
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'warn', () => {});
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
@@ -109,13 +106,13 @@ test('failed companion cleanup transfers reverse ownership to fallback and Stop 
     if (args[0] === 'reverse' && args[1] === '--list') {
       return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
     }
-    if (args[0] === 'shell' && args[1] === 'am') {
+    if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Starting: Intent { act=tech.httptoolkit.android.ACTIVATE }\nStatus: timeout\n';
     }
+    if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';
     if (args[0] === 'reverse' && args[1] === `tcp:${PROXY_PORT}` &&
         args[2] === PREVIOUS_MAPPING) {
       reverseRestores += 1;
-      if (reverseRestores === 1) throw new Error('device temporarily offline');
     }
     if (args.join(' ') === 'shell settings get global http_proxy') {
       proxyReads += 1;
@@ -131,7 +128,10 @@ test('failed companion cleanup transfers reverse ownership to fallback and Stop 
 
   assert.equal(activation.success, true);
   assert.equal(activation.metadata.mode, 'global-proxy');
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).previousReverseMapping, PREVIOUS_MAPPING);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(interceptor.activatedDevices.get(DEVICE_ID), 'previousReverseMapping'),
+    false
+  );
   assert.deepEqual(readJournal(interceptor), {
     version: 3,
     devices: [{
@@ -142,23 +142,25 @@ test('failed companion cleanup transfers reverse ownership to fallback and Stop 
       proxyPort: PROXY_PORT,
       remoteCertPath: STAGED_CA_PATH,
       model: 'Test Device',
-      deviceName: 'test-device',
-      previousReverseMapping: PREVIOUS_MAPPING
+      deviceName: 'test-device'
     }]
   });
 
   await interceptor.deactivate({ deviceId: DEVICE_ID });
 
-  assert.equal(reverseRestores, 2);
+  assert.equal(reverseRestores, 1);
+  const activationReverseRestore = commands.findIndex(args =>
+    args[0] === 'reverse' && args[2] === PREVIOUS_MAPPING);
+  const fallbackProxyWrite = commands.findIndex(args => args.join(' ') ===
+    `shell settings put global http_proxy ${OWNED_PROXY}`);
   const stopProxyWrite = commands.findIndex(args => args.join(' ') ===
     `shell settings put global http_proxy ${PREVIOUS_PROXY}`);
   const stopCertRemoval = commands.findIndex(args => args.join(' ') ===
     `shell rm -f ${STAGED_CA_PATH}`);
-  const finalReverseRestore = commands.findLastIndex(args =>
-    args[0] === 'reverse' && args[2] === PREVIOUS_MAPPING);
+  assert.ok(activationReverseRestore >= 0);
+  assert.ok(fallbackProxyWrite > activationReverseRestore);
   assert.ok(stopProxyWrite >= 0);
   assert.ok(stopCertRemoval > stopProxyWrite);
-  assert.ok(finalReverseRestore > stopCertRemoval);
   assert.equal(interceptor.activatedDevices.size, 0);
   assert.equal(interceptor.reverseTunnels.size, 0);
   assert.equal(interceptor.previousReverseMappings.size, 0);
@@ -245,7 +247,7 @@ test('external proxy ownership and CA failure preserve reverse cleanup for a lat
   assert.equal(interceptor.active, false);
 });
 
-test('proxy setup failure retains reverse ownership in staging cleanup until Stop succeeds', async t => {
+test('proxy setup failure after confirmed companion cleanup leaves no reverse ownership', async t => {
   t.mock.method(console, 'warn', () => {});
   t.mock.method(console, 'error', () => {});
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
@@ -266,16 +268,15 @@ test('proxy setup failure retains reverse ownership in staging cleanup until Sto
   interceptor._pushCaCert = async () => STAGED_CA_PATH;
 
   let reverseAttempts = 0;
-  let stopPhase = false;
   interceptor._adb = async (_serial, args) => {
     if (args[0] === 'reverse' && args[1] === '--list') {
       return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
     }
-    if (args[0] === 'shell' && args[1] === 'am') return 'Status: timeout\n';
+    if (args.includes('tech.httptoolkit.android.ACTIVATE')) return 'Status: timeout\n';
+    if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';
     if (args[0] === 'reverse' && args[1] === `tcp:${PROXY_PORT}` &&
         args[2] === PREVIOUS_MAPPING) {
       reverseAttempts += 1;
-      if (!stopPhase) throw new Error('reverse restore failed');
     }
     if (args.join(' ') === 'shell settings get global http_proxy') return `${PREVIOUS_PROXY}\n`;
     if (args.join(' ') === `shell settings put global http_proxy ${OWNED_PROXY}`) {
@@ -290,20 +291,15 @@ test('proxy setup failure retains reverse ownership in staging cleanup until Sto
   });
 
   assert.equal(activation.success, false);
-  assert.match(activation.error, /retry Stop/);
-  assert.equal(reverseAttempts, 2);
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'staging-cleanup');
-  assert.equal(readJournal(interceptor).devices[0].previousReverseMapping, PREVIOUS_MAPPING);
-
-  stopPhase = true;
-  await interceptor.deactivate({ deviceId: DEVICE_ID });
-
-  assert.equal(reverseAttempts, 3);
+  assert.match(activation.error, /Failed to set proxy/);
+  assert.equal(reverseAttempts, 1);
+  assert.equal(interceptor.activatedDevices.size, 0);
+  assert.equal(interceptor.reverseTunnels.size, 0);
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
 
-test('host-IP discovery failure leaves restart-safe reverse-only ownership', async t => {
+test('host-IP discovery failure after confirmed companion cleanup leaves no stale reverse ownership', async t => {
   t.mock.method(console, 'warn', () => {});
   const dataDir = createDataDir(t);
   const interceptor = new AndroidAdbInterceptor({ dataDir });
@@ -318,29 +314,13 @@ test('host-IP discovery failure leaves restart-safe reverse-only ownership', asy
     /no reachable host adapter/
   );
 
-  assert.equal(interceptor.active, true);
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'reverse-cleanup');
-  assert.deepEqual(readJournal(interceptor), expectedReverseOnlyJournal());
-
-  const restarted = new AndroidAdbInterceptor({ dataDir });
-  assert.equal(restarted.activatedDevices.get(DEVICE_ID).mode, 'reverse-cleanup');
-  assert.equal(restarted.reverseTunnels.has(TUNNEL_KEY), true);
-  const commands = [];
-  restarted._adb = async (_serial, args) => {
-    commands.push(args);
-    return '';
-  };
-  restarted._restoreProxy = async () => assert.fail('reverse-only cleanup must not claim proxy ownership');
-  restarted._removeCaCert = async () => assert.fail('reverse-only cleanup must not claim CA ownership');
-
-  await restarted.deactivate({ deviceId: DEVICE_ID });
-
-  assert.deepEqual(commands, [['reverse', `tcp:${PROXY_PORT}`, PREVIOUS_MAPPING]]);
-  assert.equal(restarted.active, false);
-  assert.equal(fs.existsSync(restarted.recoveryFile), false);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.activatedDevices.size, 0);
+  assert.equal(interceptor.reverseTunnels.size, 0);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
 
-test('current-proxy read failure leaves retryable reverse-only ownership', async t => {
+test('current-proxy read failure after confirmed companion cleanup leaves no stale reverse ownership', async t => {
   t.mock.method(console, 'warn', () => {});
   const dataDir = createDataDir(t);
   const interceptor = new AndroidAdbInterceptor({ dataDir });
@@ -357,21 +337,8 @@ test('current-proxy read failure leaves retryable reverse-only ownership', async
 
   assert.equal(activation.success, false);
   assert.match(activation.error, /Failed to read existing proxy/);
-  assert.equal(interceptor.active, true);
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'reverse-cleanup');
-  assert.deepEqual(readJournal(interceptor), expectedReverseOnlyJournal());
-
-  const commands = [];
-  interceptor._adb = async (_serial, args) => {
-    commands.push(args);
-    return '';
-  };
-  interceptor._restoreProxy = async () => assert.fail('reverse-only cleanup must not claim proxy ownership');
-  interceptor._removeCaCert = async () => assert.fail('reverse-only cleanup must not claim CA ownership');
-
-  await interceptor.deactivate({ deviceId: DEVICE_ID });
-
-  assert.deepEqual(commands, [['reverse', `tcp:${PROXY_PORT}`, PREVIOUS_MAPPING]]);
+  assert.equal(interceptor.activatedDevices.size, 0);
+  assert.equal(interceptor.reverseTunnels.size, 0);
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });

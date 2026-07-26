@@ -18,7 +18,7 @@ function appInterceptor() {
   return interceptor;
 }
 
-test('zero-exit Android activation timeout fails and removes its new reverse tunnel', async () => {
+test('zero-exit Android activation timeout fails and retains its reverse tunnel for transactional cleanup', async () => {
   const interceptor = appInterceptor();
   const commands = [];
   interceptor._adb = async (_deviceId, args) => {
@@ -34,13 +34,12 @@ test('zero-exit Android activation timeout fails and removes its new reverse tun
 
   assert.equal(result.success, false);
   assert.match(result.error, /Status: timeout/);
-  assert.equal(result.tunnelActive, false);
-  assert.equal(interceptor.reverseTunnels.has(tunnelKey), false);
-  assert.equal(interceptor.previousReverseMappings.has(tunnelKey), false);
+  assert.equal(result.tunnelActive, true);
+  assert.equal(interceptor.reverseTunnels.has(tunnelKey), true);
+  assert.equal(interceptor.previousReverseMappings.get(tunnelKey), null);
   assert.deepEqual(commands.filter(args => args[0] === 'reverse'), [
     ['reverse', '--list'],
-    ['reverse', '--no-rebind', 'tcp:8080', 'tcp:8080'],
-    ['reverse', '--remove', 'tcp:8080']
+    ['reverse', '--no-rebind', 'tcp:8080', 'tcp:8080']
   ]);
 });
 
