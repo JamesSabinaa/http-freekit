@@ -140,7 +140,8 @@ import javax.net.ssl.X509TrustManager;
 
 public class ProxyAgent {
     private static final String[] PROXY_PROPERTIES = {
-        "http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort"
+        "http.proxyHost", "http.proxyPort", "http.nonProxyHosts",
+        "https.proxyHost", "https.proxyPort"
     };
     private static final Map<String, String> originalProperties = new HashMap<String, String>();
     private static SSLContext originalSslContext;
@@ -294,6 +295,7 @@ public class ProxyAgent {
     args.push(
       `http.proxyHost=${proxyHost}`,
       `http.proxyPort=${proxyPort}`,
+      'http.nonProxyHosts=',
       `https.proxyHost=${proxyHost}`,
       `https.proxyPort=${proxyPort}`
     );
@@ -332,6 +334,16 @@ public class ProxyAgent {
       cwd,
       timeout: 10000
     });
+  }
+
+  _getFallbackCommand(proxyHost, proxyPort) {
+    return [
+      `-Dhttp.proxyHost=${proxyHost}`,
+      `-Dhttp.proxyPort=${proxyPort}`,
+      '-Dhttp.nonProxyHosts=',
+      `-Dhttps.proxyHost=${proxyHost}`,
+      `-Dhttps.proxyPort=${proxyPort}`
+    ].join(' ');
   }
 
   async _getAgentJarPath() {
@@ -468,6 +480,7 @@ public class AttachProxy {
     if (!pid) {
       // No specific process — return metadata with process list for UI selection
       const processes = await this._getRunningProcesses();
+      const proxyHost = '127.0.0.1';
       this.active = true;
       return {
         success: true,
@@ -477,6 +490,7 @@ public class AttachProxy {
             pid: p,
             ...info
           })),
+          fallbackCommand: this._getFallbackCommand(proxyHost, proxyPort),
           requiresProcessSelection: true
         }
       };
@@ -497,11 +511,12 @@ public class AttachProxy {
     if (!attachResult.success) {
       // Even if agent attach fails, we can note the process as targeted
       // The user may need to restart the JVM with -javaagent flag instead
+      const fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
       return {
         success: false,
-        error: `Could not attach to PID ${pid}: ${attachResult.error}. Try launching the JVM with: -Dhttp.proxyHost=${proxyHost} -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=${proxyHost} -Dhttps.proxyPort=${proxyPort}`,
+        error: `Could not attach to PID ${pid}: ${attachResult.error}. Try launching the JVM with: ${fallbackCommand}`,
         metadata: {
-          fallbackCommand: `-Dhttp.proxyHost=${proxyHost} -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=${proxyHost} -Dhttps.proxyPort=${proxyPort}`,
+          fallbackCommand,
           processes: await this._getRunningProcesses(),
           activatedProcesses: Array.from(this.activatedProcesses.entries()).map(([p, info]) => ({
             pid: p,

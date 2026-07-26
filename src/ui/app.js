@@ -4551,7 +4551,7 @@
       );
 
       const proxyPort = config.proxyPort || 8000;
-      const fallbackCmd = `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${proxyPort} -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${proxyPort}`;
+      const fallbackCmd = meta?.fallbackCommand || `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${proxyPort} -Dhttp.nonProxyHosts= -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${proxyPort}`;
 
       if (processes.length === 0) {
         container.innerHTML = `

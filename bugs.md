@@ -1541,9 +1541,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-276 — Medium — JVM interception keeps the localhost bypass
 
+- Status: **Fixed**.
 - Evidence: the generated agent and fallback flags set proxy hosts/ports but never clear or override `http.nonProxyHosts` (`src/interceptors/jvm-interceptor.js:112-132,170,260-263`; UI JVM flags).
 - Impact: Java's default localhost/loopback exclusions bypass FreeKit while the target is reported attached.
 - Reproduction: attach a JVM and request a localhost service using default networking properties.
+- Resolution: JVM activation now captures `http.nonProxyHosts` with the other proxy properties and sets it to an empty value, so both HTTP and HTTPS loopback traffic use FreeKit. Agent detach restores the prior value or absence, and backend/UI fallback launch flags now include the same empty override.
 
 ### BUG-277 — Low/Medium — Global Chrome activation bypasses URL validation
 
