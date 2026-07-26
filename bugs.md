@@ -1533,6 +1533,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-275 — Medium — JVM agent bytecode can be newer than the target JVM
 
+- Status: **Fixed**.
+- Resolution: ProxyAgent now targets Java 8 bytecode with `--release 8` on modern javac and a Java 8-compatible `-source 8 -target 8` fallback for legacy javac. The bytecode policy participates in the agent cache hash, while the separately executed attach helper retains host-JDK compilation defaults.
 - Evidence: `src/interceptors/jvm-interceptor.js:143-151` invokes the PATH-selected javac without `--release`, source, or target, then attaches the JAR to any JVM listed at `:223-275`.
 - Impact: a current JDK compiling for an older target fails during agent load with UnsupportedClassVersionError.
 - Reproduction: put JDK 21 first on PATH, run a Java 8 target, and attach it.

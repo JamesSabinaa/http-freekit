@@ -4,6 +4,12 @@ import os from 'os';
 import path from 'path';
 import { execFileAsync } from './command-runner.js';
 
+const AGENT_BYTECODE_POLICY = Object.freeze({
+  classMajorVersion: 52,
+  preferredJavacArgs: ['--release', '8'],
+  legacyJavacArgs: ['-source', '8', '-target', '8']
+});
+
 export class JvmInterceptor {
   constructor(options = {}) {
     this.id = 'jvm';
@@ -298,6 +304,36 @@ public class ProxyAgent {
     return args.join(',');
   }
 
+  _getAgentBytecodePolicy() {
+    return JSON.stringify(AGENT_BYTECODE_POLICY);
+  }
+
+  _runJavac(args, cwd) {
+    return execFileAsync('javac', args, { cwd, timeout: 15000 });
+  }
+
+  _isUnsupportedReleaseFlag(error) {
+    const output = `${error?.message || ''}\n${error?.stderr || ''}`;
+    return /(?:invalid|unrecognized|unknown|illegal)\s+(?:flag|option)(?::|\s)[^\n]*--release|--release[^\n]*(?:not recognized|not supported)/i.test(output)
+      || (error?.code === 2 && output.includes('--release'));
+  }
+
+  async _compileAgentJava(sourcePath, cwd) {
+    try {
+      await this._runJavac([...AGENT_BYTECODE_POLICY.preferredJavacArgs, sourcePath], cwd);
+    } catch (error) {
+      if (!this._isUnsupportedReleaseFlag(error)) throw error;
+      await this._runJavac([...AGENT_BYTECODE_POLICY.legacyJavacArgs, sourcePath], cwd);
+    }
+  }
+
+  _packageAgentJar(jarPath, manifestPath, cwd) {
+    return execFileAsync('jar', ['cfm', jarPath, manifestPath, 'ProxyAgent.class'], {
+      cwd,
+      timeout: 10000
+    });
+  }
+
   async _getAgentJarPath() {
     const agentDir = this.agentDir;
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
@@ -306,7 +342,11 @@ public class ProxyAgent {
     const stampPath = path.join(agentDir, 'source.sha256');
     const agentSource = this._getAgentSource();
     const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n';
-    const sourceHash = crypto.createHash('sha256').update(agentSource).update(manifest).digest('hex');
+    const sourceHash = crypto.createHash('sha256')
+      .update(agentSource)
+      .update(manifest)
+      .update(this._getAgentBytecodePolicy())
+      .digest('hex');
 
     if (fs.existsSync(jarPath) && fs.existsSync(stampPath)
       && fs.readFileSync(stampPath, 'utf8') === sourceHash) {
@@ -319,13 +359,10 @@ public class ProxyAgent {
       fs.writeFileSync(manifestPath, manifest);
 
       // Compile
-      await execFileAsync('javac', [javaPath], { cwd: agentDir, timeout: 15000 });
+      await this._compileAgentJava(javaPath, agentDir);
 
       // Package into JAR
-      await execFileAsync('jar', ['cfm', jarPath, manifestPath, 'ProxyAgent.class'], {
-        cwd: agentDir,
-        timeout: 10000
-      });
+      await this._packageAgentJar(jarPath, manifestPath, agentDir);
       fs.writeFileSync(stampPath, sourceHash);
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
@@ -362,7 +399,7 @@ public class AttachProxy {
   }
 
   _compileJava(sourcePath, cwd) {
-    return execFileAsync('javac', [sourcePath], { cwd, timeout: 15000 });
+    return this._runJavac([sourcePath], cwd);
   }
 
   async _ensureAttachHelper() {
