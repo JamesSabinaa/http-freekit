@@ -2335,6 +2335,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-239 — Low/Medium — HAR export reports success before any file response
 
+- Status: **Fixed**.
+- Resolution: HAR export now reports only that the authenticated browser download started, while synchronous launch failures produce an error instead of a success message.
+
 - Evidence: the UI launches an authenticated navigation and immediately displays HAR file exported at `src/ui/app.js:7548-7554`, without observing the HTTP response or download result.
 - Impact: an API failure/error download is presented as a successfully produced HAR file.
 - Reproduction: force `/api/traffic/export.har` to return an error and click Export HAR.

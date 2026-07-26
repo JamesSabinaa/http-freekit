@@ -8456,7 +8456,7 @@
           a.href = authenticatedApiUrl(`${API_BASE}/api/traffic/export.har`);
           a.download = `http-freekit-${new Date().toISOString().slice(0,10)}.har`;
           a.click();
-          toast('HAR file exported', 'success');
+          toast('HAR download started', 'success');
         } else {
           const blob = new Blob([JSON.stringify({
             exported: new Date().toISOString(),

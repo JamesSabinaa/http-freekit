@@ -128,5 +128,5 @@ test('HAR traffic export remains independently reachable and server-backed', asy
   assert.equal(anchors[0].clicked, true);
   assert.deepEqual(blobs, []);
   assert.deepEqual(revokedUrls, []);
-  assert.deepEqual(toasts, [['HAR file exported', 'success']]);
+  assert.deepEqual(toasts, [['HAR download started', 'success']]);
 });
