@@ -212,6 +212,25 @@ async function initializeApplication(apiPort) {
 
   // Graceful shutdown
   let shutdownPromise = null;
+  const notifyDesktopShutdownComplete = () => {
+    if (typeof process.send !== 'function' || !process.connected) return Promise.resolve();
+
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(finish, 250);
+      try {
+        process.send({ type: 'http-freekit:shutdown-complete' }, finish);
+      } catch {
+        finish();
+      }
+    });
+  };
   const shutdown = () => {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
@@ -222,6 +241,7 @@ async function initializeApplication(apiPort) {
         await proxy.stop();
         await api.stop();
         console.log('[Shutdown] Goodbye!');
+        await notifyDesktopShutdownComplete();
         process.exit(0);
       })();
     }

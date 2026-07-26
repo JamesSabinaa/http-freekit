@@ -1590,6 +1590,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-287 — High — Electron force-kill can interrupt proxy restoration
 
+- Status: **Fixed**.
+- Resolution: Desktop shutdown now uses an IPC completion handshake with the backend. Electron waits for the backend to finish all interceptor, proxy, and API cleanup and exit naturally; it force-kills only after cleanup has explicitly completed but exit stalls, or after one deliberate 30-second overall deadline if cleanup hangs. This replaces the three-second timer that raced normal isolated-browser shutdown before System Proxy and Android restoration.
+
 - Evidence: `shutdownServer()` force-kills the child after three seconds at `electron/main.cjs:225-264`, while one isolated-browser shutdown can wait two seconds after SIGTERM plus two after SIGKILL at `src/interceptors/browser-interceptor.js:383-404` before later System Proxy/Android cleanup runs.
 - Impact: closing the desktop with a resistant browser can terminate graceful cleanup before registry/device proxy restoration, leaving clients pointed at a dead proxy.
 - Reproduction: activate a resistant isolated browser plus System Proxy, close the desktop window, and inspect registry state after the child is killed.

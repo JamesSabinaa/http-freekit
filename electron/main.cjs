@@ -13,6 +13,7 @@ const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
+const { shutdownServerProcess } = require('./server-shutdown.cjs');
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -126,7 +127,7 @@ async function startServer() {
         HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
         HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       cwd: path.dirname(serverScript)
     });
     serverProcess = proc;
@@ -300,44 +301,17 @@ function flushPendingDeepLinks({ revealWindowOnFailure = false } = {}) {
 
 /**
  * Gracefully shut down the server process.
- * Sends POST /api/shutdown, then force-kills after 3 seconds.
+ * The child reports completed cleanup over IPC. A single overall deadline
+ * keeps desktop exit bounded if cleanup hangs.
  */
 function shutdownServer() {
-  return new Promise((resolve) => {
-    if (!serverProcess) return resolve();
+  if (!serverProcess) return Promise.resolve();
 
-    isShuttingDown = true;
-    const proc = serverProcess;
-
-    // Force-kill after 3 seconds
-    const timeout = setTimeout(() => {
-      if (proc && !proc.killed) {
-        proc.kill('SIGKILL');
-      }
-      resolve();
-    }, 3000);
-
-    // Resolve when the process exits
-    proc.on('exit', () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-
-    // Send POST /api/shutdown to trigger graceful exit
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: apiPort,
-      path: '/api/shutdown',
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    req.on('error', () => {
-      // Server may already be down — force-kill timeout will handle it
-    });
-    req.end();
+  isShuttingDown = true;
+  return shutdownServerProcess({
+    proc: serverProcess,
+    apiPort,
+    authToken
   });
 }
 
