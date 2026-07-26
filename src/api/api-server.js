@@ -140,6 +140,109 @@ export class ApiServer {
     this._setupRoutes();
   }
 
+  _cloneConfigValue(value) {
+    return value === undefined ? undefined : structuredClone(value);
+  }
+
+  _persistSettings(values) {
+    if (!this.settings) return;
+    const clonedValues = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key, this._cloneConfigValue(value)])
+    );
+    if (typeof this.settings.setAll === 'function') {
+      this.settings.setAll(clonedValues);
+      return;
+    }
+    // Settings always provides setAll. Keep the single-key-compatible fallback
+    // for embedders and lightweight test doubles implementing the older shape.
+    for (const [key, value] of Object.entries(clonedValues)) this.settings.set(key, value);
+  }
+
+  _runPersistedMutation({ capture, apply, persist, restore, shouldPersist = () => true }) {
+    const previous = capture();
+    try {
+      const result = apply();
+      if (shouldPersist(result)) persist(result);
+      return result;
+    } catch (error) {
+      try {
+        restore(previous);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `${error.message || 'Configuration mutation failed'}; rollback failed: ${rollbackError.message}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  }
+
+  _captureRuleCollection(property) {
+    const reference = this.proxy[property];
+    return { reference, value: this._cloneConfigValue(reference) };
+  }
+
+  _restoreRuleCollection(property, previous) {
+    previous.reference.splice(
+      0,
+      previous.reference.length,
+      ...this._cloneConfigValue(previous.value)
+    );
+    this.proxy[property] = previous.reference;
+  }
+
+  _mutateRules(property, settingKey, apply, shouldPersist) {
+    return this._runPersistedMutation({
+      capture: () => this._captureRuleCollection(property),
+      apply,
+      persist: () => this._persistSettings({ [settingKey]: this.proxy[property] }),
+      restore: previous => this._restoreRuleCollection(property, previous),
+      ...(shouldPersist ? { shouldPersist } : {})
+    });
+  }
+
+  _mutateProxySetting({ property, settingKey = property, apply, restore, shouldPersist }) {
+    return this._runPersistedMutation({
+      capture: () => ({
+        reference: this.proxy[property],
+        value: this._cloneConfigValue(this.proxy[property])
+      }),
+      apply,
+      persist: () => this._persistSettings({ [settingKey]: this.proxy[property] }),
+      restore: previous => {
+        restore(this._cloneConfigValue(previous.value));
+        this.proxy[property] = previous.reference;
+      },
+      ...(shouldPersist ? { shouldPersist } : {})
+    });
+  }
+
+  _captureUpstreamProxy() {
+    return {
+      reference: this.proxy.upstreamProxy,
+      value: this._cloneConfigValue(this.proxy.upstreamProxy),
+      generation: this.proxy.getUpstreamProxyGeneration?.()
+    };
+  }
+
+  _restoreUpstreamProxy(previous) {
+    this.proxy.setUpstreamProxy(this._cloneConfigValue(previous.value));
+    this.proxy.upstreamProxy = previous.reference;
+    if (previous.generation !== undefined && '_upstreamProxyGeneration' in this.proxy) {
+      this.proxy._upstreamProxyGeneration = previous.generation;
+    }
+  }
+
+  _setUpstreamProxy(config) {
+    return this._runPersistedMutation({
+      capture: () => this._captureUpstreamProxy(),
+      apply: () => this.proxy.setUpstreamProxy(config),
+      persist: () => this._persistSettings({ upstreamProxy: this.proxy.upstreamProxy }),
+      restore: previous => this._restoreUpstreamProxy(previous)
+    });
+  }
+
   _runPythonJson(script, args = []) {
     return new Promise((resolve, reject) => {
       execFile('python3', ['-c', script, ...args], { timeout: 30000 }, (error, stdout, stderr) => {
@@ -211,15 +314,23 @@ print(json.dumps({"providers": get_proxy_providers()}))
   }
 
   _setAutoRotateProxyConfig(config = {}) {
-    this.autoRotateProxy = {
-      enabled: !!config.enabled,
-      provider: String(config.provider || 'lemonprime').trim() || 'lemonprime'
-    };
-    this.settings?.set('autoRotateProxyOnError', this.autoRotateProxy);
-    return this.autoRotateProxy;
+    return this._runPersistedMutation({
+      capture: () => ({
+        reference: this.autoRotateProxy
+      }),
+      apply: () => {
+        this.autoRotateProxy = {
+          enabled: !!config.enabled,
+          provider: String(config.provider || 'lemonprime').trim() || 'lemonprime'
+        };
+        return this.autoRotateProxy;
+      },
+      persist: () => this._persistSettings({ autoRotateProxyOnError: this.autoRotateProxy }),
+      restore: previous => { this.autoRotateProxy = previous.reference; }
+    });
   }
 
-  async _rotateBottingToolsProxy(provider, refill = true) {
+  async _rotateBottingToolsProxy(provider, refill = true, { persistProvider = false } = {}) {
     const startingGeneration = this.proxy.getUpstreamProxyGeneration?.();
     const proxy = await this._getBottingToolsProxy(provider, refill);
     const currentGeneration = this.proxy.getUpstreamProxyGeneration?.();
@@ -237,8 +348,31 @@ print(json.dumps({"providers": get_proxy_providers()}))
       type: proxy.type || 'http',
       noProxy: this.proxy.upstreamProxy?.noProxy || []
     };
-    this.proxy.setUpstreamProxy(upstreamProxy);
-    this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
+    this._runPersistedMutation({
+      capture: () => ({
+        upstreamProxy: this._captureUpstreamProxy(),
+        autoRotateProxy: {
+          reference: this.autoRotateProxy
+        }
+      }),
+      apply: () => {
+        this.proxy.setUpstreamProxy(upstreamProxy);
+        if (persistProvider) {
+          this.autoRotateProxy = {
+            ...this._getAutoRotateProxyConfig(),
+            provider: proxy.provider
+          };
+        }
+      },
+      persist: () => this._persistSettings({
+        upstreamProxy: this.proxy.upstreamProxy,
+        ...(persistProvider ? { autoRotateProxyOnError: this.autoRotateProxy } : {})
+      }),
+      restore: previous => {
+        this._restoreUpstreamProxy(previous.upstreamProxy);
+        this.autoRotateProxy = previous.autoRotateProxy.reference;
+      }
+    });
     return { applied: true, provider: proxy.provider, upstreamProxy: this.proxy.upstreamProxy };
   }
 
@@ -801,9 +935,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const filterSafeFonts = Object.prototype.hasOwnProperty.call(req.body || {}, 'filterSafeFonts')
         ? req.body.filterSafeFonts === true
         : this.settings?.get('filterSafeFonts', false) === true;
-      this.settings?.set('hideTunnelRequests', hideTunnelRequests);
-      this.settings?.set('filterSafeFonts', filterSafeFonts);
-      this.proxy.filterSafeFonts = filterSafeFonts;
+      this._runPersistedMutation({
+        capture: () => this.proxy.filterSafeFonts,
+        apply: () => { this.proxy.filterSafeFonts = filterSafeFonts; },
+        persist: () => this._persistSettings({ hideTunnelRequests, filterSafeFonts }),
+        restore: previous => { this.proxy.filterSafeFonts = previous; }
+      });
       res.json({ success: true, hideTunnelRequests, filterSafeFonts });
     });
 
@@ -1085,14 +1222,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           return res.status(400).json({ error: 'At least one complete matcher is required' });
         }
         // New format
-        const rule = this.proxy.addMockRule({
+        const rule = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
           enabled: body.enabled !== undefined ? body.enabled : true,
           priority: body.priority || 'normal',
           matchers: body.matchers,
           preSteps: body.preSteps || undefined,
           action: body.action
-        });
-        this._persistMockRules();
+        }));
         return res.json({ success: true, rule });
       }
 
@@ -1101,7 +1237,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!urlPattern && !body.matchers) {
         return res.status(400).json({ error: 'matchers+action or urlPattern+response are required' });
       }
-      const rule = this.proxy.addMockRule({
+      const rule = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
         method: method || '*',
         urlPattern,
         enabled: true,
@@ -1111,8 +1247,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           headers: response?.headers || { 'Content-Type': 'application/json' },
           body: response?.body || ''
         }
-      });
-      this._persistMockRules();
+      }));
       res.json({ success: true, rule });
     });
 
@@ -1126,8 +1261,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         return res.status(400).json({ error: 'Every imported mock rule must be valid' });
       }
 
-      this.proxy.loadMockRules(rules);
-      this._persistMockRules();
+      this._mutateRules('mockRules', 'mockRules', () => this.proxy.loadMockRules(rules));
       res.json({ success: true, rules: this.proxy.mockRules });
     });
 
@@ -1135,24 +1269,35 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (req.body?.matchers && !hasCompleteMockMatchers(req.body.matchers)) {
         return res.status(400).json({ error: 'At least one complete matcher is required' });
       }
-      const updated = this.proxy.updateMockRule(req.params.id, req.body);
+      const updated = this._mutateRules(
+        'mockRules',
+        'mockRules',
+        () => this.proxy.updateMockRule(req.params.id, req.body),
+        result => result !== null
+      );
       if (!updated) return res.status(404).json({ error: 'Rule not found' });
-      this._persistMockRules();
       res.json({ success: true, rule: updated });
     });
 
     router.patch('/api/mock-rules/:id/toggle', (req, res) => {
-      const toggled = this.proxy.toggleMockRule(req.params.id);
+      const toggled = this._mutateRules(
+        'mockRules',
+        'mockRules',
+        () => this.proxy.toggleMockRule(req.params.id),
+        result => result !== null
+      );
       if (!toggled) return res.status(404).json({ error: 'Rule not found' });
-      this._persistMockRules();
       res.json({ success: true, rule: toggled });
     });
 
     router.post('/api/mock-rules/reorder', (req, res) => {
       const { ids } = req.body;
       if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array is required' });
-      const rules = this.proxy.reorderMockRules(ids);
-      this._persistMockRules();
+      const rules = this._mutateRules(
+        'mockRules',
+        'mockRules',
+        () => this.proxy.reorderMockRules(ids)
+      );
       res.json({ success: true, rules });
     });
 
@@ -1162,14 +1307,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (items.some(item => item?.type === 'group')) {
         return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
       }
-      const group = this.proxy.addMockRule({
+      const group = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
         type: 'group',
         title: req.body.title || 'New Group',
         enabled: true,
         items,
         collapsed: false
-      });
-      this._persistMockRules();
+      }));
       res.json({ success: true, group });
     });
 
@@ -1213,14 +1357,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         items: sourceRules,
         collapsed: false
       };
-      const previousRules = this.proxy.mockRules;
-      const combinedRules = [...removeSources(previousRules), group];
+      const combinedRules = [...removeSources(this.proxy.mockRules), group];
 
-      this.proxy.mockRules = combinedRules;
       try {
-        this._persistMockRules();
+        this._mutateRules('mockRules', 'mockRules', () => {
+          this.proxy.mockRules = combinedRules;
+          return combinedRules;
+        });
       } catch (err) {
-        this.proxy.mockRules = previousRules;
         return res.status(500).json({ error: err.message || 'Failed to persist mock rules' });
       }
 
@@ -1241,44 +1385,44 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
 
       // Find and remove the rule from its current location
-      const removedRule = this._removeRuleById(ruleId);
+      const removedRule = this._mutateRules('mockRules', 'mockRules', () => {
+        const removed = this._removeRuleById(ruleId);
+        if (removed) group.items.push(removed);
+        return removed;
+      }, result => result !== null);
       if (!removedRule) return res.status(404).json({ error: 'Rule not found' });
-      group.items.push(removedRule);
-      this._persistMockRules();
       res.json({ success: true });
     });
 
     // Move a rule out of its group to top level
     router.post('/api/mock-rules/ungroup', (req, res) => {
       const { ruleId } = req.body;
-      const rule = this._removeRuleById(ruleId);
+      const rule = this._mutateRules('mockRules', 'mockRules', () => {
+        const removed = this._removeRuleById(ruleId);
+        if (removed) this.proxy.mockRules.push(removed);
+        return removed;
+      }, result => result !== null);
       if (!rule) return res.status(404).json({ error: 'Rule not found' });
-      this.proxy.mockRules.push(rule);
-      this._persistMockRules();
       res.json({ success: true });
     });
 
     router.delete('/api/mock-rules/:id', (req, res) => {
       // IDs take precedence; fall back to an index only for legacy clients.
       const param = req.params.id;
-      const removedById = this.proxy.removeMockRuleById(param);
-      if (!removedById) {
+      const removed = this._mutateRules('mockRules', 'mockRules', () => {
+        if (this.proxy.removeMockRuleById(param)) return true;
         const asInt = Number(param);
-        if (!Number.isInteger(asInt) || String(asInt) !== param || asInt < 0) {
-          return res.status(404).json({ error: 'Rule not found' });
-        }
-        if (asInt >= this.proxy.mockRules.length) {
-          return res.status(404).json({ error: 'Rule not found' });
-        }
+        if (!Number.isInteger(asInt) || String(asInt) !== param || asInt < 0 ||
+            asInt >= this.proxy.mockRules.length) return false;
         this.proxy.removeMockRule(asInt);
-      }
-      this._persistMockRules();
+        return true;
+      }, Boolean);
+      if (!removed) return res.status(404).json({ error: 'Rule not found' });
       res.json({ success: true });
     });
 
     router.delete('/api/mock-rules', (req, res) => {
-      this.proxy.clearMockRules();
-      this._persistMockRules();
+      this._mutateRules('mockRules', 'mockRules', () => this.proxy.clearMockRules());
       res.json({ success: true });
     });
 
@@ -1288,24 +1432,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/breakpoints', (req, res) => {
-      try {
-        const rule = this.proxy.addBreakpoint(req.body);
-        this._persistBreakpointRules();
-        res.json({ success: true, rule });
-      } catch (err) {
-        res.status(400).json({ error: err.message });
-      }
+      const validationError = this.proxy.validateBreakpointRule(req.body);
+      if (validationError) return res.status(400).json({ error: validationError });
+      const rule = this._mutateRules(
+        'breakpointRules',
+        'breakpointRules',
+        () => this.proxy.addBreakpoint(req.body)
+      );
+      res.json({ success: true, rule });
     });
 
     router.patch('/api/breakpoints/:id', (req, res) => {
-      try {
-        const updated = this.proxy.updateBreakpoint(req.params.id, req.body || {});
-        if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
-        this._persistBreakpointRules();
-        res.json({ success: true, rule: updated });
-      } catch (err) {
-        res.status(400).json({ error: err.message });
-      }
+      const patch = req.body || {};
+      const validationError = this.proxy.validateBreakpointRule(patch, { patch: true });
+      if (validationError) return res.status(400).json({ error: validationError });
+      const updated = this._mutateRules(
+        'breakpointRules',
+        'breakpointRules',
+        () => this.proxy.updateBreakpoint(req.params.id, patch),
+        result => result !== null
+      );
+      if (!updated) return res.status(404).json({ error: 'Breakpoint not found' });
+      res.json({ success: true, rule: updated });
     });
 
     // Pending breakpoints (paused requests) — must be before /:id to avoid matching "pending" as an id
@@ -1322,10 +1470,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.delete('/api/breakpoints/:id', (req, res) => {
-      if (!this.proxy.removeBreakpoint(req.params.id)) {
+      const removed = this._mutateRules(
+        'breakpointRules',
+        'breakpointRules',
+        () => this.proxy.removeBreakpoint(req.params.id),
+        Boolean
+      );
+      if (!removed) {
         return res.status(404).json({ error: 'Breakpoint not found' });
       }
-      this._persistBreakpointRules();
       res.json({ success: true });
     });
 
@@ -1337,8 +1490,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/upstream-proxy', (req, res) => {
       const { host, port, auth, type, noProxy } = req.body || {};
       try {
-        this.proxy.setUpstreamProxy({ host, port, auth, type, noProxy });
-        this.settings?.set('upstreamProxy', this.proxy.upstreamProxy);
+        this._setUpstreamProxy({ host, port, auth, type, noProxy });
         res.json({ success: true, upstreamProxy: this.proxy.upstreamProxy });
       } catch (error) {
         if (error instanceof UpstreamProxyConfigError) {
@@ -1349,8 +1501,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.delete('/api/upstream-proxy', (req, res) => {
-      this.proxy.setUpstreamProxy(null);
-      this.settings?.set('upstreamProxy', null);
+      this._setUpstreamProxy(null);
       res.json({ success: true });
     });
 
@@ -1367,15 +1518,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       try {
         const provider = req.body?.provider || 'lemonprime';
         const refill = req.body?.refill !== false;
-        const result = await this._rotateBottingToolsProxy(provider, refill);
+        const result = await this._rotateBottingToolsProxy(provider, refill, { persistProvider: true });
         if (result.applied === false) {
           return res.status(409).json({
             error: 'Upstream proxy changed while rotation was in progress',
             upstreamProxy: result.upstreamProxy
           });
         }
-        const autoConfig = this._getAutoRotateProxyConfig();
-        this._setAutoRotateProxyConfig({ ...autoConfig, provider: result.provider });
         res.json({ success: true, ...result });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1401,16 +1550,22 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/tls-passthrough', (req, res) => {
       const { hosts } = req.body;
-      this.proxy.setTlsPassthrough(hosts || []);
-      this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
+      this._mutateProxySetting({
+        property: 'tlsPassthrough',
+        apply: () => this.proxy.setTlsPassthrough(hosts || []),
+        restore: previous => this.proxy.setTlsPassthrough(previous)
+      });
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
     router.post('/api/tls-passthrough/items', (req, res) => {
       const host = String(req.body?.host || '').trim();
       if (!host) return res.status(400).json({ error: 'host is required' });
       if (!this.proxy.tlsPassthrough.includes(host)) {
-        this.proxy.setTlsPassthrough([...this.proxy.tlsPassthrough, host]);
-        this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
+        this._mutateProxySetting({
+          property: 'tlsPassthrough',
+          apply: () => this.proxy.setTlsPassthrough([...this.proxy.tlsPassthrough, host]),
+          restore: previous => this.proxy.setTlsPassthrough(previous)
+        });
       }
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
@@ -1420,8 +1575,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!host || hosts.length === this.proxy.tlsPassthrough.length) {
         return res.status(404).json({ error: 'Host not found' });
       }
-      this.proxy.setTlsPassthrough(hosts);
-      this.settings?.set('tlsPassthrough', this.proxy.tlsPassthrough);
+      this._mutateProxySetting({
+        property: 'tlsPassthrough',
+        apply: () => this.proxy.setTlsPassthrough(hosts),
+        restore: previous => this.proxy.setTlsPassthrough(previous)
+      });
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
 
@@ -1430,8 +1588,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ certificates: this.proxy.clientCertificates });
     });
     router.post('/api/client-certificates', (req, res) => {
-      this.proxy.setClientCertificates(req.body.certificates || []);
-      this.settings?.set('clientCertificates', this.proxy.clientCertificates);
+      this._mutateProxySetting({
+        property: 'clientCertificates',
+        apply: () => this.proxy.setClientCertificates(req.body.certificates || []),
+        restore: previous => this.proxy.setClientCertificates(previous)
+      });
       res.json({ success: true });
     });
     router.post('/api/client-certificates/items', (req, res) => {
@@ -1440,8 +1601,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!host || !pfxPath) return res.status(400).json({ error: 'host and pfxPath are required' });
       const exists = this.proxy.clientCertificates.some(cert => cert.host === host && cert.pfxPath === pfxPath);
       if (!exists) {
-        this.proxy.setClientCertificates([...this.proxy.clientCertificates, { host, pfxPath }]);
-        this.settings?.set('clientCertificates', this.proxy.clientCertificates);
+        this._mutateProxySetting({
+          property: 'clientCertificates',
+          apply: () => this.proxy.setClientCertificates([
+            ...this.proxy.clientCertificates,
+            { host, pfxPath }
+          ]),
+          restore: previous => this.proxy.setClientCertificates(previous)
+        });
       }
       res.json({ success: true, certificates: this.proxy.clientCertificates });
     });
@@ -1452,8 +1619,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!host || !pfxPath || certificates.length === this.proxy.clientCertificates.length) {
         return res.status(404).json({ error: 'Client certificate not found' });
       }
-      this.proxy.setClientCertificates(certificates);
-      this.settings?.set('clientCertificates', this.proxy.clientCertificates);
+      this._mutateProxySetting({
+        property: 'clientCertificates',
+        apply: () => this.proxy.setClientCertificates(certificates),
+        restore: previous => this.proxy.setClientCertificates(previous)
+      });
       res.json({ success: true, certificates: this.proxy.clientCertificates });
     });
 
@@ -1462,16 +1632,22 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ cas: this.proxy.trustedCAs });
     });
     router.post('/api/trusted-cas', (req, res) => {
-      this.proxy.setTrustedCAs(req.body.cas || []);
-      this.settings?.set('trustedCAs', this.proxy.trustedCAs);
+      this._mutateProxySetting({
+        property: 'trustedCAs',
+        apply: () => this.proxy.setTrustedCAs(req.body.cas || []),
+        restore: previous => this.proxy.setTrustedCAs(previous)
+      });
       res.json({ success: true });
     });
     router.post('/api/trusted-cas/items', (req, res) => {
       const ca = String(req.body?.ca || '').trim();
       if (!ca) return res.status(400).json({ error: 'ca is required' });
       if (!this.proxy.trustedCAs.includes(ca)) {
-        this.proxy.setTrustedCAs([...this.proxy.trustedCAs, ca]);
-        this.settings?.set('trustedCAs', this.proxy.trustedCAs);
+        this._mutateProxySetting({
+          property: 'trustedCAs',
+          apply: () => this.proxy.setTrustedCAs([...this.proxy.trustedCAs, ca]),
+          restore: previous => this.proxy.setTrustedCAs(previous)
+        });
       }
       res.json({ success: true, cas: this.proxy.trustedCAs });
     });
@@ -1481,8 +1657,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!ca || cas.length === this.proxy.trustedCAs.length) {
         return res.status(404).json({ error: 'Trusted CA not found' });
       }
-      this.proxy.setTrustedCAs(cas);
-      this.settings?.set('trustedCAs', this.proxy.trustedCAs);
+      this._mutateProxySetting({
+        property: 'trustedCAs',
+        apply: () => this.proxy.setTrustedCAs(cas),
+        restore: previous => this.proxy.setTrustedCAs(previous)
+      });
       res.json({ success: true, cas: this.proxy.trustedCAs });
     });
 
@@ -1491,16 +1670,22 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ hosts: this.proxy.httpsWhitelist });
     });
     router.post('/api/https-whitelist', (req, res) => {
-      this.proxy.setHttpsWhitelist(req.body.hosts || []);
-      this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
+      this._mutateProxySetting({
+        property: 'httpsWhitelist',
+        apply: () => this.proxy.setHttpsWhitelist(req.body.hosts || []),
+        restore: previous => this.proxy.setHttpsWhitelist(previous)
+      });
       res.json({ success: true });
     });
     router.post('/api/https-whitelist/items', (req, res) => {
       const host = String(req.body?.host || '').trim();
       if (!host) return res.status(400).json({ error: 'host is required' });
       if (!this.proxy.httpsWhitelist.includes(host)) {
-        this.proxy.setHttpsWhitelist([...this.proxy.httpsWhitelist, host]);
-        this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
+        this._mutateProxySetting({
+          property: 'httpsWhitelist',
+          apply: () => this.proxy.setHttpsWhitelist([...this.proxy.httpsWhitelist, host]),
+          restore: previous => this.proxy.setHttpsWhitelist(previous)
+        });
       }
       res.json({ success: true, hosts: this.proxy.httpsWhitelist });
     });
@@ -1510,8 +1695,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!host || hosts.length === this.proxy.httpsWhitelist.length) {
         return res.status(404).json({ error: 'Host not found' });
       }
-      this.proxy.setHttpsWhitelist(hosts);
-      this.settings?.set('httpsWhitelist', this.proxy.httpsWhitelist);
+      this._mutateProxySetting({
+        property: 'httpsWhitelist',
+        apply: () => this.proxy.setHttpsWhitelist(hosts),
+        restore: previous => this.proxy.setHttpsWhitelist(previous)
+      });
       res.json({ success: true, hosts: this.proxy.httpsWhitelist });
     });
 
@@ -1549,8 +1737,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!['all', 'h2-only', 'disabled'].includes(mode)) {
         return res.status(400).json({ error: 'Invalid mode. Use: all, h2-only, disabled' });
       }
-      this.proxy.setHttp2Config(mode);
-      this.settings?.set('http2Enabled', mode);
+      this._mutateProxySetting({
+        property: 'http2Enabled',
+        apply: () => this.proxy.setHttp2Config(mode),
+        restore: previous => this.proxy.setHttp2Config(previous)
+      });
       res.json({ success: true, mode: this.proxy.http2Enabled });
     });
 
@@ -1563,8 +1754,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/tls-fingerprint', (req, res) => {
       const { fingerprint } = req.body;
-      this.proxy.setTlsFingerprint(fingerprint);
-      this.settings?.set('tlsFingerprint', fingerprint);
+      this._mutateProxySetting({
+        property: 'tlsFingerprint',
+        apply: () => this.proxy.setTlsFingerprint(fingerprint),
+        restore: previous => this.proxy.setTlsFingerprint(previous)
+      });
       res.json({ success: true, fingerprint: this.proxy.tlsFingerprint });
     });
 
@@ -1584,9 +1778,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         return res.status(400).json({ error: 'Port range must use integers from 1 to 65535 with minimum no greater than maximum' });
       }
       // Store for next restart (can't change port while running)
-      this.settings?.set('proxyPortRange', range);
-      this.proxy.minPort = range.minPort;
-      this.proxy.maxPort = range.maxPort;
+      this._runPersistedMutation({
+        capture: () => ({ minPort: this.proxy.minPort, maxPort: this.proxy.maxPort }),
+        apply: () => {
+          this.proxy.minPort = range.minPort;
+          this.proxy.maxPort = range.maxPort;
+        },
+        persist: () => this._persistSettings({ proxyPortRange: range }),
+        restore: previous => {
+          this.proxy.minPort = previous.minPort;
+          this.proxy.maxPort = previous.maxPort;
+        }
+      });
       res.json({ success: true, minPort: this.proxy.minPort, maxPort: this.proxy.maxPort, note: 'Port changes take effect on next restart' });
     });
 
@@ -2016,14 +2219,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
     return clearId;
-  }
-
-  _persistMockRules() {
-    this.settings?.set('mockRules', this.proxy.mockRules);
-  }
-
-  _persistBreakpointRules() {
-    this.settings?.set('breakpointRules', this.proxy.getBreakpoints());
   }
 
   setMcpBridge(bridge) {

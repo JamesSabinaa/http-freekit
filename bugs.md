@@ -854,9 +854,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-267 — Medium — Failed persistence leaves runtime configuration applied
 
+- Status: **Fixed**.
 - Evidence: routes mutate proxy/rule state before saving (for example upstream, H2, and mock routes), while `Settings.set()` can restore only its own data object on write failure and cannot roll back the proxy mutation.
 - Impact: a request returns an error but the supposedly failed proxy, TLS, H2, or mock change remains active until restart; retries can duplicate rule behavior.
 - Reproduction: make settings persistence fail, POST a new upstream or mock, then query/use runtime state.
+- Resolution: persisted management mutations now snapshot runtime state, apply the live change, and atomically save cloned settings values; any apply or persistence error restores the prior live state, while apply errors occur before any settings write. Multi-key UI and BottingTools rotation updates use one settings write, and restored rule trees are detached from settings data to prevent reference aliasing.
 
 ### BUG-268 — Low/Medium — HAR conversion conflates wire and decoded body sizes
 

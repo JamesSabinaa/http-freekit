@@ -5056,6 +5056,7 @@ export class ProxyServer {
 
   loadMockRules(rules) {
     let migrated = false;
+    const input = structuredClone(Array.isArray(rules) ? rules : []);
     const flattenGroupItems = (items, parentEnabled = true) => {
       const flattened = [];
       for (const item of Array.isArray(items) ? items : []) {
@@ -5071,7 +5072,7 @@ export class ProxyServer {
       return flattened;
     };
 
-    const normalized = (Array.isArray(rules) ? rules : []).map(item => {
+    const normalized = input.map(item => {
       if (item?.type !== 'group') return item;
       const items = flattenGroupItems(item.items);
       return migrated ? { ...item, items } : item;
@@ -6179,7 +6180,7 @@ export class ProxyServer {
   }
 
   loadBreakpoints(rules) {
-    const input = Array.isArray(rules) ? rules : [];
+    const input = structuredClone(Array.isArray(rules) ? rules : []);
     const blockedIds = new Set(
       input
         .filter(rule => rule && typeof rule === 'object' && !Array.isArray(rule))
