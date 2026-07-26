@@ -788,6 +788,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-243 — Low/Medium — Repeated header arrays crash traffic detail rendering
 
+- Status: **Fixed**.
+- Resolution: Detail header inspection now reads names case-insensitively and combines scalar or repeated values without changing the headers displayed to the user.
+
 - Evidence: traffic validation explicitly accepts string-array header values, but the renderer calls `.toLowerCase()` on response Content-Type and `.split(",")` on Cache-Control at `src/ui/app.js:1657,1686`.
 - Impact: a valid imported record with repeated forms of either header throws when selected, preventing detail rendering.
 - Reproduction: import `"cache-control": ["public","max-age=60"]` and open the exchange.

@@ -495,15 +495,20 @@
 
     function findHeaderValues(headers, targetName) {
       if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null;
+      const normalizedTargetName = String(targetName).toLowerCase();
       const values = [];
       let present = false;
       for (const [name, value] of Object.entries(headers)) {
-        if (name.toLowerCase() !== targetName) continue;
+        if (name.toLowerCase() !== normalizedTargetName) continue;
         present = true;
         const headerValues = Array.isArray(value) ? value : [value];
         values.push(...headerValues.map(item => String(item ?? '')));
       }
       return present ? values : null;
+    }
+
+    function getCombinedHeaderValue(headers, targetName) {
+      return (findHeaderValues(headers, targetName) || []).join(', ');
     }
 
     function matchesFilter(req, filter) {
@@ -1686,7 +1691,7 @@
       // ---- Request Body Card (separate card) ----
       const effBody = effReq.requestBody;
       if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
-        const reqCt = effReq.requestHeaders?.['content-type'] || '';
+        const reqCt = getCombinedHeaderValue(effReq.requestHeaders, 'content-type');
         const reqBodyModes = getBodyViewModes(effBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
         const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !effBody.startsWith('[Binary data:');
@@ -1734,7 +1739,7 @@
 
       // ---- Response Body Card (separate card) ----
       if (req.responseBody && req.responseBody !== '') {
-        const ct = req.responseHeaders?.['content-type'] || '';
+        const ct = getCombinedHeaderValue(req.responseHeaders, 'content-type');
         const resBodyModes = getBodyViewModes(req.responseBody, ct);
         const resDefaultMode = resBodyModes[0]?.value || 'text';
         const resUseMonaco = isMonacoViewMode(resDefaultMode) && !req.responseBody.startsWith('[Binary data:');
@@ -1824,8 +1829,8 @@
           `;
 
       // ---- Compression Analysis ----
-      const resEncoding = req.responseHeaders?.['content-encoding'] || '';
-      const resCt = (req.responseHeaders?.['content-type'] || '').toLowerCase();
+      const resEncoding = getCombinedHeaderValue(req.responseHeaders, 'content-encoding').toLowerCase();
+      const resCt = getCombinedHeaderValue(req.responseHeaders, 'content-type').toLowerCase();
       const resSize = req.responseBodySize || 0;
       const isCompressible = !resCt.match(/^(image\/(png|jpeg|gif|webp)|video\/|audio\/|application\/(zip|gzip|pdf|octet-stream))/);
 
@@ -1847,14 +1852,14 @@
       html += '</div>';
 
       // ---- Caching Analysis ----
-      const cacheControl = req.responseHeaders?.['cache-control'] || '';
-      const expires = req.responseHeaders?.['expires'] || '';
-      const etag = req.responseHeaders?.['etag'] || '';
-      const lastMod = req.responseHeaders?.['last-modified'] || '';
+      const cacheControl = getCombinedHeaderValue(req.responseHeaders, 'cache-control');
+      const expires = getCombinedHeaderValue(req.responseHeaders, 'expires');
+      const etag = getCombinedHeaderValue(req.responseHeaders, 'etag');
+      const lastMod = getCombinedHeaderValue(req.responseHeaders, 'last-modified');
 
       html += '<div style="margin-top:16px;"><div class="section-label">Caching</div>';
       if (cacheControl) {
-        const directives = cacheControl.split(',').map(d => d.trim());
+        const directives = cacheControl.split(',').map(d => d.trim().toLowerCase());
         const maxAge = directives.find(d => d.startsWith('max-age='));
         const isNoStore = directives.includes('no-store');
         const isNoCache = directives.includes('no-cache');
@@ -1959,7 +1964,7 @@
 
       // Initialize the request body viewer from the currently selected transform perspective
       if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
-        const reqCt2 = effReq.requestHeaders?.['content-type'] || '';
+        const reqCt2 = getCombinedHeaderValue(effReq.requestHeaders, 'content-type');
         const reqModes2 = getBodyViewModes(effBody, reqCt2);
         const reqDefMode2 = reqModes2[0]?.value || 'text';
         renderBodyViewer('reqBody', effBody, reqCt2, reqDefMode2, { request: effReq, section: 'request' });
@@ -1967,7 +1972,7 @@
 
       // Initialize the response body viewer
       if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
-        const resCt = req.responseHeaders?.['content-type'] || '';
+        const resCt = getCombinedHeaderValue(req.responseHeaders, 'content-type');
         const resModes = getBodyViewModes(req.responseBody, resCt);
         const resDefMode = resModes[0]?.value || 'text';
         renderBodyViewer('resBody', req.responseBody, resCt, resDefMode, { request: req, section: 'response' });
@@ -2806,8 +2811,8 @@
       const effectiveReq = section === 'request' ? getEffectiveRequest(req) : req;
       const body = section === 'request' ? effectiveReq.requestBody : req.responseBody;
       const ct = section === 'request'
-        ? (effectiveReq.requestHeaders?.['content-type'] || '')
-        : (req.responseHeaders?.['content-type'] || '');
+        ? getCombinedHeaderValue(effectiveReq.requestHeaders, 'content-type')
+        : getCombinedHeaderValue(req.responseHeaders, 'content-type');
       const wrapper = document.getElementById(elementId);
       const mode = wrapper?.dataset.viewMode || (getBodyViewModes(body, ct)[0]?.value || 'protobuf');
       renderBodyViewer(elementId, body, ct, mode, {
@@ -3510,8 +3515,8 @@
       const effectiveReq = section === 'request' ? getEffectiveRequest(req) : req;
       const body = section === 'request' ? effectiveReq.requestBody : req.responseBody;
       const ct = section === 'request'
-        ? (effectiveReq.requestHeaders?.['content-type'] || '')
-        : (req.responseHeaders?.['content-type'] || '');
+        ? getCombinedHeaderValue(effectiveReq.requestHeaders, 'content-type')
+        : getCombinedHeaderValue(req.responseHeaders, 'content-type');
 
       renderBodyViewer(elementId, body, ct, mode, { request: effectiveReq, section });
     }
