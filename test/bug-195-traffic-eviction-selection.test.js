@@ -28,11 +28,15 @@ function createHarness(selectedIndex) {
     detailPanel: { _request: selected },
     detailEmptyState: { style: { display: 'none' } },
     detailActive: { style: { display: 'flex' } },
-    trafficBody: {
+    trafficGrid: {
       setAttribute(name, value) {
         attributes.set(name, value);
+      },
+      removeAttribute(name) {
+        attributes.delete(name);
       }
-    }
+    },
+    trafficBody: { contains: () => false }
   };
   const location = { hash: `#/view/${selected.id}` };
   const historyCalls = [];
@@ -87,7 +91,7 @@ test('capacity eviction closes an evicted selected request coherently', () => {
   assert.equal(harness.elements.detailPanel._request, null);
   assert.equal(harness.elements.detailEmptyState.style.display, 'flex');
   assert.equal(harness.elements.detailActive.style.display, 'none');
-  assert.equal(harness.attributes.get('aria-activedescendant'), '');
+  assert.equal(harness.attributes.has('aria-activedescendant'), false);
   assert.equal(harness.context.window.location.hash, '#/view');
   assert.deepEqual(harness.historyCalls, [{ state: null, title: '', hash: '#/view' }]);
   assert.equal(harness.filterCalls, 1);

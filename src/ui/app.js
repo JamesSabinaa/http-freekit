@@ -730,8 +730,7 @@
         }
       }
 
-      const rowTabIndex = req.id === selectedRequestId || (!selectedRequestId && index === 0) ? 0 : -1;
-      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="${rowTabIndex}" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="-1" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
         <td role="gridcell">${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
@@ -746,7 +745,11 @@
       const tbody = document.getElementById('trafficBody');
       const wrapper = document.getElementById('trafficTableWrapper');
       const totalRows = filteredRequests.length;
-      if (totalRows === 0) { tbody.innerHTML = ''; return; }
+      if (totalRows === 0) {
+        tbody.innerHTML = '';
+        updateTrafficActiveDescendant(null);
+        return;
+      }
 
       const scrollTop = wrapper.scrollTop;
       const clientHeight = wrapper.clientHeight;
@@ -758,7 +761,10 @@
       const renderEnd = Math.min(totalRows, lastVisible + VS_BUFFER);
 
       // Skip re-render if range and selection haven't changed
-      if (!vsForceRender && renderStart === vsRenderStart && renderEnd === vsRenderEnd) return;
+      if (!vsForceRender && renderStart === vsRenderStart && renderEnd === vsRenderEnd) {
+        updateTrafficActiveDescendant(selectedRequestId);
+        return;
+      }
 
       let html = '';
       // Top spacer
@@ -778,6 +784,7 @@
       vsRenderStart = renderStart;
       vsRenderEnd = renderEnd;
       vsForceRender = false;
+      updateTrafficActiveDescendant(selectedRequestId);
     }
 
     function renderTraffic() {
@@ -791,7 +798,7 @@
       updateSortHeaders();
 
       // Update aria-rowcount on the traffic table
-      const trafficTable = document.querySelector('.traffic-table');
+      const trafficTable = document.getElementById('trafficGrid');
       if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
 
       const query = document.getElementById('searchInput').value.trim();
@@ -827,6 +834,7 @@
           empty.innerHTML = '<div style="font-size:60px;opacity:0.15;margin-bottom:16px;">&#9783;</div><h3>Connect a client and intercept some requests, and they\'ll appear here</h3>';
         }
         empty.style.display = 'flex';
+        updateTrafficActiveDescendant(null);
         return;
       }
 
@@ -851,8 +859,16 @@
     }
 
     function updateTrafficActiveDescendant(id) {
+      const grid = document.getElementById('trafficGrid');
+      if (!grid) return;
       const tbody = document.getElementById('trafficBody');
-      if (tbody) tbody.setAttribute('aria-activedescendant', id ? 'row-' + id : '');
+      const row = id ? document.getElementById('row-' + id) : null;
+      const rowIsOwned = Boolean(row) && (!tbody?.contains || tbody.contains(row));
+      if (rowIsOwned) {
+        grid.setAttribute('aria-activedescendant', row.id);
+      } else {
+        grid.removeAttribute('aria-activedescendant');
+      }
     }
 
     function selectRequest(id, toggle = true) {
@@ -860,14 +876,12 @@
         closeDetail();
         return;
       }
+      const req = requests.find(r => r.id === id);
+      if (!req) return;
       selectedRequestId = id;
-      updateTrafficActiveDescendant(id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', buildTrafficViewHash(id));
       }
-      const req = requests.find(r => r.id === id);
-      if (!req) return;
-
       // Scroll selected row into view (center alignment)
       const idx = filteredRequests.findIndex(r => r.id === id);
       if (idx !== -1) {
@@ -8706,7 +8720,6 @@
 
       const req = filteredRequests[newIdx];
       selectedRequestId = req.id;
-      updateTrafficActiveDescendant(req.id);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
         history.replaceState(null, '', buildTrafficViewHash(req.id));
       }
@@ -10231,8 +10244,9 @@
       }
 
       const wrapper = document.getElementById('trafficTableWrapper');
+      const grid = document.getElementById('trafficGrid');
       let row = event.target?.closest?.('#trafficBody tr[data-id]') || null;
-      if (!row && event.target === wrapper) row = selectedTrafficRow();
+      if (!row && (event.target === grid || event.target === wrapper)) row = selectedTrafficRow();
       if (!row || row.dataset.id !== selectedRequestId) return false;
 
       consumeContextMenuKey(event);
@@ -10817,6 +10831,10 @@
       const tagName = element?.tagName?.toUpperCase();
       if (tagName === 'BUTTON' || tagName === 'SUMMARY') return false;
       if (tagName === 'A' && element?.hasAttribute?.('href')) return false;
+      if (element?.id === 'trafficGrid' || element?.id === 'trafficTableWrapper' ||
+          element?.matches?.('#trafficBody tr[data-id]')) {
+        return true;
+      }
       return !element?.closest?.([
         'button', 'a[href]', 'summary', 'audio[controls]', 'video[controls]',
         '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
@@ -10958,7 +10976,8 @@
       // Ctrl+[: Focus traffic list pane (left side)
       if (e.key === '[' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
         e.preventDefault();
-        const trafficList = document.getElementById('trafficTableWrapper');
+        const trafficList = document.getElementById('trafficGrid') ||
+          document.getElementById('trafficTableWrapper');
         if (trafficList) trafficList.focus();
         return;
       }
@@ -10974,29 +10993,18 @@
       // Arrow / vim navigation applies only to the active Traffic panel's
       // non-interactive surface. Controls retain their native key behavior.
       if (trafficPanelActive && isTrafficNavigationKeyboardTarget(trafficNavigationTarget)) {
-        if (e.key === 'ArrowDown' || e.key === 'j') {
+        const direction = e.key === 'ArrowDown' || e.key === 'j' ? 1
+          : e.key === 'ArrowUp' || e.key === 'k' ? -1
+          : e.key === 'PageDown' ? 10
+          : e.key === 'PageUp' ? -10
+          : e.key === 'Home' ? 'first'
+          : e.key === 'End' ? 'last'
+          : null;
+        if (direction !== null) {
           e.preventDefault();
-          selectRequestByIndex(1);
-        }
-        if (e.key === 'ArrowUp' || e.key === 'k') {
-          e.preventDefault();
-          selectRequestByIndex(-1);
-        }
-        if (e.key === 'PageDown') {
-          e.preventDefault();
-          selectRequestByIndex(10);
-        }
-        if (e.key === 'PageUp') {
-          e.preventDefault();
-          selectRequestByIndex(-10);
-        }
-        if (e.key === 'Home') {
-          e.preventDefault();
-          selectRequestByIndex('first');
-        }
-        if (e.key === 'End') {
-          e.preventDefault();
-          selectRequestByIndex('last');
+          const grid = document.getElementById('trafficGrid');
+          if (grid && document.activeElement !== grid) grid.focus({ preventScroll: true });
+          selectRequestByIndex(direction);
         }
       }
     });

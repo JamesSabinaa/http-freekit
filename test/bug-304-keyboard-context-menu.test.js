@@ -229,7 +229,8 @@ function createHarness() {
   const trafficPanel = append(document, document.body, 'section', 'panel-traffic');
   trafficPanel.className = 'active';
   const wrapper = append(document, trafficPanel, 'div', 'trafficTableWrapper');
-  const trafficBody = append(document, wrapper, 'tbody', 'trafficBody');
+  const grid = append(document, wrapper, 'table', 'trafficGrid');
+  const trafficBody = append(document, grid, 'tbody', 'trafficBody');
   const row = append(document, trafficBody, 'tr');
   row.setAttribute('data-id', 'request-1');
   row.rect = { left: 41, top: 20, right: 141, bottom: 64, width: 100, height: 44 };
@@ -274,7 +275,7 @@ function createHarness() {
     };
   `, context);
 
-  return { context, document, clipboardWrites, selections, trafficPanel, wrapper, trafficBody, row, api: context.menuApi };
+  return { context, document, clipboardWrites, selections, trafficPanel, wrapper, grid, trafficBody, row, api: context.menuApi };
 }
 
 function dispatchKey(document, key, target = document.activeElement, overrides = {}) {
@@ -430,6 +431,18 @@ test('keyboard invocation excludes editable targets, editor surfaces, unselected
   assert.ok(context);
 });
 
+test('focused Traffic grid opens the selected row context menu', () => {
+  const { api, document, grid, row } = createHarness();
+  grid.focus();
+
+  const event = dispatchKey(document, 'ContextMenu', grid);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.ok(api.active());
+  assert.equal(api.active().style.left, `${row.rect.left}px`);
+  assert.equal(api.active().style.top, `${row.rect.bottom}px`);
+});
+
 test('rendered Traffic rows and header targets expose keyboard menu hooks', () => {
   const rowRenderer = extract('const _globe =', '// Render the visible virtual-scroll rows');
   const headerRenderer = extract('function renderHeadersGrid', '// Keep old renderHeaders as alias');
@@ -451,7 +464,7 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
   const rowHtml = context.renderApi.row({
     id: 'row-1', method: 'GET', statusCode: 200, source: 'proxy', host: 'example.test', path: '/', pinned: false
   }, 2);
-  assert.match(rowHtml, /aria-haspopup="menu" tabindex="0"/);
+  assert.match(rowHtml, /aria-haspopup="menu" tabindex="-1"/);
   assert.match(rowHtml, /oncontextmenu="showTrafficContextMenu\(event, 'row-1'\)"/);
 
   const headerHtml = context.renderApi.headers({ 'x-test': 'value' }, 'request');

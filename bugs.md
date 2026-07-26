@@ -2691,6 +2691,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-323 — Low — Traffic active-descendant is attached to an unfocusable owner
 
+- Status: **Fixed**.
+- Resolution: the focusable Traffic grid now owns `aria-activedescendant`, virtual rendering keeps it synchronized only with an owned rendered row, and scoped keyboard navigation focuses the grid while mouse selection leaves focus untouched.
 - Evidence: the Traffic grid is the table at `src/ui/index.html:70`, but `updateTrafficActiveDescendant()` at `src/ui/app.js:700-703` writes `aria-activedescendant` to the unfocusable `tbody`. The table, body, and generated rows never receive keyboard or programmatic focus.
 - Impact: keyboard selection changes visually, but assistive technology receives no active-row focus or selection announcement.
 - Reproduction: navigate Traffic with Arrow keys and inspect `document.activeElement` and the accessibility tree; the active descendant belongs to no focused composite.

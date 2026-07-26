@@ -715,6 +715,11 @@
       font-size: 13px;
     }
 
+    .traffic-table:focus-visible {
+      outline: 2px solid var(--pop-color);
+      outline-offset: -2px;
+    }
+
     .traffic-table thead tr {
       height: 38px;
       background: var(--bg-main);

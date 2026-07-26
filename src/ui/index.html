@@ -67,7 +67,7 @@
               <button class="btn" onclick="resumeAllBreakpoints()" style="margin-left:auto;font-size:11px;padding:3px 10px;">Resume All</button>
             </div>
             <div class="traffic-table-wrapper" id="trafficTableWrapper" role="region" aria-label="Traffic list pane" tabindex="-1">
-              <table class="traffic-table" role="grid" aria-label="Intercepted HTTP traffic" aria-rowcount="0" aria-colcount="6">
+              <table class="traffic-table" id="trafficGrid" role="grid" tabindex="0" aria-label="Intercepted HTTP traffic" aria-rowcount="0" aria-colcount="6">
                 <thead><tr role="row">
                   <th role="columnheader" style="width:5px;padding:0;" aria-label="Row marker"></th>
                   <th role="columnheader" class="sortable" data-sort-field="method" aria-sort="none" tabindex="0" style="width:71px" onclick="sortBy('method')" onkeydown="activateOnKeyboard(event)"><span>Method</span><span class="sort-chevron" aria-hidden="true"></span></th>

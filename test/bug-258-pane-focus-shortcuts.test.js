@@ -26,6 +26,7 @@ function createHarness() {
     getElementById(id) {
       if (id === 'panel-traffic') return trafficPanel;
       if (id === 'trafficTableWrapper') return trafficList;
+      if (id === 'trafficGrid') return trafficGrid;
       if (id === 'detailPanel') return detailPane;
       return null;
     },
@@ -34,6 +35,7 @@ function createHarness() {
     }
   };
   const trafficList = { focus: () => { document.activeElement = trafficList; } };
+  const trafficGrid = { focus: () => { document.activeElement = trafficGrid; } };
   const detailPane = { focus: () => { document.activeElement = detailPane; } };
 
   vm.runInNewContext(shortcutSource, { document });
@@ -42,6 +44,7 @@ function createHarness() {
   return {
     document,
     trafficList,
+    trafficGrid,
     detailPane,
     press(key, modifier = 'ctrlKey') {
       let prevented = 0;
@@ -72,11 +75,11 @@ test('traffic list and detail panes are labeled programmatic focus targets', () 
   }
 });
 
-test('Ctrl+[ focuses the rendered traffic list pane', () => {
+test('Ctrl+[ focuses the rendered Traffic grid owner', () => {
   const harness = createHarness();
 
   assert.equal(harness.press('['), 1);
-  assert.equal(harness.document.activeElement, harness.trafficList);
+  assert.equal(harness.document.activeElement, harness.trafficGrid);
 });
 
 test('Command+] focuses the rendered request detail pane', () => {
