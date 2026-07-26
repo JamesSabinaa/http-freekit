@@ -2971,8 +2971,11 @@
     }
 
     .mock-add-rule-row {
+      appearance: none;
+      -webkit-appearance: none;
       cursor: pointer;
       text-align: left;
+      font: inherit;
       padding: 18px 20px;
       margin-top: 12px;
       opacity: 0.7;
@@ -2994,6 +2997,13 @@
       border-color: var(--pop-color);
       color: var(--pop-color);
       background: rgba(255,255,255,0.015);
+    }
+    .mock-add-rule-row:focus-visible {
+      opacity: 1;
+      border-color: var(--pop-color);
+      color: var(--pop-color);
+      outline: 2px solid var(--pop-color);
+      outline-offset: 2px;
     }
 
     .mock-rule-card {

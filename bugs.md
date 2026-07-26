@@ -2570,6 +2570,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-295 — Low — Add Rule is keyboard-inaccessible
 
+- Status: **Fixed**.
+- Resolution: Add Rule is now a native `type="button"` control, preserving the existing click handler and presentation while gaining standard Tab focus and single Enter/Space activation. Its browser-default appearance and typography are normalized, and keyboard focus receives the same visible accent outline used by the rest of the UI.
+
 - Evidence: the sole `addNewMockRule()` trigger is a clickable `div` at `src/ui/index.html:214` with no button role, tabindex, or keyboard handler.
 - Impact: keyboard-only users cannot create a mock rule through the visible interface.
 - Reproduction: navigate the Mock panel using only Tab and Enter/Space; the Add Rule control never receives focus and cannot be invoked.
