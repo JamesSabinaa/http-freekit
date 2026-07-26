@@ -1,5 +1,23 @@
 const { Menu, shell, app, dialog } = require('electron');
 
+async function showExternalLinkError(mainWindow, title, message, error) {
+  const options = {
+    type: 'error',
+    title,
+    message,
+    detail: error?.message || String(error || 'Unknown error')
+  };
+  try {
+    if (mainWindow && (typeof mainWindow.isDestroyed !== 'function' || !mainWindow.isDestroyed())) {
+      await dialog.showMessageBox(mainWindow, options);
+    } else {
+      await dialog.showMessageBox(options);
+    }
+  } catch {
+    // The original failure has already been handled; never leak a secondary dialog rejection.
+  }
+}
+
 /**
  * Build and return the application menu template.
  * @param {Electron.BrowserWindow} mainWindow
@@ -72,8 +90,17 @@ function buildAppMenu(mainWindow) {
     submenu: [
       {
         label: 'Documentation',
-        click: () => {
-          shell.openExternal('https://github.com/jamessabinaa/http-freekit#readme');
+        click: async () => {
+          try {
+            await shell.openExternal('https://github.com/jamessabinaa/http-freekit#readme');
+          } catch (err) {
+            await showExternalLinkError(
+              mainWindow,
+              'Unable to Open Documentation',
+              'HTTP FreeKit could not open the documentation in your browser.',
+              err
+            );
+          }
         }
       },
       { type: 'separator' },

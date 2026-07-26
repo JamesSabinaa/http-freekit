@@ -67,7 +67,7 @@ async function promptForUpdate(info, options = {}) {
         cancelId: 1
       });
       if (result.response === 0) {
-        shell.openExternal(url);
+        await shell.openExternal(url);
       } else {
         sendStatus({ status: 'update-dismissed', version, manual });
       }

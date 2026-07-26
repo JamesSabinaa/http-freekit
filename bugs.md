@@ -2648,6 +2648,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-315 — Low/Medium — Native external-link failures become unhandled rejections
 
+- Status: **Fixed**.
+- Resolution: The Linux updater now awaits its download-page launch so the existing catch reports an error status and the prompt-state `finally` always runs. The Documentation menu action awaits and catches browser-launch failures, shows a native error dialog attached to a usable main window, and absorbs any secondary dialog rejection so neither path can leak an unhandled Promise rejection.
+
 - Evidence: `electron/menu.cjs:77` and `electron/updater.cjs:68` call `shell.openExternal()` without awaiting or catching its Promise. The updater's surrounding synchronous try/catch cannot catch an asynchronous rejection, unlike the explicit `.catch()` handling in `electron/main.cjs`.
 - Impact: a missing URL handler, OS policy denial, or invalid updater URL gives no user-facing error and raises an unhandled rejection in the Electron main process, which can terminate under the default rejection policy.
 - Reproduction: mock `shell.openExternal()` to return `Promise.reject(new Error('no URL handler'))` and invoke Help → Documentation; the main process emits `unhandledRejection`.
