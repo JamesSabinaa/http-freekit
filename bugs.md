@@ -1576,6 +1576,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-286 — Medium — Terminal interceptors disable all Node TLS verification
 
+- Status: **Fixed**.
+- Resolution: The BUG-270 terminal trust changes cover every Fresh and Existing Terminal path. Fresh terminals remove any inherited `NODE_TLS_REJECT_UNAUTHORIZED` value before launching, while Bash, PowerShell, and CMD setup instructions explicitly clear it. All terminal trust variables use the stable, atomically refreshed bundle containing Node's public roots plus the FreeKit CA, so Node keeps normal certificate and hostname verification while trusting intercepted certificates.
+
 - Evidence: Fresh Terminal injects `NODE_TLS_REJECT_UNAUTHORIZED=0` at `src/interceptors/terminal-interceptors.js:55,84`; Existing Terminal instructions and UI fallback repeat it at `:179-181` and `src/ui/app.js:3957-3959`.
 - Impact: Node programs accept expired, self-signed, and wrong-host certificates for bypassed, direct, and passthrough destinations unrelated to FreeKit.
 - Reproduction: activate/paste terminal setup and request a self-signed wrong-host HTTPS endpoint with Node.
