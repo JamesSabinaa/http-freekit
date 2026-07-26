@@ -8255,18 +8255,13 @@
 
     // ============ CONFIG ============
     async function loadConfig() {
+      const portConfigPromise = loadPortConfig();
       try {
         const res = await fetch(`${API_BASE}/api/config`);
         const data = await res.json();
         if (data.config) {
           const fpEl = document.getElementById('settingsCaFingerprint');
           if (fpEl) fpEl.textContent = data.config.certificateFingerprint || '--';
-          if (data.config.proxyPort) {
-            const minEl = document.getElementById('settingsMinPort');
-            const maxEl = document.getElementById('settingsMaxPort');
-            if (minEl && !minEl.value) minEl.value = data.config.proxyPort;
-            if (maxEl && !maxEl.value) maxEl.value = data.config.proxyPort;
-          }
           const mpEl = document.getElementById('manualProxyPort');
           if (mpEl) mpEl.textContent = data.config.proxyPort;
         }
@@ -8274,6 +8269,7 @@
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
       }
+      await portConfigPromise;
     }
 
     let uiSettingsSaveGeneration = 0;
@@ -8734,17 +8730,86 @@
     }
 
     // ============ PORT CONFIG ============
-    async function savePortConfig() {
-      const min = document.getElementById('settingsMinPort').value;
-      const max = document.getElementById('settingsMaxPort').value;
+    let portConfigLoadGeneration = 0;
+    let portConfigSaveGeneration = 0;
+    let portConfigSavesInFlight = 0;
+
+    async function parsePortConfigResponse(response, requireSaveConfirmation = false) {
+      let data;
       try {
-        await fetch(API_BASE + '/api/port-config', {
+        data = await response.json();
+      } catch {
+        throw new Error('Port configuration response was not valid JSON');
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || `Port configuration returned HTTP ${response.status}`);
+      }
+      if (requireSaveConfirmation && data?.success !== true) {
+        throw new Error(data?.error || 'Port configuration save was not confirmed');
+      }
+      const minPort = Number(data?.minPort);
+      const maxPort = Number(data?.maxPort);
+      if (!Number.isInteger(minPort) || !Number.isInteger(maxPort) ||
+          minPort < 1 || maxPort > 65535 || minPort > maxPort) {
+        throw new Error('Port configuration response was incomplete');
+      }
+      return { minPort, maxPort };
+    }
+
+    async function loadPortConfig() {
+      if (portConfigSavesInFlight > 0) return;
+      const loadGeneration = ++portConfigLoadGeneration;
+      const saveGeneration = portConfigSaveGeneration;
+      const minEl = document.getElementById('settingsMinPort');
+      const maxEl = document.getElementById('settingsMaxPort');
+      const initialMin = minEl?.value;
+      const initialMax = maxEl?.value;
+      try {
+        const response = await fetch(API_BASE + '/api/port-config');
+        const range = await parsePortConfigResponse(response);
+        if (loadGeneration !== portConfigLoadGeneration || saveGeneration !== portConfigSaveGeneration) return;
+
+        const currentMinEl = document.getElementById('settingsMinPort');
+        const currentMaxEl = document.getElementById('settingsMaxPort');
+        if (!currentMinEl || !currentMaxEl ||
+            currentMinEl.value !== initialMin || currentMaxEl.value !== initialMax) return;
+        currentMinEl.value = String(range.minPort);
+        currentMaxEl.value = String(range.maxPort);
+      } catch (err) {
+        if (loadGeneration !== portConfigLoadGeneration || saveGeneration !== portConfigSaveGeneration) return;
+        console.error('[Error]', err.message);
+        toast('Error: ' + err.message, 'error');
+      }
+    }
+
+    async function savePortConfig() {
+      const minEl = document.getElementById('settingsMinPort');
+      const maxEl = document.getElementById('settingsMaxPort');
+      if (!minEl || !maxEl) return;
+      const min = minEl.value;
+      const max = maxEl.value;
+      const saveGeneration = ++portConfigSaveGeneration;
+      portConfigSavesInFlight++;
+      portConfigLoadGeneration++;
+      try {
+        const response = await fetch(API_BASE + '/api/port-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ minPort: min, maxPort: max })
         });
+        const range = await parsePortConfigResponse(response, true);
+        if (saveGeneration !== portConfigSaveGeneration) return;
+        if (minEl.value === min && maxEl.value === max) {
+          minEl.value = String(range.minPort);
+          maxEl.value = String(range.maxPort);
+        }
         toast('Port range saved (takes effect on restart)', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (saveGeneration !== portConfigSaveGeneration) return;
+        toast('Error: ' + err.message, 'error');
+      } finally {
+        portConfigSavesInFlight--;
+      }
     }
 
     // ============ TLS PASSTHROUGH ============

@@ -2301,6 +2301,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-236 — Low/Medium — Saved port ranges reload as one active port
 
+- Status: **Fixed**.
+- Resolution: Settings now loads the canonical saved range from `/api/port-config` independently of the active proxy-port display. Delayed loads cannot overwrite edits or saves started while they were pending, and failed or malformed load/save responses retain explicit error feedback.
+
 - Evidence: `/api/port-config` exposes persisted min/max, but the UI never calls it. `loadConfig()` writes the currently bound `proxyPort` into both fields at `src/ui/app.js:7387-7399`.
 - Impact: opening Settings after restart displays a collapsed range, and pressing Save destroys the original range.
 - Reproduction: save 19000–19010, restart on 19000, open Settings, and save the displayed 19000–19000.
