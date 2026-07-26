@@ -994,6 +994,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-356 — Low/Medium — UI-setting updates can partially commit
 
+- Status: **Fixed**.
+- Resolution: Commit `7707497` moved the combined UI-setting update onto the transactional `Settings.setAll()` persistence path and restores the runtime font-filter setting if that atomic write fails.
+
 - Evidence: `POST /api/ui-settings` performs separate `Settings.set()` calls for `hideTunnelRequests` and `filterSafeFonts` at `src/api/api-server.js:695-704`, although atomic `Settings.setAll()` exists.
 - Impact: failure during the second write returns HTTP 500 after the first setting was permanently saved; persisted and runtime settings can disagree with each other and with the failed response.
 - Reproduction: make the first `settings.set()` succeed and the second throw; `hideTunnelRequests` retains its new persisted value while `filterSafeFonts` and the proxy retain their old values.
