@@ -70,24 +70,66 @@ export function createManagedBrowserProfile(browserType, tempDir = os.tmpdir()) 
   return profileDir;
 }
 
-function readProfileOwner(profileDir) {
+function inspectProfileOwner(profileDir) {
   const markerPath = path.join(profileDir, PROFILE_MARKER);
+  let stats;
   try {
-    const stats = fs.lstatSync(markerPath);
-    if (!stats.isFile() || stats.isSymbolicLink()) return null;
-    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    const createdAt = Date.parse(marker.createdAt);
-    const startedAt = Date.parse(marker.ownerStartedAt);
-    return Number.isInteger(marker.ownerPid) && marker.ownerPid > 0 && Number.isFinite(createdAt)
-      ? {
-          pid: marker.ownerPid,
-          createdAt,
-          startedAt: Number.isFinite(startedAt) ? startedAt : null
-        }
-      : null;
-  } catch {
-    return null;
+    stats = fs.lstatSync(markerPath);
+  } catch (err) {
+    return {
+      valid: false,
+      reason: err.code === 'ENOENT'
+        ? `missing ${PROFILE_MARKER} ownership marker`
+        : `could not inspect ${PROFILE_MARKER}: ${err.message}`
+    };
   }
+
+  if (stats.isSymbolicLink()) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker is a symbolic link` };
+  }
+  if (!stats.isFile()) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker is not a regular file` };
+  }
+
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch (err) {
+    return { valid: false, reason: `could not parse ${PROFILE_MARKER} ownership marker: ${err.message}` };
+  }
+
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker must contain a JSON object` };
+  }
+  if (!Number.isInteger(marker.ownerPid) || marker.ownerPid <= 0) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker has an invalid ownerPid` };
+  }
+  if (typeof marker.createdAt !== 'string' || !Number.isFinite(Date.parse(marker.createdAt))) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker has an invalid createdAt` };
+  }
+  if (!/^(?:chrome|firefox|edge|brave)$/.test(marker.browserType)) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker has an invalid browserType` };
+  }
+  if (!path.basename(profileDir).startsWith(`http-freekit-${marker.browserType}-`)) {
+    return { valid: false, reason: `${PROFILE_MARKER} ownership marker does not match the profile directory` };
+  }
+
+  let startedAt = null;
+  if (Object.hasOwn(marker, 'ownerStartedAt')) {
+    if (typeof marker.ownerStartedAt !== 'string' || !Number.isFinite(Date.parse(marker.ownerStartedAt))) {
+      return { valid: false, reason: `${PROFILE_MARKER} ownership marker has an invalid ownerStartedAt` };
+    }
+    startedAt = Date.parse(marker.ownerStartedAt);
+  }
+
+  return {
+    valid: true,
+    owner: {
+      pid: marker.ownerPid,
+      createdAt: Date.parse(marker.createdAt),
+      startedAt
+    }
+  };
 }
 
 function isProfileOwnerActive(owner, processes) {
@@ -249,6 +291,13 @@ export function removeManagedBrowserProfile(profileDir, options = {}) {
   }
   if (!fs.existsSync(inspected.path)) return { removed: true, alreadyMissing: true };
 
+  if (options.requireOwnershipMarker) {
+    const ownership = inspectProfileOwner(inspected.path);
+    if (!ownership.valid) {
+      return { removed: false, reason: ownership.reason, unsafe: true };
+    }
+  }
+
   try {
     fs.rmSync(inspected.path, {
       recursive: true,
@@ -291,14 +340,23 @@ export function cleanupStaleBrowserProfiles(options = {}) {
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !MANAGED_PROFILE_PATTERN.test(entry.name)) continue;
     const profileDir = path.join(tempDir, entry.name);
-    const owner = readProfileOwner(profileDir);
+    const ownership = inspectProfileOwner(profileDir);
+    if (!ownership.valid) {
+      result.failed.push({ path: profileDir, reason: ownership.reason });
+      continue;
+    }
+
     const relatedPids = collectRelatedProcessIds(snapshot, profileDir);
-    if (isProfileOwnerActive(owner, snapshot) || relatedPids.size > 0) {
+    if (isProfileOwnerActive(ownership.owner, snapshot) || relatedPids.size > 0) {
       result.skippedActive.push(profileDir);
       continue;
     }
 
-    const cleanup = removeManagedBrowserProfile(profileDir, { ...options, tempDir });
+    const cleanup = removeManagedBrowserProfile(profileDir, {
+      ...options,
+      tempDir,
+      requireOwnershipMarker: true
+    });
     if (cleanup.removed) result.removed.push(profileDir);
     else result.failed.push({ path: profileDir, reason: cleanup.reason || 'Unknown cleanup failure' });
   }

@@ -55,14 +55,17 @@ test('startup cleanup removes abandoned profiles and preserves active or unrelat
     'utf8'
   ));
   const staleOwnedProfile = createManagedBrowserProfile('firefox', tempRoot);
+  const staleOwnerMarker = JSON.parse(fs.readFileSync(
+    path.join(staleOwnedProfile, '.http-freekit-profile.json'),
+    'utf8'
+  ));
   fs.writeFileSync(
     path.join(staleOwnedProfile, '.http-freekit-profile.json'),
-    JSON.stringify({ ownerPid: 2147483647, browserType: 'firefox' })
+    JSON.stringify({ ...staleOwnerMarker, ownerPid: 2147483647 })
   );
   const legacyStaleProfile = path.join(tempRoot, 'http-freekit-edge-1700000000000');
   fs.mkdirSync(legacyStaleProfile);
-  const activeBrowserProfile = path.join(tempRoot, 'http-freekit-brave-active');
-  fs.mkdirSync(activeBrowserProfile);
+  const activeBrowserProfile = createManagedBrowserProfile('brave', tempRoot);
   const unrelated = path.join(tempRoot, 'other-application-data');
   fs.mkdirSync(unrelated);
 
@@ -83,10 +86,18 @@ test('startup cleanup removes abandoned profiles and preserves active or unrelat
 
   assert.deepEqual(
     result.removed.map(item => path.basename(item)).sort(),
-    [path.basename(legacyStaleProfile), path.basename(staleOwnedProfile)].sort()
+    [path.basename(staleOwnedProfile)]
+  );
+  assert.deepEqual(result.skippedActive.map(item => path.basename(item)).sort(), [
+    path.basename(activeBrowserProfile),
+    path.basename(liveOwnerProfile)
+  ].sort());
+  assert.match(
+    result.failed.find(item => item.path === legacyStaleProfile)?.reason || '',
+    /missing .*ownership marker/
   );
   assert.equal(fs.existsSync(staleOwnedProfile), false);
-  assert.equal(fs.existsSync(legacyStaleProfile), false);
+  assert.equal(fs.existsSync(legacyStaleProfile), true);
   assert.equal(fs.existsSync(liveOwnerProfile), true);
   assert.equal(fs.existsSync(activeBrowserProfile), true);
   assert.equal(fs.existsSync(unrelated), true);

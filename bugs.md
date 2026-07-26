@@ -1456,6 +1456,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-247 — High/Medium — Startup cleanup deletes markerless lookalike directories
 
+- Status: **Fixed**.
+- Resolution: Startup cleanup now requires a valid regular, non-symlink FreeKit ownership marker before recursively removing a stale browser profile.
+
 - Evidence: `src/interceptors/browser-lifecycle.js:80-89` yields no owner for a missing/malformed marker, but cleanup at `:223-235` recursively deletes any direct temp child matching the FreeKit browser-profile name pattern without requiring ownership proof.
 - Impact: a renamed backup or unrelated colliding directory can be recursively erased at startup.
 - Reproduction: create a markerless direct temp child named `http-freekit-chrome-backup` and run startup cleanup.
