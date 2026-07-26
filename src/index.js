@@ -155,6 +155,9 @@ async function initializeApplication(apiPort) {
   // 5. Start servers
   await proxy.start();
   await api.start();
+  if (process.env.ELECTRON === '1' && typeof process.send === 'function' && process.connected) {
+    process.send({ type: 'http-freekit:server-ready', port: apiPort });
+  }
 
   // 6. Initialize MCP Server (Model Context Protocol)
   const mcpBridge = new McpServerBridge({

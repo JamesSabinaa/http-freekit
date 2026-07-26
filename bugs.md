@@ -2235,6 +2235,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-366 — Low/Medium — Desktop startup can accept an unrelated local service as ready
 
+- Status: **Fixed**.
+- Resolution: Desktop startup now waits for a validated ready message from the exact spawned child after its API listener starts, so a process that wins the released port is never contacted or trusted and all readiness listeners are cleaned up on success, exit, or timeout.
+
 - Evidence: `findFreePort()` releases its temporary listener before the server child binds at `electron/main.cjs:34-42`, and `waitForServer()` resolves on any HTTP response from `/api/config` at `:48-80` without checking its status or validating that it is FreeKit.
 - Impact: another local process can claim the selected port during the race, after which the desktop loads an unrelated response or error page and treats failed FreeKit startup inconsistently.
 - Reproduction: claim the selected port after `findFreePort()` returns and respond 503 to `/api/config`; `waitForServer()` still reports readiness.

@@ -13,6 +13,7 @@ const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
+const { waitForServer } = require('./server-readiness.cjs');
 const { shutdownServerProcess } = require('./server-shutdown.cjs');
 
 let mainWindow = null;
@@ -44,44 +45,6 @@ function findFreePort() {
       srv.close(() => resolve(port));
     });
     srv.on('error', reject);
-  });
-}
-
-/**
- * Poll the server until it responds to HTTP requests.
- */
-function waitForServer(port, proc, timeoutMs = 30000) {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    let done = false;
-
-    // If the server process exits before responding, fail immediately
-    proc.on('exit', (code) => {
-      if (!done) {
-        done = true;
-        reject(new Error(`Server process exited with code ${code} before becoming ready`));
-      }
-    });
-
-    function poll() {
-      if (done) return;
-      if (Date.now() - start > timeoutMs) {
-        done = true;
-        return reject(new Error(`Server did not start within ${timeoutMs}ms`));
-      }
-      const req = http.get(`http://127.0.0.1:${port}/api/config`, {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      }, (res) => {
-        res.resume();
-        if (!done) { done = true; resolve(); }
-      });
-      req.on('error', () => { if (!done) setTimeout(poll, 200); });
-      req.setTimeout(2000, () => {
-        req.destroy();
-        if (!done) setTimeout(poll, 200);
-      });
-    }
-    poll();
   });
 }
 
