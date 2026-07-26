@@ -31,6 +31,7 @@ export class BrowserInterceptor {
     this.lastProcessInspectionFailed = false;
     this.statusInspectionInFlight = false;
     this.statusMonitorGeneration = 0;
+    this.lifecycleGeneration = 0;
     this.cleanupPending = false;
   }
 
@@ -75,7 +76,79 @@ export class BrowserInterceptor {
   }
 
   async isActive() {
-    return this.cleanupPending || (this.active && this._isBrowserStillRunning());
+    if (this.cleanupPending) return true;
+    if (!this.active) return false;
+    const lifecycle = this._captureLifecycle();
+    const running = await this._isBrowserStillRunning(lifecycle);
+    if (!this._isLifecycleCurrent(lifecycle)) return this.cleanupPending || this.active;
+    return running;
+  }
+
+  _captureLifecycle() {
+    return {
+      generation: this.lifecycleGeneration,
+      profileDir: this.profileDir,
+      process: this.process
+    };
+  }
+
+  _isLifecycleCurrent(lifecycle) {
+    return Boolean(lifecycle)
+      && lifecycle.generation === this.lifecycleGeneration
+      && lifecycle.profileDir === this.profileDir
+      && lifecycle.process === this.process;
+  }
+
+  _ownsLifecycleProfile(generation, profileDir) {
+    return generation === this.lifecycleGeneration && profileDir === this.profileDir;
+  }
+
+  _invalidateLifecycleCallbacks() {
+    this.lifecycleGeneration += 1;
+    this._stopStatusMonitor();
+  }
+
+  _clearLifecycleState() {
+    this.active = false;
+    this.process = null;
+    this.profileDir = null;
+    this.proxyPort = null;
+    this.trackedProcessIds.clear();
+    this.lifecycleInspectionErrorLogged = false;
+    this.lastProcessInspectionAt = 0;
+    this.lastProcessInspectionFailed = false;
+    this.statusInspectionInFlight = false;
+    this.cleanupPending = false;
+  }
+
+  _retireInactiveLifecycle() {
+    const profileDir = this.profileDir;
+    const launcherPid = this.process?.pid || null;
+
+    // Invalidate old monitor and child continuations before any replacement
+    // profile can be created or assigned.
+    this._invalidateLifecycleCallbacks();
+    this.active = false;
+
+    const cleanupResult = profileDir
+      ? this._cleanup(profileDir)
+      : { removed: true, alreadyMissing: true };
+    if (cleanupResult.removed !== true) {
+      this.active = true;
+      this.cleanupPending = true;
+      this._emitStatus('cleanup-failed', {
+        pid: launcherPid,
+        profileRemoved: false,
+        exitReason: 'closed'
+      });
+      const error = new Error(
+        `Could not replace ${this.name}; its previous profile cleanup is still pending`
+      );
+      error.code = 'BROWSER_CLEANUP_PENDING';
+      throw error;
+    }
+
+    this._clearLifecycleState();
   }
 
   async activate(proxyPort, options = {}) {
@@ -93,9 +166,13 @@ export class BrowserInterceptor {
       launchOptions.url = normalizeBrowserUrl(launchOptions.url);
     }
 
+    this._retireInactiveLifecycle();
+
     // Create a uniquely-owned temporary profile. The marker lets a future
     // startup distinguish abandoned profiles from another active instance.
-    this.profileDir = this._createManagedProfile();
+    const profileDir = this._createManagedProfile();
+    const generation = ++this.lifecycleGeneration;
+    this.profileDir = profileDir;
     this.proxyPort = proxyPort;
     this.trackedProcessIds.clear();
     this.lifecycleInspectionErrorLogged = false;
@@ -105,7 +182,10 @@ export class BrowserInterceptor {
     let args;
     let launchedProcess;
     try {
-      args = await this._getBrowserArgs(proxyPort, launchOptions);
+      args = await this._getBrowserArgs(proxyPort, launchOptions, profileDir);
+      if (!this._ownsLifecycleProfile(generation, profileDir)) {
+        throw new Error(`${this.name} launch was superseded during preparation`);
+      }
       console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
       launchedProcess = this._spawn(browserPath, args, {
         detached: false,
@@ -113,34 +193,54 @@ export class BrowserInterceptor {
       });
       await this._waitForSpawn(launchedProcess);
     } catch (err) {
-      const profileDir = this.profileDir;
-      this._cleanup(profileDir);
-      this._resetLifecycleState();
+      const cleanupResult = this._cleanup(profileDir);
+      if (this._ownsLifecycleProfile(generation, profileDir)) {
+        this._invalidateLifecycleCallbacks();
+        if (cleanupResult.removed === true) {
+          this._clearLifecycleState();
+        } else {
+          this.active = true;
+          this.process = null;
+          this.cleanupPending = true;
+          this._emitStatus('cleanup-failed', {
+            profileRemoved: false,
+            launchFailed: true,
+            error: err.message
+          });
+        }
+      }
       throw err;
+    }
+
+    if (!this._ownsLifecycleProfile(generation, profileDir)) {
+      this._cleanup(profileDir);
+      throw new Error(`${this.name} launch was superseded before it became active`);
     }
     this.process = launchedProcess;
     if (Number.isInteger(launchedProcess.pid)) this.trackedProcessIds.add(launchedProcess.pid);
 
     this.active = true;
     this._emitStatus('active');
-    this._startStatusMonitor();
+    const lifecycle = this._captureLifecycle();
+    this._startStatusMonitor(lifecycle);
 
     launchedProcess.on('exit', async (code) => {
+      if (!this._isLifecycleCurrent(lifecycle)) return;
       console.log(`[Interceptor] ${this.name} exited with code ${code}`);
-      if (!this.active || this.process !== launchedProcess) return;
-      const browserStillRunning = await this._isBrowserStillRunning();
-      if (!this.active || this.process !== launchedProcess) return;
+      if (!this.active) return;
+      const browserStillRunning = await this._isBrowserStillRunning(lifecycle);
+      if (!this._isLifecycleCurrent(lifecycle) || !this.active) return;
       if (browserStillRunning) {
-        this._startStatusMonitor();
+        this._startStatusMonitor(lifecycle);
         return;
       }
-      this._markInactive('exited', { code });
+      this._markInactive('exited', { code }, lifecycle);
     });
 
     launchedProcess.on('error', (err) => {
-      if (this.process !== launchedProcess) return;
+      if (!this._isLifecycleCurrent(lifecycle)) return;
       console.error(`[Interceptor] ${this.name} error:`, err.message);
-      this._markInactive('error', { error: err.message });
+      this._markInactive('error', { error: err.message }, lifecycle);
     });
 
     return { success: true, pid: launchedProcess.pid, browser: this.name };
@@ -175,7 +275,7 @@ export class BrowserInterceptor {
       throw new Error(`${this.name} not found on this system`);
     }
 
-    const args = this._getChromiumArgs(this.proxyPort, { url: normalizedUrl });
+    const args = this._getChromiumArgs(this.proxyPort, { url: normalizedUrl }, this.profileDir);
     await new Promise((resolve, reject) => {
       const opener = spawn(browserPath, args, {
         detached: false,
@@ -191,17 +291,17 @@ export class BrowserInterceptor {
     return { success: true, browser: this.name, url: normalizedUrl };
   }
 
-  async _getBrowserArgs(proxyPort, options) {
+  async _getBrowserArgs(proxyPort, options, profileDir = this.profileDir) {
     if (this.browserType === 'firefox') {
-      return await this._getFirefoxArgs(proxyPort, options);
+      return await this._getFirefoxArgs(proxyPort, options, profileDir);
     }
-    return this._getChromiumArgs(proxyPort, options);
+    return this._getChromiumArgs(proxyPort, options, profileDir);
   }
 
-  _getChromiumArgs(proxyPort, options) {
+  _getChromiumArgs(proxyPort, options, profileDir = this.profileDir) {
     const args = [
       `--proxy-server=127.0.0.1:${proxyPort}`,
-      `--user-data-dir=${this.profileDir}`,
+      `--user-data-dir=${profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
     ];
@@ -223,9 +323,9 @@ export class BrowserInterceptor {
     return ensureChromiumLoopbackProxying(args);
   }
 
-  async _getFirefoxArgs(proxyPort, options) {
+  async _getFirefoxArgs(proxyPort, options, profileDir = this.profileDir) {
     // Create Firefox profile with proxy settings
-    const prefsPath = path.join(this.profileDir, 'user.js');
+    const prefsPath = path.join(profileDir, 'user.js');
     const prefs = [
       `user_pref("network.proxy.type", 1);`,
       `user_pref("network.proxy.http", "127.0.0.1");`,
@@ -246,10 +346,10 @@ export class BrowserInterceptor {
     fs.writeFileSync(prefsPath, prefs);
 
     // Import our CA cert into Firefox's cert store using certutil if available
-    await this._importCertToFirefoxProfile();
+    await this._importCertToFirefoxProfile(profileDir);
 
     const args = [
-      '-profile', this.profileDir,
+      '-profile', profileDir,
       '-no-remote',
     ];
 
@@ -264,7 +364,7 @@ export class BrowserInterceptor {
     return execFileAsync('certutil', args, { timeout: 5000 });
   }
 
-  async _importCertToFirefoxProfile() {
+  async _importCertToFirefoxProfile(profileDir = this.profileDir) {
     if (!this.ca) {
       throw new Error('FreeKit CA certificate is not available for Firefox interception');
     }
@@ -273,11 +373,11 @@ export class BrowserInterceptor {
 
     try {
       // Initialize the cert DB for the profile
-      await this._runCertutil(['-d', `sql:${this.profileDir}`, '-N', '--empty-password']);
+      await this._runCertutil(['-d', `sql:${profileDir}`, '-N', '--empty-password']);
 
       // Import CA cert as trusted (C = trusted for SSL, T = trusted for email, u = trusted for code signing)
       await this._runCertutil([
-        '-d', `sql:${this.profileDir}`,
+        '-d', `sql:${profileDir}`,
         '-A',
         '-t', 'CT,,',
         '-n', 'HTTP FreeKit CA',
@@ -301,18 +401,19 @@ export class BrowserInterceptor {
     if (!this.active && !this.profileDir) return;
 
     console.log(`[Interceptor] Stopping ${this.name} and its profile process tree...`);
-    this._stopStatusMonitor();
+    this._invalidateLifecycleCallbacks();
+    const lifecycle = this._captureLifecycle();
     this.active = false;
 
-    const profileDir = this.profileDir;
-    const launcherPid = this.process?.pid || null;
-    const inspectedIds = await this._refreshTrackedProcessIds(true);
+    const profileDir = lifecycle.profileDir;
+    const launcherPid = lifecycle.process?.pid || null;
+    const inspectedIds = await this._refreshTrackedProcessIds(true, lifecycle);
     const targetIds = inspectedIds === null
       ? new Set()
       : new Set(inspectedIds);
-    if (this._isSpawnedProcessRunning()) targetIds.add(launcherPid);
+    if (this._isSpawnedProcessRunning(lifecycle.process)) targetIds.add(launcherPid);
 
-    const remainingIds = await this._terminateProcessTree(targetIds);
+    const remainingIds = await this._terminateProcessTree(targetIds, lifecycle);
     let cleanupResult = { removed: false, reason: 'process state could not be verified' };
     if (remainingIds !== null && remainingIds.size === 0) {
       cleanupResult = this._cleanup(profileDir);
@@ -336,7 +437,7 @@ export class BrowserInterceptor {
       );
     }
 
-    this._resetLifecycleState();
+    this._resetLifecycleState(lifecycle);
     this._emitStatus('inactive', {
       terminatedProcessCount: Math.max(0, targetIds.size - (remainingIds?.size || 0)),
       remainingProcessCount: remainingIds?.size ?? null,
@@ -344,10 +445,12 @@ export class BrowserInterceptor {
     });
   }
 
-  _markInactive(reason, extra = {}) {
-    const profileDir = this.profileDir;
-    const launcherPid = this.process?.pid || null;
-    this._stopStatusMonitor();
+  _markInactive(reason, extra = {}, lifecycle = this._captureLifecycle()) {
+    if (!this._isLifecycleCurrent(lifecycle)) return false;
+    const profileDir = lifecycle.profileDir;
+    const launcherPid = lifecycle.process?.pid || null;
+    this._invalidateLifecycleCallbacks();
+    const inactiveLifecycle = this._captureLifecycle();
     this.active = false;
     const cleanupResult = this._cleanup(profileDir);
     if (cleanupResult.removed !== true) {
@@ -359,35 +462,47 @@ export class BrowserInterceptor {
         exitReason: reason,
         ...extra
       });
-      return;
+      return false;
     }
-    this._resetLifecycleState();
+    this._resetLifecycleState(inactiveLifecycle);
     this._emitStatus(reason, {
       pid: launcherPid,
       profileRemoved: cleanupResult.removed === true,
       ...extra
     });
+    return true;
   }
 
-  _startStatusMonitor() {
+  _startStatusMonitor(lifecycle = this._captureLifecycle()) {
+    if (!this._isLifecycleCurrent(lifecycle)) return;
     this._stopStatusMonitor();
-    const generation = this.statusMonitorGeneration;
+    const monitorGeneration = this.statusMonitorGeneration;
     this.statusMonitor = setInterval(() => {
+      if (monitorGeneration !== this.statusMonitorGeneration || !this._isLifecycleCurrent(lifecycle)) return;
       if (!this.active) {
         this._stopStatusMonitor();
         return;
       }
       if (this.statusInspectionInFlight) return;
       this.statusInspectionInFlight = true;
-      Promise.resolve(this._isBrowserStillRunning())
+      Promise.resolve(this._isBrowserStillRunning(lifecycle))
         .then(running => {
-          if (generation === this.statusMonitorGeneration && this.active && !running) {
-            this._markInactive('closed');
+          if (monitorGeneration === this.statusMonitorGeneration
+              && this._isLifecycleCurrent(lifecycle)
+              && this.active
+              && !running) {
+            this._markInactive('closed', {}, lifecycle);
           }
         })
-        .catch(err => console.warn(`[Interceptor] Could not monitor ${this.name}: ${err.message}`))
+        .catch(err => {
+          if (monitorGeneration === this.statusMonitorGeneration && this._isLifecycleCurrent(lifecycle)) {
+            console.warn(`[Interceptor] Could not monitor ${this.name}: ${err.message}`);
+          }
+        })
         .finally(() => {
-          if (generation === this.statusMonitorGeneration) this.statusInspectionInFlight = false;
+          if (monitorGeneration === this.statusMonitorGeneration && this._isLifecycleCurrent(lifecycle)) {
+            this.statusInspectionInFlight = false;
+          }
         });
     }, 1500);
     this.statusMonitor.unref?.();
@@ -402,53 +517,57 @@ export class BrowserInterceptor {
     }
   }
 
-  async _isBrowserStillRunning() {
-    const spawnedProcessRunning = this._isSpawnedProcessRunning();
-    const relatedIds = await this._refreshTrackedProcessIds();
+  async _isBrowserStillRunning(lifecycle = this._captureLifecycle()) {
+    const spawnedProcessRunning = this._isSpawnedProcessRunning(lifecycle.process);
+    const relatedIds = await this._refreshTrackedProcessIds(false, lifecycle);
     // If inspection is unavailable, err on the side of preserving an active
     // browser/profile rather than deleting files that may still be in use.
     return relatedIds === null
-      ? spawnedProcessRunning || this.active
+      ? spawnedProcessRunning || (this._isLifecycleCurrent(lifecycle) && this.active)
       : spawnedProcessRunning || relatedIds.size > 0;
   }
 
-  _isSpawnedProcessRunning() {
-    if (!this.process?.pid || this.process.exitCode !== null || this.process.signalCode !== null) {
+  _isSpawnedProcessRunning(launchedProcess = this.process) {
+    if (!launchedProcess?.pid || launchedProcess.exitCode !== null || launchedProcess.signalCode !== null) {
       return false;
     }
     try {
-      process.kill(this.process.pid, 0);
+      process.kill(launchedProcess.pid, 0);
       return true;
     } catch {
       return false;
     }
   }
 
-  async _refreshTrackedProcessIds(force = false) {
-    if (!this.profileDir) {
-      this.trackedProcessIds.clear();
+  async _refreshTrackedProcessIds(force = false, lifecycle = this._captureLifecycle()) {
+    if (!lifecycle.profileDir) {
+      if (this._isLifecycleCurrent(lifecycle)) this.trackedProcessIds.clear();
       return new Set();
     }
 
     const now = Date.now();
-    if (!force && now - this.lastProcessInspectionAt < 5000) {
+    if (this._isLifecycleCurrent(lifecycle) && !force && now - this.lastProcessInspectionAt < 5000) {
       return this.lastProcessInspectionFailed ? null : new Set(this.trackedProcessIds);
     }
 
-    const rootPids = this._isSpawnedProcessRunning() ? [this.process.pid] : [];
+    const rootPids = this._isSpawnedProcessRunning(lifecycle.process) ? [lifecycle.process.pid] : [];
     try {
-      const relatedIds = await getRelatedProcessIdsAsync(this.profileDir, rootPids);
-      this.trackedProcessIds = relatedIds;
-      this.lastProcessInspectionAt = now;
-      this.lastProcessInspectionFailed = false;
-      this.lifecycleInspectionErrorLogged = false;
+      const relatedIds = await getRelatedProcessIdsAsync(lifecycle.profileDir, rootPids);
+      if (this._isLifecycleCurrent(lifecycle)) {
+        this.trackedProcessIds = relatedIds;
+        this.lastProcessInspectionAt = now;
+        this.lastProcessInspectionFailed = false;
+        this.lifecycleInspectionErrorLogged = false;
+      }
       return new Set(relatedIds);
     } catch (err) {
-      this.lastProcessInspectionAt = now;
-      this.lastProcessInspectionFailed = true;
-      if (!this.lifecycleInspectionErrorLogged) {
-        console.warn(`[Interceptor] Could not inspect ${this.name} process tree: ${err.message}`);
-        this.lifecycleInspectionErrorLogged = true;
+      if (this._isLifecycleCurrent(lifecycle)) {
+        this.lastProcessInspectionAt = now;
+        this.lastProcessInspectionFailed = true;
+        if (!this.lifecycleInspectionErrorLogged) {
+          console.warn(`[Interceptor] Could not inspect ${this.name} process tree: ${err.message}`);
+          this.lifecycleInspectionErrorLogged = true;
+        }
       }
       return null;
     }
@@ -487,10 +606,10 @@ export class BrowserInterceptor {
     this._signalProcesses(processIds, 'SIGKILL');
   }
 
-  async _waitForProfileProcessesToExit(timeoutMs) {
+  async _waitForProfileProcessesToExit(timeoutMs, lifecycle = this._captureLifecycle()) {
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      const remainingIds = await this._refreshTrackedProcessIds(true);
+      const remainingIds = await this._refreshTrackedProcessIds(true, lifecycle);
       if (remainingIds === null || remainingIds.size === 0 || Date.now() >= deadline) {
         return remainingIds;
       }
@@ -498,29 +617,23 @@ export class BrowserInterceptor {
     }
   }
 
-  async _terminateProcessTree(initialIds) {
+  async _terminateProcessTree(initialIds, lifecycle = this._captureLifecycle()) {
     if (initialIds.size > 0) this._signalProcesses(initialIds, 'SIGTERM');
 
-    let remainingIds = await this._waitForProfileProcessesToExit(2000);
+    let remainingIds = await this._waitForProfileProcessesToExit(2000, lifecycle);
     if (remainingIds === null || remainingIds.size === 0) return remainingIds;
 
     console.warn(`[Interceptor] Force-stopping ${remainingIds.size} remaining ${this.name} process(es)`);
     await this._forceTerminateProcesses(remainingIds);
-    remainingIds = await this._waitForProfileProcessesToExit(2000);
+    remainingIds = await this._waitForProfileProcessesToExit(2000, lifecycle);
     return remainingIds;
   }
 
-  _resetLifecycleState() {
-    this.active = false;
-    this.process = null;
-    this.profileDir = null;
-    this.proxyPort = null;
-    this.trackedProcessIds.clear();
-    this.lifecycleInspectionErrorLogged = false;
-    this.lastProcessInspectionAt = 0;
-    this.lastProcessInspectionFailed = false;
-    this.statusInspectionInFlight = false;
-    this.cleanupPending = false;
+  _resetLifecycleState(lifecycle = null) {
+    if (lifecycle && !this._isLifecycleCurrent(lifecycle)) return false;
+    this._invalidateLifecycleCallbacks();
+    this._clearLifecycleState();
+    return true;
   }
 
   _emitStatus(reason, extra = {}) {

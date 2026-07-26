@@ -1738,6 +1738,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-311 — High/Medium — A stale browser monitor can erase a replacement during launch
 
+- Status: **Fixed**.
+- Resolution: Isolated-browser profiles, child callbacks, process inspections, and status monitors now carry an immutable lifecycle generation. A confirmed-dead lifecycle is invalidated and its owned profile is cleaned before replacement profile creation; cleanup failure remains retryable and blocks replacement. Stale monitor/exit/error continuations cannot mutate newer state, while launch-failure cleanup is limited to the profile owned by that launch.
+
 - Evidence: `BrowserInterceptor.activate()` at `src/interceptors/browser-interceptor.js:54-84` can determine that the old browser is dead, overwrite `profileDir`, and await asynchronous launch preparation before invalidating the old monitor. The generation check at `:319-344` therefore still accepts an already-pending old result during that window.
 - Impact: the old monitor or exit callback can mark a replacement inactive, delete its new profile, and clear its process state while the replacement activation is still progressing.
 - Reproduction: hold replacement activation in `_getBrowserArgs()`, resolve a pending old lifecycle check as false, and observe that the new profile is cleaned and the interceptor reset before launch completes.
