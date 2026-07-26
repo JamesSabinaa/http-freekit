@@ -2766,6 +2766,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-340 — Low/Medium — The delayed update check survives updater shutdown
 
+- Status: **Fixed**.
+
 - Evidence: `initAutoUpdater()` schedules the startup check with an untracked ten-second `setTimeout` at `electron/updater.cjs:191-197`. `stopAutoUpdater()` at `:234-241` clears only the recurring interval, so it cannot cancel that pending callback.
 - Impact: quitting shortly after launch can still contact the update feed and emit updater state during asynchronous cleanup, after the updater was stopped and its window may already be gone.
 - Reproduction: initialize and immediately stop the updater, then allow the captured startup timer to fire; `checkForUpdates()` still runs once after shutdown.

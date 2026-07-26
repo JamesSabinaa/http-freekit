@@ -17,6 +17,7 @@ const { shouldForceLinuxUpdateChecks } = require('./update-platform.cjs');
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LINUX_DOWNLOAD_URL = 'https://github.com/jamessabinaa/http-freekit/releases/latest';
 let mainWindow = null;
+let startupCheckTimer = null;
 let checkInterval = null;
 let currentCheckIsManual = false;
 let isDownloading = false;
@@ -242,7 +243,8 @@ function initAutoUpdater(win, options = {}) {
   // --- Schedule checks ---
 
   // Check on launch (with a short delay to let the window settle)
-  setTimeout(() => {
+  startupCheckTimer = setTimeout(() => {
+    startupCheckTimer = null;
     checkForUpdates(false);
   }, 10000);
 
@@ -256,7 +258,11 @@ function initAutoUpdater(win, options = {}) {
  * Stop periodic update checks and clean up.
  */
 function stopAutoUpdater() {
-  if (checkInterval) {
+  if (startupCheckTimer !== null) {
+    clearTimeout(startupCheckTimer);
+    startupCheckTimer = null;
+  }
+  if (checkInterval !== null) {
     clearInterval(checkInterval);
     checkInterval = null;
   }

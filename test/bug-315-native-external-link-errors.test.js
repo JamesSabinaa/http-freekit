@@ -19,6 +19,7 @@ function loadCommonJs(relativePath, mocks, platform = 'linux') {
       versions: process.versions
     },
     setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
     setInterval: () => ({ unref() {} }),
     clearInterval: () => {}
   });

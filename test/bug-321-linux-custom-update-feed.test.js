@@ -58,6 +58,7 @@ function loadUpdater({ updateUrl, dialogResponse = 0 } = {}) {
       versions: process.versions
     },
     setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
     setInterval: () => ({ unref() {} }),
     clearInterval: () => {}
   });
