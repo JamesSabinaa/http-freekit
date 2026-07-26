@@ -2226,6 +2226,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-221 — Low/Medium — Escape-to-abort works only inside Monaco
 
+- Status: **Fixed**.
+- Resolution: The document shortcut path now gives an active Send request first priority for Escape from every Send-page focus target, while the Monaco command delegates to the same idempotent handler. Once aborting, repeated delivery is consumed without a second abort or toast; with no active Send request, existing context-menu and detail closing behavior is preserved.
+
 - Evidence: Send registers Escape abort on Monaco at `src/ui/app.js:6696-6699`; document-level Escape only closes details at `:8872`, despite the README promising a general abort shortcut.
 - Impact: pressing Escape while focus is in the URL, headers, Send button, or response pane leaves the request running.
 - Reproduction: start Send with focus on the URL input and press Escape.

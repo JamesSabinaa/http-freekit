@@ -7168,6 +7168,18 @@
       }
     }
 
+    function registerSendEditorShortcuts(editor) {
+      // Ctrl+Enter sends the request
+      editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
+        sendRequest();
+      });
+
+      // Monaco consumes Escape itself, so retain an explicit route to the shared handler.
+      editor.addCommand(monacoApi.KeyCode.Escape, function () {
+        handleSendEscapeShortcut();
+      });
+    }
+
     /**
      * Initialize or re-initialize the Send page body Monaco editor.
      * @param {string} [initialValue='']
@@ -7205,15 +7217,7 @@
 
       editor.onDidChangeModelContent(() => scheduleSendExportUpdate());
 
-      // Ctrl+Enter sends the request
-      editor.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.Enter, function () {
-        sendRequest();
-      });
-
-      // Escape aborts the request
-      editor.addCommand(monacoApi.KeyCode.Escape, function () {
-        abortSendRequest();
-      });
+      registerSendEditorShortcuts(editor);
     }
 
     /**
@@ -8205,7 +8209,20 @@
       if (currentSendAbort && !currentSendAbort.signal.aborted) {
         currentSendAbort.abort();
         toast('Request aborted', 'success');
+        return true;
       }
+      return false;
+    }
+
+    function handleSendEscapeShortcut(event) {
+      const sendPanelActive = document.getElementById('panel-send')?.classList.contains('active') === true;
+      if (!sendPanelActive || !currentSendAbort) return false;
+
+      event?.preventDefault?.();
+      // Keep consuming Escape while the aborted fetch settles. abortSendRequest itself
+      // ensures Monaco and document delivery cannot abort or toast more than once.
+      abortSendRequest();
+      return true;
     }
 
     // ============ CONFIG ============
@@ -9806,7 +9823,10 @@
       const isInput = isEditableKeyboardTarget(activeEl);
       const trafficPanelActive = document.getElementById('panel-traffic')?.classList.contains('active') === true;
 
-      if (e.key === 'Escape') closeDetail();
+      if (e.key === 'Escape') {
+        if (!handleSendEscapeShortcut(e)) closeDetail();
+        return;
+      }
 
       // Panel switching: Ctrl+1..4, Ctrl+9 (matches HTTP Toolkit)
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {

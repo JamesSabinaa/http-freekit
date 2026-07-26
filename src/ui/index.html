@@ -232,7 +232,7 @@
                   </select>
                   <i class="ph ph-caret-down" style="font-size:12px;position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"></i>
                 </div>
-                <input type="url" id="sendUrl" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" oninput="scheduleSendExportUpdate()" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest(); if(event.key==='Escape') abortSendRequest();" onfocus="prepopulateSendUrl(this)">
+                <input type="url" id="sendUrl" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" oninput="scheduleSendExportUpdate()" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest();" onfocus="prepopulateSendUrl(this)">
                 <button class="btn btn-primary" onclick="sendRequest()" id="sendBtn" style="border-radius:0;padding:10px 18px;" title="Send this request (Ctrl+Enter)" aria-label="Send request">
                   <i id="sendBtnArrow" class="ph ph-arrow-right" style="font-size:16px;"></i>
                   <i id="sendBtnSpinner" class="ph ph-circle-notch" style="font-size:16px;display:none;animation:spin 1s linear infinite;"></i>
