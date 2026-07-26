@@ -1029,6 +1029,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-360 — Low/Medium — MCP live summary exposes upstream-proxy credentials
 
+- Status: **Fixed**.
+- Resolution: The live summary now projects upstream-proxy state onto an explicit allowlist of non-secret connection metadata (type, host, and port), without mutating the proxy's full statistics or changing management APIs.
+
 - Evidence: `ProxyServer.getStats()` returns the complete `upstreamProxy` object, including `auth`, and `_handleGetLiveSummary()` copies it directly into tool output at `src/mcp/mcp-server.js:389-405`.
 - Impact: invoking a status-summary tool sends plaintext upstream-proxy usernames and passwords into MCP client/model context although the summary needs only connection metadata.
 - Reproduction: configure upstream auth as `user:secret` and invoke `get_live_summary`; its JSON contains `"auth": "user:secret"`.

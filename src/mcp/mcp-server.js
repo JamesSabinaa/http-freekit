@@ -11,6 +11,15 @@ const MCP_HAR_EXPORT_MAX_BYTES = 200 * 1024;
 const MCP_HAR_JSON_PREFIX = '{"log":{"version":"1.2","creator":{"name":"HTTP FreeKit","version":"1.0.0"},"entries":[';
 const MCP_HAR_JSON_SUFFIX = ']}}';
 
+function publicUpstreamProxyMetadata(upstreamProxy) {
+  if (!upstreamProxy) return null;
+  return {
+    type: upstreamProxy.type,
+    host: upstreamProxy.host,
+    port: upstreamProxy.port
+  };
+}
+
 const TOOL_DEFINITIONS = [
   {
     name: 'search_traffic',
@@ -412,7 +421,7 @@ export class McpServerBridge {
       breakpointRules: proxyStats.breakpointRules || 0,
       pendingBreakpoints: proxyStats.pendingBreakpoints || 0,
       activeInterceptors,
-      upstreamProxy: proxyStats.upstreamProxy || null,
+      upstreamProxy: publicUpstreamProxyMetadata(proxyStats.upstreamProxy),
       http2Enabled: proxyStats.http2Enabled,
       tlsPassthrough: proxyStats.tlsPassthrough?.length || 0
     };
