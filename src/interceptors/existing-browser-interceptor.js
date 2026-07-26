@@ -13,6 +13,9 @@ export class ExistingBrowserInterceptor {
     this.active = false;
     this.ca = null;
     this.process = null;
+    this.deactivatingProcess = null;
+    this.gracefulExitTimeoutMs = 2000;
+    this.forceExitTimeoutMs = 2000;
     this.onStatusChange = null;
   }
 
@@ -64,6 +67,51 @@ export class ExistingBrowserInterceptor {
     });
   }
 
+  _hasExited(launchedProcess) {
+    return launchedProcess.exitCode != null || launchedProcess.signalCode != null;
+  }
+
+  _signalAndWaitForExit(launchedProcess, signal, timeoutMs) {
+    if (this._hasExited(launchedProcess)) {
+      return Promise.resolve({ exited: true, error: null });
+    }
+
+    return new Promise(resolve => {
+      let settled = false;
+      let timeout = null;
+      const finish = (exited, error = null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        launchedProcess.removeListener('exit', onExit);
+        launchedProcess.removeListener('error', onError);
+        resolve({ exited, error });
+      };
+      const onExit = () => finish(true);
+      const onError = err => finish(this._hasExited(launchedProcess), err);
+
+      launchedProcess.once('exit', onExit);
+      launchedProcess.once('error', onError);
+      if (this._hasExited(launchedProcess)) {
+        finish(true);
+        return;
+      }
+
+      timeout = setTimeout(
+        () => finish(this._hasExited(launchedProcess)),
+        timeoutMs
+      );
+      try {
+        const signalSent = launchedProcess.kill(signal);
+        if (!signalSent && !this._hasExited(launchedProcess)) {
+          finish(false, new Error(`${signal} was not delivered`));
+        }
+      } catch (err) {
+        finish(this._hasExited(launchedProcess), err);
+      }
+    });
+  }
+
   async activate(proxyPort, options = {}) {
     const launchOptions = { ...options };
     if (launchOptions.url) {
@@ -111,6 +159,7 @@ export class ExistingBrowserInterceptor {
 
     launchedProcess.on('exit', () => {
       if (this.process !== launchedProcess) return;
+      if (this.deactivatingProcess === launchedProcess) return;
       this.active = false;
       this.process = null;
       this._emitStatus('exited', { pid: launchedProcess.pid });
@@ -119,9 +168,8 @@ export class ExistingBrowserInterceptor {
     launchedProcess.on('error', (err) => {
       if (this.process !== launchedProcess) return;
       console.error(`[Interceptor] ${this.name} error:`, err.message);
-      this.active = false;
-      this.process = null;
-      this._emitStatus('error', { pid: launchedProcess.pid, error: err.message });
+      this.active = true;
+      this._emitStatus('process-error', { pid: launchedProcess.pid, error: err.message });
     });
 
     return { success: true, pid: launchedProcess.pid, browser: this.name };
@@ -129,12 +177,63 @@ export class ExistingBrowserInterceptor {
 
   async deactivate() {
     const launchedProcess = this.process;
-    this.process = null;
-    if (launchedProcess && !launchedProcess.killed) {
-      launchedProcess.kill();
+    if (!launchedProcess) {
+      this.active = false;
+      this._emitStatus('inactive', { pid: null });
+      return;
     }
-    this.active = false;
-    this._emitStatus('inactive', { pid: launchedProcess?.pid || null });
+
+    this.deactivatingProcess = launchedProcess;
+    const errors = [];
+    let exited = this._hasExited(launchedProcess);
+
+    try {
+      if (!exited) {
+        const gracefulResult = await this._signalAndWaitForExit(
+          launchedProcess,
+          'SIGTERM',
+          this.gracefulExitTimeoutMs
+        );
+        exited = gracefulResult.exited;
+        if (gracefulResult.error) errors.push(gracefulResult.error);
+      }
+
+      if (!exited) {
+        const forcedResult = await this._signalAndWaitForExit(
+          launchedProcess,
+          'SIGKILL',
+          this.forceExitTimeoutMs
+        );
+        exited = forcedResult.exited;
+        if (forcedResult.error) errors.push(forcedResult.error);
+      }
+
+      if (!exited) {
+        if (this.process === launchedProcess) {
+          this.active = true;
+          const error = errors.at(-1);
+          this._emitStatus('stop-failed', {
+            pid: launchedProcess.pid,
+            ...(error ? { error: error.message } : {})
+          });
+        }
+        const detail = errors.at(-1)?.message;
+        throw new Error(
+          `${this.name} did not exit${detail ? `: ${detail}` : ''}; ` +
+          'its process state was preserved so Stop can be retried'
+        );
+      }
+
+      if (this.process === launchedProcess) {
+        this.process = null;
+        this.active = false;
+        this._emitStatus('inactive', { pid: launchedProcess.pid });
+      }
+    } finally {
+      if (this.deactivatingProcess === launchedProcess) {
+        this.deactivatingProcess = null;
+      }
+    }
   }
 
   _emitStatus(reason, extra = {}) {

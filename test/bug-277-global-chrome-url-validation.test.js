@@ -7,9 +7,15 @@ import { ExistingBrowserInterceptor } from '../src/interceptors/existing-browser
 function fakeChild(pid) {
   const child = new EventEmitter();
   child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
   child.killed = false;
   child.kill = () => {
     child.killed = true;
+    queueMicrotask(() => {
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+    });
     return true;
   };
   queueMicrotask(() => child.emit('spawn'));

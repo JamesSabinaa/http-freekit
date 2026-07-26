@@ -1614,6 +1614,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-294 — Medium — Global Chrome Stop reports inactive before the browser exits
 
+- Status: **Fixed**.
+- Resolution: Global Chrome Stop now waits for actual child exit after SIGTERM, escalates to SIGKILL after a bounded grace period, and waits again for confirmed exit. Signal errors, rejected signals, and processes that ignore both signals retain the exact child handle and active state so Stop can be retried; stale exit/error events are identity-checked and cannot clear a newer browser.
+
 - Evidence: `ExistingBrowserInterceptor.deactivate()` at `src/interceptors/existing-browser-interceptor.js:73-79` sends one signal, immediately marks the interceptor inactive, and does not wait for exit. Node marks `child.killed` when the signal is sent, so a later Stop will not retry a process that ignored the signal.
 - Impact: FreeKit reports Global Chrome stopped while the tracked browser and its proxy configuration can remain running, with no further cleanup attempt available through the UI.
 - Reproduction: suspend the tracked Chrome process so it cannot handle termination, click Stop, and observe that the interceptor becomes inactive while the PID remains alive.
