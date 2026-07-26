@@ -11,7 +11,11 @@ test('system proxy activation journals settings and normal stop removes the jour
   const interceptor = new SystemProxyInterceptor({ dataDir });
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
-  interceptor._readCurrentSettings = () => ({ enabled: true, server: 'corporate.proxy:8888' });
+  interceptor._readCurrentSettings = () => ({
+    enabled: true,
+    server: 'corporate.proxy:8888',
+    override: 'intranet.example;<local>'
+  });
   interceptor._setRegistryValue = () => {};
   interceptor._notifyWinInet = () => {};
 
@@ -21,9 +25,18 @@ test('system proxy activation journals settings and normal stop removes the jour
   const recovery = JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8'));
   assert.equal(recovery.pid, process.pid);
   assert.equal(recovery.proxyServer, '127.0.0.1:8080');
-  assert.deepEqual(recovery.previousSettings, { enabled: true, server: 'corporate.proxy:8888' });
+  assert.deepEqual(recovery.previousSettings, {
+    enabled: true,
+    server: 'corporate.proxy:8888',
+    override: 'intranet.example;<local>'
+  });
+  assert.deepEqual(recovery.ownedSettings, {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  });
 
-  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080' });
+  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080', override: '' });
   await interceptor.deactivate();
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
@@ -42,6 +55,11 @@ test('a new process restores a stale system-proxy journal', (t) => {
   const interceptor = new SystemProxyInterceptor({ dataDir });
   interceptor._isWindows = () => true;
   interceptor._isProcessRunning = () => false;
+  interceptor._readCurrentSettings = () => ({
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: 'legacy-bypass.example'
+  });
   interceptor._setRegistryValue = (...args) => writes.push(args);
   interceptor._notifyWinInet = () => {};
 

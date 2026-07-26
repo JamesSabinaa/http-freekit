@@ -6,9 +6,9 @@ test('system-proxy deactivation reports restore failures and remains active', as
   const interceptor = new SystemProxyInterceptor();
   interceptor._isWindows = () => true;
   interceptor.active = true;
-  interceptor.previousSettings = { enabled: true, server: 'corporate.proxy:8888' };
+  interceptor.previousSettings = { enabled: true, server: 'corporate.proxy:8888', override: '<local>' };
   interceptor.activeProxyServer = '127.0.0.1:8080';
-  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080' });
+  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080', override: '' });
   interceptor._restorePreviousSettings = () => {
     throw new Error('registry access denied');
   };
@@ -20,7 +20,8 @@ test('system-proxy deactivation reports restore failures and remains active', as
   assert.equal(interceptor.active, true);
   assert.deepEqual(interceptor.previousSettings, {
     enabled: true,
-    server: 'corporate.proxy:8888'
+    server: 'corporate.proxy:8888',
+    override: '<local>'
   });
 });
 

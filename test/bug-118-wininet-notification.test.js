@@ -6,7 +6,7 @@ test('system proxy activation and restoration notify WinINet clients', async () 
   const interceptor = new SystemProxyInterceptor();
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
-  interceptor._readCurrentSettings = () => ({ enabled: false, server: null });
+  interceptor._readCurrentSettings = () => ({ enabled: false, server: null, override: null });
   interceptor._persistRecoveryState = () => {};
   interceptor._removeRecoveryState = () => {};
   interceptor._setRegistryValue = () => {};
@@ -16,7 +16,7 @@ test('system proxy activation and restoration notify WinINet clients', async () 
   await interceptor.activate(8080);
   assert.equal(notifications, 1);
 
-  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080' });
+  interceptor._readCurrentSettings = () => ({ enabled: true, server: '127.0.0.1:8080', override: '' });
   interceptor._execRegistry = () => '';
   await interceptor.deactivate();
   assert.equal(notifications, 2);

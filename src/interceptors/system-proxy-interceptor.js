@@ -79,9 +79,13 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     });
     const enabledMatch = output.match(/^\s*ProxyEnable\s+REG_DWORD\s+(\S+)/im);
     const serverMatch = output.match(/^\s*ProxyServer\s+REG_SZ\s+(.*)$/im);
+    const overrideMatch = output.match(/^[ \t]*ProxyOverride[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
     return {
       enabled: enabledMatch ? parseInt(enabledMatch[1], 0) !== 0 : false,
-      server: serverMatch ? serverMatch[1].trim() : null
+      server: serverMatch ? serverMatch[1].trim() : null,
+      // null means the value is absent; an empty string is an existing value
+      // that must be recreated exactly during restoration.
+      override: overrideMatch ? (overrideMatch[1] || '').trim() : null
     };
   }
 
@@ -93,6 +97,28 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       '/d', String(value),
       '/f'
     ], { stdio: 'ignore', timeout: 5000 });
+  }
+
+  _deleteRegistryValue(name) {
+    try {
+      this._execRegistry(['delete', INTERNET_SETTINGS_KEY, '/v', name, '/f'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+    } catch (err) {
+      const settingsField = {
+        ProxyServer: 'server',
+        ProxyOverride: 'override'
+      }[name];
+      if (settingsField) {
+        try {
+          if (this._readCurrentSettings()[settingsField] === null) return;
+        } catch {
+          // Preserve the original deletion failure when state cannot be read.
+        }
+      }
+      throw err;
+    }
   }
 
   _isProcessRunning(pid) {
@@ -113,6 +139,11 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       fs.writeFileSync(tempPath, JSON.stringify({
         pid: process.pid,
         proxyServer,
+        ownedSettings: {
+          enabled: true,
+          server: proxyServer,
+          override: ''
+        },
         previousSettings: this.previousSettings
       }), { encoding: 'utf8', mode: 0o600 });
       fs.renameSync(tempPath, this.recoveryFile);
@@ -131,6 +162,22 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     }
   }
 
+  _settingsCouldBelongToRecovery(current, recovery) {
+    const previous = recovery.previousSettings;
+    const owned = recovery.ownedSettings || {
+      enabled: true,
+      server: recovery.proxyServer
+    };
+    const fields = ['enabled', 'server'];
+    if (recovery.ownedSettings) {
+      if (!Object.prototype.hasOwnProperty.call(previous, 'override')) return false;
+      fields.push('override');
+    }
+    return fields.every(field =>
+      current[field] === previous[field] || current[field] === owned[field]
+    );
+  }
+
   recoverStaleSettings() {
     if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
@@ -138,6 +185,15 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       if (this._isProcessRunning(recovery.pid)) return false;
       if (!recovery.previousSettings || typeof recovery.previousSettings !== 'object') {
         throw new Error('Recovery file does not contain previous proxy settings');
+      }
+      const currentSettings = this._readCurrentSettings();
+      // The journal is durable before activation starts writing the registry,
+      // so a crash can leave any mixture of exact previous and intended owned
+      // values. A value outside those two states is an external change.
+      if (!this._settingsCouldBelongToRecovery(currentSettings, recovery)) {
+        this._removeRecoveryState();
+        console.log('[Interceptor] Stale system proxy was changed externally; preserving the newer settings');
+        return false;
       }
       this.previousSettings = recovery.previousSettings;
       this._restorePreviousSettings();
@@ -163,6 +219,13 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
         });
       } catch {}
     }
+    if (Object.prototype.hasOwnProperty.call(previous, 'override')) {
+      if (previous.override != null) {
+        this._setRegistryValue('ProxyOverride', 'REG_SZ', previous.override);
+      } else {
+        this._deleteRegistryValue('ProxyOverride');
+      }
+    }
     this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
     this._notifyWinInet();
     this._removeRecoveryState();
@@ -175,6 +238,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       this.activeProxyServer
       && settings?.enabled
       && settings.server === this.activeProxyServer
+      && settings.override === ''
     );
   }
 
@@ -189,6 +253,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
         this._persistRecoveryState(proxyServer);
         this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
+        this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
         this._notifyWinInet();
         this.activeProxyServer = proxyServer;
         this.active = true;

@@ -1307,6 +1307,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-198 — Medium — Existing Windows proxy bypasses remain active
 
+- Status: **Fixed**.
+- Resolution: System Proxy now snapshots `ProxyOverride` with distinct missing and empty states, journals both the prior and FreeKit-owned settings, and clears the override while active. Normal Stop, activation rollback, and stale-session recovery restore the exact prior override state; ownership checks preserve any newer external proxy or bypass change, while recovery still recognizes partial activation left by a crash.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:21-43` reads only `ProxyEnable` and `ProxyServer`; activation at `:72-80` changes only those values and never snapshots or clears `ProxyOverride`.
 - Impact: every host in the user's existing bypass list continues connecting directly while the UI promises all machine HTTP traffic is intercepted.
 - Reproduction: set `ProxyOverride` to `example.com`, activate System Proxy, and request that host from a WinINet client.

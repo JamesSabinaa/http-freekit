@@ -31,6 +31,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 
   assert.deepEqual(interceptor._readCurrentSettings(), {
     enabled: false,
-    server: null
+    server: null,
+    override: null
   });
 });
