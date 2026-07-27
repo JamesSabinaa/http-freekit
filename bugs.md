@@ -1,6 +1,21 @@
 # Bug audit
 
-This file records reproducible defects found during a repository-wide audit. Findings are grouped by subsystem, not by discovery order. Line numbers refer to the `main` revision current when each finding was recorded and may shift as concurrent fixes land. Findings without a status are open at the latest completed audit pass; explicit Fixed or Partially fixed statuses preserve changes made during the audit.
+This file records reproducible defects found during a repository-wide audit. Findings are grouped by subsystem, not by discovery order. Line numbers refer to the `main` revision current when each finding was recorded and may shift as fixes land. Every finding now has an explicit Open, Partially fixed, or Fixed status.
+
+## Current status
+
+Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
+
+**No: 70 of the 360 documented bugs are not fully fixed.**
+
+| Status | Count |
+| --- | ---: |
+| Fixed | 290 |
+| Partially fixed | 26 |
+| Open | 44 |
+| **Total** | **360** |
+
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -98,8 +113,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-057 — Medium — Settings write failures are reported as successful saves
 
-- Status: **Partially fixed**.
-- Resolution: Settings now roll back and return an error when persistence fails, but renderer save handlers that ignore unsuccessful HTTP responses can still report the failed change as saved.
+- Status: **Fixed**.
+- Resolution: Settings writes now throw and restore the previous in-memory state, API mutations return an error, and the renderer's management-API fetch wrapper turns every unsuccessful response into an exception before individual save handlers can display success.
 
 - Evidence: `src/settings.js:25-31` catches write errors, logs them, and returns no failure. `set()`/`setAll()` at `:39-47` therefore complete normally, and API setting routes return success regardless of whether disk persistence worked.
 - Impact: on a read-only/full filesystem the UI says settings were saved, the in-memory value works temporarily, and every change disappears on restart.
@@ -227,11 +242,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-063 — Medium — Corrupt or mismatched CA files are never recovered
 
+- Status: **Open**.
+
 - Evidence: `src/proxy/certificate-authority.js:20-38` assumes that any existing `ca.pem` and `ca.key` parse and belong together. Parse failures are not caught, and no public/private key match is verified before the pair is used to sign host certificates.
 - Impact: a partial/corrupt file prevents startup entirely; a valid but mismatched key lets startup succeed but produces host certificates clients cannot validate against the advertised CA.
 - Reproduction: replace `ca.key` with invalid text to get a fatal startup error, or with a different valid RSA key and verify a generated leaf against `ca.pem`.
 
 ### BUG-100 — High — H2 failure fallback replays non-idempotent requests
+
+- Status: **Open**.
 
 - Evidence: all upstream-H2 paths catch any `_makeH2Request()` error and fall through to a second H1 request without `_canSafelyReplayRequest()` checks at `src/proxy/proxy-server.js:1496-1519`, `:1791-1822`, and `:2031-2055`.
 - Impact: payments, mutations, and uploads can execute twice if the H2 origin processes a POST and resets before responding.
@@ -247,19 +266,23 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-102 — High/Medium — Transform and timeout actions silently become fixed 200s
 
+- Status: **Open**.
+
 - Evidence: plain action dispatch implements selected types at `src/proxy/proxy-server.js:3384-3755` then treats every unknown type as a fixed response at `:3757-3794`; no path implements `transform-request`, `transform-response`, or `timeout`. HTTPS/H2 dispatch at `:1107-1397,2223-2488` omits the same actions and additionally lacks some webhook/combined-breakpoint variants.
 - Impact: valid rules displayed as transforming or timing out instead synthesize an empty successful response.
 - Reproduction: save each advertised action type and request a matching URL; each returns an empty 200.
 
 ### BUG-104 — Medium — Send/mock-forward hang when a response aborts mid-body
 
-- Status: **Partially fixed**.
-- Resolution: Send now rejects aborted or errored response streams, but mock-forward still listens only for `data` and `end`, so an upstream partial-response disconnect can leave the forwarded request unsettled.
+- Status: **Fixed**.
+- Resolution: Send rejects aborted or errored response streams. All mock-forward protocol paths now use the shared `_requestMockForward()` helper, which forwards response `aborted`/`error` events to the request, settles request failures, and applies upstream response timeouts.
 - Evidence: Send listens only for response `data`/`end` at `src/api/api-server.js:1190-1203`; request `error` does not receive response-stream aborts. Mock-forward repeats this at `src/proxy/proxy-server.js:1167-1195`, `:2265-2300`, and `:3443-3472`, with no response abort/error forwarding or timeout.
 - Impact: a common upstream partial-response disconnect leaves clients, API handlers, and sockets unsettled indefinitely.
 - Reproduction: send headers and a partial body from an origin, destroy its socket, and observe neither rejection nor a 502.
 
 ### BUG-105 — Medium — Breakpoint header editing cannot delete headers
+
+- Status: **Open**.
 
 - Evidence: resume paths merge edited headers with `Object.assign()` instead of replacing the original set (`src/proxy/proxy-server.js:628-630`, `:1320`, `:1441-1443`, `:1744`, `:1989`, `:2410`, `:3628`, `:3712`).
 - Impact: removing Authorization or another problematic header in the editor has no effect at the origin.
@@ -267,11 +290,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-106 — Medium — H1 breakpoint URL rewrites retain Host and the old transport
 
+- Status: **Open**.
+
 - Evidence: plain H1 changes `targetUrl` at `src/proxy/proxy-server.js:622-624,3624-3626` but builds headers from the old Host at `:638-680`. Request-library selection around `:696` and HTTPS paths at `:1554-1563,2097-2107` does not follow an HTTP↔HTTPS rewrite.
 - Impact: rewritten requests reach the wrong virtual host or use TLS/plaintext against the wrong scheme.
 - Reproduction: rewrite a request to a second local origin and inspect the Host header; then try a cross-scheme rewrite.
 
 ### BUG-107 — Medium — Editing a chunked breakpoint body sends illegal framing
+
+- Status: **Open**.
 
 - Evidence: `_setContentLength()` at `src/proxy/proxy-server.js:210-215` removes only old Content-Length and leaves Transfer-Encoding. Body-edit paths then add Content-Length at `:631-634`, `:1321-1324`, `:1444-1447`, `:1745-1748`, `:1990-1993`, `:2411-2414`, `:3629-3632`, and `:3713-3715`.
 - Impact: the origin receives both `Content-Length` and `Transfer-Encoding`, commonly rejects the request, and may trigger request-smuggling defenses.
@@ -287,11 +314,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-109 — Medium — One transient H2 failure blacklists an origin until restart
 
+- Status: **Open**.
+
 - Evidence: `_getH2Session()` immediately rejects blacklisted origins at `src/proxy/proxy-server.js:2541`; any initial error or five-second timeout adds the origin at `:2575-2581,2596-2605`. The set clears only during full shutdown at `:2635-2644`.
 - Impact: after a temporary outage, an H2-only origin stays unreachable for the rest of the process because every request tries H1.
 - Reproduction: fail the first H2 connection, restore the origin, and retry without restarting FreeKit.
 
 ### BUG-110 — Medium — H1 forwarding leaks hop-by-hop headers across connections
+
+- Status: **Open**.
 
 - Evidence: `_shouldStripUpstreamHeader()` at `src/proxy/proxy-server.js:289-309` does not remove standard hop-by-hop fields or names nominated by `Connection`; H1 forwarding passes them at `:638-680`, `:1451-1460`, and `:2054-2063`.
 - Impact: connection-specific metadata crosses hops and can break pooling/framing or trigger proxy inconsistencies.
@@ -299,11 +330,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-111 — Medium — Send irreversibly decodes binary responses as UTF-8
 
+- Status: **Open**.
+
 - Evidence: `src/api/api-server.js:1194-1200` always calls `responseBody.toString("utf8")` and returns no response encoding metadata.
 - Impact: images, archives, protobuf, and arbitrary binary responses gain replacement characters and cannot be inspected/replayed faithfully.
 - Reproduction: return bytes `00 ff 80 01`; re-encoding the Send body yields different bytes.
 
 ### BUG-112 — Medium — Compressed WebSocket messages are displayed as corrupt text
+
+- Status: **Open**.
 
 - Evidence: `src/proxy/ws-frame-parser.js:65-68` discards RSV bits and exposes no compression state. `src/proxy/proxy-server.js:507-526` directly UTF-8 decodes text frames even though the forwarded upgrade can negotiate `permessage-deflate`.
 - Impact: common compressed text messages appear as gibberish/replacement characters.
@@ -311,17 +346,24 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-113 — Medium — BottingTools hard-codes a non-portable Python command
 
+- Status: **Open**.
+
 - Evidence: `src/api/api-server.js:48-50` always executes `python3`, while the same file handles Windows candidates (`py -3`, `python`, `python3`) for generator integration at `:290-306`.
 - Impact: provider listing/rotation fails with `ENOENT` on normal Windows Python installs that expose only `py.exe` or `python.exe`.
 - Reproduction: use the integration on Windows with only the standard Python launcher installed.
 
 ### BUG-114 — Low/Medium — SOCKS passwords containing colons are truncated
 
+- Status: **Open**.
+
 - Evidence: `_connectViaSocks()` uses `proxy.auth.split(":")` at `src/proxy/proxy-server.js:3136-3139`, so only the segment before the second colon becomes the password.
 - Impact: valid SOCKS credentials such as `user:pa:ss` fail on the plain-HTTP SOCKS path.
 - Reproduction: configure that credential and inspect authentication delivered to a test SOCKS server.
 
 ### BUG-115 — Low/Medium — Valid multipart, cookie, and JSON matchers fail
+
+- Status: **Partially fixed**.
+- Resolution: Cookie parsing now splits only on the first equals sign and uses an own-key `Map`, preserving padded values and prototype-named cookies. Quoted multipart boundaries, order-independent exact JSON comparison, case normalization for host matchers, and safe wildcard-header escaping remain unresolved.
 
 - Evidence: multipart parsing retains quotes around `boundary="abc"` at `src/proxy/proxy-server.js:3293-3309`; cookie parsing splits on every `=` at `:3277-3283`; JSON exact matching compares property-order-sensitive `JSON.stringify()` output at `:3256-3261`. Host/hostname matchers compare normalized URL hosts to raw case-sensitive values at `:3206-3220`, and header wildcard conversion leaves regex metacharacters unescaped at `:3224-3233`.
 - Impact: quoted multipart boundaries, padded cookie values, semantically equal reordered JSON, uppercase DNS matchers, and literal punctuation in wildcard header values can all produce false results.
@@ -336,6 +378,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: create groups A and B, move a rule into A, then move A into B and try to toggle or delete the rule by ID.
 
 ### BUG-116 — High — Ordinary proxy traffic is buffered until the whole message ends
+
+- Status: **Open**.
 
 - Evidence: normal H1/H2 request and response paths accumulate all chunks and only create/write the upstream or client response after `end` (representative paths: `src/proxy/proxy-server.js:580-705`, `:1522-1539`, `:1684-1839`, `:1930-2076`, `:2673-2695`). No tee/streaming path forwards chunks while retaining a bounded capture.
 - Impact: SSE, streaming downloads, long-lived H2/gRPC streams, and streaming uploads do not work: the other side sees no headers/data until the stream finishes, and infinite streams appear hung forever.
@@ -595,6 +639,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-182 — Medium — Automatic CA renewal breaks non-Windows trust
 
+- Status: **Open**.
+
 - Evidence: startup regenerates an expiring CA and overwrites its files at `src/proxy/certificate-authority.js:19-36,47-85`. Boot installs/replaces trust only on Windows and does nothing equivalent on macOS/Linux at `src/index.js:43-58`.
 - Impact: after the one-year renewal, previously configured macOS, Linux, browser, and device clients reject all interception without a warning or re-trust migration.
 - Reproduction: trust a near-expiry CA on macOS/Linux, restart inside its renewal window, and make an HTTPS request.
@@ -749,11 +795,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-228 — Medium — A hard-coded Chromium filter silently hides traffic
 
+- Status: **Open**.
+
 - Evidence: both pending and completed emission call `_shouldSuppressTrafficLog()` at `src/proxy/proxy-server.js:3810,3837`; for Chrome-family UAs, `:3845-3926` always drops many update, Safe Browsing, account, telemetry, Web Store, and Google requests. Only safe-font filtering is configurable.
 - Impact: forwarded authentication and failure traffic never reaches API/UI/MCP/HAR, contradicting the promise to inspect every request and providing no indication that records were removed.
 - Reproduction: send a Chrome-UA request to `accounts.google.com/ListAccounts` with font filtering off and observe no capture.
 
 ### BUG-229 — Low/Medium — MCP request detail silently truncates bodies
+
+- Status: **Open**.
 
 - Evidence: `get_request_detail` promises full details including body at `src/mcp/mcp-server.js:25-33`, but the handler slices request and response bodies at 50 KiB at `:198-216`.
 - Impact: MCP clients cannot retrieve or analyze the remaining captured data even though storage retains substantially more.
@@ -840,6 +890,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Resolution: captured traffic and both HAR import paths now attach explicit request/response body-encoding provenance. HAR export unwraps internal base64 data URIs only when that metadata marks genuine binary data, while literal data-URI-shaped text remains unchanged.
 
 ### BUG-264 — Medium — Generated certificates are not backdated for clock skew
+
+- Status: **Open**.
 
 - Evidence: CA and leaf `notBefore` values are set to the exact generation time at `src/proxy/certificate-authority.js:55-57,100-102`.
 - Impact: devices, VMs, containers, or remote clients whose clocks trail the proxy by a small amount reject newly generated interception certificates as not yet valid.
@@ -1047,11 +1099,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-361 — Low/Medium — Cleared pending-request IDs are retained indefinitely
 
+- Status: **Open**.
+
 - Evidence: `_clearTraffic()` copies every live pending ID into `_clearedPendingTrafficIds`. Entries are deleted only if a later event reuses or completes the same ID; the set has no size limit, expiry, or other cleanup path.
 - Impact: pending requests that never produce a completion leave permanent tombstones. Repeated pending-and-clear cycles can grow backend memory even while the bounded traffic log stays small.
 - Reproduction: emit unique pending traffic events and clear after each without emitting their completions; `_clearedPendingTrafficIds` grows once per cycle while `trafficLog` remains empty.
 
 ### BUG-364 — Low/Medium — Webhook actions block matched requests despite their fire-and-forget contract
+
+- Status: **Open**.
 
 - Evidence: The rule editor labels webhooks `Send a webhook (fire-and-forget)` at `src/ui/app.js:4537`, but `_serveMockResponse()` awaits webhook response headers before it responds to the matched client at `src/proxy/proxy-server.js:4294-4309`.
 - Impact: a slow or nonresponsive webhook delays the original client for up to the outbound timeout and can turn an otherwise matched mock response into an error.
@@ -1069,6 +1125,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ## Interceptors and cleanup
 
 ### BUG-038 — Critical — The unauthenticated API can launch an arbitrary local executable
+
+- Status: **Fixed**.
+- Resolution: Management routes now reject foreign browser origins, and the Electron build additionally requires its random per-session bearer token. The executable activation route is no longer available to the cross-origin browser attacker in the reproduction.
 
 - Evidence: `src/api/api-server.js:738-745` passes the request body as interceptor activation options; `src/interceptors/interceptor-manager.js:62-70` forwards it unchanged. `src/interceptors/electron-interceptor.js:23-24,49-54` treats `appPath` as an executable and calls `spawn()` without an allowlist or user confirmation. BUG-001 makes the route cross-origin accessible.
 - Impact: a browser page can request that an executable already present on the machine be launched with the user's privileges.
@@ -1220,8 +1279,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-091 — Medium — System-proxy Stop overwrites newer external settings
 
-- Status: **Partially fixed**.
-- Resolution: Normal Stop now verifies that the current settings still belong to FreeKit. Startup recovery restores a stale journal without comparing its saved `proxyServer` to the current registry state, so it can still overwrite a newer post-crash change.
+- Status: **Fixed**.
+- Resolution: Normal Stop verifies the complete active settings before restoring them. Startup recovery now also compares every current proxy field with the journal's exact previous and FreeKit-owned states, preserving and discarding ownership for any newer external configuration.
 - Evidence: activation snapshots settings once at `src/interceptors/system-proxy-interceptor.js:75`; deactivation at `:90-99` blindly restores that snapshot without checking whether current values still belong to FreeKit.
 - Impact: a VPN/corporate proxy change made while FreeKit is active is replaced with stale pre-activation values.
 - Reproduction: activate, change the Windows proxy externally, then Stop FreeKit.
@@ -1242,8 +1301,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-094 — Medium — Exited JVMs remain marked active forever
 
-- Status: **Partially fixed**.
-- Resolution: Refresh now removes missing PIDs and PIDs whose reported main class changed. PID reuse by another JVM with the same main class is indistinguishable and remains falsely marked active.
+- Status: **Fixed**.
+- Resolution: Refresh removes exited JVMs and verifies tracked targets with both JPS metadata and a strong OS identity containing PID, process start time, and executable path. A reused PID, including one with the same main class, is cleared without attaching to the replacement process; ambiguous observations retain explicit retryable ownership.
 - Evidence: `src/interceptors/jvm-interceptor.js:25-27` checks only the in-memory map; PIDs inserted at `:272-276` are never pruned by process/metadata refresh.
 - Impact: a closed JVM leaves the interceptor active indefinitely, and PID reuse can label a different, unproxied JVM as already activated.
 - Reproduction: attach successfully, exit the target JVM, and refresh interceptor metadata.
@@ -1329,13 +1388,16 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-123 — Medium — Android Stop leaves the user-installed CA trusted
 
+- Status: **Open**.
+
 - Evidence: fallback activation instructs the user to install `/data/local/tmp/http-freekit-ca.pem` into Android's credential store at `src/interceptors/android-adb-interceptor.js:483-487`. `_removeCaCert()` at `:342-351` deletes only the staging file, and Stop supplies no credential-removal step.
 - Impact: a user who follows the setup instructions retains the FreeKit root CA after the interceptor is reported stopped.
 - Reproduction: install the fallback CA as instructed, Stop the interceptor, and inspect Android's user credentials.
 
 ### BUG-124 — Medium — The JVM API rejects numeric process IDs
 
-- Status: **Partially fixed**. Activation normalizes a numeric PID to the stored string form, but targeted deactivation still tests the raw numeric value and silently leaves the JVM attached.
+- Status: **Fixed**.
+- Resolution: Both activation and targeted deactivation normalize a supplied numeric or string PID to the same canonical string form before process lookup and ownership checks.
 
 - Evidence: `_getRunningProcesses()` stores PIDs as strings at `src/interceptors/jvm-interceptor.js:46-60`; activation compares the caller's value with strict equality at `:223-249` without normalization.
 - Impact: the natural JSON body `{ "pid": 1234 }` returns process not found even though `{ "pid": "1234" }` selects the same running JVM.
@@ -1393,6 +1455,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-165 — Medium — System Proxy omits WinHTTP despite claiming all machine traffic
 
+- Status: **Open**.
+
 - Evidence: `src/interceptors/system-proxy-interceptor.js:3,46-53,72-80` changes only current-user Internet Settings. The UI promises “Intercept all HTTP traffic on this machine” at `src/ui/app.js:3561`, but no WinHTTP proxy is configured.
 - Impact: Windows services and machine clients using WinHTTP continue bypassing FreeKit while the interceptor reports active.
 - Reproduction: activate System Proxy and run `netsh winhttp show proxy`; its setting remains unchanged.
@@ -1413,6 +1477,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: leave a managed profile marker containing an unrelated live PID and run startup cleanup; the directory is classified as active.
 
 ### BUG-197 — Medium — Android remains active after interception disappears
+
+- Status: **Open**.
 
 - Evidence: `src/interceptors/android-adb-interceptor.js:26-27` checks only the in-memory activation map. Entries added at `:454-465` are never reconciled with connected devices, Android's global proxy, the VPN app, or reverse-tunnel state.
 - Impact: unplugging a device, stopping the VPN, or changing its proxy leaves FreeKit reporting it active; reconnecting the same serial can suppress activation even though no interception exists.
@@ -1446,6 +1512,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-201 — Low/Medium — macOS browser Focus can raise the wrong profile
 
+- Status: **Open**.
+
 - Evidence: `src/interceptors/browser-interceptor.js:479-490` only runs `tell application "<browser>" to activate`; it does not identify the managed profile directory, process, or window. Windows uses profile-specific selection at `:435-476`.
 - Impact: when normal and isolated windows coexist, Focus can raise the unproxied normal profile instead of FreeKit's browser.
 - Reproduction: run normal and isolated Chrome windows on macOS and invoke Focus with the normal window foremost inside Chrome.
@@ -1478,6 +1546,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: open two UI sessions, activate System Proxy or Android in one, and observe no connected-source change in the other until reload.
 
 ### BUG-218 — High/Medium — Restart preserves orphaned browsers but discards their ownership
+
+- Status: **Open**.
 
 - Scope update: Global Chrome has the same restart-ownership failure without a managed-profile marker. A fresh `ExistingBrowserInterceptor` has no handle for the surviving default-profile browser, reports inactive, and cannot stop it.
 - Evidence: startup cleanup classifies a profile with a related live browser as `skippedActive` at `src/interceptors/browser-lifecycle.js:223-230`. `InterceptorManager` invokes cleanup at `interceptor-manager.js:17-23` but ignores that result, then constructs new browser interceptors with empty process/profile state at `:25-37`.
@@ -1933,6 +2003,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-347 — High/Medium — Browser open actions bypass lifecycle serialization
 
+- Status: **Partially fixed**.
+- Resolution: Browser Open now runs inside the manager's per-interceptor exclusive operation and safely handles a browser closing during the action. Focus still calls the interceptor outside that serialization, so it can race Stop or replacement activation against stale process state.
+
 - Evidence: `InterceptorManager.openUrl()` calls an active browser's `openUrl()` outside `_runExclusive()` at `src/interceptors/interceptor-manager.js:115-127`; `focus()` bypasses the lock similarly at `:107-113`. Stop can clear the browser's process, profile, and proxy state while the open path is between its active checks and launch.
 - Impact: a URL action can finish after Stop and spawn an untracked browser using cleared `profileDir` or `proxyPort` values. Focus can likewise target stale or already terminated process state.
 - Reproduction: pause the browser's second active check, complete manager Stop, then release the open; it reports success and launches after Stop with null lifecycle configuration while no manager operation was tracked.
@@ -1988,11 +2061,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-060 — Low — The advertised minimize-to-tray behavior is not implemented
 
+- Status: **Open**.
+
 - Evidence: `README.md:188` promises minimize to tray. `electron/main.cjs:291-321` creates the window without `minimize` or `close` interception, while `:441-445` shuts down when the window closes. `electron/tray.cjs:91-105` can hide the window only when the user explicitly selects Hide from the tray menu.
 - Impact: minimizing leaves a taskbar window, and closing quits the server instead of moving the application to the tray as documented.
 - Reproduction: minimize or close the desktop window and inspect its taskbar/tray and process state.
 
 ### BUG-062 — Low — README advertises an unsupported Node.js baseline
+
+- Status: **Open**.
 
 - Evidence: `package.json:38-39` declares `node >=22.12.0`, while `README.md:315` advertises “Runtime: Node.js 18+”.
 - Impact: users following the README can install/run with a runtime the package explicitly rejects, leading to engine warnings or dependency/runtime failures.
@@ -2051,11 +2128,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-075 — Medium — Deleting an exchange removes only the renderer copy
 
+- Status: **Open**.
+
 - Evidence: `src/ui/app.js:786-797` splices the selected item from local arrays and reports success without sending an API/WebSocket mutation. Server detail, search, and export continue reading `trafficLog` (`src/api/api-server.js:613-647`).
 - Impact: a record the user deleted remains available in API/MCP results and exports and returns after any future full synchronization.
 - Reproduction: delete a captured exchange in View, then request `/api/traffic/:id` or export HAR.
 
 ### BUG-076 — Medium — Pinned rows become backend-less ghosts after Clear
+
+- Status: **Open**.
 
 - Evidence: the `traffic-cleared` handler preserves locally pinned entries at `src/ui/app.js:167-175`, but the server replaces its entire log with `[]` at `src/api/api-server.js:1314-1316`. Pin state itself is changed only in the renderer at `app.js:770-777`.
 - Impact: the UI retains a row that detail API, MCP, search, stats, and HAR export no longer know about; it disappears on reload.
@@ -2063,11 +2144,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-078 — Medium — Slow Send responses are written into whichever tab is active later
 
+- Status: **Open**.
+
 - Evidence: `sendRequest()` does not capture the initiating tab before awaiting fetch at `src/ui/app.js:7252-7274`; after completion, it updates the current DOM and finds the then-current `activeSendTab` at `:7285-7330`.
 - Impact: switching from tab A to B while A is in flight displays and saves A's response against B.
 - Reproduction: start a slow request in A, switch to B, and wait for A to finish.
 
 ### BUG-079 — Medium — Current Send edits are lost on reload/exit
+
+- Status: **Open**.
 
 - Evidence: URL/body edits update only current DOM/editor state (`src/ui/index.html:230-235`, `src/ui/app.js:6651,6780-6821`). `saveSendTabState()` persists only during selected tab operations, sending, or cURL paste (`app.js:7009-7036,7124-7160,7329,9553`); there is no unload save.
 - Impact: unsent edits in the active tab silently revert after Reload, New Session, or application exit.
@@ -2075,11 +2160,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-080 — Low/Medium — Restored multipart tabs display files they no longer contain
 
+- Status: **Open**.
+
 - Evidence: persistence deliberately strips `File` objects but retains filenames at `src/ui/app.js:6980-6989,7025-7033`. Restore renders the old name at `:7039-7051,6763-6767`, while serialization requires `field.file` at `:6851-6857`.
 - Impact: the tab looks ready to send but fails with “Choose a file”.
 - Reproduction: choose a multipart file, persist by switching tabs, reload, return, and Send.
 
 ### BUG-081 — Medium — Reload/New Session discards mock drafts without warning
+
+- Status: **Open**.
 
 - Evidence: draft state is memory-only (`src/ui/app.js:17-20,6020-6023`). The unsaved-change warning runs only in `switchPanel()` at `:8321-8328`; Electron's New Session and Reload commands directly reload at `electron/menu.cjs:24-31,56-60`, and no `beforeunload` guard exists.
 - Impact: users can lose an entire unsaved rule edit despite the application having a warning mechanism.
@@ -2087,11 +2176,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-082 — Medium — MCP enabled state always resets to enabled
 
+- Status: **Open**.
+
 - Evidence: the toggle routes at `src/ui/app.js:8137-8145` and `src/api/api-server.js:1144-1151` never write settings. Startup hard-codes `{ enabled: true }` at `src/index.js:128-136`.
 - Impact: users who disable the network MCP server find it enabled again after every restart.
 - Reproduction: disable MCP, restart, and query `/api/mcp/status`.
 
 ### BUG-083 — Medium — Re-enabling MCP cannot restore stdio transport
+
+- Status: **Open**.
 
 - Evidence: disabling closes the server and clears `stdioTransport` at `src/mcp/mcp-server.js:482-493`; enabling creates only a server at `:496-503`, and the API restarts only SSE (`src/api/api-server.js:1147-1149`). `startStdio()` is called only during process startup (`src/index.js:138-143`).
 - Impact: in `--mcp-stdio` mode, an off/on toggle permanently disconnects the stdio client until the entire process restarts.
@@ -2099,17 +2192,23 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-084 — Medium — Concurrent MCP disable/enable can end disabled after enable succeeds
 
+- Status: **Open**.
+
 - Evidence: `setEnabled(false)` awaits transport/server closure before nulling state (`src/mcp/mcp-server.js:482-493`). An overlapping `setEnabled(true)` sees the still-present server and does nothing at `:496-503`, but the API immediately reports the requested enabled value at `src/api/api-server.js:1144-1151`.
 - Impact: rapid toggles or two clients can receive a successful enable response while final bridge state is disabled/null.
 - Reproduction: hold an SSE close pending, issue disable and immediate enable requests, then inspect final status.
 
 ### BUG-085 — Medium — Overlapping update checks lose manual/automatic attribution
 
+- Status: **Open**.
+
 - Evidence: every check writes one global `currentCheckIsManual` at `electron/updater.cjs:33-40`; result handlers consume that shared flag at `:120-140,154-159`. Scheduled checks at `:174-182` can overlap, and installed `AppUpdater` coalesces concurrent calls to its existing promise.
 - Impact: a scheduled check can relabel an in-progress manual check as automatic, suppressing the result/error feedback the user requested.
 - Reproduction: begin a slow manual check just before the scheduled launch check fires.
 
 ### BUG-087 — Low — Sidebar and Send tabs are missing keyboard focus behavior
+
+- Status: **Open**.
 
 - Evidence: sidebar controls are clickable `<div role="tab">` nodes without `tabindex` at `src/ui/index.html:29-50`; generated Send tabs/add control repeat the pattern at `src/ui/app.js:6973-6977` and provide no Enter/Space handler.
 - Impact: keyboard-only users cannot reach or activate the application's primary tab navigation using normal focus controls.
@@ -2524,6 +2623,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-235 — Low/Medium — Reset rules to default restores no defaults
 
+- Status: **Open**.
+
 - Evidence: the visible control promises Reset rules to default at `src/ui/index.html:202`, but `clearAllMockRules()` only deletes everything at `src/ui/app.js:4446-4453`. Default creation is startup-only and blocked by the retained `http-freekit-defaults-created` key at `:4627-4645`.
 - Impact: Reset permanently leaves an empty rule list across reloads instead of restoring the shipped defaults.
 - Reproduction: start with defaults, click Reset, and reload.
@@ -2889,11 +2990,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
+- Status: **Open**.
+
 - Evidence: `src/ui/app.js:8218-8232` only flips a local boolean and button state. Incoming `request` events are discarded locally at `:142-146`; no API/proxy pause is sent, so `src/api/api-server.js:1212-1235` continues recording and broadcasting all traffic.
 - Impact: while the UI says capture is paused, sensitive/large traffic continues accumulating and remains available to exports/API/MCP. The UI never backfills those discarded events when resuming.
 - Reproduction: click Pause, send traffic, verify the table stays unchanged, then query `/api/traffic` and observe the supposedly paused requests.
 
 ### BUG-065 — Medium — The OpenAPI picker offers YAML files that it always rejects
+
+- Status: **Open**.
 
 - Evidence: `src/ui/app.js:8180-8191` sets the picker to `.json,.yaml,.yml`, then uses only `JSON.parse()` and immediately rejects any parse failure with “Please use JSON format”.
 - Impact: valid YAML OpenAPI/Swagger documents exposed as supported choices cannot be loaded.
@@ -2901,17 +3006,23 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-066 — Medium — Uploaded API specifications disappear on restart
 
+- Status: **Open**.
+
 - Evidence: API specs live only in `ProxyServer.apiSpecs` and are added/removed through `src/proxy/proxy-server.js:4159-4172`. Unlike mock/TLS settings, `src/index.js:77-105` has no spec restore and the API routes at `src/api/api-server.js:1042-1057` never persist them.
 - Impact: every configured OpenAPI/Swagger document must be re-uploaded after each application restart.
 - Reproduction: upload a spec, verify it in `/api/specs`, restart, and query the list again.
 
 ### BUG-067 — Medium — OpenAPI host/path matching interprets literals as substrings and regex
 
+- Status: **Open**.
+
 - Evidence: `src/proxy/proxy-server.js:4175-4189` accepts a host when `host.includes(configuredHost)` and builds a regex by replacing only `{parameters}`; it does not escape regex metacharacters in literal path text.
 - Impact: a spec for `api.example.com` can annotate `api.example.com.evil` traffic, and paths containing `.`, `+`, `(`, or similar characters match the wrong requests or fail to match their literal paths.
 - Reproduction: configure base URL `https://api.example.com` with path `/v1/a.b`; test a lookalike host or `/v1/aXb`.
 
 ### BUG-069 — High — Imported and Send traffic exists only in one browser tab
+
+- Status: **Open**.
 
 - Evidence: the HAR picker at `src/ui/app.js:7459-7493` parses entries and calls local `addRequest()` instead of the existing `/api/traffic/import-har` route. Send similarly creates a synthetic object and calls only `addRequest()` at `:7291-7330`; `src/api/api-server.js:1125-1134,1174-1208` sends directly with Node HTTP/HTTPS instead of using the proxy or adding to `trafficLog`.
 - Impact: these requests appear in the table but are absent from server HAR export, API search/stats, MCP tools, and every other UI client; they also vanish on reload. Send additionally bypasses configured upstream routing and all matching mock rules.
@@ -2934,6 +3045,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Reproduction: run `npm audit --audit-level=high` and inspect the `app-builder-lib` advisory.
 
 ### BUG-037 — High — Build dependencies contain an unbounded brace-expansion DoS
+
+- Status: **Open**.
 
 - Evidence: The top-level `brace-expansion` is 5.0.8, but `package-lock.json` still resolves vulnerable nested 1.1.16 and 2.1.2 copies under Electron/build tooling. Full `npm audit` reports [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) through those paths.
 - Impact: attacker-controlled or accidentally extreme patterns processed by the build dependency graph can exhaust memory.
