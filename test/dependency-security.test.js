@@ -14,46 +14,84 @@ import { McpServerBridge } from '../src/mcp/mcp-server.js';
 
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-function readInstalledPackage(name) {
-  return JSON.parse(fs.readFileSync(path.join(repoRoot, 'node_modules', ...name.split('/'), 'package.json'), 'utf8'));
-}
+const packageLock = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8'));
 
 function versionParts(version) {
   return String(version).split(/[.-]/).slice(0, 3).map(part => Number.parseInt(part, 10) || 0);
 }
 
-function assertVersionAtLeast(name, minimum) {
-  const actual = readInstalledPackage(name).version;
-  const actualParts = versionParts(actual);
-  const minimumParts = versionParts(minimum);
+function isVersionAtLeast(actualVersion, minimumVersion) {
+  const actual = versionParts(actualVersion);
+  const minimum = versionParts(minimumVersion);
   for (let i = 0; i < 3; i++) {
-    if (actualParts[i] > minimumParts[i]) return;
-    if (actualParts[i] < minimumParts[i]) {
-      assert.fail(`${name} ${actual} is below the safe minimum ${minimum}`);
-    }
+    if (actual[i] > minimum[i]) return true;
+    if (actual[i] < minimum[i]) return false;
+  }
+  return true;
+}
+
+function assertVersionAtLeast(name, minimum) {
+  const packageSuffix = `node_modules/${name}`;
+  const rootPackage = packageLock.packages[packageSuffix];
+  const matches = rootPackage
+    ? [[packageSuffix, rootPackage]]
+    : Object.entries(packageLock.packages)
+      .filter(([packagePath]) => packagePath.endsWith(`/${packageSuffix}`));
+  assert.ok(matches.length > 0, `${name} is missing from the dependency lockfile`);
+  for (const [, packageData] of matches) {
+    assert.ok(
+      isVersionAtLeast(packageData.version, minimum),
+      `${name} ${packageData.version} is below the safe minimum ${minimum}`
+    );
   }
 }
 
-test('installed packages meet the audited safe minimums', () => {
+test('locked packages meet the audited safe minimums', () => {
   const minimumVersions = {
-    '@hono/node-server': '2.0.5',
+    '@electron/asar': '4.2.1',
+    '@electron/universal': '3.0.6',
+    '@hono/node-server': '2.0.12',
     'app-builder-lib': '26.15.0',
     'body-parser': '2.3.0',
+    'brace-expansion': '5.0.8',
     'builder-util-runtime': '9.7.0',
     'dompurify': '3.4.12',
-    'electron-builder': '26.15.0',
+    'electron': '43.2.0',
+    'electron-builder': '26.15.7',
     'fast-uri': '3.1.4',
     'hono': '4.12.27',
+    'https-proxy-agent': '9.1.0',
+    'jake': '12.10.1',
     'js-yaml': '4.3.0',
     'monaco-editor': '0.56.0',
+    'pako': '3.0.1',
     'protobufjs': '8.7.1',
-    'sharp': '0.35.3'
+    'sharp': '0.35.3',
+    'socks-proxy-agent': '10.1.0',
+    'uuid': '14.0.1',
+    'ws': '8.21.1'
   };
 
   for (const [name, minimum] of Object.entries(minimumVersions)) {
     assertVersionAtLeast(name, minimum);
   }
+});
+
+test('the complete dependency graph excludes vulnerable brace expansion releases', () => {
+  const bracePackages = Object.entries(packageLock.packages)
+    .filter(([packagePath]) => packagePath.endsWith('node_modules/brace-expansion'));
+
+  assert.ok(bracePackages.length > 0, 'Expected brace-expansion in the dependency graph');
+  for (const [packagePath, packageData] of bracePackages) {
+    assert.ok(
+      isVersionAtLeast(packageData.version, '5.0.8'),
+      `${packagePath} resolved vulnerable brace-expansion ${packageData.version}`
+    );
+  }
+
+  const squirrelPackages = Object.keys(packageLock.packages)
+    .filter(packagePath => packagePath.endsWith('node_modules/electron-builder-squirrel-windows'));
+  assert.deepEqual(squirrelPackages, [], 'Unused Squirrel.Windows tooling should not be installed');
 });
 
 test('electron-updater uses a credential-safe builder runtime', () => {

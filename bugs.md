@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 70 of the 360 documented bugs are not fully fixed.**
+**No: 69 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 290 |
+| Fixed | 291 |
 | Partially fixed | 26 |
-| Open | 44 |
+| Open | 43 |
 | **Total** | **360** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
 
 ## Audit completion gate
 
@@ -3046,7 +3046,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-037 — High — Build dependencies contain an unbounded brace-expansion DoS
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Every direct dependency with an available supported update was advanced, including Electron 43.2.0 and electron-builder 26.15.7. The build graph overrides `@electron/asar`, `@electron/universal`, and Jake to releases that use patched `brace-expansion` 5.0.8, while npm no longer auto-installs the unused Squirrel.Windows peer target. Full production and development audits now report zero vulnerabilities, and a lockfile regression test rejects any reintroduced vulnerable brace-expansion release.
 
 - Evidence: The top-level `brace-expansion` is 5.0.8, but `package-lock.json` still resolves vulnerable nested 1.1.16 and 2.1.2 copies under Electron/build tooling. Full `npm audit` reports [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) through those paths.
 - Impact: attacker-controlled or accidentally extreme patterns processed by the build dependency graph can exhaust memory.
