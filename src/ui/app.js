@@ -785,6 +785,7 @@
       const methodClass = isWebSocketConnection(req) ? 'method-WS' : `method-${req.method}`;
       let statusClass = req.statusCode === null || req.statusCode === undefined ? 'status-pending' :
         req.error ? 'status-err' :
+        req.statusCode === 0 ? 'status-err' :
         req.statusCode < 200 ? 'status-1xx' :
         req.statusCode < 300 ? 'status-2xx' :
         req.statusCode < 400 ? 'status-3xx' :
@@ -1801,7 +1802,11 @@
       const effMethodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[effReq.method] || '#888';
       const sourceLabel = req.source || 'Unknown';
       const sourceIconHtml = SOURCE_ICONS[sourceLabel] || SOURCE_ICONS['Other'] || '';
-      const httpVersion = req.protocol === 'h2' ? 'HTTP/2' : req.protocol === 'https' ? 'HTTPS/1.1' : 'HTTP/1.1';
+      const httpVersion = req.protocol === 'h2'
+        ? 'HTTP/2'
+        : req.protocol === 'https' || req.protocol === 'wss'
+          ? 'HTTPS/1.1'
+          : 'HTTP/1.1';
       html += `<div class="detail-card dir-right" id="card-request" aria-expanded="true" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -1858,10 +1863,16 @@
       }
 
       // ---- Response Card (border-left, pills left, heading right) ----
+      const responseStatus = req.statusCode === null || req.statusCode === undefined
+        ? 'Pending'
+        : req.statusCode || 'ERR';
+      const responseStatusMessage = responseStatus === 'Pending' && req.statusMessage === 'Pending'
+        ? ''
+        : req.statusMessage || '';
       html += `<div class="detail-card dir-left" id="card-response" aria-expanded="true" style="border-left-color:${statusColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-            <span class="detail-pill" style="background:${statusColor};color:#fff;">${req.statusCode || 'ERR'}</span>
+            <span class="detail-pill" style="background:${statusColor};color:#fff;">${responseStatus}</span>
             <span class="detail-card-heading">Response</span>
             <span class="collapse-chevron">&#9650;</span>
           </span>
@@ -1870,7 +1881,7 @@
           ${renderBodyCaptureWarning(req, 'response')}
           <div class="detail-card-section">
             <div class="section-label">Status</div>
-            <div style="font-family:var(--font-mono);font-size:13px;">${req.statusCode || 'ERR'} ${esc(req.statusMessage || '')}</div>
+            <div style="font-family:var(--font-mono);font-size:13px;">${responseStatus}${responseStatusMessage ? ' ' + esc(responseStatusMessage) : ''}</div>
           </div>
           <div class="detail-card-section">
             <div class="section-label">Headers</div>
@@ -2047,24 +2058,26 @@
               <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
             </div>
           </div>`;
-      } else if (req.protocol === 'https' && req.tls) {
+      } else if ((req.protocol === 'https' || req.protocol === 'wss') && req.tls) {
+        const secureProtocol = req.protocol === 'wss' ? 'WSS' : 'HTTPS';
         html += `<div style="margin-top:12px;">
             <div class="section-label">Connection</div>
             <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;">
               <span style="color:var(--text-watermark);">Protocol:</span>
-              <span style="font-family:var(--font-mono);">HTTPS (${esc(req.tls.version || 'TLS')})</span>
+              <span style="font-family:var(--font-mono);">${secureProtocol} (${esc(req.tls.version || 'TLS')})</span>
               ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
               <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
             </div>
           </div>`;
-      } else if (req.protocol === 'http') {
+      } else if (req.protocol === 'http' || req.protocol === 'ws') {
+        const plainProtocol = req.protocol === 'ws' ? 'WS' : 'HTTP';
         html += `<div style="margin-top:12px;">
             <div class="section-label">Connection</div>
             <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;">
               <span style="color:var(--text-watermark);">Protocol:</span>
-              <span style="font-family:var(--font-mono);">HTTP (unencrypted)</span>
+              <span style="font-family:var(--font-mono);">${plainProtocol} (unencrypted)</span>
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
               <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
             </div>

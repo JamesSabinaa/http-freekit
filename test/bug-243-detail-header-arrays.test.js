@@ -166,7 +166,7 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
     assert.doesNotMatch(connected, /id="card-error"/);
 
     for (const failure of [
-      { statusCode: null },
+      { statusCode: null, statusMessage: 'Pending' },
       { statusCode: 401 },
       { statusCode: 0, error: 'downstream disconnected' },
       { statusCode: 502, error: 'upstream failed' },
@@ -175,12 +175,25 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
       const failed = renderDetail(baseRequest({}, {
         protocol,
         method: 'WS',
+        ...(protocol === 'wss' ? { tls: { version: 'TLSv1.3', cipher: 'AES-256' } } : {}),
         ...failure
       })).html;
       assert.doesNotMatch(failed, /detail-card-heading">(?:WebSocket|Messages)</);
+      if (failure.statusCode === null) {
+        assert.match(failed, />Pending</);
+        assert.doesNotMatch(failed, /ERR Pending|Pending Pending/);
+      }
       if (failure.error) {
         assert.match(failed, /id="card-error"/);
         assert.match(failed, new RegExp(failure.error));
+      }
+      if (protocol === 'wss') {
+        assert.match(failed, />HTTPS\/1\.1</);
+        assert.match(failed, />WSS \(TLSv1\.3\)</);
+        assert.match(failed, />AES-256</);
+      } else {
+        assert.match(failed, />HTTP\/1\.1</);
+        assert.match(failed, />WS \(unencrypted\)</);
       }
     }
   }

@@ -528,9 +528,11 @@ test('WebSocket rows preserve pending and failure status semantics', () => {
   for (const protocol of ['ws', 'wss']) {
     for (const { statusCode, error, expected } of [
       { statusCode: null, expected: /status-badge status-pending/ },
+      { statusCode: 0, expected: /status-badge status-err">ERR/ },
       { statusCode: 0, error: 'downstream disconnected', expected: /status-badge status-err">ERR/ },
       { statusCode: 401, expected: /status-badge status-4xx">401/ },
       { statusCode: 502, error: 'upstream failed', expected: /status-badge status-err">502/ },
+      { statusCode: 101, error: 'relay failed', expected: /status-badge status-err">101/ },
       { statusCode: 101, expected: /status-badge status-2xx">101/ }
     ]) {
       const request = { ...trafficRecord(`${protocol}-${statusCode}`, protocol), statusCode, error };
