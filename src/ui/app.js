@@ -1365,7 +1365,13 @@
 
       const content = document.getElementById('detailContent');
       const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
-      const statusColor = req.error ? '#ce3939' : req.statusCode < 200 ? '#888' : req.statusCode < 300 ? '#4caf7d' : req.statusCode < 400 ? '#5a80cc' : req.statusCode < 500 ? '#ff8c38' : '#ce3939';
+      const statusPending = req.statusCode === null || req.statusCode === undefined;
+      const statusColor = statusPending ? '#888' :
+        req.error || req.statusCode === 0 ? '#ce3939' :
+        req.statusCode < 200 ? '#888' :
+        req.statusCode < 300 ? '#4caf7d' :
+        req.statusCode < 400 ? '#5a80cc' :
+        req.statusCode < 500 ? '#ff8c38' : '#ce3939';
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;

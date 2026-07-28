@@ -180,7 +180,9 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
 
     for (const failure of [
       { statusCode: null, statusMessage: 'Pending' },
+      { statusCode: undefined, statusMessage: 'Pending' },
       { statusCode: 401 },
+      { statusCode: 0 },
       { statusCode: 0, error: 'downstream disconnected' },
       { statusCode: 502, error: 'upstream failed' },
       { statusCode: 101, error: 'relay failed' }
@@ -192,9 +194,13 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
         ...failure
       })).html;
       assert.doesNotMatch(failed, /detail-card-heading">(?:WebSocket|Messages)</);
-      if (failure.statusCode === null) {
+      if (failure.statusCode === null || failure.statusCode === undefined) {
         assert.match(failed, />Pending</);
         assert.doesNotMatch(failed, /ERR Pending|Pending Pending/);
+        assert.match(failed, /background:#888;color:#fff;">Pending/);
+      }
+      if (failure.statusCode === 0) {
+        assert.match(failed, /background:#ce3939;color:#fff;">ERR/);
       }
       if (failure.error) {
         assert.match(failed, /id="card-error"/);
