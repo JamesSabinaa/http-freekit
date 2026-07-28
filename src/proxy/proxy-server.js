@@ -1929,10 +1929,10 @@ export class ProxyServer {
       }
 
       // Check breakpoint rules
-      const breakpoint = mockBreakpointPhase === 'request'
+      const breakpoint = ['request', 'request-response'].includes(mockBreakpointPhase)
         ? mockRule
         : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
-      const responseBreakpoint = mockBreakpointPhase === 'response';
+      const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
       if (breakpoint) {
         this._emitRequest({
           id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
@@ -2992,10 +2992,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = mockBreakpointPhase === 'request'
+        const breakpointRule = ['request', 'request-response'].includes(mockBreakpointPhase)
           ? mockRule
           : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
-        const responseBreakpoint = mockBreakpointPhase === 'response';
+        const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
         if (breakpointRule) {
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -3519,10 +3519,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = mockBreakpointPhase === 'request'
+        const breakpointRule = ['request', 'request-response'].includes(mockBreakpointPhase)
           ? mockRule
           : this._checkBreakpoint(method, fullUrl, reqHeaders, matcherBody);
-        const responseBreakpoint = mockBreakpointPhase === 'response';
+        const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
         if (breakpointRule) {
           emitCapturedRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
@@ -3930,10 +3930,10 @@ export class ProxyServer {
         }
 
         // Check breakpoint rules
-        const breakpointRule = mockBreakpointPhase === 'request'
+        const breakpointRule = ['request', 'request-response'].includes(mockBreakpointPhase)
           ? mockRule
           : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
-        const responseBreakpoint = mockBreakpointPhase === 'response';
+        const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
         if (breakpointRule) {
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -7015,6 +7015,7 @@ export class ProxyServer {
     const type = mockRule?.action?.type;
     if (type === 'breakpoint-request') return 'request';
     if (type === 'breakpoint-response') return 'response';
+    if (type === 'breakpoint-request-response') return 'request-response';
     return null;
   }
 

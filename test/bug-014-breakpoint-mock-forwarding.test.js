@@ -65,7 +65,8 @@ async function runBreakpointAction(t, actionType, modifications = {}) {
     onRequest: event => events.push(event),
     onBreakpoint: (event) => {
       if (event.type !== 'breakpoint-hit') return;
-      setImmediate(() => proxy.resumeBreakpoint(event.requestId, modifications));
+      const resumed = typeof modifications === 'function' ? modifications(event) : modifications;
+      setImmediate(() => proxy.resumeBreakpoint(event.requestId, resumed));
     }
   });
   proxy.mockRules = [{ enabled: true, matchers: [], action: { type: actionType } }];
@@ -112,6 +113,28 @@ test('response breakpoint mock actions pause the real response and apply edits',
     event.upstreamStatusCode === 201 &&
     event.responseBody === 'origin-body'
   ));
+});
+
+test('combined breakpoint mock actions edit a real request and its real response', async (t) => {
+  const { response, originHits, originHeaders, events } = await runBreakpointAction(
+    t,
+    'breakpoint-request-response',
+    event => event.phase === 'response'
+      ? {
+          status: 202,
+          headers: { 'content-type': 'text/plain', 'x-combined': 'yes' },
+          body: 'combined response'
+        }
+      : { headers: { host: 'stale.example.test', 'x-request-edited': 'yes' } }
+  );
+
+  assert.equal(originHits, 1);
+  assert.equal(originHeaders['x-request-edited'], 'yes');
+  assert.notEqual(originHeaders.host, 'stale.example.test');
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.headers['x-combined'], 'yes');
+  assert.equal(response.body, 'combined response');
+  assert.ok(events.some(event => event.breakpointPhase === 'response'));
 });
 
 test('renderer exposes response breakpoint status, headers, and body edits', () => {

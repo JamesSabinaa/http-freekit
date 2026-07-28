@@ -321,6 +321,39 @@ test('request and response breakpoints remain one lifecycle across all intercept
         assertSingleLifecycle(capture, expectedStatus, `${protocol.name} ${phase}`, 2);
       }
     }
+
+    for (const protocol of protocols) {
+      capture.reset();
+      proxy.setHttp2Config(protocol.mode);
+      proxy.mockRules = [{
+        enabled: true,
+        matchers: [],
+        action: { type: 'breakpoint-request-response' }
+      }];
+      proxy.onBreakpoint = event => {
+        if (event.type !== 'breakpoint-hit') return;
+        const modifications = event.phase === 'response'
+          ? {
+              status: 202,
+              headers: { 'content-type': 'text/plain', 'content-length': '6' },
+              body: 'edited'
+            }
+          : { headers: { connection: 'close', 'x-combined': 'yes' } };
+        setImmediate(() => proxy.resumeBreakpoint(event.requestId, modifications));
+      };
+
+      const response = await protocol.send(proxy.server.address().port, authority);
+      assert.equal(response.statusCode, 202, `${protocol.name} combined status`);
+      assert.equal(response.body, 'edited', `${protocol.name} combined body`);
+      const originHeaders = observedHeaders.at(-1);
+      assert.equal(originHeaders.authorization, undefined,
+        `${protocol.name} combined removes authorization`);
+      assert.equal(originHeaders['x-remove-me'], undefined,
+        `${protocol.name} combined removes edited header`);
+      assert.equal(originHeaders['x-combined'], 'yes',
+        `${protocol.name} combined forwards request edits`);
+      assertSingleLifecycle(capture, 202, `${protocol.name} combined`, 3);
+    }
   });
 
 class FakeResponse extends EventEmitter {

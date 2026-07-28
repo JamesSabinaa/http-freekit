@@ -181,6 +181,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-014 — High — Breakpoint mock actions never perform the real upstream exchange
 
 - Status: **Fixed**.
+- Resolution: Request-only, response-only, and combined request/response mock breakpoints now share the normal origin-forwarding pipelines for plain H1, intercepted H1, native H2, and H1-on-H2. Combined actions pause the edited request, forward it once, then pause and edit the real upstream response.
 
 - Evidence: in plain HTTP, `breakpoint-request` resumes into the default synthetic response and `breakpoint-response` pauses before any upstream request at `src/proxy/proxy-server.js:3596-3770`. Equivalent branches exist for HTTPS at `:1282-1397` and H2 at `:2374-2475`.
 - Impact: “resume without changes” can return an empty or `Breakpoint released` synthetic 200, while response breakpoints cannot inspect the actual response.
@@ -295,7 +296,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-106 — Medium — H1 breakpoint URL rewrites retain Host and the old transport
 
 - Status: **Fixed**.
-- Resolution: H1 breakpoint URL edits now select the outbound HTTP or HTTPS transport from the rewritten URL and synchronize the request's Host header with its rewritten authority after all breakpoint edits. Regression coverage verifies HTTP→HTTPS for plain proxy requests and HTTPS→HTTP for both intercepted H1 implementations.
+- Resolution: H1 breakpoint URL edits now select the outbound HTTP or HTTPS transport from the rewritten URL and synchronize the request's Host header with its rewritten authority after all breakpoint edits. Single-phase and combined request/response actions share this forwarding path. Regression coverage verifies HTTP→HTTPS, HTTPS→HTTP in both intercepted H1 implementations, stale edited Host replacement, complete captures, and configured upstream-proxy routing.
 
 - Evidence: plain H1 changes `targetUrl` at `src/proxy/proxy-server.js:622-624,3624-3626` but builds headers from the old Host at `:638-680`. Request-library selection around `:696` and HTTPS paths at `:1554-1563,2097-2107` does not follow an HTTP↔HTTPS rewrite.
 - Impact: rewritten requests reach the wrong virtual host or use TLS/plaintext against the wrong scheme.

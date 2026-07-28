@@ -104,7 +104,8 @@ test('plain H1 breakpoint rewrites update Host and switch HTTP to HTTPS',
       port: 0,
       onRequest: event => captures.push(event),
       onBreakpoint: event => setImmediate(() => proxy.resumeBreakpoint(event.requestId, {
-        url: `https://127.0.0.1:${securePort}/rewritten`
+        url: `https://127.0.0.1:${securePort}/rewritten`,
+        headers: { host: `127.0.0.1:${originalPort}`, connection: 'close' }
       }))
     });
     proxy.setHttpsWhitelist(['127.0.0.1']);
@@ -129,7 +130,11 @@ test('plain H1 breakpoint rewrites update Host and switch HTTP to HTTPS',
     assert.deepEqual(received, [{ url: '/rewritten', host: rewrittenAuthority }]);
     const completed = captures.findLast(event => event.statusCode === 200);
     assert.equal(completed.protocol, 'https');
+    assert.equal(completed.url, `https://${rewrittenAuthority}/rewritten`);
+    assert.equal(completed.host, '127.0.0.1');
+    assert.equal(completed.path, '/rewritten');
     assert.equal(completed.requestHeaders.host, rewrittenAuthority);
+    assert.equal(completed.usedUpstreamProxy, false);
   });
 
 test('intercepted H1 breakpoint rewrites switch HTTPS to HTTP in both TLS modes',
@@ -155,7 +160,8 @@ test('intercepted H1 breakpoint rewrites switch HTTPS to HTTP in both TLS modes'
         port: 0,
         onRequest: event => captures.push(event),
         onBreakpoint: event => setImmediate(() => proxy.resumeBreakpoint(event.requestId, {
-          url: `http://127.0.0.1:${originPort}/${mode}`
+          url: `http://127.0.0.1:${originPort}/${mode}`,
+          headers: { host: `original-${mode}.example.test`, connection: 'close' }
         }))
       });
       proxy.setTlsFingerprint('passthrough');
@@ -174,9 +180,58 @@ test('intercepted H1 breakpoint rewrites switch HTTPS to HTTP in both TLS modes'
         assert.deepEqual(received.at(-1), { url: `/${mode}`, host: rewrittenAuthority });
         const completed = captures.findLast(event => event.statusCode === 200);
         assert.equal(completed.protocol, 'http', mode);
+        assert.equal(completed.url, `http://${rewrittenAuthority}/${mode}`, mode);
+        assert.equal(completed.host, '127.0.0.1', mode);
+        assert.equal(completed.path, `/${mode}`, mode);
         assert.equal(completed.requestHeaders.host, rewrittenAuthority, mode);
+        assert.equal(completed.usedUpstreamProxy, false, mode);
       } finally {
         await proxy.stop();
       }
     }
   });
+
+test('plain H1 breakpoint rewrites retain the configured upstream proxy', async t => {
+  let upstreamRequest;
+  const upstream = http.createServer((request, response) => {
+    upstreamRequest = { url: request.url, host: request.headers.host };
+    response.writeHead(208, { 'content-type': 'text/plain' });
+    response.end('via upstream');
+  });
+  const upstreamPort = await listen(upstream);
+  const captures = [];
+  let proxy;
+  proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: event => captures.push(event),
+    onBreakpoint: event => setImmediate(() => proxy.resumeBreakpoint(event.requestId, {
+      url: 'http://rewritten.example.test:8081/via-upstream',
+      headers: { host: 'original.example.test', connection: 'close' }
+    }))
+  });
+  proxy.setUpstreamProxy({ host: '127.0.0.1', port: upstreamPort, type: 'http' });
+  proxy.breakpointRules = [{ id: 'rewrite-via-upstream', enabled: true, matchers: [] }];
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(upstream);
+  });
+
+  const response = await requestThroughProxy(
+    proxy.server.address().port,
+    'http://original.example.test/original'
+  );
+
+  assert.equal(response.statusCode, 208);
+  assert.equal(response.body, 'via upstream');
+  assert.deepEqual(upstreamRequest, {
+    url: 'http://rewritten.example.test:8081/via-upstream',
+    host: 'rewritten.example.test:8081'
+  });
+  const completed = captures.findLast(event => event.statusCode === 208);
+  assert.equal(completed.url, 'http://rewritten.example.test:8081/via-upstream');
+  assert.equal(completed.host, 'rewritten.example.test');
+  assert.equal(completed.path, '/via-upstream');
+  assert.equal(completed.requestHeaders.host, 'rewritten.example.test:8081');
+  assert.equal(completed.usedUpstreamProxy, true);
+});
