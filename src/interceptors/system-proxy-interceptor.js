@@ -15,6 +15,7 @@ export class SystemProxyInterceptor {
     this.restorePending = false;
     this.restoreNotificationPending = false;
     this.restoreBaselineSettings = null;
+    this.recoveryBlockedReason = null;
     this.ca = options.ca || null;
     this._processIdentityLookup = options.processIdentityLookup
       || (pid => this._queryWindowsProcessIdentity(pid));
@@ -36,7 +37,9 @@ export class SystemProxyInterceptor {
   }
 
   async needsDeactivation() {
-    return this.active || Boolean(this.previousSettings && this.pendingRecovery);
+    return this.active || Boolean(
+      this.recoveryBlockedReason || (this.previousSettings && this.pendingRecovery)
+    );
   }
 
   _execRegistry(args, options) {
@@ -328,9 +331,11 @@ if ($null -eq $target) {
         : this._settingsCouldBelongToRecovery(currentSettings, recovery);
       if (!settingsAreOwned) {
         this._removeRecoveryState();
+        this.recoveryBlockedReason = null;
         console.log('[Interceptor] Stale system proxy was changed externally; preserving the newer settings');
         return false;
       }
+      this.recoveryBlockedReason = null;
       this.previousSettings = recovery.previousSettings;
       this.pendingRecovery = recovery;
       this.restorePending = true;
@@ -340,6 +345,13 @@ if ($null -eq $target) {
       console.log('[Interceptor] Restored system proxy settings left by an interrupted session');
       return true;
     } catch (err) {
+      // A malformed or otherwise unreadable journal cannot be replaced safely:
+      // it may be the only record of settings that still need restoration. If
+      // recovery progressed far enough to hydrate the normal retry state then
+      // Stop can continue that retry instead.
+      if (!this.previousSettings || !this.pendingRecovery) {
+        this.recoveryBlockedReason = err.message;
+      }
       console.error('[Interceptor] Failed to recover stale system proxy settings:', err.message);
       return false;
     }
@@ -381,6 +393,7 @@ if ($null -eq $target) {
     this.restorePending = false;
     this.restoreNotificationPending = false;
     this.restoreBaselineSettings = null;
+    this.recoveryBlockedReason = null;
   }
 
   _settingsBelongToActiveSession(settings) {
@@ -397,8 +410,16 @@ if ($null -eq $target) {
       if (this.ca?.systemTrustInstalled !== true) {
         throw new Error('System Proxy requires the HTTP FreeKit CA to be installed in the Windows trust store');
       }
-      if (!this.active && (this.previousSettings || this.pendingRecovery ||
-          this.restorePending || this.restoreNotificationPending)) {
+      if (this.recoveryBlockedReason) {
+        throw new Error(`System Proxy cleanup is blocked by an unresolved recovery journal: ${this.recoveryBlockedReason}`);
+      }
+      if (this.restorePending || this.restoreNotificationPending) {
+        throw new Error('System Proxy cleanup is still pending; retry Stop before starting it again');
+      }
+      if (this.active) {
+        throw new Error('System Proxy is already active; Stop it before starting it again');
+      }
+      if (this.previousSettings || this.pendingRecovery) {
         throw new Error('System Proxy cleanup is still pending; retry Stop before starting it again');
       }
       let registryMutationStarted = false;
@@ -450,6 +471,9 @@ if ($null -eq $target) {
 
   async deactivate() {
     if (this._isWindows()) {
+      if (this.recoveryBlockedReason) {
+        throw new Error(`Cannot safely restore System Proxy from its unresolved recovery journal: ${this.recoveryBlockedReason}`);
+      }
       if (!this.active && !this.previousSettings) return;
       try {
         const currentSettings = this._readCurrentSettings();
@@ -476,6 +500,7 @@ if ($null -eq $target) {
           this.restorePending = false;
           this.restoreNotificationPending = false;
           this.restoreBaselineSettings = null;
+          this.recoveryBlockedReason = null;
           this.active = false;
           console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
           return;

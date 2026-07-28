@@ -129,6 +129,19 @@ test('a failed restoration notification remains retryable on the next Stop', asy
   assert.equal(interceptor.active, true);
   assert.equal(await interceptor.needsDeactivation(), true);
 
+  interceptor.ca = { systemTrustInstalled: true };
+  interceptor._usesPerMachineProxyPolicy = () => assert.fail('duplicate Start must stop before policy access');
+  await assert.rejects(
+    interceptor.activate(9090),
+    /cleanup is still pending; retry Stop/
+  );
+  assert.equal(interceptor.activeProxyServer, '127.0.0.1:8080');
+  assert.deepEqual(interceptor.pendingRecovery.ownedSettings, {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  });
+
   await interceptor.deactivate();
 
   assert.equal(notificationAttempts, 2);
@@ -219,6 +232,35 @@ test('Start is rejected while a prior notification retry still owns cleanup', as
   });
 });
 
+test('duplicate Start is rejected without replacing active System Proxy ownership', async () => {
+  const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
+  interceptor._isWindows = () => true;
+  interceptor._usesPerMachineProxyPolicy = () => false;
+  interceptor._processIdentityLookup = () => ({
+    pid: process.pid,
+    startedAt: '2026-01-02T03:04:05.000Z',
+    executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+  });
+  interceptor._readCurrentSettings = () => ({
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  });
+  interceptor._persistRecoveryState = () => {};
+  interceptor._setRegistryValue = () => {};
+  interceptor._notifyWinInet = () => {};
+
+  await interceptor.activate(8080);
+  const originalRecovery = structuredClone(interceptor.pendingRecovery);
+
+  await assert.rejects(
+    interceptor.activate(9090),
+    /already active; Stop it before starting it again/
+  );
+  assert.equal(interceptor.activeProxyServer, '127.0.0.1:8080');
+  assert.deepEqual(interceptor.pendingRecovery, originalRecovery);
+});
+
 test('notification-pending recovery survives restart and republishes exact restored settings', t => {
   const { dataDir, previousSettings, settings } = createDurableNotificationRetry(t);
   const restarted = new SystemProxyInterceptor({ dataDir });
@@ -261,4 +303,47 @@ test('notification-pending recovery preserves an external change across restart'
   assert.equal(registryWrites, 0);
   assert.equal(notifications, 0);
   assert.equal(fs.existsSync(restarted.recoveryFile), false);
+});
+
+test('an invalid durable restore phase blocks activation without replacing its journal', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-wininet-invalid-phase-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const recoveryFile = path.join(dataDir, 'system-proxy-recovery.json');
+  const recovery = {
+    owner: {
+      pid: 9876,
+      startedAt: '2026-01-02T03:04:05.000Z',
+      executablePath: 'c:\\program files\\http freekit\\freekit.exe'
+    },
+    proxyServer: '127.0.0.1:8080',
+    ownedSettings: {
+      enabled: true,
+      server: '127.0.0.1:8080',
+      override: ''
+    },
+    previousSettings: {
+      enabled: false,
+      server: 'corporate.proxy:8888',
+      override: '<local>'
+    },
+    restorePhase: 'unknown-future-phase'
+  };
+  fs.writeFileSync(recoveryFile, JSON.stringify(recovery));
+
+  const interceptor = new SystemProxyInterceptor({
+    dataDir,
+    ca: { systemTrustInstalled: true }
+  });
+  interceptor._isWindows = () => true;
+  interceptor._recoveryOwnerIsActive = () => false;
+  interceptor._readCurrentSettings = () => ({ ...recovery.ownedSettings });
+  interceptor._usesPerMachineProxyPolicy = () => assert.fail('blocked Start must stop before policy access');
+
+  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.equal(await interceptor.needsDeactivation(), true);
+  await assert.rejects(
+    interceptor.activate(9090),
+    /blocked by an unresolved recovery journal: Recovery file contains an invalid restore phase/
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(recoveryFile, 'utf8')), recovery);
 });
