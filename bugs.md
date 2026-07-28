@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 47 of the 360 documented bugs are not fully fixed.**
+**No: 46 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 313 |
+| Fixed | 314 |
 | Partially fixed | 19 |
-| Open | 28 |
+| Open | 27 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -905,7 +905,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-264 — Medium — Generated certificates are not backdated for clock skew
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Newly generated root and per-host certificates now begin their validity five minutes before generation, using the same clock-skew tolerance as persisted-CA validation while keeping their expiry based on the actual generation time.
 
 - Evidence: CA and leaf `notBefore` values are set to the exact generation time at `src/proxy/certificate-authority.js:55-57,100-102`.
 - Impact: devices, VMs, containers, or remote clients whose clocks trail the proxy by a small amount reject newly generated interception certificates as not yet valid.

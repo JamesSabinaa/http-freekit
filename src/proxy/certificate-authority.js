@@ -446,9 +446,10 @@ export class CertificateAuthority {
     cert.publicKey = keys.publicKey;
     cert.serialNumber = this._randomSerial();
 
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+    const generatedAt = Date.now();
+    cert.validity.notBefore = new Date(generatedAt - CA_CLOCK_SKEW_TOLERANCE_MS);
+    cert.validity.notAfter = new Date(generatedAt);
+    cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 1);
 
     const attrs = [
       { name: 'commonName', value: 'HTTP FreeKit CA' },
@@ -506,9 +507,10 @@ export class CertificateAuthority {
     cert.publicKey = keys.publicKey;
     cert.serialNumber = this._randomSerial();
 
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 365);
+    const generatedAt = Date.now();
+    cert.validity.notBefore = new Date(generatedAt - CA_CLOCK_SKEW_TOLERANCE_MS);
+    cert.validity.notAfter = new Date(generatedAt);
+    cert.validity.notAfter.setDate(cert.validity.notAfter.getDate() + 365);
 
     cert.setSubject([
       { name: 'commonName', value: hostname },
