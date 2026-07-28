@@ -160,7 +160,15 @@ export class ApiServer {
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
-    this._clearedPendingTrafficIds = new Set();
+    this._clearedPendingTrafficIds = new Map();
+    this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
+      options.maxClearedPendingTrafficIds > 0
+      ? options.maxClearedPendingTrafficIds
+      : this.maxTrafficLog;
+    this.clearedPendingTrafficTtlMs = Number.isSafeInteger(options.clearedPendingTrafficTtlMs) &&
+      options.clearedPendingTrafficTtlMs > 0
+      ? options.clearedPendingTrafficTtlMs
+      : 60 * 60 * 1000;
     this.authToken = options.authToken || null;
     this.onShutdown = options.onShutdown || null;
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
@@ -2366,6 +2374,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   onTrafficEvent(data) {
+    this._pruneClearedPendingTrafficIds();
     // Enrich with API spec match
     let apiMatch = null;
     try {
@@ -2608,11 +2617,27 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _clearTraffic() {
     const clearId = crypto.randomUUID();
-    for (const id of this._pendingTrafficIds) this._clearedPendingTrafficIds.add(id);
+    const expiresAt = Date.now() + this.clearedPendingTrafficTtlMs;
+    for (const id of this._pendingTrafficIds) {
+      this._clearedPendingTrafficIds.delete(id);
+      this._clearedPendingTrafficIds.set(id, expiresAt);
+    }
+    this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
     return clearId;
+  }
+
+  _pruneClearedPendingTrafficIds(now = Date.now()) {
+    for (const [id, expiresAt] of this._clearedPendingTrafficIds) {
+      if (expiresAt > now) break;
+      this._clearedPendingTrafficIds.delete(id);
+    }
+    while (this._clearedPendingTrafficIds.size > this.maxClearedPendingTrafficIds) {
+      const oldestId = this._clearedPendingTrafficIds.keys().next().value;
+      this._clearedPendingTrafficIds.delete(oldestId);
+    }
   }
 
   setMcpBridge(bridge) {

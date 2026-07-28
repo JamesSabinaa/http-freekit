@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 44 of the 361 documented bugs are not fully fixed.**
+**No: 43 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 317 |
+| Fixed | 318 |
 | Partially fixed | 19 |
-| Open | 25 |
+| Open | 24 |
 | **Total** | **361** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -1126,7 +1126,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-361 — Low/Medium — Cleared pending-request IDs are retained indefinitely
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Cleared pending-request tombstones now expire after one hour and are capped at the 10,000-row traffic-log limit, while completions inside that bounded retention window remain suppressed as before. Normal completions and ID reuse still remove their tombstones immediately.
 
 - Evidence: `_clearTraffic()` copies every live pending ID into `_clearedPendingTrafficIds`. Entries are deleted only if a later event reuses or completes the same ID; the set has no size limit, expiry, or other cleanup path.
 - Impact: pending requests that never produce a completion leave permanent tombstones. Repeated pending-and-clear cycles can grow backend memory even while the bounded traffic log stays small.
