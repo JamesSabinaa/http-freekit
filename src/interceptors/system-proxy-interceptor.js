@@ -300,8 +300,7 @@ if ($null -eq $target) {
     ).some(Boolean);
   }
 
-  _settingsMatchCompletedRestore(current) {
-    const previous = this.previousSettings;
+  _settingsMatchCompletedRestore(current, previous = this.previousSettings) {
     if (!previous) return false;
     const fields = ['enabled', 'server'];
     if (Object.prototype.hasOwnProperty.call(previous, 'override')) fields.push('override');
@@ -316,17 +315,26 @@ if ($null -eq $target) {
       if (!recovery.previousSettings || typeof recovery.previousSettings !== 'object') {
         throw new Error('Recovery file does not contain previous proxy settings');
       }
+      const notificationPending = recovery.restorePhase === 'notification-pending';
+      if (Object.prototype.hasOwnProperty.call(recovery, 'restorePhase') && !notificationPending) {
+        throw new Error('Recovery file contains an invalid restore phase');
+      }
       const currentSettings = this._readCurrentSettings();
-      // The journal is durable before activation starts writing the registry,
-      // so a crash can leave any mixture of exact previous and intended owned
-      // values. A value outside those two states is an external change.
-      if (!this._settingsCouldBelongToRecovery(currentSettings, recovery)) {
+      // An activation journal can contain a partial registry transition. Once
+      // the durable notification phase is present, however, every restore
+      // write completed and only the exact restored state remains ours.
+      const settingsAreOwned = notificationPending
+        ? this._settingsMatchCompletedRestore(currentSettings, recovery.previousSettings)
+        : this._settingsCouldBelongToRecovery(currentSettings, recovery);
+      if (!settingsAreOwned) {
         this._removeRecoveryState();
         console.log('[Interceptor] Stale system proxy was changed externally; preserving the newer settings');
         return false;
       }
       this.previousSettings = recovery.previousSettings;
       this.pendingRecovery = recovery;
+      this.restorePending = true;
+      this.restoreNotificationPending = notificationPending;
       this._restorePreviousSettings();
       this.active = false;
       console.log('[Interceptor] Restored system proxy settings left by an interrupted session');
@@ -357,6 +365,14 @@ if ($null -eq $target) {
     // fails from here, a retry may own only this exact restored state; the
     // broader prefix matcher is reserved for interrupted registry writes.
     this.restoreNotificationPending = true;
+    if (this.pendingRecovery) {
+      const notificationRecovery = {
+        ...this.pendingRecovery,
+        restorePhase: 'notification-pending'
+      };
+      this.pendingRecovery = notificationRecovery;
+      if (this.recoveryFile) this._persistRecoveryState(notificationRecovery);
+    }
     this._notifyWinInet();
     this._removeRecoveryState();
     this.previousSettings = null;
@@ -380,6 +396,10 @@ if ($null -eq $target) {
     if (this._isWindows()) {
       if (this.ca?.systemTrustInstalled !== true) {
         throw new Error('System Proxy requires the HTTP FreeKit CA to be installed in the Windows trust store');
+      }
+      if (!this.active && (this.previousSettings || this.pendingRecovery ||
+          this.restorePending || this.restoreNotificationPending)) {
+        throw new Error('System Proxy cleanup is still pending; retry Stop before starting it again');
       }
       let registryMutationStarted = false;
       try {

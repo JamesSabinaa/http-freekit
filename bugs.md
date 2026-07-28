@@ -1381,7 +1381,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-118 — High — Windows proxy changes are not published to running WinINet clients
 
 - Status: **Fixed**.
-- Resolution: Activation and restoration publish both WinINet settings-changed and refresh notifications. Restoration records its exact pre-restore baseline before registry mutation. Once the registry writes complete, a failed notification remains retryable only while the exact restored settings are still present, so a subsequent Stop can republish the notification without overwriting an intervening external change.
+- Resolution: Activation and restoration publish both WinINet settings-changed and refresh notifications. Restoration records its exact pre-restore baseline before registry mutation, then durably journals a notification-pending phase before notifying WinINet. In-process and restarted retries accept only the exact restored settings, intervening external changes are preserved, and a new Start is rejected until pending cleanup completes.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:46-53,72-80,90-99` changes registry values only and never sends the WinINet settings-changed and refresh notifications required after a global configuration change ([Microsoft option flags](https://learn.microsoft.com/en-us/windows/win32/wininet/option-flags)).
 - Impact: already-running WinINet clients can continue using cached direct/proxy settings after both Start and Stop even though FreeKit reports success.
 - Reproduction: keep a WinINet client open, activate System Proxy, and make another request without restarting the client.

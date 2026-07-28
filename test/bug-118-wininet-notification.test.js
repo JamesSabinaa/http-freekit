@@ -1,6 +1,53 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
+
+function createDurableNotificationRetry(t) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-wininet-retry-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const settings = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  };
+  const recovery = {
+    owner: {
+      pid: 9876,
+      startedAt: '2026-01-02T03:04:05.000Z',
+      executablePath: 'c:\\program files\\http freekit\\freekit.exe'
+    },
+    proxyServer: settings.server,
+    ownedSettings: { ...settings },
+    previousSettings
+  };
+  const interceptor = new SystemProxyInterceptor({ dataDir });
+  interceptor.previousSettings = previousSettings;
+  interceptor.pendingRecovery = recovery;
+  interceptor._persistRecoveryState(recovery);
+  interceptor._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') settings.server = value;
+    if (name === 'ProxyOverride') settings.override = value;
+  };
+  interceptor._notifyWinInet = () => { throw new Error('WinINet refresh failed'); };
+
+  assert.throws(() => interceptor._restorePreviousSettings(), /WinINet refresh failed/);
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.restoreNotificationPending, true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8')).restorePhase,
+    'notification-pending'
+  );
+  return { dataDir, previousSettings, settings };
+}
 
 test('system proxy activation and restoration notify WinINet clients', async () => {
   const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
@@ -149,4 +196,69 @@ test('a notification retry preserves an external change made after registry rest
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.previousSettings, null);
   assert.equal(interceptor.pendingRecovery, null);
+});
+
+test('Start is rejected while a prior notification retry still owns cleanup', async () => {
+  const interceptor = new SystemProxyInterceptor({ ca: { systemTrustInstalled: true } });
+  interceptor._isWindows = () => true;
+  interceptor.previousSettings = { enabled: false, server: null, override: null };
+  interceptor.pendingRecovery = {
+    proxyServer: '127.0.0.1:8080',
+    previousSettings: interceptor.previousSettings
+  };
+  interceptor.restorePending = true;
+  interceptor.restoreNotificationPending = true;
+  interceptor._usesPerMachineProxyPolicy = () => assert.fail('activation must stop before policy access');
+
+  await assert.rejects(interceptor.activate(8080), /retry Stop before starting it again/);
+  assert.equal(interceptor.restoreNotificationPending, true);
+  assert.deepEqual(interceptor.previousSettings, {
+    enabled: false,
+    server: null,
+    override: null
+  });
+});
+
+test('notification-pending recovery survives restart and republishes exact restored settings', t => {
+  const { dataDir, previousSettings, settings } = createDurableNotificationRetry(t);
+  const restarted = new SystemProxyInterceptor({ dataDir });
+  restarted._isWindows = () => true;
+  restarted._recoveryOwnerIsActive = () => false;
+  restarted._readCurrentSettings = () => ({ ...settings });
+  restarted._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') settings.server = value;
+    if (name === 'ProxyOverride') settings.override = value;
+  };
+  let notifications = 0;
+  restarted._notifyWinInet = () => { notifications += 1; };
+
+  assert.equal(restarted.recoverStaleSettings(), true);
+  assert.equal(notifications, 1);
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(fs.existsSync(restarted.recoveryFile), false);
+  assert.equal(restarted.restoreNotificationPending, false);
+});
+
+test('notification-pending recovery preserves an external change across restart', t => {
+  const { dataDir, settings } = createDurableNotificationRetry(t);
+  settings.enabled = true;
+  const restarted = new SystemProxyInterceptor({ dataDir });
+  restarted._isWindows = () => true;
+  restarted._recoveryOwnerIsActive = () => false;
+  restarted._readCurrentSettings = () => ({ ...settings });
+  let registryWrites = 0;
+  restarted._setRegistryValue = () => { registryWrites += 1; };
+  let notifications = 0;
+  restarted._notifyWinInet = () => { notifications += 1; };
+
+  assert.equal(restarted.recoverStaleSettings(), false);
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  });
+  assert.equal(registryWrites, 0);
+  assert.equal(notifications, 0);
+  assert.equal(fs.existsSync(restarted.recoveryFile), false);
 });
