@@ -192,6 +192,39 @@ class EncodedBodyString extends String {
   }
 }
 
+class PendingBreakpointMap extends Map {
+  constructor(onExternalMutation) {
+    super();
+    this.onExternalMutation = onExternalMutation;
+  }
+
+  set(key, value) {
+    const result = super.set(key, value);
+    this.onExternalMutation();
+    return result;
+  }
+
+  delete(key) {
+    const deleted = super.delete(key);
+    if (deleted) this.onExternalMutation();
+    return deleted;
+  }
+
+  clear() {
+    const hadEntries = this.size > 0;
+    super.clear();
+    if (hadEntries) this.onExternalMutation();
+  }
+
+  setInternal(key, value) {
+    return super.set(key, value);
+  }
+
+  deleteInternal(key) {
+    return super.delete(key);
+  }
+}
+
 export class ProxyServer {
   constructor(certificateAuthority, options = {}) {
     this.ca = certificateAuthority;
@@ -208,9 +241,12 @@ export class ProxyServer {
     this.activeConnections = new Set();
     this._pendingWsCaptureFinalizations = new Set();
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
-    this.pendingBreakpoints = new Map(); // requestId -> pending breakpoint or FIFO array for reused IDs
     this._pendingBreakpointOrder = new WeakMap();
     this._pendingBreakpointSequence = 0;
+    this._pendingBreakpointOrderDirty = false;
+    this.pendingBreakpoints = new PendingBreakpointMap(() => {
+      this._pendingBreakpointOrderDirty = true;
+    }); // requestId -> pending breakpoint or FIFO array for reused IDs
     this.mockRules = [];
     // Upstream proxy: { host, port, auth? } or null
     this.upstreamProxy = null;
@@ -9270,18 +9306,21 @@ export class ProxyServer {
         }
       }
     }
+    this._pendingBreakpointOrderDirty = false;
   }
 
   _storePendingBreakpoint(requestId, breakpoint) {
-    this._indexPendingBreakpointOrder();
+    if (this._pendingBreakpointOrderDirty) {
+      this._indexPendingBreakpointOrder();
+    }
     this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) {
-      this.pendingBreakpoints.set(requestId, breakpoint);
+      this.pendingBreakpoints.setInternal(requestId, breakpoint);
     } else if (Array.isArray(stored)) {
       stored.push(breakpoint);
     } else {
-      this.pendingBreakpoints.set(requestId, [stored, breakpoint]);
+      this.pendingBreakpoints.setInternal(requestId, [stored, breakpoint]);
     }
     return breakpoint;
   }
@@ -9297,18 +9336,21 @@ export class ProxyServer {
   }
 
   _deletePendingBreakpoint(requestId, breakpoint) {
+    if (this._pendingBreakpointOrderDirty) {
+      this._indexPendingBreakpointOrder();
+    }
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) return false;
     if (!Array.isArray(stored)) {
       if (stored !== breakpoint) return false;
-      this.pendingBreakpoints.delete(requestId);
+      this.pendingBreakpoints.deleteInternal(requestId);
       return true;
     }
     const index = stored.indexOf(breakpoint);
     if (index === -1) return false;
     stored.splice(index, 1);
-    if (stored.length === 1) this.pendingBreakpoints.set(requestId, stored[0]);
-    else if (stored.length === 0) this.pendingBreakpoints.delete(requestId);
+    if (stored.length === 1) this.pendingBreakpoints.setInternal(requestId, stored[0]);
+    else if (stored.length === 0) this.pendingBreakpoints.deleteInternal(requestId);
     return true;
   }
 

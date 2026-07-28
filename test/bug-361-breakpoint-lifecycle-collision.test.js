@@ -159,3 +159,21 @@ test('helper-stored breakpoints do not overtake directly seeded pending entries'
     ]
   );
 });
+
+test('normal pending breakpoint insertion does not rescan prior entries', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+  let indexingCalls = 0;
+  const indexPending = proxy._indexPendingBreakpointOrder.bind(proxy);
+  proxy._indexPendingBreakpointOrder = () => {
+    indexingCalls++;
+    return indexPending();
+  };
+
+  for (let index = 0; index < 1_000; index++) {
+    proxy._storePendingBreakpoint(`request-${index}`, pending(`life-${index}`, resolved));
+  }
+
+  assert.equal(indexingCalls, 0);
+  assert.equal(proxy.getStats().pendingBreakpoints, 1_000);
+});
