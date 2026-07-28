@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
 function createRestoreHarness(currentRequests, selectedRequestId) {
-  const start = source.indexOf('function mergeServerTrafficRequest(');
+  const start = source.indexOf('function trimTrafficRows(');
   const end = source.indexOf('function connectWebSocket()', start);
   assert.ok(start >= 0 && end > start, 'traffic dump restoration functions must be present');
 
@@ -45,7 +45,7 @@ function createRestoreHarness(currentRequests, selectedRequestId) {
 }
 
 function createUpdateHarness(currentRequests, selectedRequestId) {
-  const start = source.indexOf('function mergeServerTrafficRequest(');
+  const start = source.indexOf('function trimTrafficRows(');
   const end = source.indexOf('// ============ TRAFFIC ============', start);
   assert.ok(start >= 0 && end > start, 'traffic update functions must be present');
 

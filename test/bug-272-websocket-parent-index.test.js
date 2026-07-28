@@ -52,7 +52,7 @@ function trafficRecord(id, protocol, parentId) {
 function rendererHarness(initialRequests = []) {
   const stateStart = rendererSource.indexOf('/** Map of parentId');
   const stateEnd = rendererSource.indexOf('// ============ VIRTUAL SCROLL STATE', stateStart);
-  const restoreStart = rendererSource.indexOf('function mergeServerTrafficRequest(');
+  const restoreStart = rendererSource.indexOf('function trimTrafficRows(');
   const restoreEnd = rendererSource.indexOf('const appliedTrafficClearIds', restoreStart);
   const trafficStart = rendererSource.indexOf('function addRequest(');
   const trafficEnd = rendererSource.indexOf('function parseFilters(', trafficStart);

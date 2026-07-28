@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
-const restoreStart = source.indexOf('function mergeServerTrafficRequest(');
+const restoreStart = source.indexOf('function trimTrafficRows(');
 const restoreEnd = source.indexOf('const appliedTrafficClearIds', restoreStart);
 const trafficStart = source.indexOf('function addRequest(');
 const trafficEnd = source.indexOf('function parseFilters(', trafficStart);
@@ -165,17 +165,14 @@ test('adding to oversized state removes the full excess and rebuilds frame index
   harness.context.add(added);
 
   assert.equal(harness.context.requests.length, 10_000);
-  assert.equal(harness.context.requests[0].id, 'kept-frame');
-  assert.equal(harness.context.requests.at(-1), added);
+  assert.equal(harness.context.requests[0].id, 'old-4');
+  assert.equal(harness.context.requests.includes(added), false);
   assert.equal(added._index, 10_006);
   assert.equal(harness.context.requestCounter, 10_006);
   assert.equal(harness.context.selectedRequestId, null);
   assert.deepEqual(harness.closeCalls, [false]);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.frameIndex())), {
-    'kept-parent': ['kept-frame'],
-    'new-parent': ['new-frame']
-  });
-  assert.equal(harness.context.filteredRequests.length, 9_998);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.frameIndex())), {});
+  assert.equal(harness.context.filteredRequests.length, 10_000);
   assert.equal(harness.filterCalls, 1);
 });
 
@@ -196,4 +193,24 @@ test('ordinary under-cap adds retain rows, selection, and frame indexing', () =>
   });
   assert.deepEqual(Array.from(harness.context.filteredIds()), ['selected', 'other']);
   assert.equal(harness.filterCalls, 1);
+});
+
+test('a frame flood evicts old frames without removing its WebSocket parent', () => {
+  const parent = request('socket', { protocol: 'ws', statusCode: 101 });
+  const frames = Array.from({ length: 9_999 }, (_, index) => request(`frame-${index}`, {
+    protocol: 'ws-frame',
+    parentId: parent.id
+  }));
+  const harness = createHarness([parent, ...frames]);
+  const newestFrame = request('frame-new', { protocol: 'ws-frame', parentId: parent.id });
+
+  harness.context.add(newestFrame);
+
+  assert.equal(harness.context.requests.length, 10_000);
+  assert.equal(harness.context.requests[0].id, parent.id);
+  assert.equal(harness.context.requests.some(request => request.id === 'frame-0'), false);
+  assert.equal(harness.context.requests.at(-1), newestFrame);
+  assert.equal(harness.context.filteredRequests.length, 1);
+  assert.deepEqual(Array.from(harness.context.filteredIds()), [parent.id]);
+  assert.equal(harness.context.frameIndex()[parent.id].length, 9_999);
 });

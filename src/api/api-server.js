@@ -2401,6 +2401,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._pendingTrafficIds.delete(id);
   }
 
+  _trimTrafficLog() {
+    const limit = Math.max(0, this.maxTrafficLog);
+    const excess = this.trafficLog.length - limit;
+    if (excess <= 0) return;
+
+    const removedIndexes = new Set();
+    for (let index = 0; index < this.trafficLog.length && removedIndexes.size < excess; index++) {
+      if (this.trafficLog[index]?.protocol === 'ws-frame') removedIndexes.add(index);
+    }
+    for (let index = 0; index < this.trafficLog.length && removedIndexes.size < excess; index++) {
+      removedIndexes.add(index);
+    }
+    this.trafficLog = this.trafficLog.filter((_request, index) => !removedIndexes.has(index));
+  }
+
   onTrafficEvent(data) {
     this._pruneClearedPendingTrafficIds();
     // Enrich with API spec match
@@ -2448,9 +2463,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         // A completion whose pending row was evicted must be surfaced as a new
         // row so backend and renderer state stay consistent.
         this.trafficLog.push(data);
-        if (this.trafficLog.length > this.maxTrafficLog) {
-          this.trafficLog.shift();
-        }
+        this._trimTrafficLog();
         this._broadcast({ type: 'request', data });
       }
       this._maybeAutoRotateProxyOnError(data);
@@ -2468,9 +2481,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       delete data._pending;
       this.trafficLog.push(data);
-      if (this.trafficLog.length > this.maxTrafficLog) {
-        this.trafficLog.shift();
-      }
+      this._trimTrafficLog();
       this._broadcast({ type: 'request', data });
     }
   }

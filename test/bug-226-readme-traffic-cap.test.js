@@ -10,7 +10,7 @@ test('README traffic-table scale matches the retained record cap', () => {
   const apiSource = read('src/api/api-server.js');
   const rendererSource = read('src/ui/app.js');
   const apiCap = apiSource.match(/this\.maxTrafficLog\s*=\s*([\d_]+)/);
-  const rendererCap = rendererSource.match(/requests\.length\s*(?:>|-)\s*([\d_]+)/);
+  const rendererCap = rendererSource.match(/trimTrafficRows\s*\([^,]+,\s*limit\s*=\s*([\d_]+)/);
 
   assert.ok(apiCap, 'API traffic cap must remain discoverable');
   assert.ok(rendererCap, 'renderer traffic cap must remain discoverable');

@@ -157,6 +157,19 @@
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
 
+    function trimTrafficRows(rows, limit = 10_000) {
+      const excess = rows.length - limit;
+      if (excess <= 0) return rows;
+      const removedIndexes = new Set();
+      for (let index = 0; index < rows.length && removedIndexes.size < excess; index++) {
+        if (rows[index]?.protocol === 'ws-frame') removedIndexes.add(index);
+      }
+      for (let index = 0; index < rows.length && removedIndexes.size < excess; index++) {
+        removedIndexes.add(index);
+      }
+      return rows.filter((_request, index) => !removedIndexes.has(index));
+    }
+
     function mergeServerTrafficRequest(currentRequest, serverRequest) {
       const restoredRequest = { ...serverRequest };
       delete restoredRequest.pinned;
@@ -190,7 +203,7 @@
         }
       }
       rendererOnlyPins.reverse();
-      return [...restoredServerRequests, ...rendererOnlyPins].slice(-10_000);
+      return trimTrafficRows([...restoredServerRequests, ...rendererOnlyPins]);
     }
 
     function restoreTrafficDump(serverRequests) {
@@ -400,15 +413,13 @@
       req._index = requestCounter;
       requests.push(req);
 
-      // Track WS frames by parent for sub-row rendering
-      if (req.protocol === 'ws-frame' && req.parentId) {
+      // Child frames are useful only while their parent row remains inspectable.
+      requests = trimTrafficRows(requests);
+      // Track a frame only if capacity trimming retained it.
+      if (requests.includes(req) && req.protocol === 'ws-frame' && req.parentId) {
         if (!wsFramesByParent[req.parentId]) wsFramesByParent[req.parentId] = [];
         wsFramesByParent[req.parentId].push(req);
       }
-
-      // Keep the newest 10,000 rows, even if prior state was already oversized.
-      const excess = requests.length - 10_000;
-      if (excess > 0) requests.splice(0, excess);
       if (
         selectedRequestId !== null &&
         !requests.some(request => request.id === selectedRequestId)
