@@ -61,9 +61,11 @@ test('MCP request detail advertises bounded body paging', () => {
   ]);
   assert.equal(tool.inputSchema.properties.body_limit.maximum, MAX_PAGE);
   assert.equal(tool.inputSchema.properties.body_offset.minimum, 0);
+  assert.equal(tool.inputSchema.properties.body_offset.maximum, Number.MAX_SAFE_INTEGER);
   assert.equal(tool.inputSchema.properties.request_id.minLength, 1);
   assert.deepEqual(tool.inputSchema.allOf[0].then.required, ['body_side']);
-  assert.match(tool.description, /Repeat with body_offset/);
+  assert.match(tool.description, /repeat with body_offset/i);
+  assert.match(tool.inputSchema.properties.body_side.description, /complete legacy bodies/);
 });
 
 test('MCP request detail metadata stays bounded and every retained body is retrievable', () => {
@@ -91,13 +93,15 @@ test('MCP request detail metadata stays bounded and every retained body is retri
   const metadataResult = bridge._handleGetRequestDetail({ request_id: 'large-request' });
   const detail = parseDetail(metadataResult);
   assert.ok(Buffer.byteLength(metadataResult.content[0].text) < MAX_RESPONSE_BYTES);
-  assert.equal(detail.requestBody, splitSurrogate.slice(0, PREVIEW));
-  assert.equal(detail.responseBody, responseBody.slice(0, PREVIEW));
-  assert.equal(detail.originalRequest.body, originalRequestBody.slice(0, PREVIEW));
+  assert.equal(detail.requestBody, splitSurrogate);
+  assert.equal(detail.responseBody, responseBody);
+  assert.equal(detail.originalRequest.body, originalRequestBody);
+  assert.equal(detail.requestBodyPreview, undefined);
+  assert.equal(detail.legacyBodiesOmitted, undefined);
   assert.equal(detail.bodyPage, null);
   assert.equal(detail.bodies.request.totalLength, splitSurrogate.length);
-  assert.equal(detail.bodies.request.previewLength, PREVIEW);
-  assert.equal(detail.bodies.request.hasMore, true);
+  assert.equal(detail.bodies.request.previewLength, splitSurrogate.length);
+  assert.equal(detail.bodies.request.hasMore, false);
   assert.equal(detail.bodies.request.offsetUnit, 'utf16-code-unit');
   assert.equal(detail.bodies.response.totalLength, responseBody.length);
   assert.equal(detail.bodies.response.encoding, 'base64');
@@ -111,21 +115,25 @@ test('MCP request detail metadata stays bounded and every retained body is retri
   assert.equal(trafficLog[0].originalRequest.body, originalRequestBody);
 });
 
-test('legacy request detail fields remain complete for small bodies', () => {
+test('legacy request detail fields remain complete whenever the bounded response fits', () => {
+  const requestBody = 'r'.repeat(9_000);
+  const responseBody = 's'.repeat(9_000);
+  const originalBody = 'o'.repeat(9_000);
   const bridge = createBridge([{
     id: 'legacy-small',
     method: 'POST',
-    requestBody: 'small request',
-    responseBody: 'small response',
-    originalRequest: { method: 'PUT', body: 'small original' },
+    requestBody,
+    responseBody,
+    originalRequest: { method: 'PUT', body: originalBody },
     timestamp: 1_767_225_600_000
   }]);
 
   const detail = parseDetail(bridge._handleGetRequestDetail({ request_id: 'legacy-small' }));
-  assert.equal(detail.requestBody, 'small request');
-  assert.equal(detail.responseBody, 'small response');
-  assert.equal(detail.originalRequest.body, 'small original');
-  assert.equal(detail.bodies.request.previewLength, 'small request'.length);
+  assert.equal(detail.requestBody, requestBody);
+  assert.equal(detail.responseBody, responseBody);
+  assert.equal(detail.originalRequest.body, originalBody);
+  assert.equal(detail.requestBodyPreview, undefined);
+  assert.equal(detail.bodies.request.previewLength, requestBody.length);
   assert.equal(detail.bodies.request.hasMore, false);
   assert.equal(detail.bodies.response.hasMore, false);
 });
@@ -207,6 +215,46 @@ test('large imported metadata is recursively bounded without mutating traffic', 
   assert.equal(record.extension.nested.body, huge);
 });
 
+test('metadata traversal omits accessors and stops at a bounded number of entries', () => {
+  let accessorReads = 0;
+  const manyHeaders = {};
+  for (let index = 0; index < 10_000; index++) manyHeaders[`x-${index}`] = '';
+  const originalRequest = { method: 'POST' };
+  Object.defineProperty(originalRequest, 'body', {
+    enumerable: true,
+    get() {
+      accessorReads++;
+      throw new Error('original body getter must not run');
+    }
+  });
+  const record = {
+    id: 'accessor-metadata',
+    method: 'GET',
+    requestHeaders: manyHeaders,
+    requestBody: 'stable',
+    responseBody: '',
+    originalRequest,
+    timestamp: 1_767_225_600_000
+  };
+  Object.defineProperty(record, 'danger', {
+    enumerable: true,
+    get() {
+      accessorReads++;
+      record.requestBody = 'MUTATED';
+      return 'unsafe';
+    }
+  });
+  const bridge = createBridge([record]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({ request_id: 'accessor-metadata' }));
+  assert.equal(accessorReads, 0);
+  assert.equal(record.requestBody, 'stable');
+  assert.equal(detail.requestBody, 'stable');
+  assert.equal(detail.originalRequest.body, '');
+  assert.equal(detail.requestHeaders._mcpAdditionalEntriesOmitted, true);
+  assert.ok(Object.keys(detail.requestHeaders).length <= 129);
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{
@@ -229,20 +277,59 @@ test('one MCP request detail page stays bounded for a near-limit capture', () =>
   assert.equal(detail.bodyPage.totalLength, requestBody.length);
   assert.equal(detail.bodyPage.hasMore, true);
   assert.equal(detail.bodyPage.nextOffset, MAX_PAGE);
+
+  const defaultDetail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'near-limit-request'
+  }));
+  assert.equal(defaultDetail.requestBody, undefined);
+  assert.equal(defaultDetail.legacyBodiesOmitted, true);
+  assert.equal(defaultDetail.requestBodyPreview, requestBody.slice(0, PREVIEW));
 });
 
 test('MCP transport returns paged Unicode content and rejects unsafe page arguments', async t => {
   const requestBody = `${'u'.repeat(MAX_PAGE - 1)}😀tail`;
-  const bridge = createBridge([{
-    id: 'transport-request',
-    method: 'POST',
-    url: 'https://body.test/transport',
-    requestBody,
-    responseBody: '',
-    timestamp: 1_767_225_600_000
-  }]);
+  const wireMetadata = {};
+  for (let index = 0; index < 128; index++) {
+    wireMetadata[`x-${String(index).padStart(3, '0')}-${'k'.repeat(118)}`] =
+      '\ud800'.repeat(128);
+  }
+  const bridge = createBridge([
+    {
+      id: 'transport-request',
+      method: 'POST',
+      url: 'https://body.test/transport',
+      requestBody,
+      responseBody: '',
+      timestamp: 1_767_225_600_000
+    },
+    {
+      id: 'wire-heavy-request',
+      method: 'POST',
+      url: 'https://body.test/wire-heavy',
+      requestBody: '\\'.repeat(200 * 1024),
+      responseBody: '',
+      timestamp: 1_767_225_600_000
+    },
+    {
+      id: 'wire-page-request',
+      method: 'POST',
+      url: 'https://body.test/wire-page',
+      requestHeaders: wireMetadata,
+      requestBody: '\ud800'.repeat(MAX_PAGE),
+      responseBody: '',
+      timestamp: 1_767_225_600_000
+    }
+  ]);
   const client = new Client({ name: 'body-pagination-test', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const wireResponseBytes = [];
+  const sendServerMessage = serverTransport.send.bind(serverTransport);
+  serverTransport.send = async (message, options) => {
+    if (message?.result?.content) {
+      wireResponseBytes.push(Buffer.byteLength(JSON.stringify(message)));
+    }
+    return sendServerMessage(message, options);
+  };
   await bridge.server.connect(serverTransport);
   await client.connect(clientTransport);
   t.after(async () => {
@@ -261,7 +348,7 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
       body_side: 'request'
     }
   }));
-  assert.ok(Buffer.byteLength(JSON.stringify(first)) <= MAX_RESPONSE_BYTES);
+  assert.ok(wireResponseBytes.at(-1) <= MAX_RESPONSE_BYTES);
   const second = parseDetail(await client.callTool({
     name: 'get_request_detail',
     arguments: {
@@ -271,6 +358,26 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
     }
   }));
   assert.equal(first.bodyPage.content + second.bodyPage.content, requestBody);
+  assert.ok(wireResponseBytes.at(-1) <= MAX_RESPONSE_BYTES);
+
+  const wireHeavy = parseDetail(await client.callTool({
+    name: 'get_request_detail',
+    arguments: { request_id: 'wire-heavy-request' }
+  }));
+  assert.equal(wireHeavy.requestBody, undefined);
+  assert.equal(wireHeavy.legacyBodiesOmitted, true);
+  assert.equal(wireHeavy.requestBodyPreview, '\\'.repeat(PREVIEW));
+  assert.ok(wireResponseBytes.at(-1) <= MAX_RESPONSE_BYTES);
+
+  const wirePage = parseDetail(await client.callTool({
+    name: 'get_request_detail',
+    arguments: {
+      request_id: 'wire-page-request',
+      body_side: 'request'
+    }
+  }));
+  assert.equal(wirePage.bodyPage.content, '\ud800'.repeat(MAX_PAGE));
+  assert.ok(wireResponseBytes.at(-1) <= MAX_RESPONSE_BYTES);
 
   const invalid = await client.callTool({
     name: 'get_request_detail',
@@ -292,6 +399,17 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
   });
   assert.equal(missingSide.isError, true);
   assert.match(missingSide.content[0].text, /body_side/);
+
+  const unsafeOffset = await client.callTool({
+    name: 'get_request_detail',
+    arguments: {
+      request_id: 'transport-request',
+      body_side: 'request',
+      body_offset: Number.MAX_SAFE_INTEGER + 1
+    }
+  });
+  assert.equal(unsafeOffset.isError, true);
+  assert.match(unsafeOffset.content[0].text, /body_offset/);
 });
 
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
@@ -325,5 +443,13 @@ test('MCP request detail requires a side for offsets and validates direct calls'
   assert.throws(
     () => bridge._handleGetRequestDetail({ request_id: '' }),
     /request_id/
+  );
+  assert.throws(
+    () => bridge._handleGetRequestDetail({
+      request_id: 'validation-request',
+      body_side: 'request',
+      body_offset: Number.MAX_SAFE_INTEGER + 1
+    }),
+    /body_offset/
   );
 });

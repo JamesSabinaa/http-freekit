@@ -819,7 +819,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-229 — Low/Medium — MCP request detail silently truncates bodies
 
 - Status: **Fixed**.
-- Resolution: `get_request_detail` now returns recursively bounded metadata plus explicit request, response, or original-request body pages. Small bodies remain available through the legacy top-level fields; larger defaults are labeled previews. Clients can repeat calls with a UTF-16 code-unit offset and a maximum 32 KiB page size to retrieve every retained code unit, including production boxed binary/truncated original bodies, while each serialized response remains capped at 512 KiB.
+- Resolution: `get_request_detail` now traverses only bounded data descriptors, omitting accessors and excess metadata without proportional intermediate allocation, and returns explicit request, response, or original-request body pages. Complete legacy body fields remain intact whenever the wire-level MCP response fits; oversized defaults use explicitly named previews. Clients can repeat calls with a schema-matched safe UTF-16 code-unit offset and a maximum 32 KiB page size to retrieve every retained code unit, including production boxed binary/truncated original bodies, while each serialized MCP tool response remains capped at 512 KiB.
 
 - Evidence: `get_request_detail` promises full details including body at `src/mcp/mcp-server.js:25-33`, but the handler slices request and response bodies at 50 KiB at `:198-216`.
 - Impact: MCP clients cannot retrieve or analyze the remaining captured data even though storage retains substantially more.

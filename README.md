@@ -240,7 +240,7 @@ HTTP FreeKit includes a built-in [Model Context Protocol](https://modelcontextpr
 | `export_traffic` | Filtered HAR 1.2 export |
 | `get_live_summary` | Proxy state, active interceptors, mock rules, breakpoints |
 
-`get_request_detail` keeps the legacy `requestBody` and `responseBody` fields for small bodies and returns explicit preview lengths for larger ones. Pass `body_side` (`request`, `response`, or `original_request`) and repeat with `body_offset`/`body_limit` to retrieve the complete retained body in bounded pages.
+`get_request_detail` keeps complete legacy `requestBody` and `responseBody` fields whenever the serialized tool response fits its wire budget. Oversized details use explicitly named body-preview fields and report their preview lengths. Pass `body_side` (`request`, `response`, or `original_request`) and repeat with `body_offset`/`body_limit` to retrieve the complete retained body in bounded pages.
 
 ### Connecting via SSE
 

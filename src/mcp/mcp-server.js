@@ -13,8 +13,10 @@ const MCP_HAR_JSON_SUFFIX = ']}}';
 const MCP_BODY_PAGE_MAX_CODE_UNITS = 32 * 1024;
 const MCP_LEGACY_BODY_PREVIEW_CODE_UNITS = 8 * 1024;
 const MCP_REQUEST_DETAIL_MAX_BYTES = 512 * 1024;
+const MCP_REQUEST_DETAIL_ENVELOPE_RESERVE_BYTES = 8 * 1024;
 const MCP_METADATA_MAX_DEPTH = 6;
 const MCP_METADATA_MAX_ENTRIES = 128;
+const MCP_METADATA_MAX_SCANNED_ENTRIES = 160;
 const MCP_METADATA_MAX_KEY_CODE_UNITS = 128;
 const MCP_METADATA_MAX_STRING_CODE_UNITS = 4 * 1024;
 const MCP_METADATA_TOTAL_STRING_CODE_UNITS = 16 * 1024;
@@ -28,36 +30,71 @@ function publicUpstreamProxyMetadata(upstreamProxy) {
   };
 }
 
+function ownDataValue(value, key) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function retainedBody(value, provenance = {}) {
-  const boxedString = value instanceof String;
-  const content = typeof value === 'string' || boxedString ? String(value) : '';
-  const boxedEncoding = boxedString && typeof value.encoding === 'string'
-    ? value.encoding
-    : null;
-  const boxedCapturedSize = boxedString && Number.isSafeInteger(value.capturedSize)
-    ? value.capturedSize
-    : null;
-  const boxedDecodedSize = boxedString && Number.isSafeInteger(value.decodedSize)
-    ? value.decodedSize
-    : null;
+  let boxedString = false;
+  let content = '';
+  try {
+    boxedString = value instanceof String;
+    if (typeof value === 'string' || boxedString) content = String(value);
+  } catch {
+    boxedString = false;
+  }
+  const boxedEncoding = boxedString ? ownDataValue(value, 'encoding') : null;
+  const boxedCapturedSize = boxedString ? ownDataValue(value, 'capturedSize') : null;
+  const boxedDecodedSize = boxedString ? ownDataValue(value, 'decodedSize') : null;
+  const encoding = typeof provenance.encoding === 'string'
+    ? provenance.encoding
+    : typeof boxedEncoding === 'string'
+      ? boxedEncoding
+      : 'utf8';
+  const capturedSize = Number.isSafeInteger(provenance.capturedSize)
+    ? provenance.capturedSize
+    : Number.isSafeInteger(boxedCapturedSize)
+      ? boxedCapturedSize
+      : null;
+  const decodedSize = Number.isSafeInteger(provenance.decodedSize)
+    ? provenance.decodedSize
+    : Number.isSafeInteger(boxedDecodedSize)
+      ? boxedDecodedSize
+      : null;
   return {
     content,
-    encoding: provenance.encoding || boxedEncoding || 'utf8',
-    truncated: provenance.truncated === true || boxedCapturedSize !== null || boxedDecodedSize !== null,
-    capturedSize: provenance.capturedSize ?? boxedCapturedSize,
-    decodedSize: provenance.decodedSize ?? boxedDecodedSize
+    encoding: encoding.slice(0, 64),
+    truncated: provenance.truncated === true || capturedSize !== null || decodedSize !== null,
+    capturedSize,
+    decodedSize
   };
 }
 
-function boundedMetadata(value, state = null, depth = 0) {
+function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   const budget = state || {
     entries: 0,
+    scannedEntries: 0,
     stringCodeUnits: 0,
     seen: new WeakSet()
   };
   if (value === null || value === undefined) return value;
   if (typeof value === 'string' || value instanceof String) {
-    const text = String(value);
+    let text;
+    try {
+      text = String(value);
+    } catch {
+      return '[string omitted]';
+    }
     const remaining = Math.max(0,
       MCP_METADATA_TOTAL_STRING_CODE_UNITS - budget.stringCodeUnits);
     const available = Math.min(MCP_METADATA_MAX_STRING_CODE_UNITS, remaining);
@@ -76,9 +113,14 @@ function boundedMetadata(value, state = null, depth = 0) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'symbol' || typeof value === 'function') return undefined;
-  if (value instanceof Date) return Number.isFinite(value.getTime())
-    ? value.toISOString()
-    : 'Invalid Date';
+  if (value instanceof Date) {
+    try {
+      const timestamp = Date.prototype.getTime.call(value);
+      return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : 'Invalid Date';
+    } catch {
+      return '[invalid date omitted]';
+    }
+  }
   if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) {
     return `[Binary metadata: ${value.byteLength} bytes]`;
   }
@@ -86,37 +128,49 @@ function boundedMetadata(value, state = null, depth = 0) {
   if (budget.seen.has(value)) return '[repeated reference omitted]';
   budget.seen.add(value);
 
-  if (Array.isArray(value)) {
-    const output = [];
-    let omitted = 0;
-    for (let index = 0; index < value.length; index++) {
-      if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
-        omitted = value.length - index;
+  const arrayOutput = Array.isArray(value);
+  const output = arrayOutput ? [] : Object.create(null);
+  let omitted = false;
+  try {
+    for (const key in value) {
+      if (budget.scannedEntries >= MCP_METADATA_MAX_SCANNED_ENTRIES) {
+        omitted = true;
         break;
       }
+      budget.scannedEntries++;
+      if (!Object.prototype.hasOwnProperty.call(value, key) || excludedKeys?.has(key)) continue;
+      if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
+        omitted = true;
+        break;
+      }
+      if (key.length > MCP_METADATA_MAX_KEY_CODE_UNITS) {
+        omitted = true;
+        continue;
+      }
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        omitted = true;
+        continue;
+      }
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        omitted = true;
+        continue;
+      }
       budget.entries++;
-      output.push(boundedMetadata(value[index], budget, depth + 1));
+      const sanitized = boundedMetadata(descriptor.value, budget, depth + 1);
+      if (sanitized === undefined) continue;
+      if (arrayOutput) output.push(sanitized);
+      else output[key] = sanitized;
     }
-    if (omitted > 0) output.push(`[${omitted} items omitted]`);
-    return output;
+  } catch {
+    omitted = true;
   }
-
-  const output = {};
-  let omitted = 0;
-  for (const [key, nestedValue] of Object.entries(value)) {
-    if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
-      omitted++;
-      continue;
-    }
-    if (key.length > MCP_METADATA_MAX_KEY_CODE_UNITS) {
-      omitted++;
-      continue;
-    }
-    budget.entries++;
-    const sanitized = boundedMetadata(nestedValue, budget, depth + 1);
-    if (sanitized !== undefined) output[key] = sanitized;
+  if (omitted) {
+    if (arrayOutput) output.push('[additional entries omitted]');
+    else output._mcpAdditionalEntriesOmitted = true;
   }
-  if (omitted > 0) output._mcpOmittedEntries = omitted;
   return output;
 }
 
@@ -133,9 +187,24 @@ function bodyDescriptor(body, previewLength) {
   };
 }
 
+function requestDetailFitsWireBudget(text) {
+  const representativeMessage = {
+    jsonrpc: '2.0',
+    id: 0,
+    result: { content: [{ type: 'text', text }] }
+  };
+  return Buffer.byteLength(JSON.stringify(representativeMessage)) <=
+    MCP_REQUEST_DETAIL_MAX_BYTES - MCP_REQUEST_DETAIL_ENVELOPE_RESERVE_BYTES;
+}
+
+function stringifyRequestDetailIfBounded(detail) {
+  const text = JSON.stringify(detail, null, 2);
+  return requestDetailFitsWireBudget(text) ? text : null;
+}
+
 function stringifyBoundedRequestDetail(detail) {
-  let text = JSON.stringify(detail, null, 2);
-  if (Buffer.byteLength(text) <= MCP_REQUEST_DETAIL_MAX_BYTES) return text;
+  let text = stringifyRequestDetailIfBounded(detail);
+  if (text !== null) return text;
 
   const compact = {
     id: detail.id,
@@ -144,14 +213,21 @@ function stringifyBoundedRequestDetail(detail) {
     bodies: detail.bodies,
     bodyPage: detail.bodyPage
   };
-  for (const field of ['requestBody', 'responseBody']) {
+  for (const field of [
+    'requestBody',
+    'responseBody',
+    'requestBodyPreview',
+    'responseBodyPreview',
+    'originalRequestBodyPreview',
+    'legacyBodiesOmitted'
+  ]) {
     if (detail[field] !== undefined) compact[field] = detail[field];
   }
   if (detail.originalRequest?.body !== undefined) {
     compact.originalRequest = { body: detail.originalRequest.body };
   }
-  text = JSON.stringify(compact, null, 2);
-  if (Buffer.byteLength(text) <= MCP_REQUEST_DETAIL_MAX_BYTES) return text;
+  text = stringifyRequestDetailIfBounded(compact);
+  if (text !== null) return text;
   throw new Error(`Request detail exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte response limit`);
 }
 
@@ -172,7 +248,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_request_detail',
-    description: 'Get bounded metadata and legacy body previews for a captured HTTP request, plus one body page when body_side is provided. Repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
+    description: 'Get bounded metadata and complete legacy body fields when they fit safely, or explicit previews for a larger captured HTTP request. Pass body_side and repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -180,11 +256,12 @@ export const TOOL_DEFINITIONS = [
         body_side: {
           type: 'string',
           enum: ['request', 'response', 'original_request'],
-          description: 'Optional body to page. Omit to return metadata and body lengths only.'
+          description: 'Optional body to page. Omit to return metadata plus wire-safe complete legacy bodies or explicit previews.'
         },
         body_offset: {
           type: 'integer',
           minimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER,
           default: 0,
           description: 'Zero-based UTF-16 code-unit offset within body_side.'
         },
@@ -396,70 +473,116 @@ export class McpServerBridge {
       throw new Error(`body_limit must be a safe integer from 1 to ${MCP_BODY_PAGE_MAX_CODE_UNITS}`);
     }
 
-    const req = this.apiServer.trafficLog.find(r => r.id === request_id);
+    const req = this.apiServer.trafficLog.find(
+      record => ownDataValue(record, 'id') === request_id
+    );
     if (!req) {
       return { content: [{ type: 'text', text: `Request ${request_id} not found` }], isError: true };
     }
 
-    const {
-      requestBody: capturedRequestBody,
-      responseBody: capturedResponseBody,
-      originalRequest,
-      ...metadata
-    } = req;
-    const requestBody = retainedBody(capturedRequestBody, {
-      encoding: req.requestBodyEncoding,
-      truncated: req.requestBodyTruncated,
-      capturedSize: req.requestBodyCapturedSize,
-      decodedSize: req.requestBodyDecodedSize
+    const originalRequest = ownDataValue(req, 'originalRequest');
+    const requestBody = retainedBody(ownDataValue(req, 'requestBody'), {
+      encoding: ownDataValue(req, 'requestBodyEncoding'),
+      truncated: ownDataValue(req, 'requestBodyTruncated'),
+      capturedSize: ownDataValue(req, 'requestBodyCapturedSize'),
+      decodedSize: ownDataValue(req, 'requestBodyDecodedSize')
     });
-    const responseBody = retainedBody(capturedResponseBody, {
-      encoding: req.responseBodyEncoding,
-      truncated: req.responseBodyTruncated,
-      capturedSize: req.responseBodyCapturedSize,
-      decodedSize: req.responseBodyDecodedSize
+    const responseBody = retainedBody(ownDataValue(req, 'responseBody'), {
+      encoding: ownDataValue(req, 'responseBodyEncoding'),
+      truncated: ownDataValue(req, 'responseBodyTruncated'),
+      capturedSize: ownDataValue(req, 'responseBodyCapturedSize'),
+      decodedSize: ownDataValue(req, 'responseBodyDecodedSize')
     });
     let originalRequestBody = retainedBody('');
     let originalRequestMetadata = originalRequest;
     if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
-      const { body, ...originalMetadata } = originalRequest;
-      originalRequestBody = retainedBody(body);
-      originalRequestMetadata = boundedMetadata(originalMetadata);
+      originalRequestBody = retainedBody(ownDataValue(originalRequest, 'body'));
+      originalRequestMetadata = boundedMetadata(
+        originalRequest,
+        null,
+        0,
+        new Set(['body'])
+      );
     } else {
       originalRequestMetadata = boundedMetadata(originalRequest);
     }
-    const includeLegacyPreviews = body_side === undefined;
-    const requestPreviewLength = includeLegacyPreviews
-      ? Math.min(requestBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
-      : 0;
-    const responsePreviewLength = includeLegacyPreviews
-      ? Math.min(responseBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
-      : 0;
-    const originalPreviewLength = includeLegacyPreviews
-      ? Math.min(originalRequestBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
-      : 0;
+    const includeLegacyBodies = body_side === undefined;
+    const requestPreviewLength = includeLegacyBodies ? requestBody.content.length : 0;
+    const responsePreviewLength = includeLegacyBodies ? responseBody.content.length : 0;
+    const originalPreviewLength = includeLegacyBodies ? originalRequestBody.content.length : 0;
     const bodies = {
       request: bodyDescriptor(requestBody, requestPreviewLength),
       response: bodyDescriptor(responseBody, responsePreviewLength),
       original_request: bodyDescriptor(originalRequestBody, originalPreviewLength)
     };
+    const metadata = boundedMetadata(
+      req,
+      null,
+      0,
+      new Set(['requestBody', 'responseBody', 'originalRequest'])
+    );
+    const rawTimestamp = ownDataValue(req, 'timestamp');
+    let timestamp = null;
+    try {
+      timestamp = new Date(rawTimestamp).toISOString();
+    } catch {
+      // Imported traffic is validated, but omit unsafe in-process timestamps.
+    }
     const detail = {
-      ...boundedMetadata(metadata),
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
       originalRequest: originalRequestMetadata,
-      timestamp: new Date(req.timestamp).toISOString(),
+      timestamp,
       bodies,
       bodyPage: null
     };
 
-    if (includeLegacyPreviews) {
-      detail.requestBody = requestBody.content.slice(0, requestPreviewLength);
-      detail.responseBody = responseBody.content.slice(0, responsePreviewLength);
-      if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
-        detail.originalRequest = {
-          ...originalRequestMetadata,
-          body: originalRequestBody.content.slice(0, originalPreviewLength)
-        };
+    if (includeLegacyBodies) {
+      const totalLegacyBodyCodeUnits = requestBody.content.length + responseBody.content.length +
+        originalRequestBody.content.length;
+      if (totalLegacyBodyCodeUnits <= MCP_REQUEST_DETAIL_MAX_BYTES) {
+        detail.requestBody = requestBody.content;
+        detail.responseBody = responseBody.content;
+        if (originalRequest && typeof originalRequest === 'object' &&
+            !Array.isArray(originalRequest)) {
+          detail.originalRequest = {
+            ...originalRequestMetadata,
+            body: originalRequestBody.content
+          };
+        }
+
+        const legacyText = stringifyRequestDetailIfBounded(detail);
+        if (legacyText !== null) {
+          return { content: [{ type: 'text', text: legacyText }] };
+        }
       }
+
+      const boundedRequestPreviewLength = Math.min(
+        requestBody.content.length,
+        MCP_LEGACY_BODY_PREVIEW_CODE_UNITS
+      );
+      const boundedResponsePreviewLength = Math.min(
+        responseBody.content.length,
+        MCP_LEGACY_BODY_PREVIEW_CODE_UNITS
+      );
+      const boundedOriginalPreviewLength = Math.min(
+        originalRequestBody.content.length,
+        MCP_LEGACY_BODY_PREVIEW_CODE_UNITS
+      );
+      bodies.request = bodyDescriptor(requestBody, boundedRequestPreviewLength);
+      bodies.response = bodyDescriptor(responseBody, boundedResponsePreviewLength);
+      bodies.original_request = bodyDescriptor(originalRequestBody, boundedOriginalPreviewLength);
+      delete detail.requestBody;
+      delete detail.responseBody;
+      if (detail.originalRequest && typeof detail.originalRequest === 'object') {
+        delete detail.originalRequest.body;
+      }
+      detail.legacyBodiesOmitted = true;
+      detail.requestBodyPreview = requestBody.content.slice(0, boundedRequestPreviewLength);
+      detail.responseBodyPreview = responseBody.content.slice(0, boundedResponsePreviewLength);
+      detail.originalRequestBodyPreview = originalRequestBody.content.slice(
+        0,
+        boundedOriginalPreviewLength
+      );
     }
 
     if (body_side !== undefined) {
