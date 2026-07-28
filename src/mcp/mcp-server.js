@@ -142,6 +142,22 @@ function ownDataValue(value, key) {
   }
 }
 
+function isInstanceOfSafely(value, constructor) {
+  try {
+    return value instanceof constructor;
+  } catch {
+    return false;
+  }
+}
+
+function isArraySafely(value) {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 function retainedBody(value, provenance = {}) {
   let boxedString = false;
   let content = '';
@@ -186,7 +202,7 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
     seen: new WeakSet()
   };
   if (value === null || value === undefined) return value;
-  if (typeof value === 'string' || value instanceof String) {
+  if (typeof value === 'string' || isInstanceOfSafely(value, String)) {
     let text;
     try {
       text = String(value);
@@ -211,7 +227,7 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'symbol' || typeof value === 'function') return undefined;
-  if (value instanceof Date) {
+  if (isInstanceOfSafely(value, Date)) {
     try {
       const timestamp = Date.prototype.getTime.call(value);
       return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : 'Invalid Date';
@@ -219,14 +235,24 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
       return '[invalid date omitted]';
     }
   }
-  if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) {
-    return `[Binary metadata: ${value.byteLength} bytes]`;
+  let binaryMetadata = false;
+  try {
+    binaryMetadata = Buffer.isBuffer(value) || ArrayBuffer.isView(value);
+  } catch {
+    // Treat opaque proxies as ordinary metadata and let guarded enumeration omit them.
+  }
+  if (binaryMetadata) {
+    try {
+      return `[Binary metadata: ${value.byteLength} bytes]`;
+    } catch {
+      return '[binary metadata omitted]';
+    }
   }
   if (depth >= MCP_METADATA_MAX_DEPTH) return '[maximum depth omitted]';
   if (budget.seen.has(value)) return '[repeated reference omitted]';
   budget.seen.add(value);
 
-  const arrayOutput = Array.isArray(value);
+  const arrayOutput = isArraySafely(value);
   const output = arrayOutput ? [] : Object.create(null);
   let omitted = false;
   try {
@@ -625,7 +651,9 @@ export class McpServerBridge {
     });
     let originalRequestBody = retainedBody('');
     let originalRequestMetadata = originalRequest;
-    if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
+    const originalRequestIsObject = originalRequest && typeof originalRequest === 'object' &&
+      !isArraySafely(originalRequest);
+    if (originalRequestIsObject) {
       originalRequestBody = retainedBody(ownDataValue(originalRequest, 'body'));
       originalRequestMetadata = boundedMetadata(
         originalRequest,
@@ -672,8 +700,7 @@ export class McpServerBridge {
       if (totalLegacyBodyCodeUnits <= MCP_REQUEST_DETAIL_MAX_BYTES) {
         detail.requestBody = requestBody.content;
         detail.responseBody = responseBody.content;
-        if (originalRequest && typeof originalRequest === 'object' &&
-            !Array.isArray(originalRequest)) {
+        if (originalRequestIsObject) {
           detail.originalRequest = {
             ...originalRequestMetadata,
             body: originalRequestBody.content

@@ -298,6 +298,32 @@ test('metadata traversal ignores inherited keys and proxy value traps', () => {
   assert.equal(proxyValueReads, 0);
 });
 
+test('opaque proxy metadata is omitted without aborting request detail', () => {
+  const requestHeaders = Proxy.revocable({ safe: 'unreachable' }, {});
+  const originalRequest = Proxy.revocable({ body: 'unreachable' }, {});
+  requestHeaders.revoke();
+  originalRequest.revoke();
+  const bridge = createBridge([{
+    id: 'opaque-metadata',
+    method: 'GET',
+    requestHeaders: requestHeaders.proxy,
+    requestBody: 'stable',
+    responseBody: '',
+    originalRequest: originalRequest.proxy,
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'opaque-metadata'
+  }));
+
+  assert.equal(detail.requestBody, 'stable');
+  assert.equal(detail.requestHeaders._mcpAdditionalEntriesOmitted, true);
+  assert.equal(detail.originalRequest._mcpAdditionalEntriesOmitted, true);
+  assert.equal(detail.originalRequest.body, '');
+  assert.equal(detail.bodies.original_request.totalLength, 0);
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{
