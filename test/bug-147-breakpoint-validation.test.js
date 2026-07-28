@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
 
@@ -116,6 +117,8 @@ test('invalid resume bodies and statuses do not release the breakpoint', async t
   const invalidPayloads = [
     { body: { nested: 'value' } },
     { body: null },
+    { status: 199 },
+    { statusCode: 100 },
     { status: 600 },
     { statusCode: 999 },
     { url: 42 }
@@ -134,14 +137,78 @@ test('invalid resume bodies and statuses do not release the breakpoint', async t
   assert.equal(proxy.pendingBreakpoints.has('pending'), true);
 });
 
-test('valid string and buffer resume bodies remain supported', () => {
+test('resume bodies accept strings and reject buffers', () => {
   const proxy = new ProxyServer(null);
   const resumed = [];
   proxy.pendingBreakpoints.set('string', { resolve: value => resumed.push(value.body) });
   proxy.pendingBreakpoints.set('buffer', { resolve: value => resumed.push(value.body) });
 
   assert.equal(proxy.resumeBreakpoint('string', { body: 'updated' }), true);
-  assert.equal(proxy.resumeBreakpoint('buffer', { body: Buffer.from('binary') }), true);
+  assert.equal(proxy.resumeBreakpoint('buffer', { body: Buffer.from('binary') }), false);
   assert.equal(resumed[0], 'updated');
-  assert.deepEqual(resumed[1], Buffer.from('binary'));
+  assert.equal(resumed.length, 1);
+  assert.equal(proxy.pendingBreakpoints.has('buffer'), true);
+});
+
+test('native H2 breakpoint responses strip connection-specific headers', async () => {
+  const captures = [];
+  let proxy;
+  proxy = new ProxyServer(null, {
+    onRequest: request => captures.push(request),
+    onBreakpoint: event => {
+      if (event.type !== 'breakpoint-hit') return;
+      setImmediate(() => proxy.resumeBreakpoint(event.requestId, {
+        status: 202,
+        headers: {
+          connection: 'x-remove',
+          'keep-alive': 'timeout=5',
+          'x-remove': 'nominated',
+          'x-safe': 'yes'
+        },
+        body: 'safe response'
+      }));
+    }
+  });
+  const stream = new EventEmitter();
+  stream.destroyed = false;
+  stream.closed = false;
+  let sentHeaders;
+  let sentBody;
+  stream.respond = headers => { sentHeaders = headers; };
+  stream.end = body => { sentBody = body; };
+
+  await proxy._handleH2MockResponse(
+    stream,
+    { action: { type: 'breakpoint-response' } },
+    {
+      requestId: 'h2-breakpoint',
+      requestTrailers: {},
+      startTime: Date.now(),
+      tlsDetails: null,
+      downstream: {},
+      method: 'GET',
+      fullUrl: 'https://example.test/',
+      authority: 'example.test',
+      path: '/',
+      reqHeaders: {
+        ':method': 'GET',
+        ':path': '/',
+        ':authority': 'example.test',
+        ':scheme': 'https'
+      },
+      body: Buffer.alloc(0),
+      pendingEmitted: false
+    }
+  );
+
+  assert.deepEqual(sentHeaders, {
+    ':status': 202,
+    'x-safe': 'yes',
+    'content-length': String(Buffer.byteLength('safe response'))
+  });
+  assert.equal(sentBody, 'safe response');
+  assert.equal(captures.at(-1).responseHeaders.connection, undefined);
+  assert.equal(captures.at(-1).responseHeaders['keep-alive'], undefined);
+  assert.equal(captures.at(-1).responseHeaders['x-remove'], undefined);
+  assert.equal(captures.at(-1).responseHeaders['x-safe'], 'yes');
 });

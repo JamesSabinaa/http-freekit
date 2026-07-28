@@ -11059,8 +11059,8 @@
         const value = prompt('Response status:', String(draft.status || 200));
         if (value === null) return;
         const status = Number(value);
-        if (!Number.isInteger(status) || status < 100 || status > 599) {
-          toast('Status must be an integer from 100 to 599', 'error');
+        if (!Number.isInteger(status) || status < 200 || status > 599) {
+          toast('Status must be an integer from 200 to 599', 'error');
           return;
         }
         draft.status = status;

@@ -6345,24 +6345,19 @@ export class ProxyServer {
         this._setBreakpointTimeout(requestId, stream);
       });
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
-      if (modifications.status) {
-        try {
-          if (!stream.destroyed && !stream.closed) {
-            stream.respond({ ':status': modifications.status, ...(modifications.headers || {}) });
-            stream.end(modifications.body || '');
-          }
-        } catch (e) { /* stream closed */ }
-      } else {
-        try {
-          if (!stream.destroyed && !stream.closed) {
-            stream.respond({ ':status': 200, 'content-type': 'text/plain' });
-            stream.end('Breakpoint released');
-          }
-        } catch (e) { /* stream closed */ }
-      }
-      const statusCode = modifications.status || 200;
-      const responseHeaders = modifications.headers || { 'content-type': 'text/plain' };
-      const responseBody = modifications.status ? (modifications.body || '') : 'Breakpoint released';
+      const hasCustomResponse = Object.prototype.hasOwnProperty.call(modifications, 'status');
+      const statusCode = hasCustomResponse ? modifications.status : 200;
+      const responseHeaders = hasCustomResponse
+        ? this._stripHopByHopHeaders(modifications.headers || {})
+        : { 'content-type': 'text/plain' };
+      const responseBody = hasCustomResponse ? (modifications.body || '') : 'Breakpoint released';
+      if (hasCustomResponse) this._setContentLength(responseHeaders, Buffer.byteLength(responseBody));
+      try {
+        if (!stream.destroyed && !stream.closed) {
+          stream.respond(this._toH2ResponseHeaders(statusCode, responseHeaders));
+          stream.end(responseBody);
+        }
+      } catch (e) { /* stream closed */ }
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
@@ -8786,15 +8781,14 @@ export class ProxyServer {
     for (const property of ['status', 'statusCode']) {
       if (Object.prototype.hasOwnProperty.call(modifications, property)
           && (!Number.isInteger(modifications[property])
-            || modifications[property] < 100
+            || modifications[property] < 200
             || modifications[property] > 599)) {
         return 'Invalid HTTP response status';
       }
     }
     if (Object.prototype.hasOwnProperty.call(modifications, 'body')
-        && typeof modifications.body !== 'string'
-        && !Buffer.isBuffer(modifications.body)) {
-      return 'Breakpoint body must be a string or buffer';
+        && typeof modifications.body !== 'string') {
+      return 'Breakpoint body must be a string';
     }
     return null;
   }
@@ -8974,7 +8968,7 @@ export class ProxyServer {
       this._setContentLength(finalHeaders, finalBody.length);
     }
     return {
-      statusCode: Number.isInteger(requestedStatus) && requestedStatus >= 100 && requestedStatus <= 599
+      statusCode: Number.isInteger(requestedStatus) && requestedStatus >= 200 && requestedStatus <= 599
         ? requestedStatus
         : statusCode,
       statusMessage,

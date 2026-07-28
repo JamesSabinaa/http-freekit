@@ -276,6 +276,7 @@ test('cancelled and invalid prompts do not rerender, refocus, or dirty breakpoin
   const attempts = [
     ['paused-response', 'status', null],
     ['paused-response', 'status', '99'],
+    ['paused-response', 'status', '199'],
     ['paused-request', 'headers', '[]'],
     ['paused-request', 'body', null]
   ];
@@ -293,5 +294,5 @@ test('cancelled and invalid prompts do not rerender, refocus, or dirty breakpoin
   }
 
   assert.equal(harness.promptCalls.length, attempts.length);
-  assert.deepEqual(harness.toasts.map(args => args[1]), ['error', 'error']);
+  assert.deepEqual(harness.toasts.map(args => args[1]), ['error', 'error', 'error']);
 });
