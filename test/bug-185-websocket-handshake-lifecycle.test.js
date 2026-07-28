@@ -403,3 +403,58 @@ test('clearing an open WebSocket suppresses its later frames and final parent up
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._clearedPendingTrafficIds.has(parentId), false);
 });
+
+test('frames stay suppressed when Safe Font filtering hid their WebSocket parent', async () => {
+  const proxy = new ProxyServer(null);
+  const api = new ApiServer(proxy, null, null);
+  const broadcasts = [];
+  api._broadcast = event => broadcasts.push(structuredClone(event));
+  proxy.onRequest = event => api.onTrafficEvent(event);
+  proxy.filterSafeFonts = true;
+  const parent = {
+    id: 'hidden-ws',
+    protocol: 'wss',
+    method: 'WS',
+    url: 'wss://fonts.gstatic.com/socket',
+    host: 'fonts.gstatic.com',
+    path: '/socket',
+    requestHeaders: { 'user-agent': 'Chrome/120.0' },
+    requestBody: '',
+    requestBodySize: 0,
+    timestamp: 1_000,
+    source: 'Chrome',
+    tls: null,
+    remote: null
+  };
+  assert.equal(proxy._emitPendingRequest({ ...parent }), false);
+  assert.equal(proxy._pendingTrafficLogDecisions.get(parent.id).emitted, false);
+
+  const frame = {
+    fin: true,
+    rsv1: false,
+    rsv2: false,
+    rsv3: false,
+    compressed: false,
+    opcode: 1,
+    masked: false,
+    payload: Buffer.from('hidden'),
+    timestamp: 1_010
+  };
+  assert.equal(await proxy._emitWsFrame(frame, 'server', parent.id, 1, null, 1_000), false);
+  api._clearTraffic();
+  broadcasts.length = 0;
+  assert.equal(await proxy._emitWsFrame(frame, 'server', parent.id, 2, null, 1_000), false);
+
+  assert.deepEqual(api.trafficLog, []);
+  assert.deepEqual(broadcasts, []);
+  proxy._emitRequestUpdate({
+    ...parent,
+    statusCode: 101,
+    responseHeaders: {},
+    responseBody: 'closed',
+    responseBodySize: 0,
+    duration: 20
+  });
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+  assert.deepEqual(api.trafficLog, []);
+});

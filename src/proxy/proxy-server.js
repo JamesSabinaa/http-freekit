@@ -3602,6 +3602,12 @@ export class ProxyServer {
       id: parentId,
       timestamp: parentStartedAt
     })?.decision;
+    const parentWasEmitted = parentDecision && typeof parentDecision === 'object'
+      ? parentDecision.emitted
+      : parentDecision;
+    if (parentDecision !== undefined && parentDecision !== null && !parentWasEmitted) {
+      return false;
+    }
     if (parentDecision && typeof parentDecision === 'object' &&
         parentDecision.trafficClearGeneration !== undefined) {
       Object.defineProperty(event, '_trafficClearGeneration', {
@@ -3609,7 +3615,7 @@ export class ProxyServer {
         configurable: true
       });
     }
-    this._emitRequest(event);
+    return this._emitRequest(event);
   }
 
   // Handle plain HTTP requests (non-CONNECT)
