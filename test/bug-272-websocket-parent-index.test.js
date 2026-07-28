@@ -218,6 +218,61 @@ test('JSON and HAR imports preserve WebSocket parent relationships at capacity',
   assert.equal(api.trafficLog[1].protocol, 'https');
 });
 
+test('duplicate imported WebSocket parents remap frames by lifecycle', () => {
+  for (const imported of [
+    [
+      { ...trafficRecord('duplicate', 'ws'), trafficLifecycleId: 'lifecycle-a' },
+      { ...trafficRecord('frame-a', 'ws-frame', 'duplicate'), parentTrafficLifecycleId: 'lifecycle-a' },
+      { ...trafficRecord('duplicate', 'wss'), trafficLifecycleId: 'lifecycle-b' },
+      { ...trafficRecord('frame-b', 'ws-frame', 'duplicate'), parentTrafficLifecycleId: 'lifecycle-b' }
+    ],
+    [
+      { ...trafficRecord('frame-b', 'ws-frame', 'duplicate'), parentTrafficLifecycleId: 'lifecycle-b' },
+      { ...trafficRecord('duplicate', 'ws'), trafficLifecycleId: 'lifecycle-a' },
+      { ...trafficRecord('frame-a', 'ws-frame', 'duplicate'), parentTrafficLifecycleId: 'lifecycle-a' },
+      { ...trafficRecord('duplicate', 'wss'), trafficLifecycleId: 'lifecycle-b' }
+    ]
+  ]) {
+    const api = new ApiServer({ mockRules: [] }, null, null);
+    api._appendImportedTraffic(imported);
+
+    const parentA = api.trafficLog.find(request => request.trafficLifecycleId === 'lifecycle-a');
+    const parentB = api.trafficLog.find(request => request.trafficLifecycleId === 'lifecycle-b');
+    const frameA = api.trafficLog.find(request => request.id === 'frame-a');
+    const frameB = api.trafficLog.find(request => request.id === 'frame-b');
+    assert.equal(parentA.id, 'duplicate');
+    assert.notEqual(parentB.id, parentA.id);
+    assert.equal(frameA.parentId, parentA.id);
+    assert.equal(frameB.parentId, parentB.id);
+
+    const reconnected = rendererHarness(api.trafficLog);
+    reconnected.context.expandTrafficRequest(parentA);
+    reconnected.context.expandTrafficRequest(parentB);
+    reconnected.context.filterTraffic();
+    assert.deepEqual(Array.from(reconnected.context.filteredTrafficIds()), [
+      parentA.id,
+      frameA.id,
+      parentB.id,
+      frameB.id
+    ]);
+  }
+});
+
+test('legacy duplicate imported WebSocket parents bind frames to the first parent', () => {
+  const api = new ApiServer({ mockRules: [] }, null, null);
+  api._appendImportedTraffic([
+    trafficRecord('legacy-frame', 'ws-frame', 'duplicate'),
+    trafficRecord('duplicate', 'ws'),
+    trafficRecord('duplicate', 'wss')
+  ]);
+
+  const parents = api.trafficLog.filter(request => request.protocol === 'ws' || request.protocol === 'wss');
+  const frame = api.trafficLog.find(request => request.protocol === 'ws-frame');
+  assert.equal(parents.length, 2);
+  assert.notEqual(parents[0].id, parents[1].id);
+  assert.equal(frame.parentId, parents[0].id);
+});
+
 test('prototype-named parent IDs survive live add, filtering, reload, and row rendering', () => {
   const live = rendererHarness();
   for (const request of [

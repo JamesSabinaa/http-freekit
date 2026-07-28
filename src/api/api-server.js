@@ -2251,6 +2251,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const assignedIds = new Set(retainedExisting.map(request => request.id));
     const assignedIncoming = [];
     const importedParentIds = new Map();
+    const importedParentLifecycleIds = new Map();
     for (const request of retainedIncoming) {
       let id = request.id;
       if (existingIds.has(id) || assignedIds.has(id)) {
@@ -2263,11 +2264,27 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const assignedRequest = { ...request, id };
       assignedIncoming.push(assignedRequest);
       if (request.protocol === 'ws' || request.protocol === 'wss') {
-        importedParentIds.set(request.id, id);
+        // Legacy frames cannot disambiguate duplicate parent lifecycles, so
+        // consistently bind them to the first imported parent with that ID.
+        if (!importedParentIds.has(request.id)) {
+          importedParentIds.set(request.id, id);
+        }
+        if (request.trafficLifecycleId) {
+          const parentKey = JSON.stringify([request.id, request.trafficLifecycleId]);
+          if (!importedParentLifecycleIds.has(parentKey)) {
+            importedParentLifecycleIds.set(parentKey, id);
+          }
+        }
       }
     }
     for (const request of assignedIncoming) {
-      if (request.protocol === 'ws-frame' && importedParentIds.has(request.parentId)) {
+      if (request.protocol !== 'ws-frame') continue;
+      const parentKey = request.parentTrafficLifecycleId
+        ? JSON.stringify([request.parentId, request.parentTrafficLifecycleId])
+        : null;
+      if (parentKey && importedParentLifecycleIds.has(parentKey)) {
+        request.parentId = importedParentLifecycleIds.get(parentKey);
+      } else if (!parentKey && importedParentIds.has(request.parentId)) {
         request.parentId = importedParentIds.get(request.parentId);
       }
     }
