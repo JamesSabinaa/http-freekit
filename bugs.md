@@ -340,7 +340,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-111 — Medium — Send irreversibly decodes binary responses as UTF-8
 
 - Status: **Fixed**.
-- Resolution: Send now returns reversible UTF-8 text only when every response byte is valid UTF-8; all other bodies are returned as MIME-aware base64 data URIs with explicit bodyEncoding and byte-size metadata. The Send viewer and synthetic traffic entries retain that encoding and use the original wire byte count.
+- Resolution: Send now returns reversible UTF-8 text only when every response byte is valid UTF-8; all other bodies are returned as base64 data URIs with a strictly validated, normalized media type plus explicit bodyEncoding and byte-size metadata. The Send viewer and synthetic traffic entries retain that encoding, use the original wire byte count, decode byte-oriented views only when base64 provenance is present, and constrain and escape image preview sources.
 
 - Evidence: `src/api/api-server.js:1194-1200` always calls `responseBody.toString("utf8")` and returns no response encoding metadata.
 - Impact: images, archives, protobuf, and arbitrary binary responses gain replacement characters and cannot be inspected/replayed faithfully.

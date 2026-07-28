@@ -1757,7 +1757,7 @@
           <div class="detail-card-body">
             <div id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">
               <div id="reqBody-monaco" style="display:${reqUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
-              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(effBody, reqCt, reqDefaultMode)}</pre>
+              <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(effBody, reqCt, reqDefaultMode, { request: effReq, section: 'request' })}</pre>
             </div>
           </div>
         </div>`;
@@ -1805,7 +1805,7 @@
           <div class="detail-card-body">
             <div id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">
               <div class="response-body-resizable" id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};"></div>
-              <pre class="body-content response-body-resizable" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode)}</pre>
+              <pre class="body-content response-body-resizable" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode, { request: req, section: 'response' })}</pre>
             </div>
           </div>
         </div>`;
@@ -3121,10 +3121,14 @@
       throw new Error('unsupported grpc-encoding: ' + encoding);
     }
 
-    function bodyToBytes(body) {
+    function bodyToBytes(body, context = {}) {
       if (!body) return new Uint8Array();
-      const dataUriMatch = String(body).match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/);
-      if (dataUriMatch) {
+      const request = context.request || {};
+      const bodyEncoding = context.section === 'request'
+        ? request.requestBodyEncoding
+        : request.responseBodyEncoding;
+      const dataUriMatch = String(body).match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/i);
+      if (String(bodyEncoding || '').toLowerCase() === 'base64' && dataUriMatch) {
         const raw = atob(dataUriMatch[2].replace(/\s+/g, ''));
         const bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
@@ -3243,7 +3247,7 @@
     }
 
     function decodeProtobufBody(body, context = {}) {
-      const bytes = bodyToBytes(body);
+      const bytes = bodyToBytes(body, context);
       if (!bytes.length) return '';
       const type = inferProtobufMessageType(context);
       if (type) {
@@ -3265,7 +3269,7 @@
     }
 
     function decodeGrpcBody(body, context = {}) {
-      const bytes = bodyToBytes(body);
+      const bytes = bodyToBytes(body, context);
       if (!bytes.length) return '';
       const chunks = [];
       let offset = 0;
@@ -3522,15 +3526,31 @@
       }).join('');
     }
 
-    function formatBodyAs(body, contentType, mode) {
+    function escapeHtmlAttribute(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function getSafeImageDataUri(body) {
+      const match = /^data:(image\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+);base64,([A-Za-z0-9+/]*={0,2})$/i.exec(String(body));
+      if (!match || match[2].length % 4 !== 0) return '';
+      return `data:${match[1].toLowerCase()};base64,${match[2]}`;
+    }
+
+    function formatBodyAs(body, contentType, mode, context = {}) {
       if (!body) return '<span style="color:var(--text-watermark);">Empty</span>';
       if (body.startsWith('[Binary data:')) return '<span style="color:var(--text-watermark);">' + esc(body) + '</span>';
 
       switch (mode) {
         case 'image': {
-          if (body.startsWith('data:image/')) {
+          const safeImageDataUri = getSafeImageDataUri(body);
+          if (safeImageDataUri) {
             return '<div style="display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg-lowlight);border-radius:4px;">' +
-              '<img src="' + body + '" style="max-width:100%;max-height:60vh;object-fit:contain;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,0.3);" alt="Response image">' +
+              '<img src="' + escapeHtmlAttribute(safeImageDataUri) + '" style="max-width:100%;max-height:60vh;object-fit:contain;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,0.3);" alt="Response image">' +
               '</div>';
           }
           return '<span style="color:var(--text-watermark);">[Image data not available]</span>';
@@ -3572,14 +3592,14 @@
           return wrapWithLineNumbers(syntaxHighlightCss(esc(beautifyCss(body))));
         }
         case 'grpc': {
-          return wrapWithLineNumbers(esc(decodeGrpcBody(body)));
+          return wrapWithLineNumbers(esc(decodeGrpcBody(body, context)));
         }
         case 'protobuf': {
-          return wrapWithLineNumbers(esc(decodeProtobufBody(body)));
+          return wrapWithLineNumbers(esc(decodeProtobufBody(body, context)));
         }
         case 'hex': {
           // Hex already has its own offset column — no extra line numbers
-          return textToHex(body);
+          return textToHex(body, context);
         }
         case 'raw':
           return wrapWithLineNumbers(esc(body));
@@ -3687,7 +3707,7 @@
         if (monacoEl) monacoEl.style.display = 'none';
         if (fallbackEl) {
           fallbackEl.style.display = 'block';
-          fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
+          fallbackEl.innerHTML = formatBodyAs(body, ct, mode, renderContext);
         }
 
         initBodyMonacoEditor(monacoId, body, ct, mode, renderContext).then(editor => {
@@ -3713,11 +3733,11 @@
 
         if (fallbackEl) {
           fallbackEl.style.display = 'block';
-          fallbackEl.innerHTML = formatBodyAs(body, ct, mode);
+          fallbackEl.innerHTML = formatBodyAs(body, ct, mode, renderContext);
         } else {
           // Fallback for request body or old-style rendering
           wrapper.dataset.viewMode = mode;
-          wrapper.innerHTML = formatBodyAs(body, ct, mode);
+          wrapper.innerHTML = formatBodyAs(body, ct, mode, renderContext);
         }
       }
     }
@@ -3933,8 +3953,8 @@
       }
     }
 
-    function textToHex(text) {
-      const bytes = bodyToBytes(text);
+    function textToHex(text, context = {}) {
+      const bytes = bodyToBytes(text, context);
       let result = '';
       for (let i = 0; i < bytes.length; i += 16) {
         const hex = [];
@@ -8744,7 +8764,8 @@
             method: tab.response.method || tab.method || 'GET',
             url: tab.response.url || tab.url || '',
             path: responsePath,
-            responseHeaders: tab.response.responseHeaders || {}
+            responseHeaders: tab.response.responseHeaders || {},
+            responseBodyEncoding: tab.response.bodyEncoding || 'utf8'
           },
           section: 'response'
         };

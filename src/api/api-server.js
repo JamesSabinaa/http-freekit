@@ -18,6 +18,15 @@ const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 // A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
 export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
+const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function normalizeDataUriMediaType(value) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  const candidate = String(rawValue || '').split(';', 1)[0].trim().toLowerCase();
+  return DATA_URI_MEDIA_TYPE_PATTERN.test(candidate)
+    ? candidate
+    : 'application/octet-stream';
+}
 
 function harHeadersToObject(headers = []) {
   const result = {};
@@ -44,7 +53,7 @@ function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
   if (String(body.encoding || '').toLowerCase() !== 'base64') {
     return { body: text, encoding: 'utf8' };
   }
-  const mimeType = String(body.mimeType || fallbackMimeType).replace(/[\r\n,]/g, '') || fallbackMimeType;
+  const mimeType = normalizeDataUriMediaType(body.mimeType || fallbackMimeType);
   return {
     body: `data:${mimeType};base64,${text.replace(/\s+/g, '')}`,
     encoding: 'base64'
@@ -2179,10 +2188,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           const bodyEncoding = isUtf8(responseBody) ? 'utf8' : 'base64';
           const rawContentType = Object.entries(res.headers)
             .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-          const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType)
-            ?.split(';')[0]
-            .replace(/[\r\n,]/g, '')
-            .trim() || 'application/octet-stream';
+          const contentType = normalizeDataUriMediaType(rawContentType);
           succeed({
             statusCode: res.statusCode,
             statusMessage: res.statusMessage,
