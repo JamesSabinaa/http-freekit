@@ -252,7 +252,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-100 — High — H2 failure fallback replays non-idempotent requests
 
 - Status: **Fixed**.
-- Resolution: All three upstream-H2 paths now distinguish session/setup failure from failure after an H2 request attempt. Setup failures and safely replayable methods may fall back to HTTP/1.1; attempted POST, PUT, PATCH, DELETE, CONNECT, and other unsafe methods are settled with the original 502 error without creating a second upstream request.
+- Resolution: All three upstream-H2 paths now distinguish session/setup failure from failure after an H2 request attempt. A request is marked attempted only after `session.request()` creates its stream, so synchronous setup failures retain the HTTP/1.1 fallback; attempted POST, PUT, PATCH, DELETE, CONNECT, and other unsafe methods are settled with the original 502 error without creating a second upstream request.
 
 - Evidence: all upstream-H2 paths catch any `_makeH2Request()` error and fall through to a second H1 request without `_canSafelyReplayRequest()` checks at `src/proxy/proxy-server.js:1496-1519`, `:1791-1822`, and `:2031-2055`.
 - Impact: payments, mutations, and uploads can execute twice if the H2 origin processes a POST and resets before responding.

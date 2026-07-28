@@ -2797,13 +2797,13 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
-              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
                 downstream.signal,
                 info => {
                   if (!downstream.aborted) this._forwardH1Informational(res, info);
-                }
+                },
+                () => { h2RequestAttempted = true; }
               );
               if (downstream.aborted) return;
               let finalResponse = {
@@ -3276,13 +3276,13 @@ export class ProxyServer {
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
             if (downstream.aborted) return;
             if (h2Session) {
-              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers,
                 downstream.signal,
                 info => {
                   if (!downstream.aborted) this._forwardH2Informational(stream, info);
-                }
+                },
+                () => { h2RequestAttempted = true; }
               );
               if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
@@ -3647,13 +3647,13 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
-              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
                 downstream.signal,
                 info => {
                   if (!downstream.aborted) this._forwardH1Informational(res, info);
-                }
+                },
+                () => { h2RequestAttempted = true; }
               );
               if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
@@ -4454,7 +4454,7 @@ export class ProxyServer {
   // { statusCode, headers, body: Buffer, trailers } or null if the request can't be made via h2.
   _makeH2Request(
     session, method, hostname, port, path, headers, body, trailers = {}, signal = null,
-    onInformational = null
+    onInformational = null, onRequestCreated = null
   ) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -4481,6 +4481,7 @@ export class ProxyServer {
       const requestTrailers = this._cleanTrailers(trailers);
       const hasRequestTrailers = Object.keys(requestTrailers).length > 0;
       const stream = session.request(h2Headers, hasRequestTrailers ? { waitForTrailers: true } : undefined);
+      onRequestCreated?.();
       let settled = false;
       let responseStarted = false;
       let idleTimer = null;
