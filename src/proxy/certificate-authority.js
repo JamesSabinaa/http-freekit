@@ -21,19 +21,29 @@ export class CertificateAuthority {
 
   async initialize() {
     if (fs.existsSync(this.caCertPath) && fs.existsSync(this.caKeyPath)) {
-      const certPem = fs.readFileSync(this.caCertPath, 'utf8');
-      const keyPem = fs.readFileSync(this.caKeyPath, 'utf8');
-      this.caCert = pki.certificateFromPem(certPem);
-      this.caKey = pki.privateKeyFromPem(keyPem);
+      let loadedExistingCa = false;
+      try {
+        const certPem = fs.readFileSync(this.caCertPath, 'utf8');
+        const keyPem = fs.readFileSync(this.caKeyPath, 'utf8');
+        this._validateCaPair(certPem, keyPem);
+        this.caCert = pki.certificateFromPem(certPem);
+        this.caKey = pki.privateKeyFromPem(keyPem);
+        loadedExistingCa = true;
+      } catch (error) {
+        console.warn(`[CA] Existing CA files are invalid, regenerating: ${error.message}`);
+      }
 
-      // Regenerate if expiring within 48 hours
-      const expiry = this.caCert.validity.notAfter;
-      const hoursLeft = (expiry - Date.now()) / (1000 * 60 * 60);
-      if (hoursLeft < 48) {
-        console.log('[CA] Certificate expiring soon, regenerating...');
-        await this._generateCA();
+      if (loadedExistingCa) {
+        const expiry = this.caCert.validity.notAfter;
+        const hoursLeft = (expiry - Date.now()) / (1000 * 60 * 60);
+        if (hoursLeft < 48) {
+          console.log('[CA] Certificate expiring soon, regenerating...');
+          await this._generateCA();
+        } else {
+          console.log('[CA] Loaded existing CA certificate');
+        }
       } else {
-        console.log('[CA] Loaded existing CA certificate');
+        await this._generateCA();
       }
     } else {
       await this._generateCA();
@@ -45,6 +55,23 @@ export class CertificateAuthority {
       keyPath: this.caKeyPath,
       fingerprint: this._getFingerprint()
     };
+  }
+
+  _validateCaPair(certPem, keyPem) {
+    const certificate = new crypto.X509Certificate(certPem);
+    const privateKey = crypto.createPrivateKey(keyPem);
+    const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
+    const privatePublicKey = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
+
+    if (!certificate.ca) {
+      throw new Error('certificate is not a certificate authority');
+    }
+    if (!certificate.checkIssued(certificate) || !certificate.verify(certificate.publicKey)) {
+      throw new Error('certificate is not self-signed');
+    }
+    if (!certificatePublicKey.equals(privatePublicKey)) {
+      throw new Error('certificate and private key do not match');
+    }
   }
 
   async _generateCA() {

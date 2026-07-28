@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 69 of the 360 documented bugs are not fully fixed.**
+**No: 68 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 291 |
+| Fixed | 292 |
 | Partially fixed | 26 |
-| Open | 43 |
+| Open | 42 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -242,7 +242,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-063 — Medium — Corrupt or mismatched CA files are never recovered
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Startup now parses and validates the persisted certificate/key pair before accepting it. The certificate must be a self-signed CA and its SPKI public key must match the stored private key; corrupt, non-CA, non-self-signed, or mismatched files are regenerated automatically before initialization returns.
 
 - Evidence: `src/proxy/certificate-authority.js:20-38` assumes that any existing `ca.pem` and `ca.key` parse and belong together. Parse failures are not caught, and no public/private key match is verified before the pair is used to sign host certificates.
 - Impact: a partial/corrupt file prevents startup entirely; a valid but mismatched key lets startup succeed but produces host certificates clients cannot validate against the advertised CA.
