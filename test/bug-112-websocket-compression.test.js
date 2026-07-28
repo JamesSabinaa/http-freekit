@@ -339,6 +339,85 @@ test('proxy decodes negotiated compressed messages in both directions with conte
   );
 });
 
+test('proxy stop waits for queued WebSocket captures and their final connection update', async t => {
+  const compressed = compressWithoutContext('captured before shutdown');
+  const compressedFrame = encodeFrame({
+    rsv1: true,
+    opcode: WS_OPCODE.TEXT,
+    payload: compressed
+  });
+  const originSockets = new Set();
+  const origin = net.createServer(originSocket => {
+    originSockets.add(originSocket);
+    originSocket.on('close', () => originSockets.delete(originSocket));
+    let handshake = Buffer.alloc(0);
+    originSocket.on('data', chunk => {
+      handshake = Buffer.concat([handshake, chunk]);
+      if (!handshake.includes(Buffer.from('\r\n\r\n'))) return;
+      originSocket.removeAllListeners('data');
+      originSocket.write(
+        'HTTP/1.1 101 Switching Protocols\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n\r\n'
+      );
+      originSocket.write(compressedFrame);
+    });
+  });
+  const originPort = await listen(origin);
+
+  let releaseCapture;
+  const captureGate = new Promise(resolve => { releaseCapture = resolve; });
+  let reportCaptureStarted;
+  const captureStarted = new Promise(resolve => { reportCaptureStarted = resolve; });
+  const events = [];
+  const proxy = new ProxyServer(null, { port: 0, onRequest: event => events.push(event) });
+  const emitWsFrame = proxy._emitWsFrame.bind(proxy);
+  proxy._emitWsFrame = async (...args) => {
+    reportCaptureStarted();
+    await captureGate;
+    return emitWsFrame(...args);
+  };
+  await proxy.start();
+
+  const client = net.connect(proxy.server.address().port, '127.0.0.1');
+  client.on('error', () => {});
+  await once(client, 'connect');
+  client.write(
+    `GET http://127.0.0.1:${originPort}/socket HTTP/1.1\r\n` +
+    `Host: 127.0.0.1:${originPort}\r\n` +
+    'Connection: Upgrade\r\n' +
+    'Upgrade: websocket\r\n' +
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+    'Sec-WebSocket-Version: 13\r\n' +
+    'Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n'
+  );
+
+  t.after(async () => {
+    releaseCapture();
+    client.destroy();
+    for (const originSocket of originSockets) originSocket.destroy();
+    await proxy.stop();
+    await close(origin);
+  });
+
+  await captureStarted;
+  let stopResolved = false;
+  const stopping = proxy.stop().then(() => { stopResolved = true; });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(stopResolved, false);
+
+  releaseCapture();
+  await stopping;
+  const frame = events.find(event => event.protocol === 'ws-frame');
+  assert.equal(frame?.requestBody, 'captured before shutdown');
+  const connection = events.findLast(event => event.protocol === 'ws');
+  assert.equal(connection?.responseBody, `1 messages (${compressedFrame.length} bytes)`);
+  const eventCountAtStop = events.length;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(events.length, eventCountAtStop);
+});
+
 test('compressed frames without a negotiated extension show a safe capture marker', () => {
   const events = [];
   const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });

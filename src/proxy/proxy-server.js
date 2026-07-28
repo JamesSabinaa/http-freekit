@@ -154,6 +154,7 @@ export class ProxyServer {
     this.server = null;
     this.requestCount = 0;
     this.activeConnections = new Set();
+    this._pendingWsCaptureFinalizations = new Set();
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
     this.pendingBreakpoints = new Map(); // requestId -> {req details, resolve fn}
     this.mockRules = [];
@@ -1550,19 +1551,19 @@ export class ProxyServer {
     });
   }
 
-  stop() {
-    return new Promise((resolve) => {
-      this._closeAllH2Sessions();
-      this._destroyUpstreamAgent();
-      if (!this.server) return resolve();
+  async stop() {
+    this._closeAllH2Sessions();
+    this._destroyUpstreamAgent();
+    if (this.server) {
       for (const socket of this.activeConnections) {
         socket.destroy();
       }
-      this.server.close(() => {
-        console.log('[Proxy] Server stopped');
-        resolve();
-      });
-    });
+      await new Promise(resolve => this.server.close(() => resolve()));
+    }
+    while (this._pendingWsCaptureFinalizations.size > 0) {
+      await Promise.all([...this._pendingWsCaptureFinalizations]);
+    }
+    if (this.server) console.log('[Proxy] Server stopped');
   }
 
   _createWebSocketRelay(source, destination, onChunk) {
@@ -1813,6 +1814,15 @@ export class ProxyServer {
       );
       let captureTail = Promise.resolve();
       let pendingCaptures = 0;
+      let resolveCaptureFinalization;
+      const captureFinalization = new Promise(resolve => {
+        resolveCaptureFinalization = resolve;
+      });
+      this._pendingWsCaptureFinalizations.add(captureFinalization);
+      const settleCaptureFinalization = () => {
+        this._pendingWsCaptureFinalizations.delete(captureFinalization);
+        resolveCaptureFinalization();
+      };
       const createCaptureState = (direction, decoder, onApplicationMessage) => {
         const state = {
           disabled: false,
@@ -1891,20 +1901,22 @@ export class ProxyServer {
         cleanedUp = true;
         stopRelays();
         const duration = Date.now() - startTime;
-        void captureTail.then(() => {
-          this._emitRequestUpdate({
-            ...requestRecord,
-            requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
-            requestBodySize: clientBytes,
-            statusCode: proxyRes.statusCode,
-            statusMessage: proxyRes.statusMessage || 'Switching Protocols',
-            responseHeaders: proxyRes.headers,
-            responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
-            responseBodySize: serverBytes,
-            duration,
-            remote
-          });
-        }).catch(() => {});
+        void captureTail
+          .then(() => {
+            this._emitRequestUpdate({
+              ...requestRecord,
+              requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
+              requestBodySize: clientBytes,
+              statusCode: proxyRes.statusCode,
+              statusMessage: proxyRes.statusMessage || 'Switching Protocols',
+              responseHeaders: proxyRes.headers,
+              responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
+              responseBodySize: serverBytes,
+              duration,
+              remote
+            });
+          })
+          .then(settleCaptureFinalization, settleCaptureFinalization);
       };
 
       proxySocket.on('end', () => {
