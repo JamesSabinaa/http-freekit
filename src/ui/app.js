@@ -4976,7 +4976,7 @@
         }
 
         if (isCurrentInterceptorOperation(operation)) {
-          if (data.metadata?.activationUncertain === true) {
+          if (data.metadata?.mode === 'app-uncertain') {
             toast(
               `Android app launched for ${data.metadata?.model || deviceId}; complete the VPN prompts on the device`,
               'warning'

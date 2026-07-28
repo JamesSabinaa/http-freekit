@@ -223,6 +223,44 @@ test('version 4 can recover companion ownership without an ADB reverse tunnel', 
   assert.equal(restarted.reverseTunnels.size, 0);
 });
 
+test('recovered confirmed companions recognize a later stopped VPN', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-197-stopped-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const tunnelDeviceId = `${DEVICE_ID}-tunnel`;
+  fs.writeFileSync(path.join(dataDir, 'android-adb-global-proxy-recovery.json'), JSON.stringify({
+    version: 4,
+    devices: [
+      { serial: DEVICE_ID, mode: 'http-toolkit-app', proxyPort: PROXY_PORT },
+      {
+        serial: tunnelDeviceId,
+        mode: 'http-toolkit-app',
+        proxyPort: PROXY_PORT,
+        previousReverseMapping: null
+      }
+    ]
+  }));
+
+  const restarted = new AndroidAdbInterceptor({ dataDir });
+  assert.equal(restarted.activatedDevices.get(DEVICE_ID).vpnStatusConfirmed, true);
+  assert.equal(restarted.activatedDevices.get(tunnelDeviceId).vpnStatusConfirmed, true);
+  restarted._getConnectedDevices = async () => [
+    connectedDevice(),
+    { ...connectedDevice(), serial: tunnelDeviceId }
+  ];
+  restarted._queryHttpToolkitAppInstalled = async () => true;
+  restarted._getHttpToolkitVpnStatus = async () => ({ success: true, value: false });
+
+  assert.equal(await restarted.isActive(), true, 'reverse cleanup remains lifecycle-owned');
+  assert.equal(restarted.activatedDevices.has(DEVICE_ID), false);
+  assert.equal(restarted.activatedDevices.get(tunnelDeviceId).mode, 'reverse-cleanup');
+  assert.deepEqual(JSON.parse(fs.readFileSync(restarted.recoveryFile, 'utf8')).devices, [{
+    serial: tunnelDeviceId,
+    mode: 'reverse-cleanup',
+    proxyPort: PROXY_PORT,
+    previousReverseMapping: null
+  }]);
+});
+
 test('VPN dumpsys parsing distinguishes connected, stopped, absent, and unknown state', () => {
   const interceptor = new AndroidAdbInterceptor();
   assert.equal(interceptor._parseHttpToolkitVpnStatus(`
@@ -252,6 +290,10 @@ test('VPN dumpsys parsing distinguishes connected, stopped, absent, and unknown 
   assert.equal(interceptor._parseHttpToolkitVpnStatus('Connectivity service ready'), null);
   assert.equal(interceptor._parseHttpToolkitVpnStatus(`
     VPNs:
+      0: tech.httptoolkit.android.v1
+  `, { authoritative: true }), null, 'sparse legacy records require a detailed fallback');
+  assert.equal(interceptor._parseHttpToolkitVpnStatus(`
+    VPNs:
       User 0:
         Active package name: tech.httptoolkit.android.v1
         Active vpn type: -1
@@ -279,13 +321,35 @@ test('VPN dumpsys parsing distinguishes connected, stopped, absent, and unknown 
   `, { authoritative: true }), null, 'conflicting target-package users are ambiguous');
 });
 
-test('pending companion launches use warning feedback instead of an activated success toast', () => {
+test('sparse legacy VPN output falls back to detailed connectivity state', async () => {
+  const interceptor = new AndroidAdbInterceptor();
+  const commands = [];
+  interceptor._adb = async (_serial, args) => {
+    commands.push(args);
+    if (args.at(-1) === 'vpn_management') {
+      return 'VPNs:\n  0: tech.httptoolkit.android.v1\n';
+    }
+    return `
+      NetworkAgentInfo:
+        mPackage=tech.httptoolkit.android.v1
+        mNetworkInfo=[type: VPN[], state: CONNECTED/CONNECTED]
+    `;
+  };
+
+  assert.deepEqual(await interceptor._getHttpToolkitVpnStatus(DEVICE_ID), {
+    success: true,
+    value: true
+  });
+  assert.deepEqual(commands.map(args => args.at(-1)), ['vpn_management', 'connectivity']);
+});
+
+test('only the activated device mode selects pending companion warning feedback', () => {
   const appSource = fs.readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
   const stylesSource = fs.readFileSync(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
 
   assert.match(
     appSource,
-    /activationUncertain\s*===\s*true[\s\S]*complete the VPN prompts on the device`\s*,\s*'warning'/
+    /data\.metadata\?\.mode\s*===\s*'app-uncertain'[\s\S]*complete the VPN prompts on the device`\s*,\s*'warning'/
   );
   assert.match(stylesSource, /\.toast-warning\s*\{[^}]*var\(--warning-color\)/);
 });

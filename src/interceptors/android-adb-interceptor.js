@@ -210,6 +210,7 @@ export class AndroidAdbInterceptor {
           this._isProxyHostReachable(entry.hostIp);
         this.activatedDevices.set(serial, {
           ...entry,
+          ...(entry.mode === 'http-toolkit-app' ? { vpnStatusConfirmed: true } : {}),
           ...(proxyStillReachable
             ? {}
             : {
@@ -478,6 +479,13 @@ export class AndroidAdbInterceptor {
     }
 
     if (packageRecords.length === 0) {
+      const escapedPackage = HTTP_TOOLKIT_ANDROID_PACKAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`(?:^|[^A-Za-z0-9._])${escapedPackage}(?=$|[^A-Za-z0-9._])`).test(text)) {
+        // Older vpn_management dumps list only "<user>: <package>" without a
+        // detailed status block. Presence there is not proof of either a live
+        // or stopped VPN, so let connectivity provide the detailed fallback.
+        return null;
+      }
       return authoritative && /(?:^|\n)\s*(?:VPNs?\s*:|User\s+\d+\s*:|mPackage\s*=|Active package name\s*:)/im.test(text)
         ? false
         : null;
