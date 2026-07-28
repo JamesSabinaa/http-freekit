@@ -6,14 +6,14 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 46 of the 360 documented bugs are not fully fixed.**
+**No: 46 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 314 |
+| Fixed | 315 |
 | Partially fixed | 19 |
 | Open | 27 |
-| **Total** | **360** |
+| **Total** | **361** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
 
@@ -912,6 +912,15 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Evidence: CA and leaf `notBefore` values are set to the exact generation time at `src/proxy/certificate-authority.js:55-57,100-102`.
 - Impact: devices, VMs, containers, or remote clients whose clocks trail the proxy by a small amount reject newly generated interception certificates as not yet valid.
 - Reproduction: set a client clock five minutes behind and request a previously unseen HTTPS hostname.
+
+### BUG-376 — High — Generated leaf certificates identify themselves as their issuer
+
+- Status: **Fixed**.
+- Resolution: Generated leaf certificates now encode the FreeKit CA's subject-key identifier as their authority-key identifier. Node/OpenSSL can therefore select the CA as issuer and build a trusted TLS chain.
+
+- Evidence: the leaf extension passed `keyIdentifier: true` at `src/proxy/certificate-authority.js:550-552`; node-forge interprets that shorthand by hashing the leaf's own public key, making the leaf authority-key identifier equal its subject-key identifier instead of the CA's.
+- Impact: strict TLS clients reject otherwise correctly signed intercepted certificates with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, even after the FreeKit CA is explicitly trusted.
+- Reproduction: generate a leaf, trust only its returned CA, and connect to a TLS server using that leaf; Node/OpenSSL cannot find the issuer because the authority-key identifier points to the leaf itself.
 
 ### BUG-265 — Low/Medium — Send drops credentials embedded in URLs
 

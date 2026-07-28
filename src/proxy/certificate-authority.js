@@ -549,7 +549,7 @@ export class CertificateAuthority {
       },
       {
         name: 'authorityKeyIdentifier',
-        keyIdentifier: true
+        keyIdentifier: this.caCert.generateSubjectKeyIdentifier().getBytes()
       }
     ]);
 
