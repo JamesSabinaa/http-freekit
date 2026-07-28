@@ -1059,11 +1059,13 @@ public class ProxyAgent {
       buildDir = fs.mkdtempSync(path.join(agentDir, '.jvm-agent-build-'));
       try { fs.chmodSync(buildDir, 0o700); } catch {}
       const javaPath = path.join(buildDir, 'ProxyAgent.java');
+      const compiledClassPath = path.join(buildDir, 'ProxyAgent.class');
       const manifestPath = path.join(buildDir, 'MANIFEST.MF');
       const builtJarPath = path.join(buildDir, 'proxy-agent.jar');
       const builtStampPath = path.join(buildDir, 'source.sha256');
       this._writeNewAgentBuildFile(javaPath, agentSource);
       this._writeNewAgentBuildFile(manifestPath, manifest);
+      this._writeNewAgentBuildFile(compiledClassPath, Buffer.alloc(0));
 
       // Compile
       await this._compileAgentJava(javaPath, buildDir);
@@ -1082,6 +1084,16 @@ public class ProxyAgent {
         'JVM agent manifest'
       ).toString('utf8') !== manifest) {
         throw new Error('JVM agent manifest changed before packaging');
+      }
+      const compiledClass = this._readBoundedRegularFile(
+        compiledClassPath,
+        8,
+        MAX_JVM_AGENT_JAR_BYTES,
+        'compiled JVM agent class'
+      );
+      if (compiledClass.readUInt32BE(0) !== 0xcafebabe ||
+          compiledClass.readUInt16BE(6) !== AGENT_BYTECODE_POLICY.classMajorVersion) {
+        throw new Error('compiled JVM agent class violates the bytecode policy');
       }
 
       // Package into JAR

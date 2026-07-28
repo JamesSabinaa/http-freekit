@@ -85,15 +85,23 @@ function createStoredZip(entries) {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
-function createTestAgentJar(marker = 0, manifest =
-  'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\n') {
+function createTestAgentClass(marker = 0) {
   const agentClass = Buffer.alloc(9);
   agentClass.writeUInt32BE(0xcafebabe, 0);
   agentClass.writeUInt16BE(52, 6);
   agentClass[8] = marker;
+  return agentClass;
+}
+
+function writeTestAgentClass(classPath, marker = 0) {
+  fs.writeFileSync(classPath, createTestAgentClass(marker));
+}
+
+function createTestAgentJar(marker = 0, manifest =
+  'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\n') {
   return createStoredZip([
     ['META-INF/MANIFEST.MF', Buffer.from(manifest)],
-    ['ProxyAgent.class', agentClass]
+    ['ProxyAgent.class', createTestAgentClass(marker)]
   ]);
 }
 
@@ -161,9 +169,9 @@ test('agent cache invalidates when its bytecode policy changes', async t => {
   const interceptor = new JvmInterceptor({ agentDir });
   let compiles = 0;
   let packages = 0;
-  interceptor._compileAgentJava = async () => {
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
     compiles += 1;
-    fs.writeFileSync(path.join(agentDir, 'ProxyAgent.class'), 'compiled');
+    writeTestAgentClass(path.join(buildDir, 'ProxyAgent.class'), compiles);
   };
   interceptor._packageAgentJar = async () => {
     packages += 1;
@@ -192,7 +200,9 @@ test('agent cache rebuilds a JAR whose contents no longer match its stamp', asyn
   t.mock.method(console, 'warn', () => {});
   const interceptor = new JvmInterceptor({ agentDir });
   let packages = 0;
-  interceptor._compileAgentJava = async () => {};
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
+    writeTestAgentClass(path.join(buildDir, 'ProxyAgent.class'));
+  };
   interceptor._packageAgentJar = async () => {
     packages++;
     return createTestAgentJar(packages);
@@ -213,7 +223,9 @@ test('unreadable agent cache metadata degrades to an unavailable fallback', asyn
   fs.writeFileSync(path.join(agentDir, 'proxy-agent.jar'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   fs.mkdirSync(path.join(agentDir, 'source.sha256'));
   const interceptor = new JvmInterceptor({ agentDir });
-  interceptor._compileAgentJava = async () => {};
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
+    writeTestAgentClass(path.join(buildDir, 'ProxyAgent.class'));
+  };
   interceptor._packageAgentJar = async () => {};
 
   assert.equal(await interceptor._getAgentJarPath(), null);
@@ -310,7 +322,9 @@ test('agent build rejects a JAR link injected while the packager runs', async t 
   const target = path.join(outsideDir, 'jar-sentinel.txt');
   fs.writeFileSync(target, 'jar sentinel');
   const interceptor = new JvmInterceptor({ agentDir });
-  interceptor._compileAgentJava = async () => {};
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
+    writeTestAgentClass(path.join(buildDir, 'ProxyAgent.class'));
+  };
   let linkError = null;
   interceptor._packageAgentJar = async (_manifestPath, buildDir) => {
     try {
@@ -335,6 +349,33 @@ test('agent build rejects a JAR link injected while the packager runs', async t 
   assert.equal(fs.readFileSync(target, 'utf8'), 'jar sentinel');
 });
 
+test('agent build reserves and validates the compiler class output', async t => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-class-output-'));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-class-outside-'));
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  const target = path.join(outsideDir, 'class-sentinel.txt');
+  fs.writeFileSync(target, 'class sentinel');
+  const interceptor = new JvmInterceptor({ agentDir });
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
+    const classPath = path.join(buildDir, 'ProxyAgent.class');
+    const reserved = fs.lstatSync(classPath);
+    assert.equal(reserved.isFile(), true);
+    assert.equal(reserved.nlink, 1);
+    assert.equal(reserved.size, 0);
+    assert.throws(
+      () => fs.linkSync(target, classPath),
+      err => err?.code === 'EEXIST'
+    );
+    writeTestAgentClass(classPath, 5);
+  };
+  interceptor._packageAgentJar = async () => createTestAgentJar(5);
+
+  assert.equal(await interceptor._getAgentJarPath(), path.join(agentDir, 'proxy-agent.jar'));
+  assert.equal(fs.readFileSync(target, 'utf8'), 'class sentinel');
+});
+
 test('agent rebuild replaces cache symlinks without touching their targets', async t => {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-symlink-cache-'));
   const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-symlink-target-'));
@@ -357,7 +398,9 @@ test('agent rebuild replaces cache symlinks without touching their targets', asy
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'warn', () => {});
   const interceptor = new JvmInterceptor({ agentDir });
-  interceptor._compileAgentJava = async () => {};
+  interceptor._compileAgentJava = async (_sourcePath, buildDir) => {
+    writeTestAgentClass(path.join(buildDir, 'ProxyAgent.class'));
+  };
   interceptor._packageAgentJar = async () => createTestAgentJar(7);
 
   assert.equal(await interceptor._getAgentJarPath(), path.join(agentDir, 'proxy-agent.jar'));
