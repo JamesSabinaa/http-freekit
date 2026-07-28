@@ -107,7 +107,21 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     ['negative timestamp', (() => { const value = validEntry(); value.startedDateTime = '1969-12-31T23:59:59.999Z'; return har([value]); })(), /startedDateTime must be non-negative/],
     ['negative duration', (() => { const value = validEntry(); value.time = -1; return har([value]); })(), /\.time must be non-negative/],
     ['negative request size', (() => { const value = validEntry(); value.request.bodySize = -2; return har([value]); })(), /request\.bodySize must be non-negative or -1/],
-    ['invalid status', (() => { const value = validEntry(); value.response.status = 99; return har([value]); })(), /response\.status must be 0 or an integer from 100 to 999/]
+    ['invalid status', (() => { const value = validEntry(); value.response.status = 99; return har([value]); })(), /response\.status must be 0 or an integer from 100 to 999/],
+    ['non-boolean truncation', (() => {
+      const value = validEntry();
+      value.response.content._truncated = 'yes';
+      value.response.content._capturedSize = 0;
+      value.response.content._originalSize = 1;
+      return har([value]);
+    })(), /content\._truncated must be a boolean/],
+    ['inverted truncation sizes', (() => {
+      const value = validEntry();
+      value.response.content._truncated = true;
+      value.response.content._capturedSize = 2;
+      value.response.content._originalSize = 1;
+      return har([value]);
+    })(), /content\._capturedSize cannot exceed _originalSize/]
   ];
 
   const nonFiniteDuration = JSON.stringify(har([validEntry()])).replace('"time":12.5', '"time":1e400');
@@ -256,4 +270,59 @@ test('visible HAR import preserves literal data-URI request and response text', 
   assert.equal(Object.hasOwn(exported.request.postData, 'encoding'), false);
   assert.equal(exported.response.content.text, responseText);
   assert.equal(Object.hasOwn(exported.response.content, 'encoding'), false);
+});
+
+test('renderer HAR import preserves truncation metadata across re-export', async () => {
+  const entry = validEntry();
+  entry.request.method = 'POST';
+  entry.request.bodySize = 1000;
+  entry.request.postData = {
+    mimeType: 'text/plain',
+    text: 'request preview',
+    _truncated: true,
+    _capturedSize: 15,
+    _originalSize: 1000
+  };
+  entry.response.bodySize = 2000;
+  entry.response.content = {
+    mimeType: 'text/plain',
+    text: 'response preview',
+    size: 16,
+    _truncated: true,
+    _capturedSize: 16,
+    _originalSize: 2000
+  };
+  const harness = createRendererHarness();
+
+  await harness.importDocument(har([entry]));
+
+  assert.equal(harness.added.length, 1);
+  const imported = harness.added[0];
+  assert.equal(imported.requestBodyTruncated, true);
+  assert.equal(imported.requestBodyCapturedSize, 15);
+  assert.equal(imported.requestBodyDecodedSize, 1000);
+  assert.equal(imported.responseBodyTruncated, true);
+  assert.equal(imported.responseBodyCapturedSize, 16);
+  assert.equal(imported.responseBodyDecodedSize, 2000);
+
+  const reexported = trafficToHar([imported], { maskSensitive: false }).log.entries[0];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify({
+      request: {
+        truncated: reexported.request.postData._truncated,
+        captured: reexported.request.postData._capturedSize,
+        original: reexported.request.postData._originalSize
+      },
+      response: {
+        truncated: reexported.response.content._truncated,
+        captured: reexported.response.content._capturedSize,
+        original: reexported.response.content._originalSize,
+        size: reexported.response.content.size
+      }
+    })),
+    {
+      request: { truncated: true, captured: 15, original: 1000 },
+      response: { truncated: true, captured: 16, original: 2000, size: 16 }
+    }
+  );
 });

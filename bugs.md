@@ -10,8 +10,8 @@ Status review completed on 27 July 2026 against source commit `00f3f7c`. This wa
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 310 |
-| Partially fixed | 20 |
+| Fixed | 311 |
+| Partially fixed | 19 |
 | Open | 30 |
 | **Total** | **360** |
 
@@ -547,8 +547,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-158 — Medium — Capture truncation silently corrupts HAR body exports
 
-- Status: **Partially fixed**.
-- Resolution: Initial HAR exports now include explicit captured/original sizes and truncation metadata. Both HAR import paths discard that metadata and replace the original response size with the captured size, so re-exporting a truncated capture presents its retained preview as complete; the renderer also uses clipped bodies for viewing, searching, resend, and mock creation without warning.
+- Status: **Fixed**.
+- Resolution: HAR export and both import paths now preserve explicit truncation, captured-size, and original-size metadata across round trips. The renderer marks incomplete exchanges and body views, warns that body searches cover retained bytes only, and refuses resend or mock creation when exact captured bodies are unavailable.
 
 - Evidence: `_safeBodyString()` truncates text at 512 KiB and replaces binary bodies of at least 2 MiB with a textual placeholder at `src/proxy/proxy-server.js:3988-4010`; only the transformed field is stored. HAR conversion writes it as response content while reporting the original size at `src/api/har-converter.js:29-30,57-65`.
 - Impact: exported HARs cannot replay or inspect full large responses and are internally inconsistent, with no truncation flag.

@@ -66,6 +66,31 @@ function normalizeHarBodySize(value) {
     : 0;
 }
 
+function harTruncationToTraffic(body, fieldPath) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !Object.prototype.hasOwnProperty.call(body, '_truncated')) return null;
+  if (typeof body._truncated !== 'boolean') {
+    throw new TypeError(`${fieldPath}._truncated must be a boolean`);
+  }
+  if (!body._truncated) return null;
+
+  const sizes = {};
+  for (const property of ['_capturedSize', '_originalSize']) {
+    const value = body[property];
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`${fieldPath}.${property} must be a non-negative safe integer`);
+    }
+    sizes[property] = value;
+  }
+  if (sizes._capturedSize > sizes._originalSize) {
+    throw new TypeError(`${fieldPath}._capturedSize cannot exceed _originalSize`);
+  }
+  return {
+    capturedSize: sizes._capturedSize,
+    originalSize: sizes._originalSize
+  };
+}
+
 function publicClientCertificates(certificates) {
   if (!Array.isArray(certificates)) return [];
   return certificates.map(certificate => ({
@@ -606,6 +631,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     ];
     const capturedSizeFields = ['requestBodyCapturedSize', 'responseBodyCapturedSize'];
     const numberFields = ['statusCode', 'duration', ...bodySizeFields, ...capturedSizeFields];
+    const booleanFields = ['requestBodyTruncated', 'responseBodyTruncated'];
 
     for (let index = 0; index < requests.length; index++) {
       const request = requests[index];
@@ -630,6 +656,12 @@ print(json.dumps({"providers": get_proxy_providers()}))
       for (const field of numberFields) {
         if (request[field] !== undefined && request[field] !== null && !Number.isFinite(request[field])) {
           return `requests[${index}].${field} must be a finite number`;
+        }
+      }
+      for (const field of booleanFields) {
+        if (request[field] !== undefined && request[field] !== null
+            && typeof request[field] !== 'boolean') {
+          return `requests[${index}].${field} must be a boolean`;
         }
       }
       if (request.statusCode !== undefined && request.statusCode !== null &&
@@ -1183,9 +1215,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             : new Date(entry.startedDateTime).getTime();
           const requestBody = harBodyToTraffic(entry.request.postData);
           const responseBody = harBodyToTraffic(entry.response?.content);
-          const responseBodyDecodedSize = entry.response?.content?.size === undefined
-            ? undefined
-            : normalizeHarBodySize(entry.response.content.size);
+          const requestTruncation = harTruncationToTraffic(
+            entry.request.postData,
+            'request.postData'
+          );
+          const responseTruncation = harTruncationToTraffic(
+            entry.response?.content,
+            'response.content'
+          );
+          const responseBodyDecodedSize = responseTruncation?.originalSize
+            ?? (entry.response?.content?.size === undefined
+              ? undefined
+              : normalizeHarBodySize(entry.response.content.size));
 
           return {
             id: crypto.randomUUID(),
@@ -1206,6 +1247,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             requestPostDataMimeType: entry.request.postData?.mimeType || '',
             requestHttpVersion: entry.request.httpVersion || '',
             requestBodySize: normalizeHarBodySize(entry.request.bodySize),
+            ...(requestTruncation ? {
+              requestBodyTruncated: true,
+              requestBodyCapturedSize: requestTruncation.capturedSize,
+              requestBodyDecodedSize: requestTruncation.originalSize
+            } : {}),
             statusCode: entry.response?.status || 0,
             statusMessage: entry.response?.statusText || '',
             responseHeaders: harHeadersToObject(entry.response?.headers),
@@ -1216,6 +1262,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseHttpVersion: entry.response?.httpVersion || '',
             responseBodySize: normalizeHarBodySize(entry.response?.bodySize),
             ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
+            ...(responseTruncation ? {
+              responseBodyTruncated: true,
+              responseBodyCapturedSize: responseTruncation.capturedSize
+            } : {}),
             duration: entry.time || 0,
             timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : importTimestamp,
             source: 'import'

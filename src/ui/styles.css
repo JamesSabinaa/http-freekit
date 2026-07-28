@@ -947,6 +947,11 @@
       margin-right: 2px;
       opacity: 0.6;
     }
+    .row-truncated-body {
+      color: #f1971f;
+      font-size: 11px;
+      margin-right: 3px;
+    }
 
     /* ============================================================
        9. Row Marker (left color bar)
@@ -2675,6 +2680,20 @@
     .detail-card-header:hover .collapse-chevron { color: var(--pop-color); }
 
     .detail-card-body { padding: 0 20px 20px; }
+
+    .body-capture-warning {
+      align-items: center;
+      background: color-mix(in srgb, #f1971f 12%, var(--bg-main));
+      border: 1px solid color-mix(in srgb, #f1971f 45%, transparent);
+      border-radius: 4px;
+      color: var(--text-main);
+      display: flex;
+      font-size: 11px;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 8px 10px;
+    }
+    .body-capture-warning i { color: #f1971f; font-size: 16px; }
 
     /* Direction borders: right border for request, left border for response.
        Border color is set inline via style attribute to match method/status color. */

@@ -747,6 +747,9 @@
         ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
         : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
       const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
+      const truncatedBodyIcon = req.requestBodyTruncated === true || req.responseBodyTruncated === true
+        ? '<span class="row-truncated-body" title="Body capture incomplete; viewing and search cover retained bytes only">&#9888;</span>'
+        : '';
 
       // WS connection: add frame count badge and expand toggle
       let wsFrameBadge = '';
@@ -761,7 +764,7 @@
 
       return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="-1" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td role="gridcell">${pinIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
+        <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
         <td role="gridcell" class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
         <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
@@ -836,14 +839,20 @@
         (!hideTunnelRequests || !isTunnelRequest(r)) &&
         (!filterSafeFonts || !isSafeFontRequest(r))
       ).length;
+      const filterSummary = [];
       if (query && filteredRequests.length !== visibleTotal) {
         countEl.textContent = filteredRequests.length + ' / ' + visibleTotal;
-        if (footerFilter) {
-          footerFilter.textContent = '(' + filteredRequests.length + ' shown)';
-        }
+        filterSummary.push(filteredRequests.length + ' shown');
       } else {
         countEl.textContent = filteredRequests.length;
-        if (footerFilter) footerFilter.textContent = '';
+      }
+      const bodySearchIsIncomplete = query
+        && parseFilters(query).some(filter => filter.type === 'body' || filter.type === 'text')
+        && requests.some(request => request.requestBodyTruncated === true
+          || request.responseBodyTruncated === true);
+      if (bodySearchIsIncomplete) filterSummary.push('body search covers captured bytes only');
+      if (footerFilter) {
+        footerFilter.textContent = filterSummary.length > 0 ? `(${filterSummary.join('; ')})` : '';
       }
       if (countLabel) {
         countLabel.textContent = 'requests';
@@ -1040,6 +1049,10 @@
       if (!requestId) return;
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
+      if (req.requestBodyTruncated === true) {
+        toast('Cannot resend this request because its captured body is incomplete.', 'error');
+        return;
+      }
 
       // Save current tab state before creating a new one
       saveSendTabState();
@@ -1269,6 +1282,26 @@
     }
 
     function renderDetailCards(req) {
+      function renderBodyCaptureWarning(request, side) {
+        const field = side + 'Body';
+        if (request?.[field + 'Truncated'] !== true) return '';
+        const capturedSize = Number.isFinite(request[field + 'CapturedSize'])
+          ? request[field + 'CapturedSize']
+          : 0;
+        const originalSize = Number.isFinite(request[field + 'DecodedSize'])
+          && request[field + 'DecodedSize'] >= 0
+          ? request[field + 'DecodedSize']
+          : request[field + 'Size'];
+        const displaySize = size => size === 0 ? '0B' : formatSize(size);
+        const retained = Number.isFinite(originalSize) && originalSize >= 0
+          ? `${displaySize(capturedSize)} of ${displaySize(originalSize)}`
+          : displaySize(capturedSize);
+        return `<div class="body-capture-warning" role="note">
+          <i class="ph ph-warning" aria-hidden="true"></i>
+          <span>Incomplete ${side} body: ${retained} retained. Viewing and body search use only these captured bytes.</span>
+        </div>`;
+      }
+
       const content = document.getElementById('detailContent');
       const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
       const statusColor = req.error ? '#ce3939' : req.statusCode < 200 ? '#888' : req.statusCode < 300 ? '#4caf7d' : req.statusCode < 400 ? '#5a80cc' : req.statusCode < 500 ? '#ff8c38' : '#ce3939';
@@ -1720,6 +1753,7 @@
           </span>
         </div>
         <div class="detail-card-body">
+          ${renderBodyCaptureWarning(effReq, 'request')}
           <div class="detail-card-section">
             <div class="section-label">URL</div>
             <div class="url-summary" onclick="toggleUrlBreakdown()">
@@ -1773,6 +1807,7 @@
           </span>
         </div>
         <div class="detail-card-body">
+          ${renderBodyCaptureWarning(req, 'response')}
           <div class="detail-card-section">
             <div class="section-label">Status</div>
             <div style="font-family:var(--font-mono);font-size:13px;">${req.statusCode || 'ERR'} ${esc(req.statusMessage || '')}</div>
@@ -9290,6 +9325,30 @@
       };
     }
 
+    function normalizeHarTruncation(body, fieldPath) {
+      if (body === undefined || !Object.hasOwn(body, '_truncated')) return null;
+      if (typeof body._truncated !== 'boolean') {
+        throw new Error(`${fieldPath}._truncated must be a boolean`);
+      }
+      if (!body._truncated) return null;
+
+      const sizes = {};
+      for (const property of ['_capturedSize', '_originalSize']) {
+        const value = body[property];
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(`${fieldPath}.${property} must be a non-negative safe integer`);
+        }
+        sizes[property] = value;
+      }
+      if (sizes._capturedSize > sizes._originalSize) {
+        throw new Error(`${fieldPath}._capturedSize cannot exceed _originalSize`);
+      }
+      return {
+        capturedSize: sizes._capturedSize,
+        originalSize: sizes._originalSize
+      };
+    }
+
     function normalizeHarEntry(entry, index) {
       const entryPath = `log.entries[${index}]`;
       assertHarObject(entry, entryPath);
@@ -9323,9 +9382,6 @@
         response.bodySize,
         `${entryPath}.response.bodySize`
       );
-      const responseBodyDecodedSize = content?.size === undefined
-        ? undefined
-        : normalizeHarSize(content.size, `${entryPath}.response.content.size`);
       const timestamp = normalizeHarTimestamp(entry.startedDateTime, `${entryPath}.startedDateTime`);
       const duration = normalizeHarNonNegativeNumber(entry.time, `${entryPath}.time`, { optional: true });
       const requestPostData = request.postData === undefined
@@ -9360,6 +9416,18 @@
         content,
         `${entryPath}.response.content`
       );
+      const requestTruncation = normalizeHarTruncation(
+        requestPostData,
+        `${entryPath}.request.postData`
+      );
+      const responseTruncation = normalizeHarTruncation(
+        content,
+        `${entryPath}.response.content`
+      );
+      const responseBodyDecodedSize = responseTruncation?.originalSize
+        ?? (content?.size === undefined
+          ? undefined
+          : normalizeHarSize(content.size, `${entryPath}.response.content.size`));
 
       return {
         id: crypto.randomUUID(),
@@ -9378,6 +9446,11 @@
         requestPostDataMimeType,
         requestHttpVersion,
         requestBodySize,
+        ...(requestTruncation ? {
+          requestBodyTruncated: true,
+          requestBodyCapturedSize: requestTruncation.capturedSize,
+          requestBodyDecodedSize: requestTruncation.originalSize
+        } : {}),
         statusCode: status,
         statusMessage,
         responseHeaders: normalizeHarHeaders(response.headers, `${entryPath}.response.headers`),
@@ -9388,6 +9461,10 @@
         responseHttpVersion,
         responseBodySize,
         ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
+        ...(responseTruncation ? {
+          responseBodyTruncated: true,
+          responseBodyCapturedSize: responseTruncation.capturedSize
+        } : {}),
         duration,
         timestamp,
         source: 'import',
@@ -10775,6 +10852,10 @@
     function createMockFromRequest(requestId) {
       const req = requests.find(r => r.id === requestId);
       if (!req) return;
+      if (req.requestBodyTruncated === true || req.responseBodyTruncated === true) {
+        toast('Cannot create a mock because this exchange contains an incomplete body capture.', 'error');
+        return;
+      }
 
       // Build rich matchers from the request
       const matchers = [
