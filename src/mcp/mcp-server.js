@@ -52,7 +52,7 @@ function capMcpResponse(message) {
   return mcpMessageBytes(fallback) <= MCP_REQUEST_DETAIL_MAX_BYTES ? fallback : null;
 }
 
-function guardMcpTransportRequestIds(transport) {
+function guardMcpTransportRequestIds(transport, onRejectedRequest = () => {}) {
   const existing = guardedMcpTransports.get(transport);
   if (existing) return existing;
   const guarded = new Proxy(transport, {
@@ -85,6 +85,11 @@ function guardMcpTransportRequestIds(transport) {
             Object.prototype.hasOwnProperty.call(message, 'id') &&
             typeof message.method === 'string';
           if (isRequest && !jsonRpcRequestIdCanFitResponse(message.id)) {
+            try {
+              onRejectedRequest(target);
+            } catch {
+              // The request must still be dropped when rejection handling fails.
+            }
             try {
               Promise.resolve(target.close()).catch(() => {});
             } catch {
@@ -424,6 +429,8 @@ export class McpServerBridge {
     this.sseSessions = new Map();
     this.sseRoutesRegistered = false;
     this.stdioTransport = null;
+    this.stdioOutput = null;
+    this.onStdioFatalError = null;
     this.launchConfig = options.launchConfig || null;
 
     if (this.enabled) {
@@ -441,9 +448,28 @@ export class McpServerBridge {
       { capabilities: { tools: {} } }
     );
     const connect = server.connect.bind(server);
-    server.connect = transport => connect(guardMcpTransportRequestIds(transport));
+    server.connect = transport => connect(guardMcpTransportRequestIds(
+      transport,
+      rejectedTransport => this._handleRejectedMcpRequest(rejectedTransport)
+    ));
     this._registerTools(server);
     return server;
+  }
+
+  _handleRejectedMcpRequest(transport) {
+    if (transport !== this.stdioTransport) return;
+    this.stdioTransport = null;
+    const output = this.stdioOutput;
+    this.stdioOutput = null;
+    try { output?.end(); } catch {}
+    const onFatalError = this.onStdioFatalError;
+    this.onStdioFatalError = null;
+    if (typeof onFatalError !== 'function') return;
+    Promise.resolve(onFatalError(new Error(
+      `MCP request ID cannot fit in the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte response limit`
+    ))).catch(error => {
+      console.error('[MCP] stdio fatal error handler failed:', error.message);
+    });
   }
 
   _registerTools(server) {
@@ -991,10 +1017,30 @@ export class McpServerBridge {
     console.log('[MCP] SSE transport ready on /mcp/sse');
   }
 
-  async startStdio() {
+  async startStdio({
+    stdin = process.stdin,
+    stdout = process.stdout,
+    onFatalError = null
+  } = {}) {
     if (!this.server) return;
-    this.stdioTransport = new StdioServerTransport();
-    await this.server.connect(this.stdioTransport);
+    const transport = new StdioServerTransport(stdin, stdout);
+    this.stdioTransport = transport;
+    this.stdioOutput = stdout;
+    this.onStdioFatalError = onFatalError;
+    transport.onclose = () => {
+      if (this.stdioTransport !== transport) return;
+      this.stdioTransport = null;
+      if (this.stdioOutput === stdout) this.stdioOutput = null;
+      this.onStdioFatalError = null;
+    };
+    try {
+      await this.server.connect(transport);
+    } catch (error) {
+      if (this.stdioTransport === transport) this.stdioTransport = null;
+      if (this.stdioOutput === stdout) this.stdioOutput = null;
+      this.onStdioFatalError = null;
+      throw error;
+    }
     console.error('[MCP] stdio transport connected');
   }
 
@@ -1008,6 +1054,8 @@ export class McpServerBridge {
       try { await this.server.close(); } catch {}
     }
     this.stdioTransport = null;
+    this.stdioOutput = null;
+    this.onStdioFatalError = null;
     this.server = null;
     this.enabled = false;
   }

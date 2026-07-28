@@ -16,5 +16,8 @@ test('stdio mode redirects console logs before application startup', () => {
   assert.ok(redirectIndex < mainIndex);
   assert.ok(redirectIndex < bannerIndex);
   assert.equal(source.match(/console\.log =/g)?.length, 1);
-  assert.match(source, /if \(MCP_STDIO_ENABLED\) \{\r?\n    await mcpBridge\.startStdio\(\);/);
+  assert.match(
+    source,
+    /if \(MCP_STDIO_ENABLED\) \{\r?\n    await mcpBridge\.startStdio\(\{ onFatalError: \(\) => shutdown\(1\) \}\);/
+  );
 });

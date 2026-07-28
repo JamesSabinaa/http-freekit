@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -546,6 +548,44 @@ test('MCP closes a transport when its request ID cannot fit in any capped respon
     clientTransport.send({ jsonrpc: '2.0', id: 1, method: 'ping' }),
     /Not connected/
   );
+});
+
+test('direct MCP stdio terminates after an unanswerable request ID', async t => {
+  const bridge = createBridge([]);
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const output = [];
+  stdout.on('data', chunk => output.push(Buffer.from(chunk)));
+  let resolveFatal;
+  const fatal = new Promise(resolve => { resolveFatal = resolve; });
+  const finished = once(stdout, 'finish');
+  await bridge.startStdio({
+    stdin,
+    stdout,
+    onFatalError: error => resolveFatal(error)
+  });
+  t.after(async () => {
+    stdin.destroy();
+    stdout.destroy();
+    await bridge.stop();
+  });
+
+  stdin.write(`${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'i'.repeat(520 * 1024),
+    method: 'tools/call',
+    params: {
+      name: 'get_request_detail',
+      arguments: { request_id: 'missing' }
+    }
+  })}\n`);
+
+  const [error] = await Promise.all([fatal, finished]);
+  assert.match(error.message, /cannot fit/i);
+  assert.equal(Buffer.concat(output).length, 0);
+  assert.equal(stdin.listenerCount('data'), 0);
+  assert.equal(stdout.writableEnded, true);
+  assert.equal(bridge.getStatus().stdioActive, false);
 });
 
 test('MCP request detail requires a side for offsets and validates direct calls', () => {

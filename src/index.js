@@ -213,11 +213,6 @@ async function initializeApplication(apiPort) {
   };
   process.once('exit', removeOwnMcpRuntimeDescriptor);
 
-  // If launched with --mcp-stdio, enable stdio transport for Claude Desktop
-  if (MCP_STDIO_ENABLED) {
-    await mcpBridge.startStdio();
-  }
-
   console.log('');
   console.log('  ┌─────────────────────────────────────┐');
   const proxyStr = `http://127.0.0.1:${proxy.port}`;
@@ -257,7 +252,8 @@ async function initializeApplication(apiPort) {
       }
     });
   };
-  const shutdown = () => {
+  const shutdown = (exitCode = 0) => {
+    const finalExitCode = Number.isInteger(exitCode) ? exitCode : 0;
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
         interceptors.beginShutdown();
@@ -269,13 +265,19 @@ async function initializeApplication(apiPort) {
         await api.stop();
         console.log('[Shutdown] Goodbye!');
         await notifyDesktopShutdownComplete();
-        process.exit(0);
+        process.exit(finalExitCode);
       })();
     }
     return shutdownPromise;
   };
 
   api.setShutdownHandler(shutdown);
+
+  // If launched with --mcp-stdio, enable stdio transport for Claude Desktop.
+  // A terminal framing failure must also stop the servers that keep this process alive.
+  if (MCP_STDIO_ENABLED) {
+    await mcpBridge.startStdio({ onFatalError: () => shutdown(1) });
+  }
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

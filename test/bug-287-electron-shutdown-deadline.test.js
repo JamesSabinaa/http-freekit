@@ -166,6 +166,6 @@ test('desktop child wiring exposes IPC and reports completion after graceful cle
   assert.ok(backendSource.includes(`type: '${SHUTDOWN_COMPLETE_MESSAGE}'`));
   assert.match(
     backendSource,
-    /await interceptors\.deactivateAll\(\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\);[\s\S]*?await notifyDesktopShutdownComplete\(\);[\s\S]*?process\.exit\(0\)/
+    /await interceptors\.deactivateAll\(\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\);[\s\S]*?await notifyDesktopShutdownComplete\(\);[\s\S]*?process\.exit\(finalExitCode\)/
   );
 });

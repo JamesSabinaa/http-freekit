@@ -345,7 +345,7 @@ test('all interceptor operation routes map closing to 503, busy to 409, and ordi
 
 test('application closes interceptor admissions at the first synchronous shutdown step', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'index.js'), 'utf8');
-  const shutdownStart = source.indexOf('const shutdown = () => {');
+  const shutdownStart = source.indexOf('const shutdown = (exitCode = 0) => {');
   const shutdownEnd = source.indexOf('api.setShutdownHandler(shutdown)', shutdownStart);
   const shutdownSource = source.slice(shutdownStart, shutdownEnd);
   const promiseStart = shutdownSource.indexOf('shutdownPromise = (async () => {');
