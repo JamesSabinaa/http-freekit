@@ -195,7 +195,8 @@ async function initializeApplication(apiPort) {
         bridgeScript: path.join(__dirname, 'mcp', 'stdio-bridge.js'),
         descriptorPath: MCP_RUNTIME_DESCRIPTOR_PATH,
         electronRuntime: process.env.ELECTRON === '1',
-        packagedAppRuntime: process.env.HTTP_FREEKIT_MCP_PACKAGED_APP === '1'
+        packagedAppRuntime: process.env.HTTP_FREEKIT_MCP_PACKAGED_APP === '1',
+        remountingPackagedApp: process.env.HTTP_FREEKIT_MCP_REMOUNTING_APP === '1'
       })
     }
   });

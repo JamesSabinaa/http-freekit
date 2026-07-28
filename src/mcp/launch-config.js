@@ -20,7 +20,8 @@ export function createMcpLaunchConfig({
   bridgeScript,
   descriptorPath,
   electronRuntime = false,
-  packagedAppRuntime = false
+  packagedAppRuntime = false,
+  remountingPackagedApp = false
 }) {
   if (!path.isAbsolute(executablePath)) {
     throw new Error('MCP executable path must be absolute');
@@ -32,7 +33,7 @@ export function createMcpLaunchConfig({
     throw new Error('MCP runtime descriptor path must be absolute');
   }
 
-  if (packagedAppRuntime) {
+  if (packagedAppRuntime && remountingPackagedApp) {
     return {
       command: executablePath,
       args: ['--mcp-stdio-bridge', descriptorPath]
@@ -42,7 +43,9 @@ export function createMcpLaunchConfig({
   return {
     command: executablePath,
     args: [bridgeScript, descriptorPath],
-    ...(electronRuntime ? { env: { ELECTRON_RUN_AS_NODE: '1' } } : {})
+    ...(electronRuntime || packagedAppRuntime
+      ? { env: { ELECTRON_RUN_AS_NODE: '1' } }
+      : {})
   };
 }
 

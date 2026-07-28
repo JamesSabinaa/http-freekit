@@ -88,6 +88,7 @@ async function startServer() {
         ELECTRON: '1',
         HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
         HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
+        HTTP_FREEKIT_MCP_REMOUNTING_APP: app.isPackaged && process.platform === 'linux' && process.env.APPIMAGE ? '1' : '0',
         HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

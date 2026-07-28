@@ -24,6 +24,7 @@ const {
   resolveDesktopMcpExecutable
 } = require('../electron/mcp-launch.cjs');
 const builderConfig = require('../electron-builder.config.cjs');
+const electronPath = require('electron');
 const packageJson = require('../package.json');
 const repoRoot = process.cwd();
 
@@ -115,6 +116,24 @@ test('development Electron keeps direct bridge-script Node mode', () => {
   assert.deepEqual(config.env, { ELECTRON_RUN_AS_NODE: '1' });
 });
 
+test('stable packaged Electron uses direct Node mode for clean stdio framing', () => {
+  const bridgeScript = path.join(repoRoot, 'src', 'mcp', 'stdio-bridge.js');
+  const descriptorPath = path.join(repoRoot, 'data', 'mcp-runtime.json');
+  const config = createMcpLaunchConfig({
+    executablePath: electronPath,
+    bridgeScript,
+    descriptorPath,
+    electronRuntime: true,
+    packagedAppRuntime: true
+  });
+
+  assert.deepEqual(config, {
+    command: electronPath,
+    args: [bridgeScript, descriptorPath],
+    env: { ELECTRON_RUN_AS_NODE: '1' }
+  });
+});
+
 test('packaged MCP config re-enters the stable application across AppImage remounts', () => {
   const installedAppImage = path.join(repoRoot, 'fixtures', 'HTTP-FreeKit.AppImage');
   const firstMount = path.join(repoRoot, 'fixtures', '.mount-first');
@@ -132,14 +151,16 @@ test('packaged MCP config re-enters the stable application across AppImage remou
     bridgeScript: path.join(firstMount, 'resources', 'app.asar.unpacked', 'src', 'mcp', 'stdio-bridge.js'),
     descriptorPath,
     electronRuntime: true,
-    packagedAppRuntime: true
+    packagedAppRuntime: true,
+    remountingPackagedApp: true
   });
   const secondConfig = createMcpLaunchConfig({
     executablePath,
     bridgeScript: path.join(secondMount, 'resources', 'app.asar.unpacked', 'src', 'mcp', 'stdio-bridge.js'),
     descriptorPath,
     electronRuntime: true,
-    packagedAppRuntime: true
+    packagedAppRuntime: true,
+    remountingPackagedApp: true
   });
 
   assert.deepEqual(firstConfig, secondConfig);
@@ -154,7 +175,9 @@ test('packaged MCP config re-enters the stable application across AppImage remou
   const mainSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.cjs'), 'utf8');
   const indexSource = fs.readFileSync(path.join(repoRoot, 'src', 'index.js'), 'utf8');
   assert.match(mainSource, /HTTP_FREEKIT_MCP_PACKAGED_APP: app\.isPackaged \? '1' : '0'/);
+  assert.match(mainSource, /HTTP_FREEKIT_MCP_REMOUNTING_APP: app\.isPackaged && process\.platform === 'linux' && process\.env\.APPIMAGE \? '1' : '0'/);
   assert.match(indexSource, /packagedAppRuntime: process\.env\.HTTP_FREEKIT_MCP_PACKAGED_APP === '1'/);
+  assert.match(indexSource, /remountingPackagedApp: process\.env\.HTTP_FREEKIT_MCP_REMOUNTING_APP === '1'/);
 });
 
 test('application bootstrap resolves the bridge from each current package mount', () => {
@@ -196,7 +219,7 @@ test('runtime descriptor keeps authentication outside the displayed config and c
   assert.equal(fs.existsSync(descriptorPath), false);
 });
 
-test('application bootstrap relays Claude requests to the active authenticated traffic server', async t => {
+test('packaged Electron relays Claude requests without leading non-protocol stdout', async t => {
   const authToken = 'runtime-only-secret';
   const apiServer = {
     trafficLog: [],
@@ -227,21 +250,21 @@ test('application bootstrap relays Claude requests to the active authenticated t
     instanceId: 'integration-test'
   });
   const launchConfig = createMcpLaunchConfig({
-    executablePath: process.execPath,
+    executablePath: electronPath,
     bridgeScript: path.join(repoRoot, 'src', 'mcp', 'stdio-bridge.js'),
-    descriptorPath
+    descriptorPath,
+    electronRuntime: true,
+    packagedAppRuntime: true
   });
   assert.doesNotMatch(JSON.stringify(launchConfig), new RegExp(authToken));
-  const child = spawn(process.execPath, [
-    path.join(repoRoot, 'electron', 'bootstrap.cjs'),
-    MCP_STDIO_BRIDGE_FLAG,
-    descriptorPath
-  ], {
+  const child = spawn(launchConfig.command, launchConfig.args, {
     cwd: os.tmpdir(),
     env: { ...process.env, ...(launchConfig.env || {}) },
     stdio: ['pipe', 'pipe', 'pipe']
   });
+  let stdout = '';
   let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); });
   child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); });
   t.after(async () => {
     child.kill();
@@ -264,6 +287,7 @@ test('application bootstrap relays Claude requests to the active authenticated t
   const initialized = await nextMessage();
   assert.equal(initialized.id, 1, stderr);
   assert.equal(initialized.result.serverInfo.name, 'http-freekit');
+  assert.equal(stdout[0], '{', `Unexpected leading stdout bytes: ${Buffer.from(stdout).toString('hex')}`);
 
   child.stdin.write(JSON.stringify({
     jsonrpc: '2.0',
