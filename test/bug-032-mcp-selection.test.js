@@ -42,7 +42,10 @@ test('MCP search exposes lifecycle IDs and select_request accepts one', () => {
   const bridge = createBridge(trafficLog, broadcasts);
   const selectTool = TOOL_DEFINITIONS.find(tool => tool.name === 'select_request');
 
-  assert.equal(selectTool.inputSchema.properties.traffic_lifecycle_id.minLength, 1);
+  assert.deepEqual(selectTool.inputSchema.properties.traffic_lifecycle_id.anyOf, [
+    { type: 'string', minLength: 1 },
+    { type: 'null' }
+  ]);
   const searchResult = bridge._handleSearchTraffic({ limit: 10 });
   assert.match(searchResult.content[0].text, /"trafficLifecycleId": "life-2"/);
 
@@ -74,4 +77,34 @@ test('MCP select_request rejects an unknown lifecycle without selecting a siblin
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /duplicate \(lifecycle missing-life\) not found/);
   assert.deepEqual(broadcasts, []);
+});
+
+test('MCP explicitly selects and serializes a duplicate legacy lifecycle as null', () => {
+  const broadcasts = [];
+  const bridge = createBridge([
+    {
+      id: 'duplicate', trafficLifecycleId: 'life-1', method: 'GET',
+      url: 'https://current.test/', host: 'current.test', path: '/', timestamp: 1
+    },
+    {
+      id: 'duplicate', method: 'DELETE', url: 'https://legacy.test/',
+      host: 'legacy.test', path: '/', timestamp: 2
+    }
+  ], broadcasts);
+
+  const searchResult = bridge._handleSearchTraffic({ limit: 10 });
+  assert.match(searchResult.content[0].text, /"trafficLifecycleId": null/);
+  const result = bridge._handleSelectRequest({
+    request_id: 'duplicate',
+    traffic_lifecycle_id: null
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /DELETE https:\/\/legacy\.test\//);
+  const serializedBroadcast = JSON.parse(JSON.stringify(broadcasts.at(-1)));
+  assert.deepEqual(serializedBroadcast, {
+    type: 'mcp-select',
+    requestId: 'duplicate',
+    trafficLifecycleId: null
+  });
 });

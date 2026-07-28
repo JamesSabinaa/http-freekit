@@ -320,9 +320,11 @@ export const TOOL_DEFINITIONS = [
       properties: {
         request_id: { type: 'string', description: 'The request ID to select and show details for' },
         traffic_lifecycle_id: {
-          type: 'string',
-          minLength: 1,
-          description: 'Optional lifecycle ID from search_traffic, used to distinguish reused request IDs'
+          anyOf: [
+            { type: 'string', minLength: 1 },
+            { type: 'null' }
+          ],
+          description: 'Optional lifecycle ID from search_traffic, including null for a legacy request without one'
         }
       },
       required: ['request_id']
@@ -428,7 +430,7 @@ export class McpServerBridge {
 
     const matched = results.slice(-max).map(r => ({
       id: r.id,
-      trafficLifecycleId: r.trafficLifecycleId,
+      trafficLifecycleId: r.trafficLifecycleId ?? null,
       method: r.method,
       statusCode: r.statusCode,
       url: r.url,
@@ -809,22 +811,26 @@ export class McpServerBridge {
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
   }
 
-  _handleSelectRequest({ request_id, traffic_lifecycle_id }) {
+  _handleSelectRequest(args) {
+    const { request_id, traffic_lifecycle_id } = args;
+    const lifecycleProvided = Object.prototype.hasOwnProperty.call(args, 'traffic_lifecycle_id');
     const req = this.apiServer.trafficLog.find(r =>
       r.id === request_id &&
-      (traffic_lifecycle_id === undefined || r.trafficLifecycleId === traffic_lifecycle_id)
+      (!lifecycleProvided || (r.trafficLifecycleId ?? null) === traffic_lifecycle_id)
     );
     if (!req) {
-      const identity = traffic_lifecycle_id === undefined
+      const identity = !lifecycleProvided
         ? request_id
-        : `${request_id} (lifecycle ${traffic_lifecycle_id})`;
+        : traffic_lifecycle_id === null
+          ? `${request_id} (legacy lifecycle)`
+          : `${request_id} (lifecycle ${traffic_lifecycle_id})`;
       return { content: [{ type: 'text', text: `Request ${identity} not found` }], isError: true };
     }
     // Broadcast to UI to select this request and open detail pane
     this._broadcastToUi({
       type: 'mcp-select',
       requestId: request_id,
-      trafficLifecycleId: req.trafficLifecycleId
+      trafficLifecycleId: req.trafficLifecycleId ?? null
     });
     return {
       content: [{
