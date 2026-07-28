@@ -219,16 +219,8 @@ export class McpServerBridge {
       return { content: [{ type: 'text', text: `Request ${request_id} not found` }], isError: true };
     }
 
-    // Truncate bodies to 50KB for context manageability
-    const maxBody = 50 * 1024;
     const detail = {
       ...req,
-      requestBody: req.requestBody?.length > maxBody
-        ? req.requestBody.substring(0, maxBody) + '\n... [truncated]'
-        : req.requestBody,
-      responseBody: req.responseBody?.length > maxBody
-        ? req.responseBody.substring(0, maxBody) + '\n... [truncated]'
-        : req.responseBody,
       timestamp: new Date(req.timestamp).toISOString()
     };
 

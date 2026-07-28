@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 45 of the 361 documented bugs are not fully fixed.**
+**No: 44 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 316 |
+| Fixed | 317 |
 | Partially fixed | 19 |
-| Open | 26 |
+| Open | 25 |
 | **Total** | **361** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -818,7 +818,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-229 — Low/Medium — MCP request detail silently truncates bodies
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: `get_request_detail` now returns the complete request and response bodies retained in the traffic record, matching its full-detail contract without an undocumented 50 KiB slice.
 
 - Evidence: `get_request_detail` promises full details including body at `src/mcp/mcp-server.js:25-33`, but the handler slices request and response bodies at 50 KiB at `:198-216`.
 - Impact: MCP clients cannot retrieve or analyze the remaining captured data even though storage retains substantially more.
