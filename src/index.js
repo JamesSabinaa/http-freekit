@@ -57,7 +57,7 @@ async function initializeApplication(apiPort) {
   // 1. Initialize Certificate Authority
   console.log('[Boot] Initializing Certificate Authority...');
   const ca = new CertificateAuthority(DATA_DIR);
-  const certInfo = await ca.initialize({ autoRenewExpiring: process.platform === 'win32' });
+  const certInfo = await ca.initialize({ autoRenewExpiring: false });
   console.log(`[Boot] CA certificate: ${certInfo.certPath}`);
   console.log(`[Boot] CA fingerprint: ${certInfo.fingerprint.substring(0, 16)}...`);
 
@@ -65,6 +65,12 @@ async function initializeApplication(apiPort) {
   // Installs a regenerated CA before deleting only the prior exact thumbprint,
   // so migration cannot leave the application without a trusted current CA.
   // The cert stays in the store across restarts — we never remove it on shutdown.
+  if (certInfo.automaticRenewalDeferred) {
+    console.warn(
+      '[Boot] Automatic CA renewal was deferred to preserve existing client trust; ' +
+      'schedule renewal from Settings > TLS when clients are ready to install the replacement'
+    );
+  }
   if (process.platform === 'win32') {
     try {
       const trustResult = installWindowsCaTrust(certInfo);
@@ -89,12 +95,6 @@ async function initializeApplication(apiPort) {
     }
   } else {
     ca.systemTrustInstalled = false;
-    if (certInfo.automaticRenewalDeferred) {
-      console.warn(
-        '[Boot] Automatic CA renewal was deferred to preserve external trust; ' +
-        'schedule renewal from Settings > TLS when clients are ready to install the replacement'
-      );
-    }
     if (certInfo.replacedCertificateFingerprints.length > 0) {
       console.warn(
         `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`

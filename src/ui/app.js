@@ -10605,6 +10605,8 @@
       const panel = document.getElementById('panel-settings');
       if (panel) panel.scrollTop = 0;
 
+      if (nextSection === 'tls') void loadConfig();
+
       if (updateHash) {
         window.location.hash = '#/settings/' + nextSection;
       }

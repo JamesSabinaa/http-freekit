@@ -101,7 +101,20 @@ test('non-Windows startup defers near-expiry CA replacement until explicitly sch
     assert.equal(renewedInfo.renewalScheduled, false);
     assert.equal(fs.existsSync(renewed.caRenewalStatePath), false);
     assert.equal(renewed.getCertInfo().certificateReplacementPending, true);
+    renewed.acknowledgeReplacementMigration();
+    assert.deepEqual(
+      renewed.pendingReplacementFingerprints,
+      [oldFingerprint],
+      'migration acknowledgement must not discard Windows cleanup retries'
+    );
+    renewed.setPendingMigrationFingerprint(oldFingerprint);
     renewed.setPendingReplacementFingerprints([]);
+    assert.equal(
+      renewed.getCertInfo().certificateReplacementPending,
+      true,
+      'Windows cleanup state must not acknowledge external-client migration'
+    );
+    renewed.acknowledgeReplacementMigration();
     assert.equal(renewed.getCertInfo().certificateReplacementPending, false);
   });
 
@@ -144,6 +157,25 @@ test('near-expiry CA replacement remains automatic when trust migration is enabl
   assert.equal(ca.getCertInfo().certificateRenewalRequired, false);
 });
 
+test('post-rename marker hardening failures remain visibly scheduled', async t => {
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-marker-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const ca = new CertificateAuthority(dataDir);
+  ca._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+  await ca.initialize({ autoRenewExpiring: false });
+  const originalChmodSync = fs.chmodSync;
+  t.mock.method(fs, 'chmodSync', (filePath, mode) => {
+    if (filePath === ca.caRenewalStatePath) throw new Error('simulated chmod failure');
+    return originalChmodSync(filePath, mode);
+  });
+
+  assert.doesNotThrow(() => ca.scheduleRenewal());
+  assert.equal(fs.existsSync(ca.caRenewalStatePath), true);
+  assert.equal(ca.getCertInfo().certificateRenewalScheduled, true);
+});
+
 test('CA renewal routes schedule, cancel, and acknowledge migration state', async t => {
   const state = {
     automatic: false,
@@ -158,6 +190,9 @@ test('CA renewal routes schedule, cancel, and acknowledge migration state', asyn
     }),
     scheduleRenewal: () => { state.scheduled = true; },
     cancelScheduledRenewal: () => { state.scheduled = false; },
+    acknowledgeReplacementMigration: () => {
+      state.replacementPending = false;
+    },
     setPendingReplacementFingerprints: values => {
       state.replacementPending = values.length > 0;
     }
@@ -210,8 +245,9 @@ test('CA renewal routes schedule, cancel, and acknowledge migration state', asyn
 test('settings show deferred, scheduled, and replacement CA migration states', () => {
   assert.match(
     indexSource,
-    /initialize\(\{ autoRenewExpiring: process\.platform === 'win32' \}\)/
+    /initialize\(\{ autoRenewExpiring: false \}\)/
   );
+  assert.match(rendererSource, /if \(nextSection === 'tls'\) void loadConfig\(\)/);
   const start = rendererSource.indexOf('function renderCaRenewalState(');
   const end = rendererSource.indexOf('async function loadConfig()', start);
   assert.ok(start >= 0 && end > start);

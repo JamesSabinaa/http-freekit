@@ -2101,7 +2101,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/certificate/replacement-acknowledgement', (req, res) => {
       try {
-        this.ca.setPendingReplacementFingerprints([]);
+        this.ca.acknowledgeReplacementMigration();
         res.json({ success: true });
       } catch (error) {
         res.status(500).json({ error: `Could not acknowledge CA replacement: ${error.message}` });

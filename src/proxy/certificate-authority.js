@@ -16,6 +16,7 @@ export class CertificateAuthority {
     this.caKeyPath = path.join(dataDir, 'ca.key');
     this.caCertPath = path.join(dataDir, 'ca.pem');
     this.caReplacementStatePath = path.join(dataDir, 'ca-replacements.json');
+    this.caMigrationStatePath = path.join(dataDir, 'ca-migration.json');
     this.caRenewalStatePath = path.join(dataDir, 'ca-renewal.json');
     this.terminalCaBundlePath = terminalCaBundlePath(this.caCertPath);
     this.caKey = null;
@@ -23,6 +24,7 @@ export class CertificateAuthority {
     this.certCache = new Map();
     this.certPromises = new Map();
     this.pendingReplacementFingerprints = [];
+    this.pendingMigrationFingerprint = null;
     this.renewalScheduled = false;
     this.automaticRenewalDeferred = false;
     this.autoRenewExpiring = true;
@@ -33,6 +35,7 @@ export class CertificateAuthority {
     this.autoRenewExpiring = autoRenewExpiring;
     let replacedCertificateFingerprints = this._loadReplacementFingerprints();
     this.pendingReplacementFingerprints = replacedCertificateFingerprints;
+    this.pendingMigrationFingerprint = this._loadMigrationFingerprint();
     let scheduledRenewal = this._loadScheduledRenewal();
     this.renewalScheduled = scheduledRenewal !== null;
     this.automaticRenewalDeferred = false;
@@ -61,6 +64,7 @@ export class CertificateAuthority {
         // failure can then retry exact-thumbprint cleanup on the next start.
         this.setPendingReplacementFingerprints(replacedCertificateFingerprints);
       }
+      this.setPendingMigrationFingerprint(fingerprint);
     };
     if (existingCertReadError) {
       throw new Error(`Could not read existing CA certificate: ${existingCertReadError.message}`);
@@ -134,6 +138,11 @@ export class CertificateAuthority {
       replacedCertificateFingerprints = obsoleteCertificateFingerprints;
     }
     this.pendingReplacementFingerprints = replacedCertificateFingerprints;
+    if (this.pendingMigrationFingerprint === activeCertificateFingerprint) {
+      // A crash after recording intent but before replacing the active CA did
+      // not create a client migration. Do not show a false re-trust warning.
+      this.setPendingMigrationFingerprint(null);
+    }
 
     return {
       certPath: this.caCertPath,
@@ -218,6 +227,65 @@ export class CertificateAuthority {
     }
   }
 
+  _loadMigrationFingerprint() {
+    if (!fs.existsSync(this.caMigrationStatePath)) return null;
+    const state = JSON.parse(fs.readFileSync(this.caMigrationStatePath, 'utf8'));
+    const fingerprint = this._normalizeSha1Fingerprint(state?.previousFingerprint);
+    if (!state || state.version !== 1 || !fingerprint) {
+      throw new Error('Pending CA migration state has an unsupported format');
+    }
+    return fingerprint;
+  }
+
+  setPendingMigrationFingerprint(value) {
+    const fingerprint = value === null ? null : this._normalizeSha1Fingerprint(value);
+    if (value !== null && !fingerprint) {
+      throw new Error('Pending CA migration fingerprint is invalid');
+    }
+    if (!fingerprint) {
+      try { fs.unlinkSync(this.caMigrationStatePath); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      this.pendingMigrationFingerprint = null;
+      return;
+    }
+
+    const temporaryPath = `${this.caMigrationStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    let descriptor = null;
+    try {
+      descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(
+        descriptor,
+        JSON.stringify({ version: 1, previousFingerprint: fingerprint }),
+        'utf8'
+      );
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = null;
+      fs.renameSync(temporaryPath, this.caMigrationStatePath);
+      fs.chmodSync(this.caMigrationStatePath, 0o600);
+      if (process.platform !== 'win32') {
+        const directoryDescriptor = fs.openSync(path.dirname(this.caMigrationStatePath), 'r');
+        try {
+          fs.fsyncSync(directoryDescriptor);
+        } finally {
+          fs.closeSync(directoryDescriptor);
+        }
+      }
+      this.pendingMigrationFingerprint = fingerprint;
+    } catch (error) {
+      if (descriptor !== null) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+      try { fs.unlinkSync(temporaryPath); } catch {}
+      throw error;
+    }
+  }
+
+  acknowledgeReplacementMigration() {
+    this.setPendingMigrationFingerprint(null);
+  }
+
   _loadScheduledRenewal() {
     if (!fs.existsSync(this.caRenewalStatePath)) return null;
     const state = JSON.parse(fs.readFileSync(this.caRenewalStatePath, 'utf8'));
@@ -235,6 +303,7 @@ export class CertificateAuthority {
     if (!fingerprint) throw new Error('Current CA fingerprint is unavailable');
     const temporaryPath = `${this.caRenewalStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     let descriptor = null;
+    let committed = false;
     try {
       descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
       fs.writeFileSync(descriptor, JSON.stringify({ version: 1, fingerprint }), 'utf8');
@@ -242,6 +311,8 @@ export class CertificateAuthority {
       fs.closeSync(descriptor);
       descriptor = null;
       fs.renameSync(temporaryPath, this.caRenewalStatePath);
+      committed = true;
+      this.renewalScheduled = true;
       fs.chmodSync(this.caRenewalStatePath, 0o600);
       if (process.platform !== 'win32') {
         const directoryDescriptor = fs.openSync(path.dirname(this.caRenewalStatePath), 'r');
@@ -251,8 +322,15 @@ export class CertificateAuthority {
           fs.closeSync(directoryDescriptor);
         }
       }
-      this.renewalScheduled = true;
     } catch (error) {
+      if (committed) {
+        // The visible state must match the committed marker. A chmod or
+        // directory-fsync failure after rename is not allowed to report an
+        // unscheduled renewal which will nevertheless run after restart.
+        this.renewalScheduled = true;
+        console.warn(`[CA] Renewal was scheduled but marker hardening failed: ${error.message}`);
+        return;
+      }
       if (descriptor !== null) {
         try { fs.closeSync(descriptor); } catch {}
       }
@@ -478,7 +556,7 @@ export class CertificateAuthority {
       certificateRenewalScheduled: this.renewalScheduled,
       certificateAutomaticRenewalEnabled: this.autoRenewExpiring,
       certificateAutomaticRenewalDeferred: this.automaticRenewalDeferred,
-      certificateReplacementPending: this.pendingReplacementFingerprints.length > 0,
+      certificateReplacementPending: this.pendingMigrationFingerprint !== null,
       terminalCaBundlePath: this.terminalCaBundlePath
     };
   }

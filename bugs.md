@@ -653,7 +653,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-182 — Medium — Automatic CA renewal breaks non-Windows trust
 
 - Status: **Fixed**.
-- Resolution: Startup now renews an expiring CA automatically only where Windows trust migration is available. Other platforms preserve the currently trusted identity, expose expiry and migration state 30 days ahead, and require an explicit, crash-safe renewal scheduled for the next restart. The TLS settings UI supports scheduling or cancelling that renewal and keeps warning until the replacement CA has been installed in manually configured clients and acknowledged.
+- Resolution: Startup preserves an expiring CA on every platform so a trusted root is never silently overwritten before replacement trust is available. Expiry and migration state are exposed 30 days ahead, and replacement requires an explicit, crash-safe renewal scheduled for the next restart. Windows trust cleanup retries and human client-migration acknowledgement use separate durable state, while TLS settings refresh on entry and keep warning until the replacement CA has been installed in manually configured clients and acknowledged.
 
 - Evidence: startup regenerates an expiring CA and overwrites its files at `src/proxy/certificate-authority.js:19-36,47-85`. Boot installs/replaces trust only on Windows and does nothing equivalent on macOS/Linux at `src/index.js:43-58`.
 - Impact: after the one-year renewal, previously configured macOS, Linux, browser, and device clients reject all interception without a warning or re-trust migration.
