@@ -1108,7 +1108,12 @@ export class ProxyServer {
   }
 
   setTlsFingerprint(preset) {
-    this.tlsFingerprint = preset || 'chrome-136';
+    const nextFingerprint = preset || 'chrome-136';
+    if (nextFingerprint !== this.tlsFingerprint) {
+      this.tlsFingerprint = nextFingerprint;
+      this._destroyUpstreamAgent();
+      this._closeAllH2Sessions();
+    }
     console.log(`[Proxy] TLS fingerprint: ${this.tlsFingerprint}`);
   }
 
@@ -3111,7 +3116,9 @@ export class ProxyServer {
         if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
-            const h2Session = await this._getH2Session(hostname, targetPort);
+            const h2Session = await this._getH2Session(
+              hostname, targetPort, tlsSocket._clientHelloTls
+            );
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
@@ -3631,7 +3638,9 @@ export class ProxyServer {
         if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
-            const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
+            const h2Session = await this._getH2Session(
+              upstreamHostname, upstreamPort, tlsSocket._clientHelloTls
+            );
             if (downstream.aborted) return;
             if (h2Session) {
               const h2Res = await this._makeH2Request(
@@ -4041,7 +4050,9 @@ export class ProxyServer {
         if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
-            const h2Session = await this._getH2Session(hostname, targetPort);
+            const h2Session = await this._getH2Session(
+              hostname, targetPort, tlsSocket._clientHelloTls
+            );
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
@@ -4697,16 +4708,25 @@ export class ProxyServer {
 
   // Get or create an HTTP/2 session to the given origin, with caching.
   // Returns the h2 session or null if the origin doesn't support h2.
-  _getH2Session(hostname, port) {
+  _getH2Session(hostname, port, clientHelloTls = null) {
     const origin = `${hostname}:${port}`;
+    const cacheKey = this.tlsFingerprint === 'passthrough' && clientHelloTls
+      ? `${origin}|passthrough:${JSON.stringify([
+          clientHelloTls.minVersion || null,
+          clientHelloTls.maxVersion || null,
+          clientHelloTls.ciphers || null,
+          clientHelloTls.sigalgs || null,
+          clientHelloTls.ecdhCurve || null
+        ])}`
+      : origin;
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // Known not to support h2
-    if (this._h2Blacklist.has(origin)) return Promise.resolve(null);
+    if (this._h2Blacklist.has(cacheKey)) return Promise.resolve(null);
 
     // Already connecting — wait for it rather than exposing a session that has
     // not completed its TLS/ALPN handshake yet.
-    const cached = this._h2Sessions.get(origin);
+    const cached = this._h2Sessions.get(cacheKey);
     if (cached && cached.pending) return cached.pending;
 
     // Existing live session
@@ -4714,13 +4734,13 @@ export class ProxyServer {
       // Reset idle timer
       clearTimeout(cached.timer);
       cached.timer = setTimeout(
-        () => this._evictH2Session(origin, cached.session, cached.attempt),
+        () => this._evictH2Session(cacheKey, cached.session, cached.attempt),
         60000
       );
       return Promise.resolve(cached.session);
     }
     if (cached) {
-      this._evictH2Session(origin, cached.session, cached.attempt);
+      this._evictH2Session(cacheKey, cached.session, cached.attempt);
     }
 
     // Create new session
@@ -4732,13 +4752,13 @@ export class ProxyServer {
       let connectTimeout;
 
       const session = http2.connect(url, {
-        ...this._getUpstreamTlsOptions(hostname),
+        ...this._getUpstreamTlsOptions(hostname, clientHelloTls),
         ALPNProtocols: ['h2']
       });
 
       attemptEntry = { session, timer: null, pending: null, attempt };
       const isCurrentAttempt = () => {
-        const current = this._h2Sessions.get(origin);
+        const current = this._h2Sessions.get(cacheKey);
         return current === attemptEntry &&
           current.session === session && current.attempt === attempt;
       };
@@ -4749,8 +4769,8 @@ export class ProxyServer {
         clearTimeout(attemptEntry.timer);
         if (isCurrentAttempt()) {
           // Delete ownership before destruction can synchronously emit more events.
-          this._h2Sessions.delete(origin);
-          this._h2Blacklist.add(origin);
+          this._h2Sessions.delete(cacheKey);
+          this._h2Blacklist.add(cacheKey);
         }
         if (destroy && !session.destroyed) session.destroy();
         resolve(null);
@@ -4770,7 +4790,7 @@ export class ProxyServer {
         attemptEntry.pending = null;
         attemptEntry.abortPending = null;
         attemptEntry.timer = setTimeout(
-          () => this._evictH2Session(origin, session, attempt),
+          () => this._evictH2Session(cacheKey, session, attempt),
           60000
         );
         resolve(session);
@@ -4781,17 +4801,17 @@ export class ProxyServer {
           settlePendingFailure();
         } else {
           // Session died after initial connect — evict
-          this._evictH2Session(origin, session, attempt);
+          this._evictH2Session(cacheKey, session, attempt);
         }
       });
 
       session.on('close', () => {
         if (!settled) settlePendingFailure();
-        else this._evictH2Session(origin, session, attempt);
+        else this._evictH2Session(cacheKey, session, attempt);
       });
 
       session.on('goaway', () => {
-        this._evictH2Session(origin, session, attempt);
+        this._evictH2Session(cacheKey, session, attempt);
       });
 
       // Timeout for initial connect
@@ -4800,11 +4820,11 @@ export class ProxyServer {
       // The pending promise is attached immediately after construction below.
       // Referencing it here would hit its temporal dead zone because Promise
       // executors run synchronously.
-      this._h2Sessions.set(origin, attemptEntry);
+      this._h2Sessions.set(cacheKey, attemptEntry);
     });
 
     // Update cache entry with the pending promise
-    const cachedEntry = this._h2Sessions.get(origin);
+    const cachedEntry = this._h2Sessions.get(cacheKey);
     if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
 
     return pending;

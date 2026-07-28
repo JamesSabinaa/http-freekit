@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 62 of the 360 documented bugs are not fully fixed.**
+**No: 61 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 298 |
-| Partially fixed | 25 |
+| Fixed | 299 |
+| Partially fixed | 24 |
 | Open | 37 |
 | **Total** | **360** |
 
@@ -313,8 +313,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-108 — Medium — H2 upstreams ignore the selected TLS fingerprint
 
-- Status: **Partially fixed**.
-- Resolution: Named TLS fingerprint presets now apply when creating H2 sessions. Passthrough H2 still receives no captured ClientHello, and changing the selected fingerprint does not evict already-cached H2 sessions.
+- Status: **Fixed**.
+- Resolution: H2 session creation now receives captured downstream ClientHello parameters in passthrough mode, and passthrough sessions are cached separately for distinct TLS parameter sets. Changing the selected fingerprint destroys the fingerprinted upstream agent, closes cached and pending H2 sessions, and clears stale H2 capability results before subsequent connections.
 - Evidence: H1 upstreams spread `_getUpstreamTlsOptions()` at `src/proxy/proxy-server.js:1459,1825,2062`; `_getH2Session()` uses only verification/ALPN options at `:2556-2564` and never applies the selected fingerprint/ClientHello behavior.
 - Impact: Chrome/Safari/Firefox/passthrough fingerprint settings silently do nothing for H2-capable origins.
 - Reproduction: select different fingerprint presets, connect to an H2 fingerprint recorder, and compare ClientHello data.
