@@ -66,3 +66,55 @@ test('failure to delete an originally absent proxy server remains retryable', ()
   assert.equal(interceptor.activeProxyServer, '127.0.0.1:8080');
   assert.ok(interceptor.pendingRecovery);
 });
+
+test('a second Stop completes a partially applied system-proxy restore', async () => {
+  const previousSettings = { enabled: false, server: null, override: null };
+  const settings = { enabled: true, server: '127.0.0.1:8080', override: '' };
+  const interceptor = new SystemProxyInterceptor();
+  interceptor._isWindows = () => true;
+  interceptor.active = true;
+  interceptor.previousSettings = previousSettings;
+  interceptor.activeProxyServer = settings.server;
+  interceptor.pendingRecovery = {
+    proxyServer: settings.server,
+    ownedSettings: { ...settings },
+    previousSettings
+  };
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  interceptor._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    else if (name === 'ProxyServer') settings.server = value;
+    else if (name === 'ProxyOverride') settings.override = value;
+  };
+  let overrideDeleteFails = true;
+  interceptor._deleteRegistryValue = name => {
+    if (name === 'ProxyOverride' && overrideDeleteFails) {
+      overrideDeleteFails = false;
+      throw new Error('ProxyOverride delete failed');
+    }
+    if (name === 'ProxyServer') settings.server = null;
+    if (name === 'ProxyOverride') settings.override = null;
+  };
+  interceptor._notifyWinInet = () => {};
+
+  await assert.rejects(
+    interceptor.deactivate(),
+    /ProxyOverride delete failed/
+  );
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: null,
+    override: ''
+  });
+  assert.equal(interceptor.active, true);
+  assert.equal(interceptor.restorePending, true);
+  assert.ok(interceptor.pendingRecovery);
+
+  await interceptor.deactivate();
+
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.restorePending, false);
+  assert.equal(interceptor.previousSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+});

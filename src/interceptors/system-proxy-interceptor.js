@@ -12,6 +12,7 @@ export class SystemProxyInterceptor {
     this.previousSettings = null;
     this.activeProxyServer = null;
     this.pendingRecovery = null;
+    this.restorePending = false;
     this.ca = options.ca || null;
     this._processIdentityLookup = options.processIdentityLookup
       || (pid => this._queryWindowsProcessIdentity(pid));
@@ -324,6 +325,7 @@ if ($null -eq $target) {
     this.previousSettings = null;
     this.activeProxyServer = null;
     this.pendingRecovery = null;
+    this.restorePending = false;
   }
 
   _settingsBelongToActiveSession(settings) {
@@ -390,7 +392,7 @@ if ($null -eq $target) {
       if (!this.active && !this.previousSettings) return;
       try {
         const currentSettings = this._readCurrentSettings();
-        const settingsAreOwned = this.active
+        const settingsAreOwned = this.active && !this.restorePending
           ? this._settingsBelongToActiveSession(currentSettings)
           : this.pendingRecovery
             && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
@@ -399,10 +401,12 @@ if ($null -eq $target) {
           this.previousSettings = null;
           this.activeProxyServer = null;
           this.pendingRecovery = null;
+          this.restorePending = false;
           this.active = false;
           console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
           return;
         }
+        this.restorePending = true;
         this._restorePreviousSettings();
         this.active = false;
         console.log('[Interceptor] Previous system proxy settings restored');
