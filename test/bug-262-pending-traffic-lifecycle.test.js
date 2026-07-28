@@ -339,7 +339,7 @@ test('request and response breakpoints remain one lifecycle across all intercept
             `${protocol.name} marks every response pause for response editing`
           );
         }
-        assertSingleLifecycle(capture, expectedStatus, `${protocol.name} ${phase}`, 2);
+        assertSingleLifecycle(capture, expectedStatus, `${protocol.name} ${phase}`, 3);
       }
     }
 
@@ -398,7 +398,7 @@ test('request and response breakpoints remain one lifecycle across all intercept
         true,
         `${protocol.name} combined marks every response pause for response editing`
       );
-      assertSingleLifecycle(capture, 202, `${protocol.name} combined`, 3);
+      assertSingleLifecycle(capture, 202, `${protocol.name} combined`, 5);
     }
   });
 

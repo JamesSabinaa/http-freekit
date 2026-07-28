@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { ApiServer } from '../src/api/api-server.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 function withControlledTimeouts(run) {
@@ -135,6 +136,74 @@ test('breakpoint timeout emits one ordered resume while other completion paths s
     assert.equal(trafficUpdates[0]._mergeUpdate, true);
     assert.equal(trafficUpdates[0]._update, true);
     assert.ok(trafficUpdates[0].duration >= 0);
+  });
+});
+
+test('manual and timeout resumes immediately clear the active traffic marker', () => {
+  withControlledTimeouts(timers => {
+    const proxy = new ProxyServer(null);
+    const api = new ApiServer(proxy, null, null);
+    const resolutions = [];
+    proxy.onRequest = event => api.onTrafficEvent(event);
+
+    const seedActiveBreakpoint = (requestId, trafficLifecycleId) => {
+      const timestamp = Date.now() - 100;
+      proxy._emitPendingRequest({
+        id: requestId,
+        protocol: 'http',
+        method: 'GET',
+        url: `http://example.test/${requestId}`,
+        host: 'example.test',
+        path: `/${requestId}`,
+        requestHeaders: {},
+        requestBody: '',
+        requestBodySize: 0,
+        timestamp,
+        source: 'breakpoint',
+        tls: null,
+        remote: null
+      }, trafficLifecycleId);
+      proxy._storePendingBreakpoint(requestId, {
+        method: 'GET',
+        url: `http://example.test/${requestId}`,
+        host: 'example.test',
+        path: `/${requestId}`,
+        trafficLifecycleId,
+        timestamp,
+        resolve: value => resolutions.push({ requestId, value })
+      });
+      proxy._setBreakpointTimeout(requestId, null, trafficLifecycleId);
+      const active = api.trafficLog.find(request =>
+        request.id === requestId && request.trafficLifecycleId === trafficLifecycleId
+      );
+      assert.equal(active?.breakpointActive, true);
+    };
+
+    const assertReleased = (requestId, trafficLifecycleId) => {
+      const released = api.trafficLog.find(request =>
+        request.id === requestId && request.trafficLifecycleId === trafficLifecycleId
+      );
+      assert.equal(released?.statusCode, null);
+      assert.equal(released?.statusMessage, 'Pending');
+      assert.equal(released?.breakpointActive, false);
+      assert.equal(proxy._selectPendingBreakpoint(requestId, trafficLifecycleId), null);
+      assert.ok(proxy._selectPendingTrafficLogDecision(
+        { id: requestId }, trafficLifecycleId
+      )?.decision, 'the eventual completion must retain its lifecycle decision');
+    };
+
+    seedActiveBreakpoint('manual', 'manual-life');
+    assert.equal(proxy.resumeBreakpoint('manual', {}, 'manual-life'), true);
+    assertReleased('manual', 'manual-life');
+
+    seedActiveBreakpoint('timeout', 'timeout-life');
+    timers[1].callback();
+    assertReleased('timeout', 'timeout-life');
+
+    assert.deepEqual(resolutions, [
+      { requestId: 'manual', value: {} },
+      { requestId: 'timeout', value: {} }
+    ]);
   });
 });
 

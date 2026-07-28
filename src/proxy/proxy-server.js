@@ -8842,14 +8842,18 @@ export class ProxyServer {
   // Emit a pending request that appears in the UI immediately (before response arrives)
   _emitPendingRequest(data, trafficLifecycleId = data.trafficLifecycleId || uuidv4()) {
     const lifecycleToken = Symbol('traffic-lifecycle');
+    const breakpointPending = data.source === 'breakpoint';
     data.trafficLifecycleId = trafficLifecycleId;
     Object.defineProperty(data, '_trafficLifecycleToken', {
       value: lifecycleToken,
       configurable: true
     });
     data._pending = true;
-    data.statusCode = null;
-    data.statusMessage = 'Pending';
+    data.statusCode = breakpointPending ? 0 : null;
+    data.statusMessage = breakpointPending ? 'Breakpoint' : 'Pending';
+    if (breakpointPending && data.breakpointPhase === undefined) {
+      data.breakpointPhase = 'request';
+    }
     data.responseHeaders = {};
     data.responseBody = '';
     data.responseBodySize = 0;
@@ -9390,11 +9394,44 @@ export class ProxyServer {
     };
   }
 
+  _emitResumedBreakpointTraffic(requestId, bp) {
+    const pendingSelection = this._selectPendingTrafficLogDecision({
+      id: requestId,
+      method: bp.method,
+      url: bp.url,
+      host: bp.host,
+      path: bp.path
+    }, bp.trafficLifecycleId);
+    if (!pendingSelection || pendingSelection.decision === undefined) return;
+    const pendingDecision = pendingSelection.decision;
+    const retainedRecord = pendingDecision && typeof pendingDecision === 'object'
+      ? pendingDecision.record
+      : null;
+    const requestStartedAt = Number.isFinite(retainedRecord?.timestamp)
+      ? retainedRecord.timestamp
+      : (Number.isFinite(bp.timestamp) ? bp.timestamp : Date.now());
+    this._emitRequestUpdate({
+      ...(retainedRecord || {}),
+      id: requestId,
+      method: bp.method,
+      url: bp.url,
+      host: bp.host,
+      path: bp.path,
+      trafficLifecycleId: bp.trafficLifecycleId,
+      _trafficLifecycleComplete: false,
+      _mergeUpdate: true,
+      statusCode: null,
+      statusMessage: 'Pending',
+      duration: Math.max(0, Date.now() - requestStartedAt)
+    });
+  }
+
   resumeBreakpoint(requestId, modifications = {}, trafficLifecycleId) {
     const bp = this._selectPendingBreakpoint(requestId, trafficLifecycleId);
     if (!bp) return false;
     if (this.validateBreakpointModifications(modifications)) return false;
     this._deletePendingBreakpoint(requestId, bp);
+    this._emitResumedBreakpointTraffic(requestId, bp);
     bp.resolve(modifications);
     try {
       this.onBreakpoint({
@@ -9413,6 +9450,7 @@ export class ProxyServer {
     let onClientClose = null;
     const timeout = setTimeout(() => {
       if (this._deletePendingBreakpoint(requestId, bp)) {
+        this._emitResumedBreakpointTraffic(requestId, bp);
         bp.resolve({});
         try {
           this.onBreakpoint({

@@ -42,8 +42,17 @@ test('disconnecting paused HTTP clients removes their breakpoint and traffic lif
     request.end();
 
     await waitFor(() => proxy.pendingBreakpoints.size === 1);
-    const requestId = proxy.getPendingBreakpoints()[0].id;
+    const pendingBreakpoint = proxy.getPendingBreakpoints()[0];
+    const requestId = pendingBreakpoint.id;
     assert.equal(proxy._pendingTrafficLogDecisions.size, 1);
+    const active = api.trafficLog.find(request =>
+      request.id === requestId &&
+      request.trafficLifecycleId === pendingBreakpoint.trafficLifecycleId
+    );
+    assert.equal(active?.statusCode, 0);
+    assert.equal(active?.statusMessage, 'Breakpoint');
+    assert.equal(active?.breakpointPhase, 'request');
+    assert.equal(active?.breakpointActive, true);
     request.destroy();
     await waitFor(() => proxy.pendingBreakpoints.size === 0 &&
       proxy._pendingTrafficLogDecisions.size === 0);
