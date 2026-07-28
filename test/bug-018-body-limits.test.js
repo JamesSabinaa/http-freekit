@@ -34,14 +34,22 @@ test('decompression refuses output beyond the configured ceiling', () => {
   assert.deepEqual(proxy._decompressBody(compressed, 'gzip'), compressed);
 });
 
-test('oversized proxy uploads are rejected before reaching the origin', async (t) => {
+test('oversized pass-through uploads stream while capture remains bounded', async (t) => {
   let originHits = 0;
+  let receivedBody = '';
   const origin = http.createServer((req, res) => {
     originHits++;
-    res.end('unexpected');
+    req.setEncoding('utf8');
+    req.on('data', chunk => { receivedBody += chunk; });
+    req.on('end', () => res.end('forwarded'));
   });
   const originPort = await listen(origin);
-  const proxy = new ProxyServer(null, { port: 0, maxBufferedBodyBytes: 8 });
+  const events = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    maxBufferedBodyBytes: 8,
+    onRequest: event => events.push(event)
+  });
   await proxy.start();
   t.after(async () => {
     await proxy.stop();
@@ -63,8 +71,13 @@ test('oversized proxy uploads are rejected before reaching the origin', async (t
     req.end('123456789');
   });
 
-  assert.equal(statusCode, 413);
-  assert.equal(originHits, 0);
+  assert.equal(statusCode, 200);
+  assert.equal(originHits, 1);
+  assert.equal(receivedBody, '123456789');
+  const finalRecord = events.find(event => event._update);
+  assert.equal(finalRecord.requestBodyTruncated, true);
+  assert.equal(finalRecord.requestBodyCapturedSize, 0);
+  assert.equal(finalRecord.requestBodySize, 9);
 });
 
 test('Send rejects an upstream response beyond its buffer ceiling', async (t) => {

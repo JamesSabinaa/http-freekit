@@ -151,11 +151,26 @@ test('H2 routing never replays an attempted POST but falls back after setup fail
 
     let failureMode = 'attempted';
     let h1Requests = 0;
-    proxy._getH2Session = async () => ({});
-    proxy._makeH2Request = async (...args) => {
-      if (failureMode === 'attempted') args.at(-1)?.();
-      throw new Error(`${failureMode} H2 failure`);
-    };
+    proxy._getH2Session = async () => ({
+      request() {
+        if (failureMode === 'setup') throw new Error('setup H2 failure');
+        const request = new EventEmitter();
+        request.destroyed = false;
+        request.closed = false;
+        request.writableEnded = false;
+        request.write = () => true;
+        request.sendTrailers = () => {};
+        request.close = () => { request.closed = true; };
+        request.destroy = () => { request.destroyed = true; };
+        request.pipe = () => request;
+        request.end = () => setImmediate(() => {
+          const error = new Error('attempted H2 failure');
+          error.code = 'ECONNRESET';
+          request.emit('error', error);
+        });
+        return request;
+      }
+    });
     t.mock.method(https, 'request', () => {
       h1Requests += 1;
       const request = new EventEmitter();

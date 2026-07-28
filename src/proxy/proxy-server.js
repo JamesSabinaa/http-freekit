@@ -44,6 +44,15 @@ const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
 const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
+const BODY_MATCHER_TYPES = new Set([
+  'body-contains',
+  'json-body-exact',
+  'json-body-includes',
+  'regex-body',
+  'raw-body-exact',
+  'form-data',
+  'multipart-form-data'
+]);
 const SUPPORTED_UPGRADE_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const MAX_PENDING_WS_CAPTURE_MESSAGES = 64;
 const HOP_BY_HOP_HEADER_NAMES = new Set([
@@ -762,6 +771,1209 @@ export class ProxyServer {
     const err = new Error(`${kind} exceeds ${this.maxBufferedBodyBytes} byte buffer limit`);
     err.code = 'ERR_BODY_TOO_LARGE';
     return err;
+  }
+
+  _streamedCaptureBody(collector, totalBytes, label, headers = {}) {
+    if (collector.exceeded) {
+      return new TruncatedBodyString(
+        `[${label} body omitted after exceeding ${collector.limit} bytes]`,
+        0,
+        totalBytes
+      );
+    }
+    return this._safeBodyString(
+      this._concatBody(collector),
+      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-type')[0]
+    );
+  }
+
+  _matcherSetBeforeBody(matchers, method, url, headers) {
+    let dependsOnBody = false;
+    for (const matcher of matchers) {
+      if (isCompleteMockMatcher(matcher) && BODY_MATCHER_TYPES.has(matcher.type)) {
+        dependsOnBody = true;
+        continue;
+      }
+      if (!this._evaluateMatcher(matcher, method, url, headers, '')) return 'miss';
+    }
+    return dependsOnBody ? 'pending-body' : 'match';
+  }
+
+  _canStreamWithoutRequestBuffering(method, url, headers) {
+    const flatRules = this._flattenMockRules(this.mockRules);
+    const sortedRules = [...flatRules].sort((left, right) => {
+      if (left.priority === 'high' && right.priority !== 'high') return -1;
+      if (right.priority === 'high' && left.priority !== 'high') return 1;
+      return 0;
+    });
+
+    for (const rule of sortedRules) {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule) || !rule.enabled
+        || validateMockRule(rule, { allowGroup: false, allowEmptyMatchers: true })) continue;
+      if (Array.isArray(rule.matchers)
+        && rule.action && typeof rule.action === 'object' && !Array.isArray(rule.action)) {
+        const decision = this._matcherSetBeforeBody(rule.matchers, method, url, headers);
+        if (decision === 'miss') continue;
+        if (decision === 'pending-body') return false;
+        if (rule.action.type === 'passthrough') break;
+        return false;
+      }
+
+      const methodMatches = typeof rule.method !== 'string' || rule.method === '*'
+        || rule.method.toUpperCase() === String(method || '').toUpperCase();
+      let urlMatches = false;
+      if (rule.urlPattern instanceof RegExp) {
+        const previousIndex = rule.urlPattern.lastIndex;
+        urlMatches = rule.urlPattern.test(String(url || ''));
+        rule.urlPattern.lastIndex = previousIndex;
+      }
+      else if (typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0) {
+        urlMatches = String(url || '').includes(rule.urlPattern);
+      }
+      if (methodMatches && urlMatches) return false;
+    }
+
+    for (const rule of this.breakpointRules) {
+      if (!rule?.enabled || !Array.isArray(rule.matchers)) continue;
+      const decision = this._matcherSetBeforeBody(rule.matchers, method, url, headers);
+      if (decision !== 'miss') return false;
+    }
+    return true;
+  }
+
+  _advertisedTrailerNames(headers) {
+    const names = getHeaderValues(headers, 'trailer')
+      .flatMap(value => value.split(','))
+      .map(value => value.trim().toLowerCase())
+      .filter(value => /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(value))
+      .filter(value => !HOP_BY_HOP_HEADER_NAMES.has(value));
+    return [...new Set(names)];
+  }
+
+  _streamH1Exchange({
+    clientReq,
+    clientRes,
+    targetUrl,
+    requestId,
+    startTime,
+    captureProtocol,
+    tlsDetails = null,
+    clientHelloTls = null
+  }) {
+    const method = clientReq.method;
+    const requestHeaders = { ...clientReq.headers };
+    const upstreamHeaders = this._stripUpstreamHeaders({
+      ...this._rawHeadersToObject(clientReq.rawHeaders),
+      ...clientReq.headers
+    });
+    this._setTargetHostHeader(upstreamHeaders, targetUrl.host);
+    const requestTrailerNames = this._advertisedTrailerNames(clientReq.headers);
+    if (requestTrailerNames.length > 0) {
+      for (const name of Object.keys(upstreamHeaders)) {
+        if (name.toLowerCase() === 'content-length') delete upstreamHeaders[name];
+      }
+      upstreamHeaders.trailer = requestTrailerNames.join(', ');
+    }
+
+    const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
+    const targetPort = parseInt(targetUrl.port, 10)
+      || (targetUrl.protocol === 'https:' ? 443 : 80);
+    const requestBody = this._createBodyCollector();
+    const responseBody = this._createBodyCollector();
+    const downstream = this._trackDownstreamCancellation(clientRes);
+    const source = this._detectSource(requestHeaders);
+    let requestBodySize = 0;
+    let responseBodySize = 0;
+    let requestEnded = false;
+    let requestTrailers = {};
+    let activeRequest = null;
+    let activeResponse = null;
+    let activeProtocol = null;
+    let h2FallbackStarted = false;
+    let pendingEmitted = false;
+    let finalized = false;
+    let responseEnded = false;
+    let responseResult = null;
+    let responseMetadata = null;
+    let pendingUpstreamFailure = null;
+    let connectStart = Date.now();
+    let h2IdleTimer = null;
+
+    const captureRequestChunk = (chunk) => {
+      requestBodySize += chunk.length;
+      this._appendBodyChunk(requestBody, chunk);
+    };
+    const captureQueuedRequestChunks = () => {
+      // With a data listener attached, explicit reads synchronously emit that
+      // same chunk through the normal capture/relay handler.
+      while (clientReq.read() !== null) { /* drain queued bytes */ }
+    };
+
+    const requestCapture = () => this._streamedCaptureBody(
+      requestBody,
+      requestBodySize,
+      'Request',
+      requestHeaders
+    );
+    const responseCapture = (headers = {}) => this._streamedCaptureBody(
+      responseBody,
+      responseBodySize,
+      'Response',
+      headers
+    );
+    const baseRecord = () => ({
+      id: requestId,
+      protocol: captureProtocol,
+      method,
+      url: targetUrl.href,
+      host: targetUrl.hostname,
+      path: targetUrl.pathname + targetUrl.search,
+      requestHeaders,
+      requestBody: requestCapture(),
+      requestBodySize,
+      timestamp: startTime,
+      source,
+      tls: tlsDetails,
+      remote: null
+    });
+    const emitPending = () => {
+      if (pendingEmitted) return;
+      pendingEmitted = this._emitPendingRequest(baseRecord());
+    };
+    const clearH2IdleTimer = () => {
+      if (!h2IdleTimer) return;
+      clearTimeout(h2IdleTimer);
+      h2IdleTimer = null;
+    };
+    const resetH2IdleTimer = (request = activeRequest) => {
+      if (activeProtocol !== 'h2' || finalized || this._upstreamIdleTimeoutMs <= 0) return;
+      clearH2IdleTimer();
+      h2IdleTimer = setTimeout(() => {
+        const error = new Error(
+          `Upstream response timeout after ${this._upstreamIdleTimeoutMs / 1000}s`
+        );
+        error.code = 'ETIMEDOUT';
+        error.upstreamPhase = 'response';
+        void handleFailure(error, request, {
+          attempt: 0,
+          proxyGeneration: undefined,
+          usedUpstreamProxy: false
+        }).finally(() => request?.close?.(http2.constants.NGHTTP2_CANCEL));
+      }, this._upstreamIdleTimeoutMs);
+      h2IdleTimer.unref?.();
+    };
+    const finalize = (result) => {
+      if (finalized) return;
+      finalized = true;
+      clearH2IdleTimer();
+      downstream.complete();
+      const emit = pendingEmitted
+        ? data => this._emitRequestUpdate(data)
+        : data => this._emitRequest(data);
+      emit({
+        ...baseRecord(),
+        statusCode: result.statusCode,
+        statusMessage: result.statusMessage,
+        responseHeaders: result.responseHeaders || {},
+        responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
+        responseBodySize,
+        duration: Date.now() - startTime,
+        timing: {
+          total: Date.now() - startTime,
+          waiting: result.waiting ?? (Date.now() - connectStart)
+        },
+        usedUpstreamProxy: result.usedUpstreamProxy === true,
+        remote: result.remote || null,
+        trailers: Object.keys(result.trailers || {}).length > 0 ? result.trailers : null,
+        ...(result.error ? {
+          error: result.error.message,
+          errorCode: this._getUpstreamErrorCode(result.error),
+          errorPhase: this._getUpstreamErrorPhase(result.error),
+          upstreamProxyGeneration: result.proxyGeneration,
+          upstreamProxyConnect: result.request?._upstreamProxyConnect || null
+        } : {})
+      });
+    };
+    const finishUpload = (request) => {
+      const trailers = this._cleanTrailers(requestTrailers);
+      if (activeProtocol === 'h2') {
+        request.end();
+        return;
+      }
+      if (Object.keys(trailers).length > 0) request.addTrailers(trailers);
+      request.end();
+    };
+    const maybeFinalize = () => {
+      if (requestEnded && responseEnded && responseResult) finalize(responseResult);
+    };
+    const canReplay = () => requestEnded && !requestBody.exceeded
+      && this._canSafelyReplayRequest(method);
+
+    const handleFailure = async (error, request, context) => {
+      if (finalized || downstream.aborted) return;
+      if (!requestEnded && !responseMetadata) {
+        pendingUpstreamFailure ||= { error, request, context };
+        return;
+      }
+      if (!responseMetadata && canReplay()) {
+        const shouldRetry = await this._shouldRetryAfterUpstreamError(error, {
+          attempt: context.attempt,
+          proxyGeneration: context.proxyGeneration,
+          usedUpstreamProxy: context.usedUpstreamProxy,
+          method,
+          url: targetUrl.href,
+          host: targetUrl.hostname
+        });
+        if (shouldRetry && !finalized && !downstream.aborted) {
+          sendProxyRequest(context.attempt + 1, true);
+          return;
+        }
+      }
+
+      if (responseMetadata) {
+        if (!clientRes.destroyed) clientRes.destroy(error);
+        finalize({
+          ...responseMetadata,
+          responseBody: responseCapture(responseMetadata.responseHeaders),
+          error,
+          request,
+          proxyGeneration: context.proxyGeneration,
+          usedUpstreamProxy: context.usedUpstreamProxy
+        });
+        return;
+      }
+
+      try {
+        if (!clientRes.headersSent) {
+          clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
+          clientRes.end(`Proxy Error: ${error.message}`);
+        } else if (!clientRes.destroyed) {
+          clientRes.destroy(error);
+        }
+      } catch { /* downstream already closed */ }
+      finalize({
+        statusCode: 502,
+        statusMessage: 'Bad Gateway',
+        responseHeaders: {},
+        responseBody: `Proxy Error: ${error.message}`,
+        error,
+        request,
+        proxyGeneration: context.proxyGeneration,
+        usedUpstreamProxy: context.usedUpstreamProxy
+      });
+    };
+
+    const handleResponse = (request, context) => async proxyRes => {
+      if (finalized || downstream.aborted) {
+        proxyRes.destroy();
+        return;
+      }
+      proxyRes.pause();
+      if (canReplay()) {
+        const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+          attempt: context.attempt,
+          proxyGeneration: context.proxyGeneration,
+          usedUpstreamProxy: context.usedUpstreamProxy,
+          method,
+          url: targetUrl.href,
+          host: targetUrl.hostname
+        });
+        if (shouldRetry && !finalized && !downstream.aborted) {
+          proxyRes.resume();
+          sendProxyRequest(context.attempt + 1, true);
+          return;
+        }
+      }
+      if (finalized || downstream.aborted) {
+        proxyRes.destroy();
+        return;
+      }
+
+      activeResponse = proxyRes;
+      const responseHeaders = this._stripHopByHopHeaders(proxyRes.headers, {
+        preserveProxyAuthenticate: proxyRes.statusCode === 407
+      });
+      const responseTrailerNames = this._advertisedTrailerNames(proxyRes.headers);
+      if (responseTrailerNames.length > 0) {
+        for (const name of Object.keys(responseHeaders)) {
+          if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
+        }
+        responseHeaders.trailer = responseTrailerNames.join(', ');
+      }
+      const remote = {
+        address: request.socket?.remoteAddress,
+        port: request.socket?.remotePort
+      };
+      responseMetadata = {
+        statusCode: proxyRes.statusCode,
+        statusMessage: proxyRes.statusMessage,
+        responseHeaders,
+        remote,
+        waiting: Date.now() - connectStart,
+        usedUpstreamProxy: context.usedUpstreamProxy
+      };
+      emitPending();
+      try {
+        if (proxyRes.statusMessage) {
+          clientRes.writeHead(proxyRes.statusCode, proxyRes.statusMessage, responseHeaders);
+        } else {
+          clientRes.writeHead(proxyRes.statusCode, responseHeaders);
+        }
+      } catch (error) {
+        proxyRes.destroy(error);
+        await handleFailure(error, request, context);
+        return;
+      }
+
+      proxyRes.on('data', chunk => {
+        responseBodySize += chunk.length;
+        this._appendBodyChunk(responseBody, chunk);
+      });
+      proxyRes.once('end', () => {
+        if (finalized || downstream.aborted) return;
+        const trailers = this._cleanTrailers(proxyRes.trailers);
+        responseEnded = true;
+        responseResult = {
+          ...responseMetadata,
+          responseBody: responseCapture(responseHeaders),
+          trailers
+        };
+        try {
+          if (Object.keys(trailers).length > 0) clientRes.addTrailers(trailers);
+          clientRes.end();
+        } catch { /* downstream already closed */ }
+        maybeFinalize();
+      });
+      this._forwardUpstreamResponseErrors(proxyRes, request);
+      proxyRes.pipe(clientRes, { end: false });
+      proxyRes.resume();
+    };
+
+    const sendProxyRequest = (attempt = 0, replay = false) => {
+      if (finalized || downstream.aborted) return;
+      clearH2IdleTimer();
+      activeProtocol = 'h1';
+      responseMetadata = null;
+      activeResponse = null;
+      connectStart = Date.now();
+      const proxyGeneration = this._upstreamProxyGeneration;
+      const usedUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+      let request;
+      try {
+        const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+          targetUrl,
+          method,
+          headers: upstreamHeaders,
+          signal: downstream.signal,
+          clientHelloTls,
+          useUpstreamProxy: usedUpstreamProxy
+        });
+        request = requestLib.request(options);
+      } catch (error) {
+        void handleFailure(error, null, { attempt, proxyGeneration, usedUpstreamProxy });
+        return;
+      }
+      activeRequest = request;
+      request._upstreamProxyGeneration = proxyGeneration;
+      request._usedUpstreamProxy = usedUpstreamProxy;
+      request.on('information', info => {
+        if (!downstream.aborted) this._forwardH1Informational(clientRes, info);
+      });
+      this._configureUpstreamRequest(request);
+      const context = { attempt, proxyGeneration, usedUpstreamProxy };
+      request.once('response', proxyRes => {
+        void handleResponse(request, context)(proxyRes).catch(error => {
+          void handleFailure(error, request, context);
+        });
+      });
+      request.once('error', error => { void handleFailure(error, request, context); });
+
+      if (replay || requestEnded) {
+        this._endH1Request(request, this._concatBody(requestBody), requestTrailers);
+      } else {
+        clientReq.resume();
+      }
+    };
+
+    const sendH2Request = (session) => {
+      if (finalized || downstream.aborted) return;
+      connectStart = Date.now();
+      const h2Headers = {
+        ':method': method,
+        ':path': targetUrl.pathname + targetUrl.search,
+        ':scheme': targetUrl.protocol.slice(0, -1),
+        ':authority': targetUrl.host
+      };
+      for (const [name, value] of Object.entries(upstreamHeaders)) {
+        const lower = name.toLowerCase();
+        if (lower.startsWith(':') || lower === 'host' || lower === 'trailer'
+            || value === undefined) continue;
+        h2Headers[lower] = value;
+      }
+      if (getHeaderValues(requestHeaders, 'te')
+        .flatMap(value => value.split(','))
+        .some(value => value.trim().toLowerCase() === 'trailers')) {
+        h2Headers.te = 'trailers';
+      }
+
+      let request;
+      try {
+        request = session.request(h2Headers, { waitForTrailers: true });
+      } catch {
+        sendProxyRequest();
+        return;
+      }
+      activeProtocol = 'h2';
+      activeRequest = request;
+      activeResponse = request;
+      const context = { attempt: 0, proxyGeneration: undefined, usedUpstreamProxy: false };
+      let h2Trailers = {};
+      let h2ResponseEnded = false;
+
+      request.once('wantTrailers', () => {
+        if (request.destroyed || request.closed) return;
+        try {
+          request.sendTrailers(this._cleanTrailers(requestTrailers));
+        } catch (error) {
+          void handleFailure(error, request, context);
+        }
+      });
+      request.on('headers', headers => {
+        const statusCode = Number(headers[':status']);
+        if (statusCode >= 100 && statusCode < 200 && statusCode !== 101
+            && !downstream.aborted) {
+          const informationalHeaders = {};
+          for (const [name, value] of Object.entries(headers)) {
+            if (!name.startsWith(':')) informationalHeaders[name] = value;
+          }
+          this._forwardH1Informational(clientRes, {
+            statusCode,
+            headers: informationalHeaders
+          });
+          resetH2IdleTimer(request);
+        }
+      });
+      request.once('response', headers => {
+        if (finalized || downstream.aborted) {
+          request.close(http2.constants.NGHTTP2_CANCEL);
+          return;
+        }
+        const statusCode = Number(headers[':status']);
+        resetH2IdleTimer(request);
+        const responseHeaders = {};
+        for (const [name, value] of Object.entries(headers)) {
+          if (!name.startsWith(':')) responseHeaders[name] = value;
+        }
+        const responseTrailerNames = this._advertisedTrailerNames(headers);
+        const responseContentType = getHeaderValues(responseHeaders, 'content-type')[0] || '';
+        if (/^application\/grpc(?:[+;]|$)/i.test(responseContentType)) {
+          responseTrailerNames.push('grpc-status', 'grpc-message', 'grpc-status-details-bin');
+        }
+        const uniqueTrailerNames = [...new Set(responseTrailerNames)];
+        if (uniqueTrailerNames.length > 0) {
+          for (const name of Object.keys(responseHeaders)) {
+            if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
+          }
+          responseHeaders.trailer = uniqueTrailerNames.join(', ');
+        }
+        responseMetadata = {
+          statusCode,
+          statusMessage: '',
+          responseHeaders,
+          remote: {
+            address: session.socket?.remoteAddress,
+            port: session.socket?.remotePort
+          },
+          waiting: Date.now() - connectStart,
+          usedUpstreamProxy: false
+        };
+        emitPending();
+        try {
+          clientRes.writeHead(statusCode, responseHeaders);
+        } catch (error) {
+          request.close(http2.constants.NGHTTP2_CANCEL);
+          void handleFailure(error, request, context);
+          return;
+        }
+
+        request.on('data', chunk => {
+          responseBodySize += chunk.length;
+          this._appendBodyChunk(responseBody, chunk);
+          resetH2IdleTimer(request);
+        });
+        request.once('end', () => {
+          if (finalized || downstream.aborted) return;
+          h2ResponseEnded = true;
+          responseEnded = true;
+          responseResult = {
+            ...responseMetadata,
+            responseBody: responseCapture(responseHeaders),
+            trailers: h2Trailers
+          };
+          try {
+            if (Object.keys(h2Trailers).length > 0) clientRes.addTrailers(h2Trailers);
+            clientRes.end();
+          } catch { /* downstream already closed */ }
+          maybeFinalize();
+        });
+        request.pipe(clientRes, { end: false });
+      });
+      request.on('trailers', trailers => {
+        h2Trailers = this._cleanTrailers(trailers);
+        resetH2IdleTimer(request);
+      });
+      request.once('aborted', () => {
+        const error = new Error('Upstream HTTP/2 response aborted');
+        error.code = 'ECONNRESET';
+        error.upstreamPhase = 'response';
+        void handleFailure(error, request, context);
+      });
+      request.once('error', error => {
+        if (finalized || downstream.aborted || activeRequest !== request) return;
+        if (!responseMetadata && canReplay() && !h2FallbackStarted) {
+          h2FallbackStarted = true;
+          sendProxyRequest(0, true);
+          return;
+        }
+        void handleFailure(error, request, context);
+      });
+      request.once('close', () => {
+        if (finalized || downstream.aborted || h2ResponseEnded || activeRequest !== request) return;
+        const error = new Error(responseMetadata
+          ? 'Upstream HTTP/2 response closed prematurely'
+          : 'Upstream HTTP/2 stream closed before response headers');
+        error.code = 'ECONNRESET';
+        error.upstreamPhase = 'response';
+        void handleFailure(error, request, context);
+      });
+
+      if (requestEnded) request.end();
+      else clientReq.resume();
+      resetH2IdleTimer(request);
+    };
+
+    const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
+      captureQueuedRequestChunks();
+      const error = new Error('Client disconnected before completing the request body');
+      error.code = 'ERR_REQUEST_BODY_ABORTED';
+      error.upstreamPhase = 'request-body';
+      activeRequest?.destroy(error);
+      finalize({
+        statusCode: 0,
+        statusMessage: 'Client Upload Aborted',
+        responseHeaders: {},
+        responseBody: '',
+        error
+      });
+    });
+    clientReq.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
+    clientReq.on('data', chunk => {
+      captureRequestChunk(chunk);
+      resetH2IdleTimer();
+      if (!activeRequest || activeRequest.destroyed || activeRequest.writableEnded) return;
+      if (!activeRequest.write(chunk)) {
+        clientReq.pause();
+        const request = activeRequest;
+        request.once('drain', () => {
+          if (activeRequest === request && !finalized) clientReq.resume();
+        });
+      }
+    });
+    clientReq.once('end', () => {
+      if (!requestBodyCompletion.complete()) return;
+      requestEnded = true;
+      requestTrailers = this._cleanTrailers(clientReq.trailers);
+      if (activeRequest && !activeRequest.destroyed && !activeRequest.writableEnded) {
+        finishUpload(activeRequest);
+      }
+      if (pendingUpstreamFailure) {
+        const failure = pendingUpstreamFailure;
+        pendingUpstreamFailure = null;
+        void handleFailure(failure.error, failure.request, failure.context);
+        return;
+      }
+      maybeFinalize();
+    });
+    downstream.signal.addEventListener('abort', () => {
+      activeResponse?.destroy();
+      activeRequest?.destroy();
+      if (finalized) return;
+      const error = this._createDownstreamAbortError();
+      error.upstreamPhase = 'downstream';
+      finalize({
+        statusCode: responseMetadata?.statusCode || 0,
+        statusMessage: 'Client Disconnected',
+        responseHeaders: responseMetadata?.responseHeaders || {},
+        responseBody: responseCapture(responseMetadata?.responseHeaders),
+        error
+      });
+    }, { once: true });
+
+    clientReq.pause();
+    const selectUpstream = async () => {
+      if (targetUrl.protocol === 'https:'
+          && !this._shouldUseUpstreamProxy(targetHostname, targetPort)) {
+        const session = await this._getH2Session(targetHostname, targetPort, clientHelloTls);
+        if (session && !finalized && !downstream.aborted) {
+          sendH2Request(session);
+          return;
+        }
+      }
+      sendProxyRequest();
+    };
+    void selectUpstream().catch(error => {
+      void handleFailure(error, activeRequest, {
+        attempt: 0,
+        proxyGeneration: undefined,
+        usedUpstreamProxy: false
+      });
+    });
+  }
+
+  _streamH2Exchange({
+    stream,
+    method,
+    fullUrl,
+    authority,
+    path,
+    requestHeaders,
+    requestId,
+    startTime,
+    tlsDetails = null,
+    clientHelloTls = null
+  }) {
+    const targetUrl = new URL(fullUrl);
+    const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
+    const targetPort = parseInt(targetUrl.port, 10)
+      || (targetUrl.protocol === 'https:' ? 443 : 80);
+    const upstreamHeaders = this._stripUpstreamHeaders(requestHeaders);
+    this._setTargetHostHeader(upstreamHeaders, targetUrl.host);
+    const requestBody = this._createBodyCollector();
+    const responseBody = this._createBodyCollector();
+    const source = this._detectSource(requestHeaders);
+    let requestBodySize = 0;
+    let responseBodySize = 0;
+    let requestTrailers = {};
+    let responseTrailers = {};
+    let requestEnded = false;
+    let responseEnded = false;
+    let responseResult = null;
+    let responseMetadata = null;
+    let activeRequest = null;
+    let activeProtocol = null;
+    let pendingEmitted = false;
+    let finalized = false;
+    let connectStart = Date.now();
+    let h2FallbackStarted = false;
+    let idleTimer = null;
+    let pendingUpstreamFailure = null;
+    let downstream = {
+      aborted: false,
+      signal: null,
+      complete() {}
+    };
+
+    const captureRequestChunk = (chunk) => {
+      requestBodySize += chunk.length;
+      this._appendBodyChunk(requestBody, chunk);
+    };
+    const captureQueuedRequestChunks = () => {
+      while (stream.read() !== null) { /* drain through the data listener */ }
+    };
+
+    const requestCapture = () => this._streamedCaptureBody(
+      requestBody,
+      requestBodySize,
+      'Request',
+      requestHeaders
+    );
+    const responseCapture = (headers = {}) => this._streamedCaptureBody(
+      responseBody,
+      responseBodySize,
+      'Response',
+      headers
+    );
+    const baseRecord = () => ({
+      id: requestId,
+      protocol: 'h2',
+      method,
+      url: fullUrl,
+      host: authority,
+      path,
+      requestHeaders,
+      requestBody: requestCapture(),
+      requestBodySize,
+      timestamp: startTime,
+      source,
+      tls: tlsDetails,
+      remote: null
+    });
+    const emitPending = () => {
+      if (pendingEmitted) return;
+      pendingEmitted = this._emitPendingRequest(baseRecord());
+    };
+    const clearIdleTimer = () => {
+      if (!idleTimer) return;
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    };
+    const resetIdleTimer = () => {
+      if (finalized || this._upstreamIdleTimeoutMs <= 0) return;
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        const error = new Error(
+          `Upstream response timeout after ${this._upstreamIdleTimeoutMs / 1000}s`
+        );
+        error.code = 'ETIMEDOUT';
+        error.upstreamPhase = 'response';
+        fail(error, activeRequest);
+      }, this._upstreamIdleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    const finalize = (result) => {
+      if (finalized) return;
+      finalized = true;
+      clearIdleTimer();
+      downstream.complete();
+      const emit = pendingEmitted
+        ? data => this._emitRequestUpdate(data)
+        : data => this._emitRequest(data);
+      emit({
+        ...baseRecord(),
+        statusCode: result.statusCode,
+        statusMessage: result.statusMessage || '',
+        responseHeaders: result.responseHeaders || {},
+        responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
+        responseBodySize,
+        duration: Date.now() - startTime,
+        timing: {
+          total: Date.now() - startTime,
+          waiting: result.waiting ?? (Date.now() - connectStart)
+        },
+        usedUpstreamProxy: result.usedUpstreamProxy === true,
+        remote: result.remote || null,
+        trailers: Object.keys(result.trailers || {}).length > 0 ? result.trailers : null,
+        ...(result.error ? {
+          error: result.error.message,
+          errorCode: this._getUpstreamErrorCode(result.error),
+          errorPhase: this._getUpstreamErrorPhase(result.error),
+          upstreamProxyGeneration: result.request?._upstreamProxyGeneration,
+          upstreamProxyConnect: result.request?._upstreamProxyConnect || null
+        } : {})
+      });
+    };
+    const maybeFinalize = () => {
+      if (responseEnded && requestEnded && responseResult) finalize(responseResult);
+    };
+    const closeActiveRequest = (error) => {
+      if (!activeRequest || activeRequest.destroyed || activeRequest.closed) return;
+      if (activeProtocol === 'h2' && typeof activeRequest.close === 'function') {
+        activeRequest.once('error', () => {});
+        activeRequest.close(http2.constants.NGHTTP2_CANCEL);
+      } else {
+        activeRequest.destroy(error);
+      }
+    };
+    const fail = (error, request = activeRequest, overrides = {}) => {
+      if (finalized) return;
+      const metadata = responseMetadata || {};
+      responseEnded = true;
+      requestEnded = true;
+      const responseBodyText = responseMetadata
+        ? responseCapture(responseMetadata.responseHeaders)
+        : `Proxy Error: ${error.message}`;
+      finalize({
+        statusCode: metadata.statusCode || 502,
+        statusMessage: metadata.statusMessage || 'Bad Gateway',
+        responseHeaders: metadata.responseHeaders || {},
+        responseBody: responseBodyText,
+        trailers: responseTrailers,
+        remote: metadata.remote,
+        waiting: metadata.waiting,
+        usedUpstreamProxy: metadata.usedUpstreamProxy,
+        error,
+        request,
+        ...overrides
+      });
+      closeActiveRequest(error);
+      try {
+        if (!stream.destroyed && !stream.closed) {
+          if (!stream.headersSent) {
+            const message = `Proxy Error: ${error.message}`;
+            stream.respond({
+              ':status': 502,
+              'content-type': 'text/plain',
+              'content-length': String(Buffer.byteLength(message))
+            });
+            stream.end(message);
+          } else {
+            stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
+          }
+        }
+      } catch { /* downstream already closed */ }
+    };
+    const failOrDefer = (error, request = activeRequest, overrides = {}) => {
+      if (!requestEnded && !responseMetadata && !downstream.aborted) {
+        pendingUpstreamFailure ||= { error, request, overrides };
+        return;
+      }
+      fail(error, request, overrides);
+    };
+    const incompleteUpload = () => {
+      if (requestEnded || finalized) return;
+      captureQueuedRequestChunks();
+      const error = new Error('Client disconnected before completing the request body');
+      error.code = 'ERR_REQUEST_BODY_ABORTED';
+      error.upstreamPhase = 'request-body';
+      fail(error, activeRequest, {
+        statusCode: responseMetadata?.statusCode || 0,
+        statusMessage: 'Client Upload Aborted',
+        responseHeaders: responseMetadata?.responseHeaders || {},
+        responseBody: responseMetadata
+          ? responseCapture(responseMetadata.responseHeaders)
+          : ''
+      });
+    };
+
+    const requestBodyCompletion = this._trackRequestBodyCompletion(stream, incompleteUpload);
+    downstream = this._trackDownstreamCancellation(stream, { http2Stream: true });
+
+    const finishActiveUpload = () => {
+      if (!activeRequest || activeRequest.destroyed || activeRequest.closed
+          || activeRequest.writableEnded) return;
+      if (activeProtocol === 'h2') {
+        activeRequest.end();
+      } else {
+        const trailers = this._cleanTrailers(requestTrailers);
+        if (Object.keys(trailers).length > 0) activeRequest.addTrailers(trailers);
+        activeRequest.end();
+      }
+    };
+    const attachRequestRelay = () => {
+      stream.on('trailers', trailers => {
+        requestTrailers = this._cleanTrailers(trailers);
+      });
+      stream.on('data', chunk => {
+        captureRequestChunk(chunk);
+        resetIdleTimer();
+        const request = activeRequest;
+        if (!request || request.destroyed || request.closed || request.writableEnded) return;
+        if (!request.write(chunk)) {
+          stream.pause();
+          request.once('drain', () => {
+            if (activeRequest === request && !finalized && !downstream.aborted) stream.resume();
+          });
+        }
+      });
+      stream.once('end', () => {
+        if (!requestBodyCompletion.complete()) return;
+        requestEnded = true;
+        finishActiveUpload();
+        if (pendingUpstreamFailure) {
+          const failure = pendingUpstreamFailure;
+          pendingUpstreamFailure = null;
+          fail(failure.error, failure.request, failure.overrides);
+          return;
+        }
+        maybeFinalize();
+      });
+    };
+
+    const beginResponse = ({
+      request,
+      upstreamResponse,
+      statusCode,
+      statusMessage = '',
+      responseHeaders,
+      remote,
+      usedUpstreamProxy = false,
+      trailersOnEnd = null
+    }) => {
+      if (finalized || downstream.aborted) {
+        upstreamResponse.destroy?.();
+        return;
+      }
+      resetIdleTimer();
+      responseMetadata = {
+        statusCode,
+        statusMessage,
+        responseHeaders,
+        remote,
+        waiting: Date.now() - connectStart,
+        usedUpstreamProxy
+      };
+      emitPending();
+      try {
+        stream.respond(
+          this._toH2ResponseHeaders(statusCode, responseHeaders),
+          { waitForTrailers: true }
+        );
+      } catch (error) {
+        upstreamResponse.destroy?.(error);
+        fail(error, request);
+        return;
+      }
+      stream.once('wantTrailers', () => {
+        if (stream.destroyed || stream.closed) return;
+        try {
+          stream.sendTrailers(this._cleanTrailers(responseTrailers));
+        } catch (error) {
+          fail(error, request);
+        }
+      });
+      upstreamResponse.on('data', chunk => {
+        responseBodySize += chunk.length;
+        this._appendBodyChunk(responseBody, chunk);
+        resetIdleTimer();
+      });
+      upstreamResponse.once('end', () => {
+        if (finalized || downstream.aborted) return;
+        if (trailersOnEnd) responseTrailers = this._cleanTrailers(trailersOnEnd());
+        responseEnded = true;
+        responseResult = {
+          ...responseMetadata,
+          responseBody: responseCapture(responseHeaders),
+          trailers: responseTrailers
+        };
+        try {
+          if (!stream.destroyed && !stream.closed) stream.end();
+        } catch { /* downstream already closed */ }
+        maybeFinalize();
+      });
+      upstreamResponse.pipe(stream, { end: false });
+      upstreamResponse.resume?.();
+    };
+
+    const startH1 = (attempt = 0, replay = false) => {
+      if (finalized || downstream.aborted) return;
+      activeProtocol = 'h1';
+      connectStart = Date.now();
+      const proxyGeneration = this._upstreamProxyGeneration;
+      const usedUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+      const h1Headers = { ...upstreamHeaders };
+      // HTTP/2 request trailers are delivered only after the body and their
+      // names are not advertised up front. Chunked H1 framing is therefore
+      // required from the outset if late trailers arrive.
+      for (const name of Object.keys(h1Headers)) {
+        if (name.toLowerCase() === 'content-length' || name.toLowerCase() === 'trailer') {
+          delete h1Headers[name];
+        }
+      }
+      let request;
+      try {
+        const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+          targetUrl,
+          method,
+          headers: h1Headers,
+          signal: downstream.signal,
+          clientHelloTls,
+          useUpstreamProxy: usedUpstreamProxy
+        });
+        request = requestLib.request(options);
+      } catch (error) {
+        fail(error, null);
+        return;
+      }
+      activeRequest = request;
+      request._upstreamProxyGeneration = proxyGeneration;
+      request._usedUpstreamProxy = usedUpstreamProxy;
+      request.on('information', info => {
+        if (!downstream.aborted) this._forwardH2Informational(stream, info);
+      });
+      this._configureUpstreamRequest(request);
+      request.once('response', async proxyRes => {
+        if (finalized || downstream.aborted) {
+          proxyRes.destroy();
+          return;
+        }
+        proxyRes.pause();
+        if (requestEnded && !requestBody.exceeded && this._canSafelyReplayRequest(method)) {
+          const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, {
+            attempt,
+            proxyGeneration,
+            usedUpstreamProxy,
+            method,
+            url: fullUrl,
+            host: authority
+          });
+          if (shouldRetry && !finalized && !downstream.aborted) {
+            proxyRes.resume();
+            startH1(attempt + 1, true);
+            return;
+          }
+        }
+        this._forwardUpstreamResponseErrors(proxyRes, request);
+        beginResponse({
+          request,
+          upstreamResponse: proxyRes,
+          statusCode: proxyRes.statusCode,
+          statusMessage: proxyRes.statusMessage,
+          responseHeaders: this._stripHopByHopHeaders(proxyRes.headers, {
+            preserveProxyAuthenticate: proxyRes.statusCode === 407
+          }),
+          remote: {
+            address: request.socket?.remoteAddress,
+            port: request.socket?.remotePort
+          },
+          usedUpstreamProxy,
+          trailersOnEnd: () => proxyRes.trailers
+        });
+      });
+      request.once('error', async error => {
+        if (finalized || downstream.aborted) return;
+        if (!requestEnded && !responseMetadata) {
+          failOrDefer(error, request);
+          return;
+        }
+        if (!responseMetadata && requestEnded && !requestBody.exceeded) {
+          const shouldRetry = await this._shouldRetryAfterUpstreamError(error, {
+            attempt,
+            proxyGeneration,
+            usedUpstreamProxy,
+            method,
+            url: fullUrl,
+            host: authority
+          });
+          if (shouldRetry && !finalized && !downstream.aborted) {
+            startH1(attempt + 1, true);
+            return;
+          }
+        }
+        fail(error, request);
+      });
+      resetIdleTimer();
+      if (replay || requestEnded) {
+        this._endH1Request(request, this._concatBody(requestBody), requestTrailers);
+      } else {
+        stream.resume();
+      }
+    };
+
+    const startH2 = (session) => {
+      if (finalized || downstream.aborted) return;
+      connectStart = Date.now();
+      const headers = {
+        ':method': method,
+        ':path': path,
+        ':scheme': targetUrl.protocol.slice(0, -1),
+        ':authority': targetUrl.host
+      };
+      for (const [name, value] of Object.entries(upstreamHeaders)) {
+        const lower = name.toLowerCase();
+        if (lower.startsWith(':') || lower === 'host' || value === undefined) continue;
+        headers[lower] = value;
+      }
+      if (getHeaderValues(requestHeaders, 'te')
+        .flatMap(value => value.split(','))
+        .some(value => value.trim().toLowerCase() === 'trailers')) {
+        headers.te = 'trailers';
+      }
+      let request;
+      try {
+        request = session.request(headers, { waitForTrailers: true });
+      } catch (error) {
+        startH1();
+        return;
+      }
+      activeProtocol = 'h2';
+      activeRequest = request;
+      request.once('wantTrailers', () => {
+        if (request.destroyed || request.closed) return;
+        try {
+          request.sendTrailers(this._cleanTrailers(requestTrailers));
+        } catch (error) {
+          fail(error, request);
+        }
+      });
+      request.on('headers', informationalHeaders => {
+        const statusCode = Number(informationalHeaders[':status']);
+        if (statusCode >= 100 && statusCode < 200 && statusCode !== 101 && !downstream.aborted) {
+          const cleanHeaders = {};
+          for (const [name, value] of Object.entries(informationalHeaders)) {
+            if (!name.startsWith(':')) cleanHeaders[name] = value;
+          }
+          this._forwardH2Informational(stream, { statusCode, headers: cleanHeaders });
+        }
+      });
+      request.once('response', responseHeadersWithStatus => {
+        const statusCode = Number(responseHeadersWithStatus[':status']);
+        const responseHeaders = {};
+        for (const [name, value] of Object.entries(responseHeadersWithStatus)) {
+          if (!name.startsWith(':')) responseHeaders[name] = value;
+        }
+        beginResponse({
+          request,
+          upstreamResponse: request,
+          statusCode,
+          responseHeaders,
+          remote: {
+            address: session.socket?.remoteAddress,
+            port: session.socket?.remotePort
+          }
+        });
+      });
+      request.on('trailers', trailers => {
+        responseTrailers = this._cleanTrailers(trailers);
+        resetIdleTimer();
+      });
+      request.once('aborted', () => {
+        const error = new Error('Upstream HTTP/2 response aborted');
+        error.code = 'ECONNRESET';
+        error.upstreamPhase = 'response';
+        failOrDefer(error, request);
+      });
+      request.once('error', error => {
+        if (finalized || downstream.aborted) return;
+        if (!responseMetadata && requestEnded && !requestBody.exceeded
+            && this._canSafelyReplayRequest(method) && !h2FallbackStarted) {
+          h2FallbackStarted = true;
+          startH1(0, true);
+          return;
+        }
+        failOrDefer(error, request);
+      });
+      request.once('close', () => {
+        if (finalized || responseEnded || downstream.aborted || activeRequest !== request) return;
+        const error = new Error(responseMetadata
+          ? 'Upstream HTTP/2 response closed prematurely'
+          : 'Upstream HTTP/2 stream closed before response headers');
+        error.code = 'ECONNRESET';
+        error.upstreamPhase = 'response';
+        failOrDefer(error, request);
+      });
+      resetIdleTimer();
+      if (requestEnded) request.end();
+      else stream.resume();
+    };
+
+    attachRequestRelay();
+    downstream.signal.addEventListener('abort', () => {
+      if (finalized) return;
+      const error = this._createDownstreamAbortError();
+      error.upstreamPhase = 'downstream';
+      fail(error, activeRequest, {
+        statusCode: responseMetadata?.statusCode || 0,
+        statusMessage: 'Client Disconnected',
+        responseHeaders: responseMetadata?.responseHeaders || {},
+        responseBody: responseMetadata
+          ? responseCapture(responseMetadata.responseHeaders)
+          : ''
+      });
+    }, { once: true });
+
+    const selectUpstream = async () => {
+      if (targetUrl.protocol === 'https:'
+          && !this._shouldUseUpstreamProxy(targetHostname, targetPort)) {
+        const session = await this._getH2Session(targetHostname, targetPort, clientHelloTls);
+        if (session && !downstream.aborted && !finalized) {
+          startH2(session);
+          return;
+        }
+      }
+      startH1();
+    };
+    void selectUpstream().catch(error => failOrDefer(error, activeRequest));
   }
 
   async _streamMockFile(filePath, destination, onReady = () => {}, options = {}) {
@@ -2214,6 +3426,25 @@ export class ProxyServer {
       return;
     }
 
+    const initialMatcherHeaders = this._rawHeadersToObject(clientReq.rawHeaders, {
+      stripUpstreamHeaders: false
+    });
+    if (this._canStreamWithoutRequestBuffering(
+      clientReq.method,
+      targetUrl.href,
+      initialMatcherHeaders
+    )) {
+      this._streamH1Exchange({
+        clientReq,
+        clientRes,
+        targetUrl,
+        requestId,
+        startTime,
+        captureProtocol: targetUrl.protocol === 'https:' ? 'https' : 'http'
+      });
+      return;
+    }
+
     const requestBody = this._createBodyCollector();
     let requestBodySize = 0;
     const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
@@ -2892,6 +4123,23 @@ export class ProxyServer {
       const requestId = uuidv4();
       this.requestCount++;
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+
+      const initialMatcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
+        stripUpstreamHeaders: false
+      });
+      if (this._canStreamWithoutRequestBuffering(req.method, fullUrl, initialMatcherHeaders)) {
+        this._streamH1Exchange({
+          clientReq: req,
+          clientRes: res,
+          targetUrl: new URL(fullUrl),
+          requestId,
+          startTime,
+          captureProtocol: 'https',
+          tlsDetails,
+          clientHelloTls: tlsSocket._clientHelloTls
+        });
+        return;
+      }
 
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;
@@ -3813,6 +5061,23 @@ export class ProxyServer {
       // forwarded regular headers aligned with the CONNECT origin too.
       this._setTargetHostHeader(reqHeaders, authority);
 
+      if (this._canStreamWithoutRequestBuffering(method, fullUrl, reqHeaders)) {
+        stream.pause();
+        this._streamH2Exchange({
+          stream,
+          method,
+          fullUrl,
+          authority,
+          path,
+          requestHeaders: reqHeaders,
+          requestId,
+          startTime,
+          tlsDetails,
+          clientHelloTls: tlsSocket?._clientHelloTls
+        });
+        return;
+      }
+
       // Collect request body
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;
@@ -4233,6 +5498,23 @@ export class ProxyServer {
       const requestId = uuidv4();
       this.requestCount++;
       let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+
+      const initialMatcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
+        stripUpstreamHeaders: false
+      });
+      if (this._canStreamWithoutRequestBuffering(req.method, fullUrl, initialMatcherHeaders)) {
+        this._streamH1Exchange({
+          clientReq: req,
+          clientRes: res,
+          targetUrl: new URL(fullUrl),
+          requestId,
+          startTime,
+          captureProtocol: 'https',
+          tlsDetails,
+          clientHelloTls: tlsSocket._clientHelloTls
+        });
+        return;
+      }
 
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;

@@ -311,7 +311,7 @@ test('intercepted H1 body edits replace chunked framing in both TLS modes',
     }
   });
 
-test('native H2 trailers replace Content-Length with chunked H1 fallback framing',
+test('late native H2 trailers use chunked H1 fallback framing',
   { timeout: 20000 }, async t => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-trailer-fallback-'));
     const ca = new CertificateAuthority(dataDir);
@@ -345,7 +345,9 @@ test('native H2 trailers replace Content-Length with chunked H1 fallback framing
     assert.equal(response.body, 'ok');
     assert.equal(observed.headers['content-length'], undefined);
     assert.equal(observed.headers['transfer-encoding'], 'chunked');
-    assert.equal(observed.headers.trailer, 'x-checksum');
+    // H2 does not announce request-trailer names before the body, so a
+    // streaming H1 fallback can carry them but cannot advertise their names.
+    assert.equal(observed.headers.trailer, undefined);
     assert.equal(observed.body, 'original');
     assert.deepEqual(observed.trailers, { 'x-checksum': 'original checksum' });
   });

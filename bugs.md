@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 54 of the 360 documented bugs are not fully fixed.**
+**No: 53 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 306 |
+| Fixed | 307 |
 | Partially fixed | 23 |
-| Open | 31 |
+| Open | 30 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -392,11 +392,11 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-116 — High — Ordinary proxy traffic is buffered until the whole message ends
 
-- Status: **Open**.
+- Status: **Fixed**.
 
-- Evidence: normal H1/H2 request and response paths accumulate all chunks and only create/write the upstream or client response after `end` (representative paths: `src/proxy/proxy-server.js:580-705`, `:1522-1539`, `:1684-1839`, `:1930-2076`, `:2673-2695`). No tee/streaming path forwards chunks while retaining a bounded capture.
-- Impact: SSE, streaming downloads, long-lived H2/gRPC streams, and streaming uploads do not work: the other side sees no headers/data until the stream finishes, and infinite streams appear hung forever.
-- Reproduction: proxy an SSE endpoint that writes headers and one event but remains open; the client receives neither before the origin closes.
+- Evidence: ordinary traffic now enters guarded H1 and H2 streaming exchanges that relay request and response chunks with backpressure while a bounded collector records what fits. Body-dependent mocks, transforms, and breakpoints retain the buffered path. The relay preserves direct H2 negotiation, H1 fallback, upstream-proxy routing, informational responses, cancellation, and late trailers. `test/bug-116-streaming-proxy.test.js` covers SSE-style responses, streaming uploads, H1-to-H2, H2-to-H2/gRPC, and H2-to-H1 bidirectional traffic; the body-limit regression verifies that capture truncation no longer rejects pass-through uploads.
+- Impact: SSE, streaming downloads and uploads, and long-lived H2/gRPC exchanges deliver headers and chunks before either message ends without allowing traffic capture memory to grow without bound.
+- Reproduction: fixed; the origin and client timing assertions in `test/bug-116-streaming-proxy.test.js` fail if either direction is buffered until `end`.
 
 ### BUG-128 — High — Secure WebSockets cannot traverse TLS interception
 
