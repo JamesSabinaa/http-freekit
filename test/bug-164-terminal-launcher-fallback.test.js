@@ -31,11 +31,34 @@ function fakeLauncher(pid, exitCode = null) {
 function windowsInterceptor(launchers) {
   const interceptor = new FreshTerminalInterceptor();
   const commands = [];
+  let currentLauncher = null;
+  const stoppedPids = new Set();
   interceptor._platform = () => 'win32';
   interceptor._launcherStartupGraceMs = () => 5;
   interceptor._spawnDetached = async command => {
     commands.push(command);
-    return launchers.shift();
+    currentLauncher = launchers.shift();
+    return currentLauncher;
+  };
+  interceptor._waitForWindowsShellReport = async () => ({
+    pid: currentLauncher.pid,
+    startTime: String(currentLauncher.pid),
+    executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+  });
+  interceptor._inspectSessionIdentity = async pid => stoppedPids.has(pid)
+    ? { state: 'absent' }
+    : {
+        state: 'running',
+        identity: {
+          pid,
+          startTime: String(pid),
+          executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+        }
+      };
+  interceptor._acknowledgeWindowsShell = async () => {};
+  interceptor._killSession = pid => {
+    stoppedPids.add(pid);
+    return true;
   };
   return { interceptor, commands };
 }

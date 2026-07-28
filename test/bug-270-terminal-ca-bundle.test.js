@@ -129,8 +129,22 @@ test('Fresh and Existing Terminal paths share the bundle without disabling TLS v
     });
     terminal._confirmLauncherStartup = async () => {};
     terminal._createPidFilePath = () => path.join(dataDir, `${platform}.pid`);
-    terminal._waitForShellPid = async () => 9370 + index;
-    terminal._killSession = () => {};
+    const sessionPid = 9370 + index;
+    let sessionRunning = true;
+    terminal._waitForShellPid = async () => sessionPid;
+    if (platform === 'win32') {
+      const identity = {
+        pid: sessionPid,
+        startTime: String(sessionPid),
+        executable: 'c:\\windows\\powershell.exe'
+      };
+      terminal._waitForWindowsShellReport = async () => identity;
+      terminal._inspectSessionIdentity = async () => sessionRunning
+        ? { state: 'running', identity }
+        : { state: 'absent' };
+      terminal._acknowledgeWindowsShell = async () => {};
+    }
+    terminal._killSession = () => { sessionRunning = false; };
     terminal._startStatusMonitor = () => {};
     terminal._spawnDetached = async (command, args, options) => {
       launch = { command, args, options };

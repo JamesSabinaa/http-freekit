@@ -75,8 +75,22 @@ test('Fresh Terminal overrides inherited bypass variables on every platform', as
     });
     interceptor._launcherStartupGraceMs = () => 1;
     interceptor._createPidFilePath = () => `/tmp/http-freekit-${platform}.pid`;
-    interceptor._waitForShellPid = async () => 9250 + index;
-    interceptor._killSession = () => {};
+    const sessionPid = 9250 + index;
+    let sessionRunning = true;
+    interceptor._waitForShellPid = async () => sessionPid;
+    if (platform === 'win32') {
+      const identity = {
+        pid: sessionPid,
+        startTime: String(sessionPid),
+        executable: 'c:\\windows\\powershell.exe'
+      };
+      interceptor._waitForWindowsShellReport = async () => identity;
+      interceptor._inspectSessionIdentity = async () => sessionRunning
+        ? { state: 'running', identity }
+        : { state: 'absent' };
+      interceptor._acknowledgeWindowsShell = async () => {};
+    }
+    interceptor._killSession = () => { sessionRunning = false; };
     interceptor._spawnDetached = async (command, args, options) => {
       launch = { command, args, options };
       return launcher;

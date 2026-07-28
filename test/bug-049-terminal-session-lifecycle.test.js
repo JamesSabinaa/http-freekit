@@ -85,7 +85,12 @@ test('Windows Terminal tracks its durable PowerShell child without a recovery jo
   const interceptor = new FreshTerminalInterceptor();
   interceptor._platform = () => 'win32';
   interceptor._createPidFilePath = () => 'C:\\Temp\\freekit-shell.pid';
-  interceptor._waitForShellPid = async () => 7654;
+  interceptor._waitForWindowsShellReport = async () => ({
+    pid: 7654,
+    startTime: '300',
+    executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+  });
+  interceptor._acknowledgeWindowsShell = async () => {};
   let sessionRunning = true;
   interceptor._inspectSessionIdentity = async pid => sessionRunning && pid === 7654
     ? {
@@ -116,7 +121,8 @@ test('Windows Terminal tracks its durable PowerShell child without a recovery jo
   assert.deepEqual(launch.args.slice(0, 5), [
     'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
   ]);
-  assert.match(launch.args[5], /WriteAllText\(.+\$PID/);
+  assert.match(launch.args[5], /pid = \[int\]\$PID/);
+  assert.match(launch.args[5], /WriteAllText\(.+ConvertTo-Json/);
   assert.equal(interceptor.sessions.has(7654), true);
   assert.equal(interceptor.sessions.has(launcher.pid), false);
 
@@ -128,4 +134,72 @@ test('Windows Terminal tracks its durable PowerShell child without a recovery jo
   await interceptor.deactivate();
   assert.deepEqual(killed, [7654]);
   assert.equal(interceptor.active, false);
+});
+
+test('Windows Terminal rejects a reported PID that was reused before identity inspection', async () => {
+  const interceptor = new FreshTerminalInterceptor();
+  interceptor._platform = () => 'win32';
+  interceptor._windowsHandshakeCloseDelayMs = () => 0;
+  interceptor._waitForWindowsShellReport = async () => ({
+    pid: 7664,
+    startTime: '400',
+    executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+  });
+  interceptor._inspectSessionIdentity = async pid => ({
+    state: 'running',
+    identity: {
+      pid,
+      startTime: '401',
+      executable: 'c:\\windows\\system32\\notepad.exe'
+    }
+  });
+  interceptor._acknowledgeWindowsShell = async () => {
+    assert.fail('a replaced PID must never receive the ownership acknowledgement');
+  };
+  const launcher = fakeLauncher(7663);
+  interceptor._spawnDetached = async command => {
+    if (command === 'wt.exe') return launcher;
+    throw new Error(`${command} unavailable`);
+  };
+  interceptor._killSession = () => assert.fail('a replacement process must never be signalled');
+
+  await assert.rejects(interceptor.activate(8080), /No supported terminal found/);
+
+  assert.equal(launcher.killed, true);
+  assert.equal(interceptor.sessions.size, 0);
+  assert.equal(interceptor.active, false);
+});
+
+test('an unacknowledged Windows Terminal child fails closed before cmd fallback', async () => {
+  const interceptor = new FreshTerminalInterceptor();
+  interceptor._platform = () => 'win32';
+  let closeDelayCalls = 0;
+  interceptor._windowsHandshakeCloseDelayMs = () => 0;
+  interceptor._sleep = async () => { closeDelayCalls++; };
+  interceptor._waitForWindowsShellReport = async () => {
+    throw new Error('identity report unreadable');
+  };
+  const wtLauncher = fakeLauncher(7673);
+  const cmdLauncher = fakeLauncher(7675);
+  const launches = [];
+  interceptor._spawnDetached = async (command, args) => {
+    launches.push({ command, args });
+    if (command === 'wt.exe') return wtLauncher;
+    if (command === 'powershell.exe') throw new Error('PowerShell unavailable');
+    return cmdLauncher;
+  };
+
+  const result = await interceptor.activate(8080);
+
+  assert.equal(result.pid, cmdLauncher.pid);
+  assert.equal(wtLauncher.killed, true);
+  assert.ok(closeDelayCalls >= 1);
+  assert.match(launches[0].args[5], /ConvertTo-Json -Compress/);
+  assert.match(launches[0].args[5], /\.ack/);
+  assert.match(launches[0].args[5], /exit 1/);
+
+  interceptor._stopStatusMonitor();
+  cmdLauncher.exitCode = 0;
+  cmdLauncher.emit('exit', 0);
+  await new Promise(resolve => setImmediate(resolve));
 });

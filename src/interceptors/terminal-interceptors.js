@@ -25,6 +25,7 @@ const TERMINAL_SESSION_OWNERSHIP_VERSION = 1;
 const MAX_TERMINAL_OWNERSHIP_BYTES = 64 * 1024;
 const MAX_TERMINAL_SESSIONS = 32;
 const MAX_EXECUTABLE_IDENTITY_LENGTH = 4096;
+const MAX_TERMINAL_HANDSHAKE_BYTES = 4096;
 
 function spawnDetached(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -176,6 +177,10 @@ export class FreshTerminalInterceptor {
     return 100;
   }
 
+  _windowsHandshakeCloseDelayMs() {
+    return 3250;
+  }
+
   _confirmLauncherStartup(proc, graceMs = this._launcherStartupGraceMs()) {
     const failure = (code, signal) => {
       const detail = signal ? `signal ${signal}` : `exit code ${code}`;
@@ -231,6 +236,37 @@ export class FreshTerminalInterceptor {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     throw new Error('Terminal shell did not report its process ID');
+  }
+
+  async _waitForWindowsShellReport(reportFile, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const stat = fs.lstatSync(reportFile);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_TERMINAL_HANDSHAKE_BYTES) {
+          throw new Error('Terminal shell identity report is not a bounded regular file');
+        }
+        const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+        return this._normalizeSessionIdentity(report, report?.pid, 'win32');
+      } catch {}
+      await this._sleep(50);
+    }
+    throw new Error('Terminal shell did not report a verifiable process identity');
+  }
+
+  async _acknowledgeWindowsShell(reportFile, timeoutMs = 3000) {
+    const acknowledgementFile = `${reportFile}.ack`;
+    fs.writeFileSync(acknowledgementFile, String(process.pid), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!fs.existsSync(acknowledgementFile)) return;
+      await this._sleep(50);
+    }
+    throw new Error('Terminal shell did not acknowledge its verified identity');
   }
 
   _probeSessionPid(pid) {
@@ -592,10 +628,14 @@ export class FreshTerminalInterceptor {
     return 'unknown';
   }
 
-  async _adoptSession(pid) {
+  async _adoptSession(pid, reportedIdentity = null, expectedExecutable = null) {
     const observation = await this._observeSessionIdentity(pid);
     const identity = observation?.state === 'running' ? observation.identity : null;
     if (!this._hasCompleteSessionIdentity(identity) || identity.pid !== pid) return null;
+    if (reportedIdentity && !this._isSameSessionIdentity(reportedIdentity, identity)) return null;
+    if (expectedExecutable && path.win32.basename(identity.executable).toLowerCase() !== expectedExecutable) {
+      return null;
+    }
     return Object.freeze({ ...identity });
   }
 
@@ -871,9 +911,26 @@ export class FreshTerminalInterceptor {
 
   _buildWindowsPowerShellCommand(proxyUrl, pidFile) {
     return [
-      `[IO.File]::WriteAllText(${powerShellQuote(pidFile)}, [string]$PID)`,
+      'try {',
+      "  $freeKitProcess = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = ' + $PID) -ErrorAction Stop | Select-Object -First 1",
+      '  if ($null -eq $freeKitProcess) { exit 1 }',
+      '  $freeKitIdentity = [PSCustomObject]@{',
+      '    pid = [int]$PID',
+      '    startTime = [string]([DateTime]$freeKitProcess.CreationDate).ToUniversalTime().Ticks',
+      '    executable = [string]$freeKitProcess.ExecutablePath',
+      '  }',
+      `  [IO.File]::WriteAllText(${powerShellQuote(pidFile)}, ($freeKitIdentity | ConvertTo-Json -Compress))`,
+      '  $freeKitDeadline = [DateTime]::UtcNow.AddSeconds(3)',
+      `  while (-not [IO.File]::Exists(${powerShellQuote(`${pidFile}.ack`)})) {`,
+      '    if ([DateTime]::UtcNow -ge $freeKitDeadline) { exit 1 }',
+      '    Start-Sleep -Milliseconds 50',
+      '  }',
+      `  Remove-Item -LiteralPath ${powerShellQuote(`${pidFile}.ack`)} -Force -ErrorAction Stop`,
+      '} catch {',
+      '  exit 1',
+      '}',
       `Write-Host ${powerShellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)} -ForegroundColor Green`
-    ].join('; ');
+    ].join('\n');
   }
 
   async _launchTrackedPosixTerminal(command, args, env, pidFile) {
@@ -919,6 +976,7 @@ export class FreshTerminalInterceptor {
     let proc;
     const platform = this._platform();
     let shellPid = null;
+    let sessionIdentity = null;
 
     if (platform === 'win32') {
       // Open Windows Terminal, PowerShell, or cmd. Windows Terminal's launcher
@@ -940,7 +998,7 @@ export class FreshTerminalInterceptor {
         },
         {
           cmd: 'powershell.exe',
-          reportsPid: Boolean(this.recoveryFile),
+          reportsPid: true,
           buildArgs: pidFile => [
             '-NoExit',
             '-Command',
@@ -958,6 +1016,7 @@ export class FreshTerminalInterceptor {
 
       for (const terminal of terminals) {
         let candidateProc;
+        let launcherStarted = false;
         const pidFile = terminal.reportsPid ? this._createPidFilePath() : null;
         try {
           candidateProc = await this._spawnDetached(terminal.cmd, terminal.buildArgs(pidFile), {
@@ -966,18 +1025,39 @@ export class FreshTerminalInterceptor {
             env
           });
           await this._confirmLauncherStartup(candidateProc);
+          launcherStarted = true;
+          candidateProc.unref();
+          if (pidFile) {
+            const reportedIdentity = await this._waitForWindowsShellReport(pidFile);
+            const adoptedIdentity = await this._adoptSession(
+              reportedIdentity.pid,
+              reportedIdentity,
+              'powershell.exe'
+            );
+            if (!adoptedIdentity) {
+              throw new Error('the reported PowerShell process identity could not be verified');
+            }
+            await this._acknowledgeWindowsShell(pidFile);
+            shellPid = adoptedIdentity.pid;
+            sessionIdentity = adoptedIdentity;
+          } else {
+            shellPid = this.recoveryFile ? candidateProc.pid : null;
+          }
           proc = candidateProc;
-          proc.unref();
-          shellPid = pidFile
-            ? await this._waitForShellPid(pidFile)
-            : this.recoveryFile ? proc.pid : null;
           break;
         } catch {
           try { candidateProc?.kill(); } catch {}
+          if (launcherStarted && pidFile && terminal.cmd === 'wt.exe') {
+            // wt.exe is only a client for the new tab. The unacknowledged
+            // PowerShell command exits after three seconds; wait past that
+            // boundary before starting a fallback shell.
+            await this._sleep(this._windowsHandshakeCloseDelayMs());
+          }
           continue;
         } finally {
           if (pidFile) {
             try { fs.unlinkSync(pidFile); } catch {}
+            try { fs.unlinkSync(`${pidFile}.ack`); } catch {}
           }
         }
       }
@@ -1012,7 +1092,7 @@ export class FreshTerminalInterceptor {
       throw new Error('No supported terminal found');
     }
 
-    const sessionIdentity = shellPid ? await this._adoptSession(shellPid) : null;
+    if (!sessionIdentity && shellPid) sessionIdentity = await this._adoptSession(shellPid);
     this._trackLauncherProcess(proc, sessionIdentity?.pid || shellPid);
     if (this.recoveryFile && !sessionIdentity) {
       const processResult = await this._stopLauncherProcess(proc);

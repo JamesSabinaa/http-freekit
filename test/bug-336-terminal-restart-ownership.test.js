@@ -173,7 +173,11 @@ test('Windows Terminal records its durable PowerShell child rather than the wt l
   interceptor.ca = { getTerminalCaBundlePath: () => process.execPath };
   interceptor._launcherStartupGraceMs = () => 0;
   interceptor._createPidFilePath = () => path.join(os.tmpdir(), `bug-336-win-${owner.pid}.pid`);
-  interceptor._waitForShellPid = async () => owner.pid;
+  interceptor._waitForWindowsShellReport = async () => ({
+    ...owner,
+    executable: owner.executable.toLowerCase()
+  });
+  interceptor._acknowledgeWindowsShell = async () => {};
   let invocation;
   interceptor._spawnDetached = async (command, args, options) => {
     invocation = { command, args, options };
@@ -198,7 +202,8 @@ test('Windows Terminal records its durable PowerShell child rather than the wt l
   assert.deepEqual(invocation.args.slice(0, 5), [
     'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
   ]);
-  assert.match(invocation.args[5], /WriteAllText\(.+\$PID/);
+  assert.match(invocation.args[5], /pid = \[int\]\$PID/);
+  assert.match(invocation.args[5], /WriteAllText\(.+ConvertTo-Json/);
   assert.equal(interceptor.toJSON().pid, owner.pid);
   assert.equal(interceptor.sessions.has(launcher.pid), false);
   assert.deepEqual(

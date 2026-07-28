@@ -108,6 +108,18 @@ test('Existing Terminal instructions stay consistent with Fresh Terminal environ
   interceptor.ca = { getCertInfo: () => ({ certificatePath: certPath }) };
   interceptor._platform = () => 'win32';
   interceptor._launcherStartupGraceMs = () => 1;
+  const identity = {
+    pid: 7331,
+    startTime: '7331',
+    executable: 'c:\\windows\\powershell.exe'
+  };
+  let sessionRunning = true;
+  interceptor._waitForWindowsShellReport = async () => identity;
+  interceptor._inspectSessionIdentity = async () => sessionRunning
+    ? { state: 'running', identity }
+    : { state: 'absent' };
+  interceptor._acknowledgeWindowsShell = async () => {};
+  interceptor._killSession = () => { sessionRunning = false; };
   interceptor._spawnDetached = async (command, args, options) => {
     launchedEnvironment = options.env;
     return launcher;
