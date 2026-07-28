@@ -9238,13 +9238,13 @@ export class ProxyServer {
   }
 
   getPendingBreakpoints() {
+    this._indexPendingBreakpointOrder();
     const pending = [];
-    let fallbackOrder = this._pendingBreakpointSequence;
     for (const [id, stored] of this.pendingBreakpoints) {
       const breakpoints = Array.isArray(stored) ? stored : [stored];
       for (const bp of breakpoints) {
         pending.push({
-          order: this._pendingBreakpointOrder.get(bp) ?? fallbackOrder++,
+          order: this._pendingBreakpointOrder.get(bp),
           value: {
             id,
             trafficLifecycleId: bp.trafficLifecycleId,
@@ -9261,7 +9261,19 @@ export class ProxyServer {
     return pending.map(entry => entry.value);
   }
 
+  _indexPendingBreakpointOrder() {
+    for (const stored of this.pendingBreakpoints.values()) {
+      const breakpoints = Array.isArray(stored) ? stored : [stored];
+      for (const bp of breakpoints) {
+        if (!this._pendingBreakpointOrder.has(bp)) {
+          this._pendingBreakpointOrder.set(bp, this._pendingBreakpointSequence++);
+        }
+      }
+    }
+  }
+
   _storePendingBreakpoint(requestId, breakpoint) {
+    this._indexPendingBreakpointOrder();
     this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) {

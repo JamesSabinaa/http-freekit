@@ -143,3 +143,19 @@ test('pending breakpoint listing preserves global arrival order across duplicate
     ]
   );
 });
+
+test('helper-stored breakpoints do not overtake directly seeded pending entries', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+
+  proxy.pendingBreakpoints.set('legacy', pending('legacy-life', resolved));
+  proxy._storePendingBreakpoint('new', pending('new-life', resolved));
+
+  assert.deepEqual(
+    proxy.getPendingBreakpoints().map(bp => [bp.id, bp.trafficLifecycleId]),
+    [
+      ['legacy', 'legacy-life'],
+      ['new', 'new-life']
+    ]
+  );
+});
