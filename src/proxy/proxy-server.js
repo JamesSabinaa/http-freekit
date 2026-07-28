@@ -790,13 +790,16 @@ export class ProxyServer {
   }
 
   _endH1Request(request, body, trailers) {
-    if (body?.length) request.write(body);
     const cleanTrailers = this._cleanTrailers(trailers);
-    const hasContentLength = Object.keys(request.getHeaders?.() || {})
-      .some(name => name.toLowerCase() === 'content-length');
-    if (!hasContentLength && Object.keys(cleanTrailers).length > 0) {
-      request.addTrailers(cleanTrailers);
+    const hasTrailers = Object.keys(cleanTrailers).length > 0;
+    if (hasTrailers) {
+      for (const name of request.getHeaderNames?.() || []) {
+        if (name.toLowerCase() === 'content-length') request.removeHeader(name);
+      }
+      request.setHeader('trailer', Object.keys(cleanTrailers).join(', '));
     }
+    if (body?.length) request.write(body);
+    if (hasTrailers) request.addTrailers(cleanTrailers);
     request.end();
   }
 
@@ -2252,7 +2255,9 @@ export class ProxyServer {
           });
         });
 
-        this._endH1Request(proxyReq, body, clientReq.trailers);
+        this._endH1Request(
+          proxyReq, body, breakpointBodyModified ? {} : clientReq.trailers
+        );
       };
 
       sendProxyRequest();

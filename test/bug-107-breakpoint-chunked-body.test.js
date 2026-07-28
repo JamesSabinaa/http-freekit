@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
+import http2 from 'node:http2';
 import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
@@ -104,6 +105,40 @@ async function sendTlsChunked(proxyPort, hostname, targetPort) {
   socket.on('data', chunk => chunks.push(chunk));
   await once(socket, 'end');
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function sendH2WithTrailers(proxyPort, hostname, targetPort) {
+  const tunnel = await openTunnel(proxyPort, hostname, targetPort);
+  const socket = tls.connect({
+    socket: tunnel,
+    ALPNProtocols: ['h2'],
+    rejectUnauthorized: false
+  });
+  await once(socket, 'secureConnect');
+  const authority = `${hostname}:${targetPort}`;
+  const client = http2.connect(`https://${authority}`, { createConnection: () => socket });
+  await once(client, 'connect');
+  const request = client.request({
+    ':method': 'POST',
+    ':path': '/trailers',
+    ':authority': authority,
+    ':scheme': 'https',
+    'content-length': '8',
+    te: 'trailers'
+  }, { waitForTrailers: true });
+  request.once('wantTrailers', () => {
+    request.sendTrailers({ 'x-checksum': 'original checksum' });
+  });
+  const chunks = [];
+  request.on('data', chunk => chunks.push(chunk));
+  const responsePromise = once(request, 'response');
+  const endPromise = once(request, 'end');
+  request.end('original');
+  const [headers] = await responsePromise;
+  await endPromise;
+  client.close();
+  await once(client, 'close');
+  return { statusCode: headers[':status'], body: Buffer.concat(chunks).toString('utf8') };
 }
 
 function configureBodyBreakpoint(proxy) {
@@ -225,4 +260,43 @@ test('intercepted H1 body edits replace chunked framing in both TLS modes',
         await proxy.stop();
       }
     }
+  });
+
+test('native H2 trailers replace Content-Length with chunked H1 fallback framing',
+  { timeout: 20000 }, async t => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-trailer-fallback-'));
+    const ca = new CertificateAuthority(dataDir);
+    await ca.initialize();
+    const certificate = await ca.generateCertForHost('127.0.0.1');
+    let observed;
+    const origin = https.createServer({ key: certificate.key, cert: certificate.cert },
+      async (request, response) => {
+        observed = await captureRequest(request);
+        response.end('ok');
+      });
+    const originPort = await listen(origin);
+    const proxy = new ProxyServer(ca, { port: 0 });
+    proxy.setTlsFingerprint('passthrough');
+    proxy.setHttp2Config('h2-only');
+    proxy.setHttpsWhitelist(['127.0.0.1']);
+    await proxy.start();
+    t.after(async () => {
+      await proxy.stop();
+      await close(origin);
+      await rm(dataDir, { recursive: true, force: true });
+    });
+
+    const response = await sendH2WithTrailers(
+      proxy.server.address().port,
+      '127.0.0.1',
+      originPort
+    );
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, 'ok');
+    assert.equal(observed.headers['content-length'], undefined);
+    assert.equal(observed.headers['transfer-encoding'], 'chunked');
+    assert.equal(observed.headers.trailer, 'x-checksum');
+    assert.equal(observed.body, 'original');
+    assert.deepEqual(observed.trailers, { 'x-checksum': 'original checksum' });
   });
