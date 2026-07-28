@@ -292,7 +292,7 @@ test('metadata traversal ignores inherited keys and proxy value traps', () => {
     request_id: 'own-metadata-only'
   }));
 
-  assert.deepEqual(detail.inheritedMetadata, {});
+  assert.deepEqual(detail.inheritedMetadata, { _mcpAdditionalEntriesOmitted: true });
   assert.deepEqual(detail.proxyMetadata, { safe: 'retained' });
   assert.equal(inheritedAccessorReads, 0);
   assert.equal(proxyValueReads, 0);
@@ -323,6 +323,34 @@ test('metadata traversal bounds proxy descriptor traps before full enumeration',
 
   assert.equal(detail.expensiveMetadata._mcpAdditionalEntriesOmitted, true);
   assert.ok(descriptorReads <= 400, `read ${descriptorReads} proxy descriptors`);
+});
+
+test('metadata traversal marks a disappearing proxy descriptor as omitted', () => {
+  const descriptorReads = new Map();
+  const unstableMetadata = new Proxy({ first: 1, second: 2, third: 3 }, {
+    getOwnPropertyDescriptor(target, property) {
+      const reads = (descriptorReads.get(property) || 0) + 1;
+      descriptorReads.set(property, reads);
+      if (property === 'first' && reads === 2) return undefined;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    }
+  });
+  const bridge = createBridge([{
+    id: 'unstable-proxy-descriptor',
+    unstableMetadata,
+    requestBody: '',
+    responseBody: '',
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'unstable-proxy-descriptor'
+  }));
+
+  assert.deepEqual(detail.unstableMetadata, { _mcpAdditionalEntriesOmitted: true });
+  assert.equal(descriptorReads.get('first'), 2);
+  assert.equal(descriptorReads.has('second'), false);
+  assert.equal(descriptorReads.has('third'), false);
 });
 
 test('opaque proxy metadata is omitted without aborting request detail', () => {

@@ -278,7 +278,10 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
         continue;
       }
       // for-in yields all own enumerable keys before walking the prototype chain.
-      if (!descriptor) break;
+      if (!descriptor) {
+        omitted = true;
+        break;
+      }
       budget.scannedEntries++;
       if (excludedKeys?.has(key)) continue;
       if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
