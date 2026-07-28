@@ -6774,62 +6774,103 @@ export class ProxyServer {
   // Used by the "passthrough" fingerprint mode to mirror the client's TLS profile upstream.
   static _parseClientHello(buf) {
     try {
-      let pos = 0;
-      // TLS record header: type(1) + version(2) + length(2)
-      if (buf.length < 5 || buf[0] !== 0x16) return null; // not a Handshake record
-      const recordLen = buf.readUInt16BE(3);
-      if (buf.length < 5 + recordLen) return null;
+      const handshake = Buffer.allocUnsafe(Math.min(buf.length, MAX_CAPTURED_CLIENT_HELLO_BYTES));
+      let recordOffset = 0;
+      let handshakeLength = 0;
+      let expectedHandshakeLength = null;
+      while (recordOffset + 5 <= buf.length) {
+        if (buf[recordOffset] !== 0x16) return null;
+        const recordLength = buf.readUInt16BE(recordOffset + 3);
+        const payloadStart = recordOffset + 5;
+        const recordEnd = payloadStart + recordLength;
+        if (recordEnd > buf.length) return null;
+        if (handshakeLength + recordLength > handshake.length) return null;
+        buf.copy(handshake, handshakeLength, payloadStart, recordEnd);
+        handshakeLength += recordLength;
+        recordOffset = recordEnd;
 
-      pos = 5;
-      // Handshake header: type(1) + length(3)
-      if (buf[pos] !== 0x01) return null; // not ClientHello
-      const hsLen = (buf[pos + 1] << 16) | (buf[pos + 2] << 8) | buf[pos + 3];
-      pos += 4;
+        if (expectedHandshakeLength === null && handshakeLength >= 4) {
+          if (handshake[0] !== 0x01) return null;
+          expectedHandshakeLength = 4 + handshake.readUIntBE(1, 3);
+          if (expectedHandshakeLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) return null;
+        }
+        if (expectedHandshakeLength !== null && handshakeLength >= expectedHandshakeLength) {
+          return ProxyServer._parseClientHelloHandshake(
+            handshake.subarray(0, expectedHandshakeLength)
+          );
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
 
-      const chStart = pos;
+  static _parseClientHelloHandshake(handshake) {
+    try {
+      if (handshake.length < 4 || handshake[0] !== 0x01) return null;
+      const hsLen = handshake.readUIntBE(1, 3);
+      if (handshake.length < 4 + hsLen) return null;
+      const chEnd = 4 + hsLen;
+      let pos = 4;
+
       // ClientHello: version(2) + random(32)
-      const tlsVersion = buf.readUInt16BE(pos);
+      if (pos + 34 > chEnd) return null;
+      const tlsVersion = handshake.readUInt16BE(pos);
       pos += 2 + 32;
 
       // Session ID
-      const sidLen = buf[pos]; pos += 1 + sidLen;
+      if (pos + 1 > chEnd) return null;
+      const sidLen = handshake[pos];
+      if (pos + 1 + sidLen > chEnd) return null;
+      pos += 1 + sidLen;
 
       // Cipher suites
-      const csLen = buf.readUInt16BE(pos); pos += 2;
+      if (pos + 2 > chEnd) return null;
+      const csLen = handshake.readUInt16BE(pos); pos += 2;
+      if (csLen % 2 !== 0 || pos + csLen > chEnd) return null;
       const cipherSuites = [];
       for (let i = 0; i < csLen; i += 2) {
-        cipherSuites.push(buf.readUInt16BE(pos + i));
+        cipherSuites.push(handshake.readUInt16BE(pos + i));
       }
       pos += csLen;
 
       // Compression methods
-      const compLen = buf[pos]; pos += 1 + compLen;
+      if (pos + 1 > chEnd) return null;
+      const compLen = handshake[pos]; pos += 1 + compLen;
+      if (pos > chEnd) return null;
 
       // Extensions
       const groups = [];
       const sigalgs = [];
-      if (pos < chStart + hsLen + 4) {
-        const extLen = buf.readUInt16BE(pos); pos += 2;
+      if (pos < chEnd) {
+        if (pos + 2 > chEnd) return null;
+        const extLen = handshake.readUInt16BE(pos); pos += 2;
         const extEnd = pos + extLen;
+        if (extEnd !== chEnd) return null;
         while (pos + 4 <= extEnd) {
-          const extType = buf.readUInt16BE(pos);
-          const extDataLen = buf.readUInt16BE(pos + 2);
+          const extType = handshake.readUInt16BE(pos);
+          const extDataLen = handshake.readUInt16BE(pos + 2);
           pos += 4;
+          if (pos + extDataLen > extEnd) return null;
           if (extType === 0x000a && extDataLen >= 2) {
             // supported_groups
-            const listLen = buf.readUInt16BE(pos);
+            const listLen = handshake.readUInt16BE(pos);
+            if (listLen + 2 > extDataLen || listLen % 2 !== 0) return null;
             for (let i = 0; i < listLen; i += 2) {
-              groups.push(buf.readUInt16BE(pos + 2 + i));
+              groups.push(handshake.readUInt16BE(pos + 2 + i));
             }
           } else if (extType === 0x000d && extDataLen >= 2) {
             // signature_algorithms
-            const listLen = buf.readUInt16BE(pos);
+            const listLen = handshake.readUInt16BE(pos);
+            if (listLen + 2 > extDataLen || listLen % 2 !== 0) return null;
             for (let i = 0; i < listLen; i += 2) {
-              sigalgs.push(buf.readUInt16BE(pos + 2 + i));
+              sigalgs.push(handshake.readUInt16BE(pos + 2 + i));
             }
           }
           pos += extDataLen;
         }
+        if (pos !== extEnd) return null;
       }
 
       return { tlsVersion, cipherSuites, groups, sigalgs };
@@ -6949,9 +6990,13 @@ export class ProxyServer {
   // this works with tls.TLSSocket which reads from the native handle.
   _createCapturingSocket(socket, initialData = Buffer.alloc(0)) {
     let captureComplete = false;
-    let expectedLength = null;
-    const capturedChunks = [];
+    let recordOffset = 0;
+    let expectedHandshakeLength = null;
     let capturedLength = 0;
+    let handshakeLength = 0;
+    const initialCapacity = Math.min(4096, MAX_CAPTURED_CLIENT_HELLO_BYTES);
+    let capturedBytes = Buffer.allocUnsafe(initialCapacity);
+    let handshakeBytes = Buffer.allocUnsafe(initialCapacity);
     const wrapper = new Duplex({
       read() { socket.resume(); },
       write(chunk, enc, cb) { socket.write(chunk, enc, cb); },
@@ -6966,34 +7011,82 @@ export class ProxyServer {
     });
     wrapper._captured = null;
 
+    const ensureCapacity = (buffer, used, required) => {
+      if (required <= buffer.length) return buffer;
+      const nextLength = Math.min(
+        MAX_CAPTURED_CLIENT_HELLO_BYTES,
+        Math.max(required, buffer.length * 2)
+      );
+      const grown = Buffer.allocUnsafe(nextLength);
+      buffer.copy(grown, 0, 0, used);
+      return grown;
+    };
+    const finishCapture = (parsed = null) => {
+      wrapper._captured = parsed;
+      captureComplete = true;
+      capturedBytes = null;
+      handshakeBytes = null;
+    };
+
     const capture = (chunk) => {
       if (captureComplete || !chunk.length) return;
       const remaining = MAX_CAPTURED_CLIENT_HELLO_BYTES - capturedLength;
       if (remaining <= 0) {
-        captureComplete = true;
+        finishCapture();
         return;
       }
       const capturedChunk = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
-      capturedChunks.push(capturedChunk);
+      capturedBytes = ensureCapacity(
+        capturedBytes,
+        capturedLength,
+        capturedLength + capturedChunk.length
+      );
+      capturedChunk.copy(capturedBytes, capturedLength);
       capturedLength += capturedChunk.length;
 
-      if (expectedLength === null && capturedLength >= 5) {
-        const header = Buffer.concat(capturedChunks, capturedLength).subarray(0, 5);
-        if (header[0] !== 0x16) {
-          captureComplete = true;
+      while (recordOffset + 5 <= capturedLength) {
+        if (capturedBytes[recordOffset] !== 0x16) {
+          finishCapture();
           return;
         }
-        expectedLength = 5 + header.readUInt16BE(3);
-        if (expectedLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) {
-          captureComplete = true;
+        const recordLength = capturedBytes.readUInt16BE(recordOffset + 3);
+        const payloadStart = recordOffset + 5;
+        const recordEnd = payloadStart + recordLength;
+        if (recordEnd > capturedLength) break;
+        if (handshakeLength + recordLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) {
+          finishCapture();
+          return;
+        }
+        handshakeBytes = ensureCapacity(
+          handshakeBytes,
+          handshakeLength,
+          handshakeLength + recordLength
+        );
+        capturedBytes.copy(handshakeBytes, handshakeLength, payloadStart, recordEnd);
+        handshakeLength += recordLength;
+        recordOffset = recordEnd;
+
+        if (expectedHandshakeLength === null && handshakeLength >= 4) {
+          if (handshakeBytes[0] !== 0x01) {
+            finishCapture();
+            return;
+          }
+          expectedHandshakeLength = 4 + handshakeBytes.readUIntBE(1, 3);
+          if (expectedHandshakeLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) {
+            finishCapture();
+            return;
+          }
+        }
+        if (expectedHandshakeLength !== null && handshakeLength >= expectedHandshakeLength) {
+          finishCapture(ProxyServer._parseClientHelloHandshake(
+            handshakeBytes.subarray(0, expectedHandshakeLength)
+          ));
           return;
         }
       }
 
-      if (expectedLength !== null && capturedLength >= expectedLength) {
-        const clientHello = Buffer.concat(capturedChunks, capturedLength).subarray(0, expectedLength);
-        wrapper._captured = ProxyServer._parseClientHello(clientHello);
-        captureComplete = true;
+      if (capturedLength >= MAX_CAPTURED_CLIENT_HELLO_BYTES) {
+        finishCapture();
       }
     };
 

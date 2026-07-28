@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 53 of the 360 documented bugs are not fully fixed.**
+**No: 52 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 307 |
-| Partially fixed | 23 |
+| Fixed | 308 |
+| Partially fixed | 22 |
 | Open | 30 |
 | **Total** | **360** |
 
@@ -424,12 +424,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-131 — Medium — A fragmented ClientHello disables passthrough fingerprinting
 
-- Status: **Partially fixed**.
-- Resolution: Capture now buffers arbitrary TCP chunks through the first TLS record. It marks capture complete at that record boundary, so a legal ClientHello handshake split across multiple TLS records is still never reassembled or mirrored upstream.
+- Status: **Fixed**.
+- Resolution: ClientHello capture now incrementally parses consecutive TLS handshake records, reassembles the handshake header and body across both TCP and TLS-record boundaries, and stops only after the declared ClientHello length is complete or the bounded capture limit is reached. Its grow-on-demand buffers are released as soon as capture finishes.
 
-- Evidence: `_parseClientHello()` returns null until an entire TLS record is available at `src/proxy/proxy-server.js:2717-2724`, but `_createCapturingSocket()` at `:2892-2917` marks capture complete after the first socket chunk without appending data or retrying. `_getUpstreamTlsOptions()` at `:3042-3052` mirrors the client only when the first parse succeeded.
-- Impact: clients whose ClientHello spans TCP reads silently use Node's default upstream TLS fingerprint despite selecting passthrough mode.
-- Reproduction: send a valid ClientHello in two writes through CONNECT with `tlsFingerprint=passthrough` and compare the upstream fingerprint.
+- Evidence: `_parseClientHello()` and `_createCapturingSocket()` share record-aware reassembly semantics. `test/bug-131-fragmented-client-hello.test.js` covers fragmented TCP reads, a handshake header split between TLS records, initial CONNECT bytes followed by a second record, buffer growth beyond 4 KiB, exact downstream forwarding, and successful fingerprint extraction.
+- Impact: passthrough fingerprinting retains the captured cipher, version, group, and signature parameters even when a client fragments ClientHello across TCP reads or legal TLS handshake records.
+- Reproduction: fixed; the multi-record capture tests fail if capture stops at the first TLS record or forwards bytes differently.
 
 ### BUG-132 — Low — REST traffic pagination accepts negative values and cannot request zero
 
