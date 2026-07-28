@@ -81,6 +81,28 @@ test('active descendant is set only for a rendered row owned by the grid', () =>
   assert.equal(attributes.has('aria-activedescendant'), false);
 });
 
+test('traffic row DOM IDs are total and collision-free for opaque lifecycle identities', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`
+    ${identitySource}
+    globalThis.rowId = trafficRowDomId;
+  `, context);
+
+  const identities = [
+    { id: 'a--b' },
+    { id: 'a', trafficLifecycleId: 'b' },
+    { id: 'a--b', trafficLifecycleId: 'c' },
+    { id: 'a', trafficLifecycleId: 'b--c' },
+    { id: '\ud800', trafficLifecycleId: '\udfff' }
+  ];
+  const rowIds = identities.map(identity => context.rowId(identity));
+
+  assert.equal(new Set(rowIds).size, identities.length);
+  assert.equal(rowIds.every(rowId => /^[a-z0-9-]+$/.test(rowId)), true);
+  assert.equal(context.rowId(identities.at(-1)), rowIds.at(-1));
+});
+
 function createVirtualGridHarness() {
   const requests = Array.from({ length: 100 }, (_, index) => ({ id: `request-${index}` }));
   const rows = new Map();

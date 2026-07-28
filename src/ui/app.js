@@ -266,11 +266,21 @@
       );
     }
 
+    function encodeTrafficDomIdentityPart(value) {
+      const text = String(value ?? '');
+      let encoded = '';
+      for (let index = 0; index < text.length; index++) {
+        encoded += text.charCodeAt(index).toString(16).padStart(4, '0');
+      }
+      return encoded;
+    }
+
     function trafficRowDomId(request) {
       const lifecycleId = normalizeTrafficLifecycleId(request?.trafficLifecycleId);
       return lifecycleId === null
-        ? 'row-' + String(request?.id || '')
-        : 'row-' + encodeURIComponent(String(request?.id || '')) + '--' + encodeURIComponent(lifecycleId);
+        ? 'row-request-' + encodeTrafficDomIdentityPart(request?.id)
+        : 'row-lifecycle-' + encodeTrafficDomIdentityPart(request?.id) + '-' +
+          encodeTrafficDomIdentityPart(lifecycleId);
     }
 
     function trafficRowIdentityAttributes(request) {
