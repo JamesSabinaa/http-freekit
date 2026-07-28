@@ -2042,8 +2042,14 @@ export class ProxyServer {
       proxySocket.on('error', () => { socket.destroy(); cleanup(); });
       socket.on('end', () => proxySocket.end());
       socket.on('error', () => { proxySocket.destroy(); cleanup(); });
-      proxySocket.on('close', cleanup);
-      socket.on('close', cleanup);
+      proxySocket.on('close', () => {
+        if (!cleanedUp && !socket.destroyed) socket.destroy();
+        cleanup();
+      });
+      socket.on('close', () => {
+        if (!cleanedUp && !proxySocket.destroyed) proxySocket.destroy();
+        cleanup();
+      });
     });
 
     // A server may reject an upgrade with a normal HTTP response (for example

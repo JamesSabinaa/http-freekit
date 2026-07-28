@@ -204,6 +204,52 @@ test('shutdown aborts a delayed upstream upgrade before it can publish a late 10
   ]);
 });
 
+test('forced shutdown closes both halves of an established WebSocket', async t => {
+  let originSocket;
+  let reportOriginClosed;
+  const originClosed = new Promise(resolve => { reportOriginClosed = resolve; });
+  const origin = net.createServer(socket => {
+    originSocket = socket;
+    socket.on('error', () => {});
+    socket.once('close', reportOriginClosed);
+    socket.once('data', () => {
+      socket.write(
+        'HTTP/1.1 101 Switching Protocols\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Upgrade: websocket\r\n\r\n'
+      );
+    });
+  });
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  await proxy.start();
+  const client = await openUpgrade(proxy.server.address().port, originPort);
+
+  t.after(async () => {
+    client.socket.destroy();
+    originSocket?.destroy();
+    await proxy.stop();
+    await close(origin);
+  });
+
+  await waitFor(
+    () => client.response().includes('101 Switching Protocols'),
+    'Timed out waiting for the established WebSocket'
+  );
+  await proxy.stop();
+  await Promise.race([
+    originClosed,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('Origin WebSocket stayed open after proxy shutdown')),
+      500
+    ))
+  ]);
+
+  assert.equal(client.socket.destroyed, true);
+  assert.equal(originSocket.destroyed, true);
+  assert.equal(proxy._pendingWsCaptureFinalizations.size, 0);
+});
+
 test('an open WebSocket has its 101 parent before frames and updates it on close', async t => {
   const serverFrame = Buffer.from([0x81, 0x02, 0x6f, 0x6b]);
   const originSockets = new Set();
