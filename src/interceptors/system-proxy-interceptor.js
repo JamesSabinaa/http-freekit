@@ -13,6 +13,7 @@ export class SystemProxyInterceptor {
     this.activeProxyServer = null;
     this.pendingRecovery = null;
     this.restorePending = false;
+    this.restoreBaselineSettings = null;
     this.ca = options.ca || null;
     this._processIdentityLookup = options.processIdentityLookup
       || (pid => this._queryWindowsProcessIdentity(pid));
@@ -275,9 +276,9 @@ if ($null -eq $target) {
     );
   }
 
-  _settingsCouldBelongToRestoreRetry(current, recovery) {
+  _settingsCouldBelongToRestoreRetry(current, recovery, restoreBaseline = null) {
     const previous = recovery.previousSettings;
-    const owned = recovery.ownedSettings || {
+    const owned = restoreBaseline || recovery.ownedSettings || {
       enabled: true,
       server: recovery.proxyServer
     };
@@ -288,9 +289,9 @@ if ($null -eq $target) {
     }
     restoreOrder.push('enabled');
 
-    // A graceful restore writes these fields in order. Only exact prefixes of
-    // that sequence can be our partial work; other owned/previous mixtures may
-    // be newer settings assembled by another application.
+    // A graceful restore writes these fields in order. Only exact prefixes
+    // from the state recorded when it began can be our partial work; other
+    // mixtures may be newer settings assembled by another application.
     return Array.from({ length: restoreOrder.length + 1 }, (_, restoredCount) =>
       restoreOrder.every((field, index) =>
         current[field] === (index < restoredCount ? previous[field] : owned[field])
@@ -349,6 +350,7 @@ if ($null -eq $target) {
     this.activeProxyServer = null;
     this.pendingRecovery = null;
     this.restorePending = false;
+    this.restoreBaselineSettings = null;
   }
 
   _settingsBelongToActiveSession(settings) {
@@ -402,6 +404,7 @@ if ($null -eq $target) {
         } else if (!this.active) {
           this.previousSettings = null;
           this.pendingRecovery = null;
+          this.restoreBaselineSettings = null;
         }
         this.active = false;
         throw new Error(`Failed to set system proxy: ${err.message}`);
@@ -415,21 +418,29 @@ if ($null -eq $target) {
       if (!this.active && !this.previousSettings) return;
       try {
         const currentSettings = this._readCurrentSettings();
-        const settingsAreOwned = this.active && !this.restorePending
-          ? this._settingsBelongToActiveSession(currentSettings)
-          : this.pendingRecovery
-            && (this.restorePending
-              ? this._settingsCouldBelongToRestoreRetry(currentSettings, this.pendingRecovery)
-              : this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery));
+        const settingsAreOwned = this.restorePending
+          ? this.pendingRecovery && this._settingsCouldBelongToRestoreRetry(
+              currentSettings,
+              this.pendingRecovery,
+              this.restoreBaselineSettings
+            )
+          : this.active
+            ? this._settingsBelongToActiveSession(currentSettings)
+            : this.pendingRecovery
+              && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
         if (!settingsAreOwned) {
           this._removeRecoveryState();
           this.previousSettings = null;
           this.activeProxyServer = null;
           this.pendingRecovery = null;
           this.restorePending = false;
+          this.restoreBaselineSettings = null;
           this.active = false;
           console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
           return;
+        }
+        if (!this.restorePending) {
+          this.restoreBaselineSettings = { ...currentSettings };
         }
         this.restorePending = true;
         this._restorePreviousSettings();

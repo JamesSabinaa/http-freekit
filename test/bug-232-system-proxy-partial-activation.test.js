@@ -142,7 +142,7 @@ test('graceful cleanup preserves an external change after partial activation', a
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
 
-test('cleanup accepts a journaled partial activation state before graceful restore begins', async t => {
+test('repeated cleanup accepts prefixes from the journaled partial activation baseline', async t => {
   const previousSettings = {
     enabled: false,
     server: 'corporate.proxy:8888',
@@ -169,6 +169,7 @@ test('cleanup accepts a journaled partial activation state before graceful resto
     if (name === 'ProxyServer') {
       serverWrites++;
       if (serverWrites === 2) throw new Error('ProxyServer rollback failed');
+      if (serverWrites === 3) throw new Error('ProxyServer graceful restore failed');
       settings.server = value;
     }
     if (name === 'ProxyOverride') {
@@ -187,11 +188,24 @@ test('cleanup accepts a journaled partial activation state before graceful resto
   assert.equal(interceptor.restorePending, false);
   assert.ok(interceptor.pendingRecovery);
 
+  await assert.rejects(
+    interceptor.deactivate(),
+    /ProxyServer graceful restore failed/
+  );
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: '<local>'
+  });
+  assert.equal(interceptor.restorePending, true);
+  assert.deepEqual(interceptor.restoreBaselineSettings, settings);
+
   await interceptor.deactivate();
 
   assert.deepEqual(settings, previousSettings);
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.previousSettings, null);
   assert.equal(interceptor.pendingRecovery, null);
+  assert.equal(interceptor.restoreBaselineSettings, null);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
