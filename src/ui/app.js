@@ -1436,7 +1436,7 @@
                 <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">${responsePhase ? 'Response' : 'Request'} Paused at Breakpoint</div>
                 <div id="breakpoint-edit-instructions" style="font-size:12px;color:var(--text-lowlight);">Double-click a field, or focus it and press Enter or Space, to edit before resuming.</div>
               </div>
-              <button class="btn btn-primary" onclick="resumeBreakpointRequest('${req.id}')" style="padding:8px 20px;">
+              <button class="btn btn-primary" data-request-id="${esc(req.id)}" data-lifecycle-id="${esc(req.trafficLifecycleId || '')}" onclick="resumeBreakpointRequest(this.dataset.requestId, this.dataset.lifecycleId)" style="padding:8px 20px;">
                 Resume
               </button>
             </div>
@@ -11195,9 +11195,15 @@
         const data = await res.json();
         for (const bp of (data.pending || [])) {
           try {
-            const resumeRes = await fetch(API_BASE + '/api/breakpoints/pending/' + bp.id + '/resume', {
+            const lifecycleQuery = bp.trafficLifecycleId
+              ? '?trafficLifecycleId=' + encodeURIComponent(bp.trafficLifecycleId)
+              : '';
+            const resumeRes = await fetch(
+              API_BASE + '/api/breakpoints/pending/' + encodeURIComponent(bp.id) + '/resume' + lifecycleQuery,
+              {
               method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
-            });
+              }
+            );
             let resumeData = null;
             try { resumeData = await resumeRes.json(); } catch { /* ignore non-json error bodies */ }
             if (resumeRes.status === 404) continue;
@@ -11303,7 +11309,7 @@
       document.getElementById('breakpoint-edit-' + field)?.focus();
     }
 
-    async function resumeBreakpointRequest(requestId) {
+    async function resumeBreakpointRequest(requestId, trafficLifecycleId = '') {
       try {
         const draft = breakpointEditDrafts.get(requestId) || {};
         const dirty = draft._dirty || {};
@@ -11314,11 +11320,17 @@
         for (const field of editableFields) {
           if (dirty[field]) modifications[field] = draft[field];
         }
-        const res = await fetch(API_BASE + '/api/breakpoints/pending/' + requestId + '/resume', {
+        const lifecycleQuery = trafficLifecycleId
+          ? '?trafficLifecycleId=' + encodeURIComponent(trafficLifecycleId)
+          : '';
+        const res = await fetch(
+          API_BASE + '/api/breakpoints/pending/' + encodeURIComponent(requestId) + '/resume' + lifecycleQuery,
+          {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
           body: JSON.stringify(modifications)
-        });
+          }
+        );
         let data = null;
         try { data = await res.json(); } catch { /* ignore non-json error bodies */ }
         if (!res.ok || data?.success === false) {

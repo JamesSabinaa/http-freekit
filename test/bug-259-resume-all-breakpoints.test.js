@@ -85,3 +85,37 @@ test('Resume All continues after other failures and reports the refreshed pendin
     type: 'error'
   }]);
 });
+
+test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
+  const calls = [];
+  let pendingRead = 0;
+  const renderer = createRenderer(async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET' });
+    if (url === '/api/breakpoints/pending') {
+      pendingRead++;
+      return response({
+        pending: pendingRead === 1 ? [
+          { id: 'same/id', trafficLifecycleId: 'life 1' },
+          { id: 'same/id', trafficLifecycleId: 'life&2' }
+        ] : []
+      });
+    }
+    return response({ success: true });
+  });
+
+  await renderer.context.resumeAllBreakpoints();
+
+  assert.deepEqual(calls, [
+    { url: '/api/breakpoints/pending', method: 'GET' },
+    {
+      url: '/api/breakpoints/pending/same%2Fid/resume?trafficLifecycleId=life%201',
+      method: 'POST'
+    },
+    {
+      url: '/api/breakpoints/pending/same%2Fid/resume?trafficLifecycleId=life%262',
+      method: 'POST'
+    },
+    { url: '/api/breakpoints/pending', method: 'GET' }
+  ]);
+  assert.deepEqual(renderer.toasts, [{ message: 'All breakpoints resumed', type: 'success' }]);
+});

@@ -1760,7 +1760,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/breakpoints/pending/:requestId/resume', (req, res) => {
       const validationError = this.proxy.validateBreakpointModifications(req.body);
       if (validationError) return res.status(400).json({ error: validationError });
-      const success = this.proxy.resumeBreakpoint(req.params.requestId, req.body);
+      const trafficLifecycleId = typeof req.query.trafficLifecycleId === 'string'
+        ? req.query.trafficLifecycleId
+        : undefined;
+      const success = this.proxy.resumeBreakpoint(
+        req.params.requestId,
+        req.body,
+        trafficLifecycleId
+      );
       if (!success) return res.status(404).json({ error: 'Pending breakpoint not found' });
       res.json({ success: true });
     });

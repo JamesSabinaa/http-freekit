@@ -208,7 +208,7 @@ export class ProxyServer {
     this.activeConnections = new Set();
     this._pendingWsCaptureFinalizations = new Set();
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
-    this.pendingBreakpoints = new Map(); // requestId -> {req details, resolve fn}
+    this.pendingBreakpoints = new Map(); // requestId -> pending breakpoint or FIFO array for reused IDs
     this.mockRules = [];
     // Upstream proxy: { host, port, auth? } or null
     this.upstreamProxy = null;
@@ -3782,20 +3782,20 @@ export class ProxyServer {
         }, trafficLifecycleId);
         try {
           this.onBreakpoint({
-            type: 'breakpoint-hit', requestId,
+            type: 'breakpoint-hit', requestId, trafficLifecycleId,
             method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname
           });
         } catch (err) {
           console.error('[Proxy] Error in breakpoint handler:', err.message);
         }
         const modifications = await new Promise((resolve) => {
-          this.pendingBreakpoints.set(requestId, {
+          this._storePendingBreakpoint(requestId, {
             method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
             path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
             body: this._safeBodyString(body), trafficLifecycleId,
             timestamp: Date.now(), resolve
           });
-          this._setBreakpointTimeout(requestId, clientRes);
+          this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
         });
         if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
         // Apply modifications if provided
@@ -4724,20 +4724,20 @@ export class ProxyServer {
             });
             try {
               this.onBreakpoint({
-                type: 'breakpoint-hit', requestId,
+                type: 'breakpoint-hit', requestId, trafficLifecycleId,
                 method: req.method, url: fullUrl, host: hostname
               });
             } catch (err) {
               console.error('[Proxy] Error in breakpoint handler:', err.message);
             }
             const modifications = await new Promise((resolve) => {
-              this.pendingBreakpoints.set(requestId, {
+              this._storePendingBreakpoint(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), trafficLifecycleId,
                 timestamp: Date.now(), resolve
               });
-              this._setBreakpointTimeout(requestId, res);
+              this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
             });
             if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
             if (modifications.url) {
@@ -4776,7 +4776,7 @@ export class ProxyServer {
             });
             try {
               this.onBreakpoint({
-                type: 'breakpoint-hit', requestId,
+                type: 'breakpoint-hit', requestId, trafficLifecycleId,
                 method: req.method, url: fullUrl, host: hostname,
                 phase: 'response'
               });
@@ -4784,13 +4784,13 @@ export class ProxyServer {
               console.error('[Proxy] Error in breakpoint handler:', err.message);
             }
             const modifications = await new Promise((resolve) => {
-              this.pendingBreakpoints.set(requestId, {
+              this._storePendingBreakpoint(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
                 body: this._safeBodyString(body), trafficLifecycleId,
                 timestamp: Date.now(), phase: 'response', resolve
               });
-              this._setBreakpointTimeout(requestId, res);
+              this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
             });
             if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
             if (modifications.status) {
@@ -4891,20 +4891,20 @@ export class ProxyServer {
           });
           try {
             this.onBreakpoint({
-              type: 'breakpoint-hit', requestId,
+              type: 'breakpoint-hit', requestId, trafficLifecycleId,
               method: req.method, url: fullUrl, host: hostname
             });
           } catch (err) {
             console.error('[Proxy] Error in breakpoint handler:', err.message);
           }
           const modifications = await new Promise((resolve) => {
-            this.pendingBreakpoints.set(requestId, {
+            this._storePendingBreakpoint(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId, res);
+            this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
           });
           if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           // Apply modifications if provided
@@ -5442,20 +5442,20 @@ export class ProxyServer {
           });
           try {
             this.onBreakpoint({
-              type: 'breakpoint-hit', requestId,
+              type: 'breakpoint-hit', requestId, trafficLifecycleId,
               method, url: fullUrl, host: authority
             });
           } catch (err) {
             console.error('[Proxy] Error in breakpoint handler:', err.message);
           }
           const modifications = await new Promise((resolve) => {
-            this.pendingBreakpoints.set(requestId, {
+            this._storePendingBreakpoint(requestId, {
               method, url: fullUrl, host: authority,
               path, headers: reqHeaders,
               body: this._safeBodyString(body), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId, stream);
+            this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
           });
           if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           if (modifications.url) {
@@ -5885,20 +5885,20 @@ export class ProxyServer {
           });
           try {
             this.onBreakpoint({
-              type: 'breakpoint-hit', requestId,
+              type: 'breakpoint-hit', requestId, trafficLifecycleId,
               method: req.method, url: fullUrl, host: hostname
             });
           } catch (err) {
             console.error('[Proxy] Error in breakpoint handler:', err.message);
           }
           const modifications = await new Promise((resolve) => {
-            this.pendingBreakpoints.set(requestId, {
+            this._storePendingBreakpoint(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
               body: this._safeBodyString(body), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
-            this._setBreakpointTimeout(requestId, res);
+            this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
           });
           if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
           if (modifications.url) {
@@ -6504,15 +6504,18 @@ export class ProxyServer {
         originalRequest, transformedBy
       });
       try {
-        this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url: fullUrl, host: authority });
+        this.onBreakpoint({
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
+          method, url: fullUrl, host: authority
+        });
       } catch (err) { console.error('[Proxy] Error in breakpoint handler:', err.message); }
       const modifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), resolve
         });
-        this._setBreakpointTimeout(requestId, stream);
+        this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
       });
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       if (modifications.url) {
@@ -6551,15 +6554,18 @@ export class ProxyServer {
         originalRequest, transformedBy
       });
       try {
-        this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url: fullUrl, host: authority, phase: 'response' });
+        this.onBreakpoint({
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
+          method, url: fullUrl, host: authority, phase: 'response'
+        });
       } catch (err) { console.error('[Proxy] Error in breakpoint handler:', err.message); }
       const modifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId, stream);
+        this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
       });
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       const hasCustomResponse = Object.prototype.hasOwnProperty.call(modifications, 'status');
@@ -8446,20 +8452,20 @@ export class ProxyServer {
       });
       try {
         this.onBreakpoint({
-          type: 'breakpoint-hit', requestId,
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname
         });
       } catch (err) {
         console.error('[Proxy] Error in breakpoint handler:', err.message);
       }
       const modifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), resolve
         });
-        this._setBreakpointTimeout(requestId, clientRes);
+        this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
       });
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply modifications and continue as normal proxy request
@@ -8492,7 +8498,7 @@ export class ProxyServer {
       });
       try {
         this.onBreakpoint({
-          type: 'breakpoint-hit', requestId,
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           phase: 'response'
         });
@@ -8500,13 +8506,13 @@ export class ProxyServer {
         console.error('[Proxy] Error in breakpoint handler:', err.message);
       }
       const modifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId, clientRes);
+        this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
       });
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply modifications to the response
@@ -8551,7 +8557,7 @@ export class ProxyServer {
       });
       try {
         this.onBreakpoint({
-          type: 'breakpoint-hit', requestId,
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           phase: 'request'
         });
@@ -8559,13 +8565,13 @@ export class ProxyServer {
         console.error('[Proxy] Error in breakpoint handler:', err.message);
       }
       const reqModifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), phase: 'request', resolve
         });
-        this._setBreakpointTimeout(requestId, clientRes);
+        this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
       });
       if (reqModifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply request modifications
@@ -8594,7 +8600,7 @@ export class ProxyServer {
       });
       try {
         this.onBreakpoint({
-          type: 'breakpoint-hit', requestId,
+          type: 'breakpoint-hit', requestId, trafficLifecycleId,
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           phase: 'response'
         });
@@ -8602,13 +8608,13 @@ export class ProxyServer {
         console.error('[Proxy] Error in breakpoint handler:', err.message);
       }
       const resModifications = await new Promise((resolve) => {
-        this.pendingBreakpoints.set(requestId, {
+        this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
           body: this._safeBodyString(body), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
-        this._setBreakpointTimeout(requestId, clientRes);
+        this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
       });
       if (resModifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply response modifications
@@ -9214,17 +9220,67 @@ export class ProxyServer {
 
   getPendingBreakpoints() {
     const pending = [];
-    for (const [id, bp] of this.pendingBreakpoints) {
-      pending.push({
-        id,
-        method: bp.method,
-        url: bp.url,
-        host: bp.host,
-        phase: bp.phase || 'request',
-        timestamp: bp.timestamp
-      });
+    for (const [id, stored] of this.pendingBreakpoints) {
+      const breakpoints = Array.isArray(stored) ? stored : [stored];
+      for (const bp of breakpoints) {
+        pending.push({
+          id,
+          trafficLifecycleId: bp.trafficLifecycleId,
+          method: bp.method,
+          url: bp.url,
+          host: bp.host,
+          phase: bp.phase || 'request',
+          timestamp: bp.timestamp
+        });
+      }
     }
     return pending;
+  }
+
+  _storePendingBreakpoint(requestId, breakpoint) {
+    const stored = this.pendingBreakpoints.get(requestId);
+    if (!stored) {
+      this.pendingBreakpoints.set(requestId, breakpoint);
+    } else if (Array.isArray(stored)) {
+      stored.push(breakpoint);
+    } else {
+      this.pendingBreakpoints.set(requestId, [stored, breakpoint]);
+    }
+    return breakpoint;
+  }
+
+  _selectPendingBreakpoint(requestId, trafficLifecycleId) {
+    const stored = this.pendingBreakpoints.get(requestId);
+    if (!stored) return null;
+    const breakpoints = Array.isArray(stored) ? stored : [stored];
+    if (trafficLifecycleId !== undefined && trafficLifecycleId !== null && trafficLifecycleId !== '') {
+      return breakpoints.find(bp => bp.trafficLifecycleId === trafficLifecycleId) || null;
+    }
+    return breakpoints[0] || null;
+  }
+
+  _deletePendingBreakpoint(requestId, breakpoint) {
+    const stored = this.pendingBreakpoints.get(requestId);
+    if (!stored) return false;
+    if (!Array.isArray(stored)) {
+      if (stored !== breakpoint) return false;
+      this.pendingBreakpoints.delete(requestId);
+      return true;
+    }
+    const index = stored.indexOf(breakpoint);
+    if (index === -1) return false;
+    stored.splice(index, 1);
+    if (stored.length === 1) this.pendingBreakpoints.set(requestId, stored[0]);
+    else if (stored.length === 0) this.pendingBreakpoints.delete(requestId);
+    return true;
+  }
+
+  _countPendingBreakpoints() {
+    let count = 0;
+    for (const stored of this.pendingBreakpoints.values()) {
+      count += Array.isArray(stored) ? stored.length : 1;
+    }
+    return count;
   }
 
   _getMockBreakpointPhase(mockRule) {
@@ -9273,12 +9329,14 @@ export class ProxyServer {
       trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
     }, trafficLifecycleId);
     try {
-      this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url, host, phase: 'response' });
+      this.onBreakpoint({
+        type: 'breakpoint-hit', requestId, trafficLifecycleId, method, url, host, phase: 'response'
+      });
     } catch (err) {
       console.error('[Proxy] Error in breakpoint handler:', err.message);
     }
     const modifications = await new Promise((resolve) => {
-      this.pendingBreakpoints.set(requestId, {
+      this._storePendingBreakpoint(requestId, {
         method,
         url,
         host,
@@ -9291,7 +9349,7 @@ export class ProxyServer {
         timestamp: Date.now(),
         resolve
       });
-      this._setBreakpointTimeout(requestId, abortTarget);
+      this._setBreakpointTimeout(requestId, abortTarget, trafficLifecycleId);
     });
     if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return null;
     const requestedStatus = Number(modifications.status ?? modifications.statusCode);
@@ -9319,30 +9377,36 @@ export class ProxyServer {
     };
   }
 
-  resumeBreakpoint(requestId, modifications = {}) {
-    const bp = this.pendingBreakpoints.get(requestId);
+  resumeBreakpoint(requestId, modifications = {}, trafficLifecycleId) {
+    const bp = this._selectPendingBreakpoint(requestId, trafficLifecycleId);
     if (!bp) return false;
     if (this.validateBreakpointModifications(modifications)) return false;
+    this._deletePendingBreakpoint(requestId, bp);
     bp.resolve(modifications);
-    this.pendingBreakpoints.delete(requestId);
     try {
-      this.onBreakpoint({ type: 'breakpoint-resumed', requestId });
+      this.onBreakpoint({
+        type: 'breakpoint-resumed', requestId,
+        ...(bp.trafficLifecycleId ? { trafficLifecycleId: bp.trafficLifecycleId } : {})
+      });
     } catch (err) {
       console.error('[Proxy] Error in breakpoint handler:', err.message);
     }
     return true;
   }
 
-  _setBreakpointTimeout(requestId, abortTarget = null) {
-    const bp = this.pendingBreakpoints.get(requestId);
+  _setBreakpointTimeout(requestId, abortTarget = null, trafficLifecycleId) {
+    const bp = this._selectPendingBreakpoint(requestId, trafficLifecycleId);
     if (!bp) return;
     let onClientClose = null;
     const timeout = setTimeout(() => {
-      if (this.pendingBreakpoints.get(requestId) === bp) {
+      if (this._deletePendingBreakpoint(requestId, bp)) {
         bp.resolve({});
-        this.pendingBreakpoints.delete(requestId);
         try {
-          this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'timeout' });
+          this.onBreakpoint({
+            type: 'breakpoint-resumed', requestId,
+            ...(bp.trafficLifecycleId ? { trafficLifecycleId: bp.trafficLifecycleId } : {}),
+            reason: 'timeout'
+          });
         } catch (err) {
           console.error('[Proxy] Error in breakpoint handler:', err.message);
         }
@@ -9357,7 +9421,7 @@ export class ProxyServer {
 
     if (abortTarget?.once) {
       onClientClose = () => {
-        if (this.pendingBreakpoints.get(requestId) !== bp) return;
+        if (!this._deletePendingBreakpoint(requestId, bp)) return;
         const pendingDecision = this._selectPendingTrafficLogDecision({
           id: requestId,
           method: bp.method,
@@ -9372,7 +9436,6 @@ export class ProxyServer {
           ? retainedRecord.timestamp
           : bp.timestamp;
         bp.resolve(BREAKPOINT_CLIENT_DISCONNECTED);
-        this.pendingBreakpoints.delete(requestId);
         this._emitRequestUpdate({
           ...(retainedRecord || {}),
           id: requestId,
@@ -9387,7 +9450,11 @@ export class ProxyServer {
           duration: Math.max(0, Date.now() - requestStartedAt)
         });
         try {
-          this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });
+          this.onBreakpoint({
+            type: 'breakpoint-resumed', requestId,
+            ...(bp.trafficLifecycleId ? { trafficLifecycleId: bp.trafficLifecycleId } : {}),
+            reason: 'client-disconnected'
+          });
         } catch (err) {
           console.error('[Proxy] Error in breakpoint handler:', err.message);
         }
@@ -9569,7 +9636,7 @@ export class ProxyServer {
       activeConnections: this.activeConnections.size,
       mockRules: this.mockRules.length,
       breakpointRules: this.breakpointRules.length,
-      pendingBreakpoints: this.pendingBreakpoints.size,
+      pendingBreakpoints: this._countPendingBreakpoints(),
       upstreamProxy: this.upstreamProxy,
       tlsPassthrough: this.tlsPassthrough,
       http2Enabled: this.http2Enabled,
