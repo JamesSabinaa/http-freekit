@@ -8614,6 +8614,18 @@ export class ProxyServer {
     });
   }
 
+  _snapshotTrafficRecord(data) {
+    const {
+      _pending,
+      _update,
+      _mergeUpdate,
+      _trafficLifecycleComplete,
+      _trafficClearGeneration,
+      ...record
+    } = data;
+    return record;
+  }
+
   _emitRequest(data) {
     const lifecycleComplete = data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
@@ -8636,6 +8648,9 @@ export class ProxyServer {
         value: pendingDecision.trafficClearGeneration,
         configurable: true
       });
+    }
+    if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
+      pendingDecision.record = this._snapshotTrafficRecord(data);
     }
     if (hasPendingDecision && lifecycleComplete) {
       this._pendingTrafficLogDecisions.delete(data.id);
@@ -8663,7 +8678,8 @@ export class ProxyServer {
     if (data.id !== undefined) {
       this._pendingTrafficLogDecisions.set(data.id, {
         emitted,
-        trafficClearGeneration: data._trafficClearGeneration
+        trafficClearGeneration: data._trafficClearGeneration,
+        record: this._snapshotTrafficRecord(data)
       });
     }
     return emitted;
@@ -8693,6 +8709,9 @@ export class ProxyServer {
         value: pendingDecision.trafficClearGeneration,
         configurable: true
       });
+    }
+    if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
+      pendingDecision.record = this._snapshotTrafficRecord(data);
     }
     if (hasPendingDecision && lifecycleComplete) {
       this._pendingTrafficLogDecisions.delete(data.id);
@@ -9164,9 +9183,17 @@ export class ProxyServer {
     if (abortTarget?.once) {
       onClientClose = () => {
         if (this.pendingBreakpoints.get(requestId) !== bp) return;
+        const pendingDecision = this._pendingTrafficLogDecisions.get(requestId);
+        const retainedRecord = pendingDecision && typeof pendingDecision === 'object'
+          ? pendingDecision.record
+          : null;
+        const requestStartedAt = Number.isFinite(retainedRecord?.timestamp)
+          ? retainedRecord.timestamp
+          : bp.timestamp;
         bp.resolve(BREAKPOINT_CLIENT_DISCONNECTED);
         this.pendingBreakpoints.delete(requestId);
         this._emitRequestUpdate({
+          ...(retainedRecord || {}),
           id: requestId,
           method: bp.method,
           url: bp.url,
@@ -9175,7 +9202,7 @@ export class ProxyServer {
           _mergeUpdate: true,
           statusCode: 0,
           statusMessage: 'Client Disconnected',
-          duration: Math.max(0, Date.now() - bp.timestamp)
+          duration: Math.max(0, Date.now() - requestStartedAt)
         });
         try {
           this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });

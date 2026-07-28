@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
 
 import { ApiServer } from '../src/api/api-server.js';
+import { trafficToHar } from '../src/api/har-converter.js';
+import { McpServerBridge } from '../src/mcp/mcp-server.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 function waitFor(predicate, timeoutMs = 2000) {
@@ -68,4 +71,96 @@ test('proxy shutdown clears any remaining traffic lifecycle decisions', async ()
   await proxy.stop();
 
   assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+});
+
+test('an evicted breakpoint disconnect remains a complete standalone traffic record', t => {
+  t.mock.method(Date, 'now', () => 5_000);
+  const proxy = new ProxyServer(null);
+  const api = new ApiServer(proxy, null, null);
+  api.maxTrafficLog = 1;
+  const broadcasts = [];
+  api._broadcast = event => broadcasts.push(structuredClone(event));
+  proxy.onRequest = event => api.onTrafficEvent(event);
+
+  proxy._emitPendingRequest({
+    id: 'paused',
+    protocol: 'http',
+    method: 'POST',
+    url: 'http://paused.test/original?value=1',
+    host: 'paused.test',
+    path: '/original?value=1',
+    requestHeaders: { 'content-type': 'text/plain' },
+    requestBody: 'payload',
+    requestBodySize: 7,
+    timestamp: 1_000,
+    source: 'breakpoint',
+    tls: null,
+    remote: null
+  });
+  api.onTrafficEvent({
+    id: 'evictor',
+    protocol: 'http',
+    method: 'GET',
+    url: 'http://other.test/',
+    host: 'other.test',
+    path: '/',
+    requestHeaders: {},
+    requestBody: '',
+    requestBodySize: 0,
+    statusCode: 204,
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 0,
+    timestamp: 4_500,
+    source: 'proxy'
+  });
+  assert.deepEqual(api.trafficLog.map(record => record.id), ['evictor']);
+
+  let resolution;
+  const client = new EventEmitter();
+  client.destroyed = false;
+  client.closed = false;
+  proxy.pendingBreakpoints.set('paused', {
+    method: 'POST',
+    url: 'http://paused.test/original?value=1',
+    host: 'paused.test',
+    path: '/original?value=1',
+    timestamp: 4_000,
+    resolve: value => { resolution = value; }
+  });
+  proxy._setBreakpointTimeout('paused', client);
+  broadcasts.length = 0;
+  client.emit('close');
+
+  assert.ok(resolution);
+  assert.equal(proxy.pendingBreakpoints.size, 0);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+  assert.equal(api.trafficLog.length, 1);
+  const terminal = api.trafficLog[0];
+  assert.equal(terminal.id, 'paused');
+  assert.equal(terminal.protocol, 'http');
+  assert.equal(terminal.url, 'http://paused.test/original?value=1');
+  assert.deepEqual(terminal.requestHeaders, { 'content-type': 'text/plain' });
+  assert.equal(terminal.requestBody, 'payload');
+  assert.equal(terminal.requestBodySize, 7);
+  assert.equal(terminal.responseBody, '');
+  assert.equal(terminal.responseBodySize, 0);
+  assert.equal(terminal.timestamp, 1_000);
+  assert.equal(terminal.duration, 4_000);
+  assert.equal(terminal.statusCode, 0);
+  assert.equal(terminal.statusMessage, 'Client Disconnected');
+  assert.deepEqual(
+    broadcasts.filter(event => event.type === 'request' || event.type === 'request-update')
+      .map(event => event.type),
+    ['request']
+  );
+
+  assert.doesNotThrow(() => trafficToHar(api.trafficLog, { maskSensitive: false }));
+  const bridge = new McpServerBridge({
+    apiServer: api,
+    proxyServer: proxy,
+    interceptorManager: {}
+  });
+  assert.doesNotThrow(() => bridge._handleSearchTraffic({ limit: 10 }));
 });
