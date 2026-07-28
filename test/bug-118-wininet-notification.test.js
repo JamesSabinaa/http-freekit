@@ -37,3 +37,56 @@ test('WinINet notification sends settings-changed and refresh flags', () => {
   assert.match(script, /InternetSetOption\(\[IntPtr\]::Zero, 39,/);
   assert.match(script, /InternetSetOption\(\[IntPtr\]::Zero, 37,/);
 });
+
+test('a failed restoration notification remains retryable on the next Stop', async () => {
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const settings = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  };
+  const interceptor = new SystemProxyInterceptor();
+  interceptor._isWindows = () => true;
+  interceptor.active = true;
+  interceptor.previousSettings = previousSettings;
+  interceptor.activeProxyServer = settings.server;
+  interceptor.pendingRecovery = {
+    proxyServer: settings.server,
+    ownedSettings: { ...settings },
+    previousSettings
+  };
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  interceptor._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') settings.server = value;
+    if (name === 'ProxyOverride') settings.override = value;
+  };
+  let notificationAttempts = 0;
+  interceptor._notifyWinInet = () => {
+    notificationAttempts++;
+    if (notificationAttempts === 1) throw new Error('WinINet refresh failed');
+  };
+  interceptor._removeRecoveryState = () => {};
+
+  await assert.rejects(
+    interceptor.deactivate(),
+    /Failed to restore system proxy settings: WinINet refresh failed/
+  );
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.restorePending, true);
+  assert.equal(interceptor.active, true);
+  assert.equal(await interceptor.needsDeactivation(), true);
+
+  await interceptor.deactivate();
+
+  assert.equal(notificationAttempts, 2);
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.restorePending, false);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.previousSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+});

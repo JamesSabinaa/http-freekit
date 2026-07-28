@@ -4,18 +4,18 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 ## Current status
 
-Status review completed on 28 July 2026 against source commit `c38e31f`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
+Status review completed on 28 July 2026 against source commit `8d5469c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 37 of the 361 documented bugs are not fully fixed.**
+**No: 36 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 324 |
-| Partially fixed | 14 |
+| Fixed | 325 |
+| Partially fixed | 13 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-124, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1380,7 +1380,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-118 — High — Windows proxy changes are not published to running WinINet clients
 
-- Status: **Partially fixed**. Normal activation and restoration now publish WinINet notifications, but a failed restoration notification cannot be retried because the next Stop misclassifies the restored registry values as an external change.
+- Status: **Fixed**.
+- Resolution: Activation and restoration publish both WinINet settings-changed and refresh notifications. Restoration records its exact pre-restore baseline before registry mutation, so a failed notification leaves cleanup owned and retryable; a subsequent Stop republishes the notification and clears recovery state without mistaking the restored values for an external change.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:46-53,72-80,90-99` changes registry values only and never sends the WinINet settings-changed and refresh notifications required after a global configuration change ([Microsoft option flags](https://learn.microsoft.com/en-us/windows/win32/wininet/option-flags)).
 - Impact: already-running WinINet clients can continue using cached direct/proxy settings after both Start and Stop even though FreeKit reports success.
 - Reproduction: keep a WinINet client open, activate System Proxy, and make another request without restarting the client.
