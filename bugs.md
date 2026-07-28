@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 63 of the 360 documented bugs are not fully fixed.**
+**No: 62 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 297 |
+| Fixed | 298 |
 | Partially fixed | 25 |
-| Open | 38 |
+| Open | 37 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -303,7 +303,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-107 — Medium — Editing a chunked breakpoint body sends illegal framing
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: The shared Content-Length setter now removes both existing Content-Length and Transfer-Encoding fields case-insensitively before applying the edited body's exact length. Regression tests send real chunked POST bodies through plain H1, intercepted H1, and H1-on-H2 breakpoints and verify that origins receive only Content-Length with the edited body.
 
 - Evidence: `_setContentLength()` at `src/proxy/proxy-server.js:210-215` removes only old Content-Length and leaves Transfer-Encoding. Body-edit paths then add Content-Length at `:631-634`, `:1321-1324`, `:1444-1447`, `:1745-1748`, `:1990-1993`, `:2411-2414`, `:3629-3632`, and `:3713-3715`.
 - Impact: the origin receives both `Content-Length` and `Transfer-Encoding`, commonly rejects the request, and may trigger request-smuggling defenses.

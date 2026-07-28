@@ -601,7 +601,8 @@ export class ProxyServer {
 
   _setContentLength(headers, length) {
     for (const key of Object.keys(headers)) {
-      if (key.toLowerCase() === 'content-length') delete headers[key];
+      const lower = key.toLowerCase();
+      if (lower === 'content-length' || lower === 'transfer-encoding') delete headers[key];
     }
     headers['content-length'] = String(length);
   }
