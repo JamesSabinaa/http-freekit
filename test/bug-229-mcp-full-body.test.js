@@ -288,6 +288,27 @@ test('one MCP request detail page stays bounded for a near-limit capture', () =>
   assert.equal(defaultDetail.requestBodyPreview, requestBody.slice(0, PREVIEW));
 });
 
+test('MCP request detail uses the measured wire budget without a fixed reserve', () => {
+  const requestBody = 'x'.repeat(504 * 1024);
+  const bridge = createBridge([{
+    id: 'reserve-boundary',
+    method: 'POST',
+    requestBody,
+    responseBody: '',
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const result = bridge._handleGetRequestDetail({ request_id: 'reserve-boundary' }, 1);
+  const detail = parseDetail(result);
+  const wireBytes = Buffer.byteLength(JSON.stringify({
+    jsonrpc: '2.0', id: 1, result
+  }));
+
+  assert.equal(detail.requestBody, requestBody);
+  assert.ok(wireBytes > MAX_RESPONSE_BYTES - 8 * 1024);
+  assert.ok(wireBytes <= MAX_RESPONSE_BYTES);
+});
+
 test('MCP transport returns paged Unicode content and rejects unsafe page arguments', async t => {
   const requestBody = `${'u'.repeat(MAX_PAGE - 1)}😀tail`;
   const wireMetadata = {};

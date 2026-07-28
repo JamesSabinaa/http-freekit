@@ -14,7 +14,6 @@ const MCP_HAR_JSON_SUFFIX = ']}}';
 const MCP_BODY_PAGE_MAX_CODE_UNITS = 32 * 1024;
 const MCP_LEGACY_BODY_PREVIEW_CODE_UNITS = 8 * 1024;
 const MCP_REQUEST_DETAIL_MAX_BYTES = 512 * 1024;
-const MCP_REQUEST_DETAIL_ENVELOPE_RESERVE_BYTES = 8 * 1024;
 const MCP_METADATA_MAX_DEPTH = 6;
 const MCP_METADATA_MAX_ENTRIES = 128;
 const MCP_METADATA_MAX_SCANNED_ENTRIES = 160;
@@ -281,7 +280,7 @@ function requestDetailFitsWireBudget(text, requestId = 0) {
     result: { content: [{ type: 'text', text }] }
   };
   return Buffer.byteLength(JSON.stringify(representativeMessage)) <=
-    MCP_REQUEST_DETAIL_MAX_BYTES - MCP_REQUEST_DETAIL_ENVELOPE_RESERVE_BYTES;
+    MCP_REQUEST_DETAIL_MAX_BYTES;
 }
 
 function stringifyRequestDetailIfBounded(detail, requestId = 0) {
