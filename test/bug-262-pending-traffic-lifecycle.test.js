@@ -569,7 +569,7 @@ test('ordinary non-pending H1 mocks remain append-only', async () => {
   assert.equal(capture.api.trafficLog[0].statusCode, 204);
 });
 
-test('a mock appends normally when traffic filtering suppressed its pending event', async () => {
+test('a mock remains suppressed when traffic filtering hid its pending event', async () => {
   const proxy = new ProxyServer(null);
   const capture = attachTrafficLifecycle(proxy);
   proxy._shouldSuppressTrafficLog = data => data._pending === true;
@@ -603,10 +603,10 @@ test('a mock appends normally when traffic filtering suppressed its pending even
     pendingEmitted
   );
 
-  assert.equal(capture.api.trafficLog.length, 1);
-  assert.equal(capture.api.trafficLog[0].statusCode, 205);
-  assert.deepEqual(capture.broadcasts.map(event => event.type), ['request']);
-  assert.equal(capture.events[0]._update, undefined);
+  assert.equal(capture.api.trafficLog.length, 0);
+  assert.deepEqual(capture.broadcasts, []);
+  assert.deepEqual(capture.events, []);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 });
 
 test('Safe Font filtering remains stable across each pending request lifecycle', () => {
@@ -632,6 +632,17 @@ test('Safe Font filtering remains stable across each pending request lifecycle',
     proxy.filterSafeFonts = !initiallyFiltered;
     proxy._emitRequestUpdate({
       ...baseEvent,
+      _trafficLifecycleComplete: false,
+      statusCode: 0,
+      statusMessage: 'Breakpoint (response)',
+      responseHeaders: {},
+      responseBody: '',
+      responseBodySize: 0,
+      duration: 5
+    });
+    assert.equal(proxy._pendingTrafficLogDecisions.size, 1);
+    proxy._emitRequestUpdate({
+      ...baseEvent,
       statusCode: 200,
       responseHeaders: {},
       responseBody: '',
@@ -647,10 +658,58 @@ test('Safe Font filtering remains stable across each pending request lifecycle',
       assert.equal(capture.api.trafficLog[0].statusCode, 200);
       assert.deepEqual(capture.broadcasts.map(event => event.type), [
         'request',
+        'request-update',
         'request-update'
       ]);
+      assert.equal(capture.events.every(event => event._trafficLifecycleComplete === undefined), true);
     }
     assert.equal(capture.api._pendingTrafficIds.size, 0);
     assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
   }
+});
+
+test('a hidden pending lifecycle stays hidden through append-style intermediate events', () => {
+  const proxy = new ProxyServer(null);
+  const capture = attachTrafficLifecycle(proxy);
+  proxy.filterSafeFonts = true;
+  const baseEvent = {
+    id: 'font-append-fallback',
+    protocol: 'https',
+    method: 'GET',
+    url: 'https://fonts.gstatic.com/font.woff2',
+    host: 'fonts.gstatic.com',
+    path: '/font.woff2',
+    requestHeaders: {},
+    requestBody: '',
+    requestBodySize: 0,
+    timestamp: Date.now(),
+    source: 'Chrome'
+  };
+
+  assert.equal(proxy._emitPendingRequest({ ...baseEvent }), false);
+  proxy.filterSafeFonts = false;
+  assert.equal(proxy._emitRequest({
+    ...baseEvent,
+    _trafficLifecycleComplete: false,
+    statusCode: 0,
+    statusMessage: 'Breakpoint',
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 5
+  }), false);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 1);
+  assert.equal(proxy._emitRequest({
+    ...baseEvent,
+    statusCode: 200,
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 10
+  }), false);
+
+  assert.deepEqual(capture.events, []);
+  assert.deepEqual(capture.broadcasts, []);
+  assert.equal(capture.api.trafficLog.length, 0);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 });

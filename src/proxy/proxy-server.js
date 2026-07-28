@@ -3302,6 +3302,7 @@ export class ProxyServer {
       // connection record even while the connection remains open.
       this._emitRequestUpdate({
         ...requestRecord,
+        _trafficLifecycleComplete: false,
         requestBody: 'WebSocket: 0 sent, 0 received',
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage || 'Switching Protocols',
@@ -4668,6 +4669,7 @@ export class ProxyServer {
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
               requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              _trafficLifecycleComplete: false,
               statusCode: 0, statusMessage: 'Breakpoint',
               responseHeaders: {}, responseBody: '', responseBodySize: 0,
               duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -4718,6 +4720,7 @@ export class ProxyServer {
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
               requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              _trafficLifecycleComplete: false,
               statusCode: 0, statusMessage: 'Breakpoint (response)',
               responseHeaders: {}, responseBody: '', responseBodySize: 0,
               duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -4832,6 +4835,7 @@ export class ProxyServer {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
             duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -5379,6 +5383,7 @@ export class ProxyServer {
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
             duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -5819,6 +5824,7 @@ export class ProxyServer {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
             duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -6434,6 +6440,7 @@ export class ProxyServer {
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
         requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
         responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -6479,6 +6486,7 @@ export class ProxyServer {
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
         requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint (response)', responseHeaders: {},
         responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
@@ -8369,7 +8377,8 @@ export class ProxyServer {
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint',
+        requestBodySize: body.length, _trafficLifecycleComplete: false,
+        statusCode: 0, statusMessage: 'Breakpoint',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
         tls: captureTls, remote: null,
@@ -8413,7 +8422,8 @@ export class ProxyServer {
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
+        requestBodySize: body.length, _trafficLifecycleComplete: false,
+        statusCode: 0, statusMessage: 'Breakpoint (response)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
         tls: captureTls, remote: null,
@@ -8470,7 +8480,8 @@ export class ProxyServer {
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (request)',
+        requestBodySize: body.length, _trafficLifecycleComplete: false,
+        statusCode: 0, statusMessage: 'Breakpoint (request)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
         tls: captureTls, remote: null,
@@ -8511,7 +8522,8 @@ export class ProxyServer {
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
         requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint (response)',
+        requestBodySize: body.length, _trafficLifecycleComplete: false,
+        statusCode: 0, statusMessage: 'Breakpoint (response)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: 0, timestamp: startTime, source: 'breakpoint',
         tls: captureTls, remote: null,
@@ -8602,15 +8614,22 @@ export class ProxyServer {
   }
 
   _emitRequest(data) {
+    const lifecycleComplete = data._trafficLifecycleComplete !== false;
+    delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
     // Auto-detect source from User-Agent if source is 'proxy' (generic)
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
-    if (data._pending !== true && data.id !== undefined) {
+    const hasPendingDecision = data._pending !== true && data.id !== undefined &&
+      this._pendingTrafficLogDecisions.has(data.id);
+    const pendingWasEmitted = hasPendingDecision
+      ? this._pendingTrafficLogDecisions.get(data.id)
+      : null;
+    if (hasPendingDecision && lifecycleComplete) {
       this._pendingTrafficLogDecisions.delete(data.id);
     }
-    if (this._shouldSuppressTrafficLog(data)) return false;
+    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
     try {
       this.onRequest(data);
       return true;
@@ -8638,6 +8657,8 @@ export class ProxyServer {
 
   // Emit an update that replaces an existing pending request
   _emitRequestUpdate(data) {
+    const lifecycleComplete = data._trafficLifecycleComplete !== false;
+    delete data._trafficLifecycleComplete;
     data._update = true;
     this._normalizeCapturedBodies(data);
     // Auto-detect source
@@ -8649,7 +8670,9 @@ export class ProxyServer {
     const pendingWasEmitted = hasPendingDecision
       ? this._pendingTrafficLogDecisions.get(data.id)
       : null;
-    if (hasPendingDecision) this._pendingTrafficLogDecisions.delete(data.id);
+    if (hasPendingDecision && lifecycleComplete) {
+      this._pendingTrafficLogDecisions.delete(data.id);
+    }
     if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return;
     try {
       this.onRequest(data);
@@ -9016,6 +9039,7 @@ export class ProxyServer {
       requestHeaders,
       requestBody: this._safeBodyString(requestBody),
       requestBodySize: requestBody.length,
+      _trafficLifecycleComplete: false,
       statusCode: 0,
       statusMessage: 'Breakpoint (response)',
       responseHeaders,
