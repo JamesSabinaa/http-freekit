@@ -4,18 +4,18 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 ## Current status
 
-Status review completed on 28 July 2026 against source commit `8d5469c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
+Status review completed on 28 July 2026 against source commit `84aec6f`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 36 of the 361 documented bugs are not fully fixed.**
+**No: 35 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 325 |
-| Partially fixed | 13 |
+| Fixed | 326 |
+| Partially fixed | 12 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1451,8 +1451,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-161 — High — Android companion setup destroys an existing ADB reverse mapping
 
-- Status: **Partially fixed**.
-- Resolution: Normal activation snapshots and restores an existing reverse mapping. If ADB applies the replacement and then times out, activation records neither the previous mapping nor tunnel ownership, so Stop cannot restore it and the original mapping remains lost.
+- Status: **Fixed**.
+- Resolution: Companion preparation snapshots and journals the existing reverse mapping before mutation. Reverse creation uses `--no-rebind` for unused ports; after an ambiguous write failure it reads the mapping back, or retains cleanup ownership when readback is unavailable, so Stop can restore the exact prior endpoint. External changes observed during cleanup are preserved.
 
 - Evidence: `src/interceptors/android-adb-interceptor.js:124-136` creates `adb reverse tcp:<proxyPort> tcp:<proxyPort>` without checking `adb reverse --list` or using `--no-rebind`; Stop at `:139-153` removes the port instead of restoring a prior destination.
 - Impact: FreeKit can overwrite and then delete another Android development workflow's reverse tunnel.
