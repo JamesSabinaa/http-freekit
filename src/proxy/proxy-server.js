@@ -41,6 +41,7 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'EAI_AGAIN'
 ]);
 const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
+const STREAMING_UPLOAD_FAILURE_GRACE_MS = 100;
 const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
@@ -897,6 +898,7 @@ export class ProxyServer {
     let responseResult = null;
     let responseMetadata = null;
     let pendingUpstreamFailure = null;
+    let upstreamFailureTimer = null;
     let connectStart = Date.now();
     let h2IdleTimer = null;
 
@@ -966,6 +968,9 @@ export class ProxyServer {
     const finalize = (result) => {
       if (finalized) return;
       finalized = true;
+      if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
+      upstreamFailureTimer = null;
+      pendingUpstreamFailure = null;
       clearH2IdleTimer();
       downstream.complete();
       const emit = pendingEmitted
@@ -1010,10 +1015,31 @@ export class ProxyServer {
     const canReplay = () => requestEnded && !requestBody.exceeded
       && this._canSafelyReplayRequest(method);
 
-    const handleFailure = async (error, request, context) => {
+    const handleFailure = async (error, request, context, allowGrace = true) => {
       if (finalized || downstream.aborted) return;
-      if (!requestEnded && !responseMetadata) {
+      if (allowGrace && !requestEnded && !responseMetadata) {
+        // An upstream failure can happen while request backpressure has the
+        // downstream paused. The failed request will never drain, so resume
+        // consumption and bound how long client-abort/end can take precedence.
         pendingUpstreamFailure ||= { error, request, context };
+        clientReq.resume();
+        if (!upstreamFailureTimer) {
+          upstreamFailureTimer = setTimeout(() => {
+            upstreamFailureTimer = null;
+            const failure = pendingUpstreamFailure;
+            pendingUpstreamFailure = null;
+            if (failure) {
+              void handleFailure(failure.error, failure.request, failure.context, false);
+            }
+          }, STREAMING_UPLOAD_FAILURE_GRACE_MS);
+          upstreamFailureTimer.unref?.();
+        }
+        return;
+      }
+      if (!responseMetadata && activeProtocol === 'h2' && canReplay()
+          && !h2FallbackStarted && activeRequest === request) {
+        h2FallbackStarted = true;
+        sendProxyRequest(0, true);
         return;
       }
       if (!responseMetadata && canReplay()) {
@@ -1271,10 +1297,13 @@ export class ProxyServer {
           responseTrailerNames.push('grpc-status', 'grpc-message', 'grpc-status-details-bin');
         }
         const uniqueTrailerNames = [...new Set(responseTrailerNames)];
+        // HTTP/2 peers can send trailers without advertising their names in
+        // the initial headers. Always select chunked H1 framing so those late
+        // trailers are not silently discarded by Node's H1 response writer.
+        for (const name of Object.keys(responseHeaders)) {
+          if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
+        }
         if (uniqueTrailerNames.length > 0) {
-          for (const name of Object.keys(responseHeaders)) {
-            if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
-          }
           responseHeaders.trailer = uniqueTrailerNames.join(', ');
         }
         responseMetadata = {
@@ -1324,6 +1353,7 @@ export class ProxyServer {
         resetH2IdleTimer(request);
       });
       request.once('aborted', () => {
+        if (finalized || downstream.aborted || activeRequest !== request) return;
         const error = new Error('Upstream HTTP/2 response aborted');
         error.code = 'ECONNRESET';
         error.upstreamPhase = 'response';
@@ -1331,11 +1361,6 @@ export class ProxyServer {
       });
       request.once('error', error => {
         if (finalized || downstream.aborted || activeRequest !== request) return;
-        if (!responseMetadata && canReplay() && !h2FallbackStarted) {
-          h2FallbackStarted = true;
-          sendProxyRequest(0, true);
-          return;
-        }
         void handleFailure(error, request, context);
       });
       request.once('close', () => {
@@ -1388,9 +1413,11 @@ export class ProxyServer {
         finishUpload(activeRequest);
       }
       if (pendingUpstreamFailure) {
+        if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
+        upstreamFailureTimer = null;
         const failure = pendingUpstreamFailure;
         pendingUpstreamFailure = null;
-        void handleFailure(failure.error, failure.request, failure.context);
+        void handleFailure(failure.error, failure.request, failure.context, false);
         return;
       }
       maybeFinalize();
@@ -1468,6 +1495,7 @@ export class ProxyServer {
     let h2FallbackStarted = false;
     let idleTimer = null;
     let pendingUpstreamFailure = null;
+    let upstreamFailureTimer = null;
     let downstream = {
       aborted: false,
       signal: null,
@@ -1534,6 +1562,9 @@ export class ProxyServer {
     const finalize = (result) => {
       if (finalized) return;
       finalized = true;
+      if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
+      upstreamFailureTimer = null;
+      pendingUpstreamFailure = null;
       clearIdleTimer();
       downstream.complete();
       const emit = pendingEmitted
@@ -1613,9 +1644,35 @@ export class ProxyServer {
         }
       } catch { /* downstream already closed */ }
     };
-    const failOrDefer = (error, request = activeRequest, overrides = {}) => {
-      if (!requestEnded && !responseMetadata && !downstream.aborted) {
+    const failOrDefer = (
+      error, request = activeRequest, overrides = {}, allowGrace = true
+    ) => {
+      if (allowGrace && !requestEnded && !responseMetadata && !downstream.aborted) {
+        // A destroyed upstream cannot emit the drain event which paused this
+        // request body. Resume consumption and bound how long client-abort/end
+        // can take precedence over the upstream failure.
         pendingUpstreamFailure ||= { error, request, overrides };
+        stream.resume();
+        if (!upstreamFailureTimer) {
+          upstreamFailureTimer = setTimeout(() => {
+            upstreamFailureTimer = null;
+            const failure = pendingUpstreamFailure;
+            pendingUpstreamFailure = null;
+            if (failure) {
+              failOrDefer(
+                failure.error, failure.request, failure.overrides, false
+              );
+            }
+          }, STREAMING_UPLOAD_FAILURE_GRACE_MS);
+          upstreamFailureTimer.unref?.();
+        }
+        return;
+      }
+      if (!responseMetadata && activeProtocol === 'h2' && requestEnded
+          && !requestBody.exceeded && this._canSafelyReplayRequest(method)
+          && !h2FallbackStarted && activeRequest === request) {
+        h2FallbackStarted = true;
+        startH1(0, true);
         return;
       }
       fail(error, request, overrides);
@@ -1671,9 +1728,11 @@ export class ProxyServer {
         requestEnded = true;
         finishActiveUpload();
         if (pendingUpstreamFailure) {
+          if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
+          upstreamFailureTimer = null;
           const failure = pendingUpstreamFailure;
           pendingUpstreamFailure = null;
-          fail(failure.error, failure.request, failure.overrides);
+          failOrDefer(failure.error, failure.request, failure.overrides, false);
           return;
         }
         maybeFinalize();
@@ -1918,19 +1977,14 @@ export class ProxyServer {
         resetIdleTimer();
       });
       request.once('aborted', () => {
+        if (finalized || downstream.aborted || activeRequest !== request) return;
         const error = new Error('Upstream HTTP/2 response aborted');
         error.code = 'ECONNRESET';
         error.upstreamPhase = 'response';
         failOrDefer(error, request);
       });
       request.once('error', error => {
-        if (finalized || downstream.aborted) return;
-        if (!responseMetadata && requestEnded && !requestBody.exceeded
-            && this._canSafelyReplayRequest(method) && !h2FallbackStarted) {
-          h2FallbackStarted = true;
-          startH1(0, true);
-          return;
-        }
+        if (finalized || downstream.aborted || activeRequest !== request) return;
         failOrDefer(error, request);
       });
       request.once('close', () => {

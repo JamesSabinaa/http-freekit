@@ -425,3 +425,260 @@ test('streaming fast paths stop when a mock or breakpoint can depend on the body
   }];
   assert.equal(proxy._canStreamWithoutRequestBuffering('POST', url, headers), false);
 });
+
+test('an upstream reset cannot strand a backpressured HTTP/1 upload', { timeout: 15000 }, async t => {
+  const origin = net.createServer(socket => {
+    socket.pause();
+    setTimeout(() => socket.destroy(), 250);
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin, destroyOriginSockets);
+  });
+
+  const agent = new http.Agent({ keepAlive: true });
+  t.after(() => agent.destroy());
+  let stopUpload = false;
+  const result = new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: `http://127.0.0.1:${originPort}/reset-upload`,
+      method: 'POST',
+      agent,
+      headers: { 'content-length': String(64 * 1024 * 1024) }
+    }, response => {
+      stopUpload = true;
+      response.resume();
+      resolve(response.statusCode);
+      request.destroy();
+    });
+    request.once('error', error => {
+      if (!stopUpload) reject(error);
+    });
+    void (async () => {
+      const chunk = Buffer.alloc(64 * 1024, 0x61);
+      while (!stopUpload) {
+        if (!request.write(chunk)) await once(request, 'drain');
+      }
+    })().catch(error => {
+      if (!stopUpload) reject(error);
+    });
+  });
+
+  const statusCode = await withTimeout(result, 'backpressured HTTP/1 upload remained paused', 5000);
+  assert.equal(statusCode, 502);
+});
+
+test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout: 20000 }, async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-reset-h2-'));
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize();
+  const originCert = await ca.generateCertForHost('127.0.0.1');
+  const origin = https.createServer({ key: originCert.key, cert: originCert.cert }, request => {
+    request.on('error', () => {});
+    request.pause();
+    setTimeout(() => request.socket.destroy(), 250);
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(ca, { port: 0 });
+  proxy.setHttp2Config('h2-only');
+  proxy.setHttpsWhitelist(['127.0.0.1']);
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin, destroyOriginSockets);
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  const tunnel = await openTunnel(proxy.server.address().port, originPort);
+  const secureSocket = tls.connect({
+    socket: tunnel,
+    servername: 'localhost',
+    ALPNProtocols: ['h2'],
+    rejectUnauthorized: false
+  });
+  await once(secureSocket, 'secureConnect');
+  const client = http2.connect(`https://127.0.0.1:${originPort}`, {
+    createConnection: () => secureSocket
+  });
+  t.after(() => client.destroy());
+  await once(client, 'connect');
+
+  const request = client.request({
+    ':method': 'POST',
+    ':path': '/reset-upload',
+    ':scheme': 'https',
+    ':authority': `127.0.0.1:${originPort}`,
+    'content-length': String(64 * 1024 * 1024)
+  });
+  secureSocket.on('error', () => {});
+  client.on('error', () => {});
+  const terminal = new Promise(resolve => {
+    request.once('response', headers => resolve({ statusCode: headers[':status'] }));
+    request.once('error', error => resolve({ error }));
+  });
+  request.resume();
+  let stopUpload = false;
+  terminal.then(() => { stopUpload = true; });
+  void (async () => {
+    const chunk = Buffer.alloc(64 * 1024, 0x62);
+    while (!stopUpload) {
+      if (!request.write(chunk)) await once(request, 'drain');
+    }
+  })().catch(() => {});
+
+  const outcome = await withTimeout(terminal, 'backpressured HTTP/2 upload remained paused', 5000);
+  assert.ok(
+    outcome.statusCode === 502 || outcome.error?.code === 'ECONNRESET',
+    `unexpected terminal outcome: ${outcome.error?.code || outcome.statusCode}`
+  );
+  if (!request.closed) request.close(http2.constants.NGHTTP2_NO_ERROR);
+});
+
+test('HTTP/2 response trailers keep chunked framing even when announced late', { timeout: 20000 }, async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-late-trailer-'));
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize();
+  const originCert = await ca.generateCertForHost('127.0.0.1');
+  const origin = http2.createSecureServer({ key: originCert.key, cert: originCert.cert });
+  origin.on('stream', originStream => {
+    originStream.respond({
+      ':status': 200,
+      'content-type': 'text/plain',
+      'content-length': '5'
+    }, { waitForTrailers: true });
+    originStream.once('wantTrailers', () => {
+      originStream.sendTrailers({ 'x-late': 'yes' });
+    });
+    originStream.end('hello');
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(ca, { port: 0 });
+  proxy.setHttp2Config('disabled');
+  proxy.setHttpsWhitelist(['127.0.0.1']);
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin, destroyOriginSockets);
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  const tunnel = await openTunnel(proxy.server.address().port, originPort);
+  const secureSocket = tls.connect({
+    socket: tunnel,
+    servername: 'localhost',
+    ALPNProtocols: ['http/1.1'],
+    rejectUnauthorized: false
+  });
+  await once(secureSocket, 'secureConnect');
+  const chunks = [];
+  secureSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  const ended = once(secureSocket, 'end');
+  secureSocket.write(
+    `GET /late-trailer HTTP/1.1\r\n` +
+    `Host: 127.0.0.1:${originPort}\r\n` +
+    'Connection: close\r\n\r\n'
+  );
+  await ended;
+
+  const response = Buffer.concat(chunks).toString('latin1');
+  assert.match(response, /^HTTP\/1\.1 200 /);
+  assert.doesNotMatch(response, /\r\ncontent-length:/i);
+  assert.match(response, /\r\ntransfer-encoding: chunked\r\n/i);
+  assert.match(response, /\r\n0\r\nx-late: yes\r\n\r\n$/i);
+});
+
+test('HTTP/2 CANCEL falls back to HTTP/1 for H1 and H2 clients', { timeout: 30000 }, async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-cancel-'));
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize();
+  const originCert = await ca.generateCertForHost('127.0.0.1');
+  let h2Attempts = 0;
+  let h1Attempts = 0;
+  const origin = http2.createSecureServer(
+    { key: originCert.key, cert: originCert.cert, allowHTTP1: true },
+    (request, response) => {
+      if (request.httpVersionMajor !== 1) return;
+      h1Attempts += 1;
+      response.end('fallback');
+    }
+  );
+  origin.on('stream', originStream => {
+    h2Attempts += 1;
+    originStream.close(http2.constants.NGHTTP2_CANCEL);
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  t.after(async () => {
+    await close(origin, destroyOriginSockets);
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  const h1Proxy = new ProxyServer(ca, { port: 0 });
+  h1Proxy.setHttp2Config('disabled');
+  h1Proxy.setHttpsWhitelist(['127.0.0.1']);
+  await h1Proxy.start();
+  const h1Tunnel = await openTunnel(h1Proxy.server.address().port, originPort);
+  const h1Socket = tls.connect({
+    socket: h1Tunnel,
+    servername: 'localhost',
+    ALPNProtocols: ['http/1.1'],
+    rejectUnauthorized: false
+  });
+  await once(h1Socket, 'secureConnect');
+  const h1Chunks = [];
+  h1Socket.on('data', chunk => h1Chunks.push(Buffer.from(chunk)));
+  const h1End = once(h1Socket, 'end');
+  h1Socket.write(
+    `GET /cancel-h1 HTTP/1.1\r\n` +
+    `Host: 127.0.0.1:${originPort}\r\n` +
+    'Connection: close\r\n\r\n'
+  );
+  await withTimeout(h1End, 'H1 client did not receive fallback response', 5000);
+  assert.match(Buffer.concat(h1Chunks).toString('latin1'), /^HTTP\/1\.1 200 /);
+  assert.match(Buffer.concat(h1Chunks).toString('latin1'), /fallback/);
+  await h1Proxy.stop();
+
+  const h2Proxy = new ProxyServer(ca, { port: 0 });
+  h2Proxy.setHttp2Config('h2-only');
+  h2Proxy.setHttpsWhitelist(['127.0.0.1']);
+  await h2Proxy.start();
+  t.after(() => h2Proxy.stop());
+  const h2Tunnel = await openTunnel(h2Proxy.server.address().port, originPort);
+  const h2Socket = tls.connect({
+    socket: h2Tunnel,
+    servername: 'localhost',
+    ALPNProtocols: ['h2'],
+    rejectUnauthorized: false
+  });
+  await once(h2Socket, 'secureConnect');
+  const h2Client = http2.connect(`https://127.0.0.1:${originPort}`, {
+    createConnection: () => h2Socket
+  });
+  t.after(() => h2Client.destroy());
+  await once(h2Client, 'connect');
+  const h2Request = h2Client.request({
+    ':method': 'GET',
+    ':path': '/cancel-h2',
+    ':scheme': 'https',
+    ':authority': `127.0.0.1:${originPort}`
+  });
+  const h2Headers = once(h2Request, 'response');
+  const h2Chunks = [];
+  h2Request.on('data', chunk => h2Chunks.push(chunk));
+  const h2End = once(h2Request, 'end');
+  h2Request.end();
+  const [headers] = await withTimeout(h2Headers, 'H2 client did not receive fallback headers', 5000);
+  await withTimeout(h2End, 'H2 client did not receive fallback body', 5000);
+  assert.equal(headers[':status'], 200);
+  assert.equal(Buffer.concat(h2Chunks).toString(), 'fallback');
+  assert.equal(h2Attempts, 2);
+  assert.equal(h1Attempts, 2);
+});

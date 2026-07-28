@@ -112,6 +112,25 @@ async function requestH1ThroughTunnel(proxyPort, targetPort, protocols = ['http/
     const match = block.match(new RegExp(`^${name}:\\s*(.*)$`, 'im'));
     return match?.[1];
   };
+  const rawBody = raw.slice(finalEnd + 4);
+  const decodeChunked = (body) => {
+    const chunks = [];
+    let offset = 0;
+    while (offset < body.length) {
+      const lineEnd = body.indexOf('\r\n', offset);
+      assert.notEqual(lineEnd, -1, body);
+      const size = Number.parseInt(body.slice(offset, lineEnd).split(';', 1)[0], 16);
+      assert.ok(Number.isSafeInteger(size) && size >= 0, body);
+      offset = lineEnd + 2;
+      if (size === 0) break;
+      chunks.push(body.slice(offset, offset + size));
+      offset += size + 2;
+    }
+    return chunks.join('');
+  };
+  const body = /(?:^|\r\n)transfer-encoding:\s*chunked(?:\r\n|$)/i.test(finalBlock)
+    ? decodeChunked(rawBody)
+    : rawBody;
   return {
     informational: [{
       statusCode: Number(earlyBlock.match(/^HTTP\/1\.1 (\d{3})/)?.[1]),
@@ -122,7 +141,7 @@ async function requestH1ThroughTunnel(proxyPort, targetPort, protocols = ['http/
     }],
     statusCode: Number(finalBlock.match(/^HTTP\/1\.1 (\d{3})/)?.[1]),
     headers: {},
-    body: raw.slice(finalEnd + 4)
+    body
   };
 }
 
