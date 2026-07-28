@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 40 of the 361 documented bugs are not fully fixed.**
+**No: 39 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 321 |
-| Partially fixed | 17 |
+| Fixed | 322 |
+| Partially fixed | 16 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, BUG-044, and BUG-364 were fixed after that reconciliation.
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, BUG-044, BUG-049, and BUG-364 were fixed after that reconciliation.
 
 ## Audit completion gate
 
@@ -1236,8 +1236,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-049 — High — Fresh-terminal lifecycle tracks launcher helpers, not shells
 
-- Status: **Partially fixed**.
-- Resolution: macOS and Linux now wait for and monitor the interactive shell PID. Windows still records the short-lived `wt.exe` client rather than the terminal tab or shell it creates.
+- Status: **Fixed**.
+- Resolution: macOS and Linux wait for and monitor the interactive shell PID. Windows Terminal launches a PowerShell child that reports its durable PID through a private file; FreeKit verifies and tracks that shell identity even without a recovery journal, so `wt.exe` can exit without changing active state and Stop targets the actual session.
 - Evidence: macOS tracks `osascript` at `src/interceptors/terminal-interceptors.js:83-86`; Linux often tracks the short-lived `gnome-terminal` client at `:88-99`. Their exit handlers mark the interceptor inactive at `:113-122`, and Stop can kill only stored handles at `:128-133`.
 - Impact: FreeKit reports inactive while the terminal session remains open and cannot close or otherwise clean up that session during Stop/shutdown.
 - Reproduction: activate on macOS; `osascript` exits after opening Terminal.app while the shell remains running.

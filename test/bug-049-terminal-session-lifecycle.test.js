@@ -80,3 +80,52 @@ test('Linux terminal commands wait for and identify their interactive shell', as
   assert.match(launch.args[4], /printf '%s' "\$\$"/);
   assert.match(launch.args[4], /exec "\$\{SHELL:-\/bin\/sh\}" -l/);
 });
+
+test('Windows Terminal tracks its durable PowerShell child without a recovery journal', async () => {
+  const interceptor = new FreshTerminalInterceptor();
+  interceptor._platform = () => 'win32';
+  interceptor._createPidFilePath = () => 'C:\\Temp\\freekit-shell.pid';
+  interceptor._waitForShellPid = async () => 7654;
+  let sessionRunning = true;
+  interceptor._inspectSessionIdentity = async pid => sessionRunning && pid === 7654
+    ? {
+        state: 'running',
+        identity: {
+          pid,
+          startTime: '300',
+          executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+        }
+      }
+    : { state: 'absent' };
+  const launcher = fakeLauncher(7653);
+  let launch;
+  interceptor._spawnDetached = async (command, args, options) => {
+    launch = { command, args, options };
+    return launcher;
+  };
+  const killed = [];
+  interceptor._killSession = pid => {
+    killed.push(pid);
+    sessionRunning = false;
+    return true;
+  };
+
+  const result = await interceptor.activate(8080);
+  assert.equal(result.pid, 7654);
+  assert.equal(launch.command, 'wt.exe');
+  assert.deepEqual(launch.args.slice(0, 5), [
+    'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
+  ]);
+  assert.match(launch.args[5], /WriteAllText\(.+\$PID/);
+  assert.equal(interceptor.sessions.has(7654), true);
+  assert.equal(interceptor.sessions.has(launcher.pid), false);
+
+  launcher.exitCode = 0;
+  launcher.emit('exit', 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(await interceptor.isActive(), true);
+
+  await interceptor.deactivate();
+  assert.deepEqual(killed, [7654]);
+  assert.equal(interceptor.active, false);
+});

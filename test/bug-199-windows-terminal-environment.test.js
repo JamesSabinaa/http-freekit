@@ -26,6 +26,18 @@ test('Windows Terminal new tabs inherit the supplied FreeKit environment', async
   const launches = [];
   interceptor._platform = () => 'win32';
   interceptor._launcherStartupGraceMs = () => 1;
+  interceptor._waitForShellPid = async () => 6102;
+  let sessionRunning = true;
+  interceptor._inspectSessionIdentity = async pid => sessionRunning && pid === 6102
+    ? {
+        state: 'running',
+        identity: { pid, startTime: '6102', executable: 'C:\\Windows\\powershell.exe' }
+      }
+    : { state: 'absent' };
+  interceptor._killSession = () => {
+    sessionRunning = false;
+    return true;
+  };
   interceptor._spawnDetached = async (command, args, options) => {
     launches.push({ command, args, options });
     return launcher;
@@ -33,10 +45,13 @@ test('Windows Terminal new tabs inherit the supplied FreeKit environment', async
 
   const result = await interceptor.activate(8765);
 
-  assert.equal(result.pid, launcher.pid);
+  assert.equal(result.pid, 6102);
   assert.equal(launches.length, 1);
   assert.equal(launches[0].command, 'wt.exe');
-  assert.deepEqual(launches[0].args, ['new-tab', '--inheritEnvironment']);
+  assert.deepEqual(launches[0].args.slice(0, 5), [
+    'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
+  ]);
+  assert.match(launches[0].args[5], /WriteAllText\(.+\$PID/);
   assert.equal(launches[0].options.env.HTTP_PROXY, 'http://127.0.0.1:8765');
   assert.equal(launches[0].options.env.HTTPS_PROXY, 'http://127.0.0.1:8765');
   assert.equal(launches[0].options.detached, true);

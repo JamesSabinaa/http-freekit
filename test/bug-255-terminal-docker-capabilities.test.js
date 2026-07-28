@@ -50,6 +50,18 @@ test('Fresh Terminal configures its host shell while Docker emits container-reac
   const terminal = new FreshTerminalInterceptor();
   terminal.ca = { getCertInfo: () => ({ certificatePath: 'C:\\FreeKit\\ca.pem' }) };
   terminal._platform = () => 'win32';
+  terminal._waitForShellPid = async () => 7256;
+  let terminalSessionRunning = true;
+  terminal._inspectSessionIdentity = async pid => terminalSessionRunning && pid === 7256
+    ? {
+        state: 'running',
+        identity: { pid, startTime: '7256', executable: 'C:\\Windows\\powershell.exe' }
+      }
+    : { state: 'absent' };
+  terminal._killSession = () => {
+    terminalSessionRunning = false;
+    return true;
+  };
   terminal._spawnDetached = async (command, args, options) => {
     terminalLaunch = { command, args, options };
     return launcher;

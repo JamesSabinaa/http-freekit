@@ -53,6 +53,18 @@ async function captureFreshTerminalEnvironment(proxyPort) {
   });
   interceptor._confirmLauncherStartup = async () => {};
   interceptor._startStatusMonitor = () => {};
+  interceptor._waitForShellPid = async () => 8297;
+  let sessionRunning = true;
+  interceptor._inspectSessionIdentity = async pid => sessionRunning && pid === 8297
+    ? {
+        state: 'running',
+        identity: { pid, startTime: '8297', executable: 'C:\\Windows\\powershell.exe' }
+      }
+    : { state: 'absent' };
+  interceptor._killSession = () => {
+    sessionRunning = false;
+    return true;
+  };
   interceptor._spawnDetached = async (_command, _args, options) => {
     environment = options.env;
     return child;

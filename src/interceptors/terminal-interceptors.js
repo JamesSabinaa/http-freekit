@@ -926,7 +926,7 @@ export class FreshTerminalInterceptor {
       const terminals = [
         {
           cmd: 'wt.exe',
-          reportsPid: Boolean(this.recoveryFile),
+          reportsPid: true,
           buildArgs: pidFile => pidFile
             ? [
                 'new-tab',
