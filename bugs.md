@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 65 of the 360 documented bugs are not fully fixed.**
+**No: 64 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 295 |
+| Fixed | 296 |
 | Partially fixed | 25 |
-| Open | 40 |
+| Open | 39 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -285,7 +285,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-105 — Medium — Breakpoint header editing cannot delete headers
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Every request-breakpoint resume path now treats the edited header object as the complete replacement set instead of merging it into the original request. Headers removed in the editor therefore remain absent across plain H1, intercepted H1, native H2, H1-on-H2, and mock breakpoint actions.
 
 - Evidence: resume paths merge edited headers with `Object.assign()` instead of replacing the original set (`src/proxy/proxy-server.js:628-630`, `:1320`, `:1441-1443`, `:1744`, `:1989`, `:2410`, `:3628`, `:3712`).
 - Impact: removing Authorization or another problematic header in the editor has no effect at the origin.

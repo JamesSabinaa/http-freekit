@@ -25,7 +25,11 @@ function requestThroughProxy(proxyPort, originPort) {
       hostname: '127.0.0.1',
       port: proxyPort,
       path: `http://127.0.0.1:${originPort}/real`,
-      headers: { host: `127.0.0.1:${originPort}` }
+      headers: {
+        host: `127.0.0.1:${originPort}`,
+        authorization: 'Bearer remove-me',
+        'x-remove-me': 'yes'
+      }
     }, (res) => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
@@ -42,9 +46,11 @@ function requestThroughProxy(proxyPort, originPort) {
 
 async function runBreakpointAction(t, actionType, modifications = {}) {
   let originHits = 0;
+  let originHeaders;
   const events = [];
   const origin = http.createServer((req, res) => {
     originHits++;
+    originHeaders = req.headers;
     res.writeHead(201, {
       'content-type': 'text/plain',
       'content-length': String(Buffer.byteLength('origin-body')),
@@ -70,13 +76,20 @@ async function runBreakpointAction(t, actionType, modifications = {}) {
   });
 
   const response = await requestThroughProxy(proxy.server.address().port, originPort);
-  return { response, originHits, events };
+  return { response, originHits, originHeaders, events };
 }
 
 test('request breakpoint mock actions resume into the real origin request', async (t) => {
-  const { response, originHits } = await runBreakpointAction(t, 'breakpoint-request');
+  const { response, originHits, originHeaders } = await runBreakpointAction(
+    t,
+    'breakpoint-request',
+    { headers: { 'x-kept': 'yes' } }
+  );
 
   assert.equal(originHits, 1);
+  assert.equal(originHeaders.authorization, undefined);
+  assert.equal(originHeaders['x-remove-me'], undefined);
+  assert.equal(originHeaders['x-kept'], 'yes');
   assert.equal(response.statusCode, 201);
   assert.equal(response.headers['x-origin'], 'yes');
   assert.equal(response.body, 'origin-body');

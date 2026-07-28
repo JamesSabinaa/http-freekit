@@ -58,7 +58,10 @@ async function requestH1(proxyPort, authority) {
   const socket = await connectTls(proxyPort, authority, ['http/1.1']);
   const chunks = [];
   socket.on('data', chunk => chunks.push(Buffer.from(chunk)));
-  socket.write(`GET /resource HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n\r\n`);
+  socket.write(
+    `GET /resource HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n` +
+    'Authorization: Bearer remove-me\r\nX-Remove-Me: yes\r\n\r\n'
+  );
   await once(socket, 'end');
   const response = Buffer.concat(chunks).toString('utf8');
   const statusMatch = response.match(/^HTTP\/1\.1 (\d+)/);
@@ -98,7 +101,9 @@ async function requestH2(proxyPort, authority) {
     ':method': 'GET',
     ':path': '/resource',
     ':authority': authority,
-    ':scheme': 'https'
+    ':scheme': 'https',
+    authorization: 'Bearer remove-me',
+    'x-remove-me': 'yes'
   });
   const chunks = [];
   request.on('data', chunk => chunks.push(chunk));
@@ -258,10 +263,12 @@ test('request and response breakpoints remain one lifecycle across all intercept
   { timeout: 30000 }, async t => {
     const { proxy, ca } = await createInterceptingProxy(t);
     const originCertificate = await ca.generateCertForHost('localhost');
+    const observedHeaders = [];
     const origin = https.createServer({
       key: originCertificate.key,
       cert: originCertificate.cert
-    }, (_request, response) => {
+    }, (request, response) => {
+      observedHeaders.push(request.headers);
       response.writeHead(203, {
         'content-type': 'text/plain',
         'content-length': '6'
@@ -296,7 +303,7 @@ test('request and response breakpoints remain one lifecycle across all intercept
                 headers: { 'content-type': 'text/plain', 'content-length': '6' },
                 body: 'edited'
               }
-            : {};
+            : { headers: { connection: 'close', 'x-kept': 'yes' } };
           setImmediate(() => proxy.resumeBreakpoint(event.requestId, modifications));
         };
 
@@ -305,6 +312,12 @@ test('request and response breakpoints remain one lifecycle across all intercept
         assert.equal(response.statusCode, expectedStatus, `${protocol.name} ${phase}`);
         assert.equal(response.body, phase === 'response' ? 'edited' : 'origin',
           `${protocol.name} ${phase}`);
+        const originHeaders = observedHeaders.at(-1);
+        if (phase === 'request') {
+          assert.equal(originHeaders.authorization, undefined, `${protocol.name} removes authorization`);
+          assert.equal(originHeaders['x-remove-me'], undefined, `${protocol.name} removes edited header`);
+          assert.equal(originHeaders['x-kept'], 'yes', `${protocol.name} keeps replacement header`);
+        }
         assertSingleLifecycle(capture, expectedStatus, `${protocol.name} ${phase}`, 2);
       }
     }

@@ -1967,7 +1967,8 @@ export class ProxyServer {
           clientReq.method = modifications.method;
         }
         if (modifications.headers) {
-          Object.assign(clientReq.headers, modifications.headers);
+          clientReq.headers = { ...modifications.headers };
+          transformedRequestHeaders = true;
         }
         if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
           body = Buffer.from(String(modifications.body || ''));
@@ -2872,7 +2873,7 @@ export class ProxyServer {
               } catch { /* keep original */ }
             }
             if (modifications.method) req.method = modifications.method;
-            if (modifications.headers) Object.assign(req.headers, modifications.headers);
+            if (modifications.headers) req.headers = { ...modifications.headers };
             if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
               body = Buffer.from(String(modifications.body || ''));
               this._setContentLength(req.headers, body.length);
@@ -3033,7 +3034,8 @@ export class ProxyServer {
             req.method = modifications.method;
           }
           if (modifications.headers) {
-            Object.assign(req.headers, modifications.headers);
+            req.headers = { ...modifications.headers };
+            transformedRequestHeaders = true;
           }
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
@@ -3558,7 +3560,7 @@ export class ProxyServer {
           if (modifications.method) {
             method = String(modifications.method).trim().toUpperCase() || method;
           }
-          if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
+          if (modifications.headers) reqHeaders = { ...modifications.headers };
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
             this._setContentLength(reqHeaders, body.length);
@@ -3966,7 +3968,10 @@ export class ProxyServer {
             } catch { /* keep original */ }
           }
           if (modifications.method) req.method = modifications.method;
-          if (modifications.headers) Object.assign(req.headers, modifications.headers);
+          if (modifications.headers) {
+            req.headers = { ...modifications.headers };
+            transformedRequestHeaders = true;
+          }
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
             this._setContentLength(req.headers, body.length);
@@ -4563,7 +4568,7 @@ export class ProxyServer {
         method = String(modifications.method).trim().toUpperCase();
         reqHeaders[':method'] = method;
       }
-      if (modifications.headers) Object.assign(reqHeaders, modifications.headers);
+      if (modifications.headers) reqHeaders = { ...modifications.headers };
       if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
         body = Buffer.from(String(modifications.body || ''));
         this._setContentLength(reqHeaders, body.length);
@@ -6358,7 +6363,7 @@ export class ProxyServer {
         try { targetUrl = new URL(modifications.url); } catch { /* keep original */ }
       }
       if (modifications.method) clientReq.method = modifications.method;
-      if (modifications.headers) Object.assign(clientReq.headers, modifications.headers);
+      if (modifications.headers) clientReq.headers = { ...modifications.headers };
       if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
         body = Buffer.from(String(modifications.body || ''));
         this._setContentLength(clientReq.headers, body.length);
@@ -6459,7 +6464,7 @@ export class ProxyServer {
         try { targetUrl = new URL(reqModifications.url); } catch { /* keep original */ }
       }
       if (reqModifications.method) clientReq.method = reqModifications.method;
-      if (reqModifications.headers) Object.assign(clientReq.headers, reqModifications.headers);
+      if (reqModifications.headers) clientReq.headers = { ...reqModifications.headers };
       if (Object.prototype.hasOwnProperty.call(reqModifications, 'body')) {
         body = Buffer.from(String(reqModifications.body || ''));
         this._setContentLength(clientReq.headers, body.length);
