@@ -1372,6 +1372,13 @@
         req.statusCode < 300 ? '#4caf7d' :
         req.statusCode < 400 ? '#5a80cc' :
         req.statusCode < 500 ? '#ff8c38' : '#ce3939';
+      const remoteEndpoint = req.remote?.address
+        ? esc(req.remote.address) + (
+          req.remote.port === null || req.remote.port === undefined
+            ? ''
+            : ':' + esc(String(req.remote.port))
+        )
+        : '';
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
@@ -1608,7 +1615,7 @@
             ${req.responseHeaders && Object.keys(req.responseHeaders).length > 0 ? '<div class="detail-card-section" style="margin-top:12px;"><div class="section-label">Upgrade Response Headers</div>' + renderHeadersGrid(req.responseHeaders, 'response') + '</div>' : ''}
             <div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Protocol: ${wsConnectionLabel}</div>
             ${req.tls?.cipher ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Cipher: ' + esc(req.tls.cipher) + '</div>' : ''}
-            ${req.remote?.address ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + esc(req.remote.port ?? '') + '</div>' : ''}
+            ${remoteEndpoint ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + remoteEndpoint + '</div>' : ''}
           </div>
         </div>`;
 
@@ -2066,8 +2073,8 @@
               <span style="font-family:var(--font-mono);">HTTP/2 (${esc(req.tls.version || 'TLS')})</span>
               ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
-              ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
+              ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
+              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
             </div>
           </div>`;
       } else if ((req.protocol === 'https' && req.tls) || req.protocol === 'wss') {
@@ -2079,8 +2086,8 @@
               <span style="font-family:var(--font-mono);">${secureProtocol} (${esc(req.tls?.version || 'TLS')})</span>
               ${req.tls?.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
-              ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
+              ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
+              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
             </div>
           </div>`;
       } else if (req.protocol === 'http' || req.protocol === 'ws') {
@@ -2090,8 +2097,8 @@
             <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;">
               <span style="color:var(--text-watermark);">Protocol:</span>
               <span style="font-family:var(--font-mono);">${plainProtocol} (unencrypted)</span>
-              ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
+              ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
+              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
             </div>
           </div>`;
       }

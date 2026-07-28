@@ -251,3 +251,24 @@ test('traffic details escape remote ports in specialized and generic connection 
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   }
 });
+
+test('traffic details preserve port zero and omit separators for absent ports', () => {
+  for (const port of [0, 65535, null, undefined]) {
+    const remote = {
+      address: '192.0.2.1',
+      ...(port === undefined ? {} : { port })
+    };
+    for (const scenario of [
+      { protocol: 'ws', method: 'WS', statusCode: 101 },
+      { protocol: 'http', method: 'GET', statusCode: 502, error: 'failed' }
+    ]) {
+      const html = renderDetail(baseRequest({}, { ...scenario, remote })).html;
+      if (port === null || port === undefined) {
+        assert.match(html, /192\.0\.2\.1/);
+        assert.doesNotMatch(html, /192\.0\.2\.1:/);
+      } else {
+        assert.match(html, new RegExp(`192\\.0\\.2\\.1:${port}`));
+      }
+    }
+  }
+});
