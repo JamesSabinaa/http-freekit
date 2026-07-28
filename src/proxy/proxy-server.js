@@ -41,6 +41,18 @@ const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
 const SUPPORTED_UPGRADE_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
+const HOP_BY_HOP_HEADER_NAMES = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'http2-settings'
+]);
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 
 class TruncatedBodyString extends String {
@@ -811,7 +823,7 @@ export class ProxyServer {
   _sendH1Response(response, statusCode, headers, body, trailers) {
     const cleanTrailers = this._cleanTrailers(trailers);
     const hasTrailers = Object.keys(cleanTrailers).length > 0;
-    const outgoingHeaders = { ...(headers || {}) };
+    const outgoingHeaders = this._stripHopByHopHeaders(headers);
     for (const name of Object.keys(outgoingHeaders)) {
       const lowerName = name.toLowerCase();
       if (lowerName === 'trailer' || (hasTrailers && lowerName === 'content-length')) {
@@ -839,10 +851,9 @@ export class ProxyServer {
 
   _cleanInformationalHeaders(headers) {
     const clean = {};
-    for (const [name, value] of Object.entries(headers || {})) {
+    for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
       const lower = name.toLowerCase();
-      if (lower.startsWith(':') || value === undefined ||
-          ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade'].includes(lower)) {
+      if (lower.startsWith(':') || value === undefined) {
         continue;
       }
       clean[lower] = value;
@@ -1196,8 +1207,30 @@ export class ProxyServer {
 
   _stripUpstreamHeaders(headers) {
     const clean = {};
-    for (const [name, value] of Object.entries(headers || {})) {
+    for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
       if (this._shouldStripUpstreamHeader(name)) continue;
+      clean[name] = value;
+    }
+    return clean;
+  }
+
+  _stripHopByHopHeaders(headers) {
+    const nominated = new Set();
+    for (const [name, value] of Object.entries(headers || {})) {
+      if (name.toLowerCase() !== 'connection') continue;
+      const values = Array.isArray(value) ? value : [value];
+      for (const item of values) {
+        for (const token of String(item || '').split(',')) {
+          const normalized = token.trim().toLowerCase();
+          if (normalized) nominated.add(normalized);
+        }
+      }
+    }
+
+    const clean = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      const lower = name.toLowerCase();
+      if (HOP_BY_HOP_HEADER_NAMES.has(lower) || nominated.has(lower)) continue;
       clean[name] = value;
     }
     return clean;
@@ -1387,9 +1420,8 @@ export class ProxyServer {
 
   _toH2ResponseHeaders(statusCode, headers) {
     const converted = { ':status': statusCode };
-    for (const [name, value] of Object.entries(headers || {})) {
+    for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
       const lower = name.toLowerCase();
-      if (['transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'http2-settings'].includes(lower)) continue;
       converted[lower] = Array.isArray(value)
         ? (lower === 'set-cookie' ? value : value.join(', '))
         : value;
