@@ -68,3 +68,29 @@ test('import trimming uses one bounded pass and preserves the traffic array', ()
   assert.strictEqual(api.trafficLog, originalLog);
   assert.deepEqual(api.trafficLog.map(request => request.id), ['newer', 'one', 'two']);
 });
+
+test('import trimming removes WebSocket frames before connection parents', () => {
+  const api = createApi();
+  api.maxTrafficLog = 3;
+  const originalLog = api.trafficLog;
+  api.trafficLog.push(
+    { id: 'socket', protocol: 'ws' },
+    { id: 'old-frame', protocol: 'ws-frame', parentId: 'socket' }
+  );
+
+  api._appendImportedTraffic([{ id: 'one' }, { id: 'two' }]);
+
+  assert.equal(api.trafficLog, originalLog);
+  assert.deepEqual(api.trafficLog.map(request => request.id), ['socket', 'one', 'two']);
+
+  api.trafficLog.length = 0;
+  api._appendImportedTraffic([
+    { id: 'imported-socket', protocol: 'ws' },
+    { id: 'frame-1', protocol: 'ws-frame', parentId: 'imported-socket' },
+    { id: 'frame-2', protocol: 'ws-frame', parentId: 'imported-socket' },
+    { id: 'frame-3', protocol: 'ws-frame', parentId: 'imported-socket' }
+  ]);
+  assert.deepEqual(api.trafficLog.map(request => request.id), [
+    'imported-socket', 'frame-2', 'frame-3'
+  ]);
+});

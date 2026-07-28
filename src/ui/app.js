@@ -172,14 +172,30 @@
     function trimTrafficRows(rows, limit = 10_000) {
       const excess = rows.length - limit;
       if (excess <= 0) return rows;
-      const removedIndexes = new Set();
-      for (let index = 0; index < rows.length && removedIndexes.size < excess; index++) {
-        if (rows[index]?.protocol === 'ws-frame') removedIndexes.add(index);
+
+      if (excess === 1) {
+        const frameIndex = rows.findIndex(request => request?.protocol === 'ws-frame');
+        rows.splice(frameIndex === -1 ? 0 : frameIndex, 1);
+        return rows;
       }
-      for (let index = 0; index < rows.length && removedIndexes.size < excess; index++) {
-        removedIndexes.add(index);
+
+      let framesToRemove = 0;
+      for (const request of rows) {
+        if (request?.protocol === 'ws-frame' && framesToRemove < excess) framesToRemove++;
       }
-      return rows.filter((_request, index) => !removedIndexes.has(index));
+      let baseRowsToRemove = excess - framesToRemove;
+      let writeIndex = 0;
+      for (const request of rows) {
+        if (request?.protocol === 'ws-frame' && framesToRemove > 0) {
+          framesToRemove--;
+        } else if (request?.protocol !== 'ws-frame' && baseRowsToRemove > 0) {
+          baseRowsToRemove--;
+        } else {
+          rows[writeIndex++] = request;
+        }
+      }
+      rows.length = writeIndex;
+      return rows;
     }
 
     function mergeServerTrafficRequest(currentRequest, serverRequest) {

@@ -9,13 +9,13 @@ import { ApiServer } from '../src/api/api-server.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
-function postImport(port, requests) {
+function postJson(port, requestPath, body) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ requests });
+    const payload = JSON.stringify(body);
     const request = http.request({
       hostname: '127.0.0.1',
       port,
-      path: '/api/traffic/import',
+      path: requestPath,
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -32,6 +32,10 @@ function postImport(port, requests) {
     request.once('error', reject);
     request.end(payload);
   });
+}
+
+function postImport(port, requests) {
+  return postJson(port, '/api/traffic/import', { requests });
 }
 
 function trafficRecord(id, protocol, parentId) {
@@ -152,6 +156,66 @@ test('traffic import requires every WebSocket frame to have a non-empty string p
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.imported, imported.length);
   assert.deepEqual(api.trafficLog, imported);
+});
+
+test('JSON and HAR imports preserve WebSocket parent relationships at capacity', async t => {
+  const api = new ApiServer({
+    port: 8081,
+    mockRules: [],
+    onBreakpoint: null,
+    onUpstreamProxyRetry: null,
+    matchApiSpec: () => null
+  }, null, null);
+  api.maxTrafficLog = 3;
+  api.trafficLog.push(trafficRecord('taken', 'https'));
+  const server = http.createServer(api.app);
+  server.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port;
+
+  const result = await postImport(port, [
+    trafficRecord('taken', 'ws'),
+    trafficRecord('child', 'ws-frame', 'taken')
+  ]);
+  assert.equal(result.statusCode, 200);
+  const importedParent = api.trafficLog.find(request => request.protocol === 'ws');
+  const importedFrame = api.trafficLog.find(request => request.protocol === 'ws-frame');
+  assert.notEqual(importedParent.id, 'taken');
+  assert.equal(importedFrame.parentId, importedParent.id);
+
+  const reconnected = rendererHarness(api.trafficLog);
+  reconnected.context.expandTrafficRequest(importedParent);
+  reconnected.context.filterTraffic();
+  assert.deepEqual(Array.from(reconnected.context.filteredTrafficIds()), [
+    'taken', importedParent.id, importedFrame.id
+  ]);
+
+  api.maxTrafficLog = 2;
+  const harResult = await postJson(port, '/api/traffic/import-har', {
+    log: {
+      entries: [{
+        startedDateTime: '2026-01-01T00:00:00.000Z',
+        time: 1,
+        request: {
+          method: 'GET', url: 'https://example.test/imported',
+          httpVersion: 'HTTP/1.1', headers: []
+        },
+        response: {
+          status: 200, statusText: 'OK', httpVersion: 'HTTP/1.1',
+          headers: [], content: { text: '' }
+        }
+      }]
+    }
+  });
+  assert.equal(harResult.statusCode, 200);
+  assert.equal(api.trafficLog.length, 2);
+  assert.equal(api.trafficLog[0].id, importedParent.id);
+  assert.equal(api.trafficLog[0].protocol, 'ws');
+  assert.equal(api.trafficLog[1].protocol, 'https');
 });
 
 test('prototype-named parent IDs survive live add, filtering, reload, and row rendering', () => {

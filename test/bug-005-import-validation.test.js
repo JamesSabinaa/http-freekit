@@ -56,6 +56,12 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   });
   assert.equal(invalidBody.statusCode, 400);
   assert.match(invalidBody.body.error, /requestBody/);
+
+  const invalidLifecycle = await postJson(port, {
+    requests: [{ id: 'x', timestamp: Date.now(), trafficLifecycleId: { nested: true } }]
+  });
+  assert.equal(invalidLifecycle.statusCode, 400);
+  assert.match(invalidLifecycle.body.error, /trafficLifecycleId/);
   assert.deepEqual(api.trafficLog, []);
 
   const invalidTruncations = [

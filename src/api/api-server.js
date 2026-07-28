@@ -639,7 +639,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     const textFields = [
       'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
       'requestBodyEncoding', 'responseBodyEncoding', 'statusMessage', 'protocol', 'source',
-      'parentId'
+      'parentId', 'trafficLifecycleId', 'parentTrafficLifecycleId'
     ];
     const bodySizeFields = [
       'requestBodySize', 'responseBodySize',
@@ -2212,19 +2212,46 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _appendImportedTraffic(requests) {
     const limit = Math.max(0, this.maxTrafficLog);
-    const incomingStart = Math.max(0, requests.length - limit);
-    const incomingCount = requests.length - incomingStart;
-    const existingCount = Math.min(this.trafficLog.length, limit - incomingCount);
-    const existingIds = new Set(this.trafficLog.map(request => request.id));
-    const reservedIds = new Set(existingIds);
-    for (const request of requests) reservedIds.add(request.id);
-
-    if (this.trafficLog.length > existingCount) {
-      this.trafficLog.splice(0, this.trafficLog.length - existingCount);
+    const excess = Math.max(0, this.trafficLog.length + requests.length - limit);
+    const existingIds = new Set();
+    const reservedIds = new Set();
+    let framesToRemove = 0;
+    for (const request of this.trafficLog) {
+      existingIds.add(request.id);
+      reservedIds.add(request.id);
+      if (request?.protocol === 'ws-frame' && framesToRemove < excess) {
+        framesToRemove++;
+      }
     }
-    const assignedIds = new Set(this.trafficLog.map(request => request.id));
-    for (let index = incomingStart; index < requests.length; index++) {
-      const request = requests[index];
+    for (const request of requests) {
+      reservedIds.add(request.id);
+      if (request?.protocol === 'ws-frame' && framesToRemove < excess) {
+        framesToRemove++;
+      }
+    }
+    let baseRowsToRemove = excess - framesToRemove;
+    let remainingFramesToRemove = framesToRemove;
+    const retainedExisting = [];
+    const retainedIncoming = [];
+    for (const [rows, retained] of [
+      [this.trafficLog, retainedExisting],
+      [requests, retainedIncoming]
+    ]) {
+      for (const request of rows) {
+        if (request?.protocol === 'ws-frame' && remainingFramesToRemove > 0) {
+          remainingFramesToRemove--;
+        } else if (request?.protocol !== 'ws-frame' && baseRowsToRemove > 0) {
+          baseRowsToRemove--;
+        } else {
+          retained.push(request);
+        }
+      }
+    }
+
+    const assignedIds = new Set(retainedExisting.map(request => request.id));
+    const assignedIncoming = [];
+    const importedParentIds = new Map();
+    for (const request of retainedIncoming) {
       let id = request.id;
       if (existingIds.has(id) || assignedIds.has(id)) {
         do {
@@ -2233,8 +2260,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       reservedIds.add(id);
       assignedIds.add(id);
-      this.trafficLog.push({ ...request, id });
+      const assignedRequest = { ...request, id };
+      assignedIncoming.push(assignedRequest);
+      if (request.protocol === 'ws' || request.protocol === 'wss') {
+        importedParentIds.set(request.id, id);
+      }
     }
+    for (const request of assignedIncoming) {
+      if (request.protocol === 'ws-frame' && importedParentIds.has(request.parentId)) {
+        request.parentId = importedParentIds.get(request.parentId);
+      }
+    }
+
+    this.trafficLog.length = 0;
+    for (const request of retainedExisting) this.trafficLog.push(request);
+    for (const request of assignedIncoming) this.trafficLog.push(request);
   }
 
   _removeRuleById(ruleId, rules = this.proxy.mockRules) {
@@ -2406,14 +2446,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const excess = this.trafficLog.length - limit;
     if (excess <= 0) return;
 
-    const removedIndexes = new Set();
-    for (let index = 0; index < this.trafficLog.length && removedIndexes.size < excess; index++) {
-      if (this.trafficLog[index]?.protocol === 'ws-frame') removedIndexes.add(index);
+    if (excess === 1) {
+      const frameIndex = this.trafficLog.findIndex(request => request?.protocol === 'ws-frame');
+      this.trafficLog.splice(frameIndex === -1 ? 0 : frameIndex, 1);
+      return;
     }
-    for (let index = 0; index < this.trafficLog.length && removedIndexes.size < excess; index++) {
-      removedIndexes.add(index);
+
+    let framesToRemove = 0;
+    for (const request of this.trafficLog) {
+      if (request?.protocol === 'ws-frame' && framesToRemove < excess) framesToRemove++;
     }
-    this.trafficLog = this.trafficLog.filter((_request, index) => !removedIndexes.has(index));
+    let baseRowsToRemove = excess - framesToRemove;
+    let writeIndex = 0;
+    for (const request of this.trafficLog) {
+      if (request?.protocol === 'ws-frame' && framesToRemove > 0) {
+        framesToRemove--;
+      } else if (request?.protocol !== 'ws-frame' && baseRowsToRemove > 0) {
+        baseRowsToRemove--;
+      } else {
+        this.trafficLog[writeIndex++] = request;
+      }
+    }
+    this.trafficLog.length = writeIndex;
   }
 
   onTrafficEvent(data) {

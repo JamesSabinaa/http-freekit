@@ -28,6 +28,7 @@ test('traffic eviction removes WebSocket frames before their inspectable parent'
     { id: 'frame-1', protocol: 'ws-frame', parentId: 'socket' },
     { id: 'frame-2', protocol: 'ws-frame', parentId: 'socket' }
   ];
+  const originalLog = api.trafficLog;
 
   api.onTrafficEvent({
     id: 'frame-3',
@@ -50,4 +51,5 @@ test('traffic eviction removes WebSocket frames before their inspectable parent'
     timestamp: Date.now()
   });
   assert.deepEqual(api.trafficLog.map(request => request.id), ['socket']);
+  assert.equal(api.trafficLog, originalLog);
 });
