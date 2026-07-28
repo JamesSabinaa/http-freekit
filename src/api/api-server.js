@@ -1,4 +1,5 @@
 import express from 'express';
+import { isUtf8 } from 'node:buffer';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
@@ -2175,11 +2176,22 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         res.once('error', fail);
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks);
+          const bodyEncoding = isUtf8(responseBody) ? 'utf8' : 'base64';
+          const rawContentType = Object.entries(res.headers)
+            .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+          const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType)
+            ?.split(';')[0]
+            .replace(/[\r\n,]/g, '')
+            .trim() || 'application/octet-stream';
           succeed({
             statusCode: res.statusCode,
             statusMessage: res.statusMessage,
             headers: res.headers,
-            body: responseBody.toString('utf8'),
+            body: bodyEncoding === 'base64'
+              ? `data:${contentType};base64,${responseBody.toString('base64')}`
+              : responseBody.toString('utf8'),
+            bodyEncoding,
+            bodySize: responseBody.length,
             duration: Date.now() - startTime
           });
         });
