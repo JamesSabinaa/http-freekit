@@ -819,7 +819,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-229 — Low/Medium — MCP request detail silently truncates bodies
 
 - Status: **Fixed**.
-- Resolution: `get_request_detail` now returns the complete request and response bodies retained in the traffic record, matching its full-detail contract without an undocumented 50 KiB slice.
+- Resolution: `get_request_detail` now returns bounded request metadata plus explicit request, response, or original-request body pages. Clients can repeat calls with a UTF-16 code-unit offset and a maximum 64 KiB page size to retrieve every retained code unit without allocating or transporting a whole near-limit capture at once.
 
 - Evidence: `get_request_detail` promises full details including body at `src/mcp/mcp-server.js:25-33`, but the handler slices request and response bodies at 50 KiB at `:198-216`.
 - Impact: MCP clients cannot retrieve or analyze the remaining captured data even though storage retains substantially more.

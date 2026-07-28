@@ -10,6 +10,7 @@ import { trafficToHar } from '../api/har-converter.js';
 const MCP_HAR_EXPORT_MAX_BYTES = 200 * 1024;
 const MCP_HAR_JSON_PREFIX = '{"log":{"version":"1.2","creator":{"name":"HTTP FreeKit","version":"1.0.0"},"entries":[';
 const MCP_HAR_JSON_SUFFIX = ']}}';
+const MCP_BODY_PAGE_MAX_CODE_UNITS = 64 * 1024;
 
 function publicUpstreamProxyMetadata(upstreamProxy) {
   if (!upstreamProxy) return null;
@@ -20,7 +21,7 @@ function publicUpstreamProxyMetadata(upstreamProxy) {
   };
 }
 
-const TOOL_DEFINITIONS = [
+export const TOOL_DEFINITIONS = [
   {
     name: 'search_traffic',
     description: 'Search captured HTTP traffic and update the UI filter in real-time. The traffic list in the user\'s browser will immediately update to show only matching requests. Filter by method, status code, hostname, or free-text query.',
@@ -37,11 +38,29 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_request_detail',
-    description: 'Get full details of a specific captured HTTP request including headers, body, timing, and TLS info.',
+    description: 'Get metadata for a captured HTTP request, plus one bounded body page when body_side is provided. Repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
     inputSchema: {
       type: 'object',
       properties: {
-        request_id: { type: 'string', description: 'The request ID to look up' }
+        request_id: { type: 'string', description: 'The request ID to look up' },
+        body_side: {
+          type: 'string',
+          enum: ['request', 'response', 'original_request'],
+          description: 'Optional body to page. Omit to return metadata and body lengths only.'
+        },
+        body_offset: {
+          type: 'integer',
+          minimum: 0,
+          default: 0,
+          description: 'Zero-based UTF-16 code-unit offset within body_side.'
+        },
+        body_limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: MCP_BODY_PAGE_MAX_CODE_UNITS,
+          default: MCP_BODY_PAGE_MAX_CODE_UNITS,
+          description: `Maximum UTF-16 code units to return (max ${MCP_BODY_PAGE_MAX_CODE_UNITS}).`
+        }
       },
       required: ['request_id']
     }
@@ -213,16 +232,93 @@ export class McpServerBridge {
     };
   }
 
-  _handleGetRequestDetail({ request_id }) {
+  _handleGetRequestDetail({ request_id, body_side, body_offset, body_limit }) {
+    if (typeof request_id !== 'string' || request_id.length === 0) {
+      throw new Error('request_id must be a non-empty string');
+    }
+    if (body_side !== undefined &&
+      !['request', 'response', 'original_request'].includes(body_side)) {
+      throw new Error('body_side must be request, response, or original_request');
+    }
+    if (body_side === undefined && (body_offset !== undefined || body_limit !== undefined)) {
+      throw new Error('body_side is required when body_offset or body_limit is provided');
+    }
+
+    const offset = body_offset ?? 0;
+    const limit = body_limit ?? MCP_BODY_PAGE_MAX_CODE_UNITS;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error('body_offset must be a non-negative safe integer');
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MCP_BODY_PAGE_MAX_CODE_UNITS) {
+      throw new Error(`body_limit must be a safe integer from 1 to ${MCP_BODY_PAGE_MAX_CODE_UNITS}`);
+    }
+
     const req = this.apiServer.trafficLog.find(r => r.id === request_id);
     if (!req) {
       return { content: [{ type: 'text', text: `Request ${request_id} not found` }], isError: true };
     }
 
-    const detail = {
-      ...req,
-      timestamp: new Date(req.timestamp).toISOString()
+    const {
+      requestBody: capturedRequestBody,
+      responseBody: capturedResponseBody,
+      originalRequest,
+      ...metadata
+    } = req;
+    const requestBody = typeof capturedRequestBody === 'string' ? capturedRequestBody : '';
+    const responseBody = typeof capturedResponseBody === 'string' ? capturedResponseBody : '';
+    let originalRequestBody = '';
+    let originalRequestMetadata = originalRequest;
+    if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
+      const { body, ...originalMetadata } = originalRequest;
+      originalRequestBody = typeof body === 'string' ? body : '';
+      originalRequestMetadata = originalMetadata;
+    }
+    const bodies = {
+      request: {
+        totalLength: requestBody.length,
+        offsetUnit: 'utf16-code-unit',
+        encoding: req.requestBodyEncoding || 'utf8',
+        truncated: req.requestBodyTruncated === true
+      },
+      response: {
+        totalLength: responseBody.length,
+        offsetUnit: 'utf16-code-unit',
+        encoding: req.responseBodyEncoding || 'utf8',
+        truncated: req.responseBodyTruncated === true
+      },
+      original_request: {
+        totalLength: originalRequestBody.length,
+        offsetUnit: 'utf16-code-unit'
+      }
     };
+    const detail = {
+      ...metadata,
+      originalRequest: originalRequestMetadata,
+      timestamp: new Date(req.timestamp).toISOString(),
+      bodies,
+      bodyPage: null
+    };
+
+    if (body_side !== undefined) {
+      const body = body_side === 'request'
+        ? requestBody
+        : body_side === 'response'
+          ? responseBody
+          : originalRequestBody;
+      const content = body.slice(offset, offset + limit);
+      const nextOffset = offset + content.length;
+      const hasMore = nextOffset < body.length;
+      detail.bodyPage = {
+        side: body_side,
+        offset,
+        limit,
+        length: content.length,
+        totalLength: body.length,
+        hasMore,
+        nextOffset: hasMore ? nextOffset : null,
+        content
+      };
+    }
 
     return { content: [{ type: 'text', text: JSON.stringify(detail, null, 2) }] };
   }
