@@ -32,7 +32,8 @@ export const DEFAULT_MAX_WS_MESSAGE_FRAGMENTS = 1024;
 export class WsFrameParser {
   /**
    * @param {function} onFrame - Called with each complete application message
-   *   or control frame: { fin, opcode, masked, payload: Buffer, timestamp }
+   *   or control frame: { fin, rsv1, rsv2, rsv3, compressed, opcode,
+   *   masked, payload: Buffer, timestamp }
    */
   constructor(onFrame, options = {}) {
     this.onFrame = onFrame;
@@ -70,8 +71,12 @@ export class WsFrameParser {
     const isControlFrame = frame.opcode === WS_OPCODE.CLOSE ||
       frame.opcode === WS_OPCODE.PING || frame.opcode === WS_OPCODE.PONG;
 
+    if (frame.rsv2 || frame.rsv3) {
+      this._rejectUnsupportedReservedBits();
+    }
+
     if (isControlFrame) {
-      if (!frame.fin || frame.payload.length > 125) {
+      if (frame.rsv1 || !frame.fin || frame.payload.length > 125) {
         this._rejectMalformedControlFrame();
       }
       // Control frames may be interleaved in a fragmented message and do not
@@ -83,6 +88,9 @@ export class WsFrameParser {
     if (frame.opcode === WS_OPCODE.CONTINUATION) {
       if (!this._fragment) {
         this._rejectMalformedFragmentation('continuation frame without an open message');
+      }
+      if (frame.rsv1) {
+        this._rejectMalformedFragmentation('continuation frame sets RSV1');
       }
       this._appendFragment(frame.payload);
       this._fragment.fragmentCount++;
@@ -96,6 +104,10 @@ export class WsFrameParser {
       this.onFrame({
         fin: true,
         opcode: fragment.opcode,
+        rsv1: fragment.rsv1,
+        rsv2: false,
+        rsv3: false,
+        compressed: fragment.compressed,
         masked: fragment.masked,
         payload: Buffer.concat(fragment.chunks, fragment.length),
         timestamp: fragment.timestamp,
@@ -121,6 +133,8 @@ export class WsFrameParser {
 
     this._fragment = {
       opcode: frame.opcode,
+      rsv1: frame.rsv1,
+      compressed: frame.compressed,
       masked: frame.masked,
       timestamp: frame.timestamp,
       chunks: frame.payload.length > 0 ? [frame.payload] : [],
@@ -155,6 +169,9 @@ export class WsFrameParser {
     // Byte 0: FIN + RSV + opcode
     const byte0 = buf[offset++];
     const fin = (byte0 & 0x80) !== 0;
+    const rsv1 = (byte0 & 0x40) !== 0;
+    const rsv2 = (byte0 & 0x20) !== 0;
+    const rsv3 = (byte0 & 0x10) !== 0;
     const opcode = byte0 & 0x0F;
 
     // Byte 1: MASK + payload length
@@ -205,6 +222,10 @@ export class WsFrameParser {
 
     return {
       fin,
+      rsv1,
+      rsv2,
+      rsv3,
+      compressed: rsv1,
       opcode,
       masked,
       payload,
@@ -275,6 +296,12 @@ export class WsFrameParser {
   _rejectMalformedControlFrame() {
     const error = new SyntaxError('Malformed WebSocket control frame');
     error.code = 'ERR_WS_INVALID_CONTROL_FRAME';
+    this._disableCapture(error);
+  }
+
+  _rejectUnsupportedReservedBits() {
+    const error = new SyntaxError('Unsupported WebSocket reserved bits');
+    error.code = 'ERR_WS_UNSUPPORTED_RSV';
     this._disableCapture(error);
   }
 

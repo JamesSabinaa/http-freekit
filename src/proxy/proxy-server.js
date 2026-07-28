@@ -21,6 +21,10 @@ import {
   WS_OPCODE_NAMES,
   parseClosePayload
 } from './ws-frame-parser.js';
+import {
+  createPerMessageDeflateDecoder,
+  parsePerMessageDeflate
+} from './ws-permessage-deflate.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
 import { getApiSpecBaseHost, isObjectRecord } from '../api/openapi-validation.js';
@@ -1730,17 +1734,26 @@ export class ProxyServer {
       let serverBytes = 0;
       let cleanedUp = false;
       let frameSequence = 0;
+      const perMessageDeflate = parsePerMessageDeflate(proxyRes.headers);
+      const clientDecoder = createPerMessageDeflateDecoder(
+        perMessageDeflate?.client,
+        this.maxWsCapturedMessageBytes
+      );
+      const serverDecoder = createPerMessageDeflateDecoder(
+        perMessageDeflate?.server,
+        this.maxWsCapturedMessageBytes
+      );
 
       // Frame parser for client -> server direction
       const clientParser = new WsFrameParser((frame) => {
         if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) clientMessages++;
-        this._emitWsFrame(frame, 'client', requestId, ++frameSequence);
+        this._emitWsFrame(frame, 'client', requestId, ++frameSequence, clientDecoder);
       }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
 
       // Frame parser for server -> client direction
       const serverParser = new WsFrameParser((frame) => {
         if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) serverMessages++;
-        this._emitWsFrame(frame, 'server', requestId, ++frameSequence);
+        this._emitWsFrame(frame, 'server', requestId, ++frameSequence, serverDecoder);
       }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
 
       const stopRelays = this._startWebSocketRelay(
@@ -1819,30 +1832,49 @@ export class ProxyServer {
 
   /**
    * Emit a complete WebSocket application message or control frame as a traffic event.
-   * @param {{ fin: boolean, opcode: number, masked: boolean, payload: Buffer, timestamp: number }} frame
+   * @param {{ fin: boolean, rsv1: boolean, rsv2: boolean, rsv3: boolean,
+   *   compressed: boolean, opcode: number, masked: boolean, payload: Buffer,
+   *   timestamp: number }} frame
    * @param {'client'|'server'} direction
    * @param {string} parentId - The WS connection request ID
    * @param {number} sequence - Capture sequence number within the connection
+   * @param {{ decode: function(Buffer): Buffer }|null} compressionDecoder
    */
-  _emitWsFrame(frame, direction, parentId, sequence) {
+  _emitWsFrame(frame, direction, parentId, sequence, compressionDecoder = null) {
     const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
 
+    let displayPayload = frame.payload;
+    let decompressionError = null;
+    if (frame.compressed) {
+      if (!compressionDecoder) {
+        decompressionError = 'RSV1 is set but permessage-deflate was not negotiated';
+      } else {
+        try {
+          displayPayload = compressionDecoder.decode(frame.payload);
+        } catch (error) {
+          decompressionError = error.message;
+        }
+      }
+    }
+
     let payload;
-    if (frame.opcode === WS_OPCODE.TEXT) {
+    if (decompressionError) {
+      payload = `[Unable to decompress WebSocket message: ${decompressionError}]`;
+    } else if (frame.opcode === WS_OPCODE.TEXT) {
       // Decode text frames as UTF-8
-      payload = frame.payload.toString('utf-8');
+      payload = displayPayload.toString('utf-8');
     } else if (frame.opcode === WS_OPCODE.CLOSE) {
       // Parse close frame for code and reason
-      const close = parseClosePayload(frame.payload);
+      const close = parseClosePayload(displayPayload);
       payload = close.code != null
         ? `Close code: ${close.code}${close.reason ? ' - ' + close.reason : ''}`
         : '';
     } else if (frame.opcode === WS_OPCODE.BINARY) {
       // Hex-encode binary frames
-      payload = frame.payload.toString('hex');
+      payload = displayPayload.toString('hex');
     } else {
       // Ping/pong: show payload as UTF-8 if present, otherwise empty
-      payload = frame.payload.length > 0 ? frame.payload.toString('utf-8') : '';
+      payload = displayPayload.length > 0 ? displayPayload.toString('utf-8') : '';
     }
 
     this._emitRequest({
@@ -1855,6 +1887,9 @@ export class ProxyServer {
       requestHeaders: {},
       requestBody: payload,
       requestBodySize: frame.payload.length,
+      ...(frame.compressed && !decompressionError
+        ? { requestBodyDecodedSize: displayPayload.length }
+        : {}),
       statusCode: 0,
       statusMessage: opcodeName,
       responseHeaders: {},
@@ -1870,6 +1905,11 @@ export class ProxyServer {
       opcode: frame.opcode,
       opcodeName,
       fin: frame.fin,
+      rsv1: frame.rsv1,
+      rsv2: frame.rsv2,
+      rsv3: frame.rsv3,
+      compressed: frame.compressed,
+      ...(decompressionError ? { decompressionError } : {}),
       masked: frame.masked,
       parentId,
       sequence,

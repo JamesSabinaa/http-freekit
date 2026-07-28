@@ -348,7 +348,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-112 — Medium — Compressed WebSocket messages are displayed as corrupt text
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: WebSocket capture now retains RSV1 across complete and fragmented messages, parses the negotiated permessage-deflate direction and context parameters, and inflates text and binary payloads for display without changing relayed bytes. Decompression output is bounded by the capture limit, takeover history is direction-specific, invalid reserved-bit use disables only capture, and undecodable compressed messages show an explicit marker instead of corrupt UTF-8.
 
 - Evidence: `src/proxy/ws-frame-parser.js:65-68` discards RSV bits and exposes no compression state. `src/proxy/proxy-server.js:507-526` directly UTF-8 decodes text frames even though the forwarded upgrade can negotiate `permessage-deflate`.
 - Impact: common compressed text messages appear as gibberish/replacement characters.
