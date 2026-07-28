@@ -728,10 +728,12 @@ public class ProxyAgent {
     }
   }
 
-  _packageAgentJar(jarPath, manifestPath, cwd) {
-    return execFileAsync('jar', ['cfm', jarPath, manifestPath, 'ProxyAgent.class'], {
+  _packageAgentJar(manifestPath, cwd) {
+    return execFileAsync('jar', ['cm', manifestPath, 'ProxyAgent.class'], {
       cwd,
-      timeout: 10000
+      timeout: 10000,
+      encoding: null,
+      maxBuffer: MAX_JVM_AGENT_JAR_BYTES + 1
     });
   }
 
@@ -750,15 +752,70 @@ public class ProxyAgent {
     );
   }
 
+  _sameFileIdentity(first, second) {
+    return first.dev === second.dev && first.ino === second.ino;
+  }
+
+  _readBoundedRegularFile(filePath, minimumBytes, maximumBytes, description) {
+    const pathStat = fs.lstatSync(filePath);
+    if (!pathStat.isFile() || pathStat.nlink !== 1 || pathStat.size < minimumBytes ||
+        pathStat.size > maximumBytes) {
+      throw new Error(`${description} is not a bounded single-link regular file`);
+    }
+    const descriptor = fs.openSync(filePath, 'r');
+    try {
+      const openedStat = fs.fstatSync(descriptor);
+      if (!openedStat.isFile() || openedStat.nlink !== 1 ||
+          !this._sameFileIdentity(pathStat, openedStat)) {
+        throw new Error(`${description} changed before it was opened`);
+      }
+      const bytes = fs.readFileSync(descriptor);
+      const finalDescriptorStat = fs.fstatSync(descriptor);
+      const finalPathStat = fs.lstatSync(filePath);
+      if (bytes.length !== openedStat.size || finalDescriptorStat.size !== openedStat.size ||
+          finalDescriptorStat.nlink !== 1 || !finalPathStat.isFile() ||
+          finalPathStat.nlink !== 1 ||
+          !this._sameFileIdentity(openedStat, finalDescriptorStat) ||
+          !this._sameFileIdentity(openedStat, finalPathStat)) {
+        throw new Error(`${description} changed while it was read`);
+      }
+      return bytes;
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+
+  _writeNewAgentBuildFile(filePath, contents) {
+    const descriptor = fs.openSync(
+      filePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      0o600
+    );
+    let writtenStat;
+    try {
+      fs.writeFileSync(descriptor, contents);
+      fs.fsyncSync(descriptor);
+      writtenStat = fs.fstatSync(descriptor);
+      if (!writtenStat.isFile() || writtenStat.nlink !== 1) {
+        throw new Error(`JVM agent build output is not a single-link regular file: ${filePath}`);
+      }
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    const pathStat = fs.lstatSync(filePath);
+    if (!pathStat.isFile() || pathStat.nlink !== 1 ||
+        !this._sameFileIdentity(writtenStat, pathStat)) {
+      throw new Error(`JVM agent build output changed while it was written: ${filePath}`);
+    }
+  }
+
   _readAgentJarBytes(jarPath) {
-    const stat = fs.lstatSync(jarPath);
-    if (!stat.isFile() || stat.size < 22 || stat.size > MAX_JVM_AGENT_JAR_BYTES) {
-      throw new Error('cached JVM agent JAR is not a bounded regular file');
-    }
-    const bytes = fs.readFileSync(jarPath);
-    if (bytes.length !== stat.size) {
-      throw new Error('cached JVM agent JAR changed while it was read');
-    }
+    const bytes = this._readBoundedRegularFile(
+      jarPath,
+      22,
+      MAX_JVM_AGENT_JAR_BYTES,
+      'cached JVM agent JAR'
+    );
     this._validateAgentJarArchive(bytes);
     return bytes;
   }
@@ -871,8 +928,9 @@ public class ProxyAgent {
     }
     const manifest = this._readAgentJarEntry(bytes, manifestEntry, centralDirectoryOffset)
       .toString('utf8');
-    if (!/^Premain-Class:\s*ProxyAgent\s*$/m.test(manifest) ||
-        !/^Agent-Class:\s*ProxyAgent\s*$/m.test(manifest)) {
+    const manifestAttributes = this._parseAgentManifestMainAttributes(manifest);
+    if (manifestAttributes.get('premain-class') !== 'ProxyAgent' ||
+        manifestAttributes.get('agent-class') !== 'ProxyAgent') {
       throw new Error('cached JVM agent JAR manifest does not name ProxyAgent');
     }
     const agentClass = this._readAgentJarEntry(bytes, classEntry, centralDirectoryOffset);
@@ -892,11 +950,12 @@ public class ProxyAgent {
   }
 
   _agentJarCacheIsValid(jarPath, stampPath, sourceHash) {
-    const stampStat = fs.lstatSync(stampPath);
-    if (!stampStat.isFile() || stampStat.size <= 0 || stampStat.size > MAX_JVM_AGENT_STAMP_BYTES) {
-      throw new Error('JVM agent cache stamp is not a bounded regular file');
-    }
-    const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
+    const stamp = JSON.parse(this._readBoundedRegularFile(
+      stampPath,
+      1,
+      MAX_JVM_AGENT_STAMP_BYTES,
+      'JVM agent cache stamp'
+    ).toString('utf8'));
     if (stamp?.version !== JVM_AGENT_CACHE_VERSION || stamp.sourceHash !== sourceHash ||
         !/^[a-f0-9]{64}$/.test(stamp.jarHash || '')) {
       return false;
@@ -916,12 +975,60 @@ public class ProxyAgent {
   }
 
   _publishAgentCacheFile(sourcePath, targetPath) {
+    const sourceStat = fs.lstatSync(sourcePath);
+    if (!sourceStat.isFile() || sourceStat.nlink !== 1) {
+      throw new Error(`JVM agent build output is not publishable: ${sourcePath}`);
+    }
     try {
       fs.unlinkSync(targetPath);
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
     fs.renameSync(sourcePath, targetPath);
+    const targetStat = fs.lstatSync(targetPath);
+    if (!targetStat.isFile() || targetStat.nlink !== 1 ||
+        !this._sameFileIdentity(sourceStat, targetStat)) {
+      throw new Error(`JVM agent cache publication changed unexpectedly: ${targetPath}`);
+    }
+  }
+
+  _parseAgentManifestMainAttributes(manifest) {
+    const attributes = new Map();
+    let currentName = null;
+    let currentValue = '';
+    const commitAttribute = () => {
+      if (currentName === null) return;
+      const normalizedName = currentName.toLowerCase();
+      if (attributes.has(normalizedName)) {
+        throw new Error(`cached JVM agent JAR manifest repeats ${currentName}`);
+      }
+      attributes.set(normalizedName, currentValue);
+      currentName = null;
+      currentValue = '';
+    };
+
+    for (const line of manifest.split(/\r\n|\n|\r/)) {
+      if (line === '') {
+        commitAttribute();
+        break;
+      }
+      if (line.startsWith(' ')) {
+        if (currentName === null) {
+          throw new Error('cached JVM agent JAR manifest has an invalid continuation');
+        }
+        currentValue += line.slice(1);
+        continue;
+      }
+      commitAttribute();
+      const match = /^([A-Za-z0-9][A-Za-z0-9_-]*): (.*)$/.exec(line);
+      if (!match) {
+        throw new Error('cached JVM agent JAR manifest has an invalid main attribute');
+      }
+      currentName = match[1];
+      currentValue = match[2];
+    }
+    commitAttribute();
+    return attributes;
   }
 
   async _getAgentJarPath() {
@@ -950,26 +1057,53 @@ public class ProxyAgent {
     try {
       fs.mkdirSync(agentDir, { recursive: true });
       buildDir = fs.mkdtempSync(path.join(agentDir, '.jvm-agent-build-'));
+      try { fs.chmodSync(buildDir, 0o700); } catch {}
       const javaPath = path.join(buildDir, 'ProxyAgent.java');
       const manifestPath = path.join(buildDir, 'MANIFEST.MF');
       const builtJarPath = path.join(buildDir, 'proxy-agent.jar');
       const builtStampPath = path.join(buildDir, 'source.sha256');
-      fs.writeFileSync(javaPath, agentSource);
-      fs.writeFileSync(manifestPath, manifest);
+      this._writeNewAgentBuildFile(javaPath, agentSource);
+      this._writeNewAgentBuildFile(manifestPath, manifest);
 
       // Compile
       await this._compileAgentJava(javaPath, buildDir);
+      if (this._readBoundedRegularFile(
+        javaPath,
+        Buffer.byteLength(agentSource),
+        Buffer.byteLength(agentSource),
+        'JVM agent source'
+      ).toString('utf8') !== agentSource) {
+        throw new Error('JVM agent source changed during compilation');
+      }
+      if (this._readBoundedRegularFile(
+        manifestPath,
+        Buffer.byteLength(manifest),
+        Buffer.byteLength(manifest),
+        'JVM agent manifest'
+      ).toString('utf8') !== manifest) {
+        throw new Error('JVM agent manifest changed before packaging');
+      }
 
       // Package into JAR
-      await this._packageAgentJar(builtJarPath, manifestPath, buildDir);
-      fs.writeFileSync(
+      const packagedAgent = await this._packageAgentJar(manifestPath, buildDir);
+      if (!Buffer.isBuffer(packagedAgent)) {
+        throw new Error('JVM agent packager did not return a binary JAR');
+      }
+      this._writeNewAgentBuildFile(builtJarPath, packagedAgent);
+      this._writeNewAgentBuildFile(
         builtStampPath,
         JSON.stringify(this._getAgentJarCacheStamp(builtJarPath, sourceHash))
       );
+      if (!this._agentJarCacheIsValid(builtJarPath, builtStampPath, sourceHash)) {
+        throw new Error('JVM agent build outputs changed before publication');
+      }
       this._assertAgentCacheTargetIsReplaceable(jarPath);
       this._assertAgentCacheTargetIsReplaceable(stampPath);
       this._publishAgentCacheFile(builtJarPath, jarPath);
       this._publishAgentCacheFile(builtStampPath, stampPath);
+      if (!this._agentJarCacheIsValid(jarPath, stampPath, sourceHash)) {
+        throw new Error('JVM agent cache changed during publication');
+      }
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
       this._preparedAgentJarPath = jarPath;
