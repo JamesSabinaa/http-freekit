@@ -28,6 +28,7 @@ const NAME_MATCHER_TYPES = new Set([
   'header', 'query', 'cookie', 'form-data', 'multipart-form-data'
 ]);
 const OPTIONAL_VALUE_MATCHER_TYPES = new Set(['wildcard', 'raw-body-exact', 'exact-query']);
+const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const MOCK_ACTION_TYPES = new Set([
   'fixed-response',
   'serve-file',
@@ -103,6 +104,13 @@ function validateOptionalStringArray(container, property, label) {
     : `${label} must be an array of non-empty strings`;
 }
 
+function validateOptionalEnum(container, property, values, label) {
+  if (!hasOwn(container, property) || container[property] === undefined) return null;
+  return values.has(container[property])
+    ? null
+    : `${label} must use a supported value`;
+}
+
 function validatePreStep(step) {
   if (!isObject(step) || !MOCK_PRE_STEP_TYPES.has(step.type)) {
     return 'Every mock rule pre-step must use a supported type';
@@ -119,7 +127,7 @@ function validatePreStep(step) {
     return null;
   }
   if (step.type === 'rewrite-method') {
-    return typeof step.value === 'string' && /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(step.value)
+    return typeof step.value === 'string' && HTTP_TOKEN_PATTERN.test(step.value)
       ? null
       : 'rewrite-method pre-step value must be a valid HTTP method';
   }
@@ -129,9 +137,24 @@ function validatePreStep(step) {
 }
 
 function validateTransformAction(action) {
+  if (hasOwn(action, 'methodMode') && action.methodMode !== undefined
+    && (typeof action.methodMode !== 'string' || !HTTP_TOKEN_PATTERN.test(action.methodMode))) {
+    return 'Mock transform methodMode must be original or a valid HTTP method';
+  }
+  const enumFields = [
+    ['urlMode', new Set(['original', 'modify'])],
+    ['headersMode', new Set(['original', 'update', 'replace'])],
+    ['bodyMode', new Set(['original', 'replace-fixed', 'json-merge', 'match-replace'])],
+    ['resStatusMode', new Set(['original', 'replace'])],
+    ['resHeadersMode', new Set(['original', 'update', 'replace'])],
+    ['resBodyMode', new Set(['original', 'replace-fixed', 'json-merge', 'match-replace'])]
+  ];
+  for (const [property, values] of enumFields) {
+    const error = validateOptionalEnum(action, property, values, `Mock transform ${property}`);
+    if (error) return error;
+  }
   const stringFields = [
-    'methodMode', 'urlMode', 'urlReplace', 'headersMode', 'bodyMode', 'bodyMatchPattern',
-    'bodyReplaceWith', 'resStatusMode', 'resHeadersMode', 'resBodyMode',
+    'urlReplace', 'bodyMatchPattern', 'bodyReplaceWith',
     'resBodyMatchPattern', 'resBodyReplaceWith'
   ];
   for (const property of stringFields) {
@@ -139,6 +162,17 @@ function validateTransformAction(action) {
       && typeof action[property] !== 'string') {
       return `Mock transform ${property} must be a string`;
     }
+  }
+  if (action.urlMode === 'modify' && (typeof action.urlReplace !== 'string' || !action.urlReplace.trim())) {
+    return 'Mock transform urlReplace must be a non-empty string when modifying the URL';
+  }
+  if (action.bodyMode === 'match-replace'
+    && (typeof action.bodyMatchPattern !== 'string' || !action.bodyMatchPattern)) {
+    return 'Mock transform bodyMatchPattern is required for match-replace';
+  }
+  if (action.resBodyMode === 'match-replace'
+    && (typeof action.resBodyMatchPattern !== 'string' || !action.resBodyMatchPattern)) {
+    return 'Mock transform resBodyMatchPattern is required for match-replace';
   }
   for (const [property, label] of [
     ['headers', 'Mock transform request headers'],
@@ -163,7 +197,14 @@ function validateTransformAction(action) {
     const error = validateOptionalBody(action, property, label);
     if (error) return error;
   }
-  return validateOptionalStatus(action, 'resStatusOverride', 'Mock transform response status');
+  const statusError = validateOptionalStatus(
+    action, 'resStatusOverride', 'Mock transform response status'
+  );
+  if (statusError) return statusError;
+  if (action.resStatusMode === 'replace' && action.resStatusOverride === undefined) {
+    return 'Mock transform resStatusOverride is required when replacing the response status';
+  }
+  return null;
 }
 
 function validateAction(action) {
@@ -174,9 +215,14 @@ function validateAction(action) {
     && (typeof action.delay !== 'number' || !Number.isFinite(action.delay) || action.delay < 0)) {
     return 'Mock action delay must be a non-negative number';
   }
-  if (hasOwn(action, 'addResponseHeaders') && action.addResponseHeaders !== undefined) {
-    const headersError = validateHeaders(action.addResponseHeaders, 'Additional mock response headers');
-    if (headersError) return headersError;
+  for (const [property, label] of [
+    ['addRequestHeaders', 'Additional mock request headers'],
+    ['addResponseHeaders', 'Additional mock response headers']
+  ]) {
+    if (hasOwn(action, property) && action[property] !== undefined) {
+      const headersError = validateHeaders(action[property], label);
+      if (headersError) return headersError;
+    }
   }
 
   if (action.type === 'fixed-response') {
@@ -189,8 +235,9 @@ function validateAction(action) {
     return validateOptionalBody(action, 'body', 'Mock response body');
   }
   if (action.type === 'serve-file') {
-    if (hasOwn(action, 'filePath') && action.filePath !== undefined
-      && typeof action.filePath !== 'string') return 'Mock file path must be a string';
+    if (typeof action.filePath !== 'string' || !action.filePath.trim()) {
+      return 'Mock file path must be a non-empty string';
+    }
     if (hasOwn(action, 'contentType') && action.contentType !== undefined
       && typeof action.contentType !== 'string') return 'Mock file content type must be a string';
     if (typeof action.contentType === 'string' && !isValidHeader('content-type', action.contentType)) {
@@ -199,13 +246,13 @@ function validateAction(action) {
     return validateOptionalStatus(action, 'status', 'Mock file response status');
   }
   if (action.type === 'forward') {
-    return action.forwardTo === undefined || typeof action.forwardTo === 'string'
+    return typeof action.forwardTo === 'string' && action.forwardTo.trim()
       ? null
-      : 'Mock forward target must be a string';
+      : 'Mock forward target must be a non-empty string';
   }
   if (action.type === 'webhook') {
-    if (action.webhookUrl !== undefined && typeof action.webhookUrl !== 'string') {
-      return 'Mock webhook URL must be a string';
+    if (typeof action.webhookUrl !== 'string' || !action.webhookUrl.trim()) {
+      return 'Mock webhook URL must be a non-empty string';
     }
     if (action.webhookHeaders !== undefined) {
       return validateHeaders(action.webhookHeaders, 'Mock webhook headers');
@@ -214,6 +261,23 @@ function validateAction(action) {
   }
   if (action.type === 'transform-request') return validateTransformAction(action);
   if (action.type === 'transform-response') {
+    const bodyModeError = validateOptionalEnum(
+      action,
+      'bodyMode',
+      new Set(['original', 'replace-fixed', 'json-merge', 'match-replace']),
+      'Legacy response transform bodyMode'
+    );
+    if (bodyModeError) return bodyModeError;
+    for (const property of ['bodyMatchPattern', 'bodyReplaceWith']) {
+      if (hasOwn(action, property) && action[property] !== undefined
+        && typeof action[property] !== 'string') {
+        return `Legacy response transform ${property} must be a string`;
+      }
+    }
+    if (action.bodyMode === 'match-replace'
+      && (typeof action.bodyMatchPattern !== 'string' || !action.bodyMatchPattern)) {
+      return 'Legacy response transform bodyMatchPattern is required for match-replace';
+    }
     if (action.headers !== undefined) {
       const error = validateHeaders(action.headers, 'Legacy response transform headers');
       if (error) return error;

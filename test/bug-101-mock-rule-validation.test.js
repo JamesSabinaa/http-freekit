@@ -142,8 +142,25 @@ test('validator rejects malformed execution fields before rules reach runtime ha
     { ...base, action: { type: 'fixed-response', headers: { 'x-test': 'value\r\ninjected' } } },
     { ...base, action: { type: 'fixed-response', body: {} } },
     { ...base, action: { type: 'forward', addResponseHeaders: 'invalid' } },
+    { ...base, action: { type: 'forward', forwardTo: 'http://example.test', addRequestHeaders: 'invalid' } },
+    {
+      ...base,
+      action: {
+        type: 'forward',
+        forwardTo: 'http://example.test',
+        addRequestHeaders: { 'bad header': 'value' }
+      }
+    },
+    { ...base, action: { type: 'transform-request', methodMode: 'GET\r\nX-Evil: yes' } },
+    { ...base, action: { type: 'transform-request', headersMode: 'invalid' } },
+    { ...base, action: { type: 'transform-request', urlMode: 'modify', urlReplace: '' } },
     { ...base, action: { type: 'transform-request', removeHeaders: [42] } },
     { ...base, action: { type: 'transform-request', resStatusOverride: '201' } },
+    { ...base, action: { type: 'transform-request', resStatusMode: 'replace' } },
+    { ...base, action: { type: 'transform-response', bodyMode: 'invalid' } },
+    { ...base, action: { type: 'serve-file' } },
+    { ...base, action: { type: 'forward', forwardTo: '' } },
+    { ...base, action: { type: 'webhook' } },
     { enabled: true, urlPattern: '/', response: { body: {} } }
   ];
 
@@ -192,4 +209,43 @@ test('mock import rejects non-boolean enabled values without changing existing r
   });
   assert.equal(groupResult.statusCode, 400);
   assert.deepEqual(proxy.mockRules, before);
+});
+
+test('combined rule imports preserve false enabled values and default omissions to true', async t => {
+  const { proxy, port } = await createApi(t);
+  const importedRule = (title, enabled) => ({
+    title,
+    ...(enabled === undefined ? {} : { enabled }),
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response' }
+  });
+
+  const result = await requestJson(port, 'PUT', '/api/rules', {
+    mockRules: [
+      importedRule('disabled leaf', false),
+      importedRule('default leaf'),
+      {
+        type: 'group',
+        title: 'disabled group',
+        enabled: false,
+        items: [importedRule('disabled group child')]
+      },
+      {
+        type: 'group',
+        title: 'default group',
+        items: [importedRule('default group child')]
+      }
+    ],
+    breakpointRules: []
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(proxy.mockRules.map(rule => [rule.title, rule.enabled]), [
+    ['disabled leaf', false],
+    ['default leaf', true],
+    ['disabled group', false],
+    ['default group', true]
+  ]);
+  assert.equal(proxy.mockRules[2].items[0].enabled, true);
+  assert.equal(proxy.mockRules[3].items[0].enabled, true);
 });
