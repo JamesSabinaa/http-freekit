@@ -162,6 +162,7 @@ export class ApiServer {
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
     this._clearedPendingTrafficIds = new Map();
+    this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
       options.maxClearedPendingTrafficIds > 0
       ? options.maxClearedPendingTrafficIds
@@ -2396,7 +2397,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       delete data._update;
       const mergeUpdate = data._mergeUpdate === true;
       delete data._mergeUpdate;
+      const trafficClearGeneration = data._trafficClearGeneration;
+      delete data._trafficClearGeneration;
       this._pendingTrafficIds.delete(data.id);
+      if (trafficClearGeneration !== undefined &&
+          trafficClearGeneration !== this._trafficClearGeneration) {
+        this._clearedPendingTrafficIds.delete(data.id);
+        this._maybeAutoRotateProxyOnError(data);
+        return;
+      }
       if (this._clearedPendingTrafficIds.delete(data.id)) {
         this._maybeAutoRotateProxyOnError(data);
         return;
@@ -2419,8 +2428,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     } else {
       // New request (pending or complete)
       this._clearedPendingTrafficIds.delete(data.id);
-      if (data._pending) this._pendingTrafficIds.add(data.id);
-      else this._pendingTrafficIds.delete(data.id);
+      if (data._pending) {
+        this._pendingTrafficIds.add(data.id);
+        Object.defineProperty(data, '_trafficClearGeneration', {
+          value: this._trafficClearGeneration,
+          configurable: true
+        });
+      } else {
+        this._pendingTrafficIds.delete(data.id);
+      }
       delete data._pending;
       this.trafficLog.push(data);
       if (this.trafficLog.length > this.maxTrafficLog) {
@@ -2632,6 +2648,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this._clearedPendingTrafficIds.delete(id);
       this._clearedPendingTrafficIds.set(id, expiresAt);
     }
+    this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
     this.trafficLog = [];

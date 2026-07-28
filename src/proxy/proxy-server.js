@@ -8624,9 +8624,19 @@ export class ProxyServer {
     }
     const hasPendingDecision = data._pending !== true && data.id !== undefined &&
       this._pendingTrafficLogDecisions.has(data.id);
-    const pendingWasEmitted = hasPendingDecision
+    const pendingDecision = hasPendingDecision
       ? this._pendingTrafficLogDecisions.get(data.id)
       : null;
+    const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
+      ? pendingDecision.emitted
+      : pendingDecision;
+    if (pendingDecision && typeof pendingDecision === 'object' &&
+        pendingDecision.trafficClearGeneration !== undefined) {
+      Object.defineProperty(data, '_trafficClearGeneration', {
+        value: pendingDecision.trafficClearGeneration,
+        configurable: true
+      });
+    }
     if (hasPendingDecision && lifecycleComplete) {
       this._pendingTrafficLogDecisions.delete(data.id);
     }
@@ -8651,7 +8661,10 @@ export class ProxyServer {
     data.duration = null;
     const emitted = this._emitRequest(data);
     if (data.id !== undefined) {
-      this._pendingTrafficLogDecisions.set(data.id, emitted);
+      this._pendingTrafficLogDecisions.set(data.id, {
+        emitted,
+        trafficClearGeneration: data._trafficClearGeneration
+      });
     }
     return emitted;
   }
@@ -8668,9 +8681,19 @@ export class ProxyServer {
     }
     const hasPendingDecision = data.id !== undefined &&
       this._pendingTrafficLogDecisions.has(data.id);
-    const pendingWasEmitted = hasPendingDecision
+    const pendingDecision = hasPendingDecision
       ? this._pendingTrafficLogDecisions.get(data.id)
       : null;
+    const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
+      ? pendingDecision.emitted
+      : pendingDecision;
+    if (pendingDecision && typeof pendingDecision === 'object' &&
+        pendingDecision.trafficClearGeneration !== undefined) {
+      Object.defineProperty(data, '_trafficClearGeneration', {
+        value: pendingDecision.trafficClearGeneration,
+        configurable: true
+      });
+    }
     if (hasPendingDecision && lifecycleComplete) {
       this._pendingTrafficLogDecisions.delete(data.id);
     }
