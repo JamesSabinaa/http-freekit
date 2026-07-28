@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 68 of the 360 documented bugs are not fully fixed.**
+**No: 67 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 292 |
+| Fixed | 293 |
 | Partially fixed | 26 |
-| Open | 42 |
+| Open | 41 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -251,7 +251,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-100 — High — H2 failure fallback replays non-idempotent requests
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: All three upstream-H2 paths now distinguish session/setup failure from failure after an H2 request attempt. Setup failures and safely replayable methods may fall back to HTTP/1.1; attempted POST, PUT, PATCH, DELETE, CONNECT, and other unsafe methods are settled with the original 502 error without creating a second upstream request.
 
 - Evidence: all upstream-H2 paths catch any `_makeH2Request()` error and fall through to a second H1 request without `_canSafelyReplayRequest()` checks at `src/proxy/proxy-server.js:1496-1519`, `:1791-1822`, and `:2031-2055`.
 - Impact: payments, mutations, and uploads can execute twice if the H2 origin processes a POST and resets before responding.

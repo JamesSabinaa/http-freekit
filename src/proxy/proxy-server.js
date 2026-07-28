@@ -128,6 +128,13 @@ export class ProxyServer {
     return ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(String(method || '').toUpperCase());
   }
 
+  _settleNonReplayableH2Failure(method, requestAttempted, error, downstream, respond) {
+    if (!requestAttempted || this._canSafelyReplayRequest(method)) return false;
+    downstream.complete();
+    respond(error);
+    return true;
+  }
+
   _getUpstreamErrorCode(err) {
     return err?.code || err?.cause?.code || null;
   }
@@ -2781,6 +2788,7 @@ export class ProxyServer {
         };
 
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        let h2RequestAttempted = false;
         // Try HTTP/2 upstream first when this host bypasses the configured proxy.
         if (!initiallyUsesUpstreamProxy) {
           try {
@@ -2789,6 +2797,7 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
+              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
                 downstream.signal,
@@ -2833,6 +2842,15 @@ export class ProxyServer {
             }
           } catch (err) {
             if (downstream.aborted) return;
+            if (this._settleNonReplayableH2Failure(
+              req.method, h2RequestAttempted, err, downstream, error => {
+                try {
+                  res.writeHead(502, { 'Content-Type': 'text/plain' });
+                  res.end(`Proxy Error: ${error.message}`);
+                } catch (e) { /* client gone */ }
+                emitError(error, null);
+              }
+            )) return;
             // H2 request failed — fall back to h1.1
             upstreamProtocol = 'https';
           }
@@ -3250,6 +3268,7 @@ export class ProxyServer {
         };
 
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
+        let h2RequestAttempted = false;
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
         if (!initiallyUsesUpstreamProxy) {
           try {
@@ -3257,6 +3276,7 @@ export class ProxyServer {
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
             if (downstream.aborted) return;
             if (h2Session) {
+              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, method, upstreamHostname, upstreamPort, path, upstreamHeaders, body, requestTrailers,
                 downstream.signal,
@@ -3304,6 +3324,17 @@ export class ProxyServer {
             }
           } catch (err) {
             if (downstream.aborted) return;
+            if (this._settleNonReplayableH2Failure(
+              method, h2RequestAttempted, err, downstream, error => {
+                try {
+                  if (!stream.destroyed && !stream.closed) {
+                    stream.respond({ ':status': 502 });
+                    stream.end('Proxy Error: ' + error.message);
+                  }
+                } catch (e) { /* stream already closed */ }
+                emitH2Error(error, null);
+              }
+            )) return;
             // H2 request failed — fall back to h1.1
           }
         }
@@ -3607,6 +3638,7 @@ export class ProxyServer {
         };
 
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        let h2RequestAttempted = false;
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
         if (!initiallyUsesUpstreamProxy) {
           try {
@@ -3615,6 +3647,7 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (h2Session) {
               upstreamProtocol = 'h2';
+              h2RequestAttempted = true;
               const h2Res = await this._makeH2Request(
                 h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
                 downstream.signal,
@@ -3658,6 +3691,15 @@ export class ProxyServer {
             }
           } catch (err) {
             if (downstream.aborted) return;
+            if (this._settleNonReplayableH2Failure(
+              req.method, h2RequestAttempted, err, downstream, error => {
+                try {
+                  res.writeHead(502, { 'Content-Type': 'text/plain' });
+                  res.end(`Proxy Error: ${error.message}`);
+                } catch (e) { /* client gone */ }
+                emitH1Error(error, null);
+              }
+            )) return;
             // H2 request failed — fall back to h1.1
             upstreamProtocol = 'https';
           }
