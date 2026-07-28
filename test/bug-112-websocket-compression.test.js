@@ -168,26 +168,45 @@ test('permessage-deflate negotiation is direction-specific and rejects ambiguity
   }), null);
 });
 
-test('permessage-deflate decoding is output-bounded and no-takeover failures recover', () => {
+test('permessage-deflate decoding is asynchronous, output-bounded, and recoverable without takeover', async () => {
   const decoder = createPerMessageDeflateDecoder(
     { noContextTakeover: true, windowBits: 15 },
     16
   );
-  assert.throws(() => decoder.decode(compressWithoutContext('A'.repeat(1024))), error =>
+  const oversized = decoder.decode(compressWithoutContext('A'.repeat(1024)));
+  assert.ok(oversized instanceof Promise);
+  await assert.rejects(oversized, error =>
     error.code === 'ERR_BUFFER_TOO_LARGE' ||
     error.code === 'ERR_WS_DECOMPRESSED_MESSAGE_TOO_LARGE'
   );
-  assert.equal(decoder.decode(compressWithoutContext('recovered')).toString(), 'recovered');
+  assert.equal(
+    (await decoder.decode(compressWithoutContext('recovered'))).toString(),
+    'recovered'
+  );
 
   const takeoverDecoder = createPerMessageDeflateDecoder(
     { noContextTakeover: false, windowBits: 15 },
     16
   );
-  assert.throws(() => takeoverDecoder.decode(Buffer.from('invalid deflate')));
-  assert.throws(
+  await assert.rejects(takeoverDecoder.decode(Buffer.from('invalid deflate')));
+  await assert.rejects(
     () => takeoverDecoder.decode(compressWithoutContext('valid')),
     /context is unavailable/
   );
+});
+
+test('context takeover copies only its bounded sliding window', async () => {
+  const decodedSize = 4 * 1024 * 1024;
+  const decoder = createPerMessageDeflateDecoder(
+    { noContextTakeover: false, windowBits: 15 },
+    decodedSize
+  );
+  const decoded = await decoder.decode(compressWithoutContext('A'.repeat(decodedSize)));
+  assert.equal(decoded.length, decodedSize);
+  assert.deepEqual(decoder.retainedHistoryAllocation(), {
+    length: 32 * 1024,
+    byteLength: 32 * 1024
+  });
 });
 
 test('proxy decodes negotiated compressed messages in both directions with context takeover', async t => {
@@ -299,6 +318,7 @@ test('proxy decodes negotiated compressed messages in both directions with conte
   assert.deepEqual(Buffer.concat(originPayloadChunks), clientWire);
   assert.deepEqual(responsePayload(Buffer.concat(clientChunks)), serverWire);
   const frames = events.filter(event => event.protocol === 'ws-frame');
+  assert.deepEqual(frames.map(frame => frame.sequence), [1, 2, 3, 4]);
   assert.deepEqual(
     frames.filter(frame => frame.direction === 'client').map(frame => frame.requestBody),
     clientMessages

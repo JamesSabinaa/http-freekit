@@ -45,6 +45,7 @@ const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
 ]);
 const SUPPORTED_UPGRADE_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
+const MAX_PENDING_WS_CAPTURE_MESSAGES = 64;
 const HOP_BY_HOP_HEADER_NAMES = new Set([
   'connection',
   'keep-alive',
@@ -1510,8 +1511,9 @@ export class ProxyServer {
 
     const forward = (chunk) => {
       if (!active) return;
+      const needsDrain = !destination.write(chunk);
       onChunk(chunk);
-      if (!destination.write(chunk) && !waitingForDrain) {
+      if (needsDrain && !waitingForDrain) {
         waitingForDrain = true;
         source.pause();
         destination.once('drain', handleDrain);
@@ -1743,18 +1745,61 @@ export class ProxyServer {
         perMessageDeflate?.server,
         this.maxWsCapturedMessageBytes
       );
+      let captureTail = Promise.resolve();
+      let pendingCaptures = 0;
+      const createCaptureState = (direction, decoder, onApplicationMessage) => {
+        const state = {
+          disabled: false,
+          pendingBytes: 0,
+          pendingMessages: 0
+        };
+        state.enqueue = (frame) => {
+          if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) {
+            onApplicationMessage();
+          }
+          if (state.disabled) return;
+
+          const requiresAsyncCapture = pendingCaptures > 0 || (frame.compressed && decoder);
+          if (!requiresAsyncCapture) {
+            const sequence = ++frameSequence;
+            void this._emitWsFrame(frame, direction, requestId, sequence, decoder).catch(() => {});
+            return;
+          }
+          if (state.pendingMessages >= MAX_PENDING_WS_CAPTURE_MESSAGES ||
+              state.pendingBytes + frame.payload.length > this.maxWsCapturedMessageBytes) {
+            state.disabled = true;
+            return;
+          }
+
+          const sequence = ++frameSequence;
+          state.pendingMessages++;
+          state.pendingBytes += frame.payload.length;
+          pendingCaptures++;
+          const operation = captureTail.then(
+            () => this._emitWsFrame(frame, direction, requestId, sequence, decoder)
+          );
+          captureTail = operation.then(() => undefined, () => undefined).finally(() => {
+            state.pendingMessages--;
+            state.pendingBytes -= frame.payload.length;
+            pendingCaptures--;
+          });
+        };
+        return state;
+      };
+      const clientCapture = createCaptureState('client', clientDecoder, () => { clientMessages++; });
+      const serverCapture = createCaptureState('server', serverDecoder, () => { serverMessages++; });
 
       // Frame parser for client -> server direction
-      const clientParser = new WsFrameParser((frame) => {
-        if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) clientMessages++;
-        this._emitWsFrame(frame, 'client', requestId, ++frameSequence, clientDecoder);
-      }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
+      const clientParser = new WsFrameParser(
+        frame => clientCapture.enqueue(frame),
+        { maxMessagePayloadLength: this.maxWsCapturedMessageBytes }
+      );
 
       // Frame parser for server -> client direction
-      const serverParser = new WsFrameParser((frame) => {
-        if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) serverMessages++;
-        this._emitWsFrame(frame, 'server', requestId, ++frameSequence, serverDecoder);
-      }, { maxMessagePayloadLength: this.maxWsCapturedMessageBytes });
+      const serverParser = new WsFrameParser(
+        frame => serverCapture.enqueue(frame),
+        { maxMessagePayloadLength: this.maxWsCapturedMessageBytes }
+      );
 
       const stopRelays = this._startWebSocketRelay(
         socket,
@@ -1763,11 +1808,15 @@ export class ProxyServer {
         proxyHead,
         (chunk) => {
           clientBytes += chunk.length;
-          try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
+          if (!clientCapture.disabled) {
+            try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
+          }
         },
         (chunk) => {
           serverBytes += chunk.length;
-          try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
+          if (!serverCapture.disabled) {
+            try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
+          }
         }
       );
 
@@ -1776,18 +1825,20 @@ export class ProxyServer {
         cleanedUp = true;
         stopRelays();
         const duration = Date.now() - startTime;
-        this._emitRequestUpdate({
-          ...requestRecord,
-          requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
-          requestBodySize: clientBytes,
-          statusCode: proxyRes.statusCode,
-          statusMessage: proxyRes.statusMessage || 'Switching Protocols',
-          responseHeaders: proxyRes.headers,
-          responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
-          responseBodySize: serverBytes,
-          duration,
-          remote
-        });
+        void captureTail.then(() => {
+          this._emitRequestUpdate({
+            ...requestRecord,
+            requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
+            requestBodySize: clientBytes,
+            statusCode: proxyRes.statusCode,
+            statusMessage: proxyRes.statusMessage || 'Switching Protocols',
+            responseHeaders: proxyRes.headers,
+            responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
+            responseBodySize: serverBytes,
+            duration,
+            remote
+          });
+        }).catch(() => {});
       };
 
       proxySocket.on('end', () => {
@@ -1838,9 +1889,9 @@ export class ProxyServer {
    * @param {'client'|'server'} direction
    * @param {string} parentId - The WS connection request ID
    * @param {number} sequence - Capture sequence number within the connection
-   * @param {{ decode: function(Buffer): Buffer }|null} compressionDecoder
+   * @param {{ decode: function(Buffer): Promise<Buffer> }|null} compressionDecoder
    */
-  _emitWsFrame(frame, direction, parentId, sequence, compressionDecoder = null) {
+  async _emitWsFrame(frame, direction, parentId, sequence, compressionDecoder = null) {
     const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
 
     let displayPayload = frame.payload;
@@ -1850,7 +1901,7 @@ export class ProxyServer {
         decompressionError = 'RSV1 is set but permessage-deflate was not negotiated';
       } else {
         try {
-          displayPayload = compressionDecoder.decode(frame.payload);
+          displayPayload = await compressionDecoder.decode(frame.payload);
         } catch (error) {
           decompressionError = error.message;
         }

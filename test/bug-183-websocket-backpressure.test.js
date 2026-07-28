@@ -26,7 +26,14 @@ class FakeSocket extends EventEmitter {
   }
 }
 
-function startRelay({ clientResults = [], serverResults = [], head = '', proxyHead = '' } = {}) {
+function startRelay({
+  clientResults = [],
+  serverResults = [],
+  head = '',
+  proxyHead = '',
+  onClientChunk,
+  onServerChunk
+} = {}) {
   const proxy = new ProxyServer(null);
   const client = new FakeSocket(clientResults);
   const server = new FakeSocket(serverResults);
@@ -37,11 +44,32 @@ function startRelay({ clientResults = [], serverResults = [], head = '', proxyHe
     server,
     Buffer.from(head),
     Buffer.from(proxyHead),
-    chunk => clientChunks.push(Buffer.from(chunk)),
-    chunk => serverChunks.push(Buffer.from(chunk))
+    chunk => {
+      clientChunks.push(Buffer.from(chunk));
+      onClientChunk?.(chunk);
+    },
+    chunk => {
+      serverChunks.push(Buffer.from(chunk));
+      onServerChunk?.(chunk);
+    }
   );
   return { client, server, clientChunks, serverChunks, stop };
 }
+
+test('WebSocket relay writes bytes before scheduling capture work', () => {
+  const order = [];
+  const relay = startRelay({ onClientChunk: () => order.push('capture') });
+  const write = relay.server.write.bind(relay.server);
+  relay.server.write = chunk => {
+    order.push('write');
+    return write(chunk);
+  };
+
+  relay.client.emit('data', Buffer.from('relayed-first'));
+
+  assert.deepEqual(order, ['write', 'capture']);
+  relay.stop();
+});
 
 test('client-to-server WebSocket relay pauses until the upstream socket drains', () => {
   const relay = startRelay({ serverResults: [false, true] });

@@ -77,40 +77,67 @@ export function createPerMessageDeflateDecoder(options, maxOutputLength) {
   const windowSize = 2 ** options.windowBits;
   let history = Buffer.alloc(0);
   let contextError = null;
+  let decodeQueue = Promise.resolve();
+
+  const retainHistory = (decoded) => {
+    const retainedLength = Math.min(windowSize, history.length + decoded.length);
+    const nextHistory = Buffer.allocUnsafe(retainedLength);
+    if (decoded.length >= retainedLength) {
+      decoded.copy(nextHistory, 0, decoded.length - retainedLength);
+    } else {
+      const previousLength = retainedLength - decoded.length;
+      history.copy(nextHistory, 0, history.length - previousLength);
+      decoded.copy(nextHistory, previousLength);
+    }
+    history = nextHistory;
+  };
+
+  const decodeOne = async (payload) => {
+    if (contextError) {
+      throw new Error(`permessage-deflate context is unavailable after: ${contextError}`);
+    }
+    try {
+      const inflateOptions = {
+        finishFlush: zlib.constants.Z_SYNC_FLUSH,
+        maxOutputLength: Math.max(1, outputLimit + 1),
+        windowBits: options.windowBits
+      };
+      if (!options.noContextTakeover && history.length > 0) {
+        inflateOptions.dictionary = history;
+      }
+      const decoded = await new Promise((resolve, reject) => {
+        zlib.inflateRaw(
+          Buffer.concat([payload, PERMESSAGE_DEFLATE_TAIL]),
+          inflateOptions,
+          (error, result) => error ? reject(error) : resolve(result)
+        );
+      });
+      if (decoded.length > outputLimit) {
+        const error = new RangeError(
+          `decompressed WebSocket message exceeds the ${outputLimit} byte capture limit`
+        );
+        error.code = 'ERR_WS_DECOMPRESSED_MESSAGE_TOO_LARGE';
+        throw error;
+      }
+      if (!options.noContextTakeover) retainHistory(decoded);
+      return decoded;
+    } catch (error) {
+      if (!options.noContextTakeover) contextError = error.message;
+      throw error;
+    }
+  };
 
   return {
     decode(payload) {
-      if (contextError) {
-        throw new Error(`permessage-deflate context is unavailable after: ${contextError}`);
-      }
-      try {
-        const inflateOptions = {
-          finishFlush: zlib.constants.Z_SYNC_FLUSH,
-          maxOutputLength: Math.max(1, outputLimit + 1),
-          windowBits: options.windowBits
-        };
-        if (!options.noContextTakeover && history.length > 0) {
-          inflateOptions.dictionary = history;
-        }
-        const decoded = zlib.inflateRawSync(
-          Buffer.concat([payload, PERMESSAGE_DEFLATE_TAIL]),
-          inflateOptions
-        );
-        if (decoded.length > outputLimit) {
-          const error = new RangeError(
-            `decompressed WebSocket message exceeds the ${outputLimit} byte capture limit`
-          );
-          error.code = 'ERR_WS_DECOMPRESSED_MESSAGE_TOO_LARGE';
-          throw error;
-        }
-        if (!options.noContextTakeover) {
-          history = Buffer.concat([history, decoded]).subarray(-windowSize);
-        }
-        return decoded;
-      } catch (error) {
-        if (!options.noContextTakeover) contextError = error.message;
-        throw error;
-      }
+      const operation = decodeQueue.then(() => decodeOne(payload));
+      decodeQueue = operation.then(() => undefined, () => undefined);
+      return operation;
+    },
+    retainedHistoryAllocation() {
+      return {
+        length: history.length,
+        byteLength: history.buffer.byteLength
+      };
     }
   };
 }
