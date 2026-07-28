@@ -3545,7 +3545,7 @@ export class ProxyServer {
       payload = displayPayload.length > 0 ? displayPayload.toString('utf-8') : '';
     }
 
-    this._emitRequest({
+    const event = {
       id: uuidv4(),
       protocol: 'ws-frame',
       method: 'WS',
@@ -3585,7 +3585,16 @@ export class ProxyServer {
         fragmented: true,
         fragmentCount: frame.fragmentCount
       } : {})
-    });
+    };
+    const parentDecision = this._pendingTrafficLogDecisions.get(parentId);
+    if (parentDecision && typeof parentDecision === 'object' &&
+        parentDecision.trafficClearGeneration !== undefined) {
+      Object.defineProperty(event, '_trafficClearGeneration', {
+        value: parentDecision.trafficClearGeneration,
+        configurable: true
+      });
+    }
+    this._emitRequest(event);
   }
 
   // Handle plain HTTP requests (non-CONNECT)

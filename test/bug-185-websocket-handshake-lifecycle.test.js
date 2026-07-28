@@ -4,6 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
 
+import { ApiServer } from '../src/api/api-server.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 async function listen(server) {
@@ -330,4 +331,75 @@ test('an open WebSocket has its 101 parent before frames and updates it on close
   storedParents = capture.traffic.filter(event => event.protocol === 'ws');
   assert.equal(storedParents.length, 1);
   assert.equal(storedParents[0].responseBody, '1 messages (4 bytes)');
+});
+
+test('clearing an open WebSocket suppresses its later frames and final parent update', async t => {
+  let originSocket;
+  const origin = http.createServer();
+  origin.on('upgrade', (_req, socket) => {
+    originSocket = socket;
+    socket.on('error', () => {});
+    socket.on('end', () => socket.end());
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Connection: Upgrade\r\n' +
+      'Upgrade: websocket\r\n\r\n'
+    );
+  });
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  const api = new ApiServer(proxy, null, null);
+  const broadcasts = [];
+  api._broadcast = event => broadcasts.push(structuredClone(event));
+  proxy.onRequest = event => api.onTrafficEvent(event);
+  let capturedFrames = 0;
+  const emitWsFrame = proxy._emitWsFrame.bind(proxy);
+  proxy._emitWsFrame = async (...args) => {
+    capturedFrames++;
+    return emitWsFrame(...args);
+  };
+  await proxy.start();
+  const client = await openUpgrade(proxy.server.address().port, originPort);
+
+  t.after(async () => {
+    client.socket.destroy();
+    originSocket?.destroy();
+    await proxy.stop();
+    await close(origin);
+  });
+
+  await waitFor(
+    () => api.trafficLog.some(record => record.protocol === 'ws' && record.statusCode === 101),
+    'Timed out waiting for the open WebSocket parent'
+  );
+  const parentId = api.trafficLog.find(record => record.protocol === 'ws').id;
+  const decision = proxy._pendingTrafficLogDecisions.get(parentId);
+  assert.equal(typeof decision.trafficClearGeneration, 'symbol');
+
+  originSocket.write(Buffer.from([0x81, 0x06, 0x62, 0x65, 0x66, 0x6f, 0x72, 0x65]));
+  await waitFor(
+    () => api.trafficLog.some(record => record.protocol === 'ws-frame'),
+    'Timed out waiting for the pre-clear frame capture'
+  );
+  assert.equal(api.trafficLog.find(record => record.protocol === 'ws-frame').requestBody, 'before');
+
+  api._clearTraffic();
+  broadcasts.length = 0;
+  originSocket.write(Buffer.from([0x81, 0x05, 0x61, 0x66, 0x74, 0x65, 0x72]));
+  await waitFor(() => capturedFrames === 2, 'Timed out waiting for the post-clear frame capture');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(api.trafficLog, []);
+  assert.deepEqual(
+    broadcasts.filter(event => event.type === 'request' || event.type === 'request-update'),
+    []
+  );
+
+  client.socket.end();
+  await waitFor(
+    () => proxy._pendingTrafficLogDecisions.size === 0,
+    'Timed out waiting for the cleared WebSocket lifecycle to finish'
+  );
+  assert.deepEqual(api.trafficLog, []);
+  assert.equal(api._clearedPendingTrafficIds.has(parentId), false);
 });

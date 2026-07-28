@@ -2392,20 +2392,24 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
     if (apiMatch) data.apiMatch = apiMatch;
 
+    const trafficClearGeneration = data._trafficClearGeneration;
+    delete data._trafficClearGeneration;
+    if (trafficClearGeneration !== undefined &&
+        trafficClearGeneration !== this._trafficClearGeneration) {
+      if (data._update) {
+        this._pendingTrafficIds.delete(data.id);
+        this._clearedPendingTrafficIds.delete(data.id);
+        this._maybeAutoRotateProxyOnError(data);
+      }
+      return;
+    }
+
     if (data._update) {
       // Update an existing pending request in-place
       delete data._update;
       const mergeUpdate = data._mergeUpdate === true;
       delete data._mergeUpdate;
-      const trafficClearGeneration = data._trafficClearGeneration;
-      delete data._trafficClearGeneration;
       this._pendingTrafficIds.delete(data.id);
-      if (trafficClearGeneration !== undefined &&
-          trafficClearGeneration !== this._trafficClearGeneration) {
-        this._clearedPendingTrafficIds.delete(data.id);
-        this._maybeAutoRotateProxyOnError(data);
-        return;
-      }
       if (this._clearedPendingTrafficIds.delete(data.id)) {
         this._maybeAutoRotateProxyOnError(data);
         return;
