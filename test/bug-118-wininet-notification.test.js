@@ -78,6 +78,7 @@ test('a failed restoration notification remains retryable on the next Stop', asy
   );
   assert.deepEqual(settings, previousSettings);
   assert.equal(interceptor.restorePending, true);
+  assert.equal(interceptor.restoreNotificationPending, true);
   assert.equal(interceptor.active, true);
   assert.equal(await interceptor.needsDeactivation(), true);
 
@@ -86,6 +87,65 @@ test('a failed restoration notification remains retryable on the next Stop', asy
   assert.equal(notificationAttempts, 2);
   assert.deepEqual(settings, previousSettings);
   assert.equal(interceptor.restorePending, false);
+  assert.equal(interceptor.restoreNotificationPending, false);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.previousSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+});
+
+test('a notification retry preserves an external change made after registry restoration', async () => {
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const settings = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  };
+  const interceptor = new SystemProxyInterceptor();
+  interceptor._isWindows = () => true;
+  interceptor.active = true;
+  interceptor.previousSettings = previousSettings;
+  interceptor.activeProxyServer = settings.server;
+  interceptor.pendingRecovery = {
+    proxyServer: settings.server,
+    ownedSettings: { ...settings },
+    previousSettings
+  };
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  let registryWrites = 0;
+  interceptor._setRegistryValue = (name, type, value) => {
+    registryWrites++;
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') settings.server = value;
+    if (name === 'ProxyOverride') settings.override = value;
+  };
+  let notificationAttempts = 0;
+  interceptor._notifyWinInet = () => {
+    notificationAttempts++;
+    throw new Error('WinINet refresh failed');
+  };
+  interceptor._removeRecoveryState = () => {};
+
+  await assert.rejects(interceptor.deactivate(), /WinINet refresh failed/);
+  assert.equal(interceptor.restoreNotificationPending, true);
+
+  // The user deliberately re-enables the restored corporate proxy before
+  // retrying Stop. This is newer external state, not a partial FreeKit write.
+  settings.enabled = true;
+  const writesBeforeRetry = registryWrites;
+  await interceptor.deactivate();
+
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  });
+  assert.equal(registryWrites, writesBeforeRetry);
+  assert.equal(notificationAttempts, 1);
+  assert.equal(interceptor.restoreNotificationPending, false);
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.previousSettings, null);
   assert.equal(interceptor.pendingRecovery, null);

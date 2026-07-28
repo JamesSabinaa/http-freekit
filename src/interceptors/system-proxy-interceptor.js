@@ -13,6 +13,7 @@ export class SystemProxyInterceptor {
     this.activeProxyServer = null;
     this.pendingRecovery = null;
     this.restorePending = false;
+    this.restoreNotificationPending = false;
     this.restoreBaselineSettings = null;
     this.ca = options.ca || null;
     this._processIdentityLookup = options.processIdentityLookup
@@ -299,6 +300,14 @@ if ($null -eq $target) {
     ).some(Boolean);
   }
 
+  _settingsMatchCompletedRestore(current) {
+    const previous = this.previousSettings;
+    if (!previous) return false;
+    const fields = ['enabled', 'server'];
+    if (Object.prototype.hasOwnProperty.call(previous, 'override')) fields.push('override');
+    return fields.every(field => current[field] === previous[field]);
+  }
+
   recoverStaleSettings() {
     if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
@@ -344,12 +353,17 @@ if ($null -eq $target) {
       }
     }
     this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
+    // Registry restoration is complete. If notification or journal cleanup
+    // fails from here, a retry may own only this exact restored state; the
+    // broader prefix matcher is reserved for interrupted registry writes.
+    this.restoreNotificationPending = true;
     this._notifyWinInet();
     this._removeRecoveryState();
     this.previousSettings = null;
     this.activeProxyServer = null;
     this.pendingRecovery = null;
     this.restorePending = false;
+    this.restoreNotificationPending = false;
     this.restoreBaselineSettings = null;
   }
 
@@ -404,6 +418,7 @@ if ($null -eq $target) {
         } else if (!this.active) {
           this.previousSettings = null;
           this.pendingRecovery = null;
+          this.restoreNotificationPending = false;
           this.restoreBaselineSettings = null;
         }
         this.active = false;
@@ -418,22 +433,28 @@ if ($null -eq $target) {
       if (!this.active && !this.previousSettings) return;
       try {
         const currentSettings = this._readCurrentSettings();
-        const settingsAreOwned = this.restorePending
-          ? this.pendingRecovery && this._settingsCouldBelongToRestoreRetry(
-              currentSettings,
-              this.pendingRecovery,
-              this.restoreBaselineSettings
-            )
-          : this.active
-            ? this._settingsBelongToActiveSession(currentSettings)
-            : this.pendingRecovery
-              && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
+        let settingsAreOwned;
+        if (this.restoreNotificationPending) {
+          settingsAreOwned = this._settingsMatchCompletedRestore(currentSettings);
+        } else if (this.restorePending) {
+          settingsAreOwned = this.pendingRecovery && this._settingsCouldBelongToRestoreRetry(
+            currentSettings,
+            this.pendingRecovery,
+            this.restoreBaselineSettings
+          );
+        } else if (this.active) {
+          settingsAreOwned = this._settingsBelongToActiveSession(currentSettings);
+        } else {
+          settingsAreOwned = this.pendingRecovery
+            && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
+        }
         if (!settingsAreOwned) {
           this._removeRecoveryState();
           this.previousSettings = null;
           this.activeProxyServer = null;
           this.pendingRecovery = null;
           this.restorePending = false;
+          this.restoreNotificationPending = false;
           this.restoreBaselineSettings = null;
           this.active = false;
           console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
