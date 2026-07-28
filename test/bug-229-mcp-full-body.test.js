@@ -620,6 +620,74 @@ test('direct MCP stdio terminates after an unanswerable request ID', async t => 
   assert.equal(closeCalls, 1);
 });
 
+test('MCP stdio rejects a duplicate start without losing the active transport', async t => {
+  const bridge = createBridge([]);
+  const activeInput = new PassThrough();
+  const activeOutput = new PassThrough();
+  const duplicateInput = new PassThrough();
+  const duplicateOutput = new PassThrough();
+  const onFatalError = () => {};
+  await bridge.startStdio({
+    stdin: activeInput,
+    stdout: activeOutput,
+    onFatalError
+  });
+  t.after(async () => {
+    activeInput.destroy();
+    activeOutput.destroy();
+    duplicateInput.destroy();
+    duplicateOutput.destroy();
+    await bridge.stop();
+  });
+  const activeTransport = bridge.stdioTransport;
+
+  await assert.rejects(
+    bridge.startStdio({ stdin: duplicateInput, stdout: duplicateOutput }),
+    /already active/
+  );
+
+  assert.equal(bridge.stdioTransport, activeTransport);
+  assert.equal(bridge.stdioOutput, activeOutput);
+  assert.equal(bridge.onStdioFatalError, onFatalError);
+  assert.equal(activeInput.listenerCount('data'), 1);
+  assert.equal(duplicateInput.listenerCount('data'), 0);
+  assert.equal(bridge.getStatus().stdioActive, true);
+});
+
+test('MCP stdio cleans a partially started transport and permits retry', async t => {
+  const bridge = createBridge([]);
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const streamOn = stdin.on;
+  let rejectErrorListener = true;
+  stdin.on = function (event, listener) {
+    if (event === 'error' && rejectErrorListener) {
+      rejectErrorListener = false;
+      throw new Error('simulated stdio startup failure');
+    }
+    return streamOn.call(this, event, listener);
+  };
+  t.after(async () => {
+    stdin.destroy();
+    stdout.destroy();
+    await bridge.stop();
+  });
+
+  await assert.rejects(
+    bridge.startStdio({ stdin, stdout }),
+    /simulated stdio startup failure/
+  );
+  assert.equal(stdin.listenerCount('data'), 0);
+  assert.equal(stdin.listenerCount('error'), 0);
+  assert.equal(bridge.getStatus().stdioActive, false);
+  assert.equal(bridge.server.transport, undefined);
+
+  await bridge.startStdio({ stdin, stdout });
+  assert.equal(stdin.listenerCount('data'), 1);
+  assert.equal(stdin.listenerCount('error'), 1);
+  assert.equal(bridge.getStatus().stdioActive, true);
+});
+
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
   const bridge = createBridge([{
     id: 'validation-request',

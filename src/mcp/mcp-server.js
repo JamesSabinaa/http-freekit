@@ -1032,6 +1032,9 @@ export class McpServerBridge {
     onFatalError = null
   } = {}) {
     if (!this.server) return;
+    if (this.stdioTransport) {
+      throw new Error('MCP stdio transport is already active');
+    }
     const transport = new StdioServerTransport(stdin, stdout);
     this.stdioTransport = transport;
     this.stdioOutput = stdout;
@@ -1045,9 +1048,10 @@ export class McpServerBridge {
     try {
       await this.server.connect(transport);
     } catch (error) {
+      try { await transport.close(); } catch {}
       if (this.stdioTransport === transport) this.stdioTransport = null;
       if (this.stdioOutput === stdout) this.stdioOutput = null;
-      this.onStdioFatalError = null;
+      if (this.onStdioFatalError === onFatalError) this.onStdioFatalError = null;
       throw error;
     }
     console.error('[MCP] stdio transport connected');
