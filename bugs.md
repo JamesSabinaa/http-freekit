@@ -907,7 +907,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 - Status: **Fixed**.
 
-- Resolution: Newly generated root and per-host certificates now begin their validity five minutes before generation, using the same clock-skew tolerance as persisted-CA validation while keeping their expiry based on the actual generation time.
+- Resolution: Newly generated root and per-host certificates now begin their validity five minutes before generation, using the same clock-skew tolerance as persisted-CA validation. Both expire exactly 365 days after the actual generation instant using epoch arithmetic, so DST and leap-day boundaries cannot shorten or extend their lifetime.
 
 - Evidence: CA and leaf `notBefore` values are set to the exact generation time at `src/proxy/certificate-authority.js:55-57,100-102`.
 - Impact: devices, VMs, containers, or remote clients whose clocks trail the proxy by a small amount reject newly generated interception certificates as not yet valid.

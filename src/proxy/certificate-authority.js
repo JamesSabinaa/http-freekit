@@ -9,6 +9,7 @@ const { pki, md, asn1 } = forge;
 const CA_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 const CA_AUTO_RENEWAL_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CA_RENEWAL_NOTICE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const CERTIFICATE_VALIDITY_MS = 365 * 24 * 60 * 60 * 1000;
 const CA_REPLACEMENT_STATE_VERSION = 2;
 
 export class CertificateAuthority {
@@ -452,8 +453,7 @@ export class CertificateAuthority {
 
     const generatedAt = Date.now();
     cert.validity.notBefore = new Date(generatedAt - CA_CLOCK_SKEW_TOLERANCE_MS);
-    cert.validity.notAfter = new Date(generatedAt);
-    cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 1);
+    cert.validity.notAfter = new Date(generatedAt + CERTIFICATE_VALIDITY_MS);
 
     const attrs = [
       { name: 'commonName', value: 'HTTP FreeKit CA' },
@@ -513,8 +513,7 @@ export class CertificateAuthority {
 
     const generatedAt = Date.now();
     cert.validity.notBefore = new Date(generatedAt - CA_CLOCK_SKEW_TOLERANCE_MS);
-    cert.validity.notAfter = new Date(generatedAt);
-    cert.validity.notAfter.setDate(cert.validity.notAfter.getDate() + 365);
+    cert.validity.notAfter = new Date(generatedAt + CERTIFICATE_VALIDITY_MS);
 
     cert.setSubject([
       { name: 'commonName', value: hostname },
