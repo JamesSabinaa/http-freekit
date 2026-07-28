@@ -33,7 +33,8 @@ test('raw request exports quote every untrusted request component', () => {
   const curl = generateExportSnippet(request, 'curl');
   assert.match(curl, new RegExp(`^curl -X ${escapeRegex(shellLiteral(method))} ${escapeRegex(shellLiteral(url))}`));
   assert.ok(curl.includes(shellLiteral(`x-test: ${headerValue}`)));
-  assert.ok(curl.includes(shellLiteral(body)));
+  assert.ok(curl.includes(`--data-raw ${shellLiteral(body)}`));
+  assert.doesNotMatch(curl, /(?:^|\s)-d(?:\s|$)/);
 
   const wget = generateExportSnippet(request, 'wget');
   assert.ok(wget.includes(`--method=${shellLiteral(method)}`));
@@ -85,6 +86,39 @@ test('multipart PowerShell and PHP exports use their native safe literals', () =
   assert.ok(php.includes(phpLiteral(request.url)));
   assert.ok(php.includes(phpLiteral(request.formFields[0].key)));
   assert.ok(php.includes(phpLiteral(request.formFields[0].value)));
+});
+
+test('cURL exports keep leading-at bodies and multipart text fields literal', () => {
+  const rawBody = '@/private/secret.txt';
+  const raw = generateExportSnippet({
+    method: 'POST',
+    url: 'https://example.test/raw',
+    requestHeaders: {},
+    requestBody: rawBody
+  }, 'curl');
+
+  assert.ok(raw.includes(`--data-raw ${shellLiteral(rawBody)}`));
+  assert.doesNotMatch(raw, /(?:^|\s)-(?:d|data)(?:\s|$)/);
+
+  const multipart = generateExportSnippet({
+    method: 'POST',
+    url: 'https://example.test/form',
+    bodyType: 'multipart',
+    requestHeaders: {},
+    formFields: [
+      { key: 'literal', value: '@/private/secret.txt' },
+      {
+        key: 'upload',
+        type: 'file',
+        fileName: 'payload.bin',
+        fileType: 'application/octet-stream'
+      }
+    ]
+  }, 'curl');
+
+  assert.ok(multipart.includes(`--form-string ${shellLiteral('literal=@/private/secret.txt')}`));
+  assert.ok(multipart.includes(`-F ${shellLiteral('upload=@payload.bin;type=application/octet-stream')}`));
+  assert.doesNotMatch(multipart, /-F 'literal=/);
 });
 
 function escapeRegex(value) {

@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 28 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 34 of the 361 documented bugs are not fully fixed.**
+**No: 33 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 327 |
-| Partially fixed | 11 |
+| Fixed | 328 |
+| Partially fixed | 10 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2256,8 +2256,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-134 — High — Generated request snippets permit shell and code injection
 
-- Status: **Partially fixed**.
-- Resolution: Language and shell literals are now escaped. cURL raw-body snippets still use `-d`, so a body beginning with `@` reads a local file, and multipart text fields still use `-F`, where `name=@path` has the same file-upload semantics; literal values require `--data-raw` and `--form-string`.
+- Status: **Fixed**.
+- Resolution: Language and shell literals are escaped. cURL raw text bodies use `--data-raw`, multipart text fields use `--form-string`, and only actual file fields use `-F`, preventing captured values beginning with `@` from being reinterpreted as local file paths.
 
 - Evidence: `generateExportSnippet()` interpolates captured URLs and headers directly into single-quoted cURL at `src/ui/app.js:1962-1968` despite the safe `shellSingleQuote()` helper at `:1778-1780`. Python, JavaScript, PowerShell, wget, PHP, and Go output similarly interpolates values without language-specific escaping at `:1971-2055`; the context menu copies these snippets at `:8498-8503`.
 - Impact: running a snippet copied from an untrusted captured request can execute attacker-controlled shell commands or source code.

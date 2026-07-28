@@ -2388,10 +2388,13 @@
         let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
         headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
         fields.forEach((field) => {
-          const value = field.type === 'file'
-            ? `@${field.file?.name || field.fileName || 'file'}${field.fileType ? `;type=${field.fileType}` : ''}`
-            : (field.value || '');
-          cmd += ` \\\n  -F '${shellSingleQuote(field.key)}=${shellSingleQuote(value)}'`;
+          if (field.type === 'file') {
+            const contentType = field.file?.type || field.fileType;
+            const value = `@${field.file?.name || field.fileName || 'file'}${contentType ? `;type=${contentType}` : ''}`;
+            cmd += ` \\\n  -F '${shellSingleQuote(field.key)}=${shellSingleQuote(value)}'`;
+          } else {
+            cmd += ` \\\n  --form-string '${shellSingleQuote(field.key)}=${shellSingleQuote(field.value || '')}'`;
+          }
         });
         return cmd;
       }
@@ -2580,7 +2583,7 @@
           if (hasBody && isBinaryBody) {
             cmd = `printf '%s' '${shellSingleQuote(body)}' | base64 --decode | ${cmd} \\\n  --data-binary @-`;
           } else if (hasBody) {
-            cmd += ` \\\n  -d '${shellSingleQuote(body)}'`;
+            cmd += ` \\\n  --data-raw '${shellSingleQuote(body)}'`;
           }
           return cmd;
         }
