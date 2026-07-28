@@ -116,3 +116,30 @@ test('a lifecycle timeout leaves a duplicate-ID sibling paused', t => {
   assert.equal(proxy.resumeBreakpoint('duplicate', {}, 'life-2'), false);
   assert.equal(proxy.resumeBreakpoint('duplicate', {}, 'life-1'), true);
 });
+
+test('pending breakpoint listing preserves global arrival order across duplicate IDs', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+
+  proxy._storePendingBreakpoint('duplicate', pending('life-a1', resolved));
+  proxy._storePendingBreakpoint('other', pending('life-b1', resolved));
+  proxy._storePendingBreakpoint('duplicate', pending('life-a2', resolved));
+
+  assert.deepEqual(
+    proxy.getPendingBreakpoints().map(bp => [bp.id, bp.trafficLifecycleId]),
+    [
+      ['duplicate', 'life-a1'],
+      ['other', 'life-b1'],
+      ['duplicate', 'life-a2']
+    ]
+  );
+
+  assert.equal(proxy.resumeBreakpoint('duplicate', {}, 'life-a1'), true);
+  assert.deepEqual(
+    proxy.getPendingBreakpoints().map(bp => [bp.id, bp.trafficLifecycleId]),
+    [
+      ['other', 'life-b1'],
+      ['duplicate', 'life-a2']
+    ]
+  );
+});

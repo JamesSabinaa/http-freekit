@@ -209,6 +209,8 @@ export class ProxyServer {
     this._pendingWsCaptureFinalizations = new Set();
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
     this.pendingBreakpoints = new Map(); // requestId -> pending breakpoint or FIFO array for reused IDs
+    this._pendingBreakpointOrder = new WeakMap();
+    this._pendingBreakpointSequence = 0;
     this.mockRules = [];
     // Upstream proxy: { host, port, auth? } or null
     this.upstreamProxy = null;
@@ -9237,24 +9239,30 @@ export class ProxyServer {
 
   getPendingBreakpoints() {
     const pending = [];
+    let fallbackOrder = this._pendingBreakpointSequence;
     for (const [id, stored] of this.pendingBreakpoints) {
       const breakpoints = Array.isArray(stored) ? stored : [stored];
       for (const bp of breakpoints) {
         pending.push({
-          id,
-          trafficLifecycleId: bp.trafficLifecycleId,
-          method: bp.method,
-          url: bp.url,
-          host: bp.host,
-          phase: bp.phase || 'request',
-          timestamp: bp.timestamp
+          order: this._pendingBreakpointOrder.get(bp) ?? fallbackOrder++,
+          value: {
+            id,
+            trafficLifecycleId: bp.trafficLifecycleId,
+            method: bp.method,
+            url: bp.url,
+            host: bp.host,
+            phase: bp.phase || 'request',
+            timestamp: bp.timestamp
+          }
         });
       }
     }
-    return pending;
+    pending.sort((left, right) => left.order - right.order);
+    return pending.map(entry => entry.value);
   }
 
   _storePendingBreakpoint(requestId, breakpoint) {
+    this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) {
       this.pendingBreakpoints.set(requestId, breakpoint);
