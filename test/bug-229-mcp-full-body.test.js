@@ -688,6 +688,47 @@ test('MCP stdio cleans a partially started transport and permits retry', async t
   assert.equal(bridge.getStatus().stdioActive, true);
 });
 
+test('MCP stdio detaches a failed start when transport close also throws', async t => {
+  const bridge = createBridge([]);
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const streamOn = stdin.on;
+  const streamOff = stdin.off;
+  let rejectErrorListener = true;
+  stdin.on = function (event, listener) {
+    if (event === 'error' && rejectErrorListener) {
+      rejectErrorListener = false;
+      throw new Error('primary stdio startup failure');
+    }
+    return streamOn.call(this, event, listener);
+  };
+  stdin.off = function (event, listener) {
+    if (event === 'data') throw new Error('secondary stdio cleanup failure');
+    return streamOff.call(this, event, listener);
+  };
+  t.after(async () => {
+    stdin.off = streamOff;
+    stdin.destroy();
+    stdout.destroy();
+    await bridge.stop();
+  });
+
+  await assert.rejects(
+    bridge.startStdio({ stdin, stdout }),
+    /primary stdio startup failure/
+  );
+  assert.equal(stdin.listenerCount('data'), 0);
+  assert.equal(stdin.listenerCount('error'), 0);
+  assert.equal(bridge.server.transport, undefined);
+  assert.equal(bridge.getStatus().stdioActive, false);
+
+  stdin.off = streamOff;
+  await bridge.startStdio({ stdin, stdout });
+  assert.equal(stdin.listenerCount('data'), 1);
+  assert.equal(stdin.listenerCount('error'), 1);
+  assert.equal(bridge.getStatus().stdioActive, true);
+});
+
 test('MCP stdio cannot start a transport during shutdown', async t => {
   const bridge = createBridge([]);
   const activeInput = new PassThrough();

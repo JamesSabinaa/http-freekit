@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -1056,13 +1058,34 @@ export class McpServerBridge {
         throw new Error('MCP stdio startup was interrupted by shutdown');
       }
     } catch (error) {
-      try { await transport.close(); } catch {}
+      await this._cleanupFailedStdioStart(server, transport, stdin);
       if (this.stdioTransport === transport) this.stdioTransport = null;
       if (this.stdioOutput === stdout) this.stdioOutput = null;
       if (this.onStdioFatalError === onFatalError) this.onStdioFatalError = null;
       throw error;
     }
     console.error('[MCP] stdio transport connected');
+  }
+
+  async _cleanupFailedStdioStart(server, transport, stdin) {
+    try { await server.close(); } catch {}
+    if (server.transport) {
+      try { await transport.close(); } catch {}
+    }
+    if (!server.transport) return;
+
+    for (const [event, listenerKey] of [
+      ['data', '_ondata'],
+      ['error', '_onerror']
+    ]) {
+      const listener = ownDataValue(transport, listenerKey);
+      if (typeof listener !== 'function') continue;
+      try { EventEmitter.prototype.removeListener.call(stdin, event, listener); } catch {}
+    }
+    try {
+      if (stdin.listenerCount?.('data') === 0) stdin.pause?.();
+    } catch {}
+    try { server.transport.onclose?.(); } catch {}
   }
 
   async _performStop() {
