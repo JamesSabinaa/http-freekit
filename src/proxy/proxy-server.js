@@ -602,7 +602,9 @@ export class ProxyServer {
   _setContentLength(headers, length) {
     for (const key of Object.keys(headers)) {
       const lower = key.toLowerCase();
-      if (lower === 'content-length' || lower === 'transfer-encoding') delete headers[key];
+      if (lower === 'content-length' || lower === 'transfer-encoding' || lower === 'trailer') {
+        delete headers[key];
+      }
     }
     headers['content-length'] = String(length);
   }
@@ -790,7 +792,11 @@ export class ProxyServer {
   _endH1Request(request, body, trailers) {
     if (body?.length) request.write(body);
     const cleanTrailers = this._cleanTrailers(trailers);
-    if (Object.keys(cleanTrailers).length > 0) request.addTrailers(cleanTrailers);
+    const hasContentLength = Object.keys(request.getHeaders?.() || {})
+      .some(name => name.toLowerCase() === 'content-length');
+    if (!hasContentLength && Object.keys(cleanTrailers).length > 0) {
+      request.addTrailers(cleanTrailers);
+    }
     request.end();
   }
 
@@ -1359,7 +1365,8 @@ export class ProxyServer {
         ? numericStatus
         : response.statusCode,
       headers,
-      body: bodyResult.body
+      body: bodyResult.body,
+      trailers: bodyResult.changed ? {} : response.trailers
     };
   }
 
@@ -3051,6 +3058,7 @@ export class ProxyServer {
         // Forward to real server — preserve raw header case to avoid bot detection
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        const requestTrailers = breakpointBodyModified ? {} : req.trailers;
         this._setTargetHostHeader(req.headers, upstreamUrl.host);
         const proxyHeaders = this._stripUpstreamHeaders({
           ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
@@ -3108,7 +3116,7 @@ export class ProxyServer {
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, requestTrailers,
                 downstream.signal,
                 info => {
                   if (!downstream.aborted) this._forwardH1Informational(res, info);
@@ -3279,7 +3287,7 @@ export class ProxyServer {
             }
             handleError(err, attemptReq);
           });
-          this._endH1Request(attemptReq, body, req.trailers);
+          this._endH1Request(attemptReq, body, requestTrailers);
         };
 
         sendProxyRequest();
@@ -3574,6 +3582,7 @@ export class ProxyServer {
         }
 
         // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
+        if (breakpointBodyModified) requestTrailers = {};
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
         if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
         this._setTargetHostHeader(upstreamHeaders, authority);
@@ -3987,6 +3996,7 @@ export class ProxyServer {
         // Forward to real server — try HTTP/2 upstream first for secure targets.
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        const requestTrailers = breakpointBodyModified ? {} : req.trailers;
         this._setTargetHostHeader(req.headers, upstreamUrl.host);
         let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
@@ -4036,7 +4046,7 @@ export class ProxyServer {
             if (h2Session) {
               upstreamProtocol = 'h2';
               const h2Res = await this._makeH2Request(
-                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, req.trailers,
+                h2Session, req.method, hostname, targetPort, req.url, req.headers, body, requestTrailers,
                 downstream.signal,
                 info => {
                   if (!downstream.aborted) this._forwardH1Informational(res, info);
@@ -4212,7 +4222,7 @@ export class ProxyServer {
             }
             handleError(err, attemptReq);
           });
-          this._endH1Request(attemptReq, body, req.trailers);
+          this._endH1Request(attemptReq, body, requestTrailers);
         };
 
         sendProxyRequest();
@@ -7097,7 +7107,7 @@ export class ProxyServer {
       statusMessage,
       headers: finalHeaders,
       body: finalBody,
-      trailers
+      trailers: bodyModified ? {} : trailers
     };
   }
 

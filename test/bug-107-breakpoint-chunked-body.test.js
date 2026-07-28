@@ -31,7 +31,8 @@ function captureRequest(request) {
     request.on('data', chunk => chunks.push(chunk));
     request.on('end', () => resolve({
       headers: request.headers,
-      body: Buffer.concat(chunks).toString('utf8')
+      body: Buffer.concat(chunks).toString('utf8'),
+      trailers: request.trailers
     }));
   });
 }
@@ -45,18 +46,23 @@ function sendChunkedThroughProxy(proxyPort, targetUrl) {
       method: 'POST',
       headers: {
         connection: 'close',
-        'transfer-encoding': 'chunked'
+        'Transfer-Encoding': 'chunked',
+        Trailer: 'X-Checksum'
       }
     }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => resolve({
         statusCode: response.statusCode,
-        body: Buffer.concat(chunks).toString('utf8')
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+        trailers: response.trailers
       }));
     });
     request.once('error', reject);
-    request.end('original');
+    request.write('original');
+    request.addTrailers({ 'X-Checksum': 'original checksum' });
+    request.end();
   });
 }
 
@@ -90,8 +96,9 @@ async function sendTlsChunked(proxyPort, hostname, targetPort) {
     'POST /original HTTP/1.1\r\n' +
     `Host: ${hostname}:${targetPort}\r\n` +
     'Connection: close\r\n' +
-    'Transfer-Encoding: chunked\r\n\r\n' +
-    '8\r\noriginal\r\n0\r\n\r\n'
+    'TrAnSfEr-EnCoDiNg: chunked\r\n' +
+    'Trailer: X-Checksum\r\n\r\n' +
+    '8\r\noriginal\r\n0\r\nX-Checksum: original checksum\r\n\r\n'
   );
   const chunks = [];
   socket.on('data', chunk => chunks.push(chunk));
@@ -108,8 +115,10 @@ function configureBodyBreakpoint(proxy) {
 
 function assertEditedRequest(observed) {
   assert.equal(observed.headers['transfer-encoding'], undefined);
+  assert.equal(observed.headers.trailer, undefined);
   assert.equal(observed.headers['content-length'], String(Buffer.byteLength(EDITED_BODY)));
   assert.equal(observed.body, EDITED_BODY);
+  assert.deepEqual(observed.trailers, {});
 }
 
 test('plain H1 breakpoint body edits replace chunked framing with Content-Length', async t => {
@@ -135,6 +144,46 @@ test('plain H1 breakpoint body edits replace chunked framing with Content-Length
   assert.equal(response.statusCode, 200);
   assert.equal(response.body, 'ok');
   assertEditedRequest(observed);
+});
+
+test('response body edits discard stale chunked response trailers', async t => {
+  const origin = http.createServer((_request, response) => {
+    response.writeHead(200, {
+      'content-type': 'text/plain',
+      'transfer-encoding': 'chunked',
+      trailer: 'X-Checksum'
+    });
+    response.write('original');
+    response.addTrailers({ 'X-Checksum': 'original checksum' });
+    response.end();
+  });
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  proxy.mockRules = [{
+    enabled: true,
+    matchers: [],
+    action: { type: 'breakpoint-response' }
+  }];
+  proxy.onBreakpoint = event => setImmediate(() => proxy.resumeBreakpoint(event.requestId, {
+    body: EDITED_BODY
+  }));
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin);
+  });
+
+  const response = await sendChunkedThroughProxy(
+    proxy.server.address().port,
+    `http://127.0.0.1:${originPort}/original`
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['transfer-encoding'], undefined);
+  assert.equal(response.headers.trailer, undefined);
+  assert.equal(response.headers['content-length'], String(Buffer.byteLength(EDITED_BODY)));
+  assert.equal(response.body, EDITED_BODY);
+  assert.deepEqual(response.trailers, {});
 });
 
 test('intercepted H1 body edits replace chunked framing in both TLS modes',

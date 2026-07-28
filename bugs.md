@@ -305,7 +305,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-107 — Medium — Editing a chunked breakpoint body sends illegal framing
 
 - Status: **Fixed**.
-- Resolution: The shared Content-Length setter now removes both existing Content-Length and Transfer-Encoding fields case-insensitively before applying the edited body's exact length. Regression tests send real chunked POST bodies through plain H1, intercepted H1, and H1-on-H2 breakpoints and verify that origins receive only Content-Length with the edited body.
+- Resolution: The shared Content-Length setter now removes existing Content-Length, Transfer-Encoding, and Trailer fields case-insensitively before applying the edited body's exact length. Request and response body edits also discard trailers associated with the old body, while unedited chunked trailers remain preserved. Regression tests send real mixed-case chunked POST bodies with declared trailers through plain H1, intercepted H1, and H1-on-H2 breakpoints and verify safe Content-Length framing at the origin.
 
 - Evidence: `_setContentLength()` at `src/proxy/proxy-server.js:210-215` removes only old Content-Length and leaves Transfer-Encoding. Body-edit paths then add Content-Length at `:631-634`, `:1321-1324`, `:1444-1447`, `:1745-1748`, `:1990-1993`, `:2411-2414`, `:3629-3632`, and `:3713-3715`.
 - Impact: the origin receives both `Content-Length` and `Transfer-Encoding`, commonly rejects the request, and may trigger request-smuggling defenses.
