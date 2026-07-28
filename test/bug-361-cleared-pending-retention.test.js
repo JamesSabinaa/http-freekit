@@ -318,3 +318,41 @@ test('legacy boolean decisions retain FIFO order beside correlated lifecycles', 
     assert.equal(proxy._pendingTrafficLogDecisions.get('mixed'), correlatedDecision);
   }
 });
+
+test('uncorrelated same-ID traffic cannot consume an active lifecycle decision', () => {
+  const proxy = new ProxyServer(null);
+  const events = [];
+  proxy.onRequest = event => events.push(structuredClone(event));
+  const pendingEvent = {
+    id: 'reused', protocol: 'https', method: 'GET',
+    url: 'https://pending.test/original', host: 'pending.test', path: '/original',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  };
+
+  proxy._emitPendingRequest({ ...pendingEvent });
+  const pendingDecision = proxy._pendingTrafficLogDecisions.get('reused');
+  assert.equal(proxy._emitRequest({
+    id: 'reused', protocol: 'https', method: 'POST',
+    url: 'https://standalone.test/other', host: 'standalone.test', path: '/other',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    statusCode: 204, responseHeaders: {}, responseBody: '', responseBodySize: 0,
+    duration: 1, timestamp: 2_000, source: 'proxy'
+  }), true);
+
+  assert.equal(events.length, 2);
+  assert.equal(events[1].trafficLifecycleId, undefined);
+  assert.equal(proxy._pendingTrafficLogDecisions.get('reused'), pendingDecision);
+
+  proxy._emitRequestUpdate({
+    ...pendingEvent,
+    statusCode: 200,
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 10
+  });
+  assert.equal(events.length, 3);
+  assert.equal(events[2].trafficLifecycleId, pendingDecision.trafficLifecycleId);
+  assert.equal(proxy._pendingTrafficLogDecisions.has('reused'), false);
+});

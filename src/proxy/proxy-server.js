@@ -8758,7 +8758,9 @@ export class ProxyServer {
         exact: true
       };
     }
-    if (decisions.length === 1) return { decision: decisions[0] };
+    if (decisions.length === 1 && (!decisions[0] || typeof decisions[0] !== 'object')) {
+      return { decision: decisions[0] };
+    }
     const legacyBarrierIndex = decisions.findIndex(
       decision => !decision || typeof decision !== 'object'
     );
@@ -8772,7 +8774,7 @@ export class ProxyServer {
       decision => decision && typeof decision === 'object'
     );
     const timestampMatches = data.timestamp === undefined
-      ? objectDecisions
+      ? []
       : objectDecisions.filter(decision => decision.record?.timestamp === data.timestamp);
     const candidates = timestampMatches.length > 0 ? timestampMatches : objectDecisions;
     const identityFields = ['method', 'url', 'host', 'path'];
@@ -8802,7 +8804,9 @@ export class ProxyServer {
         decision.record?.[field] === originalIdentity[field]
       ));
     }
-    return { decision: identityMatch || decisions[0] };
+    const correlatedDecision = identityMatch ||
+      (timestampMatches.length === 1 ? timestampMatches[0] : undefined);
+    return correlatedDecision ? { decision: correlatedDecision } : null;
   }
 
   _storePendingTrafficLogDecision(id, decision) {
