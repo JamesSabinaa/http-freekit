@@ -319,6 +319,16 @@ test('request and response breakpoints remain one lifecycle across all intercept
           assert.equal(originHeaders.authorization, undefined, `${protocol.name} removes authorization`);
           assert.equal(originHeaders['x-remove-me'], undefined, `${protocol.name} removes edited header`);
           assert.equal(originHeaders['x-kept'], 'yes', `${protocol.name} keeps replacement header`);
+        } else {
+          const responsePauses = capture.events.filter(
+            event => event.statusMessage === 'Breakpoint (response)'
+          );
+          assert.ok(responsePauses.length > 0, `${protocol.name} emits a response pause`);
+          assert.equal(
+            responsePauses.every(event => event.breakpointPhase === 'response'),
+            true,
+            `${protocol.name} marks every response pause for response editing`
+          );
         }
         assertSingleLifecycle(capture, expectedStatus, `${protocol.name} ${phase}`, 2);
       }
@@ -370,6 +380,15 @@ test('request and response breakpoints remain one lifecycle across all intercept
         `${protocol.name} response breakpoint captures synchronized Host`);
       assert.equal(capture.events.at(-1)?.requestHeaders?.host, authority,
         `${protocol.name} final capture keeps synchronized Host`);
+      const responsePauses = capture.events.filter(
+        event => event.statusMessage === 'Breakpoint (response)'
+      );
+      assert.ok(responsePauses.length > 0, `${protocol.name} combined emits a response pause`);
+      assert.equal(
+        responsePauses.every(event => event.breakpointPhase === 'response'),
+        true,
+        `${protocol.name} combined marks every response pause for response editing`
+      );
       assertSingleLifecycle(capture, 202, `${protocol.name} combined`, 3);
     }
   });
