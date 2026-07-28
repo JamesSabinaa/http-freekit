@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
 
@@ -158,4 +159,30 @@ test('a webhook that never sends headers cannot block the matched response', asy
   assert.equal(response.statusCode, 200);
   assert.equal(response.body, '');
   assert.deepEqual(events, []);
+});
+
+test('proxy shutdown cancels and settles an unfinished webhook delivery', async t => {
+  const webhook = http.createServer(request => request.resume());
+  await listen(webhook);
+  t.after(() => close(webhook));
+
+  const requestReceived = once(webhook, 'request');
+  const events = [];
+  const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+  const response = await serveWebhook(
+    proxy,
+    `http://127.0.0.1:${webhook.address().port}/hang`
+  );
+  await requestReceived;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(proxy._activeWebhookRequests.size, 1);
+  await proxy.stop();
+
+  assert.equal(proxy._activeWebhookRequests.size, 0);
+  assert.equal(proxy._pendingWebhookFinalizations.size, 0);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].statusCode, 502);
+  assert.equal(events[0].statusMessage, 'Webhook delivery failed');
+  assert.match(events[0].error, /Proxy stopped before webhook delivery completed/);
 });

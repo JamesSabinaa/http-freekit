@@ -244,6 +244,9 @@ export class ProxyServer {
     this.requestCount = 0;
     this.activeConnections = new Set();
     this._pendingWsCaptureFinalizations = new Set();
+    this._activeWebhookRequests = new Set();
+    this._pendingWebhookFinalizations = new Set();
+    this._stopping = false;
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
     this._pendingBreakpointOrder = new WeakMap();
     this._pendingBreakpointSequence = 0;
@@ -3010,6 +3013,7 @@ export class ProxyServer {
   }
 
   start() {
+    this._stopping = false;
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
         this._handleHttpRequest(req, res);
@@ -3054,8 +3058,12 @@ export class ProxyServer {
   }
 
   async stop() {
+    this._stopping = true;
     this._closeAllH2Sessions();
     this._destroyUpstreamAgent();
+    for (const request of this._activeWebhookRequests) {
+      request.destroy(new Error('Proxy stopped before webhook delivery completed'));
+    }
     if (this.server) {
       for (const socket of this.activeConnections) {
         socket.destroy();
@@ -3064,6 +3072,14 @@ export class ProxyServer {
     }
     while (this._pendingWsCaptureFinalizations.size > 0) {
       await Promise.all([...this._pendingWsCaptureFinalizations]);
+    }
+    while (this._activeWebhookRequests.size > 0) {
+      await Promise.all([...this._activeWebhookRequests].map(request => (
+        new Promise(resolve => request.once('close', resolve))
+      )));
+    }
+    while (this._pendingWebhookFinalizations.size > 0) {
+      await Promise.all([...this._pendingWebhookFinalizations]);
     }
     this._pendingTrafficLogDecisions.clear();
     if (this.server) console.log('[Proxy] Server stopped');
@@ -8435,6 +8451,9 @@ export class ProxyServer {
       clientRes.end('');
 
       const webhookDelivery = (async () => {
+        if (this._stopping) {
+          throw new Error('Proxy stopped before webhook delivery started');
+        }
         const webhookTarget = new URL(action.webhookUrl);
         if (webhookTarget.protocol !== 'http:' && webhookTarget.protocol !== 'https:') {
           throw new Error(`Unsupported webhook protocol: ${webhookTarget.protocol}`);
@@ -8465,9 +8484,16 @@ export class ProxyServer {
             }
             reject(new Error(`Webhook endpoint responded with HTTP ${webhookStatus}`));
           });
-          this._configureUpstreamRequest(webhookReq);
+          this._activeWebhookRequests.add(webhookReq);
+          webhookReq.once('close', () => this._activeWebhookRequests.delete(webhookReq));
           webhookReq.once('error', reject);
-          webhookReq.end(body);
+          try {
+            this._configureUpstreamRequest(webhookReq);
+            webhookReq.end(body);
+          } catch (error) {
+            webhookReq.destroy();
+            reject(error);
+          }
         });
       })();
       const recordDelivery = (webhookError = null) => {
@@ -8486,7 +8512,7 @@ export class ProxyServer {
           originalRequest, transformedBy
         });
       };
-      void webhookDelivery.then(
+      const webhookFinalization = webhookDelivery.then(
         () => recordDelivery(),
         error => {
           console.error('[Proxy] Webhook error:', error.message);
@@ -8494,6 +8520,10 @@ export class ProxyServer {
         }
       ).catch(error => {
         console.error('[Proxy] Webhook result handler failed:', error.message);
+      });
+      this._pendingWebhookFinalizations.add(webhookFinalization);
+      void webhookFinalization.then(() => {
+        this._pendingWebhookFinalizations.delete(webhookFinalization);
       });
       return;
     }
