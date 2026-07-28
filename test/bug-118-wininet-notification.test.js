@@ -347,3 +347,59 @@ test('an invalid durable restore phase blocks activation without replacing its j
   );
   assert.deepEqual(JSON.parse(fs.readFileSync(recoveryFile, 'utf8')), recovery);
 });
+
+test('stale partial activation recovery retains its observed baseline after a transient restore failure', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-wininet-partial-retry-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const recoveryFile = path.join(dataDir, 'system-proxy-recovery.json');
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const recovery = {
+    owner: {
+      pid: 9876,
+      startedAt: '2026-01-02T03:04:05.000Z',
+      executablePath: 'c:\\program files\\http freekit\\freekit.exe'
+    },
+    proxyServer: '127.0.0.1:8080',
+    ownedSettings: {
+      enabled: true,
+      server: '127.0.0.1:8080',
+      override: ''
+    },
+    previousSettings
+  };
+  fs.writeFileSync(recoveryFile, JSON.stringify(recovery));
+  const settings = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: '<local>'
+  };
+  const interceptor = new SystemProxyInterceptor({ dataDir });
+  interceptor._isWindows = () => true;
+  interceptor._recoveryOwnerIsActive = () => false;
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  let serverFailures = 1;
+  interceptor._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyServer' && serverFailures-- > 0) {
+      throw new Error('transient ProxyServer write failure');
+    }
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') settings.server = value;
+    if (name === 'ProxyOverride') settings.override = value;
+  };
+  interceptor._notifyWinInet = () => {};
+
+  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.deepEqual(interceptor.restoreBaselineSettings, settings);
+  assert.equal(fs.existsSync(recoveryFile), true);
+
+  await interceptor.deactivate();
+
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.restoreBaselineSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+  assert.equal(fs.existsSync(recoveryFile), false);
+});

@@ -338,6 +338,7 @@ if ($null -eq $target) {
       this.recoveryBlockedReason = null;
       this.previousSettings = recovery.previousSettings;
       this.pendingRecovery = recovery;
+      this.restoreBaselineSettings = notificationPending ? null : { ...currentSettings };
       this.restorePending = true;
       this.restoreNotificationPending = notificationPending;
       this._restorePreviousSettings();
