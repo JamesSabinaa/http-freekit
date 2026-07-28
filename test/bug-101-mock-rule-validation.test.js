@@ -3,6 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 
 import { ApiServer } from '../src/api/api-server.js';
+import { validateMockRule } from '../src/proxy/mock-rule-validation.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 import { restoreSavedRuleSettings } from '../src/startup-rule-restoration.js';
 
@@ -106,6 +107,17 @@ test('runtime matcher evaluation fails closed for malformed rules', () => {
     { enabled: true, matchers: {}, action: { type: 'fixed-response' } },
     { enabled: true, matchers: [{ type: 'method', value: {} }], action: { type: 'fixed-response' } },
     { enabled: true, matchers: [{ type: 'method', value: 'GET' }], action: [] },
+    {
+      enabled: true,
+      matchers: [{ type: 'method', value: 'GET' }],
+      preSteps: [{ type: 'add-header', name: {} }],
+      action: { type: 'fixed-response' }
+    },
+    {
+      enabled: true,
+      matchers: [{ type: 'method', value: 'GET' }],
+      action: { type: 'fixed-response', body: {} }
+    },
     { enabled: true, method: {}, urlPattern: '/', response: {} }
   ];
 
@@ -113,6 +125,31 @@ test('runtime matcher evaluation fails closed for malformed rules', () => {
   assert.equal(proxy._findMockRule('GET', 'https://example.test/', null, ''), undefined);
   assert.equal(proxy._evaluateMatcher(null, 'GET', 'https://example.test/', {}, ''), false);
   assert.equal(proxy._evaluateMatcher({ type: 'host', value: 42 }, 'GET', 'https://example.test/', {}, ''), false);
+});
+
+test('validator rejects malformed execution fields before rules reach runtime handlers', () => {
+  const base = {
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }]
+  };
+  const malformedRules = [
+    { ...base, action: { type: 'unknown-action' } },
+    { ...base, preSteps: [{ type: 'unknown-step' }], action: { type: 'fixed-response' } },
+    { ...base, preSteps: [{ type: 'add-header', name: {} }], action: { type: 'fixed-response' } },
+    { ...base, action: { type: 'fixed-response', status: '200' } },
+    { ...base, action: { type: 'fixed-response', headers: [] } },
+    { ...base, action: { type: 'fixed-response', headers: { 'bad header': 'value' } } },
+    { ...base, action: { type: 'fixed-response', headers: { 'x-test': 'value\r\ninjected' } } },
+    { ...base, action: { type: 'fixed-response', body: {} } },
+    { ...base, action: { type: 'forward', addResponseHeaders: 'invalid' } },
+    { ...base, action: { type: 'transform-request', removeHeaders: [42] } },
+    { ...base, action: { type: 'transform-request', resStatusOverride: '201' } },
+    { enabled: true, urlPattern: '/', response: { body: {} } }
+  ];
+
+  for (const rule of malformedRules) {
+    assert.equal(typeof validateMockRule(rule), 'string');
+  }
 });
 
 test('mock APIs reject malformed group children and invalid updates atomically', async t => {
@@ -133,4 +170,26 @@ test('mock APIs reject malformed group children and invalid updates atomically',
 
   assert.equal(updateResult.statusCode, 400);
   assert.deepEqual(rule, before);
+});
+
+test('mock import rejects non-boolean enabled values without changing existing rules', async t => {
+  const { proxy, port } = await createApi(t);
+  proxy.mockRules = [validRule('existing')];
+  const before = structuredClone(proxy.mockRules);
+
+  const leafResult = await requestJson(port, 'PUT', '/api/mock-rules', {
+    rules: [{
+      enabled: 'false',
+      matchers: [{ type: 'method', value: 'GET' }],
+      action: { type: 'fixed-response' }
+    }]
+  });
+  assert.equal(leafResult.statusCode, 400);
+  assert.deepEqual(proxy.mockRules, before);
+
+  const groupResult = await requestJson(port, 'PUT', '/api/mock-rules', {
+    rules: [{ type: 'group', enabled: 1, items: [validRule('nested')] }]
+  });
+  assert.equal(groupResult.statusCode, 400);
+  assert.deepEqual(proxy.mockRules, before);
 });

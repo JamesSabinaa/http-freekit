@@ -66,6 +66,8 @@ function publicClientCertificates(certificates) {
 
 function normalizeImportedMockRule(rule, allowGroup = true) {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
+  if (Object.prototype.hasOwnProperty.call(rule, 'enabled')
+    && typeof rule.enabled !== 'boolean') return null;
   const normalizedRule = { ...rule };
   delete normalizedRule.id;
 
@@ -75,7 +77,7 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
     if (items.some(item => !item)) return null;
     const group = {
       ...normalizedRule,
-      enabled: rule.enabled !== false,
+      enabled: rule.enabled === undefined ? true : rule.enabled,
       items
     };
     return validateMockRule(group) ? null : group;
@@ -83,7 +85,7 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
 
   const normalized = {
     ...normalizedRule,
-    enabled: rule.enabled !== false,
+    enabled: rule.enabled === undefined ? true : rule.enabled,
     priority: rule.priority || 'normal'
   };
   return validateMockRule(normalized) ? null : normalized;

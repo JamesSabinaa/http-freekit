@@ -138,7 +138,7 @@ test('mock mutations restore runtime and settings trees after a failed save', as
     enabled: true,
     priority: 'normal',
     matchers: [{ type: 'method', value: 'GET' }],
-    action: { type: 'response', status: 200, body: 'before' }
+    action: { type: 'fixed-response', status: 200, body: 'before' }
   }]);
   proxy.loadMockRules(settings.get('mockRules'));
   const previousRules = proxy.mockRules;
