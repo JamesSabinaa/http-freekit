@@ -366,7 +366,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-114 — Low/Medium — SOCKS passwords containing colons are truncated
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Upstream credentials now split only at the first colon in one shared helper used by both agent URLs and raw plain-HTTP SOCKS connections. Passwords retain every subsequent colon, while username-only, empty-username, and empty-password forms preserve their existing meaning.
 
 - Evidence: `_connectViaSocks()` uses `proxy.auth.split(":")` at `src/proxy/proxy-server.js:3136-3139`, so only the segment before the second colon becomes the password.
 - Impact: valid SOCKS credentials such as `user:pa:ss` fail on the plain-HTTP SOCKS path.

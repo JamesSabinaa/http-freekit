@@ -5591,6 +5591,15 @@ export class ProxyServer {
   }
 
   // Build a proxy URL from the upstream proxy config
+  _splitUpstreamProxyAuth(auth = this.upstreamProxy?.auth) {
+    const value = String(auth || '');
+    const colonIndex = value.indexOf(':');
+    return {
+      userId: colonIndex === -1 ? value : value.slice(0, colonIndex),
+      password: colonIndex === -1 ? '' : value.slice(colonIndex + 1)
+    };
+  }
+
   _getUpstreamProxyUrl() {
     const p = this.upstreamProxy;
     const scheme = p.type?.startsWith('socks') ? p.type : (p.type === 'https' ? 'https' : 'http');
@@ -5598,10 +5607,8 @@ export class ProxyServer {
     const urlHost = net.isIP(connectionHost) === 6 ? `[${connectionHost}]` : connectionHost;
     let auth = '';
     if (p.auth) {
-      const colonIdx = p.auth.indexOf(':');
-      const user = colonIdx === -1 ? p.auth : p.auth.slice(0, colonIdx);
-      const pass = colonIdx === -1 ? '' : p.auth.slice(colonIdx + 1);
-      auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
+      const { userId, password } = this._splitUpstreamProxyAuth(p.auth);
+      auth = `${encodeURIComponent(userId)}:${encodeURIComponent(password)}@`;
     }
     return `${scheme}://${auth}${urlHost}:${p.port}`;
   }
@@ -5691,9 +5698,9 @@ export class ProxyServer {
       timeout: this._upstreamConnectTimeoutMs,
     };
     if (proxy.auth) {
-      const [userId, password] = proxy.auth.split(':');
+      const { userId, password } = this._splitUpstreamProxyAuth(proxy.auth);
       socksOptions.proxy.userId = userId;
-      socksOptions.proxy.password = password || '';
+      socksOptions.proxy.password = password;
     }
     const { socket } = await SocksClient.createConnection(socksOptions);
     return socket;
