@@ -298,6 +298,33 @@ test('metadata traversal ignores inherited keys and proxy value traps', () => {
   assert.equal(proxyValueReads, 0);
 });
 
+test('metadata traversal bounds proxy descriptor traps before full enumeration', () => {
+  let descriptorReads = 0;
+  const target = {};
+  for (let index = 0; index < 10_000; index++) target[`key-${index}`] = index;
+  const expensiveMetadata = new Proxy(target, {
+    getOwnPropertyDescriptor(object, property) {
+      descriptorReads++;
+      return Reflect.getOwnPropertyDescriptor(object, property);
+    }
+  });
+  const bridge = createBridge([{
+    id: 'bounded-proxy-enumeration',
+    expensiveMetadata,
+    method: 'GET',
+    requestBody: '',
+    responseBody: '',
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'bounded-proxy-enumeration'
+  }));
+
+  assert.equal(detail.expensiveMetadata._mcpAdditionalEntriesOmitted, true);
+  assert.ok(descriptorReads <= 400, `read ${descriptorReads} proxy descriptors`);
+});
+
 test('opaque proxy metadata is omitted without aborting request detail', () => {
   const requestHeaders = Proxy.revocable({ safe: 'unreachable' }, {});
   const originalRequest = Proxy.revocable({ body: 'unreachable' }, {});

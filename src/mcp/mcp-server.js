@@ -256,11 +256,21 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   const output = arrayOutput ? [] : Object.create(null);
   let omitted = false;
   try {
-    for (const key of Object.keys(value)) {
+    for (const key in value) {
       if (budget.scannedEntries >= MCP_METADATA_MAX_SCANNED_ENTRIES) {
         omitted = true;
         break;
       }
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        budget.scannedEntries++;
+        omitted = true;
+        continue;
+      }
+      // for-in yields all own enumerable keys before walking the prototype chain.
+      if (!descriptor) break;
       budget.scannedEntries++;
       if (excludedKeys?.has(key)) continue;
       if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
@@ -271,14 +281,7 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
         omitted = true;
         continue;
       }
-      let descriptor;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(value, key);
-      } catch {
-        omitted = true;
-        continue;
-      }
-      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
         omitted = true;
         continue;
       }
