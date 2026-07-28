@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { inflateRawSync } from 'zlib';
 import { execFileAsync } from './command-runner.js';
 
 const AGENT_BYTECODE_POLICY = Object.freeze({
@@ -751,14 +752,134 @@ public class ProxyAgent {
 
   _readAgentJarBytes(jarPath) {
     const stat = fs.lstatSync(jarPath);
-    if (!stat.isFile() || stat.size < 4 || stat.size > MAX_JVM_AGENT_JAR_BYTES) {
+    if (!stat.isFile() || stat.size < 22 || stat.size > MAX_JVM_AGENT_JAR_BYTES) {
       throw new Error('cached JVM agent JAR is not a bounded regular file');
     }
     const bytes = fs.readFileSync(jarPath);
-    if (bytes.length !== stat.size || bytes.readUInt32BE(0) !== 0x504b0304) {
-      throw new Error('cached JVM agent JAR is not a valid JAR archive');
+    if (bytes.length !== stat.size) {
+      throw new Error('cached JVM agent JAR changed while it was read');
     }
+    this._validateAgentJarArchive(bytes);
     return bytes;
+  }
+
+  _crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  _readAgentJarEntry(bytes, entry, centralDirectoryOffset) {
+    const offset = entry.localHeaderOffset;
+    if (offset + 30 > centralDirectoryOffset || bytes.readUInt32LE(offset) !== 0x04034b50) {
+      throw new Error(`JVM agent JAR entry ${entry.name} has an invalid local header`);
+    }
+    const flags = bytes.readUInt16LE(offset + 6);
+    const method = bytes.readUInt16LE(offset + 8);
+    const nameLength = bytes.readUInt16LE(offset + 26);
+    const extraLength = bytes.readUInt16LE(offset + 28);
+    const dataOffset = offset + 30 + nameLength + extraLength;
+    const dataEnd = dataOffset + entry.compressedSize;
+    if ((flags & 1) !== 0 || method !== entry.method || dataEnd > centralDirectoryOffset ||
+        bytes.subarray(offset + 30, offset + 30 + nameLength).toString('utf8') !== entry.name) {
+      throw new Error(`JVM agent JAR entry ${entry.name} is inconsistent`);
+    }
+    const compressed = bytes.subarray(dataOffset, dataEnd);
+    let content;
+    if (method === 0) {
+      content = Buffer.from(compressed);
+    } else if (method === 8) {
+      content = inflateRawSync(compressed, {
+        maxOutputLength: Math.min(MAX_JVM_AGENT_JAR_BYTES, entry.uncompressedSize + 1)
+      });
+    } else {
+      throw new Error(`JVM agent JAR entry ${entry.name} uses an unsupported compression method`);
+    }
+    if (content.length !== entry.uncompressedSize || this._crc32(content) !== entry.crc32) {
+      throw new Error(`JVM agent JAR entry ${entry.name} failed its integrity check`);
+    }
+    return content;
+  }
+
+  _validateAgentJarArchive(bytes) {
+    let endOffset = -1;
+    const minimumOffset = Math.max(0, bytes.length - 22 - 0xffff);
+    for (let offset = bytes.length - 22; offset >= minimumOffset; offset--) {
+      if (bytes.readUInt32LE(offset) === 0x06054b50 &&
+          offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length) {
+        endOffset = offset;
+        break;
+      }
+    }
+    if (endOffset < 0 || bytes.readUInt16LE(endOffset + 4) !== 0 ||
+        bytes.readUInt16LE(endOffset + 6) !== 0) {
+      throw new Error('cached JVM agent JAR has no valid single-disk directory');
+    }
+    const entryCount = bytes.readUInt16LE(endOffset + 10);
+    const entriesOnDisk = bytes.readUInt16LE(endOffset + 8);
+    const centralDirectorySize = bytes.readUInt32LE(endOffset + 12);
+    const centralDirectoryOffset = bytes.readUInt32LE(endOffset + 16);
+    if (entryCount === 0 || entryCount === 0xffff || entriesOnDisk !== entryCount ||
+        centralDirectorySize === 0xffffffff || centralDirectoryOffset === 0xffffffff ||
+        centralDirectoryOffset + centralDirectorySize !== endOffset) {
+      throw new Error('cached JVM agent JAR has an invalid central directory');
+    }
+
+    const entries = new Map();
+    let offset = centralDirectoryOffset;
+    for (let index = 0; index < entryCount; index++) {
+      if (offset + 46 > endOffset || bytes.readUInt32LE(offset) !== 0x02014b50) {
+        throw new Error('cached JVM agent JAR has a malformed central directory entry');
+      }
+      const flags = bytes.readUInt16LE(offset + 8);
+      const method = bytes.readUInt16LE(offset + 10);
+      const nameLength = bytes.readUInt16LE(offset + 28);
+      const extraLength = bytes.readUInt16LE(offset + 30);
+      const commentLength = bytes.readUInt16LE(offset + 32);
+      const entryEnd = offset + 46 + nameLength + extraLength + commentLength;
+      if ((flags & 1) !== 0 || entryEnd > endOffset || bytes.readUInt16LE(offset + 34) !== 0) {
+        throw new Error('cached JVM agent JAR contains an unsupported entry');
+      }
+      const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString('utf8');
+      if (!name || name.includes('\0') || entries.has(name)) {
+        throw new Error('cached JVM agent JAR contains an invalid or duplicate entry name');
+      }
+      entries.set(name, {
+        name,
+        flags,
+        method,
+        crc32: bytes.readUInt32LE(offset + 16),
+        compressedSize: bytes.readUInt32LE(offset + 20),
+        uncompressedSize: bytes.readUInt32LE(offset + 24),
+        localHeaderOffset: bytes.readUInt32LE(offset + 42)
+      });
+      offset = entryEnd;
+    }
+    if (offset !== endOffset) {
+      throw new Error('cached JVM agent JAR central directory size is inconsistent');
+    }
+
+    const manifestEntry = entries.get('META-INF/MANIFEST.MF');
+    const classEntry = entries.get('ProxyAgent.class');
+    if (!manifestEntry || !classEntry) {
+      throw new Error('cached JVM agent JAR is missing its manifest or ProxyAgent class');
+    }
+    const manifest = this._readAgentJarEntry(bytes, manifestEntry, centralDirectoryOffset)
+      .toString('utf8');
+    if (!/^Premain-Class:\s*ProxyAgent\s*$/m.test(manifest) ||
+        !/^Agent-Class:\s*ProxyAgent\s*$/m.test(manifest)) {
+      throw new Error('cached JVM agent JAR manifest does not name ProxyAgent');
+    }
+    const agentClass = this._readAgentJarEntry(bytes, classEntry, centralDirectoryOffset);
+    if (agentClass.length < 8 || agentClass.readUInt32BE(0) !== 0xcafebabe ||
+        agentClass.readUInt16BE(6) !== AGENT_BYTECODE_POLICY.classMajorVersion) {
+      throw new Error('cached JVM agent JAR contains incompatible ProxyAgent bytecode');
+    }
   }
 
   _getAgentJarCacheStamp(jarPath, sourceHash) {
@@ -784,11 +905,28 @@ public class ProxyAgent {
     return actualStamp.jarHash === stamp.jarHash;
   }
 
+  _assertAgentCacheTargetIsReplaceable(targetPath) {
+    try {
+      if (fs.lstatSync(targetPath).isDirectory()) {
+        throw new Error(`JVM agent cache target is a directory: ${targetPath}`);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  _publishAgentCacheFile(sourcePath, targetPath) {
+    try {
+      fs.unlinkSync(targetPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    fs.renameSync(sourcePath, targetPath);
+  }
+
   async _getAgentJarPath() {
     const agentDir = this.agentDir;
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
-    const javaPath = path.join(agentDir, 'ProxyAgent.java');
-    const manifestPath = path.join(agentDir, 'MANIFEST.MF');
     const stampPath = path.join(agentDir, 'source.sha256');
     const agentSource = this._getAgentSource();
     const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n';
@@ -808,20 +946,30 @@ public class ProxyAgent {
       console.warn('[Interceptor] Ignoring invalid cached JVM agent JAR:', err.message);
     }
 
+    let buildDir = null;
     try {
       fs.mkdirSync(agentDir, { recursive: true });
+      buildDir = fs.mkdtempSync(path.join(agentDir, '.jvm-agent-build-'));
+      const javaPath = path.join(buildDir, 'ProxyAgent.java');
+      const manifestPath = path.join(buildDir, 'MANIFEST.MF');
+      const builtJarPath = path.join(buildDir, 'proxy-agent.jar');
+      const builtStampPath = path.join(buildDir, 'source.sha256');
       fs.writeFileSync(javaPath, agentSource);
       fs.writeFileSync(manifestPath, manifest);
 
       // Compile
-      await this._compileAgentJava(javaPath, agentDir);
+      await this._compileAgentJava(javaPath, buildDir);
 
       // Package into JAR
-      await this._packageAgentJar(jarPath, manifestPath, agentDir);
+      await this._packageAgentJar(builtJarPath, manifestPath, buildDir);
       fs.writeFileSync(
-        stampPath,
-        JSON.stringify(this._getAgentJarCacheStamp(jarPath, sourceHash))
+        builtStampPath,
+        JSON.stringify(this._getAgentJarCacheStamp(builtJarPath, sourceHash))
       );
+      this._assertAgentCacheTargetIsReplaceable(jarPath);
+      this._assertAgentCacheTargetIsReplaceable(stampPath);
+      this._publishAgentCacheFile(builtJarPath, jarPath);
+      this._publishAgentCacheFile(builtStampPath, stampPath);
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
       this._preparedAgentJarPath = jarPath;
@@ -830,6 +978,14 @@ public class ProxyAgent {
       this._preparedAgentJarPath = null;
       console.error('[Interceptor] Failed to build JVM agent JAR:', err.message);
       return null;
+    } finally {
+      if (buildDir) {
+        try {
+          fs.rmSync(buildDir, { recursive: true, force: true });
+        } catch (error) {
+          console.warn('[Interceptor] Failed to remove temporary JVM agent build:', error.message);
+        }
+      }
     }
   }
 
