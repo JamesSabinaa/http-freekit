@@ -214,7 +214,9 @@ test('renderer refreshes the breakpoint banner for timeout resume events', () =>
   assert.ok(start >= 0 && end > start, 'WebSocket message handler must be present');
 
   let bannerRefreshes = 0;
+  const clearedDrafts = [];
   const context = {
+    clearBreakpointEditDraft: (...args) => clearedDrafts.push(args),
     updateBreakpointBanner: () => { bannerRefreshes++; }
   };
   vm.createContext(context);
@@ -226,8 +228,10 @@ test('renderer refreshes the breakpoint banner for timeout resume events', () =>
   context.handle({
     type: 'breakpoint-resumed',
     requestId: 'timed-out-request',
+    trafficLifecycleId: 'timed-out-life',
     reason: 'timeout'
   });
 
   assert.equal(bannerRefreshes, 1);
+  assert.deepEqual(clearedDrafts, [['timed-out-request', 'timed-out-life']]);
 });

@@ -419,6 +419,7 @@
           selectBreakpointRequest(msg.requestId);
           break;
         case 'breakpoint-resumed':
+          clearBreakpointEditDraft(msg.requestId, msg.trafficLifecycleId);
           updateBreakpointBanner();
           break;
         case 'mcp-filter':
@@ -1414,7 +1415,7 @@
       if (req.breakpointActive === true) {
         const draft = getBreakpointEditDraft(req);
         const responsePhase = draft._phase === 'response';
-        const breakpointIdentityAttrs = `data-request-id="${esc(req.id)}" data-lifecycle-id="${esc(req.trafficLifecycleId || '')}"`;
+        const breakpointIdentityAttrs = `data-request-id="${escapeHtmlAttribute(req.id)}" data-lifecycle-id="${escapeHtmlAttribute(req.trafficLifecycleId || '')}"`;
         const breakpointFields = responsePhase ? `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Status</span>
@@ -11232,10 +11233,14 @@
             );
             let resumeData = null;
             try { resumeData = await resumeRes.json(); } catch { /* ignore non-json error bodies */ }
-            if (resumeRes.status === 404) continue;
+            if (resumeRes.status === 404) {
+              clearBreakpointEditDraft(bp.id, bp.trafficLifecycleId);
+              continue;
+            }
             if (!resumeRes.ok || resumeData?.success === false) {
               throw new Error(resumeData?.error || `Resume failed (${resumeRes.status})`);
             }
+            clearBreakpointEditDraft(bp.id, bp.trafficLifecycleId);
           } catch (err) {
             failures.push(err);
           }
@@ -11260,10 +11265,15 @@
       return JSON.stringify([String(requestId), String(trafficLifecycleId || '')]);
     }
 
+    function clearBreakpointEditDraft(requestId, trafficLifecycleId = '') {
+      breakpointEditDrafts.delete(breakpointDraftKey(requestId, trafficLifecycleId));
+    }
+
     function getBreakpointEditDraft(req) {
       const draftKey = breakpointDraftKey(req.id, req.trafficLifecycleId);
-      if (!breakpointEditDrafts.has(draftKey)) {
-        const responsePhase = req.breakpointPhase === 'response';
+      const responsePhase = req.breakpointPhase === 'response';
+      const expectedPhase = responsePhase ? 'response' : 'request';
+      if (breakpointEditDrafts.get(draftKey)?._phase !== expectedPhase) {
         breakpointEditDrafts.set(draftKey, responsePhase ? {
           _phase: 'response',
           status: req.upstreamStatusCode || 200,
@@ -11371,7 +11381,7 @@
         if (!res.ok || data?.success === false) {
           throw new Error(data?.error || `Resume failed (${res.status})`);
         }
-        breakpointEditDrafts.delete(draftKey);
+        clearBreakpointEditDraft(requestId, trafficLifecycleId);
         toast('Request resumed', 'success');
         updateBreakpointBanner();
       } catch (err) { toast('Error: ' + err.message, 'error'); }

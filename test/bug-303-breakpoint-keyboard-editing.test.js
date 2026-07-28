@@ -25,7 +25,11 @@ function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
+    .replaceAll('>', '&gt;');
+}
+
+function escapeHtmlAttribute(value) {
+  return escapeHtml(value)
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
@@ -56,7 +60,7 @@ function pausedRequest(phase) {
   };
 }
 
-function renderPausedDetail(phase) {
+function renderPausedDetail(phase, identity = {}) {
   const detailContent = { innerHTML: '' };
   const context = {
     HEADER_DOCS: {},
@@ -69,6 +73,7 @@ function renderPausedDetail(phase) {
     disposeBodyEditor: () => {},
     document: { getElementById: id => id === 'detailContent' ? detailContent : null },
     esc: escapeHtml,
+    escapeHtmlAttribute,
     formatBodyAs: body => escapeHtml(body),
     formatSize: size => `${size || 0} bytes`,
     getBreakpointEditDraft: request => phase === 'response' ? {
@@ -101,7 +106,7 @@ function renderPausedDetail(phase) {
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
-  context.renderDetailCardsForTest(pausedRequest(phase));
+  context.renderDetailCardsForTest({ ...pausedRequest(phase), ...identity });
   return detailContent.innerHTML;
 }
 
@@ -168,6 +173,19 @@ test('paused request and response fields render as named, instructed keyboard bu
       );
     }
   }
+});
+
+test('breakpoint identity attributes escape quotes before rendering', () => {
+  const html = renderPausedDetail('request', {
+    id: 'paused" onmouseover="attack',
+    trafficLifecycleId: "life' onfocus='attack"
+  });
+  const control = renderedControl(html, 'method');
+
+  assert.equal(attribute(control, 'data-request-id'), 'paused&quot; onmouseover=&quot;attack');
+  assert.equal(attribute(control, 'data-lifecycle-id'), 'life&#39; onfocus=&#39;attack');
+  assert.doesNotMatch(control, /data-request-id="paused" onmouseover=/);
+  assert.doesNotMatch(control, /data-lifecycle-id="life' onfocus=/);
 });
 
 function createEditHarness() {
@@ -347,4 +365,31 @@ test('duplicate request IDs keep breakpoint edit drafts isolated by lifecycle', 
   assert.equal(firstDraft._dirty.body, undefined);
   assert.equal(secondDraft.body, 'edited second body');
   assert.equal(secondDraft._dirty.body, true);
+});
+
+test('a response pause replaces a stale request-phase draft for the same lifecycle', () => {
+  const harness = createEditHarness();
+  const requestPause = {
+    ...pausedRequest('request'),
+    id: 'combined',
+    trafficLifecycleId: 'combined-life',
+    requestBody: 'request body'
+  };
+  const responsePause = {
+    ...pausedRequest('response'),
+    id: 'combined',
+    trafficLifecycleId: 'combined-life',
+    responseBody: 'response body'
+  };
+  const requestDraft = harness.context.getDraftForTest(requestPause);
+  requestDraft.body = 'stale request edit';
+  requestDraft._dirty.body = true;
+
+  const responseDraft = harness.context.getDraftForTest(responsePause);
+
+  assert.notEqual(responseDraft, requestDraft);
+  assert.equal(responseDraft._phase, 'response');
+  assert.equal(responseDraft.body, 'response body');
+  assert.deepEqual(Object.keys(responseDraft._dirty), []);
+  assert.equal(responseDraft.method, undefined);
 });

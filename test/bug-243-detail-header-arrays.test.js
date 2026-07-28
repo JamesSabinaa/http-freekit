@@ -71,6 +71,7 @@ function renderDetail(request) {
       getElementById: id => id === 'detailContent' ? detailContent : null
     },
     esc: escapeHtml,
+    escapeHtmlAttribute: escapeHtml,
     formatBodyAs: body => escapeHtml(body),
     formatSize: size => `${size || 0} bytes`,
     getEffectiveRequest: value => value,

@@ -19,7 +19,7 @@ function response(body, { ok = true, status = ok ? 200 : 500 } = {}) {
   return { ok, status, json: async () => body };
 }
 
-function createRenderer(fetch) {
+function createRenderer(fetch, breakpointEditDrafts = new Map()) {
   const elements = {
     breakpointBanner: { style: { display: 'flex' } },
     breakpointBannerText: { textContent: 'stale count' }
@@ -27,6 +27,7 @@ function createRenderer(fetch) {
   const toasts = [];
   const context = {
     API_BASE: '',
+    breakpointEditDrafts,
     fetch,
     document: { getElementById: id => elements[id] || null },
     console,
@@ -94,6 +95,10 @@ test('Resume All continues after other failures and reports the refreshed pendin
 test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
   const calls = [];
   let pendingRead = 0;
+  const breakpointEditDrafts = new Map([
+    [JSON.stringify(['same/id', 'life 1']), { _phase: 'request' }],
+    [JSON.stringify(['same/id', 'life&2']), { _phase: 'request' }]
+  ]);
   const renderer = createRenderer(async (url, options = {}) => {
     calls.push({ url, method: options.method || 'GET' });
     if (url === '/api/breakpoints/pending') {
@@ -106,7 +111,7 @@ test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
       });
     }
     return response({ success: true });
-  });
+  }, breakpointEditDrafts);
 
   await renderer.context.resumeAllBreakpoints();
 
@@ -122,6 +127,7 @@ test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
     },
     { url: '/api/breakpoints/pending', method: 'GET' }
   ]);
+  assert.equal(breakpointEditDrafts.size, 0);
   assert.deepEqual(renderer.toasts, [{ message: 'All breakpoints resumed', type: 'success' }]);
 });
 
