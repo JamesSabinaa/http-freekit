@@ -271,6 +271,16 @@ export class CertificateAuthority {
     return fingerprint;
   }
 
+  _syncMigrationStateDirectory() {
+    if (process.platform === 'win32') return;
+    const directoryDescriptor = fs.openSync(path.dirname(this.caMigrationStatePath), 'r');
+    try {
+      fs.fsyncSync(directoryDescriptor);
+    } finally {
+      fs.closeSync(directoryDescriptor);
+    }
+  }
+
   setPendingMigrationFingerprint(value) {
     const fingerprint = value === null ? null : this._normalizeSha1Fingerprint(value);
     if (value !== null && !fingerprint) {
@@ -286,7 +296,6 @@ export class CertificateAuthority {
 
     const temporaryPath = `${this.caMigrationStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     let descriptor = null;
-    let committed = false;
     try {
       descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
       fs.writeFileSync(
@@ -298,30 +307,29 @@ export class CertificateAuthority {
       fs.closeSync(descriptor);
       descriptor = null;
       fs.renameSync(temporaryPath, this.caMigrationStatePath);
-      committed = true;
-      this.pendingMigrationFingerprint = fingerprint;
-      fs.chmodSync(this.caMigrationStatePath, 0o600);
-      if (process.platform !== 'win32') {
-        const directoryDescriptor = fs.openSync(path.dirname(this.caMigrationStatePath), 'r');
-        try {
-          fs.fsyncSync(directoryDescriptor);
-        } finally {
-          fs.closeSync(directoryDescriptor);
-        }
-      }
     } catch (error) {
-      if (committed) {
-        // The marker was atomically published with mode 0600. Keep startup and
-        // the visible migration warning consistent with that committed state
-        // even if redundant chmod or directory durability hardening failed.
-        this.pendingMigrationFingerprint = fingerprint;
-        console.warn(`[CA] Migration marker was saved but hardening failed: ${error.message}`);
-        return;
-      }
       if (descriptor !== null) {
         try { fs.closeSync(descriptor); } catch {}
       }
       try { fs.unlinkSync(temporaryPath); } catch {}
+      throw error;
+    }
+
+    this.pendingMigrationFingerprint = fingerprint;
+    try {
+      fs.chmodSync(this.caMigrationStatePath, 0o600);
+    } catch (error) {
+      // The temporary file was created with mode 0600, which rename preserves.
+      // A redundant chmod failure must not strand an otherwise durable marker.
+      console.warn(`[CA] Migration marker was saved but permission hardening failed: ${error.message}`);
+    }
+    try {
+      this._syncMigrationStateDirectory();
+    } catch (error) {
+      // Atomic rename does not make the directory entry crash-durable by
+      // itself. Keep legacy v1 recovery evidence intact by aborting startup
+      // before its cleanup state can be rewritten as v2.
+      console.warn(`[CA] Migration marker directory could not be synchronized: ${error.message}`);
       throw error;
     }
   }

@@ -257,6 +257,54 @@ test('legacy active-fingerprint filtering cannot publish v2 before its migration
   });
 });
 
+test('legacy cleanup remains v1 until the migration marker directory is durable', async t => {
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-migration-fsync-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const activeCertificate = createPersistedCa(
+    dataDir,
+    new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+  );
+  const activeFingerprint = new crypto.X509Certificate(activeCertificate)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  const previousFingerprint = 'EF'.repeat(20);
+  const replacementPath = path.join(dataDir, 'ca-replacements.json');
+  fs.writeFileSync(replacementPath, JSON.stringify({
+    version: 1,
+    fingerprints: [previousFingerprint, activeFingerprint]
+  }));
+
+  const interrupted = new CertificateAuthority(dataDir);
+  interrupted._syncMigrationStateDirectory = () => {
+    throw new Error('simulated migration directory fsync failure');
+  };
+  await assert.rejects(
+    interrupted.initialize({ autoRenewExpiring: false }),
+    /simulated migration directory fsync failure/
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
+    version: 1,
+    fingerprints: [previousFingerprint, activeFingerprint]
+  });
+  assert.equal(fs.existsSync(interrupted.caMigrationStatePath), true);
+
+  // Model a crash losing the marker rename whose directory entry was not
+  // flushed. The legacy journal must be sufficient to recreate it.
+  fs.unlinkSync(interrupted.caMigrationStatePath);
+  const recovered = new CertificateAuthority(dataDir);
+  await recovered.initialize({ autoRenewExpiring: false });
+  assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
+    version: 2,
+    fingerprints: [previousFingerprint]
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(recovered.caMigrationStatePath, 'utf8')), {
+    version: 1,
+    previousFingerprint
+  });
+  assert.equal(recovered.getCertInfo().certificateReplacementPending, true);
+});
+
 test('committed migration marker hardening failure does not strand a scheduled renewal', async t => {
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'warn', () => {});
