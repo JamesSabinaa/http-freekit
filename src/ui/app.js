@@ -1414,34 +1414,35 @@
       if (req.breakpointActive === true) {
         const draft = getBreakpointEditDraft(req);
         const responsePhase = draft._phase === 'response';
+        const breakpointIdentityAttrs = `data-request-id="${esc(req.id)}" data-lifecycle-id="${esc(req.trafficLifecycleId || '')}"`;
         const breakpointFields = responsePhase ? `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Status</span>
-                <span id="breakpoint-edit-status" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit response status" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'status')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'status')">${draft.status}</span>
+                <span id="breakpoint-edit-status" ${breakpointIdentityAttrs} class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit response status" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'status')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'status')">${draft.status}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Headers</span>
-                <pre id="breakpoint-edit-headers" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+                <pre id="breakpoint-edit-headers" ${breakpointIdentityAttrs} class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Body</span>
-                <pre id="breakpoint-edit-body" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'body')">${esc(draft.body || '')}</pre>
+                <pre id="breakpoint-edit-body" ${breakpointIdentityAttrs} class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit response body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'body')">${esc(draft.body || '')}</pre>
               </div>` : `
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Method</span>
-                <span id="breakpoint-edit-method" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request method" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'method')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'method')">${esc(draft.method)}</span>
+                <span id="breakpoint-edit-method" ${breakpointIdentityAttrs} class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request method" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'method')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'method')">${esc(draft.method)}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">URL</span>
-                <span id="breakpoint-edit-url" class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request URL" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'url')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'url')">${esc(draft.url)}</span>
+                <span id="breakpoint-edit-url" ${breakpointIdentityAttrs} class="breakpoint-edit-value" role="button" tabindex="0" aria-label="Edit request URL" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'url')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'url')">${esc(draft.url)}</span>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Headers</span>
-                <pre id="breakpoint-edit-headers" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
+                <pre id="breakpoint-edit-headers" ${breakpointIdentityAttrs} class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request headers" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'headers')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'headers')">${esc(JSON.stringify(draft.headers, null, 2))}</pre>
               </div>
               <div class="breakpoint-edit-row">
                 <span class="breakpoint-edit-label">Body</span>
-                <pre id="breakpoint-edit-body" class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField('${req.id}', 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, '${req.id}', 'body')">${esc(draft.body || '')}</pre>
+                <pre id="breakpoint-edit-body" ${breakpointIdentityAttrs} class="breakpoint-edit-value breakpoint-edit-pre" role="button" tabindex="0" aria-label="Edit request body" aria-describedby="breakpoint-edit-instructions" ondblclick="editBreakpointField(this.dataset.requestId, this.dataset.lifecycleId, 'body')" onkeydown="activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, 'body')">${esc(draft.body || '')}</pre>
               </div>`;
         html += `<div class="detail-card" style="border-left:4px solid #f1971f;background:#f1971f11;">
           <div class="detail-card-body" style="padding:16px 20px;">
@@ -11255,10 +11256,15 @@
       }
     }
 
+    function breakpointDraftKey(requestId, trafficLifecycleId = '') {
+      return JSON.stringify([String(requestId), String(trafficLifecycleId || '')]);
+    }
+
     function getBreakpointEditDraft(req) {
-      if (!breakpointEditDrafts.has(req.id)) {
+      const draftKey = breakpointDraftKey(req.id, req.trafficLifecycleId);
+      if (!breakpointEditDrafts.has(draftKey)) {
         const responsePhase = req.breakpointPhase === 'response';
-        breakpointEditDrafts.set(req.id, responsePhase ? {
+        breakpointEditDrafts.set(draftKey, responsePhase ? {
           _phase: 'response',
           status: req.upstreamStatusCode || 200,
           headers: { ...(req.responseHeaders || {}) },
@@ -11273,20 +11279,23 @@
           _dirty: {}
         });
       }
-      const draft = breakpointEditDrafts.get(req.id);
+      const draft = breakpointEditDrafts.get(draftKey);
       if (!draft._dirty) draft._dirty = {};
       return draft;
     }
 
-    function activateBreakpointFieldOnKeyboard(event, requestId, field) {
+    function activateBreakpointFieldOnKeyboard(event, requestId, trafficLifecycleId, field) {
       if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
       event.preventDefault();
       if (event.repeat) return;
-      editBreakpointField(requestId, field);
+      editBreakpointField(requestId, trafficLifecycleId, field);
     }
 
-    function editBreakpointField(requestId, field) {
-      const req = requests.find(r => r.id === requestId);
+    function editBreakpointField(requestId, trafficLifecycleId, field) {
+      const req = requests.find(r =>
+        r.id === requestId &&
+        (!trafficLifecycleId || r.trafficLifecycleId === trafficLifecycleId)
+      );
       if (!req) return;
       const draft = getBreakpointEditDraft(req);
 
@@ -11336,7 +11345,8 @@
 
     async function resumeBreakpointRequest(requestId, trafficLifecycleId = '') {
       try {
-        const draft = breakpointEditDrafts.get(requestId) || {};
+        const draftKey = breakpointDraftKey(requestId, trafficLifecycleId);
+        const draft = breakpointEditDrafts.get(draftKey) || {};
         const dirty = draft._dirty || {};
         const modifications = {};
         const editableFields = draft._phase === 'response'
@@ -11361,7 +11371,7 @@
         if (!res.ok || data?.success === false) {
           throw new Error(data?.error || `Resume failed (${res.status})`);
         }
-        breakpointEditDrafts.delete(requestId);
+        breakpointEditDrafts.delete(draftKey);
         toast('Request resumed', 'success');
         updateBreakpointBanner();
       } catch (err) { toast('Error: ' + err.message, 'error'); }

@@ -19,7 +19,7 @@ const remoteEndpointSource = sourceBetween('function formatRemoteEndpoint(', 'fu
 const headerGridSource = sourceBetween('function renderHeadersGrid(', '// Keep old renderHeaders as alias');
 const bodyModeSource = sourceBetween('function isGrpcContentType(', 'const activeBodyEditors = {}');
 const webSocketConnectionSource = sourceBetween('function isWebSocketConnection(', 'function wsConnectionKey(');
-const breakpointEditSource = sourceBetween('function getBreakpointEditDraft(', 'async function resumeBreakpointRequest(');
+const breakpointEditSource = sourceBetween('function breakpointDraftKey(', 'async function resumeBreakpointRequest(');
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -33,6 +33,7 @@ function escapeHtml(value) {
 function pausedRequest(phase) {
   return {
     id: `paused-${phase}`,
+    trafficLifecycleId: `${phase}-life`,
     timestamp: '2026-01-01T00:00:00.000Z',
     protocol: 'https',
     method: 'POST',
@@ -148,13 +149,23 @@ test('paused request and response fields render as named, instructed keyboard bu
       assert.equal(attribute(control, 'tabindex'), '0');
       assert.equal(attribute(control, 'aria-label'), accessibleName);
       assert.equal(attribute(control, 'aria-describedby'), 'breakpoint-edit-instructions');
-      assert.match(attribute(control, 'onkeydown'), new RegExp(`^activateBreakpointFieldOnKeyboard\\(event, 'paused-${phase}', '${field}'\\)$`));
+      assert.equal(attribute(control, 'data-request-id'), `paused-${phase}`);
+      assert.equal(attribute(control, 'data-lifecycle-id'), `${phase}-life`);
+      assert.equal(
+        attribute(control, 'onkeydown'),
+        `activateBreakpointFieldOnKeyboard(event, this.dataset.requestId, this.dataset.lifecycleId, '${field}')`
+      );
 
       const doubleClickCalls = [];
-      vm.runInNewContext(attribute(control, 'ondblclick'), {
+      vm.runInNewContext(`(function () { ${attribute(control, 'ondblclick')} }).call(control)`, {
+        control: { dataset: { requestId: `paused-${phase}`, lifecycleId: `${phase}-life` } },
         editBreakpointField: (...args) => doubleClickCalls.push(args)
       });
-      assert.deepEqual(doubleClickCalls, [[`paused-${phase}`, field]], `${phase} ${field} double-click still edits once`);
+      assert.deepEqual(
+        doubleClickCalls,
+        [[`paused-${phase}`, `${phase}-life`, field]],
+        `${phase} ${field} double-click still edits once`
+      );
     }
   }
 });
@@ -244,7 +255,8 @@ test('Enter and Space edit every breakpoint field once and restore focus after r
     harness.prompts.push(answer);
     const { event, state } = keyboardEvent(key);
 
-    harness.context.activateForTest(event, requestId, field);
+    const request = harness.context.requests.find(candidate => candidate.id === requestId);
+    harness.context.activateForTest(event, requestId, request.trafficLifecycleId, field);
 
     assert.equal(state.prevented, 1, `${key === ' ' ? 'Space' : key} prevents its native action`);
     assert.equal(harness.promptCalls.length, priorPromptCount + 1, `${requestId} ${field} opens one prompt`);
@@ -266,7 +278,9 @@ test('keyboard activation ignores repeats, nested targets and unrelated keys wit
     keyboardEvent('Enter', { target: {} })
   ];
 
-  for (const { event } of scenarios) harness.context.activateForTest(event, 'paused-request', 'method');
+  for (const { event } of scenarios) {
+    harness.context.activateForTest(event, 'paused-request', 'request-life', 'method');
+  }
 
   assert.equal(scenarios[0].state.prevented, 1);
   assert.equal(scenarios[1].state.prevented, 1, 'repeated Space is still prevented from scrolling');
@@ -291,7 +305,8 @@ test('cancelled and invalid prompts do not rerender, refocus, or dirty breakpoin
     const beforeRenders = harness.renders.length;
     const beforeFocusLookups = harness.focusLookups;
     const { event } = keyboardEvent('Enter');
-    harness.context.activateForTest(event, requestId, field);
+    const request = harness.context.requests.find(candidate => candidate.id === requestId);
+    harness.context.activateForTest(event, requestId, request.trafficLifecycleId, field);
     assert.equal(harness.renders.length, beforeRenders);
     assert.equal(harness.focusLookups, beforeFocusLookups);
     const draft = harness.context.getDraftForTest(harness.context.requests.find(request => request.id === requestId));
@@ -300,4 +315,36 @@ test('cancelled and invalid prompts do not rerender, refocus, or dirty breakpoin
 
   assert.equal(harness.promptCalls.length, attempts.length);
   assert.deepEqual(harness.toasts.map(args => args[1]), ['error', 'error', 'error']);
+});
+
+test('duplicate request IDs keep breakpoint edit drafts isolated by lifecycle', () => {
+  const harness = createEditHarness();
+  const first = {
+    ...pausedRequest('request'),
+    id: 'duplicate',
+    trafficLifecycleId: 'life-1',
+    requestBody: 'first body'
+  };
+  const second = {
+    ...pausedRequest('request'),
+    id: 'duplicate',
+    trafficLifecycleId: 'life-2',
+    requestBody: 'second body'
+  };
+  harness.context.requests.push(first, second);
+
+  const firstDraft = harness.context.getDraftForTest(first);
+  const secondDraft = harness.context.getDraftForTest(second);
+  assert.notEqual(firstDraft, secondDraft);
+  assert.equal(firstDraft.body, 'first body');
+  assert.equal(secondDraft.body, 'second body');
+
+  harness.prompts.push('edited second body');
+  const { event } = keyboardEvent('Enter');
+  harness.context.activateForTest(event, 'duplicate', 'life-2', 'body');
+
+  assert.equal(firstDraft.body, 'first body');
+  assert.equal(firstDraft._dirty.body, undefined);
+  assert.equal(secondDraft.body, 'edited second body');
+  assert.equal(secondDraft._dirty.body, true);
 });

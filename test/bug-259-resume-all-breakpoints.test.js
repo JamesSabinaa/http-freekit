@@ -9,6 +9,11 @@ const functionsStart = rendererSource.indexOf('async function updateBreakpointBa
 const functionsEnd = rendererSource.indexOf('function getBreakpointEditDraft(', functionsStart);
 assert.notEqual(functionsStart, -1);
 assert.notEqual(functionsEnd, -1);
+const singleResumeStart = rendererSource.indexOf('function breakpointDraftKey(');
+const singleResumeEnd = rendererSource.indexOf('function createBreakpointFromRequest(', singleResumeStart);
+assert.notEqual(singleResumeStart, -1);
+assert.notEqual(singleResumeEnd, -1);
+const singleResumeSource = rendererSource.slice(singleResumeStart, singleResumeEnd);
 
 function response(body, { ok = true, status = ok ? 200 : 500 } = {}) {
   return { ok, status, json: async () => body };
@@ -118,4 +123,43 @@ test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
     { url: '/api/breakpoints/pending', method: 'GET' }
   ]);
   assert.deepEqual(renderer.toasts, [{ message: 'All breakpoints resumed', type: 'success' }]);
+});
+
+test('manual resume sends only the selected lifecycle draft', async () => {
+  const calls = [];
+  const toasts = [];
+  const breakpointEditDrafts = new Map([
+    [JSON.stringify(['duplicate/id', 'life-1']), {
+      _phase: 'request', body: 'first edit', _dirty: { body: true }
+    }],
+    [JSON.stringify(['duplicate/id', 'life-2']), {
+      _phase: 'request', body: 'second edit', _dirty: { body: true }
+    }]
+  ]);
+  const context = {
+    API_BASE: '',
+    breakpointEditDrafts,
+    requests: [],
+    fetch: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return response({ success: true });
+    },
+    toast: (...args) => toasts.push(args),
+    updateBreakpointBanner: async () => {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${singleResumeSource}
+    globalThis.resumeForTest = resumeBreakpointRequest;
+  `, context);
+
+  await context.resumeForTest('duplicate/id', 'life-2');
+
+  assert.deepEqual(calls, [{
+    url: '/api/breakpoints/pending/duplicate%2Fid/resume?trafficLifecycleId=life-2',
+    body: { body: 'second edit' }
+  }]);
+  assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-1'])), true);
+  assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-2'])), false);
+  assert.deepEqual(toasts, [['Request resumed', 'success']]);
 });
