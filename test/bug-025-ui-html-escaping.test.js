@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -73,4 +74,30 @@ test('newly created mock lookup compares data values instead of building a selec
   assert.match(createMock, /querySelectorAll\('\[data-rule-id\]'\)/);
   assert.match(createMock, /candidate\.dataset\.ruleId === data\.rule\.id/);
   assert.doesNotMatch(createMock, /querySelector\('\[data-rule-id="' \+ data\.rule\.id/);
+});
+
+test('expanded mock editor actions never interpolate the persisted rule ID', () => {
+  const editorSource = functionSource('renderMockRuleEditor', 'renderMockMatcherRow');
+  const renderRulesSource = functionSource('renderMockRules', 'breakpointRuleSummary');
+  const context = {
+    MOCK_ACTION_TYPES: [{ value: 'fixed-response', label: 'Return a fixed response' }],
+    renderMockMatcherRow: () => '',
+    renderMockPreStepRow: () => '',
+    renderMockActionFields: () => ''
+  };
+  vm.createContext(context);
+  vm.runInContext(`${editorSource}; globalThis.renderEditor = renderMockRuleEditor;`, context);
+
+  const hostileId = 'x\');" autofocus onfocus="globalThis.__xss=1"><img src=x onerror="globalThis.__xss=2">\\&/tail';
+  const html = context.renderEditor({
+    priority: 'normal',
+    matchers: [],
+    preSteps: [],
+    action: { type: 'fixed-response' }
+  }, hostileId);
+
+  assert.match(html, /saveMockRule\(this\.closest\('\.mock-rule-card'\)\.dataset\.ruleId\)/);
+  assert.doesNotMatch(html, /" autofocus|onfocus=|<img|onerror=/);
+  assert.doesNotMatch(editorSource, /saveMockRule\(\\'' \+ ruleId/);
+  assert.match(renderRulesSource, /data-rule-id="__new__"/);
 });

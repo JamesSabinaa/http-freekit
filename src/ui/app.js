@@ -6323,7 +6323,7 @@
       }
 
       if (mockEditingRule === '__new__' && mockEditDraft) {
-        html += '<div class="mock-rule-card mock-rule-editing">';
+        html += '<div class="mock-rule-card mock-rule-editing" data-rule-id="__new__">';
         html += '<div class="mock-rule-summary"><div class="mock-rule-icon" style="background:#888;"></div>';
         html += '<span class="mock-rule-desc" style="color:var(--text-watermark);">New Rule</span></div>';
         html += renderMockRuleEditor(mockEditDraft, '__new__');
@@ -6634,7 +6634,7 @@
       html += '</div>';
 
       html += '<div class="mock-editor-buttons">';
-      html += '<button class="btn btn-primary" onclick="saveMockRule(\'' + ruleId + '\')">Save Draft</button>';
+      html += '<button class="btn btn-primary" onclick="saveMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)">Save Draft</button>';
       html += '<button class="btn" onclick="cancelMockEdit()">Cancel</button>';
       html += '</div>';
 
