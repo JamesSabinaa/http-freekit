@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -226,6 +227,32 @@ export class FreshTerminalInterceptor {
     return path.join(os.tmpdir(), `http-freekit-terminal-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.pid`);
   }
 
+  _createWindowsHandshake() {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-terminal-handshake-'));
+    try { fs.chmodSync(directory, 0o700); } catch {}
+    return Object.freeze({
+      directory,
+      reportFile: path.join(directory, 'identity.json'),
+      acknowledgementFile: path.join(directory, 'acknowledgement.txt'),
+      nonce: crypto.randomBytes(32).toString('hex')
+    });
+  }
+
+  _cleanupWindowsHandshake(handshake) {
+    if (!handshake) return;
+    const temporaryRoot = path.resolve(os.tmpdir());
+    const directory = handshake.directory ? path.resolve(handshake.directory) : null;
+    if (directory && path.dirname(directory) === temporaryRoot &&
+        path.basename(directory).startsWith('http-freekit-terminal-handshake-')) {
+      fs.rmSync(directory, { recursive: true, force: true });
+      return;
+    }
+    for (const filePath of [handshake.reportFile, handshake.acknowledgementFile]) {
+      if (!filePath) continue;
+      try { fs.unlinkSync(filePath); } catch {}
+    }
+  }
+
   async _waitForShellPid(pidFile, timeoutMs = 3000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -243,10 +270,17 @@ export class FreshTerminalInterceptor {
     while (Date.now() < deadline) {
       try {
         const stat = fs.lstatSync(reportFile);
-        if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_TERMINAL_HANDSHAKE_BYTES) {
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0 ||
+            stat.size > MAX_TERMINAL_HANDSHAKE_BYTES) {
           throw new Error('Terminal shell identity report is not a bounded regular file');
         }
         const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+        const reportKeys = Object.keys(report || {}).sort();
+        if (reportKeys.length !== 3 ||
+            reportKeys[0] !== 'executable' || reportKeys[1] !== 'pid' ||
+            reportKeys[2] !== 'startTime') {
+          throw new Error('Terminal shell identity report has an invalid schema');
+        }
         return this._normalizeSessionIdentity(report, report?.pid, 'win32');
       } catch {}
       await this._sleep(50);
@@ -254,16 +288,15 @@ export class FreshTerminalInterceptor {
     throw new Error('Terminal shell did not report a verifiable process identity');
   }
 
-  async _acknowledgeWindowsShell(reportFile, timeoutMs = 3000) {
-    const acknowledgementFile = `${reportFile}.ack`;
-    fs.writeFileSync(acknowledgementFile, String(process.pid), {
+  async _acknowledgeWindowsShell(handshake, timeoutMs = 3000) {
+    fs.writeFileSync(handshake.acknowledgementFile, handshake.nonce, {
       encoding: 'utf8',
       flag: 'wx',
       mode: 0o600
     });
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (!fs.existsSync(acknowledgementFile)) return;
+      if (!fs.existsSync(handshake.acknowledgementFile)) return;
       await this._sleep(50);
     }
     throw new Error('Terminal shell did not acknowledge its verified identity');
@@ -909,7 +942,10 @@ export class FreshTerminalInterceptor {
     ].join('; ');
   }
 
-  _buildWindowsPowerShellCommand(proxyUrl, pidFile) {
+  _buildWindowsPowerShellCommand(proxyUrl, handshake) {
+    const reportFile = handshake.reportFile;
+    const acknowledgementFile = handshake.acknowledgementFile;
+    const acknowledgementNonce = handshake.nonce;
     return [
       'try {',
       '  $freeKitProcess = [Diagnostics.Process]::GetCurrentProcess()',
@@ -918,13 +954,25 @@ export class FreshTerminalInterceptor {
       '    startTime = [string]$freeKitProcess.StartTime.ToUniversalTime().Ticks',
       '    executable = [string]$freeKitProcess.MainModule.FileName',
       '  }',
-      `  [IO.File]::WriteAllText(${powerShellQuote(pidFile)}, ($freeKitIdentity | ConvertTo-Json -Compress))`,
+      '  $freeKitReportBytes = [Text.Encoding]::UTF8.GetBytes(($freeKitIdentity | ConvertTo-Json -Compress))',
+      `  $freeKitReport = [IO.File]::Open(${powerShellQuote(reportFile)}, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)`,
+      '  try {',
+      '    $freeKitReport.Write($freeKitReportBytes, 0, $freeKitReportBytes.Length)',
+      '    $freeKitReport.Flush($true)',
+      '  } finally {',
+      '    $freeKitReport.Dispose()',
+      '  }',
       '  $freeKitDeadline = [DateTime]::UtcNow.AddSeconds(3)',
-      `  while (-not [IO.File]::Exists(${powerShellQuote(`${pidFile}.ack`)})) {`,
+      '  while ($true) {',
+      '    try {',
+      `      if ([IO.File]::ReadAllText(${powerShellQuote(acknowledgementFile)}) -ceq ${powerShellQuote(acknowledgementNonce)}) {`,
+      `        Remove-Item -LiteralPath ${powerShellQuote(acknowledgementFile)} -Force -ErrorAction Stop`,
+      '        break',
+      '      }',
+      '    } catch {}',
       '    if ([DateTime]::UtcNow -ge $freeKitDeadline) { exit 1 }',
       '    Start-Sleep -Milliseconds 50',
       '  }',
-      `  Remove-Item -LiteralPath ${powerShellQuote(`${pidFile}.ack`)} -Force -ErrorAction Stop`,
       '} catch {',
       '  exit 1',
       '}',
@@ -984,25 +1032,25 @@ export class FreshTerminalInterceptor {
         {
           cmd: 'wt.exe',
           reportsPid: true,
-          buildArgs: pidFile => pidFile
+          buildArgs: handshake => handshake
             ? [
                 'new-tab',
                 '--inheritEnvironment',
                 'powershell.exe',
                 '-NoExit',
                 '-Command',
-                this._buildWindowsPowerShellCommand(proxyUrl, pidFile)
+                this._buildWindowsPowerShellCommand(proxyUrl, handshake)
               ]
             : ['new-tab', '--inheritEnvironment']
         },
         {
           cmd: 'powershell.exe',
           reportsPid: true,
-          buildArgs: pidFile => [
+          buildArgs: handshake => [
             '-NoExit',
             '-Command',
-            pidFile
-              ? this._buildWindowsPowerShellCommand(proxyUrl, pidFile)
+            handshake
+              ? this._buildWindowsPowerShellCommand(proxyUrl, handshake)
               : `Write-Host "HTTP FreeKit proxy active on ${proxyUrl}" -ForegroundColor Green`
           ]
         },
@@ -1014,11 +1062,12 @@ export class FreshTerminalInterceptor {
       ];
 
       for (const terminal of terminals) {
+        if (this.recoveryFile && !terminal.reportsPid) continue;
         let candidateProc;
         let launcherStarted = false;
-        const pidFile = terminal.reportsPid ? this._createPidFilePath() : null;
+        const handshake = terminal.reportsPid ? this._createWindowsHandshake() : null;
         try {
-          candidateProc = await this._spawnDetached(terminal.cmd, terminal.buildArgs(pidFile), {
+          candidateProc = await this._spawnDetached(terminal.cmd, terminal.buildArgs(handshake), {
             detached: true,
             stdio: 'ignore',
             env
@@ -1026,8 +1075,8 @@ export class FreshTerminalInterceptor {
           await this._confirmLauncherStartup(candidateProc);
           launcherStarted = true;
           candidateProc.unref();
-          if (pidFile) {
-            const reportedIdentity = await this._waitForWindowsShellReport(pidFile);
+          if (handshake) {
+            const reportedIdentity = await this._waitForWindowsShellReport(handshake.reportFile);
             const adoptedIdentity = await this._adoptSession(
               reportedIdentity.pid,
               reportedIdentity,
@@ -1036,22 +1085,7 @@ export class FreshTerminalInterceptor {
             if (!adoptedIdentity) {
               throw new Error('the reported PowerShell process identity could not be verified');
             }
-            await this._acknowledgeWindowsShell(pidFile);
-            shellPid = adoptedIdentity.pid;
-            sessionIdentity = adoptedIdentity;
-          } else if (this.recoveryFile) {
-            const adoptedIdentity = await this._adoptSession(
-              candidateProc.pid,
-              null,
-              'cmd.exe'
-            );
-            const confirmation = adoptedIdentity
-              ? await this._observeSessionIdentity(candidateProc.pid)
-              : null;
-            if (!adoptedIdentity || this._hasProcessExited(candidateProc) ||
-                !this._isSameSession(adoptedIdentity, confirmation)) {
-              throw new Error('the cmd launcher process identity could not be verified');
-            }
+            await this._acknowledgeWindowsShell(handshake);
             shellPid = adoptedIdentity.pid;
             sessionIdentity = adoptedIdentity;
           }
@@ -1059,7 +1093,7 @@ export class FreshTerminalInterceptor {
           break;
         } catch {
           try { candidateProc?.kill(); } catch {}
-          if (launcherStarted && pidFile && terminal.cmd === 'wt.exe') {
+          if (launcherStarted && handshake && terminal.cmd === 'wt.exe') {
             // wt.exe is only a client for the new tab. The unacknowledged
             // PowerShell command exits after three seconds; wait past that
             // boundary before starting a fallback shell.
@@ -1067,10 +1101,7 @@ export class FreshTerminalInterceptor {
           }
           continue;
         } finally {
-          if (pidFile) {
-            try { fs.unlinkSync(pidFile); } catch {}
-            try { fs.unlinkSync(`${pidFile}.ack`); } catch {}
-          }
+          this._cleanupWindowsHandshake(handshake);
         }
       }
     } else if (platform === 'darwin') {

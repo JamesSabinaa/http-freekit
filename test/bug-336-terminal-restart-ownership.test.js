@@ -172,7 +172,12 @@ test('Windows Terminal records its durable PowerShell child rather than the wt l
   const interceptor = new FreshTerminalInterceptor({ dataDir, platform: 'win32' });
   interceptor.ca = { getTerminalCaBundlePath: () => process.execPath };
   interceptor._launcherStartupGraceMs = () => 0;
-  interceptor._createPidFilePath = () => path.join(os.tmpdir(), `bug-336-win-${owner.pid}.pid`);
+  interceptor._createWindowsHandshake = () => ({
+    directory: null,
+    reportFile: path.join(os.tmpdir(), `bug-336-win-${owner.pid}.json`),
+    acknowledgementFile: path.join(os.tmpdir(), `bug-336-win-${owner.pid}.ack`),
+    nonce: 'bug-336-test-nonce'
+  });
   interceptor._waitForWindowsShellReport = async () => ({
     ...owner,
     executable: owner.executable.toLowerCase()
@@ -203,7 +208,8 @@ test('Windows Terminal records its durable PowerShell child rather than the wt l
     'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
   ]);
   assert.match(invocation.args[5], /pid = \[int\]\$PID/);
-  assert.match(invocation.args[5], /WriteAllText\(.+ConvertTo-Json/);
+  assert.match(invocation.args[5], /FileMode\]::CreateNew/);
+  assert.match(invocation.args[5], /ReadAllText\(.+bug-336-test-nonce/);
   assert.equal(interceptor.toJSON().pid, owner.pid);
   assert.equal(interceptor.sessions.has(launcher.pid), false);
   assert.deepEqual(

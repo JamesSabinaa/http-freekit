@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { FreshTerminalInterceptor } from '../src/interceptors/terminal-interceptors.js';
 
@@ -84,7 +87,12 @@ test('Linux terminal commands wait for and identify their interactive shell', as
 test('Windows Terminal tracks its durable PowerShell child without a recovery journal', async () => {
   const interceptor = new FreshTerminalInterceptor();
   interceptor._platform = () => 'win32';
-  interceptor._createPidFilePath = () => 'C:\\Temp\\freekit-shell.pid';
+  interceptor._createWindowsHandshake = () => ({
+    directory: null,
+    reportFile: 'C:\\Temp\\freekit-shell.json',
+    acknowledgementFile: 'C:\\Temp\\freekit-shell.ack',
+    nonce: 'test-terminal-nonce'
+  });
   interceptor._waitForWindowsShellReport = async () => ({
     pid: 7654,
     startTime: '300',
@@ -122,7 +130,8 @@ test('Windows Terminal tracks its durable PowerShell child without a recovery jo
     'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
   ]);
   assert.match(launch.args[5], /pid = \[int\]\$PID/);
-  assert.match(launch.args[5], /WriteAllText\(.+ConvertTo-Json/);
+  assert.match(launch.args[5], /FileMode\]::CreateNew/);
+  assert.match(launch.args[5], /ReadAllText\(.+test-terminal-nonce/);
   assert.equal(interceptor.sessions.has(7654), true);
   assert.equal(interceptor.sessions.has(launcher.pid), false);
 
@@ -176,6 +185,12 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
   let closeDelayCalls = 0;
   interceptor._windowsHandshakeCloseDelayMs = () => 0;
   interceptor._sleep = async () => { closeDelayCalls++; };
+  interceptor._createWindowsHandshake = () => ({
+    directory: null,
+    reportFile: 'C:\\Temp\\unacknowledged-shell.json',
+    acknowledgementFile: 'C:\\Temp\\unacknowledged-shell.ack',
+    nonce: 'unacknowledged-test-nonce'
+  });
   interceptor._waitForWindowsShellReport = async () => {
     throw new Error('identity report unreadable');
   };
@@ -195,7 +210,8 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
   assert.equal(wtLauncher.killed, true);
   assert.ok(closeDelayCalls >= 1);
   assert.match(launches[0].args[5], /ConvertTo-Json -Compress/);
-  assert.match(launches[0].args[5], /\.ack/);
+  assert.match(launches[0].args[5], /FileMode\]::CreateNew/);
+  assert.match(launches[0].args[5], /ReadAllText\(.+unacknowledged-test-nonce/);
   assert.match(launches[0].args[5], /exit 1/);
   assert.doesNotMatch(launches[0].args[5], /Get-CimInstance/);
 
@@ -205,29 +221,93 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
   await new Promise(resolve => setImmediate(resolve));
 });
 
-test('durable cmd fallback rejects a launcher PID already reused by another executable', async () => {
+test('durable Windows activation never attempts an unverifiable cmd fallback', async () => {
   const interceptor = new FreshTerminalInterceptor({
     platform: 'win32',
     recoveryFile: 'unused-fresh-terminal-journal.json'
   });
-  const cmdLauncher = fakeLauncher(7685);
-  cmdLauncher.exitCode = 0;
+  const commands = [];
   interceptor._spawnDetached = async command => {
-    if (command === 'cmd.exe') return cmdLauncher;
+    commands.push(command);
+    if (command === 'cmd.exe') {
+      assert.fail('cmd.exe cannot provide durable process identity');
+    }
     throw new Error(`${command} unavailable`);
   };
-  interceptor._inspectSessionIdentity = async pid => ({
-    state: 'running',
-    identity: {
-      pid,
-      startTime: '500',
-      executable: 'c:\\windows\\system32\\notepad.exe'
-    }
-  });
-  interceptor._killSession = () => assert.fail('the reused cmd PID must never be signalled');
 
   await assert.rejects(interceptor.activate(8080), /No supported terminal found/);
 
+  assert.deepEqual(commands, ['wt.exe', 'powershell.exe']);
   assert.equal(interceptor.sessions.size, 0);
   assert.equal(interceptor.active, false);
+});
+
+test('Windows shell handshakes use isolated paths and a cryptographic nonce', t => {
+  const interceptor = new FreshTerminalInterceptor({ platform: 'win32' });
+  const first = interceptor._createWindowsHandshake();
+  const second = interceptor._createWindowsHandshake();
+  t.after(() => {
+    interceptor._cleanupWindowsHandshake(first);
+    interceptor._cleanupWindowsHandshake(second);
+  });
+
+  assert.notEqual(first.directory, second.directory);
+  assert.equal(path.dirname(first.reportFile), first.directory);
+  assert.equal(path.dirname(first.acknowledgementFile), first.directory);
+  assert.equal(fs.lstatSync(first.directory).isDirectory(), true);
+  assert.match(first.nonce, /^[a-f0-9]{64}$/);
+  assert.notEqual(first.nonce, second.nonce);
+  assert.equal(fs.existsSync(first.reportFile), false);
+  assert.equal(fs.existsSync(first.acknowledgementFile), false);
+});
+
+test('Windows shell acknowledgement rejects stale files and publishes the exact nonce', async t => {
+  const interceptor = new FreshTerminalInterceptor({ platform: 'win32' });
+  const handshake = interceptor._createWindowsHandshake();
+  t.after(() => interceptor._cleanupWindowsHandshake(handshake));
+
+  fs.writeFileSync(handshake.acknowledgementFile, 'stale acknowledgement');
+  await assert.rejects(
+    interceptor._acknowledgeWindowsShell(handshake, 10),
+    err => err?.code === 'EEXIST'
+  );
+  fs.unlinkSync(handshake.acknowledgementFile);
+
+  let releaseSleep;
+  interceptor._sleep = () => new Promise(resolve => { releaseSleep = resolve; });
+  const acknowledgement = interceptor._acknowledgeWindowsShell(handshake, 1000);
+  assert.equal(fs.readFileSync(handshake.acknowledgementFile, 'utf8'), handshake.nonce);
+  fs.unlinkSync(handshake.acknowledgementFile);
+  releaseSleep();
+  await acknowledgement;
+});
+
+test('Windows shell reports reject hard links without modifying their target', async t => {
+  const interceptor = new FreshTerminalInterceptor({ platform: 'win32' });
+  const handshake = interceptor._createWindowsHandshake();
+  const sentinelDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-terminal-sentinel-'));
+  const sentinel = path.join(sentinelDirectory, 'sentinel.json');
+  const contents = JSON.stringify({
+    pid: 7695,
+    startTime: '600',
+    executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+  });
+  fs.writeFileSync(sentinel, contents);
+  t.after(() => {
+    interceptor._cleanupWindowsHandshake(handshake);
+    fs.rmSync(sentinelDirectory, { recursive: true, force: true });
+  });
+  try {
+    fs.linkSync(sentinel, handshake.reportFile);
+  } catch (err) {
+    t.skip(`hard links unavailable: ${err.message}`);
+    return;
+  }
+  interceptor._sleep = async () => {};
+
+  await assert.rejects(
+    interceptor._waitForWindowsShellReport(handshake.reportFile, 5),
+    /did not report a verifiable process identity/
+  );
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), contents);
 });

@@ -57,7 +57,8 @@ test('Windows Terminal new tabs inherit the supplied FreeKit environment', async
     'new-tab', '--inheritEnvironment', 'powershell.exe', '-NoExit', '-Command'
   ]);
   assert.match(launches[0].args[5], /pid = \[int\]\$PID/);
-  assert.match(launches[0].args[5], /WriteAllText\(.+ConvertTo-Json/);
+  assert.match(launches[0].args[5], /FileMode\]::CreateNew/);
+  assert.match(launches[0].args[5], /ReadAllText/);
   assert.equal(launches[0].options.env.HTTP_PROXY, 'http://127.0.0.1:8765');
   assert.equal(launches[0].options.env.HTTPS_PROXY, 'http://127.0.0.1:8765');
   assert.equal(launches[0].options.detached, true);
