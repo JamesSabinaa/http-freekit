@@ -45,11 +45,45 @@ test('breakpoint API rejects non-array matcher state', async t => {
   assert.deepEqual(proxy.breakpointRules, []);
 });
 
+test('breakpoint API rejects incomplete matcher fields', async t => {
+  const { proxy, port } = await createServer(t);
+  const invalidMatchers = [
+    { type: 'method', value: 42 },
+    { type: 'header', value: 'present' },
+    { type: 'not-a-matcher', value: 'GET' },
+    { type: 'regex-url' }
+  ];
+
+  for (const matcher of invalidMatchers) {
+    const result = await requestJson(port, 'POST', '/api/breakpoints', {
+      matchers: [matcher]
+    });
+    assert.equal(result.statusCode, 400);
+  }
+
+  assert.deepEqual(proxy.breakpointRules, []);
+});
+
+test('persisted breakpoints with incomplete matcher fields are discarded', () => {
+  const proxy = new ProxyServer(null);
+  const restored = proxy.loadBreakpoints([
+    { id: 'bad-method', matchers: [{ type: 'method', value: {} }] },
+    { id: 'bad-header', matchers: [{ type: 'header', value: 'present' }] },
+    { id: 'valid', matchers: [{ type: 'method', value: 'GET' }] }
+  ]);
+
+  assert.equal(restored.migrated, true);
+  assert.equal(restored.discarded, 2);
+  assert.deepEqual(restored.rules.map(rule => rule.id), ['valid']);
+});
+
 test('persisted malformed breakpoint state is ignored at runtime', () => {
   const proxy = new ProxyServer(null);
   proxy.breakpointRules = [
     { enabled: true, matchers: {} },
-    { enabled: true, matchers: [null] }
+    { enabled: true, matchers: [null] },
+    { enabled: true, matchers: [{ type: 'method', value: {} }] },
+    { enabled: true, matchers: [{ type: 'regex-url', value: '[' }] }
   ];
 
   assert.doesNotThrow(() => proxy._checkBreakpoint('GET', 'https://example.test', {}));
@@ -72,4 +106,42 @@ test('invalid resume methods and headers are rejected without releasing the brea
   assert.equal(header.statusCode, 400);
   assert.equal(resolved, false);
   assert.equal(proxy.pendingBreakpoints.has('pending'), true);
+});
+
+test('invalid resume bodies and statuses do not release the breakpoint', async t => {
+  const { proxy, port } = await createServer(t);
+  let resolved = false;
+  proxy.pendingBreakpoints.set('pending', { resolve: () => { resolved = true; } });
+
+  const invalidPayloads = [
+    { body: { nested: 'value' } },
+    { body: null },
+    { status: 600 },
+    { statusCode: 999 },
+    { url: 42 }
+  ];
+  for (const payload of invalidPayloads) {
+    const result = await requestJson(
+      port,
+      'POST',
+      '/api/breakpoints/pending/pending/resume',
+      payload
+    );
+    assert.equal(result.statusCode, 400);
+  }
+
+  assert.equal(resolved, false);
+  assert.equal(proxy.pendingBreakpoints.has('pending'), true);
+});
+
+test('valid string and buffer resume bodies remain supported', () => {
+  const proxy = new ProxyServer(null);
+  const resumed = [];
+  proxy.pendingBreakpoints.set('string', { resolve: value => resumed.push(value.body) });
+  proxy.pendingBreakpoints.set('buffer', { resolve: value => resumed.push(value.body) });
+
+  assert.equal(proxy.resumeBreakpoint('string', { body: 'updated' }), true);
+  assert.equal(proxy.resumeBreakpoint('buffer', { body: Buffer.from('binary') }), true);
+  assert.equal(resumed[0], 'updated');
+  assert.deepEqual(resumed[1], Buffer.from('binary'));
 });

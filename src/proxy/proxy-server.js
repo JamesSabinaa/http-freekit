@@ -8738,8 +8738,8 @@ export class ProxyServer {
     if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return 'Breakpoint must be an object';
     if (!patch || Object.prototype.hasOwnProperty.call(rule, 'matchers')) {
       if (!Array.isArray(rule.matchers)) return 'Breakpoint matchers must be an array';
-      if (rule.matchers.some(matcher => !matcher || typeof matcher !== 'object' || Array.isArray(matcher))) {
-        return 'Every breakpoint matcher must be an object';
+      if (!rule.matchers.every(isCompleteMockMatcher)) {
+        return 'Every breakpoint matcher must be complete';
       }
     }
     if (Object.prototype.hasOwnProperty.call(rule, 'enabled') && typeof rule.enabled !== 'boolean') {
@@ -8759,6 +8759,7 @@ export class ProxyServer {
       }
     }
     if (Object.prototype.hasOwnProperty.call(modifications, 'url')) {
+      if (typeof modifications.url !== 'string') return 'Invalid breakpoint URL';
       try {
         const url = new URL(modifications.url);
         if (!['http:', 'https:'].includes(url.protocol)) return 'Breakpoint URL must use HTTP or HTTPS';
@@ -8782,10 +8783,18 @@ export class ProxyServer {
         return err.message;
       }
     }
-    if (Object.prototype.hasOwnProperty.call(modifications, 'status')) {
-      if (!Number.isInteger(modifications.status) || modifications.status < 100 || modifications.status > 999) {
+    for (const property of ['status', 'statusCode']) {
+      if (Object.prototype.hasOwnProperty.call(modifications, property)
+          && (!Number.isInteger(modifications[property])
+            || modifications[property] < 100
+            || modifications[property] > 599)) {
         return 'Invalid HTTP response status';
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(modifications, 'body')
+        && typeof modifications.body !== 'string'
+        && !Buffer.isBuffer(modifications.body)) {
+      return 'Breakpoint body must be a string or buffer';
     }
     return null;
   }

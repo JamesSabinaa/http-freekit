@@ -10,8 +10,8 @@ Status review completed on 27 July 2026 against source commit `00f3f7c`. This wa
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 309 |
-| Partially fixed | 21 |
+| Fixed | 310 |
+| Partially fixed | 20 |
 | Open | 30 |
 | **Total** | **360** |
 
@@ -458,8 +458,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-147 — High — Malformed breakpoint state can crash the proxy process
 
-- Status: **Partially fixed**.
-- Resolution: Non-array matcher state and invalid resume methods/headers are rejected. Matcher objects still receive no field-level type validation, and response resume bodies are not validated, so accepted state can still throw during matcher evaluation or response writes.
+- Status: **Fixed**.
+- Resolution: Breakpoint create, update, and restore now require every matcher to satisfy the complete matcher contract. Resume payloads reject invalid URLs, methods, headers, response statuses, and non-string/non-buffer bodies before releasing a pending request, preventing malformed state from reaching matcher evaluation or Node's request/response writers.
 
 - Evidence: breakpoint create/update accepts raw JSON at `src/api/api-server.js:921-929`; `_checkBreakpoint()` calls `.every()` on `matchers` at `src/proxy/proxy-server.js:4071-4075` without validating it is an array. Resume at `api-server.js:937-939` likewise accepts arbitrary method/headers that are merged at `proxy-server.js:625-629` and passed to Node request construction, where invalid tokens throw in an async EventEmitter handler without a rejection boundary.
 - Impact: one malformed persisted breakpoint can crash processing on every request, and one invalid resume payload can terminate the Node server.
