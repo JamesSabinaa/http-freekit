@@ -62,7 +62,12 @@ function rendererHarness(initialRequests = []) {
   const trafficEnd = rendererSource.indexOf('function parseFilters(', trafficStart);
   const rowStart = rendererSource.indexOf('function buildRowHtml(');
   const rowEnd = rendererSource.indexOf('// Render the visible virtual-scroll rows', rowStart);
-  for (const position of [stateStart, stateEnd, restoreStart, restoreEnd, trafficStart, trafficEnd, rowStart, rowEnd]) {
+  const toggleStart = rendererSource.indexOf('function toggleWsExpand(');
+  const toggleEnd = rendererSource.indexOf('// ============ SCROLL TO END', toggleStart);
+  for (const position of [
+    stateStart, stateEnd, restoreStart, restoreEnd, trafficStart, trafficEnd,
+    rowStart, rowEnd, toggleStart, toggleEnd
+  ]) {
     assert.notEqual(position, -1, 'renderer traffic function marker must exist');
   }
 
@@ -95,10 +100,12 @@ function rendererHarness(initialRequests = []) {
     ${rendererSource.slice(restoreStart, restoreEnd)}
     ${rendererSource.slice(trafficStart, trafficEnd)}
     ${rendererSource.slice(rowStart, rowEnd)}
+    ${rendererSource.slice(toggleStart, toggleEnd)}
     globalThis.addTrafficRequest = addRequest;
     globalThis.reloadTraffic = restoreTrafficDump;
     globalThis.expandTraffic = parentId => wsExpandedConnections.add(wsConnectionKey({ id: parentId }));
     globalThis.expandTrafficRequest = request => wsExpandedConnections.add(wsConnectionKey(request));
+    globalThis.toggleTraffic = toggleWsExpand;
     globalThis.filterTraffic = applyFilter;
     globalThis.filteredTrafficIds = () => filteredRequests.map(request => request.id);
     globalThis.frameIndex = () => Object.fromEntries(
@@ -468,7 +475,7 @@ test('legacy IDs cannot collide with lifecycle WebSocket frame keys', () => {
     ...trafficRecord('a', 'ws'),
     trafficLifecycleId: 'b'
   };
-  const legacyParent = trafficRecord(JSON.stringify(['lifecycle', 'a', 'b']), 'wss');
+  const legacyParent = trafficRecord(JSON.stringify(['a', 'b']), 'wss');
   const correlatedFrame = {
     ...trafficRecord('correlated-frame', 'ws-frame', correlatedParent.id),
     parentTrafficLifecycleId: correlatedParent.trafficLifecycleId
@@ -481,9 +488,28 @@ test('legacy IDs cannot collide with lifecycle WebSocket frame keys', () => {
     legacyFrame
   ]);
 
-  harness.context.expandTrafficRequest(correlatedParent);
-  harness.context.expandTrafficRequest(legacyParent);
   harness.context.filterTraffic();
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    correlatedParent.id,
+    legacyParent.id
+  ]);
+
+  harness.context.toggleTraffic(correlatedParent.id, correlatedParent.trafficLifecycleId);
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    correlatedParent.id,
+    correlatedFrame.id,
+    legacyParent.id
+  ]);
+
+  harness.context.toggleTraffic(correlatedParent.id, correlatedParent.trafficLifecycleId);
+  harness.context.toggleTraffic(legacyParent.id);
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    correlatedParent.id,
+    legacyParent.id,
+    legacyFrame.id
+  ]);
+
+  harness.context.toggleTraffic(correlatedParent.id, correlatedParent.trafficLifecycleId);
 
   assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
     correlatedParent.id,
