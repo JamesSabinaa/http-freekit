@@ -912,12 +912,11 @@ export class FreshTerminalInterceptor {
   _buildWindowsPowerShellCommand(proxyUrl, pidFile) {
     return [
       'try {',
-      "  $freeKitProcess = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = ' + $PID) -ErrorAction Stop | Select-Object -First 1",
-      '  if ($null -eq $freeKitProcess) { exit 1 }',
+      '  $freeKitProcess = [Diagnostics.Process]::GetCurrentProcess()',
       '  $freeKitIdentity = [PSCustomObject]@{',
       '    pid = [int]$PID',
-      '    startTime = [string]([DateTime]$freeKitProcess.CreationDate).ToUniversalTime().Ticks',
-      '    executable = [string]$freeKitProcess.ExecutablePath',
+      '    startTime = [string]$freeKitProcess.StartTime.ToUniversalTime().Ticks',
+      '    executable = [string]$freeKitProcess.MainModule.FileName',
       '  }',
       `  [IO.File]::WriteAllText(${powerShellQuote(pidFile)}, ($freeKitIdentity | ConvertTo-Json -Compress))`,
       '  $freeKitDeadline = [DateTime]::UtcNow.AddSeconds(3)',

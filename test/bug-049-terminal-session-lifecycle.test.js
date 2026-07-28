@@ -197,6 +197,7 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
   assert.match(launches[0].args[5], /ConvertTo-Json -Compress/);
   assert.match(launches[0].args[5], /\.ack/);
   assert.match(launches[0].args[5], /exit 1/);
+  assert.doesNotMatch(launches[0].args[5], /Get-CimInstance/);
 
   interceptor._stopStatusMonitor();
   cmdLauncher.exitCode = 0;
