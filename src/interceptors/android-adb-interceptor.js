@@ -1865,7 +1865,9 @@ export class AndroidAdbInterceptor {
         model: device.model,
         mode: activationMode,
         proxyUrl: mode === 'http-toolkit-app'
-          ? `HTTP Toolkit Android VPN app -> http://127.0.0.1:${proxyPort} via ADB reverse`
+          ? tunnelActive
+            ? `HTTP Toolkit Android VPN app -> http://127.0.0.1:${proxyPort} via ADB reverse`
+            : `HTTP Toolkit Android VPN app -> HTTP FreeKit proxy on the device network (port ${proxyPort})`
           : `http://${hostIp}:${proxyPort}`,
         httpToolkitAppInstalled: appInstalled,
         httpToolkitTunnelActive: tunnelActive,

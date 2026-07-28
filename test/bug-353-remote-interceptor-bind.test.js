@@ -188,6 +188,38 @@ test('loopback binding keeps Android companion activation available through ADB 
   assert.equal(interceptor.activatedDevices.get(device.serial).mode, 'app-uncertain');
 });
 
+test('companion activation metadata reports a direct device-network route without ADB reverse', async () => {
+  const interceptor = new AndroidAdbInterceptor({ proxyBindHost: '0.0.0.0' });
+  configureCa(interceptor);
+  interceptor._getConnectedDevices = async () => [device];
+  interceptor._getHostInterfaces = () => [{
+    name: 'Wi-Fi',
+    address: '192.0.2.10',
+    netmask: '255.255.255.0',
+    prefixLength: 24
+  }];
+  interceptor._prepareHttpToolkitAppActivation = async () => ({
+    success: true,
+    appInstalled: true,
+    previousReverseMapping: 'tcp:9000'
+  });
+  interceptor._activateHttpToolkitApp = async () => ({
+    success: true,
+    appInstalled: true,
+    tunnelActive: false
+  });
+
+  const result = await interceptor.activate(8080, {
+    deviceId: device.serial,
+    useHttpToolkitApp: true
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.metadata.httpToolkitTunnelActive, false);
+  assert.match(result.metadata.proxyUrl, /device network \(port 8080\)/);
+  assert.doesNotMatch(result.metadata.proxyUrl, /ADB reverse/);
+});
+
 test('loopback companion activation does not claim success when ADB reverse fails', async () => {
   const interceptor = new AndroidAdbInterceptor({ proxyBindHost: '127.0.0.1' });
   configureCa(interceptor);
