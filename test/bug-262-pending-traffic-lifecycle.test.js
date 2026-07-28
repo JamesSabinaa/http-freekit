@@ -440,7 +440,7 @@ class FakeResponse extends EventEmitter {
   }
 }
 
-function seedPending(proxy, requestId, protocol) {
+function seedPending(proxy, requestId, protocol, timestamp = Date.now()) {
   proxy._emitPendingRequest({
     id: requestId,
     protocol,
@@ -451,7 +451,7 @@ function seedPending(proxy, requestId, protocol) {
     requestHeaders: {},
     requestBody: '',
     requestBodySize: 0,
-    timestamp: Date.now(),
+    timestamp,
     source: 'proxy',
     tls: null,
     remote: null
@@ -519,8 +519,9 @@ test('native H2 mock terminal actions all complete their pending row', async t =
       const capture = attachTrafficLifecycle(proxy);
       const requestId = `h2-${scenario.name}`;
       const stream = new FakeResponse();
+      const startTime = Date.now();
       configureActionDependency(proxy, scenario.dependency);
-      seedPending(proxy, requestId, 'h2');
+      seedPending(proxy, requestId, 'h2', startTime);
 
       await proxy._handleH2MockResponse(stream, { action: scenario.action }, {
         requestId,
@@ -531,7 +532,7 @@ test('native H2 mock terminal actions all complete their pending row', async t =
         reqHeaders: {},
         body: Buffer.alloc(0),
         requestTrailers: {},
-        startTime: Date.now(),
+        startTime,
         tlsDetails: null,
         downstream: null
       });
@@ -555,8 +556,9 @@ test('H1-on-H2 mock terminal actions all complete through the shared H1 engine',
         rawHeaders: [],
         trailers: {}
       };
+      const startTime = Date.now();
       configureActionDependency(proxy, scenario.dependency);
-      seedPending(proxy, requestId, 'https');
+      seedPending(proxy, requestId, 'https', startTime);
 
       await proxy._serveMockResponseH1OnH2(
         requestId,
@@ -567,7 +569,7 @@ test('H1-on-H2 mock terminal actions all complete through the shared H1 engine',
         443,
         Buffer.alloc(0),
         { action: scenario.action },
-        Date.now(),
+        startTime,
         null
       );
 
@@ -601,6 +603,7 @@ test('a mock remains suppressed when traffic filtering hid its pending event', a
   const proxy = new ProxyServer(null);
   const capture = attachTrafficLifecycle(proxy);
   proxy._shouldSuppressTrafficLog = data => data._pending === true;
+  const startTime = Date.now();
   const pendingEmitted = proxy._emitPendingRequest({
     id: 'filtered-pending',
     protocol: 'https',
@@ -611,7 +614,7 @@ test('a mock remains suppressed when traffic filtering hid its pending event', a
     requestHeaders: {},
     requestBody: '',
     requestBodySize: 0,
-    timestamp: Date.now(),
+    timestamp: startTime,
     source: 'proxy'
   });
   assert.equal(pendingEmitted, false);
@@ -625,7 +628,7 @@ test('a mock remains suppressed when traffic filtering hid its pending event', a
     443,
     Buffer.alloc(0),
     { action: { type: 'fixed-response', status: 205, body: '' } },
-    Date.now(),
+    startTime,
     null,
     null,
     pendingEmitted

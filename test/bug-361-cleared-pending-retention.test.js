@@ -113,14 +113,15 @@ test('proxy carries clear generations while current evicted requests still compl
     source: 'proxy'
   });
 
-  proxy._emitPendingRequest(baseEvent('cleared'));
+  const clearedEvent = baseEvent('cleared');
+  proxy._emitPendingRequest({ ...clearedEvent });
   assert.equal(typeof proxy._pendingTrafficLogDecisions.get('cleared').trafficClearGeneration,
     'symbol');
   api._clearTraffic();
   api._clearedPendingTrafficIds.clear();
   broadcasts.length = 0;
   proxy._emitRequestUpdate({
-    ...baseEvent('cleared'),
+    ...clearedEvent,
     statusCode: 200,
     responseHeaders: {},
     responseBody: '',
@@ -131,12 +132,13 @@ test('proxy carries clear generations while current evicted requests still compl
   assert.deepEqual(broadcasts, []);
   assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 
-  proxy._emitPendingRequest(baseEvent('current'));
+  const currentEvent = baseEvent('current');
+  proxy._emitPendingRequest({ ...currentEvent });
   api.onTrafficEvent({ id: 'newer', method: 'GET', timestamp: Date.now() });
   assert.deepEqual(api.trafficLog.map(request => request.id), ['newer']);
   broadcasts.length = 0;
   proxy._emitRequestUpdate({
-    ...baseEvent('current'),
+    ...currentEvent,
     statusCode: 201,
     responseHeaders: {},
     responseBody: '',
@@ -355,4 +357,100 @@ test('uncorrelated same-ID traffic cannot consume an active lifecycle decision',
   assert.equal(events.length, 3);
   assert.equal(events[2].trafficLifecycleId, pendingDecision.trafficLifecycleId);
   assert.equal(proxy._pendingTrafficLogDecisions.has('reused'), false);
+});
+
+test('uncorrelated same-ID updates append without clearing the API lifecycle', () => {
+  const proxy = new ProxyServer(null);
+  const api = new ApiServer(proxy, null, null);
+  const broadcasts = [];
+  api._broadcast = event => broadcasts.push(structuredClone(event));
+  proxy.onRequest = event => api.onTrafficEvent(event);
+  const request = (path, timestamp) => ({
+    id: 'reused-update', protocol: 'https', method: 'GET',
+    url: `https://pending.test${path}`, host: 'pending.test', path,
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp, source: 'proxy'
+  });
+
+  proxy._emitPendingRequest(request('/pending', 1_000));
+  const pendingDecision = proxy._pendingTrafficLogDecisions.get('reused-update');
+  broadcasts.length = 0;
+
+  proxy._emitRequestUpdate({
+    ...request('/standalone', 2_000),
+    statusCode: 204, responseHeaders: {}, responseBody: '', responseBodySize: 0,
+    duration: 1
+  });
+
+  assert.deepEqual(api.trafficLog.map(record => [record.path, record.statusCode]), [
+    ['/pending', null],
+    ['/standalone', 204]
+  ]);
+  assert.deepEqual(broadcasts.map(event => event.type), ['request']);
+  assert.equal(api._pendingTrafficIds.has('reused-update'), true);
+  assert.equal(api._pendingTrafficLifecycles.get('reused-update').size, 1);
+  assert.equal(proxy._pendingTrafficLogDecisions.get('reused-update'), pendingDecision);
+
+  proxy._emitRequestUpdate({
+    ...request('/pending', 1_000),
+    statusCode: 200, responseHeaders: {}, responseBody: '', responseBodySize: 0,
+    duration: 10
+  });
+
+  assert.deepEqual(api.trafficLog.map(record => [record.path, record.statusCode]), [
+    ['/pending', 200],
+    ['/standalone', 204]
+  ]);
+  assert.deepEqual(broadcasts.map(event => event.type), ['request', 'request-update']);
+  assert.equal(api._pendingTrafficIds.size, 0);
+  assert.equal(api._pendingTrafficLifecycles.size, 0);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+});
+
+test('lifecycle correlation requires timestamp and request identity to agree', () => {
+  const proxy = new ProxyServer(null);
+  proxy.onRequest = () => {};
+  const pendingEvent = {
+    id: 'evidence', protocol: 'https', method: 'GET',
+    url: 'https://pending.test/original', host: 'pending.test', path: '/original',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  };
+  proxy._emitPendingRequest({ ...pendingEvent }, 'pending-lifecycle');
+  const decision = proxy._pendingTrafficLogDecisions.get('evidence');
+
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...pendingEvent,
+    method: 'POST', url: 'https://other.test/other', host: 'other.test', path: '/other'
+  }), null, 'matching timestamp cannot override a different identity');
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...pendingEvent,
+    timestamp: 2_000
+  }), null, 'matching identity cannot override a different timestamp');
+  assert.equal(proxy._pendingTrafficLogDecisions.get('evidence'), decision);
+});
+
+test('original request identity is authoritative for transformed completions', () => {
+  const proxy = new ProxyServer(null);
+  const events = [];
+  proxy.onRequest = event => events.push(structuredClone(event));
+  const request = path => ({
+    id: 'transformed', protocol: 'https', method: 'GET',
+    url: `https://pending.test${path}`, host: 'pending.test', path,
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  });
+
+  proxy._emitPendingRequest(request('/current'), 'current-lifecycle');
+  proxy._emitPendingRequest(request('/original'), 'original-lifecycle');
+  proxy._emitRequestUpdate({
+    ...request('/current'),
+    originalRequest: { method: 'GET', url: 'https://pending.test/original' },
+    statusCode: 200, responseHeaders: {}, responseBody: '', responseBodySize: 0,
+    duration: 10
+  });
+
+  assert.equal(events.at(-1).trafficLifecycleId, 'original-lifecycle');
+  assert.equal(proxy._pendingTrafficLogDecisions.get('transformed').trafficLifecycleId,
+    'current-lifecycle');
 });

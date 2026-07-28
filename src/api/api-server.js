@@ -2590,8 +2590,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     const trafficClearGeneration = data._trafficClearGeneration;
     const trafficLifecycleToken = data._trafficLifecycleToken;
+    const preservePendingTrafficLifecycle = data._preservePendingTrafficLifecycle === true;
     delete data._trafficClearGeneration;
     delete data._trafficLifecycleToken;
+    delete data._preservePendingTrafficLifecycle;
     if (trafficClearGeneration !== undefined &&
         trafficClearGeneration !== this._trafficClearGeneration) {
       if (data._update || trafficLifecycleToken !== undefined) {
@@ -2638,7 +2640,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           value: this._trafficClearGeneration,
           configurable: true
         });
-      } else {
+      } else if (!preservePendingTrafficLifecycle) {
         this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
       }
       delete data._pending;

@@ -8757,6 +8757,7 @@ export class ProxyServer {
       _trafficLifecycleComplete,
       _trafficClearGeneration,
       _trafficLifecycleToken,
+      _preservePendingTrafficLifecycle,
       ...record
     } = data;
     return record;
@@ -8797,18 +8798,9 @@ export class ProxyServer {
     const objectDecisions = selectableDecisions.filter(
       decision => decision && typeof decision === 'object'
     );
-    const timestampMatches = data.timestamp === undefined
-      ? []
-      : objectDecisions.filter(decision => decision.record?.timestamp === data.timestamp);
-    const candidates = timestampMatches.length > 0 ? timestampMatches : objectDecisions;
     const identityFields = ['method', 'url', 'host', 'path'];
-    const hasIdentity = identityFields.some(field => data[field] !== undefined);
-    let identityMatch = hasIdentity
-      ? candidates.find(decision => identityFields.every(field =>
-          data[field] === undefined || decision.record?.[field] === data[field]
-        ))
-      : undefined;
-    if (!identityMatch && data.originalRequest && typeof data.originalRequest === 'object') {
+    let identity = data;
+    if (data.originalRequest && typeof data.originalRequest === 'object') {
       let originalUrl;
       try {
         originalUrl = data.originalRequest.url === undefined
@@ -8823,13 +8815,21 @@ export class ProxyServer {
         host: originalUrl?.hostname,
         path: originalUrl ? originalUrl.pathname + originalUrl.search : undefined
       };
-      identityMatch = candidates.find(decision => identityFields.every(field =>
-        originalIdentity[field] === undefined ||
-        decision.record?.[field] === originalIdentity[field]
-      ));
+      if (identityFields.some(field => originalIdentity[field] !== undefined)) {
+        identity = originalIdentity;
+      }
     }
-    const correlatedDecision = identityMatch ||
-      (timestampMatches.length === 1 ? timestampMatches[0] : undefined);
+    const hasIdentity = identityFields.some(field => identity[field] !== undefined);
+    const hasTimestamp = data.timestamp !== undefined;
+    const candidates = objectDecisions.filter(decision =>
+      (!hasTimestamp || decision.record?.timestamp === data.timestamp) &&
+      (!hasIdentity || identityFields.every(field =>
+        identity[field] === undefined || decision.record?.[field] === identity[field]
+      ))
+    );
+    const correlatedDecision = hasIdentity
+      ? candidates[0]
+      : (hasTimestamp && candidates.length === 1 ? candidates[0] : undefined);
     return correlatedDecision ? { decision: correlatedDecision } : null;
   }
 
@@ -8867,6 +8867,13 @@ export class ProxyServer {
     const pendingSelection = data._pending !== true && data.id !== undefined
       ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
       : null;
+    if (data._pending !== true && pendingSelection === null && data.id !== undefined &&
+        this._pendingTrafficLogDecisions.has(data.id)) {
+      Object.defineProperty(data, '_preservePendingTrafficLifecycle', {
+        value: true,
+        configurable: true
+      });
+    }
     const hasPendingDecision = pendingSelection !== null;
     const pendingDecision = pendingSelection?.decision;
     const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
@@ -8951,6 +8958,15 @@ export class ProxyServer {
     const pendingSelection = data.id !== undefined
       ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
       : null;
+    if (pendingSelection === null && data.id !== undefined &&
+        this._pendingTrafficLogDecisions.has(data.id)) {
+      delete data._update;
+      delete data._mergeUpdate;
+      Object.defineProperty(data, '_preservePendingTrafficLifecycle', {
+        value: true,
+        configurable: true
+      });
+    }
     const hasPendingDecision = pendingSelection !== null;
     const pendingDecision = pendingSelection?.decision;
     const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
