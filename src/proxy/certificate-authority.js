@@ -7,6 +7,8 @@ import { refreshTerminalCaBundle, terminalCaBundlePath } from './terminal-ca-bun
 
 const { pki, md, asn1 } = forge;
 const CA_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+const CA_AUTO_RENEWAL_WINDOW_MS = 48 * 60 * 60 * 1000;
+const CA_RENEWAL_NOTICE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export class CertificateAuthority {
   constructor(dataDir) {
@@ -14,15 +16,26 @@ export class CertificateAuthority {
     this.caKeyPath = path.join(dataDir, 'ca.key');
     this.caCertPath = path.join(dataDir, 'ca.pem');
     this.caReplacementStatePath = path.join(dataDir, 'ca-replacements.json');
+    this.caRenewalStatePath = path.join(dataDir, 'ca-renewal.json');
     this.terminalCaBundlePath = terminalCaBundlePath(this.caCertPath);
     this.caKey = null;
     this.caCert = null;
     this.certCache = new Map();
     this.certPromises = new Map();
+    this.pendingReplacementFingerprints = [];
+    this.renewalScheduled = false;
+    this.automaticRenewalDeferred = false;
+    this.autoRenewExpiring = true;
   }
 
-  async initialize() {
+  async initialize(options = {}) {
+    const autoRenewExpiring = options.autoRenewExpiring !== false;
+    this.autoRenewExpiring = autoRenewExpiring;
     let replacedCertificateFingerprints = this._loadReplacementFingerprints();
+    this.pendingReplacementFingerprints = replacedCertificateFingerprints;
+    let scheduledRenewal = this._loadScheduledRenewal();
+    this.renewalScheduled = scheduledRenewal !== null;
+    this.automaticRenewalDeferred = false;
     let existingCertPem = null;
     let existingCertReadError = null;
     if (fs.existsSync(this.caCertPath)) {
@@ -53,6 +66,16 @@ export class CertificateAuthority {
       throw new Error(`Could not read existing CA certificate: ${existingCertReadError.message}`);
     }
 
+    const existingCertificateFingerprint = this._sha1Fingerprint(existingCertPem);
+    if (scheduledRenewal && existingCertificateFingerprint
+        && scheduledRenewal.fingerprint !== existingCertificateFingerprint) {
+      // A crash after writing the replacement but before deleting the marker
+      // must not rotate the new identity a second time.
+      this.cancelScheduledRenewal();
+      scheduledRenewal = null;
+    }
+
+    let generatedCa = false;
     if (fs.existsSync(this.caCertPath) && fs.existsSync(this.caKeyPath)) {
       let loadedExistingCa = false;
       try {
@@ -69,20 +92,34 @@ export class CertificateAuthority {
 
       if (loadedExistingCa) {
         const expiry = this.caCert.validity.notAfter;
-        const hoursLeft = (expiry - Date.now()) / (1000 * 60 * 60);
-        if (hoursLeft < 48) {
+        const renewalDue = expiry.getTime() - Date.now() < CA_AUTO_RENEWAL_WINDOW_MS;
+        if (scheduledRenewal || (renewalDue && autoRenewExpiring)) {
           rememberReplacedCertificate();
-          console.log('[CA] Certificate expiring soon, regenerating...');
+          console.log(scheduledRenewal
+            ? '[CA] Applying explicitly scheduled CA renewal...'
+            : '[CA] Certificate expiring soon, regenerating...');
           await this._generateCA();
+          generatedCa = true;
+        } else if (renewalDue) {
+          this.automaticRenewalDeferred = true;
+          console.warn(
+            '[CA] Certificate expires soon; automatic renewal is deferred to preserve external trust'
+          );
         } else {
           console.log('[CA] Loaded existing CA certificate');
         }
       } else {
         await this._generateCA();
+        generatedCa = true;
       }
     } else {
       rememberReplacedCertificate();
       await this._generateCA();
+      generatedCa = true;
+    }
+
+    if (scheduledRenewal && generatedCa) {
+      this.cancelScheduledRenewal();
     }
 
     const certContent = fs.readFileSync(this.caCertPath, 'utf8');
@@ -96,6 +133,7 @@ export class CertificateAuthority {
       this.setPendingReplacementFingerprints(obsoleteCertificateFingerprints);
       replacedCertificateFingerprints = obsoleteCertificateFingerprints;
     }
+    this.pendingReplacementFingerprints = replacedCertificateFingerprints;
 
     return {
       certPath: this.caCertPath,
@@ -103,8 +141,21 @@ export class CertificateAuthority {
       keyPath: this.caKeyPath,
       fingerprint: this._getFingerprint(),
       replacedCertificateFingerprint: replacedCertificateFingerprints[0] || null,
-      replacedCertificateFingerprints
+      replacedCertificateFingerprints,
+      renewalRequired: this._isRenewalRequired(),
+      renewalScheduled: this.renewalScheduled,
+      automaticRenewalDeferred: this.automaticRenewalDeferred
     };
+  }
+
+  _sha1Fingerprint(certPem) {
+    if (!certPem) return null;
+    try {
+      return new crypto.X509Certificate(certPem)
+        .fingerprint.replace(/:/g, '').toUpperCase();
+    } catch {
+      return null;
+    }
   }
 
   _normalizeSha1Fingerprint(value) {
@@ -135,6 +186,7 @@ export class CertificateAuthority {
       try { fs.unlinkSync(this.caReplacementStatePath); } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
+      this.pendingReplacementFingerprints = [];
       return;
     }
 
@@ -156,6 +208,7 @@ export class CertificateAuthority {
           fs.closeSync(directoryDescriptor);
         }
       }
+      this.pendingReplacementFingerprints = fingerprints;
     } catch (error) {
       if (descriptor !== null) {
         try { fs.closeSync(descriptor); } catch {}
@@ -163,6 +216,61 @@ export class CertificateAuthority {
       try { fs.unlinkSync(temporaryPath); } catch {}
       throw error;
     }
+  }
+
+  _loadScheduledRenewal() {
+    if (!fs.existsSync(this.caRenewalStatePath)) return null;
+    const state = JSON.parse(fs.readFileSync(this.caRenewalStatePath, 'utf8'));
+    const fingerprint = this._normalizeSha1Fingerprint(state?.fingerprint);
+    if (!state || state.version !== 1 || !fingerprint) {
+      throw new Error('Scheduled CA renewal state has an unsupported format');
+    }
+    return { fingerprint };
+  }
+
+  scheduleRenewal() {
+    if (!this.caCert) throw new Error('Certificate Authority is not initialized');
+    if (this.renewalScheduled) return;
+    const fingerprint = this._sha1Fingerprint(pki.certificateToPem(this.caCert));
+    if (!fingerprint) throw new Error('Current CA fingerprint is unavailable');
+    const temporaryPath = `${this.caRenewalStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    let descriptor = null;
+    try {
+      descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(descriptor, JSON.stringify({ version: 1, fingerprint }), 'utf8');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = null;
+      fs.renameSync(temporaryPath, this.caRenewalStatePath);
+      fs.chmodSync(this.caRenewalStatePath, 0o600);
+      if (process.platform !== 'win32') {
+        const directoryDescriptor = fs.openSync(path.dirname(this.caRenewalStatePath), 'r');
+        try {
+          fs.fsyncSync(directoryDescriptor);
+        } finally {
+          fs.closeSync(directoryDescriptor);
+        }
+      }
+      this.renewalScheduled = true;
+    } catch (error) {
+      if (descriptor !== null) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+      try { fs.unlinkSync(temporaryPath); } catch {}
+      throw error;
+    }
+  }
+
+  cancelScheduledRenewal() {
+    try { fs.unlinkSync(this.caRenewalStatePath); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    this.renewalScheduled = false;
+  }
+
+  _isRenewalRequired(now = Date.now()) {
+    return Boolean(this.caCert)
+      && this.caCert.validity.notAfter.getTime() - now < CA_RENEWAL_NOTICE_WINDOW_MS;
   }
 
   _validateCaPair(certPem, keyPem) {
@@ -358,12 +466,19 @@ export class CertificateAuthority {
   }
 
   getCertInfo() {
+    const certificateExpiry = this.caCert.validity.notAfter.getTime();
     return {
       certificatePath: this.caCertPath,
       certificateContent: pki.certificateToPem(this.caCert),
       certificateFingerprint: this._getFingerprint(),
       certificateSpkiFingerprint: this.getSpkiFingerprint(),
-      certificateExpiry: this.caCert.validity.notAfter.getTime(),
+      certificateExpiry,
+      certificateExpired: certificateExpiry <= Date.now(),
+      certificateRenewalRequired: this._isRenewalRequired(),
+      certificateRenewalScheduled: this.renewalScheduled,
+      certificateAutomaticRenewalEnabled: this.autoRenewExpiring,
+      certificateAutomaticRenewalDeferred: this.automaticRenewalDeferred,
+      certificateReplacementPending: this.pendingReplacementFingerprints.length > 0,
       terminalCaBundlePath: this.terminalCaBundlePath
     };
   }

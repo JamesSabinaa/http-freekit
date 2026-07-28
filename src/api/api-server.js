@@ -2066,6 +2066,48 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     // Certificate download
+    router.post('/api/certificate/renewal', (req, res) => {
+      try {
+        const certInfo = this.ca.getCertInfo();
+        if (certInfo.certificateAutomaticRenewalEnabled) {
+          return res.status(409).json({
+            error: 'CA renewal is managed automatically on this platform'
+          });
+        }
+        if (!certInfo.certificateRenewalRequired) {
+          return res.status(409).json({
+            error: 'CA renewal can be scheduled only within 30 days of expiry'
+          });
+        }
+        this.ca.scheduleRenewal();
+        res.json({
+          success: true,
+          scheduled: true,
+          note: 'The CA will be replaced on the next application restart'
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Could not schedule CA renewal: ${error.message}` });
+      }
+    });
+
+    router.delete('/api/certificate/renewal', (req, res) => {
+      try {
+        this.ca.cancelScheduledRenewal();
+        res.json({ success: true, scheduled: false });
+      } catch (error) {
+        res.status(500).json({ error: `Could not cancel CA renewal: ${error.message}` });
+      }
+    });
+
+    router.post('/api/certificate/replacement-acknowledgement', (req, res) => {
+      try {
+        this.ca.setPendingReplacementFingerprints([]);
+        res.json({ success: true });
+      } catch (error) {
+        res.status(500).json({ error: `Could not acknowledge CA replacement: ${error.message}` });
+      }
+    });
+
     router.get('/api/certificate', (req, res) => {
       const certInfo = this.ca.getCertInfo();
       res.setHeader('Content-Type', 'application/x-pem-file');

@@ -10,9 +10,9 @@ Status review completed on 27 July 2026 against source commit `00f3f7c`. This wa
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 311 |
+| Fixed | 312 |
 | Partially fixed | 19 |
-| Open | 30 |
+| Open | 29 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -652,7 +652,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-182 — Medium — Automatic CA renewal breaks non-Windows trust
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Startup now renews an expiring CA automatically only where Windows trust migration is available. Other platforms preserve the currently trusted identity, expose expiry and migration state 30 days ahead, and require an explicit, crash-safe renewal scheduled for the next restart. The TLS settings UI supports scheduling or cancelling that renewal and keeps warning until the replacement CA has been installed in manually configured clients and acknowledged.
 
 - Evidence: startup regenerates an expiring CA and overwrites its files at `src/proxy/certificate-authority.js:19-36,47-85`. Boot installs/replaces trust only on Windows and does nothing equivalent on macOS/Linux at `src/index.js:43-58`.
 - Impact: after the one-year renewal, previously configured macOS, Linux, browser, and device clients reject all interception without a warning or re-trust migration.

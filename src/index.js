@@ -57,7 +57,7 @@ async function initializeApplication(apiPort) {
   // 1. Initialize Certificate Authority
   console.log('[Boot] Initializing Certificate Authority...');
   const ca = new CertificateAuthority(DATA_DIR);
-  const certInfo = await ca.initialize();
+  const certInfo = await ca.initialize({ autoRenewExpiring: process.platform === 'win32' });
   console.log(`[Boot] CA certificate: ${certInfo.certPath}`);
   console.log(`[Boot] CA fingerprint: ${certInfo.fingerprint.substring(0, 16)}...`);
 
@@ -89,6 +89,12 @@ async function initializeApplication(apiPort) {
     }
   } else {
     ca.systemTrustInstalled = false;
+    if (certInfo.automaticRenewalDeferred) {
+      console.warn(
+        '[Boot] Automatic CA renewal was deferred to preserve external trust; ' +
+        'schedule renewal from Settings > TLS when clients are ready to install the replacement'
+      );
+    }
     if (certInfo.replacedCertificateFingerprints.length > 0) {
       console.warn(
         `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`

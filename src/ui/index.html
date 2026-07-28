@@ -530,7 +530,19 @@
     <button class="btn" onclick="addHttpsWhitelist()" style="font-size:11px;">Add</button>
   </div>
 </div>
-          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;"><div class="card-header">Certificate Authority</div><div class="settings-row"><span class="settings-label">CA Fingerprint</span><span class="settings-value" style="font-size:10px;word-break:break-all;max-width:400px;" id="settingsCaFingerprint">--</span></div><div class="settings-row"><span class="settings-label">Download</span><button class="btn" onclick="downloadCert()">Download .pem</button></div><p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">To intercept HTTPS from manually configured clients, install this CA cert. Browsers launched from the Intercept page are configured automatically.</p></div>
+          <div class="card settings-card" data-settings-section="tls" style="margin-bottom:20px;">
+            <div class="card-header">Certificate Authority</div>
+            <div class="settings-row"><span class="settings-label">CA Fingerprint</span><span class="settings-value" style="font-size:10px;word-break:break-all;max-width:400px;" id="settingsCaFingerprint">--</span></div>
+            <div class="settings-row"><span class="settings-label">Expires</span><span class="settings-value" id="settingsCaExpiry">--</span></div>
+            <div class="settings-row"><span class="settings-label">Download</span><button class="btn" onclick="downloadCert()">Download .pem</button></div>
+            <div id="settingsCaRenewalNotice" role="status" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--warning-color);border-radius:5px;color:var(--text-main);font-size:12px;line-height:1.5;"></div>
+            <div id="settingsCaRenewalActions" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap;">
+              <button class="btn" id="settingsCaScheduleRenewal" onclick="scheduleCaRenewal()">Renew on next restart</button>
+              <button class="btn" id="settingsCaCancelRenewal" onclick="cancelCaRenewal()">Cancel scheduled renewal</button>
+              <button class="btn" id="settingsCaAcknowledgeReplacement" onclick="acknowledgeCaReplacement()">I have re-trusted this CA</button>
+            </div>
+            <p style="font-size:12px;color:var(--text-lowlight);margin-top:10px;line-height:1.5;">To intercept HTTPS from manually configured clients, install this CA cert. Browsers launched from the Intercept page are configured automatically.</p>
+          </div>
           <div class="card settings-card is-active" data-settings-section="general" style="margin-bottom:20px;">
             <div class="card-header">Theme</div>
             <div class="settings-row">

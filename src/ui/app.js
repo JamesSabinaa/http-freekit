@@ -9099,6 +9099,55 @@
     }
 
     // ============ CONFIG ============
+    function renderCaRenewalState(config) {
+      const expiry = document.getElementById('settingsCaExpiry');
+      if (expiry) {
+        const expiryTime = Number(config?.certificateExpiry);
+        expiry.textContent = Number.isFinite(expiryTime)
+          ? new Date(expiryTime).toLocaleString()
+          : '--';
+      }
+
+      const notice = document.getElementById('settingsCaRenewalNotice');
+      const actions = document.getElementById('settingsCaRenewalActions');
+      const schedule = document.getElementById('settingsCaScheduleRenewal');
+      const cancel = document.getElementById('settingsCaCancelRenewal');
+      const acknowledge = document.getElementById('settingsCaAcknowledgeReplacement');
+      const scheduled = config?.certificateRenewalScheduled === true;
+      const replacementPending = config?.certificateReplacementPending === true;
+      const renewalRequired = config?.certificateRenewalRequired === true;
+      const expired = config?.certificateExpired === true;
+      const automaticRenewal = config?.certificateAutomaticRenewalEnabled === true;
+
+      let message = '';
+      if (scheduled) {
+        message = 'CA renewal is scheduled for the next restart. Existing manually configured clients will need to install the replacement certificate.';
+      } else if (replacementPending) {
+        message = 'The CA was replaced. Download and install this certificate in every manually configured client, remove the previous CA when convenient, then acknowledge the migration here.';
+      } else if (renewalRequired) {
+        message = automaticRenewal
+          ? 'This CA expires within 30 days. Windows will install its replacement automatically during the final 48 hours; manually configured external clients will still need the new certificate.'
+          : expired
+          ? 'This CA has expired. Automatic replacement is paused outside Windows so the trusted identity is not changed without your approval.'
+          : 'This CA expires within 30 days. Automatic replacement is paused outside Windows so manually configured clients are not silently disconnected.';
+      }
+
+      if (notice) {
+        notice.textContent = message;
+        notice.style.display = message ? 'block' : 'none';
+      }
+      if (schedule) {
+        schedule.style.display = renewalRequired && !scheduled && !automaticRenewal ? '' : 'none';
+      }
+      if (cancel) cancel.style.display = scheduled ? '' : 'none';
+      if (acknowledge) acknowledge.style.display = replacementPending && !scheduled ? '' : 'none';
+      if (actions) {
+        const hasActions = scheduled || replacementPending
+          || (renewalRequired && !automaticRenewal);
+        actions.style.display = hasActions ? 'flex' : 'none';
+      }
+    }
+
     async function loadConfig() {
       const portConfigPromise = loadPortConfig();
       try {
@@ -9107,6 +9156,7 @@
         if (data.config) {
           const fpEl = document.getElementById('settingsCaFingerprint');
           if (fpEl) fpEl.textContent = data.config.certificateFingerprint || '--';
+          if (typeof renderCaRenewalState === 'function') renderCaRenewalState(data.config);
           const mpEl = document.getElementById('manualProxyPort');
           if (mpEl) mpEl.textContent = data.config.proxyPort;
         }
@@ -10447,6 +10497,50 @@
 
     function downloadCert() {
       window.open(authenticatedApiUrl(`${API_BASE}/api/certificate`), '_blank');
+    }
+
+    async function updateCaRenewal(method, path, successMessage) {
+      try {
+        const response = await fetch(API_BASE + path, { method });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `CA renewal request failed (${response.status})`);
+        toast(successMessage, 'success');
+        await loadConfig();
+      } catch (error) {
+        toast(error.message, 'error');
+      }
+    }
+
+    async function scheduleCaRenewal() {
+      const confirmed = confirm(
+        'Renew the CA on the next restart? Manually configured browsers, devices, and operating systems will reject intercepted HTTPS until they install the replacement certificate.'
+      );
+      if (!confirmed) return;
+      await updateCaRenewal(
+        'POST',
+        '/api/certificate/renewal',
+        'CA renewal scheduled for the next restart'
+      );
+    }
+
+    async function cancelCaRenewal() {
+      await updateCaRenewal(
+        'DELETE',
+        '/api/certificate/renewal',
+        'Scheduled CA renewal cancelled'
+      );
+    }
+
+    async function acknowledgeCaReplacement() {
+      const confirmed = confirm(
+        'Confirm that the current CA has been installed in your manually configured clients?'
+      );
+      if (!confirmed) return;
+      await updateCaRenewal(
+        'POST',
+        '/api/certificate/replacement-acknowledgement',
+        'CA trust migration acknowledged'
+      );
     }
 
     // ============ SORTING ============
