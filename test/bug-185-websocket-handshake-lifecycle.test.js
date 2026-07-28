@@ -151,6 +151,59 @@ test('an upstream WebSocket error completes its pending traffic parent as 502', 
   assert.equal(storedParents[0].statusCode, 502);
 });
 
+test('shutdown aborts a delayed upstream upgrade before it can publish a late 101', async t => {
+  let originSocket;
+  let reportHandshake;
+  const handshakeReceived = new Promise(resolve => { reportHandshake = resolve; });
+  const origin = net.createServer(socket => {
+    originSocket = socket;
+    socket.on('error', () => {});
+    socket.once('data', reportHandshake);
+  });
+  const originPort = await listen(origin);
+  const capture = captureTraffic();
+  const proxy = new ProxyServer(null, { port: 0, onRequest: data => capture.onRequest(data) });
+  await proxy.start();
+  const client = await openUpgrade(proxy.server.address().port, originPort);
+
+  t.after(async () => {
+    client.socket.destroy();
+    originSocket?.destroy();
+    await proxy.stop();
+    await close(origin);
+  });
+
+  await handshakeReceived;
+  client.socket.destroy();
+  await proxy.stop();
+  await waitFor(() => originSocket?.destroyed, 'Timed out waiting for the upstream handshake abort');
+
+  const eventsAtStop = capture.events.length;
+  if (!originSocket.destroyed) {
+    originSocket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Connection: Upgrade\r\n' +
+      'Upgrade: websocket\r\n\r\n'
+    );
+  }
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  assert.equal(capture.events.length, eventsAtStop);
+  assert.equal(capture.events.some(event => event.statusCode === 101), false);
+  assert.equal(proxy._pendingWsCaptureFinalizations.size, 0);
+  const finalParent = capture.events.filter(event => event.protocol === 'ws').at(-1);
+  assert.equal(finalParent.statusMessage, 'Client Disconnected');
+  assert.equal(finalParent.errorCode, 'ERR_DOWNSTREAM_ABORTED');
+
+  await Promise.race([
+    proxy.stop(),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('A repeated stop waited on a late handshake lifecycle')),
+      250
+    ))
+  ]);
+});
+
 test('an open WebSocket has its 101 parent before frames and updates it on close', async t => {
   const serverFrame = Buffer.from([0x81, 0x02, 0x6f, 0x6b]);
   const originSockets = new Set();

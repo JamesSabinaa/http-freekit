@@ -1671,7 +1671,13 @@ export class ProxyServer {
     };
   }
 
-  _forwardRejectedUpgradeResponse(proxyRes, socket, requestRecord, startTime) {
+  _forwardRejectedUpgradeResponse(
+    proxyRes,
+    socket,
+    requestRecord,
+    startTime,
+    onFinalized = () => {}
+  ) {
     const responseBody = this._createBodyCollector();
     let responseBodySize = 0;
     let finalized = false;
@@ -1679,6 +1685,7 @@ export class ProxyServer {
     const finalize = (err = null) => {
       if (finalized) return;
       finalized = true;
+      socket.removeListener('close', onDownstreamClose);
       const body = this._concatBody(responseBody);
       this._emitRequestUpdate({
         ...requestRecord,
@@ -1699,6 +1706,7 @@ export class ProxyServer {
           errorPhase: this._getUpstreamErrorPhase(err)
         } : {})
       });
+      onFinalized();
     };
     const fail = (err) => {
       if (failed) return;
@@ -1706,6 +1714,12 @@ export class ProxyServer {
       finalize(err);
       proxyRes.unpipe(socket);
       if (!socket.destroyed && !socket.writableEnded) socket.end();
+    };
+    const onDownstreamClose = () => {
+      const error = this._createDownstreamAbortError();
+      error.upstreamPhase = 'downstream';
+      proxyRes.destroy(error);
+      fail(error);
     };
 
     proxyRes.on('data', chunk => {
@@ -1715,6 +1729,7 @@ export class ProxyServer {
     proxyRes.once('end', () => finalize());
     proxyRes.once('aborted', () => fail(new Error('Upstream WebSocket handshake response aborted')));
     proxyRes.on('error', fail);
+    socket.once('close', onDownstreamClose);
 
     let responseStr = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage || ''}\r\n`;
     for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
@@ -1812,10 +1827,73 @@ export class ProxyServer {
     this._emitPendingRequest({ ...requestRecord });
 
     let handshakeState = 'pending';
-    const proxyReq = requestLib.request(options);
+    let resolveLifecycle;
+    const lifecycle = new Promise(resolve => { resolveLifecycle = resolve; });
+    this._pendingWsCaptureFinalizations.add(lifecycle);
+    let lifecycleSettled = false;
+    const settleLifecycle = () => {
+      if (lifecycleSettled) return;
+      lifecycleSettled = true;
+      this._pendingWsCaptureFinalizations.delete(lifecycle);
+      resolveLifecycle();
+    };
+    let proxyReq;
+    const onDownstreamClose = () => {
+      if (handshakeState !== 'pending') return;
+      handshakeState = 'downstream-closed';
+      const error = this._createDownstreamAbortError();
+      error.upstreamPhase = 'downstream';
+      proxyReq?.destroy(error);
+      this._emitRequestUpdate({
+        ...requestRecord,
+        statusCode: 0,
+        statusMessage: 'Client Disconnected',
+        responseHeaders: {},
+        responseBody: 'WebSocket handshake cancelled because the client disconnected',
+        responseBodySize: 0,
+        duration: Date.now() - startTime,
+        error: error.message,
+        errorCode: error.code,
+        errorPhase: error.upstreamPhase
+      });
+      if (!proxyReq) settleLifecycle();
+    };
+    socket.once('close', onDownstreamClose);
+    if (socket.destroyed) queueMicrotask(onDownstreamClose);
+
+    try {
+      proxyReq = requestLib.request(options);
+    } catch (err) {
+      socket.removeListener('close', onDownstreamClose);
+      handshakeState = 'error';
+      this._emitRequestUpdate({
+        ...requestRecord,
+        statusCode: 502,
+        statusMessage: 'Bad Gateway',
+        responseHeaders: {},
+        responseBody: `Proxy Error: ${err.message}`,
+        responseBodySize: 0,
+        duration: Date.now() - startTime,
+        error: err.message,
+        errorCode: this._getUpstreamErrorCode(err),
+        errorPhase: this._getUpstreamErrorPhase(err)
+      });
+      settleLifecycle();
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      return;
+    }
     this._configureUpstreamRequest(proxyReq);
+    proxyReq.once('close', () => {
+      if (handshakeState === 'downstream-closed') settleLifecycle();
+    });
     proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+      if (handshakeState !== 'pending' || socket.destroyed) {
+        proxySocket.destroy();
+        settleLifecycle();
+        return;
+      }
       handshakeState = 'upgraded';
+      socket.removeListener('close', onDownstreamClose);
       const remote = { address: proxySocket.remoteAddress, port: proxySocket.remotePort };
 
       // Resolve the pending parent before parsing any buffered WebSocket frames.
@@ -1861,15 +1939,6 @@ export class ProxyServer {
       );
       let captureTail = Promise.resolve();
       let pendingCaptures = 0;
-      let resolveCaptureFinalization;
-      const captureFinalization = new Promise(resolve => {
-        resolveCaptureFinalization = resolve;
-      });
-      this._pendingWsCaptureFinalizations.add(captureFinalization);
-      const settleCaptureFinalization = () => {
-        this._pendingWsCaptureFinalizations.delete(captureFinalization);
-        resolveCaptureFinalization();
-      };
       const createCaptureState = (direction, decoder, onApplicationMessage) => {
         const state = {
           disabled: false,
@@ -1963,7 +2032,7 @@ export class ProxyServer {
               remote
             });
           })
-          .then(settleCaptureFinalization, settleCaptureFinalization);
+          .then(settleLifecycle, settleLifecycle);
       };
 
       proxySocket.on('end', () => {
@@ -1980,13 +2049,26 @@ export class ProxyServer {
     // A server may reject an upgrade with a normal HTTP response (for example
     // 401 or 404). In that case Node emits `response`, not `upgrade`.
     proxyReq.on('response', (proxyRes) => {
+      if (handshakeState !== 'pending' || socket.destroyed) {
+        proxyRes.destroy();
+        settleLifecycle();
+        return;
+      }
       handshakeState = 'response';
-      this._forwardRejectedUpgradeResponse(proxyRes, socket, requestRecord, startTime);
+      socket.removeListener('close', onDownstreamClose);
+      this._forwardRejectedUpgradeResponse(
+        proxyRes,
+        socket,
+        requestRecord,
+        startTime,
+        settleLifecycle
+      );
     });
 
     proxyReq.on('error', (err) => {
       if (handshakeState !== 'pending') return;
       handshakeState = 'error';
+      socket.removeListener('close', onDownstreamClose);
       console.error('[Proxy] WebSocket upstream error:', err.message);
       this._emitRequestUpdate({
         ...requestRecord,
@@ -2000,6 +2082,7 @@ export class ProxyServer {
         errorCode: this._getUpstreamErrorCode(err),
         errorPhase: this._getUpstreamErrorPhase(err)
       });
+      settleLifecycle();
       socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
     });
 
