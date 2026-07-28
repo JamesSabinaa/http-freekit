@@ -20,6 +20,49 @@ const MCP_METADATA_MAX_SCANNED_ENTRIES = 160;
 const MCP_METADATA_MAX_KEY_CODE_UNITS = 128;
 const MCP_METADATA_MAX_STRING_CODE_UNITS = 4 * 1024;
 const MCP_METADATA_TOTAL_STRING_CODE_UNITS = 16 * 1024;
+const guardedMcpTransports = new WeakMap();
+
+function jsonRpcRequestIdCanFitResponse(requestId) {
+  const minimumResponse = { jsonrpc: '2.0', id: requestId, result: {} };
+  return Buffer.byteLength(JSON.stringify(minimumResponse)) <= MCP_REQUEST_DETAIL_MAX_BYTES;
+}
+
+function guardMcpTransportRequestIds(transport) {
+  const existing = guardedMcpTransports.get(transport);
+  if (existing) return existing;
+  const guarded = new Proxy(transport, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function' ||
+          property === 'onmessage' || property === 'onclose' || property === 'onerror') {
+        return value;
+      }
+      return value.bind(target);
+    },
+    set(target, property, value) {
+      if (property === 'onmessage' && typeof value === 'function') {
+        const guardedHandler = (message, extra) => {
+          const isRequest = message?.jsonrpc === '2.0' &&
+            Object.prototype.hasOwnProperty.call(message, 'id') &&
+            typeof message.method === 'string';
+          if (isRequest && !jsonRpcRequestIdCanFitResponse(message.id)) {
+            try {
+              Promise.resolve(target.close()).catch(() => {});
+            } catch {
+              // The request must still be dropped when transport cleanup fails.
+            }
+            return;
+          }
+          value(message, extra);
+        };
+        return Reflect.set(target, property, guardedHandler, target);
+      }
+      return Reflect.set(target, property, value, target);
+    }
+  });
+  guardedMcpTransports.set(transport, guarded);
+  return guarded;
+}
 
 function publicUpstreamProxyMetadata(upstreamProxy) {
   if (!upstreamProxy) return null;
@@ -358,6 +401,8 @@ export class McpServerBridge {
       { name: 'http-freekit', version: '1.0.0' },
       { capabilities: { tools: {} } }
     );
+    const connect = server.connect.bind(server);
+    server.connect = transport => connect(guardMcpTransportRequestIds(transport));
     this._registerTools(server);
     return server;
   }

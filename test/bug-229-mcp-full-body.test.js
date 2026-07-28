@@ -467,6 +467,36 @@ test('MCP request detail budget includes the actual JSON-RPC request ID', async 
   assert.equal(detail.legacyBodiesOmitted, true);
 });
 
+test('MCP closes a transport when its request ID cannot fit in any capped response', async t => {
+  const bridge = createBridge([]);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const messages = [];
+  let resolveClosed;
+  const closed = new Promise(resolve => { resolveClosed = resolve; });
+  clientTransport.onmessage = message => messages.push(message);
+  clientTransport.onclose = resolveClosed;
+  await bridge.server.connect(serverTransport);
+  await clientTransport.start();
+  t.after(async () => { await bridge.stop(); });
+
+  await clientTransport.send({
+    jsonrpc: '2.0',
+    id: 'i'.repeat(520 * 1024),
+    method: 'tools/call',
+    params: {
+      name: 'get_request_detail',
+      arguments: { request_id: 'missing' }
+    }
+  });
+  await closed;
+
+  assert.deepEqual(messages, []);
+  await assert.rejects(
+    clientTransport.send({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    /Not connected/
+  );
+});
+
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
   const bridge = createBridge([{
     id: 'validation-request',
