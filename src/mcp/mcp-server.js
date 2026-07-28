@@ -187,23 +187,23 @@ function bodyDescriptor(body, previewLength) {
   };
 }
 
-function requestDetailFitsWireBudget(text) {
+function requestDetailFitsWireBudget(text, requestId = 0) {
   const representativeMessage = {
     jsonrpc: '2.0',
-    id: 0,
+    id: requestId,
     result: { content: [{ type: 'text', text }] }
   };
   return Buffer.byteLength(JSON.stringify(representativeMessage)) <=
     MCP_REQUEST_DETAIL_MAX_BYTES - MCP_REQUEST_DETAIL_ENVELOPE_RESERVE_BYTES;
 }
 
-function stringifyRequestDetailIfBounded(detail) {
+function stringifyRequestDetailIfBounded(detail, requestId = 0) {
   const text = JSON.stringify(detail, null, 2);
-  return requestDetailFitsWireBudget(text) ? text : null;
+  return requestDetailFitsWireBudget(text, requestId) ? text : null;
 }
 
-function stringifyBoundedRequestDetail(detail) {
-  let text = stringifyRequestDetailIfBounded(detail);
+function stringifyBoundedRequestDetail(detail, requestId = 0) {
+  let text = stringifyRequestDetailIfBounded(detail, requestId);
   if (text !== null) return text;
 
   const compact = {
@@ -226,7 +226,7 @@ function stringifyBoundedRequestDetail(detail) {
   if (detail.originalRequest?.body !== undefined) {
     compact.originalRequest = { body: detail.originalRequest.body };
   }
-  text = stringifyRequestDetailIfBounded(compact);
+  text = stringifyRequestDetailIfBounded(compact, requestId);
   if (text !== null) return text;
   throw new Error(`Request detail exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte response limit`);
 }
@@ -367,12 +367,12 @@ export class McpServerBridge {
       tools: TOOL_DEFINITIONS
     }));
 
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const { name, arguments: args } = request.params;
       try {
         switch (name) {
           case 'search_traffic': return this._handleSearchTraffic(args || {});
-          case 'get_request_detail': return this._handleGetRequestDetail(args || {});
+          case 'get_request_detail': return this._handleGetRequestDetail(args || {}, extra.requestId);
           case 'get_traffic_stats': return this._handleGetTrafficStats();
           case 'security_scan': return this._handleSecurityScan();
           case 'export_traffic': return this._handleExportTraffic(args || {});
@@ -460,7 +460,7 @@ export class McpServerBridge {
     };
   }
 
-  _handleGetRequestDetail({ request_id, body_side, body_offset, body_limit }) {
+  _handleGetRequestDetail({ request_id, body_side, body_offset, body_limit }, requestId = 0) {
     if (typeof request_id !== 'string' || request_id.length === 0) {
       throw new Error('request_id must be a non-empty string');
     }
@@ -558,7 +558,7 @@ export class McpServerBridge {
           };
         }
 
-        const legacyText = stringifyRequestDetailIfBounded(detail);
+        const legacyText = stringifyRequestDetailIfBounded(detail, requestId);
         if (legacyText !== null) {
           return { content: [{ type: 'text', text: legacyText }] };
         }
@@ -614,7 +614,7 @@ export class McpServerBridge {
       };
     }
 
-    return { content: [{ type: 'text', text: stringifyBoundedRequestDetail(detail) }] };
+    return { content: [{ type: 'text', text: stringifyBoundedRequestDetail(detail, requestId) }] };
   }
 
   _handleGetTrafficStats() {

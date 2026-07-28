@@ -412,6 +412,61 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
   assert.match(unsafeOffset.content[0].text, /body_offset/);
 });
 
+test('MCP request detail budget includes the actual JSON-RPC request ID', async t => {
+  const bridge = createBridge([{
+    id: 'large-id-request',
+    method: 'POST',
+    requestBody: 'x'.repeat(200 * 1024),
+    responseBody: '',
+    timestamp: 1_767_225_600_000
+  }]);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const pendingResponses = new Map();
+  clientTransport.onmessage = message => pendingResponses.get(message.id)?.(message);
+  await bridge.server.connect(serverTransport);
+  await clientTransport.start();
+  t.after(async () => {
+    await clientTransport.close();
+    await bridge.stop();
+  });
+
+  const request = message => new Promise((resolve, reject) => {
+    pendingResponses.set(message.id, response => {
+      pendingResponses.delete(message.id);
+      resolve(response);
+    });
+    clientTransport.send(message).catch(reject);
+  });
+  await request({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'large-id-test', version: '1.0.0' }
+    }
+  });
+  await clientTransport.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+  const requestId = 'i'.repeat(400 * 1024);
+  const response = await request({
+    jsonrpc: '2.0',
+    id: requestId,
+    method: 'tools/call',
+    params: {
+      name: 'get_request_detail',
+      arguments: { request_id: 'large-id-request' }
+    }
+  });
+
+  assert.equal(response.id, requestId);
+  assert.ok(Buffer.byteLength(JSON.stringify(response)) <= MAX_RESPONSE_BYTES);
+  const detail = JSON.parse(response.result.content[0].text);
+  assert.equal(detail.requestBody, undefined);
+  assert.equal(detail.legacyBodiesOmitted, true);
+});
+
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
   const bridge = createBridge([{
     id: 'validation-request',
