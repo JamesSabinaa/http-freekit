@@ -734,6 +734,21 @@
       tunnel: '<i class="ph ph-plugs-connected" style="font-size:16px;line-height:1;color:#888;"></i>'
     };
 
+    function formatRemoteEndpoint(address, port, fallbackPort) {
+      if (address === null || address === undefined || address === '') return '';
+      const rawAddress = String(address);
+      const displayAddress = rawAddress.includes(':') &&
+        !(rawAddress.startsWith('[') && rawAddress.endsWith(']'))
+        ? `[${rawAddress}]`
+        : rawAddress;
+      const displayPort = port === null || port === undefined ? fallbackPort : port;
+      return esc(displayAddress) + (
+        displayPort === null || displayPort === undefined
+          ? ''
+          : ':' + esc(String(displayPort))
+      );
+    }
+
     function buildRowHtml(req, index) {
       // ---- WebSocket frame sub-row ----
       if (req.protocol === 'ws-frame') {
@@ -772,12 +787,17 @@
         const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
         const bytesSent = formatSize(req.requestBodySize || 0);
         const bytesRecv = formatSize(req.responseBodySize || 0);
+        const tunnelEndpoint = formatRemoteEndpoint(
+          req.remote?.address || req.host || '-',
+          req.remote?.port,
+          443
+        );
         return `<tr class="tunnel-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
           <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
           <td role="gridcell" class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
-          <td role="gridcell" colspan="2" style="text-align:center;" title="Tunnel to ${esc(req.host || '-')}:${req.remote?.port || 443}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="Tunnel to ${tunnelEndpoint}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
         </tr>`;
       }
 
@@ -1373,13 +1393,7 @@
         req.statusCode < 300 ? '#4caf7d' :
         req.statusCode < 400 ? '#5a80cc' :
         req.statusCode < 500 ? '#ff8c38' : '#ce3939';
-      const remoteEndpoint = req.remote?.address
-        ? esc(req.remote.address) + (
-          req.remote.port === null || req.remote.port === undefined
-            ? ''
-            : ':' + esc(String(req.remote.port))
-        )
-        : '';
+      const remoteEndpoint = formatRemoteEndpoint(req.remote?.address, req.remote?.port);
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
@@ -1708,7 +1722,13 @@
         const durationStr = req.duration >= 1000
           ? (req.duration / 1000).toFixed(1) + 's'
           : req.duration + 'ms';
-        const portStr = req.remote?.port || 443;
+        const portStr = req.remote?.port === null || req.remote?.port === undefined
+          ? 443
+          : req.remote.port;
+        const tunnelEndpoint = formatRemoteEndpoint(
+          req.remote?.address || req.host || '-',
+          portStr
+        );
 
         html += `<div class="detail-card" style="border-left:4px solid #888;background:rgba(136,136,136,0.07);">
           <div class="detail-card-body" style="padding:16px 20px;">
@@ -1716,7 +1736,7 @@
               <span style="font-size:20px;color:#888;">${SOURCE_ICONS.tunnel}</span>
               <div style="flex:1;">
                 <div style="font-weight:bold;color:var(--text-main);margin-bottom:4px;">Raw Tunnel</div>
-                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${esc(req.host || '-')}:${portStr}</div>
+                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${tunnelEndpoint}</div>
                 <div style="font-size:12px;color:var(--text-lowlight);">CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received</div>
               </div>
             </div>
@@ -1738,7 +1758,7 @@
           <div class="detail-card-body">
             <div class="detail-summary">
               <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Port</div><div class="detail-summary-value">${portStr}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Port</div><div class="detail-summary-value">${esc(String(portStr))}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Bytes Sent</div><div class="detail-summary-value">${bytesSent}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Bytes Received</div><div class="detail-summary-value">${bytesRecv}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value">${durationStr}</div></div>

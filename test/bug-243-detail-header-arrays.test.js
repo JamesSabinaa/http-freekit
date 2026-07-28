@@ -37,6 +37,14 @@ const webSocketKeySource = sourceBetween(
   'function wsConnectionKey(',
   'function wsFrameParentKey('
 );
+const remoteEndpointSource = sourceBetween(
+  'function formatRemoteEndpoint(',
+  'function buildRowHtml('
+);
+const rowSource = sourceBetween(
+  'function buildRowHtml(',
+  'function renderTraffic('
+);
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -86,12 +94,29 @@ function renderDetail(request) {
     ${bodyModeSource}
     ${webSocketConnectionSource}
     ${webSocketKeySource}
+    ${remoteEndpointSource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
   context.renderDetailCardsForTest(request);
 
   return { html: detailContent.innerHTML, bodyViewerCalls };
+}
+
+function renderTunnelRow(request) {
+  const context = {
+    SOURCE_ICONS: { tunnel: '' },
+    selectedRequestId: null,
+    esc: escapeHtml,
+    formatSize: size => `${size || 0} bytes`
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${remoteEndpointSource}
+    ${rowSource}
+    globalThis.buildRowHtmlForTest = buildRowHtml;
+  `, context);
+  return context.buildRowHtmlForTest(request, 0);
 }
 
 function baseRequest(responseHeaders, overrides = {}) {
@@ -293,5 +318,48 @@ test('traffic details preserve port zero and omit separators for absent ports', 
         assert.match(html, new RegExp(`192\\.0\\.2\\.1:${port}`));
       }
     }
+  }
+});
+
+test('traffic details bracket raw IPv6 endpoints without double bracketing', () => {
+  for (const address of ['2001:db8::1', '[2001:db8::1]']) {
+    for (const scenario of [
+      { protocol: 'ws', method: 'WS', statusCode: 101 },
+      {
+        protocol: 'https', method: 'GET', statusCode: 502, error: 'failed',
+        tls: { version: 'TLSv1.3' }
+      }
+    ]) {
+      const html = renderDetail(baseRequest({}, {
+        ...scenario,
+        remote: { address, port: 443 }
+      })).html;
+      assert.match(html, /\[2001:db8::1\]:443/);
+      assert.doesNotMatch(html, /\[\[2001:db8::1\]\]/);
+      assert.doesNotMatch(html, /2001:db8::1:443/);
+    }
+  }
+});
+
+test('tunnel rows and details preserve explicit ports and format IPv6 endpoints', () => {
+  for (const { port, expectedPort } of [
+    { port: 0, expectedPort: 0 },
+    { port: null, expectedPort: 443 },
+    { port: 65535, expectedPort: 65535 }
+  ]) {
+    const request = baseRequest({}, {
+      protocol: 'tunnel',
+      method: 'CONNECT',
+      host: '2001:db8::5',
+      remote: { address: '2001:db8::5', port }
+    });
+    const endpointPattern = new RegExp(`\\[2001:db8::5\\]:${expectedPort}`);
+    const row = renderTunnelRow(request);
+    const detail = renderDetail(request).html;
+
+    assert.match(row, endpointPattern);
+    assert.match(detail, endpointPattern);
+    assert.doesNotMatch(row, /2001:db8::5:443/);
+    assert.doesNotMatch(detail, /2001:db8::5:443/);
   }
 });

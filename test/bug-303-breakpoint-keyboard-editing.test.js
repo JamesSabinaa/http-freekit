@@ -15,6 +15,7 @@ function sourceBetween(startMarker, endMarker) {
 
 const headerLookupSource = sourceBetween('function findHeaderValues(', 'function matchesFilter(');
 const detailSource = sourceBetween('function renderDetailCards(', 'function getExportFormFields(');
+const remoteEndpointSource = sourceBetween('function formatRemoteEndpoint(', 'function buildRowHtml(');
 const headerGridSource = sourceBetween('function renderHeadersGrid(', '// Keep old renderHeaders as alias');
 const bodyModeSource = sourceBetween('function isGrpcContentType(', 'const activeBodyEditors = {}');
 const webSocketConnectionSource = sourceBetween('function isWebSocketConnection(', 'function wsConnectionKey(');
@@ -94,6 +95,7 @@ function renderPausedDetail(phase) {
     ${headerGridSource}
     ${bodyModeSource}
     ${webSocketConnectionSource}
+    ${remoteEndpointSource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
