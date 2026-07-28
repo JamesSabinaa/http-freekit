@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
@@ -110,4 +111,86 @@ test('H1 forwarding rebuilds hop-by-hop headers for each connection', async t =>
   assert.equal(responseHeaders.upgrade, undefined);
   assert.equal(responseHeaders['proxy-authenticate'], undefined);
   assert.equal(responseHeaders['x-response-keep'], 'preserved');
+});
+
+test('H1 to H2 conversion strips Connection-nominated request fields', async () => {
+  const proxy = new ProxyServer(null);
+  let receivedHeaders;
+  const stream = new EventEmitter();
+  stream.destroyed = false;
+  stream.closed = false;
+  stream.close = () => { stream.closed = true; };
+  stream.end = () => queueMicrotask(() => {
+    stream.emit('response', { ':status': 200 });
+    stream.emit('end');
+  });
+  const session = {
+    request(headers) {
+      receivedHeaders = headers;
+      return stream;
+    },
+    socket: {}
+  };
+
+  const response = await proxy._makeH2Request(
+    session,
+    'GET',
+    'origin.example.test',
+    443,
+    '/',
+    {
+      connection: ['X-Remove', 'Keep-Alive'],
+      'x-remove': 'secret',
+      'keep-alive': 'timeout=30',
+      te: 'trailers',
+      trailer: 'X-Trailer',
+      'x-keep': 'preserved'
+    },
+    Buffer.alloc(0)
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(receivedHeaders.connection, undefined);
+  assert.equal(receivedHeaders['x-remove'], undefined);
+  assert.equal(receivedHeaders['keep-alive'], undefined);
+  assert.equal(receivedHeaders.te, undefined);
+  assert.equal(receivedHeaders.trailer, undefined);
+  assert.equal(receivedHeaders['x-keep'], 'preserved');
+});
+
+test('407 responses retain the downstream proxy authentication challenge', async t => {
+  const origin = http.createServer((_request, response) => {
+    response.writeHead(407, {
+      'proxy-authenticate': 'Basic realm="upstream"',
+      'content-length': '0'
+    });
+    response.end();
+  });
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin);
+  });
+
+  const response = await new Promise((resolve, reject) => {
+    const request = http.get({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: `http://127.0.0.1:${originPort}/auth`
+    }, result => {
+      result.resume();
+      result.once('end', () => resolve(result));
+    });
+    request.once('error', reject);
+  });
+
+  assert.equal(response.statusCode, 407);
+  assert.equal(response.headers['proxy-authenticate'], 'Basic realm="upstream"');
+  assert.equal(
+    proxy._toH2ResponseHeaders(407, { 'proxy-authenticate': 'Basic realm="upstream"' })
+      ['proxy-authenticate'],
+    'Basic realm="upstream"'
+  );
 });

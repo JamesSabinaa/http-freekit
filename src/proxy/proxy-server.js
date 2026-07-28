@@ -823,7 +823,9 @@ export class ProxyServer {
   _sendH1Response(response, statusCode, headers, body, trailers) {
     const cleanTrailers = this._cleanTrailers(trailers);
     const hasTrailers = Object.keys(cleanTrailers).length > 0;
-    const outgoingHeaders = this._stripHopByHopHeaders(headers);
+    const outgoingHeaders = this._stripHopByHopHeaders(headers, {
+      preserveProxyAuthenticate: statusCode === 407
+    });
     for (const name of Object.keys(outgoingHeaders)) {
       const lowerName = name.toLowerCase();
       if (lowerName === 'trailer' || (hasTrailers && lowerName === 'content-length')) {
@@ -1214,7 +1216,7 @@ export class ProxyServer {
     return clean;
   }
 
-  _stripHopByHopHeaders(headers) {
+  _stripHopByHopHeaders(headers, { preserveProxyAuthenticate = false } = {}) {
     const nominated = new Set();
     for (const [name, value] of Object.entries(headers || {})) {
       if (name.toLowerCase() !== 'connection') continue;
@@ -1230,7 +1232,8 @@ export class ProxyServer {
     const clean = {};
     for (const [name, value] of Object.entries(headers || {})) {
       const lower = name.toLowerCase();
-      if (HOP_BY_HOP_HEADER_NAMES.has(lower) || nominated.has(lower)) continue;
+      const preserve = preserveProxyAuthenticate && lower === 'proxy-authenticate';
+      if (!preserve && (HOP_BY_HOP_HEADER_NAMES.has(lower) || nominated.has(lower))) continue;
       clean[name] = value;
     }
     return clean;
@@ -1420,7 +1423,10 @@ export class ProxyServer {
 
   _toH2ResponseHeaders(statusCode, headers) {
     const converted = { ':status': statusCode };
-    for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
+    const cleanHeaders = this._stripHopByHopHeaders(headers, {
+      preserveProxyAuthenticate: statusCode === 407
+    });
+    for (const [name, value] of Object.entries(cleanHeaders)) {
       const lower = name.toLowerCase();
       converted[lower] = Array.isArray(value)
         ? (lower === 'set-cookie' ? value : value.join(', '))
@@ -4949,8 +4955,9 @@ export class ProxyServer {
         ':authority': this._formatHttpsAuthority(hostname, port)
       };
 
-      // Copy regular headers, filtering out h1-specific ones
-      for (const [k, v] of Object.entries(headers)) {
+      // Copy regular headers after removing both fixed and Connection-nominated
+      // hop-by-hop fields. This protects H1-to-H2 conversion callers too.
+      for (const [k, v] of Object.entries(this._stripUpstreamHeaders(headers))) {
         const lower = k.toLowerCase();
         if (lower.startsWith(':')) continue; // skip existing pseudo-headers
         if (['connection', 'keep-alive', 'transfer-encoding', 'upgrade',

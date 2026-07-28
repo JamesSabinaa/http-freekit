@@ -331,7 +331,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-110 — Medium — H1 forwarding leaks hop-by-hop headers across connections
 
 - Status: **Fixed**.
-- Resolution: Ordinary forwarding now removes the standard hop-by-hop fields and every field named by Connection before constructing each upstream request or downstream response. Request and response trailers are rebuilt only from the trailing fields that actually arrived, and upgrade handshakes retain their dedicated raw relay path.
+- Resolution: Ordinary forwarding now removes the standard hop-by-hop fields and every field named by Connection before constructing each upstream request or downstream response, including H1-to-H2 conversions. Request and response trailers are rebuilt only from the trailing fields that actually arrived, downstream 407 responses retain their required Proxy-Authenticate challenge, and upgrade handshakes retain their dedicated raw relay path.
 
 - Evidence: `_shouldStripUpstreamHeader()` at `src/proxy/proxy-server.js:289-309` does not remove standard hop-by-hop fields or names nominated by `Connection`; H1 forwarding passes them at `:638-680`, `:1451-1460`, and `:2054-2063`.
 - Impact: connection-specific metadata crosses hops and can break pooling/framing or trigger proxy inconsistencies.
