@@ -467,6 +467,57 @@ test('MCP request detail budget includes the actual JSON-RPC request ID', async 
   assert.equal(detail.legacyBodiesOmitted, true);
 });
 
+test('MCP replaces an over-cap boundary response with a bounded JSON-RPC error', async t => {
+  const bridge = createBridge([]);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const pendingResponses = new Map();
+  clientTransport.onmessage = message => pendingResponses.get(message.id)?.(message);
+  await bridge.server.connect(serverTransport);
+  await clientTransport.start();
+  t.after(async () => {
+    await clientTransport.close();
+    await bridge.stop();
+  });
+
+  const request = message => new Promise((resolve, reject) => {
+    pendingResponses.set(message.id, response => {
+      pendingResponses.delete(message.id);
+      resolve(response);
+    });
+    clientTransport.send(message).catch(reject);
+  });
+  await request({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'boundary-id-test', version: '1.0.0' }
+    }
+  });
+  await clientTransport.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+  const requestId = 'i'.repeat(MAX_RESPONSE_BYTES - 110);
+  const response = await request({
+    jsonrpc: '2.0',
+    id: requestId,
+    method: 'tools/call',
+    params: {
+      name: 'get_request_detail',
+      arguments: { request_id: 'missing' }
+    }
+  });
+
+  assert.equal(response.id, requestId);
+  assert.equal(response.error.code, -32603);
+  assert.match(response.error.message, /response exceeds/i);
+  assert.ok(Buffer.byteLength(JSON.stringify(response)) <= MAX_RESPONSE_BYTES);
+  assert.deepEqual(await request({ jsonrpc: '2.0', id: 2, method: 'ping' }), {
+    jsonrpc: '2.0', id: 2, result: {}
+  });
+});
+
 test('MCP closes a transport when its request ID cannot fit in any capped response', async t => {
   const bridge = createBridge([]);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

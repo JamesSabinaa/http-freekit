@@ -3,7 +3,8 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   ListToolsRequestSchema,
-  CallToolRequestSchema
+  CallToolRequestSchema,
+  ErrorCode
 } from '@modelcontextprotocol/sdk/types.js';
 import { trafficToHar } from '../api/har-converter.js';
 
@@ -22,9 +23,33 @@ const MCP_METADATA_MAX_STRING_CODE_UNITS = 4 * 1024;
 const MCP_METADATA_TOTAL_STRING_CODE_UNITS = 16 * 1024;
 const guardedMcpTransports = new WeakMap();
 
+function oversizedMcpResponse(requestId) {
+  return {
+    jsonrpc: '2.0',
+    id: requestId,
+    error: {
+      code: ErrorCode.InternalError,
+      message: `MCP response exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte limit`
+    }
+  };
+}
+
+function mcpMessageBytes(message) {
+  return Buffer.byteLength(JSON.stringify(message));
+}
+
 function jsonRpcRequestIdCanFitResponse(requestId) {
-  const minimumResponse = { jsonrpc: '2.0', id: requestId, result: {} };
-  return Buffer.byteLength(JSON.stringify(minimumResponse)) <= MCP_REQUEST_DETAIL_MAX_BYTES;
+  return mcpMessageBytes(oversizedMcpResponse(requestId)) <= MCP_REQUEST_DETAIL_MAX_BYTES;
+}
+
+function capMcpResponse(message) {
+  if (mcpMessageBytes(message) <= MCP_REQUEST_DETAIL_MAX_BYTES) return message;
+  const isResponse = message?.jsonrpc === '2.0' &&
+    Object.prototype.hasOwnProperty.call(message, 'id') &&
+    typeof message.method !== 'string';
+  if (!isResponse) return null;
+  const fallback = oversizedMcpResponse(message.id);
+  return mcpMessageBytes(fallback) <= MCP_REQUEST_DETAIL_MAX_BYTES ? fallback : null;
 }
 
 function guardMcpTransportRequestIds(transport) {
@@ -33,6 +58,20 @@ function guardMcpTransportRequestIds(transport) {
   const guarded = new Proxy(transport, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
+      if (property === 'send' && typeof value === 'function') {
+        return (message, ...args) => {
+          const boundedMessage = capMcpResponse(message);
+          if (boundedMessage) return value.call(target, boundedMessage, ...args);
+          try {
+            Promise.resolve(target.close()).catch(() => {});
+          } catch {
+            // The oversized message must still be dropped when cleanup fails.
+          }
+          return Promise.reject(new Error(
+            `MCP message exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte limit`
+          ));
+        };
+      }
       if (typeof value !== 'function' ||
           property === 'onmessage' || property === 'onclose' || property === 'onerror') {
         return value;
