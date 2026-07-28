@@ -98,14 +98,14 @@
 
     function wsConnectionKey(request) {
       return request?.trafficLifecycleId
-        ? JSON.stringify([request.id, request.trafficLifecycleId])
-        : String(request?.id || '');
+        ? JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId])
+        : JSON.stringify(['legacy', String(request?.id || '')]);
     }
 
     function wsFrameParentKey(frame) {
       return frame?.parentTrafficLifecycleId
-        ? JSON.stringify([frame.parentId, frame.parentTrafficLifecycleId])
-        : String(frame?.parentId || '');
+        ? JSON.stringify(['lifecycle', frame.parentId, frame.parentTrafficLifecycleId])
+        : JSON.stringify(['legacy', String(frame?.parentId || '')]);
     }
 
     // ============ VIRTUAL SCROLL STATE ============

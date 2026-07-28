@@ -97,7 +97,7 @@ function rendererHarness(initialRequests = []) {
     ${rendererSource.slice(rowStart, rowEnd)}
     globalThis.addTrafficRequest = addRequest;
     globalThis.reloadTraffic = restoreTrafficDump;
-    globalThis.expandTraffic = parentId => wsExpandedConnections.add(parentId);
+    globalThis.expandTraffic = parentId => wsExpandedConnections.add(wsConnectionKey({ id: parentId }));
     globalThis.expandTrafficRequest = request => wsExpandedConnections.add(wsConnectionKey(request));
     globalThis.filterTraffic = applyFilter;
     globalThis.filteredTrafficIds = () => filteredRequests.map(request => request.id);
@@ -108,6 +108,9 @@ function rendererHarness(initialRequests = []) {
       ])
     );
     globalThis.frameIndexHasNullPrototype = () => Object.getPrototypeOf(wsFramesByParent) === null;
+    globalThis.frameIdsForRequest = request => (
+      wsFramesByParent[wsConnectionKey(request)] || []
+    ).map(frame => frame.id);
     globalThis.trafficRowHtml = requestId => buildRowHtml(
       requests.find(request => request.id === requestId),
       0
@@ -378,14 +381,16 @@ test('prototype-named parent IDs survive live add, filtering, reload, and row re
     assert.doesNotThrow(() => live.context.addTrafficRequest(request));
   }
   assert.equal(live.context.frameIndexHasNullPrototype(), true);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(live.context.frameIndex())),
-    Object.fromEntries([
-      ['__proto__', ['proto-frame']],
-      ['constructor', ['constructor-frame']],
-      ['ordinary-parent', ['ordinary-frame']]
-    ])
-  );
+  for (const [parentId, frameId] of [
+    ['__proto__', 'proto-frame'],
+    ['constructor', 'constructor-frame'],
+    ['ordinary-parent', 'ordinary-frame']
+  ]) {
+    assert.deepEqual(
+      Array.from(live.context.frameIdsForRequest({ id: parentId })),
+      [frameId]
+    );
+  }
 
   for (const parentId of ['__proto__', 'constructor', 'ordinary-parent']) {
     live.context.expandTraffic(parentId);
@@ -456,6 +461,38 @@ test('reused WebSocket IDs keep frames bound to the matching parent lifecycle', 
     'current-frame'
   ]);
   assert.match(harness.context.trafficRowHtml('reused'), /ws-frame-count">1</);
+});
+
+test('legacy IDs cannot collide with lifecycle WebSocket frame keys', () => {
+  const correlatedParent = {
+    ...trafficRecord('a', 'ws'),
+    trafficLifecycleId: 'b'
+  };
+  const legacyParent = trafficRecord(JSON.stringify(['lifecycle', 'a', 'b']), 'wss');
+  const correlatedFrame = {
+    ...trafficRecord('correlated-frame', 'ws-frame', correlatedParent.id),
+    parentTrafficLifecycleId: correlatedParent.trafficLifecycleId
+  };
+  const legacyFrame = trafficRecord('legacy-frame', 'ws-frame', legacyParent.id);
+  const harness = rendererHarness([
+    correlatedParent,
+    correlatedFrame,
+    legacyParent,
+    legacyFrame
+  ]);
+
+  harness.context.expandTrafficRequest(correlatedParent);
+  harness.context.expandTrafficRequest(legacyParent);
+  harness.context.filterTraffic();
+
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    correlatedParent.id,
+    correlatedFrame.id,
+    legacyParent.id,
+    legacyFrame.id
+  ]);
+  assert.deepEqual(Array.from(harness.context.frameIdsForRequest(correlatedParent)), [correlatedFrame.id]);
+  assert.deepEqual(Array.from(harness.context.frameIdsForRequest(legacyParent)), [legacyFrame.id]);
 });
 
 test('secure WebSocket parents expose their frame rows and WebSocket styling', () => {

@@ -67,6 +67,9 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
         frames.map(frame => frame.id)
       ])
     );
+    globalThis.frameCountFor = request => (
+      wsFramesByParent[wsConnectionKey(request)] || []
+    ).length;
   `, context);
 
   return {
@@ -192,9 +195,7 @@ test('ordinary under-cap adds retain rows, selection, and frame indexing', () =>
   assert.equal(frame._index, 3);
   assert.equal(harness.context.selectedRequestId, 'selected');
   assert.deepEqual(harness.closeCalls, []);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.frameIndex())), {
-    socket: ['frame']
-  });
+  assert.equal(harness.context.frameCountFor({ id: 'socket' }), 1);
   assert.deepEqual(Array.from(harness.context.filteredIds()), ['selected', 'other']);
   assert.equal(harness.filterCalls, 1);
 });
@@ -216,5 +217,5 @@ test('a frame flood evicts old frames without removing its WebSocket parent', ()
   assert.equal(harness.context.requests.at(-1), newestFrame);
   assert.equal(harness.context.filteredRequests.length, 1);
   assert.deepEqual(Array.from(harness.context.filteredIds()), [parent.id]);
-  assert.equal(harness.context.frameIndex()[parent.id].length, 9_999);
+  assert.equal(harness.context.frameCountFor(parent), 9_999);
 });
