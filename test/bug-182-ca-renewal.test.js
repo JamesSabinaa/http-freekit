@@ -289,11 +289,32 @@ test('legacy cleanup remains v1 until the migration marker directory is durable'
   });
   assert.equal(fs.existsSync(interrupted.caMigrationStatePath), true);
 
-  // Model a crash losing the marker rename whose directory entry was not
-  // flushed. The legacy journal must be sufficient to recreate it.
-  fs.unlinkSync(interrupted.caMigrationStatePath);
+  const retry = new CertificateAuthority(dataDir);
+  let retrySyncAttempts = 0;
+  retry._syncMigrationStateDirectory = () => {
+    retrySyncAttempts += 1;
+    throw new Error('simulated retry directory fsync failure');
+  };
+  await assert.rejects(
+    retry.initialize({ autoRenewExpiring: false }),
+    /simulated retry directory fsync failure/
+  );
+  assert.equal(retrySyncAttempts, 1, 'a visible marker must be synchronized again');
+  assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
+    version: 1,
+    fingerprints: [previousFingerprint, activeFingerprint]
+  });
+  assert.equal(fs.existsSync(retry.caMigrationStatePath), true);
+
   const recovered = new CertificateAuthority(dataDir);
+  const syncMigrationStateDirectory = recovered._syncMigrationStateDirectory.bind(recovered);
+  let recoverySyncAttempts = 0;
+  recovered._syncMigrationStateDirectory = () => {
+    recoverySyncAttempts += 1;
+    return syncMigrationStateDirectory();
+  };
   await recovered.initialize({ autoRenewExpiring: false });
+  assert.equal(recoverySyncAttempts, 1);
   assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
     version: 2,
     fingerprints: [previousFingerprint]

@@ -159,8 +159,12 @@ export class CertificateAuthority {
     }
     if (replacementState.needsMigration && replacedCertificateFingerprints.length > 0) {
       // Persist the split-state version only after the migration marker is
-      // present. A later acknowledgement can then remain acknowledged while
-      // Windows exact-thumbprint cleanup continues independently.
+      // present and its directory entry is durable. This synchronization must
+      // also run when a prior failed startup left the renamed marker visible:
+      // visibility alone does not prove that the rename survived a crash.
+      this._syncMigrationStateDirectory();
+      // A later acknowledgement can then remain acknowledged while Windows
+      // exact-thumbprint cleanup continues independently.
       this.setPendingReplacementFingerprints(replacedCertificateFingerprints);
     } else if (replacementState.needsMigration) {
       // The legacy journal contained only the still-active identity, so there
