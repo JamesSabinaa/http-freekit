@@ -3357,7 +3357,9 @@ export class ProxyServer {
           const requiresAsyncCapture = pendingCaptures > 0 || (frame.compressed && decoder);
           if (!requiresAsyncCapture) {
             const sequence = ++frameSequence;
-            void this._emitWsFrame(frame, direction, requestId, sequence, decoder).catch(() => {});
+            void this._emitWsFrame(
+              frame, direction, requestId, sequence, decoder, startTime
+            ).catch(() => {});
             return;
           }
           if (state.pendingMessages >= MAX_PENDING_WS_CAPTURE_MESSAGES ||
@@ -3371,7 +3373,9 @@ export class ProxyServer {
           state.pendingBytes += frame.payload.length;
           pendingCaptures++;
           const operation = captureTail.then(
-            () => this._emitWsFrame(frame, direction, requestId, sequence, decoder)
+            () => this._emitWsFrame(
+              frame, direction, requestId, sequence, decoder, startTime
+            )
           );
           captureTail = operation.then(() => undefined, () => undefined).finally(() => {
             state.pendingMessages--;
@@ -3507,8 +3511,16 @@ export class ProxyServer {
    * @param {string} parentId - The WS connection request ID
    * @param {number} sequence - Capture sequence number within the connection
    * @param {{ decode: function(Buffer): Promise<Buffer> }|null} compressionDecoder
+   * @param {number|undefined} parentStartedAt
    */
-  async _emitWsFrame(frame, direction, parentId, sequence, compressionDecoder = null) {
+  async _emitWsFrame(
+    frame,
+    direction,
+    parentId,
+    sequence,
+    compressionDecoder = null,
+    parentStartedAt = undefined
+  ) {
     const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
 
     let displayPayload = frame.payload;
@@ -3586,7 +3598,10 @@ export class ProxyServer {
         fragmentCount: frame.fragmentCount
       } : {})
     };
-    const parentDecision = this._pendingTrafficLogDecisions.get(parentId);
+    const parentDecision = this._selectPendingTrafficLogDecision({
+      id: parentId,
+      timestamp: parentStartedAt
+    })?.decision;
     if (parentDecision && typeof parentDecision === 'object' &&
         parentDecision.trafficClearGeneration !== undefined) {
       Object.defineProperty(event, '_trafficClearGeneration', {
@@ -8630,9 +8645,51 @@ export class ProxyServer {
       _mergeUpdate,
       _trafficLifecycleComplete,
       _trafficClearGeneration,
+      _trafficLifecycleToken,
       ...record
     } = data;
     return record;
+  }
+
+  _selectPendingTrafficLogDecision(data) {
+    const stored = this._pendingTrafficLogDecisions.get(data.id);
+    if (stored === undefined) return null;
+    const decisions = Array.isArray(stored) ? stored : [stored];
+    if (decisions.length === 1) return { decision: decisions[0] };
+    const objectDecisions = decisions.filter(
+      decision => decision && typeof decision === 'object'
+    );
+    const timestampMatches = data.timestamp === undefined
+      ? objectDecisions
+      : objectDecisions.filter(decision => decision.record?.timestamp === data.timestamp);
+    const candidates = timestampMatches.length > 0 ? timestampMatches : objectDecisions;
+    const identityFields = ['method', 'url', 'host', 'path'];
+    const identityMatch = candidates.find(decision => identityFields.every(field =>
+      data[field] === undefined || decision.record?.[field] === data[field]
+    ));
+    return { decision: identityMatch || candidates[0] || decisions[0] };
+  }
+
+  _storePendingTrafficLogDecision(id, decision) {
+    if (!this._pendingTrafficLogDecisions.has(id)) {
+      this._pendingTrafficLogDecisions.set(id, decision);
+      return;
+    }
+    const stored = this._pendingTrafficLogDecisions.get(id);
+    if (Array.isArray(stored)) stored.push(decision);
+    else this._pendingTrafficLogDecisions.set(id, [stored, decision]);
+  }
+
+  _deletePendingTrafficLogDecision(id, decision) {
+    const stored = this._pendingTrafficLogDecisions.get(id);
+    if (!Array.isArray(stored)) {
+      this._pendingTrafficLogDecisions.delete(id);
+      return;
+    }
+    const index = stored.indexOf(decision);
+    if (index !== -1) stored.splice(index, 1);
+    if (stored.length === 1) this._pendingTrafficLogDecisions.set(id, stored[0]);
+    else if (stored.length === 0) this._pendingTrafficLogDecisions.delete(id);
   }
 
   _emitRequest(data) {
@@ -8643,11 +8700,11 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
-    const hasPendingDecision = data._pending !== true && data.id !== undefined &&
-      this._pendingTrafficLogDecisions.has(data.id);
-    const pendingDecision = hasPendingDecision
-      ? this._pendingTrafficLogDecisions.get(data.id)
+    const pendingSelection = data._pending !== true && data.id !== undefined
+      ? this._selectPendingTrafficLogDecision(data)
       : null;
+    const hasPendingDecision = pendingSelection !== null;
+    const pendingDecision = pendingSelection?.decision;
     const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
       ? pendingDecision.emitted
       : pendingDecision;
@@ -8658,11 +8715,18 @@ export class ProxyServer {
         configurable: true
       });
     }
+    if (pendingDecision && typeof pendingDecision === 'object' &&
+        pendingDecision.lifecycleToken !== undefined) {
+      Object.defineProperty(data, '_trafficLifecycleToken', {
+        value: pendingDecision.lifecycleToken,
+        configurable: true
+      });
+    }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
       pendingDecision.record = this._snapshotTrafficRecord(data);
     }
     if (hasPendingDecision && lifecycleComplete) {
-      this._pendingTrafficLogDecisions.delete(data.id);
+      this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
     if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
     try {
@@ -8676,6 +8740,11 @@ export class ProxyServer {
 
   // Emit a pending request that appears in the UI immediately (before response arrives)
   _emitPendingRequest(data) {
+    const lifecycleToken = Symbol('traffic-lifecycle');
+    Object.defineProperty(data, '_trafficLifecycleToken', {
+      value: lifecycleToken,
+      configurable: true
+    });
     data._pending = true;
     data.statusCode = null;
     data.statusMessage = 'Pending';
@@ -8685,9 +8754,10 @@ export class ProxyServer {
     data.duration = null;
     const emitted = this._emitRequest(data);
     if (data.id !== undefined) {
-      this._pendingTrafficLogDecisions.set(data.id, {
+      this._storePendingTrafficLogDecision(data.id, {
         emitted,
         trafficClearGeneration: data._trafficClearGeneration,
+        lifecycleToken,
         record: this._snapshotTrafficRecord(data)
       });
     }
@@ -8704,11 +8774,11 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
-    const hasPendingDecision = data.id !== undefined &&
-      this._pendingTrafficLogDecisions.has(data.id);
-    const pendingDecision = hasPendingDecision
-      ? this._pendingTrafficLogDecisions.get(data.id)
+    const pendingSelection = data.id !== undefined
+      ? this._selectPendingTrafficLogDecision(data)
       : null;
+    const hasPendingDecision = pendingSelection !== null;
+    const pendingDecision = pendingSelection?.decision;
     const pendingWasEmitted = pendingDecision && typeof pendingDecision === 'object'
       ? pendingDecision.emitted
       : pendingDecision;
@@ -8719,11 +8789,18 @@ export class ProxyServer {
         configurable: true
       });
     }
+    if (pendingDecision && typeof pendingDecision === 'object' &&
+        pendingDecision.lifecycleToken !== undefined) {
+      Object.defineProperty(data, '_trafficLifecycleToken', {
+        value: pendingDecision.lifecycleToken,
+        configurable: true
+      });
+    }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
       pendingDecision.record = this._snapshotTrafficRecord(data);
     }
     if (hasPendingDecision && lifecycleComplete) {
-      this._pendingTrafficLogDecisions.delete(data.id);
+      this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
     if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return;
     try {
@@ -9192,7 +9269,13 @@ export class ProxyServer {
     if (abortTarget?.once) {
       onClientClose = () => {
         if (this.pendingBreakpoints.get(requestId) !== bp) return;
-        const pendingDecision = this._pendingTrafficLogDecisions.get(requestId);
+        const pendingDecision = this._selectPendingTrafficLogDecision({
+          id: requestId,
+          method: bp.method,
+          url: bp.url,
+          host: bp.host,
+          path: bp.path
+        })?.decision;
         const retainedRecord = pendingDecision && typeof pendingDecision === 'object'
           ? pendingDecision.record
           : null;

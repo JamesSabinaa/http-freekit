@@ -161,6 +161,7 @@ export class ApiServer {
     this.trafficLog = []; // In-memory traffic log
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
+    this._pendingTrafficLifecycles = new Map();
     this._clearedPendingTrafficIds = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
@@ -2378,6 +2379,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
   }
 
+  _addPendingTrafficLifecycle(id, lifecycleToken) {
+    this._pendingTrafficIds.add(id);
+    if (lifecycleToken === undefined) return;
+    let lifecycles = this._pendingTrafficLifecycles.get(id);
+    if (!lifecycles) {
+      lifecycles = new Set();
+      this._pendingTrafficLifecycles.set(id, lifecycles);
+    }
+    lifecycles.add(lifecycleToken);
+  }
+
+  _completePendingTrafficLifecycle(id, lifecycleToken) {
+    const lifecycles = this._pendingTrafficLifecycles.get(id);
+    if (lifecycleToken !== undefined) {
+      if (!lifecycles) return;
+      if (!lifecycles.delete(lifecycleToken)) return;
+      if (lifecycles.size > 0) return;
+    }
+    this._pendingTrafficLifecycles.delete(id);
+    this._pendingTrafficIds.delete(id);
+  }
+
   onTrafficEvent(data) {
     this._pruneClearedPendingTrafficIds();
     // Enrich with API spec match
@@ -2393,11 +2416,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     if (apiMatch) data.apiMatch = apiMatch;
 
     const trafficClearGeneration = data._trafficClearGeneration;
+    const trafficLifecycleToken = data._trafficLifecycleToken;
     delete data._trafficClearGeneration;
+    delete data._trafficLifecycleToken;
     if (trafficClearGeneration !== undefined &&
         trafficClearGeneration !== this._trafficClearGeneration) {
-      if (data._update) {
-        this._pendingTrafficIds.delete(data.id);
+      if (data._update || trafficLifecycleToken !== undefined) {
+        this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
         this._clearedPendingTrafficIds.delete(data.id);
         this._maybeAutoRotateProxyOnError(data);
       }
@@ -2409,7 +2434,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       delete data._update;
       const mergeUpdate = data._mergeUpdate === true;
       delete data._mergeUpdate;
-      this._pendingTrafficIds.delete(data.id);
+      this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
       if (this._clearedPendingTrafficIds.delete(data.id)) {
         this._maybeAutoRotateProxyOnError(data);
         return;
@@ -2433,13 +2458,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       // New request (pending or complete)
       this._clearedPendingTrafficIds.delete(data.id);
       if (data._pending) {
-        this._pendingTrafficIds.add(data.id);
+        this._addPendingTrafficLifecycle(data.id, trafficLifecycleToken);
         Object.defineProperty(data, '_trafficClearGeneration', {
           value: this._trafficClearGeneration,
           configurable: true
         });
       } else {
-        this._pendingTrafficIds.delete(data.id);
+        this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
       }
       delete data._pending;
       this.trafficLog.push(data);
@@ -2655,6 +2680,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
+    this._pendingTrafficLifecycles.clear();
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
     return clearId;

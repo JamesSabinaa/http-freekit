@@ -149,3 +149,67 @@ test('proxy carries clear generations while current evicted requests still compl
   assert.equal(broadcasts[0].data.statusCode, 201);
   assert.equal(JSON.stringify(broadcasts).includes('_trafficClearGeneration'), false);
 });
+
+test('overlapping reused IDs keep lifecycle generations and cleanup independent', () => {
+  const proxy = new ProxyServer(null);
+  const api = new ApiServer(proxy, null, null);
+  const broadcasts = [];
+  api._broadcast = event => broadcasts.push(structuredClone(event));
+  proxy.onRequest = event => api.onTrafficEvent(event);
+  const event = (path, timestamp) => ({
+    id: 'reused',
+    protocol: 'https',
+    method: 'GET',
+    url: `https://pending.test${path}`,
+    host: 'pending.test',
+    path,
+    requestHeaders: {},
+    requestBody: '',
+    requestBodySize: 0,
+    timestamp,
+    source: 'proxy'
+  });
+
+  proxy._emitPendingRequest(event('/old', 1_000));
+  api._clearTraffic();
+  proxy._emitPendingRequest(event('/new', 2_000));
+  assert.equal(Array.isArray(proxy._pendingTrafficLogDecisions.get('reused')), true);
+  assert.equal(api._pendingTrafficLifecycles.get('reused').size, 1);
+  broadcasts.length = 0;
+
+  proxy._emitRequestUpdate({
+    ...event('/old', 1_000),
+    statusCode: 200,
+    responseHeaders: {},
+    responseBody: 'old',
+    responseBodySize: 3,
+    duration: 20
+  });
+
+  assert.deepEqual(api.trafficLog.map(record => [record.path, record.statusCode]), [
+    ['/new', null]
+  ]);
+  assert.deepEqual(broadcasts, []);
+  assert.equal(api._pendingTrafficIds.has('reused'), true);
+  assert.equal(api._pendingTrafficLifecycles.get('reused').size, 1);
+  assert.equal(Array.isArray(proxy._pendingTrafficLogDecisions.get('reused')), false);
+  assert.equal(proxy._pendingTrafficLogDecisions.get('reused').record.path, '/new');
+
+  proxy._emitRequestUpdate({
+    ...event('/new', 2_000),
+    statusCode: 201,
+    responseHeaders: {},
+    responseBody: 'new',
+    responseBodySize: 3,
+    duration: 10
+  });
+
+  assert.deepEqual(api.trafficLog.map(record => [record.path, record.statusCode]), [
+    ['/new', 201]
+  ]);
+  assert.deepEqual(broadcasts.map(event => event.type), ['request-update']);
+  assert.equal(api._pendingTrafficIds.size, 0);
+  assert.equal(api._pendingTrafficLifecycles.size, 0);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+  assert.equal(JSON.stringify(broadcasts).includes('_trafficLifecycleToken'), false);
+});
