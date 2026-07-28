@@ -5,8 +5,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { McpServerBridge, TOOL_DEFINITIONS } from '../src/mcp/mcp-server.js';
+import { ProxyServer } from '../src/proxy/proxy-server.js';
 
-const MAX_PAGE = 64 * 1024;
+const MAX_PAGE = 32 * 1024;
+const PREVIEW = 8 * 1024;
+const MAX_RESPONSE_BYTES = 512 * 1024;
 
 function createBridge(trafficLog) {
   return new McpServerBridge({
@@ -58,6 +61,8 @@ test('MCP request detail advertises bounded body paging', () => {
   ]);
   assert.equal(tool.inputSchema.properties.body_limit.maximum, MAX_PAGE);
   assert.equal(tool.inputSchema.properties.body_offset.minimum, 0);
+  assert.equal(tool.inputSchema.properties.request_id.minLength, 1);
+  assert.deepEqual(tool.inputSchema.allOf[0].then.required, ['body_side']);
   assert.match(tool.description, /Repeat with body_offset/);
 });
 
@@ -85,12 +90,14 @@ test('MCP request detail metadata stays bounded and every retained body is retri
 
   const metadataResult = bridge._handleGetRequestDetail({ request_id: 'large-request' });
   const detail = parseDetail(metadataResult);
-  assert.ok(metadataResult.content[0].text.length < 4_096);
-  assert.equal(detail.requestBody, undefined);
-  assert.equal(detail.responseBody, undefined);
-  assert.equal(detail.originalRequest.body, undefined);
+  assert.ok(Buffer.byteLength(metadataResult.content[0].text) < MAX_RESPONSE_BYTES);
+  assert.equal(detail.requestBody, splitSurrogate.slice(0, PREVIEW));
+  assert.equal(detail.responseBody, responseBody.slice(0, PREVIEW));
+  assert.equal(detail.originalRequest.body, originalRequestBody.slice(0, PREVIEW));
   assert.equal(detail.bodyPage, null);
   assert.equal(detail.bodies.request.totalLength, splitSurrogate.length);
+  assert.equal(detail.bodies.request.previewLength, PREVIEW);
+  assert.equal(detail.bodies.request.hasMore, true);
   assert.equal(detail.bodies.request.offsetUnit, 'utf16-code-unit');
   assert.equal(detail.bodies.response.totalLength, responseBody.length);
   assert.equal(detail.bodies.response.encoding, 'base64');
@@ -104,6 +111,102 @@ test('MCP request detail metadata stays bounded and every retained body is retri
   assert.equal(trafficLog[0].originalRequest.body, originalRequestBody);
 });
 
+test('legacy request detail fields remain complete for small bodies', () => {
+  const bridge = createBridge([{
+    id: 'legacy-small',
+    method: 'POST',
+    requestBody: 'small request',
+    responseBody: 'small response',
+    originalRequest: { method: 'PUT', body: 'small original' },
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({ request_id: 'legacy-small' }));
+  assert.equal(detail.requestBody, 'small request');
+  assert.equal(detail.responseBody, 'small response');
+  assert.equal(detail.originalRequest.body, 'small original');
+  assert.equal(detail.bodies.request.previewLength, 'small request'.length);
+  assert.equal(detail.bodies.request.hasMore, false);
+  assert.equal(detail.bodies.response.hasMore, false);
+});
+
+test('production boxed original bodies retain content and provenance across pages', () => {
+  const proxy = new ProxyServer(null);
+  const encodedBody = proxy._safeBodyString(
+    Buffer.from([0x00, 0xff, 0x10, 0x80]),
+    '',
+    'image/png'
+  );
+  const truncatedBody = proxy._safeBodyString(
+    Buffer.alloc(512 * 1024 + 17, 0x61),
+    '',
+    'text/plain'
+  );
+  const bridge = createBridge([
+    {
+      id: 'boxed-encoded',
+      requestBody: '',
+      responseBody: '',
+      originalRequest: { body: encodedBody },
+      timestamp: 1_767_225_600_000
+    },
+    {
+      id: 'boxed-truncated',
+      requestBody: '',
+      responseBody: '',
+      originalRequest: { body: truncatedBody },
+      timestamp: 1_767_225_600_000
+    }
+  ]);
+
+  const encodedDetail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'boxed-encoded'
+  }));
+  assert.equal(encodedDetail.bodies.original_request.encoding, 'base64');
+  assert.equal(encodedDetail.bodies.original_request.totalLength, String(encodedBody).length);
+  assert.equal(readAllPages(bridge, 'boxed-encoded', 'original_request', 7), String(encodedBody));
+
+  const truncatedDetail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'boxed-truncated'
+  }));
+  assert.equal(truncatedDetail.bodies.original_request.truncated, true);
+  assert.equal(truncatedDetail.bodies.original_request.capturedSize, 512 * 1024);
+  assert.equal(truncatedDetail.bodies.original_request.decodedSize, 512 * 1024 + 17);
+  assert.equal(
+    readAllPages(bridge, 'boxed-truncated', 'original_request', MAX_PAGE),
+    String(truncatedBody)
+  );
+});
+
+test('large imported metadata is recursively bounded without mutating traffic', () => {
+  const huge = `${'metadata-'.repeat(256 * 1024)}tail`;
+  const record = {
+    id: 'huge-metadata',
+    method: 'GET',
+    requestHeaders: { 'x-huge': huge },
+    responseHeaders: { 'x-nested': ['small', huge] },
+    requestBody: 'paged body',
+    responseBody: '',
+    originalRequest: [huge],
+    extension: { nested: { body: huge } },
+    timestamp: 1_767_225_600_000
+  };
+  const bridge = createBridge([record]);
+
+  for (const args of [
+    { request_id: 'huge-metadata' },
+    { request_id: 'huge-metadata', body_side: 'request' }
+  ]) {
+    const result = bridge._handleGetRequestDetail(args);
+    assert.ok(Buffer.byteLength(result.content[0].text) <= MAX_RESPONSE_BYTES);
+    const detail = parseDetail(result);
+    assert.match(detail.requestHeaders['x-huge'], /truncated|string omitted/);
+  }
+  assert.equal(record.requestHeaders['x-huge'], huge);
+  assert.equal(record.originalRequest[0], huge);
+  assert.equal(record.extension.nested.body, huge);
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{
@@ -112,6 +215,7 @@ test('one MCP request detail page stays bounded for a near-limit capture', () =>
     url: 'https://body.test/large',
     requestBody,
     responseBody: '',
+    requestHeaders: { 'x-large': 'h'.repeat(2 * 1024 * 1024) },
     timestamp: 1_767_225_600_000
   }]);
 
@@ -120,7 +224,7 @@ test('one MCP request detail page stays bounded for a near-limit capture', () =>
     body_side: 'request'
   });
   const detail = parseDetail(result);
-  assert.ok(result.content[0].text.length < 80 * 1024);
+  assert.ok(Buffer.byteLength(result.content[0].text) < MAX_RESPONSE_BYTES);
   assert.equal(detail.bodyPage.length, MAX_PAGE);
   assert.equal(detail.bodyPage.totalLength, requestBody.length);
   assert.equal(detail.bodyPage.hasMore, true);
@@ -157,6 +261,7 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
       body_side: 'request'
     }
   }));
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) <= MAX_RESPONSE_BYTES);
   const second = parseDetail(await client.callTool({
     name: 'get_request_detail',
     arguments: {
@@ -177,6 +282,16 @@ test('MCP transport returns paged Unicode content and rejects unsafe page argume
   });
   assert.equal(invalid.isError, true);
   assert.match(invalid.content[0].text, /body_limit/);
+
+  const missingSide = await client.callTool({
+    name: 'get_request_detail',
+    arguments: {
+      request_id: 'transport-request',
+      body_offset: 1
+    }
+  });
+  assert.equal(missingSide.isError, true);
+  assert.match(missingSide.content[0].text, /body_side/);
 });
 
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
@@ -206,5 +321,9 @@ test('MCP request detail requires a side for offsets and validates direct calls'
       body_limit: 1.5
     }),
     /body_limit/
+  );
+  assert.throws(
+    () => bridge._handleGetRequestDetail({ request_id: '' }),
+    /request_id/
   );
 });

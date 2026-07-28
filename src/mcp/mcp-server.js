@@ -10,7 +10,14 @@ import { trafficToHar } from '../api/har-converter.js';
 const MCP_HAR_EXPORT_MAX_BYTES = 200 * 1024;
 const MCP_HAR_JSON_PREFIX = '{"log":{"version":"1.2","creator":{"name":"HTTP FreeKit","version":"1.0.0"},"entries":[';
 const MCP_HAR_JSON_SUFFIX = ']}}';
-const MCP_BODY_PAGE_MAX_CODE_UNITS = 64 * 1024;
+const MCP_BODY_PAGE_MAX_CODE_UNITS = 32 * 1024;
+const MCP_LEGACY_BODY_PREVIEW_CODE_UNITS = 8 * 1024;
+const MCP_REQUEST_DETAIL_MAX_BYTES = 512 * 1024;
+const MCP_METADATA_MAX_DEPTH = 6;
+const MCP_METADATA_MAX_ENTRIES = 128;
+const MCP_METADATA_MAX_KEY_CODE_UNITS = 128;
+const MCP_METADATA_MAX_STRING_CODE_UNITS = 4 * 1024;
+const MCP_METADATA_TOTAL_STRING_CODE_UNITS = 16 * 1024;
 
 function publicUpstreamProxyMetadata(upstreamProxy) {
   if (!upstreamProxy) return null;
@@ -19,6 +26,133 @@ function publicUpstreamProxyMetadata(upstreamProxy) {
     host: upstreamProxy.host,
     port: upstreamProxy.port
   };
+}
+
+function retainedBody(value, provenance = {}) {
+  const boxedString = value instanceof String;
+  const content = typeof value === 'string' || boxedString ? String(value) : '';
+  const boxedEncoding = boxedString && typeof value.encoding === 'string'
+    ? value.encoding
+    : null;
+  const boxedCapturedSize = boxedString && Number.isSafeInteger(value.capturedSize)
+    ? value.capturedSize
+    : null;
+  const boxedDecodedSize = boxedString && Number.isSafeInteger(value.decodedSize)
+    ? value.decodedSize
+    : null;
+  return {
+    content,
+    encoding: provenance.encoding || boxedEncoding || 'utf8',
+    truncated: provenance.truncated === true || boxedCapturedSize !== null || boxedDecodedSize !== null,
+    capturedSize: provenance.capturedSize ?? boxedCapturedSize,
+    decodedSize: provenance.decodedSize ?? boxedDecodedSize
+  };
+}
+
+function boundedMetadata(value, state = null, depth = 0) {
+  const budget = state || {
+    entries: 0,
+    stringCodeUnits: 0,
+    seen: new WeakSet()
+  };
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string' || value instanceof String) {
+    const text = String(value);
+    const remaining = Math.max(0,
+      MCP_METADATA_TOTAL_STRING_CODE_UNITS - budget.stringCodeUnits);
+    const available = Math.min(MCP_METADATA_MAX_STRING_CODE_UNITS, remaining);
+    if (text.length <= available) {
+      budget.stringCodeUnits += text.length;
+      return text;
+    }
+    const suffix = '… [truncated]';
+    const clipped = available > suffix.length
+      ? text.slice(0, available - suffix.length) + suffix
+      : '[string omitted]';
+    budget.stringCodeUnits += Math.min(available, clipped.length);
+    return clipped;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'symbol' || typeof value === 'function') return undefined;
+  if (value instanceof Date) return Number.isFinite(value.getTime())
+    ? value.toISOString()
+    : 'Invalid Date';
+  if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) {
+    return `[Binary metadata: ${value.byteLength} bytes]`;
+  }
+  if (depth >= MCP_METADATA_MAX_DEPTH) return '[maximum depth omitted]';
+  if (budget.seen.has(value)) return '[repeated reference omitted]';
+  budget.seen.add(value);
+
+  if (Array.isArray(value)) {
+    const output = [];
+    let omitted = 0;
+    for (let index = 0; index < value.length; index++) {
+      if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
+        omitted = value.length - index;
+        break;
+      }
+      budget.entries++;
+      output.push(boundedMetadata(value[index], budget, depth + 1));
+    }
+    if (omitted > 0) output.push(`[${omitted} items omitted]`);
+    return output;
+  }
+
+  const output = {};
+  let omitted = 0;
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
+      omitted++;
+      continue;
+    }
+    if (key.length > MCP_METADATA_MAX_KEY_CODE_UNITS) {
+      omitted++;
+      continue;
+    }
+    budget.entries++;
+    const sanitized = boundedMetadata(nestedValue, budget, depth + 1);
+    if (sanitized !== undefined) output[key] = sanitized;
+  }
+  if (omitted > 0) output._mcpOmittedEntries = omitted;
+  return output;
+}
+
+function bodyDescriptor(body, previewLength) {
+  return {
+    totalLength: body.content.length,
+    previewLength,
+    hasMore: previewLength < body.content.length,
+    offsetUnit: 'utf16-code-unit',
+    encoding: body.encoding,
+    truncated: body.truncated,
+    ...(body.capturedSize !== null ? { capturedSize: body.capturedSize } : {}),
+    ...(body.decodedSize !== null ? { decodedSize: body.decodedSize } : {})
+  };
+}
+
+function stringifyBoundedRequestDetail(detail) {
+  let text = JSON.stringify(detail, null, 2);
+  if (Buffer.byteLength(text) <= MCP_REQUEST_DETAIL_MAX_BYTES) return text;
+
+  const compact = {
+    id: detail.id,
+    timestamp: detail.timestamp,
+    metadataTruncated: true,
+    bodies: detail.bodies,
+    bodyPage: detail.bodyPage
+  };
+  for (const field of ['requestBody', 'responseBody']) {
+    if (detail[field] !== undefined) compact[field] = detail[field];
+  }
+  if (detail.originalRequest?.body !== undefined) {
+    compact.originalRequest = { body: detail.originalRequest.body };
+  }
+  text = JSON.stringify(compact, null, 2);
+  if (Buffer.byteLength(text) <= MCP_REQUEST_DETAIL_MAX_BYTES) return text;
+  throw new Error(`Request detail exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte response limit`);
 }
 
 export const TOOL_DEFINITIONS = [
@@ -38,11 +172,11 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_request_detail',
-    description: 'Get metadata for a captured HTTP request, plus one bounded body page when body_side is provided. Repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
+    description: 'Get bounded metadata and legacy body previews for a captured HTTP request, plus one body page when body_side is provided. Repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
     inputSchema: {
       type: 'object',
       properties: {
-        request_id: { type: 'string', description: 'The request ID to look up' },
+        request_id: { type: 'string', minLength: 1, description: 'The request ID to look up' },
         body_side: {
           type: 'string',
           enum: ['request', 'response', 'original_request'],
@@ -62,7 +196,16 @@ export const TOOL_DEFINITIONS = [
           description: `Maximum UTF-16 code units to return (max ${MCP_BODY_PAGE_MAX_CODE_UNITS}).`
         }
       },
-      required: ['request_id']
+      required: ['request_id'],
+      allOf: [{
+        if: {
+          anyOf: [
+            { required: ['body_offset'] },
+            { required: ['body_limit'] }
+          ]
+        },
+        then: { required: ['body_side'] }
+      }]
     }
   },
   {
@@ -264,47 +407,67 @@ export class McpServerBridge {
       originalRequest,
       ...metadata
     } = req;
-    const requestBody = typeof capturedRequestBody === 'string' ? capturedRequestBody : '';
-    const responseBody = typeof capturedResponseBody === 'string' ? capturedResponseBody : '';
-    let originalRequestBody = '';
+    const requestBody = retainedBody(capturedRequestBody, {
+      encoding: req.requestBodyEncoding,
+      truncated: req.requestBodyTruncated,
+      capturedSize: req.requestBodyCapturedSize,
+      decodedSize: req.requestBodyDecodedSize
+    });
+    const responseBody = retainedBody(capturedResponseBody, {
+      encoding: req.responseBodyEncoding,
+      truncated: req.responseBodyTruncated,
+      capturedSize: req.responseBodyCapturedSize,
+      decodedSize: req.responseBodyDecodedSize
+    });
+    let originalRequestBody = retainedBody('');
     let originalRequestMetadata = originalRequest;
     if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
       const { body, ...originalMetadata } = originalRequest;
-      originalRequestBody = typeof body === 'string' ? body : '';
-      originalRequestMetadata = originalMetadata;
+      originalRequestBody = retainedBody(body);
+      originalRequestMetadata = boundedMetadata(originalMetadata);
+    } else {
+      originalRequestMetadata = boundedMetadata(originalRequest);
     }
+    const includeLegacyPreviews = body_side === undefined;
+    const requestPreviewLength = includeLegacyPreviews
+      ? Math.min(requestBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
+      : 0;
+    const responsePreviewLength = includeLegacyPreviews
+      ? Math.min(responseBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
+      : 0;
+    const originalPreviewLength = includeLegacyPreviews
+      ? Math.min(originalRequestBody.content.length, MCP_LEGACY_BODY_PREVIEW_CODE_UNITS)
+      : 0;
     const bodies = {
-      request: {
-        totalLength: requestBody.length,
-        offsetUnit: 'utf16-code-unit',
-        encoding: req.requestBodyEncoding || 'utf8',
-        truncated: req.requestBodyTruncated === true
-      },
-      response: {
-        totalLength: responseBody.length,
-        offsetUnit: 'utf16-code-unit',
-        encoding: req.responseBodyEncoding || 'utf8',
-        truncated: req.responseBodyTruncated === true
-      },
-      original_request: {
-        totalLength: originalRequestBody.length,
-        offsetUnit: 'utf16-code-unit'
-      }
+      request: bodyDescriptor(requestBody, requestPreviewLength),
+      response: bodyDescriptor(responseBody, responsePreviewLength),
+      original_request: bodyDescriptor(originalRequestBody, originalPreviewLength)
     };
     const detail = {
-      ...metadata,
+      ...boundedMetadata(metadata),
       originalRequest: originalRequestMetadata,
       timestamp: new Date(req.timestamp).toISOString(),
       bodies,
       bodyPage: null
     };
 
+    if (includeLegacyPreviews) {
+      detail.requestBody = requestBody.content.slice(0, requestPreviewLength);
+      detail.responseBody = responseBody.content.slice(0, responsePreviewLength);
+      if (originalRequest && typeof originalRequest === 'object' && !Array.isArray(originalRequest)) {
+        detail.originalRequest = {
+          ...originalRequestMetadata,
+          body: originalRequestBody.content.slice(0, originalPreviewLength)
+        };
+      }
+    }
+
     if (body_side !== undefined) {
       const body = body_side === 'request'
-        ? requestBody
+        ? requestBody.content
         : body_side === 'response'
-          ? responseBody
-          : originalRequestBody;
+          ? responseBody.content
+          : originalRequestBody.content;
       const content = body.slice(offset, offset + limit);
       const nextOffset = offset + content.length;
       const hasMore = nextOffset < body.length;
@@ -320,7 +483,7 @@ export class McpServerBridge {
       };
     }
 
-    return { content: [{ type: 'text', text: JSON.stringify(detail, null, 2) }] };
+    return { content: [{ type: 'text', text: stringifyBoundedRequestDetail(detail) }] };
   }
 
   _handleGetTrafficStats() {
