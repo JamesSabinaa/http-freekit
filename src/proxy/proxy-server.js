@@ -643,10 +643,10 @@ export class ProxyServer {
     };
   }
 
-  _holdMockTimeout(downstream, data, { pendingEmitted } = {}) {
+  _holdMockTimeout(downstream, data, { pendingEmitted, trafficLifecycleId } = {}) {
     downstream.abortOnClose?.();
     const tracked = pendingEmitted === undefined
-      ? this._emitPendingRequest(data)
+      ? this._emitPendingRequest(data, trafficLifecycleId)
       : pendingEmitted;
     if (!tracked) return;
 
@@ -664,7 +664,7 @@ export class ProxyServer {
         duration: Date.now() - data.timestamp,
         error: error.message,
         errorCode: error.code || 'ERR_DOWNSTREAM_ABORTED'
-      });
+      }, trafficLifecycleId);
     };
     if (downstream.aborted) settleDisconnected();
     else downstream.signal.addEventListener('abort', settleDisconnected, { once: true });
@@ -938,6 +938,7 @@ export class ProxyServer {
     let activeProtocol = null;
     let h2FallbackStarted = false;
     let pendingEmitted = false;
+    const trafficLifecycleId = uuidv4();
     let finalized = false;
     let responseEnded = false;
     let responseResult = null;
@@ -1009,7 +1010,7 @@ export class ProxyServer {
     };
     const emitPending = () => {
       if (pendingEmitted) return;
-      pendingEmitted = this._emitPendingRequest(baseRecord());
+      pendingEmitted = this._emitPendingRequest(baseRecord(), trafficLifecycleId);
     };
     const clearH2IdleTimer = () => {
       if (!h2IdleTimer) return;
@@ -1042,8 +1043,8 @@ export class ProxyServer {
       clearH2IdleTimer();
       downstream.complete();
       const emit = pendingEmitted
-        ? data => this._emitRequestUpdate(data)
-        : data => this._emitRequest(data);
+        ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+        : data => this._emitRequest(data, trafficLifecycleId);
       emit({
         ...baseRecord(),
         statusCode: result.statusCode,
@@ -1581,6 +1582,7 @@ export class ProxyServer {
     let activeRequest = null;
     let activeProtocol = null;
     let pendingEmitted = false;
+    const trafficLifecycleId = uuidv4();
     let finalized = false;
     let connectStart = Date.now();
     let h2FallbackStarted = false;
@@ -1653,7 +1655,7 @@ export class ProxyServer {
     };
     const emitPending = () => {
       if (pendingEmitted) return;
-      pendingEmitted = this._emitPendingRequest(baseRecord());
+      pendingEmitted = this._emitPendingRequest(baseRecord(), trafficLifecycleId);
     };
     const clearIdleTimer = () => {
       if (!idleTimer) return;
@@ -1682,8 +1684,8 @@ export class ProxyServer {
       clearIdleTimer();
       downstream.complete();
       const emit = pendingEmitted
-        ? data => this._emitRequestUpdate(data)
-        : data => this._emitRequest(data);
+        ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+        : data => this._emitRequest(data, trafficLifecycleId);
       emit({
         ...baseRecord(),
         statusCode: result.statusCode,
@@ -3146,6 +3148,7 @@ export class ProxyServer {
   _handleHttpUpgrade(req, socket, head, context = {}) {
     const startTime = Date.now();
     const requestId = uuidv4();
+    const trafficLifecycleId = uuidv4();
     let targetUrl;
     try {
       targetUrl = new URL(req.url);
@@ -3211,6 +3214,7 @@ export class ProxyServer {
     const captureUrl = targetUrl.href.replace(/^https?/, captureProtocol);
     const requestRecord = {
       id: requestId,
+      trafficLifecycleId,
       protocol: captureProtocol,
       method: 'WS',
       url: captureUrl,
@@ -3358,7 +3362,8 @@ export class ProxyServer {
           if (!requiresAsyncCapture) {
             const sequence = ++frameSequence;
             void this._emitWsFrame(
-              frame, direction, requestId, sequence, decoder, startTime
+              frame, direction, requestId, sequence, decoder, startTime,
+              trafficLifecycleId
             ).catch(() => {});
             return;
           }
@@ -3374,7 +3379,8 @@ export class ProxyServer {
           pendingCaptures++;
           const operation = captureTail.then(
             () => this._emitWsFrame(
-              frame, direction, requestId, sequence, decoder, startTime
+              frame, direction, requestId, sequence, decoder, startTime,
+              trafficLifecycleId
             )
           );
           captureTail = operation.then(() => undefined, () => undefined).finally(() => {
@@ -3512,6 +3518,7 @@ export class ProxyServer {
    * @param {number} sequence - Capture sequence number within the connection
    * @param {{ decode: function(Buffer): Promise<Buffer> }|null} compressionDecoder
    * @param {number|undefined} parentStartedAt
+   * @param {string|undefined} parentTrafficLifecycleId
    */
   async _emitWsFrame(
     frame,
@@ -3519,7 +3526,8 @@ export class ProxyServer {
     parentId,
     sequence,
     compressionDecoder = null,
-    parentStartedAt = undefined
+    parentStartedAt = undefined,
+    parentTrafficLifecycleId = undefined
   ) {
     const opcodeName = WS_OPCODE_NAMES[frame.opcode] || `unknown(0x${frame.opcode.toString(16)})`;
 
@@ -3592,20 +3600,23 @@ export class ProxyServer {
       ...(decompressionError ? { decompressionError } : {}),
       masked: frame.masked,
       parentId,
+      ...(parentTrafficLifecycleId ? { parentTrafficLifecycleId } : {}),
       sequence,
       ...(frame.fragmented ? {
         fragmented: true,
         fragmentCount: frame.fragmentCount
       } : {})
     };
-    const parentDecision = this._selectPendingTrafficLogDecision({
+    const parentSelection = this._selectPendingTrafficLogDecision({
       id: parentId,
       timestamp: parentStartedAt
-    })?.decision;
+    }, parentTrafficLifecycleId);
+    const parentDecision = parentSelection?.decision;
     const parentWasEmitted = parentDecision && typeof parentDecision === 'object'
       ? parentDecision.emitted
       : parentDecision;
-    if (parentDecision !== undefined && parentDecision !== null && !parentWasEmitted) {
+    if ((parentSelection?.exact && parentDecision === undefined) ||
+        (parentDecision !== undefined && parentDecision !== null && !parentWasEmitted)) {
       return false;
     }
     if (parentDecision && typeof parentDecision === 'object' &&
@@ -3622,6 +3633,7 @@ export class ProxyServer {
   _handleHttpRequest(clientReq, clientRes) {
     const startTime = Date.now();
     const requestId = uuidv4();
+    const trafficLifecycleId = uuidv4();
     this.requestCount++;
 
 
@@ -3767,7 +3779,7 @@ export class ProxyServer {
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
           requestBodySize: body.length, timestamp: startTime, source: 'breakpoint',
           tls: null, remote: null
-        });
+        }, trafficLifecycleId);
         try {
           this.onBreakpoint({
             type: 'breakpoint-hit', requestId,
@@ -3780,7 +3792,8 @@ export class ProxyServer {
           this.pendingBreakpoints.set(requestId, {
             method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
             path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-            body: this._safeBodyString(body), timestamp: Date.now(), resolve
+            body: this._safeBodyString(body), trafficLifecycleId,
+            timestamp: Date.now(), resolve
           });
           this._setBreakpointTimeout(requestId, clientRes);
         });
@@ -3888,7 +3901,7 @@ export class ProxyServer {
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
           requestBodySize: body.length, timestamp: startTime, source: 'proxy',
           tls: null, remote: null
-        });
+        }, trafficLifecycleId);
       }
 
       const connectStart = Date.now();
@@ -3948,6 +3961,7 @@ export class ProxyServer {
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
                 requestId,
+                trafficLifecycleId,
                 protocol: captureProtocol,
                 method: clientReq.method,
                 url: targetUrl.href,
@@ -4009,7 +4023,7 @@ export class ProxyServer {
               tls: null,
               remote,
               trailers: Object.keys(finalResponse.trailers || {}).length > 0 ? finalResponse.trailers : null
-            });
+            }, trafficLifecycleId);
           });
         });
         proxyReq._upstreamProxyGeneration = proxyGeneration;
@@ -4065,7 +4079,7 @@ export class ProxyServer {
             source: 'proxy',
             tls: null,
             remote: null
-          });
+          }, trafficLifecycleId);
         });
 
         this._endH1Request(
@@ -4362,6 +4376,7 @@ export class ProxyServer {
         return;
       }
 
+      const trafficLifecycleId = uuidv4();
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;
       const requestBodyCompletion = this._trackRequestBodyCompletion(req, () => {
@@ -4405,10 +4420,10 @@ export class ProxyServer {
           host: hostname, path: req.url, requestHeaders: req.headers,
           requestBody: this._safeBodyString(body), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
-        });
+        }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data)
-          : data => this._emitRequest(data);
+          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+          : data => this._emitRequest(data, trafficLifecycleId);
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
@@ -4422,7 +4437,7 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
-          }, { pendingEmitted });
+          }, { pendingEmitted, trafficLifecycleId });
           return;
         }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
@@ -4719,7 +4734,8 @@ export class ProxyServer {
               this.pendingBreakpoints.set(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
-                body: this._safeBodyString(body), timestamp: Date.now(), resolve
+                body: this._safeBodyString(body), trafficLifecycleId,
+                timestamp: Date.now(), resolve
               });
               this._setBreakpointTimeout(requestId, res);
             });
@@ -4771,7 +4787,8 @@ export class ProxyServer {
               this.pendingBreakpoints.set(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
-                body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
+                body: this._safeBodyString(body), trafficLifecycleId,
+                timestamp: Date.now(), phase: 'response', resolve
               });
               this._setBreakpointTimeout(requestId, res);
             });
@@ -4884,7 +4901,8 @@ export class ProxyServer {
             this.pendingBreakpoints.set(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
-              body: this._safeBodyString(body), timestamp: Date.now(), resolve
+              body: this._safeBodyString(body), trafficLifecycleId,
+              timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, res);
           });
@@ -4995,7 +5013,7 @@ export class ProxyServer {
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
               if (responseBreakpoint) {
                 finalResponse = await this._pauseResponseBreakpoint({
-                  requestId, protocol: 'https', method: req.method, url: fullUrl,
+                  requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                   host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
@@ -5073,7 +5091,7 @@ export class ProxyServer {
             };
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
-                requestId, protocol: 'https', method: req.method, url: fullUrl,
+                requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
@@ -5310,6 +5328,7 @@ export class ProxyServer {
         return;
       }
 
+      const trafficLifecycleId = uuidv4();
       // Collect request body
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;
@@ -5356,10 +5375,10 @@ export class ProxyServer {
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeBodyString(body), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
-        });
+        }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data)
-          : data => this._emitRequest(data);
+          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+          : data => this._emitRequest(data, trafficLifecycleId);
 
         // Check mock rules
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, matcherBody);
@@ -5373,13 +5392,14 @@ export class ProxyServer {
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
-          }, { pendingEmitted });
+          }, { pendingEmitted, trafficLifecycleId });
           return;
         }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
-            requestTrailers, startTime, tlsDetails, downstream, pendingEmitted
+            requestTrailers, startTime, tlsDetails, downstream, pendingEmitted,
+            trafficLifecycleId
           });
           return;
         }
@@ -5432,7 +5452,8 @@ export class ProxyServer {
             this.pendingBreakpoints.set(requestId, {
               method, url: fullUrl, host: authority,
               path, headers: reqHeaders,
-              body: this._safeBodyString(body), timestamp: Date.now(), resolve
+              body: this._safeBodyString(body), trafficLifecycleId,
+              timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, stream);
           });
@@ -5535,7 +5556,7 @@ export class ProxyServer {
               };
               if (responseBreakpoint) {
                 finalResponse = await this._pauseResponseBreakpoint({
-                  requestId, protocol: 'h2', method, url: fullUrl, host: authority, path,
+                  requestId, trafficLifecycleId, protocol: 'h2', method, url: fullUrl, host: authority, path,
                   requestHeaders: reqHeaders, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
@@ -5615,7 +5636,7 @@ export class ProxyServer {
             };
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
-                requestId, protocol: 'h2', method, url: fullUrl, host: authority, path,
+                requestId, trafficLifecycleId, protocol: 'h2', method, url: fullUrl, host: authority, path,
                 requestHeaders: reqHeaders, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
@@ -5749,6 +5770,7 @@ export class ProxyServer {
         return;
       }
 
+      const trafficLifecycleId = uuidv4();
       const requestBody = this._createBodyCollector();
       let requestBodySize = 0;
       const requestBodyCompletion = this._trackRequestBodyCompletion(req, () => {
@@ -5792,10 +5814,10 @@ export class ProxyServer {
           host: hostname, path: req.url, requestHeaders: req.headers,
           requestBody: this._safeBodyString(body), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
-        });
+        }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data)
-          : data => this._emitRequest(data);
+          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+          : data => this._emitRequest(data, trafficLifecycleId);
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
@@ -5809,13 +5831,13 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeBodyString(body), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
-          }, { pendingEmitted });
+          }, { pendingEmitted, trafficLifecycleId });
           return;
         }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._serveMockResponseH1OnH2(
             requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
-            downstream, pendingEmitted
+            downstream, pendingEmitted, trafficLifecycleId
           );
           return;
         }
@@ -5873,7 +5895,8 @@ export class ProxyServer {
             this.pendingBreakpoints.set(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
-              body: this._safeBodyString(body), timestamp: Date.now(), resolve
+              body: this._safeBodyString(body), trafficLifecycleId,
+              timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, res);
           });
@@ -5974,7 +5997,7 @@ export class ProxyServer {
               };
               if (responseBreakpoint) {
                 finalResponse = await this._pauseResponseBreakpoint({
-                  requestId, protocol: 'https', method: req.method, url: fullUrl,
+                  requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                   host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                   statusCode: h2Res.statusCode, statusMessage: h2Res.statusMessage,
                   responseHeaders: h2Res.headers, responseBody: h2Res.body,
@@ -6058,7 +6081,7 @@ export class ProxyServer {
             };
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
-                requestId, protocol: 'https', method: req.method, url: fullUrl,
+                requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
                 responseHeaders: proxyRes.headers, responseBody: resBody,
@@ -6207,11 +6230,13 @@ export class ProxyServer {
 
   // Handle mock responses for HTTP/2 streams
   async _handleH2MockResponse(stream, mockRule, ctx) {
-    const { requestId, requestTrailers, startTime, tlsDetails, downstream } = ctx;
+    const {
+      requestId, requestTrailers, startTime, tlsDetails, downstream, trafficLifecycleId
+    } = ctx;
     let { method, fullUrl, authority, path, reqHeaders, body } = ctx;
     const emitCapturedRequest = ctx.pendingEmitted === false
-      ? data => this._emitRequest(data)
-      : data => this._emitRequestUpdate(data);
+      ? data => this._emitRequest(data, trafficLifecycleId)
+      : data => this._emitRequestUpdate(data, trafficLifecycleId);
 
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -6484,7 +6509,8 @@ export class ProxyServer {
       const modifications = await new Promise((resolve) => {
         this.pendingBreakpoints.set(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
-          body: this._safeBodyString(body), timestamp: Date.now(), resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), resolve
         });
         this._setBreakpointTimeout(requestId, stream);
       });
@@ -6530,7 +6556,8 @@ export class ProxyServer {
       const modifications = await new Promise((resolve) => {
         this.pendingBreakpoints.set(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
-          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, stream);
       });
@@ -6597,7 +6624,7 @@ export class ProxyServer {
   // Helper for HTTP/1.1 mock responses on the h2 fallback server
   async _serveMockResponseH1OnH2(
     requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
-    downstream, pendingEmitted = true
+    downstream, pendingEmitted = true, trafficLifecycleId = undefined
   ) {
     // allowHTTP1 provides normal IncomingMessage/ServerResponse objects, so the
     // complete H1 mock engine can preserve every action and pre-step.
@@ -6606,6 +6633,7 @@ export class ProxyServer {
       protocol: 'https',
       tls: tlsDetails,
       updatePending: pendingEmitted,
+      ...(trafficLifecycleId === undefined ? {} : { trafficLifecycleId }),
       ...(downstream ? { downstream } : {})
     });
   }
@@ -8075,9 +8103,10 @@ export class ProxyServer {
     const captureProtocol = capture.protocol || 'http';
     const captureTls = capture.tls || null;
     const downstream = capture.downstream || null;
+    const trafficLifecycleId = capture.trafficLifecycleId;
     const emitRequest = capture.updatePending
-      ? data => this._emitRequestUpdate(data)
-      : data => this._emitRequest(data);
+      ? data => this._emitRequestUpdate(data, trafficLifecycleId)
+      : data => this._emitRequest(data, trafficLifecycleId);
     // Determine action — support both new format (action) and legacy format (response)
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -8427,7 +8456,8 @@ export class ProxyServer {
         this.pendingBreakpoints.set(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), timestamp: Date.now(), resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), resolve
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
@@ -8473,7 +8503,8 @@ export class ProxyServer {
         this.pendingBreakpoints.set(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
@@ -8531,7 +8562,8 @@ export class ProxyServer {
         this.pendingBreakpoints.set(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'request', resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), phase: 'request', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
@@ -8573,7 +8605,8 @@ export class ProxyServer {
         this.pendingBreakpoints.set(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), timestamp: Date.now(), phase: 'response', resolve
+          body: this._safeBodyString(body), trafficLifecycleId,
+          timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes);
       });
@@ -8657,10 +8690,19 @@ export class ProxyServer {
     return record;
   }
 
-  _selectPendingTrafficLogDecision(data) {
+  _selectPendingTrafficLogDecision(data, trafficLifecycleId = data.trafficLifecycleId) {
     const stored = this._pendingTrafficLogDecisions.get(data.id);
     if (stored === undefined) return null;
     const decisions = Array.isArray(stored) ? stored : [stored];
+    if (trafficLifecycleId !== undefined) {
+      return {
+        decision: decisions.find(decision =>
+          decision && typeof decision === 'object' &&
+          decision.trafficLifecycleId === trafficLifecycleId
+        ),
+        exact: true
+      };
+    }
     if (decisions.length === 1) return { decision: decisions[0] };
     const objectDecisions = decisions.filter(
       decision => decision && typeof decision === 'object'
@@ -8670,10 +8712,33 @@ export class ProxyServer {
       : objectDecisions.filter(decision => decision.record?.timestamp === data.timestamp);
     const candidates = timestampMatches.length > 0 ? timestampMatches : objectDecisions;
     const identityFields = ['method', 'url', 'host', 'path'];
-    const identityMatch = candidates.find(decision => identityFields.every(field =>
-      data[field] === undefined || decision.record?.[field] === data[field]
-    ));
-    return { decision: identityMatch || candidates[0] || decisions[0] };
+    const hasIdentity = identityFields.some(field => data[field] !== undefined);
+    let identityMatch = hasIdentity
+      ? candidates.find(decision => identityFields.every(field =>
+          data[field] === undefined || decision.record?.[field] === data[field]
+        ))
+      : undefined;
+    if (!identityMatch && data.originalRequest && typeof data.originalRequest === 'object') {
+      let originalUrl;
+      try {
+        originalUrl = data.originalRequest.url === undefined
+          ? null
+          : new URL(data.originalRequest.url);
+      } catch {
+        originalUrl = null;
+      }
+      const originalIdentity = {
+        method: data.originalRequest.method,
+        url: data.originalRequest.url,
+        host: originalUrl?.hostname,
+        path: originalUrl ? originalUrl.pathname + originalUrl.search : undefined
+      };
+      identityMatch = candidates.find(decision => identityFields.every(field =>
+        originalIdentity[field] === undefined ||
+        decision.record?.[field] === originalIdentity[field]
+      ));
+    }
+    return { decision: identityMatch || decisions[0] };
   }
 
   _storePendingTrafficLogDecision(id, decision) {
@@ -8689,7 +8754,7 @@ export class ProxyServer {
   _deletePendingTrafficLogDecision(id, decision) {
     const stored = this._pendingTrafficLogDecisions.get(id);
     if (!Array.isArray(stored)) {
-      this._pendingTrafficLogDecisions.delete(id);
+      if (stored === decision) this._pendingTrafficLogDecisions.delete(id);
       return;
     }
     const index = stored.indexOf(decision);
@@ -8698,7 +8763,7 @@ export class ProxyServer {
     else if (stored.length === 0) this._pendingTrafficLogDecisions.delete(id);
   }
 
-  _emitRequest(data) {
+  _emitRequest(data, trafficLifecycleId = data.trafficLifecycleId) {
     const lifecycleComplete = data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
@@ -8707,7 +8772,7 @@ export class ProxyServer {
       data.source = this._detectSource(data.requestHeaders);
     }
     const pendingSelection = data._pending !== true && data.id !== undefined
-      ? this._selectPendingTrafficLogDecision(data)
+      ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
       : null;
     const hasPendingDecision = pendingSelection !== null;
     const pendingDecision = pendingSelection?.decision;
@@ -8727,6 +8792,9 @@ export class ProxyServer {
         value: pendingDecision.lifecycleToken,
         configurable: true
       });
+    }
+    if (pendingDecision && typeof pendingDecision === 'object') {
+      data.trafficLifecycleId = pendingDecision.trafficLifecycleId;
     }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
       pendingDecision.record = this._snapshotTrafficRecord(data);
@@ -8745,8 +8813,9 @@ export class ProxyServer {
   }
 
   // Emit a pending request that appears in the UI immediately (before response arrives)
-  _emitPendingRequest(data) {
+  _emitPendingRequest(data, trafficLifecycleId = data.trafficLifecycleId || uuidv4()) {
     const lifecycleToken = Symbol('traffic-lifecycle');
+    data.trafficLifecycleId = trafficLifecycleId;
     Object.defineProperty(data, '_trafficLifecycleToken', {
       value: lifecycleToken,
       configurable: true
@@ -8764,6 +8833,7 @@ export class ProxyServer {
         emitted,
         trafficClearGeneration: data._trafficClearGeneration,
         lifecycleToken,
+        trafficLifecycleId,
         record: this._snapshotTrafficRecord(data)
       });
     }
@@ -8771,7 +8841,7 @@ export class ProxyServer {
   }
 
   // Emit an update that replaces an existing pending request
-  _emitRequestUpdate(data) {
+  _emitRequestUpdate(data, trafficLifecycleId = data.trafficLifecycleId) {
     const lifecycleComplete = data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
     data._update = true;
@@ -8781,7 +8851,7 @@ export class ProxyServer {
       data.source = this._detectSource(data.requestHeaders);
     }
     const pendingSelection = data.id !== undefined
-      ? this._selectPendingTrafficLogDecision(data)
+      ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
       : null;
     const hasPendingDecision = pendingSelection !== null;
     const pendingDecision = pendingSelection?.decision;
@@ -8801,6 +8871,9 @@ export class ProxyServer {
         value: pendingDecision.lifecycleToken,
         configurable: true
       });
+    }
+    if (pendingDecision && typeof pendingDecision === 'object') {
+      data.trafficLifecycleId = pendingDecision.trafficLifecycleId;
     }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
       pendingDecision.record = this._snapshotTrafficRecord(data);
@@ -9157,7 +9230,7 @@ export class ProxyServer {
     const {
       requestId, protocol, method, url, host, path, requestHeaders, requestBody,
       statusCode, statusMessage, responseHeaders, responseBody, trailers,
-      startTime, tlsDetails, remote, abortTarget
+      startTime, tlsDetails, remote, abortTarget, trafficLifecycleId
     } = context;
     const displayBody = this._safeBodyString(
       responseBody,
@@ -9189,7 +9262,7 @@ export class ProxyServer {
       tls: tlsDetails || null,
       remote,
       trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
-    });
+    }, trafficLifecycleId);
     try {
       this.onBreakpoint({ type: 'breakpoint-hit', requestId, method, url, host, phase: 'response' });
     } catch (err) {
@@ -9205,6 +9278,7 @@ export class ProxyServer {
         body: displayBody,
         status: statusCode,
         phase: 'response',
+        trafficLifecycleId,
         timestamp: Date.now(),
         resolve
       });
@@ -9281,7 +9355,7 @@ export class ProxyServer {
           url: bp.url,
           host: bp.host,
           path: bp.path
-        })?.decision;
+        }, bp.trafficLifecycleId)?.decision;
         const retainedRecord = pendingDecision && typeof pendingDecision === 'object'
           ? pendingDecision.record
           : null;
@@ -9297,6 +9371,7 @@ export class ProxyServer {
           url: bp.url,
           host: bp.host,
           path: bp.path,
+          trafficLifecycleId: bp.trafficLifecycleId,
           _mergeUpdate: true,
           statusCode: 0,
           statusMessage: 'Client Disconnected',

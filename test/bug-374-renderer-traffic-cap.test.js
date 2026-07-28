@@ -4,12 +4,15 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+const wsParentKeyStart = source.indexOf('function wsConnectionKey(');
+const wsParentKeyEnd = source.indexOf('// ============ VIRTUAL SCROLL STATE', wsParentKeyStart);
 const restoreStart = source.indexOf('function trimTrafficRows(');
 const restoreEnd = source.indexOf('const appliedTrafficClearIds', restoreStart);
 const trafficStart = source.indexOf('function addRequest(');
 const trafficEnd = source.indexOf('function parseFilters(', trafficStart);
 assert.ok(restoreStart >= 0 && restoreEnd > restoreStart);
 assert.ok(trafficStart >= 0 && trafficEnd > trafficStart);
+assert.ok(wsParentKeyStart >= 0 && wsParentKeyEnd > wsParentKeyStart);
 
 function request(id, extra = {}) {
   return { id, method: 'GET', ...extra };
@@ -51,6 +54,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
   };
   vm.createContext(context);
   vm.runInContext(`
+    ${source.slice(wsParentKeyStart, wsParentKeyEnd)}
     ${source.slice(restoreStart, restoreEnd)}
     ${source.slice(trafficStart, trafficEnd)}
     globalThis.restore = restoreTrafficDump;

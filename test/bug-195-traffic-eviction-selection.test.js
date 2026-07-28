@@ -18,6 +18,10 @@ const trimTrafficRowsSource = functionSource(
   'trimTrafficRows',
   'function mergeServerTrafficRequest'
 );
+const wsParentKeySource = functionSource(
+  'wsConnectionKey',
+  '// ============ VIRTUAL SCROLL STATE'
+);
 const activeDescendantSource = functionSource('updateTrafficActiveDescendant', 'function selectRequest');
 const closeDetailSource = functionSource('closeDetail', '// ============ DETAIL FOOTER ACTIONS ============');
 
@@ -65,6 +69,7 @@ function createHarness(selectedIndex) {
   };
   vm.createContext(context);
   vm.runInContext(`
+    ${wsParentKeySource}
     ${trimTrafficRowsSource}
     ${addRequestSource}
     ${activeDescendantSource}

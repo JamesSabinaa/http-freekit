@@ -144,6 +144,40 @@ test('request updates preserve renderer pin membership and rebind selected detai
   assert.equal(harness.rendered[0], harness.context.requests[0]);
 });
 
+test('request updates target the matching reused-ID lifecycle', () => {
+  const oldRequest = {
+    id: 'reused', trafficLifecycleId: 'old-lifecycle', path: '/old', statusCode: null
+  };
+  const currentRequest = {
+    id: 'reused', trafficLifecycleId: 'current-lifecycle', path: '/current', statusCode: null
+  };
+  const harness = createUpdateHarness([oldRequest, currentRequest], 'reused');
+  harness.detailPanel._request = currentRequest;
+
+  harness.context.callHandleWsMessage({
+    type: 'request-update',
+    data: {
+      id: 'reused', trafficLifecycleId: 'current-lifecycle',
+      path: '/current', statusCode: 201
+    }
+  });
+  harness.context.callHandleWsMessage({
+    type: 'request-update',
+    data: {
+      id: 'reused', trafficLifecycleId: 'old-lifecycle',
+      path: '/old', statusCode: 200
+    }
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
+    { id: 'reused', trafficLifecycleId: 'old-lifecycle', path: '/old', statusCode: 200 },
+    { id: 'reused', trafficLifecycleId: 'current-lifecycle', path: '/current', statusCode: 201 }
+  ]);
+  assert.equal(harness.detailPanel._request, harness.context.requests[1]);
+  assert.deepEqual(harness.rendered, [harness.context.requests[1]]);
+  assert.equal(harness.filterCalls, 2);
+});
+
 test('traffic dump retains pinned renderer-only records after authoritative server rows', () => {
   const harness = createRestoreHarness([
     { id: 'send', source: 'Send', _rendererOnly: true, pinned: true },

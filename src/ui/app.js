@@ -83,10 +83,22 @@
     }
 
     // ============ WEBSOCKET FRAMES STATE ============
-    /** Map of parentId -> [frame request objects] for WS frame sub-rows */
+    /** Map of parent lifecycle keys -> [frame request objects] for WS frame sub-rows */
     let wsFramesByParent = Object.create(null);
-    /** Set of WS connection IDs that are expanded to show frame sub-rows */
+    /** Set of WS connection lifecycle keys that are expanded to show frame sub-rows */
     const wsExpandedConnections = new Set();
+
+    function wsConnectionKey(request) {
+      return request?.trafficLifecycleId
+        ? JSON.stringify([request.id, request.trafficLifecycleId])
+        : String(request?.id || '');
+    }
+
+    function wsFrameParentKey(frame) {
+      return frame?.parentTrafficLifecycleId
+        ? JSON.stringify([frame.parentId, frame.parentTrafficLifecycleId])
+        : String(frame?.parentId || '');
+    }
 
     // ============ VIRTUAL SCROLL STATE ============
     const VS_ROW_HEIGHT = 32;
@@ -337,14 +349,21 @@
         case 'request-update':
           // Update an existing request in-place (pending → complete)
           if (msg.data?.id) {
-            const idx = requests.findIndex(r => r.id === msg.data.id);
+            const idx = requests.findIndex(r =>
+              r.id === msg.data.id &&
+              (msg.data.trafficLifecycleId === undefined ||
+                r.trafficLifecycleId === msg.data.trafficLifecycleId)
+            );
             if (idx !== -1) {
               msg.data = mergeServerTrafficRequest(requests[idx], msg.data);
               requests[idx] = msg.data;
               applyFilter();
               // If this request is currently selected, refresh the detail view
-              if (selectedRequestId === msg.data.id) {
-                document.getElementById('detailPanel')._request = msg.data;
+              const detailPanel = document.getElementById('detailPanel');
+              if (selectedRequestId === msg.data.id &&
+                  (msg.data.trafficLifecycleId === undefined ||
+                    detailPanel._request?.trafficLifecycleId === msg.data.trafficLifecycleId)) {
+                detailPanel._request = msg.data;
                 renderDetailCards(msg.data);
               }
             }
@@ -417,8 +436,9 @@
       requests = trimTrafficRows(requests);
       // Track a frame only if capacity trimming retained it.
       if (requests.includes(req) && req.protocol === 'ws-frame' && req.parentId) {
-        if (!wsFramesByParent[req.parentId]) wsFramesByParent[req.parentId] = [];
-        wsFramesByParent[req.parentId].push(req);
+        const parentKey = wsFrameParentKey(req);
+        if (!wsFramesByParent[parentKey]) wsFramesByParent[parentKey] = [];
+        wsFramesByParent[parentKey].push(req);
       }
       if (
         selectedRequestId !== null &&
@@ -444,8 +464,9 @@
       wsFramesByParent = Object.create(null);
       requests.forEach(r => {
         if (r.protocol === 'ws-frame' && r.parentId) {
-          if (!wsFramesByParent[r.parentId]) wsFramesByParent[r.parentId] = [];
-          wsFramesByParent[r.parentId].push(r);
+          const parentKey = wsFrameParentKey(r);
+          if (!wsFramesByParent[parentKey]) wsFramesByParent[parentKey] = [];
+          wsFramesByParent[parentKey].push(r);
         }
       });
 
@@ -482,8 +503,9 @@
       filteredRequests = [];
       for (const r of baseList) {
         filteredRequests.push(r);
-        if (r.protocol === 'ws' && wsExpandedConnections.has(r.id)) {
-          const frames = wsFramesByParent[r.id] || [];
+        const parentKey = wsConnectionKey(r);
+        if (r.protocol === 'ws' && wsExpandedConnections.has(parentKey)) {
+          const frames = wsFramesByParent[parentKey] || [];
           filteredRequests.push(...frames);
         }
       }
@@ -765,11 +787,12 @@
       // WS connection: add frame count badge and expand toggle
       let wsFrameBadge = '';
       if (req.protocol === 'ws') {
-        const frameCount = (wsFramesByParent[req.id] || []).length;
-        const isExpanded = wsExpandedConnections.has(req.id);
+        const parentKey = wsConnectionKey(req);
+        const frameCount = (wsFramesByParent[parentKey] || []).length;
+        const isExpanded = wsExpandedConnections.has(parentKey);
         const expandIcon = isExpanded ? '&#9660;' : '&#9654;';
         if (frameCount > 0) {
-          wsFrameBadge = `<span class="ws-expand-toggle" onclick="event.stopPropagation();toggleWsExpand('${req.id}')" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
+          wsFrameBadge = `<span class="ws-expand-toggle" onclick="event.stopPropagation();toggleWsExpand('${req.id}','${req.trafficLifecycleId || ''}')" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
         }
       }
 
@@ -1553,7 +1576,7 @@
         </div>`;
 
         // ---- Stream Message List Card ----
-        const frames = wsFramesByParent[req.id] || [];
+        const frames = wsFramesByParent[wsConnectionKey(req)] || [];
         if (frames.length > 0) {
           html += `<div class="detail-card dir-left" style="border-left-color:#4caf7d;">
             <div class="detail-card-header">
@@ -9290,11 +9313,15 @@
     }
 
     // ============ WS FRAME EXPAND/COLLAPSE ============
-    function toggleWsExpand(parentId) {
-      if (wsExpandedConnections.has(parentId)) {
-        wsExpandedConnections.delete(parentId);
+    function toggleWsExpand(parentId, parentTrafficLifecycleId = '') {
+      const parentKey = wsConnectionKey({
+        id: parentId,
+        trafficLifecycleId: parentTrafficLifecycleId
+      });
+      if (wsExpandedConnections.has(parentKey)) {
+        wsExpandedConnections.delete(parentKey);
       } else {
-        wsExpandedConnections.add(parentId);
+        wsExpandedConnections.add(parentKey);
       }
       applyFilter();
     }

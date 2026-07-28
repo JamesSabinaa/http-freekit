@@ -2454,7 +2454,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         this._maybeAutoRotateProxyOnError(data);
         return;
       }
-      const idx = this.trafficLog.findIndex(r => r.id === data.id);
+      const idx = this.trafficLog.findIndex(r =>
+        r.id === data.id &&
+        (data.trafficLifecycleId === undefined ||
+          r.trafficLifecycleId === data.trafficLifecycleId)
+      );
       if (idx !== -1) {
         if (mergeUpdate) data = { ...this.trafficLog[idx], ...data };
         this.trafficLog[idx] = data;

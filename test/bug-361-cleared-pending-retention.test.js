@@ -213,3 +213,104 @@ test('overlapping reused IDs keep lifecycle generations and cleanup independent'
   assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
   assert.equal(JSON.stringify(broadcasts).includes('_trafficLifecycleToken'), false);
 });
+
+test('API updates only the matching lifecycle when pending request IDs overlap', () => {
+  const api = createApi();
+  api._broadcast = () => {};
+  const oldToken = Symbol('old');
+  const currentToken = Symbol('current');
+  api.onTrafficEvent({
+    ...pending('reused'), path: '/old', trafficLifecycleId: 'old-lifecycle',
+    _trafficLifecycleToken: oldToken
+  });
+  api.onTrafficEvent({
+    ...pending('reused'), path: '/current', trafficLifecycleId: 'current-lifecycle',
+    _trafficLifecycleToken: currentToken
+  });
+
+  api.onTrafficEvent({
+    id: 'reused', path: '/current', statusCode: 201,
+    trafficLifecycleId: 'current-lifecycle', _trafficLifecycleToken: currentToken,
+    _update: true
+  });
+
+  assert.deepEqual(api.trafficLog.map(record => [
+    record.trafficLifecycleId, record.path, record.statusCode
+  ]), [
+    ['old-lifecycle', '/old', undefined],
+    ['current-lifecycle', '/current', 201]
+  ]);
+  assert.equal(api._pendingTrafficIds.has('reused'), true);
+  assert.deepEqual([...api._pendingTrafficLifecycles.get('reused')], [oldToken]);
+});
+
+test('exact lifecycle IDs bind transformed completions and same-time WebSocket frames', async () => {
+  const proxy = new ProxyServer(null);
+  const events = [];
+  proxy.onRequest = event => events.push(structuredClone(event));
+  proxy._shouldSuppressTrafficLog = data => data._pending === true && data.path === '/hidden';
+  const startedAt = 1_000;
+  const hidden = {
+    id: 'reused-socket', protocol: 'ws', method: 'WS',
+    url: 'ws://socket.test/hidden', host: 'socket.test', path: '/hidden',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: startedAt, source: 'proxy'
+  };
+  const visible = { ...hidden, url: 'ws://socket.test/visible', path: '/visible' };
+
+  assert.equal(proxy._emitPendingRequest(hidden), false);
+  assert.equal(proxy._emitPendingRequest(visible), true);
+  assert.notEqual(hidden.trafficLifecycleId, visible.trafficLifecycleId);
+
+  const frame = {
+    fin: true, rsv1: false, rsv2: false, rsv3: false,
+    compressed: false, opcode: 1, masked: false,
+    payload: Buffer.from('hello'), timestamp: startedAt + 1
+  };
+  assert.equal(await proxy._emitWsFrame(
+    frame, 'server', hidden.id, 1, null, startedAt, hidden.trafficLifecycleId
+  ), false);
+  assert.equal(await proxy._emitWsFrame(
+    frame, 'server', visible.id, 1, null, startedAt, visible.trafficLifecycleId
+  ), true);
+
+  proxy._emitRequestUpdate({
+    ...visible,
+    method: 'POST', url: 'ws://rewritten.test/result', host: 'rewritten.test', path: '/result',
+    originalRequest: { method: 'WS', url: 'ws://socket.test/visible' },
+    statusCode: 101, responseHeaders: {}, responseBody: '', responseBodySize: 0,
+    duration: 5
+  });
+
+  assert.equal(events.length, 3);
+  assert.equal(events[1].parentTrafficLifecycleId, visible.trafficLifecycleId);
+  assert.equal(events[2].trafficLifecycleId, visible.trafficLifecycleId);
+  assert.equal(proxy._pendingTrafficLogDecisions.get(hidden.id).trafficLifecycleId,
+    hidden.trafficLifecycleId);
+
+  proxy._emitRequestUpdate({
+    ...visible, statusCode: 101, responseHeaders: {}, responseBody: '',
+    responseBodySize: 0, duration: 6
+  });
+  assert.equal(events.length, 3);
+  assert.equal(proxy._pendingTrafficLogDecisions.get(hidden.id).trafficLifecycleId,
+    hidden.trafficLifecycleId);
+});
+
+test('legacy boolean decisions retain FIFO order beside correlated lifecycles', () => {
+  const proxy = new ProxyServer(null);
+  const events = [];
+  proxy.onRequest = event => events.push(event);
+  const correlatedDecision = {
+    emitted: true,
+    trafficLifecycleId: 'current-lifecycle',
+    lifecycleToken: Symbol('current'),
+    record: { id: 'mixed', path: '/current', timestamp: 2 }
+  };
+  proxy._pendingTrafficLogDecisions.set('mixed', [false, correlatedDecision]);
+
+  proxy._emitRequestUpdate({ id: 'mixed', statusCode: 500 });
+
+  assert.deepEqual(events, []);
+  assert.equal(proxy._pendingTrafficLogDecisions.get('mixed'), correlatedDecision);
+});

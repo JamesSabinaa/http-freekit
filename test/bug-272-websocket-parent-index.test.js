@@ -50,7 +50,7 @@ function trafficRecord(id, protocol, parentId) {
 }
 
 function rendererHarness(initialRequests = []) {
-  const stateStart = rendererSource.indexOf('/** Map of parentId');
+  const stateStart = rendererSource.indexOf('// ============ WEBSOCKET FRAMES STATE ============');
   const stateEnd = rendererSource.indexOf('// ============ VIRTUAL SCROLL STATE', stateStart);
   const restoreStart = rendererSource.indexOf('function trimTrafficRows(');
   const restoreEnd = rendererSource.indexOf('const appliedTrafficClearIds', restoreStart);
@@ -94,6 +94,7 @@ function rendererHarness(initialRequests = []) {
     globalThis.addTrafficRequest = addRequest;
     globalThis.reloadTraffic = restoreTrafficDump;
     globalThis.expandTraffic = parentId => wsExpandedConnections.add(parentId);
+    globalThis.expandTrafficRequest = request => wsExpandedConnections.add(wsConnectionKey(request));
     globalThis.filterTraffic = applyFilter;
     globalThis.filteredTrafficIds = () => filteredRequests.map(request => request.id);
     globalThis.frameIndex = () => Object.fromEntries(
@@ -214,4 +215,34 @@ test('prototype-named parent IDs survive live add, filtering, reload, and row re
     'ordinary-parent',
     'ordinary-frame'
   ]);
+});
+
+test('reused WebSocket IDs keep frames bound to the matching parent lifecycle', () => {
+  const oldParent = {
+    ...trafficRecord('reused', 'ws'),
+    trafficLifecycleId: 'old-lifecycle'
+  };
+  const currentParent = {
+    ...trafficRecord('reused', 'ws'),
+    trafficLifecycleId: 'current-lifecycle'
+  };
+  const oldFrame = {
+    ...trafficRecord('old-frame', 'ws-frame', 'reused'),
+    parentTrafficLifecycleId: 'old-lifecycle'
+  };
+  const currentFrame = {
+    ...trafficRecord('current-frame', 'ws-frame', 'reused'),
+    parentTrafficLifecycleId: 'current-lifecycle'
+  };
+  const harness = rendererHarness([oldParent, oldFrame, currentParent, currentFrame]);
+
+  harness.context.expandTrafficRequest(currentParent);
+  harness.context.filterTraffic();
+
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    'reused',
+    'reused',
+    'current-frame'
+  ]);
+  assert.match(harness.context.trafficRowHtml('reused'), /ws-frame-count">1</);
 });
