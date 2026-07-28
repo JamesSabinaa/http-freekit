@@ -95,7 +95,7 @@ async function initializeApplication(apiPort) {
     }
   } else {
     ca.systemTrustInstalled = false;
-    if (certInfo.replacedCertificateFingerprints.length > 0) {
+    if (ca.getCertInfo().certificateReplacementPending) {
       console.warn(
         `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`
       );

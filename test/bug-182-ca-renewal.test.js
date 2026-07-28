@@ -176,6 +176,75 @@ test('post-rename marker hardening failures remain visibly scheduled', async t =
   assert.equal(ca.getCertInfo().certificateRenewalScheduled, true);
 });
 
+test('legacy replacement cleanup state becomes a separate migration warning on upgrade', async t => {
+  t.mock.method(console, 'log', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-migration-upgrade-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  createPersistedCa(dataDir, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+  const previousFingerprint = 'AB'.repeat(20);
+  fs.writeFileSync(path.join(dataDir, 'ca-replacements.json'), JSON.stringify({
+    version: 1,
+    fingerprints: [previousFingerprint]
+  }));
+
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize({ autoRenewExpiring: false });
+
+  assert.equal(ca.getCertInfo().certificateReplacementPending, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(ca.caMigrationStatePath, 'utf8')), {
+    version: 1,
+    previousFingerprint
+  });
+  assert.equal(
+    JSON.parse(fs.readFileSync(ca.caReplacementStatePath, 'utf8')).version,
+    2
+  );
+  ca.acknowledgeReplacementMigration();
+  assert.equal(ca.getCertInfo().certificateReplacementPending, false);
+  assert.equal(fs.existsSync(ca.caMigrationStatePath), false);
+  assert.deepEqual(ca.pendingReplacementFingerprints, [previousFingerprint]);
+
+  const restarted = new CertificateAuthority(dataDir);
+  await restarted.initialize({ autoRenewExpiring: false });
+  assert.equal(
+    restarted.getCertInfo().certificateReplacementPending,
+    false,
+    'an acknowledged split-state migration must not be recreated from cleanup state'
+  );
+  assert.deepEqual(restarted.pendingReplacementFingerprints, [previousFingerprint]);
+});
+
+test('committed migration marker hardening failure does not strand a scheduled renewal', async t => {
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-migration-marker-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const oldCertificate = createPersistedCa(
+    dataDir,
+    new Date(Date.now() + 60 * 60 * 1000)
+  );
+  const schedulingCa = new CertificateAuthority(dataDir);
+  await schedulingCa.initialize({ autoRenewExpiring: false });
+  schedulingCa.scheduleRenewal();
+
+  const replacement = new CertificateAuthority(dataDir);
+  replacement._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+  const originalChmodSync = fs.chmodSync;
+  t.mock.method(fs, 'chmodSync', (filePath, mode) => {
+    if (filePath === replacement.caMigrationStatePath) {
+      throw new Error('simulated migration chmod failure');
+    }
+    return originalChmodSync(filePath, mode);
+  });
+
+  await assert.doesNotReject(replacement.initialize({ autoRenewExpiring: false }));
+  assert.notEqual(fs.readFileSync(replacement.caCertPath, 'utf8'), oldCertificate);
+  assert.equal(fs.existsSync(replacement.caMigrationStatePath), true);
+  assert.equal(fs.existsSync(replacement.caRenewalStatePath), false);
+  assert.equal(replacement.getCertInfo().certificateReplacementPending, true);
+  assert.equal(replacement.getCertInfo().certificateRenewalScheduled, false);
+});
+
 test('CA renewal routes schedule, cancel, and acknowledge migration state', async t => {
   const state = {
     automatic: false,
@@ -247,6 +316,11 @@ test('settings show deferred, scheduled, and replacement CA migration states', (
     indexSource,
     /initialize\(\{ autoRenewExpiring: false \}\)/
   );
+  assert.match(
+    indexSource,
+    /if \(ca\.getCertInfo\(\)\.certificateReplacementPending\)/
+  );
+  assert.doesNotMatch(indexSource, /if \(certInfo\.replacedCertificateFingerprints\.length > 0\)/);
   assert.match(rendererSource, /if \(nextSection === 'tls'\) void loadConfig\(\)/);
   const start = rendererSource.indexOf('function renderCaRenewalState(');
   const end = rendererSource.indexOf('async function loadConfig()', start);
@@ -273,7 +347,8 @@ test('settings show deferred, scheduled, and replacement CA migration states', (
     certificateRenewalRequired: true,
     certificateAutomaticRenewalEnabled: false
   });
-  assert.match(elements.get('settingsCaRenewalNotice').textContent, /paused outside Windows/);
+  assert.match(elements.get('settingsCaRenewalNotice').textContent, /Automatic replacement is paused/);
+  assert.doesNotMatch(elements.get('settingsCaRenewalNotice').textContent, /outside Windows/);
   assert.equal(elements.get('settingsCaScheduleRenewal').style.display, '');
   assert.equal(elements.get('settingsCaRenewalActions').style.display, 'flex');
 

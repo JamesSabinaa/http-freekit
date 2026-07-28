@@ -9128,8 +9128,8 @@
         message = automaticRenewal
           ? 'This CA expires within 30 days. Windows will install its replacement automatically during the final 48 hours; manually configured external clients will still need the new certificate.'
           : expired
-          ? 'This CA has expired. Automatic replacement is paused outside Windows so the trusted identity is not changed without your approval.'
-          : 'This CA expires within 30 days. Automatic replacement is paused outside Windows so manually configured clients are not silently disconnected.';
+          ? 'This CA has expired. Automatic replacement is paused so the trusted identity is not changed without your approval.'
+          : 'This CA expires within 30 days. Automatic replacement is paused so manually configured clients are not silently disconnected.';
       }
 
       if (notice) {

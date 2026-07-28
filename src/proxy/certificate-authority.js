@@ -9,6 +9,7 @@ const { pki, md, asn1 } = forge;
 const CA_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 const CA_AUTO_RENEWAL_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CA_RENEWAL_NOTICE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const CA_REPLACEMENT_STATE_VERSION = 2;
 
 export class CertificateAuthority {
   constructor(dataDir) {
@@ -33,7 +34,8 @@ export class CertificateAuthority {
   async initialize(options = {}) {
     const autoRenewExpiring = options.autoRenewExpiring !== false;
     this.autoRenewExpiring = autoRenewExpiring;
-    let replacedCertificateFingerprints = this._loadReplacementFingerprints();
+    const replacementState = this._loadReplacementFingerprints();
+    let replacedCertificateFingerprints = replacementState.fingerprints;
     this.pendingReplacementFingerprints = replacedCertificateFingerprints;
     this.pendingMigrationFingerprint = this._loadMigrationFingerprint();
     let scheduledRenewal = this._loadScheduledRenewal();
@@ -143,6 +145,19 @@ export class CertificateAuthority {
       // not create a client migration. Do not show a false re-trust warning.
       this.setPendingMigrationFingerprint(null);
     }
+    if (replacementState.needsMigration && this.pendingMigrationFingerprint === null &&
+        replacedCertificateFingerprints.length > 0) {
+      // Releases before the migration/cleanup journals were separated stored
+      // only these obsolete fingerprints. Preserve their unacknowledged client
+      // migration warning when upgrading instead of silently losing it.
+      this.setPendingMigrationFingerprint(replacedCertificateFingerprints.at(-1));
+    }
+    if (replacementState.needsMigration && replacedCertificateFingerprints.length > 0) {
+      // Persist the split-state version only after the migration marker is
+      // present. A later acknowledgement can then remain acknowledged while
+      // Windows exact-thumbprint cleanup continues independently.
+      this.setPendingReplacementFingerprints(replacedCertificateFingerprints);
+    }
 
     return {
       certPath: this.caCertPath,
@@ -173,16 +188,22 @@ export class CertificateAuthority {
   }
 
   _loadReplacementFingerprints() {
-    if (!fs.existsSync(this.caReplacementStatePath)) return [];
+    if (!fs.existsSync(this.caReplacementStatePath)) {
+      return { fingerprints: [], needsMigration: false };
+    }
     const state = JSON.parse(fs.readFileSync(this.caReplacementStatePath, 'utf8'));
-    if (!state || state.version !== 1 || !Array.isArray(state.fingerprints)) {
+    if (!state || ![1, CA_REPLACEMENT_STATE_VERSION].includes(state.version) ||
+        !Array.isArray(state.fingerprints)) {
       throw new Error('Pending CA replacement state has an unsupported format');
     }
     const fingerprints = state.fingerprints.map(value => this._normalizeSha1Fingerprint(value));
     if (fingerprints.some(value => value === null)) {
       throw new Error('Pending CA replacement state contains an invalid fingerprint');
     }
-    return [...new Set(fingerprints)];
+    return {
+      fingerprints: [...new Set(fingerprints)],
+      needsMigration: state.version === 1
+    };
   }
 
   setPendingReplacementFingerprints(values) {
@@ -203,7 +224,11 @@ export class CertificateAuthority {
     let descriptor = null;
     try {
       descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
-      fs.writeFileSync(descriptor, JSON.stringify({ version: 1, fingerprints }), 'utf8');
+      fs.writeFileSync(
+        descriptor,
+        JSON.stringify({ version: CA_REPLACEMENT_STATE_VERSION, fingerprints }),
+        'utf8'
+      );
       fs.fsyncSync(descriptor);
       fs.closeSync(descriptor);
       descriptor = null;
@@ -252,6 +277,7 @@ export class CertificateAuthority {
 
     const temporaryPath = `${this.caMigrationStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     let descriptor = null;
+    let committed = false;
     try {
       descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
       fs.writeFileSync(
@@ -263,6 +289,8 @@ export class CertificateAuthority {
       fs.closeSync(descriptor);
       descriptor = null;
       fs.renameSync(temporaryPath, this.caMigrationStatePath);
+      committed = true;
+      this.pendingMigrationFingerprint = fingerprint;
       fs.chmodSync(this.caMigrationStatePath, 0o600);
       if (process.platform !== 'win32') {
         const directoryDescriptor = fs.openSync(path.dirname(this.caMigrationStatePath), 'r');
@@ -272,8 +300,15 @@ export class CertificateAuthority {
           fs.closeSync(directoryDescriptor);
         }
       }
-      this.pendingMigrationFingerprint = fingerprint;
     } catch (error) {
+      if (committed) {
+        // The marker was atomically published with mode 0600. Keep startup and
+        // the visible migration warning consistent with that committed state
+        // even if redundant chmod or directory durability hardening failed.
+        this.pendingMigrationFingerprint = fingerprint;
+        console.warn(`[CA] Migration marker was saved but hardening failed: ${error.message}`);
+        return;
+      }
       if (descriptor !== null) {
         try { fs.closeSync(descriptor); } catch {}
       }
