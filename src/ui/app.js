@@ -184,7 +184,9 @@
       const response = await authenticatedFetch(resource, options);
       if (isManagementApi && !response.ok) {
         const payload = await response.clone().json().catch(() => ({}));
-        throw new Error(payload.error || `Management API returned HTTP ${response.status}`);
+        const error = new Error(payload.error || `Management API returned HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       return response;
     };
@@ -11341,6 +11343,10 @@
             }
             clearBreakpointEditDraft(bp.id, bp.trafficLifecycleId);
           } catch (err) {
+            if (err?.status === 404) {
+              clearBreakpointEditDraft(bp.id, bp.trafficLifecycleId);
+              continue;
+            }
             failures.push(err);
           }
         }
@@ -11483,7 +11489,15 @@
         clearBreakpointEditDraft(requestId, trafficLifecycleId);
         toast('Request resumed', 'success');
         updateBreakpointBanner();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (err?.status === 404) {
+          clearBreakpointEditDraft(requestId, trafficLifecycleId);
+          toast('Request is no longer paused', 'success');
+          updateBreakpointBanner();
+          return;
+        }
+        toast('Error: ' + err.message, 'error');
+      }
     }
 
     function createBreakpointFromRequest(requestId = selectedRequestId, trafficLifecycleId) {

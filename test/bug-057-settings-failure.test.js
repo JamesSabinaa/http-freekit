@@ -76,5 +76,6 @@ test('renderer turns management API failures into errors before showing success'
   const source = fs.readFileSync(path.join(repoRoot, 'src/ui/app.js'), 'utf8');
 
   assert.match(source, /if \(isManagementApi && !response\.ok\)/);
-  assert.match(source, /throw new Error\(payload\.error \|\| `Management API returned HTTP \$\{response\.status\}`\)/);
+  assert.match(source, /new Error\(payload\.error \|\| `Management API returned HTTP \$\{response\.status\}`\)/);
+  assert.match(source, /error\.status = response\.status/);
 });

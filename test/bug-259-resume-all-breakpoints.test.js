@@ -5,6 +5,10 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const fetchWrapperStart = rendererSource.indexOf('const API_BASE =');
+const fetchWrapperEnd = rendererSource.indexOf('// ============ WEBSOCKET ============', fetchWrapperStart);
+assert.notEqual(fetchWrapperStart, -1);
+assert.notEqual(fetchWrapperEnd, -1);
 const functionsStart = rendererSource.indexOf('async function updateBreakpointBanner()');
 const functionsEnd = rendererSource.indexOf('function getBreakpointEditDraft(', functionsStart);
 assert.notEqual(functionsStart, -1);
@@ -38,6 +42,35 @@ function createRenderer(fetch, breakpointEditDrafts = new Map()) {
   return { context, elements, toasts };
 }
 
+test('management fetch errors preserve their HTTP status for callers', async () => {
+  const nativeResponse = {
+    ok: false,
+    status: 404,
+    clone: () => ({ json: async () => ({ error: 'Pending breakpoint not found' }) })
+  };
+  const location = {
+    hostname: '127.0.0.1',
+    port: '9000',
+    search: '?authToken=test-token',
+    origin: 'http://127.0.0.1:9000',
+    href: 'http://127.0.0.1:9000/?authToken=test-token'
+  };
+  const context = {
+    Headers,
+    Request,
+    URL,
+    URLSearchParams,
+    window: { location, fetch: async () => nativeResponse }
+  };
+  vm.createContext(context);
+  vm.runInContext(rendererSource.slice(fetchWrapperStart, fetchWrapperEnd), context);
+
+  await assert.rejects(
+    context.window.fetch('/api/breakpoints/pending/stale/resume'),
+    error => error.message === 'Pending breakpoint not found' && error.status === 404
+  );
+});
+
 test('Resume All skips a stale breakpoint, resumes later entries, and refreshes the banner', async () => {
   const calls = [];
   let pendingRead = 0;
@@ -48,7 +81,7 @@ test('Resume All skips a stale breakpoint, resumes later entries, and refreshes 
       return response({ pending: pendingRead === 1 ? [{ id: 'a' }, { id: 'b' }] : [] });
     }
     if (url.endsWith('/a/resume')) {
-      return response({ error: 'Pending breakpoint not found' }, { ok: false, status: 404 });
+      throw Object.assign(new Error('Pending breakpoint not found'), { status: 404 });
     }
     if (url.endsWith('/b/resume')) return response({ success: true });
     return assert.fail(`Unexpected fetch: ${url}`);
@@ -168,4 +201,35 @@ test('manual resume sends only the selected lifecycle draft', async () => {
   assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-1'])), true);
   assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-2'])), false);
   assert.deepEqual(toasts, [['Request resumed', 'success']]);
+});
+
+test('manual resume clears only the selected stale lifecycle draft', async () => {
+  const toasts = [];
+  let bannerRefreshes = 0;
+  const breakpointEditDrafts = new Map([
+    [JSON.stringify(['duplicate/id', 'life-1']), { _phase: 'request' }],
+    [JSON.stringify(['duplicate/id', 'life-2']), { _phase: 'request' }]
+  ]);
+  const context = {
+    API_BASE: '',
+    breakpointEditDrafts,
+    requests: [],
+    fetch: async () => {
+      throw Object.assign(new Error('Pending breakpoint not found'), { status: 404 });
+    },
+    toast: (...args) => toasts.push(args),
+    updateBreakpointBanner: async () => { bannerRefreshes++; }
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${singleResumeSource}
+    globalThis.resumeForTest = resumeBreakpointRequest;
+  `, context);
+
+  await context.resumeForTest('duplicate/id', 'life-2');
+
+  assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-1'])), true);
+  assert.equal(breakpointEditDrafts.has(JSON.stringify(['duplicate/id', 'life-2'])), false);
+  assert.equal(bannerRefreshes, 1);
+  assert.deepEqual(toasts, [['Request is no longer paused', 'success']]);
 });
