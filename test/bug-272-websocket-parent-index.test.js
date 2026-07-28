@@ -136,12 +136,37 @@ test('traffic import requires every WebSocket frame to have a non-empty string p
   for (const malformed of [
     trafficRecord('missing-parent', 'ws-frame'),
     trafficRecord('empty-parent', 'ws-frame', ''),
-    trafficRecord('numeric-parent', 'ws-frame', 7)
+    trafficRecord('numeric-parent', 'ws-frame', 7),
+    trafficRecord('orphan-parent', 'ws-frame', 'absent-parent')
   ]) {
     const result = await postImport(port, [malformed]);
     assert.equal(result.statusCode, 400);
     assert.match(result.body.error, /parentId/);
   }
+  assert.deepEqual(api.trafficLog, []);
+
+  for (const emptyCorrelation of [
+    { ...trafficRecord('empty-parent-lifecycle', 'ws'), trafficLifecycleId: '' },
+    {
+      ...trafficRecord('empty-frame-lifecycle', 'ws-frame', 'empty-parent-lifecycle'),
+      parentTrafficLifecycleId: ''
+    }
+  ]) {
+    const emptyResult = await postImport(port, [emptyCorrelation]);
+    assert.equal(emptyResult.statusCode, 400);
+    assert.match(emptyResult.body.error, /must be non-empty/);
+  }
+  assert.deepEqual(api.trafficLog, []);
+
+  const mismatchedLifecycle = await postImport(port, [
+    { ...trafficRecord('lifecycle-parent', 'wss'), trafficLifecycleId: 'actual-lifecycle' },
+    {
+      ...trafficRecord('mismatched-frame', 'ws-frame', 'lifecycle-parent'),
+      parentTrafficLifecycleId: 'other-lifecycle'
+    }
+  ]);
+  assert.equal(mismatchedLifecycle.statusCode, 400);
+  assert.match(mismatchedLifecycle.body.error, /parentTrafficLifecycleId/);
   assert.deepEqual(api.trafficLog, []);
 
   const imported = [
@@ -156,6 +181,11 @@ test('traffic import requires every WebSocket frame to have a non-empty string p
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.imported, imported.length);
   assert.deepEqual(api.trafficLog, imported);
+
+  const linkedToRetainedParent = trafficRecord('retained-parent-frame', 'ws-frame', 'ordinary-parent');
+  const retainedResult = await postImport(port, [linkedToRetainedParent]);
+  assert.equal(retainedResult.statusCode, 200);
+  assert.deepEqual(api.trafficLog.at(-1), linkedToRetainedParent);
 });
 
 test('JSON and HAR imports preserve WebSocket parent relationships at capacity', async t => {

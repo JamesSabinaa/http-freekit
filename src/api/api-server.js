@@ -665,6 +665,11 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${field} must be a string`;
         }
       }
+      for (const field of ['trafficLifecycleId', 'parentTrafficLifecycleId']) {
+        if (request[field] === '') {
+          return `requests[${index}].${field} must be non-empty when provided`;
+        }
+      }
       if (request.protocol === 'ws-frame' &&
           (typeof request.parentId !== 'string' || request.parentId.length === 0)) {
         return `requests[${index}].parentId must be a non-empty string for WebSocket frames`;
@@ -737,6 +742,30 @@ print(json.dumps({"providers": get_proxy_providers()}))
             (Array.isArray(value) && value.every(item => typeof item === 'string'));
           if (!valid) return `requests[${index}].${field} values must be strings or string arrays`;
         }
+      }
+    }
+
+    const parentIds = new Set();
+    const parentLifecycleIds = new Set();
+    for (const rows of [this.trafficLog, requests]) {
+      for (const request of rows) {
+        if (request?.protocol !== 'ws' && request?.protocol !== 'wss') continue;
+        parentIds.add(request.id);
+        if (request.trafficLifecycleId) {
+          parentLifecycleIds.add(JSON.stringify([request.id, request.trafficLifecycleId]));
+        }
+      }
+    }
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
+      if (request.protocol !== 'ws-frame') continue;
+      if (request.parentTrafficLifecycleId) {
+        const parentKey = JSON.stringify([request.parentId, request.parentTrafficLifecycleId]);
+        if (!parentLifecycleIds.has(parentKey)) {
+          return `requests[${index}].parentTrafficLifecycleId does not match an imported or retained WebSocket parent`;
+        }
+      } else if (!parentIds.has(request.parentId)) {
+        return `requests[${index}].parentId does not match an imported or retained WebSocket parent`;
       }
     }
     return null;
