@@ -810,7 +810,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-228 — Medium — A hard-coded Chromium filter silently hides traffic
 
 - Status: **Fixed**.
-- Resolution: Chromium-family traffic is no longer discarded by an implicit host/path denylist. Account, update, Safe Browsing, telemetry, Web Store, Google UI, and failure requests now reach the API, UI, MCP tools, and exports; only Safe Font hosts are suppressed when the user explicitly enables that setting.
+- Resolution: Chromium-family traffic is no longer discarded by an implicit host/path denylist. Account, update, Safe Browsing, telemetry, Web Store, Google UI, and failure requests now reach the API, UI, MCP tools, and exports; only Safe Font hosts are suppressed when the user explicitly enables that setting. That decision is fixed for each pending request lifecycle, so changing the setting mid-flight cannot leave a ghost pending row or an unmatched completion.
 
 - Evidence: both pending and completed emission call `_shouldSuppressTrafficLog()` at `src/proxy/proxy-server.js:3810,3837`; for Chrome-family UAs, `:3845-3926` always drops many update, Safe Browsing, account, telemetry, Web Store, and Google requests. Only safe-font filtering is configurable.
 - Impact: forwarded authentication and failure traffic never reaches API/UI/MCP/HAR, contradicting the promise to inspect every request and providing no indication that records were removed.

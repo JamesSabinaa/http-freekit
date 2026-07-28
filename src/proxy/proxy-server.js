@@ -202,6 +202,7 @@ export class ProxyServer {
     this.onRequest = options.onRequest || (() => {});
     this.onBreakpoint = options.onBreakpoint || (() => {});
     this.onUpstreamProxyRetry = options.onUpstreamProxyRetry || (async () => false);
+    this._pendingTrafficLogDecisions = new Map();
     this.server = null;
     this.requestCount = 0;
     this.activeConnections = new Set();
@@ -8606,6 +8607,9 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
+    if (data._pending !== true && data.id !== undefined) {
+      this._pendingTrafficLogDecisions.delete(data.id);
+    }
     if (this._shouldSuppressTrafficLog(data)) return false;
     try {
       this.onRequest(data);
@@ -8625,7 +8629,11 @@ export class ProxyServer {
     data.responseBody = '';
     data.responseBodySize = 0;
     data.duration = null;
-    return this._emitRequest(data);
+    const emitted = this._emitRequest(data);
+    if (data.id !== undefined) {
+      this._pendingTrafficLogDecisions.set(data.id, emitted);
+    }
+    return emitted;
   }
 
   // Emit an update that replaces an existing pending request
@@ -8636,7 +8644,13 @@ export class ProxyServer {
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
-    if (this._shouldSuppressTrafficLog(data)) return;
+    const hasPendingDecision = data.id !== undefined &&
+      this._pendingTrafficLogDecisions.has(data.id);
+    const pendingWasEmitted = hasPendingDecision
+      ? this._pendingTrafficLogDecisions.get(data.id)
+      : null;
+    if (hasPendingDecision) this._pendingTrafficLogDecisions.delete(data.id);
+    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return;
     try {
       this.onRequest(data);
     } catch (err) {

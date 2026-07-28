@@ -608,3 +608,49 @@ test('a mock appends normally when traffic filtering suppressed its pending even
   assert.deepEqual(capture.broadcasts.map(event => event.type), ['request']);
   assert.equal(capture.events[0]._update, undefined);
 });
+
+test('Safe Font filtering remains stable across each pending request lifecycle', () => {
+  for (const initiallyFiltered of [false, true]) {
+    const proxy = new ProxyServer(null);
+    const capture = attachTrafficLifecycle(proxy);
+    proxy.filterSafeFonts = initiallyFiltered;
+    const baseEvent = {
+      id: `font-${initiallyFiltered}`,
+      protocol: 'https',
+      method: 'GET',
+      url: 'https://fonts.gstatic.com/font.woff2',
+      host: 'fonts.gstatic.com',
+      path: '/font.woff2',
+      requestHeaders: {},
+      requestBody: '',
+      requestBodySize: 0,
+      timestamp: Date.now(),
+      source: 'Chrome'
+    };
+
+    assert.equal(proxy._emitPendingRequest({ ...baseEvent }), !initiallyFiltered);
+    proxy.filterSafeFonts = !initiallyFiltered;
+    proxy._emitRequestUpdate({
+      ...baseEvent,
+      statusCode: 200,
+      responseHeaders: {},
+      responseBody: '',
+      responseBodySize: 0,
+      duration: 10
+    });
+
+    if (initiallyFiltered) {
+      assert.equal(capture.api.trafficLog.length, 0);
+      assert.deepEqual(capture.broadcasts, []);
+    } else {
+      assert.equal(capture.api.trafficLog.length, 1);
+      assert.equal(capture.api.trafficLog[0].statusCode, 200);
+      assert.deepEqual(capture.broadcasts.map(event => event.type), [
+        'request',
+        'request-update'
+      ]);
+    }
+    assert.equal(capture.api._pendingTrafficIds.size, 0);
+    assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+  }
+});
