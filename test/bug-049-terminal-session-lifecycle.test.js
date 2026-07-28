@@ -311,3 +311,45 @@ test('Windows shell reports reject hard links without modifying their target', a
   );
   assert.equal(fs.readFileSync(sentinel, 'utf8'), contents);
 });
+
+test('Windows activation retains verified ownership when handshake cleanup fails', async t => {
+  const interceptor = new FreshTerminalInterceptor({ platform: 'win32' });
+  t.mock.method(console, 'warn', () => {});
+  interceptor._waitForWindowsShellReport = async () => ({
+    pid: 7705,
+    startTime: '700',
+    executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+  });
+  let sessionRunning = true;
+  interceptor._inspectSessionIdentity = async pid => sessionRunning
+    ? {
+        state: 'running',
+        identity: {
+          pid,
+          startTime: '700',
+          executable: 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe'
+        }
+      }
+    : { state: 'absent' };
+  interceptor._killSession = () => {
+    sessionRunning = false;
+    return true;
+  };
+  interceptor._acknowledgeWindowsShell = async () => {};
+  interceptor._cleanupWindowsHandshake = () => {
+    throw new Error('handshake directory removal denied');
+  };
+  const launcher = fakeLauncher(7704);
+  interceptor._spawnDetached = async () => launcher;
+
+  const result = await interceptor.activate(8080);
+
+  assert.equal(result.pid, 7705);
+  assert.equal(interceptor.sessions.has(7705), true);
+  assert.equal(interceptor.processes.includes(launcher), true);
+  assert.equal(interceptor.active, true);
+  launcher.exitCode = 0;
+  launcher.emit('exit', 0);
+  await new Promise(resolve => setImmediate(resolve));
+  await interceptor.deactivate();
+});

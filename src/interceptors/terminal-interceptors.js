@@ -1101,7 +1101,11 @@ export class FreshTerminalInterceptor {
           }
           continue;
         } finally {
-          this._cleanupWindowsHandshake(handshake);
+          try {
+            this._cleanupWindowsHandshake(handshake);
+          } catch (error) {
+            console.warn('[Interceptor] Failed to remove Windows terminal handshake:', error.message);
+          }
         }
       }
     } else if (platform === 'darwin') {
