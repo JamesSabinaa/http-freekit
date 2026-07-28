@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 43 of the 361 documented bugs are not fully fixed.**
+**No: 42 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 318 |
+| Fixed | 319 |
 | Partially fixed | 19 |
-| Open | 24 |
+| Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 and BUG-364 were fixed after that reconciliation.
 
 ## Audit completion gate
 
@@ -1135,7 +1135,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-364 — Low/Medium — Webhook actions block matched requests despite their fire-and-forget contract
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Webhook actions now return an empty 200 response to the matched client before waiting for any webhook network activity. Delivery continues asynchronously, and the eventual 2xx success, transport failure, invalid URL, or non-2xx response is still recorded in traffic without changing or delaying the client response.
 
 - Evidence: The rule editor labels webhooks `Send a webhook (fire-and-forget)` at `src/ui/app.js:4537`, but `_serveMockResponse()` awaits webhook response headers before it responds to the matched client at `src/proxy/proxy-server.js:4294-4309`.
 - Impact: a slow or nonresponsive webhook delays the original client for up to the outbound timeout and can turn an otherwise matched mock response into an error.

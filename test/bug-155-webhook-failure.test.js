@@ -16,6 +16,12 @@ function close(server) {
   return new Promise(resolve => server.close(resolve));
 }
 
+function captureNextEvent() {
+  let resolveEvent;
+  const event = new Promise(resolve => { resolveEvent = resolve; });
+  return { event, onRequest: resolveEvent };
+}
+
 function createClientResponse() {
   return {
     statusCode: null,
@@ -45,27 +51,27 @@ async function serveWebhook(proxy, webhookUrl, body = Buffer.from('payload')) {
   return response;
 }
 
-test('plain HTTP webhook transport failures return and record an error', async t => {
+test('plain HTTP webhook transport failures are recorded after the client response', async t => {
   const webhook = http.createServer((request) => request.socket.destroy());
   await listen(webhook);
   t.after(() => close(webhook));
 
-  const events = [];
-  const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+  const captured = captureNextEvent();
+  const proxy = new ProxyServer(null, { onRequest: captured.onRequest });
   const response = await serveWebhook(
     proxy,
     `http://127.0.0.1:${webhook.address().port}/hook`
   );
 
-  assert.equal(response.statusCode, 502);
-  assert.match(response.body, /^Webhook Error:/);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].statusCode, 502);
-  assert.equal(events[0].statusMessage, 'Webhook delivery failed');
-  assert.ok(events[0].error);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, '');
+  const event = await captured.event;
+  assert.equal(event.statusCode, 502);
+  assert.equal(event.statusMessage, 'Webhook delivery failed');
+  assert.ok(event.error);
 });
 
-test('plain HTTP webhook success is recorded only after the endpoint responds', async t => {
+test('plain HTTP webhook success is delivered and recorded asynchronously', async t => {
   let receivedBody = '';
   const webhook = http.createServer((request, response) => {
     request.setEncoding('utf8');
@@ -78,8 +84,8 @@ test('plain HTTP webhook success is recorded only after the endpoint responds', 
   await listen(webhook);
   t.after(() => close(webhook));
 
-  const events = [];
-  const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+  const captured = captureNextEvent();
+  const proxy = new ProxyServer(null, { onRequest: captured.onRequest });
   const response = await serveWebhook(
     proxy,
     `http://127.0.0.1:${webhook.address().port}/hook`,
@@ -87,14 +93,15 @@ test('plain HTTP webhook success is recorded only after the endpoint responds', 
   );
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body, '');
+  const event = await captured.event;
   assert.equal(receivedBody, 'delivered');
-  assert.equal(events.length, 1);
-  assert.equal(events[0].statusCode, 200);
-  assert.equal(events[0].statusMessage, 'Webhook sent');
-  assert.equal(events[0].error, undefined);
+  assert.equal(event.statusCode, 200);
+  assert.equal(event.statusMessage, 'Webhook sent');
+  assert.equal(event.error, undefined);
 });
 
-test('non-2xx webhook responses return and record delivery failures', async t => {
+test('non-2xx webhook responses are recorded without changing the client response', async t => {
   const webhook = http.createServer((request, response) => {
     response.writeHead(Number(request.url.slice(1)));
     response.end();
@@ -103,28 +110,52 @@ test('non-2xx webhook responses return and record delivery failures', async t =>
   t.after(() => close(webhook));
 
   for (const webhookStatus of [302, 404, 503]) {
-    const events = [];
-    const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+    const captured = captureNextEvent();
+    const proxy = new ProxyServer(null, { onRequest: captured.onRequest });
     const response = await serveWebhook(
       proxy,
       `http://127.0.0.1:${webhook.address().port}/${webhookStatus}`
     );
 
-    assert.equal(response.statusCode, 502);
-    assert.equal(response.body, `Webhook Error: Webhook endpoint responded with HTTP ${webhookStatus}`);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].statusCode, 502);
-    assert.equal(events[0].statusMessage, 'Webhook delivery failed');
-    assert.equal(events[0].error, `Webhook endpoint responded with HTTP ${webhookStatus}`);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, '');
+    const event = await captured.event;
+    assert.equal(event.statusCode, 502);
+    assert.equal(event.statusMessage, 'Webhook delivery failed');
+    assert.equal(event.error, `Webhook endpoint responded with HTTP ${webhookStatus}`);
   }
 });
 
-test('invalid webhook URLs do not report success', async () => {
-  const events = [];
-  const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+test('invalid webhook URLs are recorded without changing the client response', async () => {
+  const captured = captureNextEvent();
+  const proxy = new ProxyServer(null, { onRequest: captured.onRequest });
   const response = await serveWebhook(proxy, 'not a URL');
 
-  assert.equal(response.statusCode, 502);
-  assert.equal(events[0].statusMessage, 'Webhook delivery failed');
-  assert.ok(events[0].error);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, '');
+  const event = await captured.event;
+  assert.equal(event.statusMessage, 'Webhook delivery failed');
+  assert.ok(event.error);
+});
+
+test('a webhook that never sends headers cannot block the matched response', async t => {
+  const webhook = http.createServer(request => request.resume());
+  await listen(webhook);
+  t.after(async () => {
+    webhook.closeAllConnections?.();
+    await close(webhook);
+  });
+
+  const events = [];
+  const proxy = new ProxyServer(null, { onRequest: event => events.push(event) });
+  const timeout = Symbol('timeout');
+  const response = await Promise.race([
+    serveWebhook(proxy, `http://127.0.0.1:${webhook.address().port}/hang`),
+    new Promise(resolve => setTimeout(() => resolve(timeout), 250))
+  ]);
+
+  assert.notEqual(response, timeout);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, '');
+  assert.deepEqual(events, []);
 });
