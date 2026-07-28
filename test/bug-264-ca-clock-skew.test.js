@@ -51,24 +51,31 @@ test('generated CA and leaf certificates tolerate five minutes of client clock s
 test('generated certificate expiry is UTC-stable across DST and leap-day boundaries', async t => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-expiry-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  let generatedAt = Date.parse('2027-03-27T12:00:00.000Z');
+  const originalTimezone = process.env.TZ;
+  process.env.TZ = 'Australia/Lord_Howe';
+  t.after(() => {
+    if (originalTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimezone;
+  });
+  let generatedAt = Date.parse('2026-04-04T00:00:00.123Z');
   t.mock.method(Date, 'now', () => generatedAt);
   const keys = pki.rsa.generateKeyPair({ bits: 1024 });
   const ca = new CertificateAuthority(dataDir);
   ca._generateKeyPair = async () => keys;
 
   for (const [label, timestamp] of [
-    ['dst', Date.parse('2027-03-27T12:00:00.000Z')],
-    ['leap-day', Date.parse('2028-02-29T12:00:00.000Z')]
+    ['dst', Date.parse('2026-04-04T00:00:00.123Z')],
+    ['leap-day', Date.parse('2028-02-29T12:00:00.456Z')]
   ]) {
     generatedAt = timestamp;
     await ca._generateCA();
     const leaf = await ca.generateCertForHost(`${label}.clock-skew.test`);
+    const encodedGenerationTime = Math.floor(generatedAt / 1000) * 1000;
 
     for (const certificatePem of [fs.readFileSync(ca.caCertPath, 'utf8'), leaf.cert]) {
       const validity = pki.certificateFromPem(certificatePem).validity;
-      assert.equal(validity.notBefore.getTime(), generatedAt - CLOCK_SKEW_MS);
-      assert.equal(validity.notAfter.getTime(), generatedAt + VALIDITY_MS);
+      assert.equal(validity.notBefore.getTime(), encodedGenerationTime - CLOCK_SKEW_MS);
+      assert.equal(validity.notAfter.getTime(), encodedGenerationTime + VALIDITY_MS);
     }
   }
 });
