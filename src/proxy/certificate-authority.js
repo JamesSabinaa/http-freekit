@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import net from 'net';
 import { refreshTerminalCaBundle, terminalCaBundlePath } from './terminal-ca-bundle.js';
 
-const { pki, md, asn1 } = forge;
+const { pki, md, asn1, util } = forge;
 const CA_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 const CA_AUTO_RENEWAL_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CA_RENEWAL_NOTICE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -527,6 +527,14 @@ export class CertificateAuthority {
     const altNames = net.isIP(hostname)
       ? [{ type: 7, ip: hostname }]
       : [{ type: 2, value: hostname }];
+    const encodedCaSubjectKeyIdentifier = this.caCert
+      .getExtension('subjectKeyIdentifier')?.subjectKeyIdentifier;
+    const caSubjectKeyIdentifier = typeof encodedCaSubjectKeyIdentifier === 'string' &&
+      encodedCaSubjectKeyIdentifier.length > 0 &&
+      encodedCaSubjectKeyIdentifier.length % 2 === 0 &&
+      /^[0-9a-f]+$/i.test(encodedCaSubjectKeyIdentifier)
+      ? util.hexToBytes(encodedCaSubjectKeyIdentifier)
+      : this.caCert.generateSubjectKeyIdentifier().getBytes();
 
     cert.setExtensions([
       { name: 'basicConstraints', cA: false },
@@ -549,7 +557,7 @@ export class CertificateAuthority {
       },
       {
         name: 'authorityKeyIdentifier',
-        keyIdentifier: this.caCert.generateSubjectKeyIdentifier().getBytes()
+        keyIdentifier: caSubjectKeyIdentifier
       }
     ]);
 

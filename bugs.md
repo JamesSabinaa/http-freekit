@@ -917,7 +917,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-376 — High — Generated leaf certificates identify themselves as their issuer
 
 - Status: **Fixed**.
-- Resolution: Generated leaf certificates now encode the FreeKit CA's subject-key identifier as their authority-key identifier. Node/OpenSSL can therefore select the CA as issuer and build a trusted TLS chain.
+- Resolution: Generated leaf certificates now copy the FreeKit CA certificate's encoded subject-key identifier as their authority-key identifier, including valid alternate RFC key-ID forms on persisted CAs. A CA without an SKI falls back to the standard public-key-derived identifier. Node/OpenSSL can therefore select the CA as issuer and build a trusted TLS chain.
 
 - Evidence: the leaf extension passed `keyIdentifier: true` at `src/proxy/certificate-authority.js:550-552`; node-forge interprets that shorthand by hashing the leaf's own public key, making the leaf authority-key identifier equal its subject-key identifier instead of the CA's.
 - Impact: strict TLS clients reject otherwise correctly signed intercepted certificates with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, even after the FreeKit CA is explicitly trusted.
