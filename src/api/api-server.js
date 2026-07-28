@@ -694,8 +694,8 @@ print(json.dumps({"providers": get_proxy_providers()}))
           && request[capturedField] !== null;
         const hasDecoded = request[decodedField] !== undefined
           && request[decodedField] !== null;
-        if (request[truncatedField] === true && hasCaptured !== hasDecoded) {
-          return `requests[${index}].${capturedField} and ${decodedField} must be provided together`;
+        if (request[truncatedField] === true && hasDecoded && !hasCaptured) {
+          return `requests[${index}].${capturedField} must be provided when ${decodedField} is set`;
         }
         if (request[truncatedField] !== true && hasCaptured) {
           return `requests[${index}].${capturedField} requires ${truncatedField} to be true`;

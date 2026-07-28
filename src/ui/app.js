@@ -9290,7 +9290,7 @@
 
     // ============ HAR IMPORT ============
     function normalizeHarBodySize(value) {
-      return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
+      return Number.isSafeInteger(value) && (value >= 0 || value === -1)
         ? value
         : 0;
     }
@@ -9322,6 +9322,9 @@
       if (value === undefined) return 0;
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         throw new Error(`${fieldPath} must be a finite number`);
+      }
+      if (!Number.isSafeInteger(value)) {
+        throw new Error(`${fieldPath} must be a safe integer`);
       }
       if (value < 0 && value !== -1) {
         throw new Error(`${fieldPath} must be non-negative or -1 for an unknown size`);

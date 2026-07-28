@@ -10,6 +10,7 @@ import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
 
+import { trafficToHar } from '../src/api/har-converter.js';
 import { CertificateAuthority } from '../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
@@ -31,6 +32,16 @@ function withTimeout(promise, message, timeoutMs = 3000) {
       timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     })
   ]).finally(() => clearTimeout(timer));
+}
+
+async function waitForTraffic(events, requestPath, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const record = events.find(event => event.path === requestPath && !event._pending);
+    if (record) return record;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for traffic record ${requestPath}`);
 }
 
 async function listen(server) {
@@ -433,7 +444,8 @@ test('an upstream reset cannot strand a backpressured HTTP/1 upload', { timeout:
   });
   const destroyOriginSockets = trackSockets(origin);
   const originPort = await listen(origin);
-  const proxy = new ProxyServer(null, { port: 0 });
+  const events = [];
+  const proxy = new ProxyServer(null, { port: 0, onRequest: event => events.push(event) });
   await proxy.start();
   t.after(async () => {
     await proxy.stop();
@@ -472,6 +484,13 @@ test('an upstream reset cannot strand a backpressured HTTP/1 upload', { timeout:
 
   const statusCode = await withTimeout(result, 'backpressured HTTP/1 upload remained paused', 5000);
   assert.equal(statusCode, 502);
+  const record = await waitForTraffic(events, '/reset-upload');
+  assert.equal(record.requestBodyTruncated, true);
+  assert.ok(record.requestBodyCapturedSize <= record.requestBodySize);
+  assert.equal(record.requestBodyDecodedSize, 64 * 1024 * 1024);
+  const harRequest = trafficToHar([record], { maskSensitive: false }).log.entries[0].request;
+  assert.equal(harRequest.postData._truncated, true);
+  assert.equal(harRequest.postData._capturedSize, record.requestBodyCapturedSize);
 });
 
 test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout: 20000 }, async t => {
@@ -486,7 +505,8 @@ test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout:
   });
   const destroyOriginSockets = trackSockets(origin);
   const originPort = await listen(origin);
-  const proxy = new ProxyServer(ca, { port: 0 });
+  const events = [];
+  const proxy = new ProxyServer(ca, { port: 0, onRequest: event => events.push(event) });
   proxy.setHttp2Config('h2-only');
   proxy.setHttpsWhitelist(['127.0.0.1']);
   await proxy.start();
@@ -539,6 +559,10 @@ test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout:
     `unexpected terminal outcome: ${outcome.error?.code || outcome.statusCode}`
   );
   if (!request.closed) request.close(http2.constants.NGHTTP2_NO_ERROR);
+  const record = await waitForTraffic(events, '/reset-upload');
+  assert.equal(record.requestBodyTruncated, true);
+  assert.ok(record.requestBodyCapturedSize <= record.requestBodySize);
+  assert.equal(record.requestBodyDecodedSize, 64 * 1024 * 1024);
 });
 
 test('HTTP/2 response trailers keep chunked framing even when announced late', { timeout: 20000 }, async t => {

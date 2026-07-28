@@ -107,6 +107,7 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     ['negative timestamp', (() => { const value = validEntry(); value.startedDateTime = '1969-12-31T23:59:59.999Z'; return har([value]); })(), /startedDateTime must be non-negative/],
     ['negative duration', (() => { const value = validEntry(); value.time = -1; return har([value]); })(), /\.time must be non-negative/],
     ['negative request size', (() => { const value = validEntry(); value.request.bodySize = -2; return har([value]); })(), /request\.bodySize must be non-negative or -1/],
+    ['fractional response size', (() => { const value = validEntry(); value.response.bodySize = 1.5; return har([value]); })(), /response\.bodySize must be a safe integer/],
     ['invalid status', (() => { const value = validEntry(); value.response.status = 99; return har([value]); })(), /response\.status must be 0 or an integer from 100 to 999/],
     ['non-boolean truncation', (() => {
       const value = validEntry();

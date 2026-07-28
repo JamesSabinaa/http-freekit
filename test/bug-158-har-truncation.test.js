@@ -119,6 +119,67 @@ test('omitted large binary captures are not exported as fake HAR body text', () 
   assert.equal(response.content._originalSize, body.length);
 });
 
+test('large interrupted prefixes export only bytes retained in the capture', () => {
+  const captures = [];
+  const proxy = new ProxyServer(null, { onRequest: request => captures.push(request) });
+  const cases = [
+    {
+      id: 'interrupted-large-text',
+      prefix: Buffer.alloc(1024 * 1024, 0x61),
+      originalSize: 2 * 1024 * 1024,
+      contentType: 'text/plain',
+      expectedCapturedSize: 512 * 1024,
+      expectedTextSize: 512 * 1024
+    },
+    {
+      id: 'interrupted-large-binary',
+      prefix: Buffer.alloc(3 * 1024 * 1024, 0),
+      originalSize: 4 * 1024 * 1024,
+      contentType: 'application/octet-stream',
+      expectedCapturedSize: 0,
+      expectedTextSize: 0
+    }
+  ];
+
+  for (const scenario of cases) {
+    const collector = proxy._createBodyCollector();
+    proxy._appendBodyChunk(collector, scenario.prefix);
+    const headers = {
+      'content-type': scenario.contentType,
+      'content-length': String(scenario.originalSize)
+    };
+    const body = proxy._streamedCaptureBody(
+      collector,
+      scenario.prefix.length,
+      'Response',
+      headers
+    );
+    proxy._emitRequest({
+      id: scenario.id,
+      timestamp: 0,
+      method: 'GET',
+      url: `http://example.test/${scenario.id}`,
+      responseHeaders: headers,
+      responseBody: body,
+      responseBodySize: scenario.prefix.length,
+      ...proxy._incompleteBodyCaptureFields(
+        'response',
+        body,
+        headers,
+        collector.length
+      )
+    });
+
+    const captured = captures.at(-1);
+    assert.equal(captured.responseBodyCapturedSize, scenario.expectedCapturedSize);
+    assert.equal(captured.responseBodyDecodedSize, scenario.originalSize);
+    const response = trafficToHar([captured], { maskSensitive: false })
+      .log.entries[0].response;
+    assert.equal(response.content._capturedSize, scenario.expectedCapturedSize);
+    assert.equal(Buffer.byteLength(response.content.text), scenario.expectedTextSize);
+  }
+});
+
 test('premature upstream responses retain small captured prefixes as incomplete', async t => {
   const origin = net.createServer(socket => {
     socket.once('data', () => {

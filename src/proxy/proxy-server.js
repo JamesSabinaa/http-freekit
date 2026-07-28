@@ -799,18 +799,16 @@ export class ProxyServer {
   }
 
   _incompleteBodyCaptureFields(side, body, headers = {}, capturedBytes) {
-    let capturedSize = Number.isSafeInteger(capturedBytes) && capturedBytes >= 0
-      ? capturedBytes
-      : undefined;
-    if (capturedSize === undefined) {
-      if (body instanceof TruncatedBodyString) {
-        capturedSize = body.capturedSize;
-      } else if (body instanceof EncodedBodyString && body.encoding === 'base64') {
-        const match = body.toString().match(/;base64,([A-Za-z0-9+/=\r\n]*)$/);
-        capturedSize = match ? Buffer.byteLength(match[1], 'base64') : 0;
-      } else {
-        capturedSize = Buffer.byteLength(String(body || ''));
-      }
+    let capturedSize;
+    if (body instanceof TruncatedBodyString) {
+      capturedSize = body.capturedSize;
+    } else if (body instanceof EncodedBodyString && body.encoding === 'base64') {
+      const match = body.toString().match(/;base64,([A-Za-z0-9+/=\r\n]*)$/);
+      capturedSize = match ? Buffer.byteLength(match[1], 'base64') : 0;
+    } else if (Number.isSafeInteger(capturedBytes) && capturedBytes >= 0) {
+      capturedSize = capturedBytes;
+    } else {
+      capturedSize = Buffer.byteLength(String(body || ''));
     }
 
     const contentEncodings = this._parseContentCodings(getHeaderValues(headers, 'content-encoding'));
@@ -1125,6 +1123,8 @@ export class ProxyServer {
           return;
         }
       }
+
+      if (!requestEnded) requestBodyIncomplete = true;
 
       if (responseMetadata) {
         if (!clientRes.destroyed) clientRes.destroy(error);
@@ -1500,6 +1500,7 @@ export class ProxyServer {
       if (finalized) return;
       const error = this._createDownstreamAbortError();
       error.upstreamPhase = 'downstream';
+      if (!requestEnded) requestBodyIncomplete = true;
       finalize({
         statusCode: responseMetadata?.statusCode || 0,
         statusMessage: 'Client Disconnected',
@@ -1715,6 +1716,7 @@ export class ProxyServer {
       if (finalized) return;
       const metadata = responseMetadata || {};
       const responseWasIncomplete = Boolean(responseMetadata) && !responseEnded;
+      if (!requestEnded) requestBodyIncomplete = true;
       responseEnded = true;
       requestEnded = true;
       const responseFields = responseMetadata
@@ -8747,7 +8749,7 @@ export class ProxyServer {
       } else if (body instanceof TruncatedBodyString) {
         data[field] = body.toString();
         data[`${field}Truncated`] = true;
-        data[`${field}CapturedSize`] ??= body.capturedSize;
+        data[`${field}CapturedSize`] = body.capturedSize;
         data[`${field}DecodedSize`] ??= body.decodedSize;
       }
       if (typeof data[field] === 'string' && data[encodingField] === undefined) {

@@ -157,9 +157,10 @@ function toHarTruncation(request, side, body) {
     : body?.encoding === 'base64'
       ? Buffer.byteLength(body.text, 'base64')
       : Buffer.byteLength(body?.text || '');
+  const fallbackOriginalSize = toHarSize(request[`${side}BodySize`]);
   const originalSize = toHarSize(
     request[`${side}BodyDecodedSize`],
-    toHarSize(request[`${side}BodySize`])
+    fallbackOriginalSize >= capturedSize ? fallbackOriginalSize : -1
   );
   return {
     comment: originalSize === -1
