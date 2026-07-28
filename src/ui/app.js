@@ -1615,7 +1615,7 @@
             </div>
             ${req.responseHeaders && Object.keys(req.responseHeaders).length > 0 ? '<div class="detail-card-section" style="margin-top:12px;"><div class="section-label">Upgrade Response Headers</div>' + renderHeadersGrid(req.responseHeaders, 'response') + '</div>' : ''}
             <div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Protocol: ${wsConnectionLabel}</div>
-            ${req.tls?.cipher ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Cipher: ' + esc(req.tls.cipher) + '</div>' : ''}
+            ${req.protocol === 'wss' && req.tls?.cipher ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Cipher: ' + esc(req.tls.cipher) + '</div>' : ''}
             ${remoteEndpoint ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + remoteEndpoint + '</div>' : ''}
           </div>
         </div>`;

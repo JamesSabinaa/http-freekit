@@ -165,8 +165,8 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
       protocol,
       method: 'WS',
       statusCode: 101,
+      tls: { version: 'TLSv1.3', cipher: 'AES-256' },
       ...(protocol === 'wss' ? {
-        tls: { version: 'TLSv1.3', cipher: 'AES-256' },
         remote: { address: '127.0.0.1', port: 443 }
       } : {})
     })).html;
@@ -181,6 +181,7 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
     } else {
       assert.match(connected, />WS</);
       assert.match(connected, /WS \(unencrypted\)/);
+      assert.doesNotMatch(connected, /Cipher:|AES-256|TLSv1\.3/);
     }
 
     for (const failure of [
