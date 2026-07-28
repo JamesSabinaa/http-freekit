@@ -413,7 +413,8 @@ test('ambiguous companion commit after old cleanup remains durable and blocks fa
     proxyPort: 9090,
     previousReverseMapping: null,
     model: 'Test Device',
-    deviceName: 'test-device'
+    deviceName: 'test-device',
+    vpnStatusConfirmed: false
   }]);
 
   const restarted = new AndroidAdbInterceptor({ dataDir });

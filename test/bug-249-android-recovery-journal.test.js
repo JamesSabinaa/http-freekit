@@ -62,7 +62,7 @@ test('a restarted manager adopts global-proxy cleanup ownership and can Stop it'
   });
   assert.equal(activation.success, true);
   assert.deepEqual(readJournal(original), {
-    version: 4,
+    version: 5,
     devices: [validJournalEntry({ deviceName: 'device-1-device' })]
   });
 
@@ -173,7 +173,7 @@ test('malformed or untrusted journals are not adopted or used for device command
   const recoveryFile = path.join(dataDir, 'android-adb-global-proxy-recovery.json');
   const invalidJournals = [
     '{not-json',
-    JSON.stringify({ version: 5, devices: [validJournalEntry()] }),
+    JSON.stringify({ version: 6, devices: [validJournalEntry()] }),
     JSON.stringify({
       version: 1,
       devices: [validJournalEntry(), validJournalEntry({ serial: '--all' })]
@@ -253,7 +253,18 @@ test('HTTP Toolkit app activation remains pending and durable until VPN confirma
   assert.equal(result.metadata.activationUncertain, true);
   assert.equal(interceptor.activatedDevices.get('device-1').mode, 'app-uncertain');
   assert.equal(fs.existsSync(interceptor.recoveryFile), true);
-  assert.equal(JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8')).version, 4);
+  assert.deepEqual(JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8')), {
+    version: 5,
+    devices: [{
+      serial: 'device-1',
+      mode: 'app-uncertain',
+      proxyPort: 8080,
+      previousReverseMapping: null,
+      model: 'device-1',
+      deviceName: 'device-1-device',
+      vpnStatusConfirmed: false
+    }]
+  });
 
   interceptor._deactivateHttpToolkitApp = async () => true;
   await interceptor.deactivate({ deviceId: 'device-1' });

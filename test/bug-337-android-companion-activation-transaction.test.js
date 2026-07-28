@@ -80,14 +80,15 @@ test('first ambiguous companion activation is journaled before mutation and reco
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(original.reverseTunnels.has(TUNNEL_KEY), true);
   assert.deepEqual(readJournal(original), {
-    version: 4,
+    version: 5,
     devices: [{
       serial: DEVICE_ID,
       mode: 'app-uncertain',
       proxyPort: PROXY_PORT,
       previousReverseMapping: PREVIOUS_MAPPING,
       model: 'Test Device',
-      deviceName: 'test-device'
+      deviceName: 'test-device',
+      vpnStatusConfirmed: false
     }]
   });
 

@@ -19,7 +19,8 @@ const ANDROID_CA_STAGING_PATH = '/data/local/tmp/http-freekit-ca.pem';
 const ANDROID_LEGACY_RECOVERY_VERSION = 1;
 const ANDROID_REVERSE_RECOVERY_VERSION = 2;
 const ANDROID_UNCERTAIN_RECOVERY_VERSION = 3;
-const ANDROID_RECOVERY_VERSION = 4;
+const ANDROID_COMPANION_RECOVERY_VERSION = 4;
+const ANDROID_RECOVERY_VERSION = 5;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
 const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
@@ -115,7 +116,7 @@ export class AndroidAdbInterceptor {
 
   _normalizeJournalDevice(entry, version = ANDROID_RECOVERY_VERSION) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const allowedModes = version === ANDROID_RECOVERY_VERSION
+    const allowedModes = version >= ANDROID_COMPANION_RECOVERY_VERSION
       ? [
           'global-proxy', 'proxy-uncertain', 'staging-cleanup',
           'reverse-cleanup', 'app-uncertain', 'http-toolkit-app'
@@ -129,7 +130,10 @@ export class AndroidAdbInterceptor {
     const reverseOnly = entry.mode === 'reverse-cleanup';
     const appOnly = entry.mode === 'app-uncertain' || entry.mode === 'http-toolkit-app';
     const allowedFields = new Set(reverseOnly || appOnly
-      ? ['serial', 'mode', 'proxyPort', 'previousReverseMapping', 'model', 'deviceName']
+      ? [
+          'serial', 'mode', 'proxyPort', 'previousReverseMapping', 'model', 'deviceName',
+          ...(appOnly && version >= ANDROID_RECOVERY_VERSION ? ['vpnStatusConfirmed'] : [])
+        ]
       : [
           'serial', 'mode', 'previousProxy', 'hostIp', 'proxyPort',
           'remoteCertPath', 'model', 'deviceName',
@@ -143,10 +147,13 @@ export class AndroidAdbInterceptor {
       if (entry[field] !== undefined && !this._isSafeJournalString(entry[field], 512)) return null;
     }
     const hasReverseCleanup = Object.prototype.hasOwnProperty.call(entry, 'previousReverseMapping');
-    if ((reverseOnly || (appOnly && version < ANDROID_RECOVERY_VERSION)) &&
+    const hasVpnConfirmation = Object.prototype.hasOwnProperty.call(entry, 'vpnStatusConfirmed');
+    if ((reverseOnly || (appOnly && version < ANDROID_COMPANION_RECOVERY_VERSION)) &&
         !hasReverseCleanup) return null;
     if (hasReverseCleanup && entry.previousReverseMapping !== null &&
         !this._isSafeReverseEndpoint(entry.previousReverseMapping)) return null;
+    if (appOnly && version >= ANDROID_RECOVERY_VERSION &&
+        (!hasVpnConfirmation || typeof entry.vpnStatusConfirmed !== 'boolean')) return null;
     if (reverseOnly || appOnly) {
       return {
         serial: entry.serial,
@@ -154,7 +161,8 @@ export class AndroidAdbInterceptor {
         proxyPort: entry.proxyPort,
         ...(hasReverseCleanup ? { previousReverseMapping: entry.previousReverseMapping } : {}),
         ...(entry.model !== undefined ? { model: entry.model } : {}),
-        ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {})
+        ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {}),
+        ...(hasVpnConfirmation ? { vpnStatusConfirmed: entry.vpnStatusConfirmed } : {})
       };
     }
     if (!this._isSafeJournalString(entry.previousProxy)) return null;
@@ -186,6 +194,7 @@ export class AndroidAdbInterceptor {
             ANDROID_LEGACY_RECOVERY_VERSION,
             ANDROID_REVERSE_RECOVERY_VERSION,
             ANDROID_UNCERTAIN_RECOVERY_VERSION,
+            ANDROID_COMPANION_RECOVERY_VERSION,
             ANDROID_RECOVERY_VERSION
           ].includes(parsed.version) ||
           !Array.isArray(parsed.devices) ||
@@ -210,7 +219,12 @@ export class AndroidAdbInterceptor {
           this._isProxyHostReachable(entry.hostIp);
         this.activatedDevices.set(serial, {
           ...entry,
-          ...(entry.mode === 'http-toolkit-app' ? { vpnStatusConfirmed: true } : {}),
+          ...((entry.mode === 'app-uncertain' || entry.mode === 'http-toolkit-app')
+            ? {
+                vpnStatusConfirmed: entry.vpnStatusConfirmed === true ||
+                  entry.mode === 'http-toolkit-app'
+              }
+            : {}),
           ...(proxyStillReachable
             ? {}
             : {
@@ -283,6 +297,9 @@ export class AndroidAdbInterceptor {
         proxyPort: activeInfo.proxyPort,
         ...(Object.prototype.hasOwnProperty.call(activeInfo, 'previousReverseMapping')
           ? { previousReverseMapping: activeInfo.previousReverseMapping }
+          : {}),
+        ...((activeInfo.mode === 'app-uncertain' || activeInfo.mode === 'http-toolkit-app')
+          ? { vpnStatusConfirmed: activeInfo.vpnStatusConfirmed === true }
           : {}),
         ...identity
       };
@@ -1580,6 +1597,7 @@ export class AndroidAdbInterceptor {
         proxyPort,
         mode: 'app-uncertain',
         appInstalled: true,
+        vpnStatusConfirmed: false,
         tunnelActive: false,
         ...(Object.prototype.hasOwnProperty.call(preparedAppActivation, 'previousReverseMapping')
           ? { previousReverseMapping: preparedAppActivation.previousReverseMapping }

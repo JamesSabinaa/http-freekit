@@ -186,12 +186,13 @@ test('confirmed companion ownership survives restart and remains stoppable', asy
   assert.equal(await original.isActive(), true);
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
   assert.deepEqual(JSON.parse(fs.readFileSync(original.recoveryFile, 'utf8')), {
-    version: 4,
+    version: 5,
     devices: [{
       serial: DEVICE_ID,
       mode: 'http-toolkit-app',
       proxyPort: PROXY_PORT,
-      previousReverseMapping: null
+      previousReverseMapping: null,
+      vpnStatusConfirmed: true
     }]
   });
 
@@ -220,10 +221,11 @@ test('version 4 can recover companion ownership without an ADB reverse tunnel', 
   const restarted = new AndroidAdbInterceptor({ dataDir });
   assert.equal(restarted.active, true);
   assert.equal(restarted.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
+  assert.equal(restarted.activatedDevices.get(DEVICE_ID).vpnStatusConfirmed, false);
   assert.equal(restarted.reverseTunnels.size, 0);
 });
 
-test('recovered confirmed companions recognize a later stopped VPN', async t => {
+test('confirmed companions survive uncertainty and restart before a stopped VPN readback', async t => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-197-stopped-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const tunnelDeviceId = `${DEVICE_ID}-tunnel`;
@@ -239,6 +241,30 @@ test('recovered confirmed companions recognize a later stopped VPN', async t => 
       }
     ]
   }));
+
+  const uncertain = new AndroidAdbInterceptor({ dataDir });
+  uncertain._getConnectedDevices = async () => [];
+  assert.equal(await uncertain.isActive(), true);
+  assert.equal(uncertain.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
+  assert.equal(uncertain.activatedDevices.get(tunnelDeviceId).mode, 'app-uncertain');
+  assert.deepEqual(JSON.parse(fs.readFileSync(uncertain.recoveryFile, 'utf8')), {
+    version: 5,
+    devices: [
+      {
+        serial: DEVICE_ID,
+        mode: 'app-uncertain',
+        proxyPort: PROXY_PORT,
+        vpnStatusConfirmed: true
+      },
+      {
+        serial: tunnelDeviceId,
+        mode: 'app-uncertain',
+        proxyPort: PROXY_PORT,
+        previousReverseMapping: null,
+        vpnStatusConfirmed: true
+      }
+    ]
+  });
 
   const restarted = new AndroidAdbInterceptor({ dataDir });
   assert.equal(restarted.activatedDevices.get(DEVICE_ID).vpnStatusConfirmed, true);

@@ -134,7 +134,7 @@ test('confirmed companion cleanup restores reverse ownership before fallback and
     false
   );
   assert.deepEqual(readJournal(interceptor), {
-    version: 4,
+    version: 5,
     devices: [{
       serial: DEVICE_ID,
       mode: 'global-proxy',
