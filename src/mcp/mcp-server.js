@@ -440,6 +440,7 @@ export class McpServerBridge {
     this.stdioTransport = null;
     this.stdioOutput = null;
     this.onStdioFatalError = null;
+    this._stopPromise = null;
     this.launchConfig = options.launchConfig || null;
 
     if (this.enabled) {
@@ -1031,7 +1032,11 @@ export class McpServerBridge {
     stdout = process.stdout,
     onFatalError = null
   } = {}) {
-    if (!this.server) return;
+    if (this._stopPromise) {
+      throw new Error('MCP bridge is stopping');
+    }
+    const server = this.server;
+    if (!server) return;
     if (this.stdioTransport) {
       throw new Error('MCP stdio transport is already active');
     }
@@ -1046,7 +1051,10 @@ export class McpServerBridge {
       this.onStdioFatalError = null;
     };
     try {
-      await this.server.connect(transport);
+      await server.connect(transport);
+      if (this._stopPromise || this.server !== server || this.stdioTransport !== transport) {
+        throw new Error('MCP stdio startup was interrupted by shutdown');
+      }
     } catch (error) {
       try { await transport.close(); } catch {}
       if (this.stdioTransport === transport) this.stdioTransport = null;
@@ -1057,23 +1065,46 @@ export class McpServerBridge {
     console.error('[MCP] stdio transport connected');
   }
 
-  async stop() {
-    for (const { transport, server } of this.sseSessions.values()) {
-      try { await transport.close(); } catch {}
-      try { await server.close(); } catch {}
-    }
+  async _performStop() {
+    const sessions = [...this.sseSessions.values()];
     this.sseSessions.clear();
-    if (this.server) {
-      try { await this.server.close(); } catch {}
-    }
+    const server = this.server;
+    this.server = null;
+    this.enabled = false;
     this.stdioTransport = null;
     this.stdioOutput = null;
     this.onStdioFatalError = null;
-    this.server = null;
-    this.enabled = false;
+
+    for (const { transport, server: sessionServer } of sessions) {
+      try { await transport.close(); } catch {}
+      try { await sessionServer.close(); } catch {}
+    }
+    if (server) {
+      try { await server.close(); } catch {}
+    }
+  }
+
+  stop() {
+    if (this._stopPromise) return this._stopPromise;
+    let resolveStop;
+    let rejectStop;
+    const stopPromise = new Promise((resolve, reject) => {
+      resolveStop = resolve;
+      rejectStop = reject;
+    });
+    this._stopPromise = stopPromise;
+    void this._performStop().then(() => {
+      if (this._stopPromise === stopPromise) this._stopPromise = null;
+      resolveStop();
+    }, error => {
+      if (this._stopPromise === stopPromise) this._stopPromise = null;
+      rejectStop(error);
+    });
+    return stopPromise;
   }
 
   async setEnabled(enabled) {
+    if (this._stopPromise) await this._stopPromise;
     if (enabled && !this.server) {
       this._createServer();
       this.enabled = true;

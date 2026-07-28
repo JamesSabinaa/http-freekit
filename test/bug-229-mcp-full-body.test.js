@@ -688,6 +688,59 @@ test('MCP stdio cleans a partially started transport and permits retry', async t
   assert.equal(bridge.getStatus().stdioActive, true);
 });
 
+test('MCP stdio cannot start a transport during shutdown', async t => {
+  const bridge = createBridge([]);
+  const activeInput = new PassThrough();
+  const activeOutput = new PassThrough();
+  const racingInput = new PassThrough();
+  const racingOutput = new PassThrough();
+  await bridge.startStdio({ stdin: activeInput, stdout: activeOutput });
+  t.after(async () => {
+    activeInput.destroy();
+    activeOutput.destroy();
+    racingInput.destroy();
+    racingOutput.destroy();
+    racingInput.removeAllListeners();
+    await bridge.stop();
+  });
+
+  const activeTransport = bridge.stdioTransport;
+  const originalClose = activeTransport.close.bind(activeTransport);
+  let racingStart;
+  activeTransport.close = async (...args) => {
+    await originalClose(...args);
+    racingStart = bridge.startStdio({ stdin: racingInput, stdout: racingOutput });
+    await racingStart.catch(() => {});
+  };
+
+  await bridge.stop();
+  await assert.rejects(racingStart, /stopping/);
+  assert.equal(racingInput.listenerCount('data'), 0);
+  assert.equal(racingInput.listenerCount('error'), 0);
+  assert.equal(bridge.server, null);
+  assert.equal(bridge.getStatus().stdioActive, false);
+});
+
+test('MCP stdio startup rejects when shutdown wins the connect race', async t => {
+  const bridge = createBridge([]);
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  t.after(() => {
+    stdin.destroy();
+    stdout.destroy();
+  });
+
+  const start = bridge.startStdio({ stdin, stdout });
+  const stop = bridge.stop();
+
+  await assert.rejects(start, /interrupted by shutdown/);
+  await stop;
+  assert.equal(stdin.listenerCount('data'), 0);
+  assert.equal(stdin.listenerCount('error'), 0);
+  assert.equal(bridge.server, null);
+  assert.equal(bridge.getStatus().stdioActive, false);
+});
+
 test('MCP request detail requires a side for offsets and validates direct calls', () => {
   const bridge = createBridge([{
     id: 'validation-request',
