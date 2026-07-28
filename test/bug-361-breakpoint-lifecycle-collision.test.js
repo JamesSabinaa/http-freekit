@@ -241,6 +241,26 @@ test('direct replacement preserves the order of retained breakpoint objects', ()
   ]);
 });
 
+test('same-array replacement detects removed breakpoint objects', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+  const first = pending('first-life', resolved);
+  const retained = pending('retained-life', resolved);
+  const middle = pending('middle-life', resolved);
+  const added = pending('added-life', resolved);
+  const grouped = [first, retained];
+
+  proxy.pendingBreakpoints.set('grouped', grouped);
+  proxy.pendingBreakpoints.set('middle', middle);
+  grouped.splice(0, grouped.length, retained, added);
+  proxy.pendingBreakpoints.set('grouped', grouped);
+  proxy.pendingBreakpoints.set('reinserted', first);
+
+  assert.deepEqual(proxy.getPendingBreakpoints().map(bp => bp.trafficLifecycleId), [
+    'retained-life', 'middle-life', 'added-life', 'first-life'
+  ]);
+});
+
 test('pending breakpoint storage remains constructor-compatible with Map', () => {
   const proxy = new ProxyServer(null);
   const resolved = [];
