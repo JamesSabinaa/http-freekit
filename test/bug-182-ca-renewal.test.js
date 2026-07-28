@@ -214,6 +214,49 @@ test('legacy replacement cleanup state becomes a separate migration warning on u
   assert.deepEqual(restarted.pendingReplacementFingerprints, [previousFingerprint]);
 });
 
+test('legacy active-fingerprint filtering cannot publish v2 before its migration marker', async t => {
+  t.mock.method(console, 'log', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-migration-order-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const activeCertificate = createPersistedCa(
+    dataDir,
+    new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+  );
+  const activeFingerprint = new crypto.X509Certificate(activeCertificate)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  const previousFingerprint = 'CD'.repeat(20);
+  const replacementPath = path.join(dataDir, 'ca-replacements.json');
+  fs.writeFileSync(replacementPath, JSON.stringify({
+    version: 1,
+    fingerprints: [previousFingerprint, activeFingerprint]
+  }));
+
+  const interrupted = new CertificateAuthority(dataDir);
+  interrupted.setPendingMigrationFingerprint = value => {
+    if (value !== null) throw new Error('simulated pre-rename migration failure');
+  };
+  await assert.rejects(
+    interrupted.initialize({ autoRenewExpiring: false }),
+    /simulated pre-rename migration failure/
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
+    version: 1,
+    fingerprints: [previousFingerprint, activeFingerprint]
+  });
+
+  const recovered = new CertificateAuthority(dataDir);
+  await recovered.initialize({ autoRenewExpiring: false });
+  assert.equal(recovered.getCertInfo().certificateReplacementPending, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(replacementPath, 'utf8')), {
+    version: 2,
+    fingerprints: [previousFingerprint]
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(recovered.caMigrationStatePath, 'utf8')), {
+    version: 1,
+    previousFingerprint
+  });
+});
+
 test('committed migration marker hardening failure does not strand a scheduled renewal', async t => {
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'warn', () => {});

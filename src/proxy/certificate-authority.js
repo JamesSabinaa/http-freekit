@@ -136,7 +136,12 @@ export class CertificateAuthority {
     if (obsoleteCertificateFingerprints.length !== replacedCertificateFingerprints.length) {
       // A crash after journaling but before replacement leaves the old CA active.
       // Never schedule that active identity for trust-store deletion.
-      this.setPendingReplacementFingerprints(obsoleteCertificateFingerprints);
+      // A legacy v1 journal must not be rewritten as v2 until its separate
+      // migration marker is committed below, or a crash could make the warning
+      // look acknowledged forever.
+      if (!replacementState.needsMigration) {
+        this.setPendingReplacementFingerprints(obsoleteCertificateFingerprints);
+      }
       replacedCertificateFingerprints = obsoleteCertificateFingerprints;
     }
     this.pendingReplacementFingerprints = replacedCertificateFingerprints;
@@ -157,6 +162,10 @@ export class CertificateAuthority {
       // present. A later acknowledgement can then remain acknowledged while
       // Windows exact-thumbprint cleanup continues independently.
       this.setPendingReplacementFingerprints(replacedCertificateFingerprints);
+    } else if (replacementState.needsMigration) {
+      // The legacy journal contained only the still-active identity, so there
+      // is neither cleanup nor a client migration to retain.
+      this.setPendingReplacementFingerprints([]);
     }
 
     return {
