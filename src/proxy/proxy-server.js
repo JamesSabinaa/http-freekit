@@ -247,6 +247,48 @@ export class ProxyServer {
     response.once('error', (err) => request.destroy(err));
   }
 
+  _buildH1UpstreamRequestOptions({
+    targetUrl, method, headers, signal, clientHelloTls, useUpstreamProxy
+  }) {
+    const isHttps = targetUrl.protocol === 'https:';
+    const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
+    const targetPort = parseInt(targetUrl.port, 10) || (isHttps ? 443 : 80);
+    const options = {
+      hostname: targetHostname,
+      port: targetPort,
+      path: targetUrl.pathname + targetUrl.search,
+      method,
+      headers: { ...headers },
+      insecureHTTPParser: true,
+      ...(signal ? { signal } : {})
+    };
+    let requestLib = isHttps ? https : http;
+
+    if (isHttps) {
+      Object.assign(options, this._getUpstreamTlsOptions(targetHostname, clientHelloTls));
+      if (useUpstreamProxy) options.agent = this._getUpstreamAgent();
+    } else if (useUpstreamProxy && this._isSocksProxy()) {
+      options.createConnection = (_connectOptions, oncreate) => {
+        this._connectViaSocks(targetHostname, targetPort)
+          .then(socket => oncreate(null, socket))
+          .catch(error => oncreate(error));
+      };
+    } else if (useUpstreamProxy) {
+      options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
+      options.port = this.upstreamProxy.port;
+      options.path = targetUrl.href;
+      if (this.upstreamProxy.auth) {
+        options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+      }
+      requestLib = this.upstreamProxy.type === 'https' ? https : http;
+      if (requestLib === https) {
+        Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+      }
+    }
+
+    return { options, requestLib };
+  }
+
   _requestMockForward({
     forwardUrl, path, method, headers, body, trailers = {}, signal = null, onInformational = null
   }) {
@@ -409,6 +451,7 @@ export class ProxyServer {
   _trackDownstreamCancellation(target, { http2Stream = false } = {}) {
     const controller = new AbortController();
     let completed = false;
+    let abortOnCleanClose = false;
 
     const cleanup = () => {
       target?.removeListener?.('close', onClose);
@@ -421,11 +464,12 @@ export class ProxyServer {
     };
     const onAborted = () => abort();
     const onClose = () => {
-      if (!http2Stream && target?.writableFinished) {
+      if (!abortOnCleanClose && !http2Stream && target?.writableFinished) {
         cleanup();
         return;
       }
-      if (http2Stream && !target?.aborted && target?.rstCode === http2.constants.NGHTTP2_NO_ERROR) {
+      if (!abortOnCleanClose && http2Stream
+        && !target?.aborted && target?.rstCode === http2.constants.NGHTTP2_NO_ERROR) {
         cleanup();
         return;
       }
@@ -443,12 +487,43 @@ export class ProxyServer {
     return {
       signal: controller.signal,
       get aborted() { return controller.signal.aborted; },
+      abortOnClose() {
+        abortOnCleanClose = true;
+        if (target?.destroyed || target?.closed) abort();
+      },
       complete() {
         if (completed) return;
         completed = true;
         cleanup();
       }
     };
+  }
+
+  _holdMockTimeout(downstream, data, { pendingEmitted } = {}) {
+    downstream.abortOnClose?.();
+    const tracked = pendingEmitted === undefined
+      ? this._emitPendingRequest(data)
+      : pendingEmitted;
+    if (!tracked) return;
+
+    const settleDisconnected = () => {
+      const error = downstream.signal.reason instanceof Error
+        ? downstream.signal.reason
+        : this._createDownstreamAbortError();
+      this._emitRequestUpdate({
+        ...data,
+        statusCode: 0,
+        statusMessage: 'Client Disconnected',
+        responseHeaders: {},
+        responseBody: '',
+        responseBodySize: 0,
+        duration: Date.now() - data.timestamp,
+        error: error.message,
+        errorCode: error.code || 'ERR_DOWNSTREAM_ABORTED'
+      });
+    };
+    if (downstream.aborted) settleDisconnected();
+    else downstream.signal.addEventListener('abort', settleDisconnected, { once: true });
   }
 
   _trackRequestBodyCompletion(target, onIncomplete) {
@@ -1150,15 +1225,19 @@ export class ProxyServer {
     return transformed;
   }
 
-  _transformMockBody(body, mode, fixedBody, matchPattern, replacement) {
+  _transformMockBody(body, mode, fixedBody, matchPattern, replacement, contentEncoding) {
     const original = Buffer.isBuffer(body) ? body : Buffer.from(body || '');
     if (!mode || mode === 'original') return { body: original, changed: false };
     if (mode === 'replace-fixed') {
       return { body: Buffer.from(String(fixedBody ?? '')), changed: true };
     }
+    const codings = this._parseContentCodings(contentEncoding);
+    const hasEncoding = codings.some(coding => coding !== 'identity');
+    const decoded = hasEncoding ? this._decompressBody(original, contentEncoding) : original;
+    if (hasEncoding && decoded === original) return { body: original, changed: false };
     if (mode === 'json-merge') {
       try {
-        const current = JSON.parse(original.toString('utf8'));
+        const current = JSON.parse(decoded.toString('utf8'));
         const additions = JSON.parse(String(fixedBody ?? ''));
         if (!current || typeof current !== 'object' || Array.isArray(current)
           || !additions || typeof additions !== 'object' || Array.isArray(additions)) {
@@ -1174,7 +1253,7 @@ export class ProxyServer {
     }
     if (mode === 'match-replace' && typeof matchPattern === 'string' && matchPattern) {
       return {
-        body: Buffer.from(original.toString('utf8').split(matchPattern).join(String(replacement ?? ''))),
+        body: Buffer.from(decoded.toString('utf8').split(matchPattern).join(String(replacement ?? ''))),
         changed: true
       };
     }
@@ -1192,6 +1271,8 @@ export class ProxyServer {
       headersChanged: false
     };
     if (action?.type !== 'transform-request') return transformed;
+    const originalContentEncoding = Object.entries(transformed.headers)
+      .find(([name]) => name.toLowerCase() === 'content-encoding')?.[1];
 
     if (typeof action.methodMode === 'string' && action.methodMode !== 'original') {
       transformed.method = action.methodMode;
@@ -1219,14 +1300,18 @@ export class ProxyServer {
       action.bodyMode,
       action.body,
       action.bodyMatchPattern,
-      action.bodyReplaceWith
+      action.bodyReplaceWith,
+      originalContentEncoding
     );
     transformed.body = bodyResult.body;
     transformed.bodyChanged = bodyResult.changed;
     transformed.changed ||= bodyResult.changed;
     if (bodyResult.changed) {
       for (const name of Object.keys(transformed.headers)) {
-        if (name.toLowerCase() === 'transfer-encoding') delete transformed.headers[name];
+        const lower = name.toLowerCase();
+        if (lower === 'transfer-encoding' || lower === 'content-encoding') {
+          delete transformed.headers[name];
+        }
       }
       this._setContentLength(transformed.headers, transformed.body.length);
     }
@@ -1236,6 +1321,8 @@ export class ProxyServer {
 
   _applyMockResponseTransform(action, response) {
     if (!['transform-request', 'transform-response'].includes(action?.type)) return response;
+    const originalContentEncoding = Object.entries(response.headers || {})
+      .find(([name]) => name.toLowerCase() === 'content-encoding')?.[1];
     const legacy = action.type === 'transform-response';
     const statusMode = legacy && action.statusOverride ? 'replace' : action.resStatusMode;
     const requestedStatus = legacy ? action.statusOverride : action.resStatusOverride;
@@ -1253,7 +1340,8 @@ export class ProxyServer {
       legacy ? action.bodyMode : action.resBodyMode,
       legacy ? action.body : action.resBody,
       legacy ? action.bodyMatchPattern : action.resBodyMatchPattern,
-      legacy ? action.bodyReplaceWith : action.resBodyReplaceWith
+      legacy ? action.bodyReplaceWith : action.resBodyReplaceWith,
+      originalContentEncoding
     );
     if (bodyResult.changed) {
       for (const name of Object.keys(headers)) {
@@ -1801,7 +1889,7 @@ export class ProxyServer {
         ? mockRule.action
         : null;
       if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) {
-        this._emitPendingRequest({
+        this._holdMockTimeout(downstream, {
           id: requestId,
           protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
           method: clientReq.method,
@@ -2475,7 +2563,15 @@ export class ProxyServer {
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
           : null;
-        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) {
+          this._holdMockTimeout(downstream, {
+            id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+            host: hostname, path: req.url, requestHeaders: req.headers,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+          }, { pendingEmitted });
+          return;
+        }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           const action = mockRule.action || {
             type: 'fixed-response',
@@ -2878,12 +2974,11 @@ export class ProxyServer {
             body
           });
           req.method = transformed.method;
-          if (transformed.url.protocol === 'https:') {
-            fullUrl = transformed.url.href;
-            hostname = this._normalizeConnectionHostname(transformed.url.hostname);
-            targetPort = parseInt(transformed.url.port, 10) || 443;
-            req.url = transformed.url.pathname + transformed.url.search;
-          }
+          fullUrl = transformed.url.href;
+          hostname = this._normalizeConnectionHostname(transformed.url.hostname);
+          targetPort = parseInt(transformed.url.port, 10)
+            || (transformed.url.protocol === 'https:' ? 443 : 80);
+          req.url = transformed.url.pathname + transformed.url.search;
           req.headers = transformed.headers;
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
@@ -2927,10 +3022,11 @@ export class ProxyServer {
           if (modifications.url) {
             try {
               const modUrl = new URL(modifications.url);
-              hostname = modUrl.hostname;
+              hostname = this._normalizeConnectionHostname(modUrl.hostname);
               targetPort = parseInt(modUrl.port) || (modUrl.protocol === 'https:' ? 443 : 80);
               req.url = modUrl.pathname + modUrl.search;
-              fullUrl = modifications.url;
+              fullUrl = modUrl.href;
+              this._setTargetHostHeader(req.headers, modUrl.host);
             } catch { /* keep original */ }
           }
           if (modifications.method) {
@@ -2947,22 +3043,16 @@ export class ProxyServer {
         }
 
         // Forward to real server — preserve raw header case to avoid bot detection
-        const proxyOpts = {
-          hostname, port: targetPort, path: req.url, method: req.method,
-          headers: (() => {
-            const headers = this._stripUpstreamHeaders({
-              ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
-              ...req.headers
-            });
-            this._setTargetHostHeader(headers, new URL(fullUrl).host);
-            if (breakpointBodyModified) this._setContentLength(headers, body.length);
-            return headers;
-          })(),
-          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls),
-          signal: downstream.signal
-        };
+        const upstreamUrl = new URL(fullUrl);
+        const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        const proxyHeaders = this._stripUpstreamHeaders({
+          ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
+          ...req.headers
+        });
+        this._setTargetHostHeader(proxyHeaders, upstreamUrl.host);
+        if (breakpointBodyModified) this._setContentLength(proxyHeaders, body.length);
 
-        let upstreamProtocol = 'https';
+        let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
         const emitSuccess = (
           statusCode, statusMessage, responseHeaders, resBody, remote, trailers, usedUpstreamProxy = false
@@ -3003,7 +3093,7 @@ export class ProxyServer {
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
         let h2RequestAttempted = false;
         // Try HTTP/2 upstream first when this host bypasses the configured proxy.
-        if (!initiallyUsesUpstreamProxy) {
+        if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(hostname, targetPort);
@@ -3149,16 +3239,18 @@ export class ProxyServer {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
-          if (useUpstreamProxy) {
-            const agent = this._getUpstreamAgent();
-            proxyReq = https.request({
-              ...proxyOpts,
-              agent,
-              insecureHTTPParser: true
-            }, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
-          } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
-          }
+          const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+            targetUrl: upstreamUrl,
+            method: req.method,
+            headers: proxyHeaders,
+            signal: downstream.signal,
+            clientHelloTls: tlsSocket._clientHelloTls,
+            useUpstreamProxy
+          });
+          proxyReq = requestLib.request(
+            options,
+            handleResponse(attempt, proxyGeneration, useUpstreamProxy)
+          );
 
           const attemptReq = proxyReq;
           attemptReq._upstreamProxyGeneration = proxyGeneration;
@@ -3240,6 +3332,8 @@ export class ProxyServer {
   }
 
   _handleHttp2Connection(socket, hostname, targetPort, tlsOptions) {
+    const tunnelHostname = hostname;
+    const tunnelTargetPort = targetPort;
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
     let tlsSocket = socket;
     let tlsDetails = null;
@@ -3380,7 +3474,15 @@ export class ProxyServer {
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
           : null;
-        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) {
+          this._holdMockTimeout(downstream, {
+            id: requestId, protocol: 'h2', method, url: fullUrl,
+            host: authority, path, requestHeaders: reqHeaders,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+          }, { pendingEmitted });
+          return;
+        }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
@@ -3397,13 +3499,12 @@ export class ProxyServer {
             body
           });
           method = transformed.method;
-          if (transformed.url.protocol === 'https:') {
-            path = transformed.url.pathname + transformed.url.search;
-            upstreamHostname = this._normalizeConnectionHostname(transformed.url.hostname);
-            upstreamPort = parseInt(transformed.url.port, 10) || 443;
-            authority = this._formatHttpsAuthority(upstreamHostname, upstreamPort);
-            fullUrl = `https://${authority}${path}`;
-          }
+          path = transformed.url.pathname + transformed.url.search;
+          upstreamHostname = this._normalizeConnectionHostname(transformed.url.hostname);
+          upstreamPort = parseInt(transformed.url.port, 10)
+            || (transformed.url.protocol === 'https:' ? 443 : 80);
+          authority = transformed.url.host;
+          fullUrl = transformed.url.href;
           reqHeaders = transformed.headers;
           this._setTargetHostHeader(reqHeaders, authority);
           body = transformed.body;
@@ -3445,14 +3546,13 @@ export class ProxyServer {
           if (modifications.url) {
             try {
               const nextUrl = new URL(modifications.url);
-              if (nextUrl.protocol === 'https:') {
-                path = nextUrl.pathname + nextUrl.search;
-                upstreamHostname = this._normalizeConnectionHostname(nextUrl.hostname);
-                upstreamPort = parseInt(nextUrl.port, 10) || 443;
-                authority = this._formatHttpsAuthority(upstreamHostname, upstreamPort);
-                fullUrl = `https://${authority}${path}`;
-                this._setTargetHostHeader(reqHeaders, authority);
-              }
+              path = nextUrl.pathname + nextUrl.search;
+              upstreamHostname = this._normalizeConnectionHostname(nextUrl.hostname);
+              upstreamPort = parseInt(nextUrl.port, 10)
+                || (nextUrl.protocol === 'https:' ? 443 : 80);
+              authority = nextUrl.host;
+              fullUrl = nextUrl.href;
+              this._setTargetHostHeader(reqHeaders, authority);
             } catch { /* keep original */ }
           }
           if (modifications.method) {
@@ -3472,6 +3572,8 @@ export class ProxyServer {
         this._setTargetHostHeader(upstreamHeaders, authority);
 
         const source = this._detectSource(reqHeaders);
+        const upstreamUrl = new URL(fullUrl);
+        const isUpstreamHttps = upstreamUrl.protocol === 'https:';
 
         const emitH2Success = (
           statusCode, statusMessage, responseHeaders, resBody, remote, trailers, usedUpstreamProxy = false
@@ -3510,7 +3612,7 @@ export class ProxyServer {
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
         let h2RequestAttempted = false;
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
-        if (!initiallyUsesUpstreamProxy) {
+        if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(upstreamHostname, upstreamPort);
@@ -3579,14 +3681,6 @@ export class ProxyServer {
             // H2 request failed — fall back to h1.1
           }
         }
-
-        // Fallback: HTTPS/1.1 upstream with Firefox TLS fingerprint
-        const proxyOpts = {
-          hostname: upstreamHostname, port: upstreamPort, path, method,
-          headers: upstreamHeaders,
-          ...this._getUpstreamTlsOptions(upstreamHostname, tlsSocket._clientHelloTls),
-          signal: downstream.signal
-        };
 
         const handleResponse = (attempt, proxyGeneration, usedUpstreamProxy) => (proxyRes) => {
           if (downstream.aborted) {
@@ -3672,20 +3766,22 @@ export class ProxyServer {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           const useUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
-          if (useUpstreamProxy) {
-            try {
-              const agent = this._getUpstreamAgent();
-              proxyReq = https.request({
-                ...proxyOpts,
-                agent,
-                insecureHTTPParser: true
-              }, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
-            } catch (err) {
-              handleError(err, null);
-              return;
-            }
-          } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
+          try {
+            const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+              targetUrl: upstreamUrl,
+              method,
+              headers: upstreamHeaders,
+              signal: downstream.signal,
+              clientHelloTls: tlsSocket._clientHelloTls,
+              useUpstreamProxy
+            });
+            proxyReq = requestLib.request(
+              options,
+              handleResponse(attempt, proxyGeneration, useUpstreamProxy)
+            );
+          } catch (err) {
+            handleError(err, null);
+            return;
           }
 
           const attemptReq = proxyReq;
@@ -3724,6 +3820,8 @@ export class ProxyServer {
 
     // HTTP/1.1 fallback — when allowHTTP1 is true and client negotiates h1.1
     h2Server.on('request', (req, res) => {
+      let hostname = tunnelHostname;
+      let targetPort = tunnelTargetPort;
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
       // This fires for HTTP/1.1 requests when allowHTTP1 is true.
@@ -3787,7 +3885,15 @@ export class ProxyServer {
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
           : null;
-        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) {
+          this._holdMockTimeout(downstream, {
+            id: requestId, protocol: 'https', method: req.method, url: fullUrl,
+            host: hostname, path: req.url, requestHeaders: req.headers,
+            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+          }, { pendingEmitted });
+          return;
+        }
         if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._serveMockResponseH1OnH2(
             requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
@@ -3804,12 +3910,11 @@ export class ProxyServer {
             body
           });
           req.method = transformed.method;
-          if (transformed.url.protocol === 'https:') {
-            fullUrl = transformed.url.href;
-            hostname = this._normalizeConnectionHostname(transformed.url.hostname);
-            targetPort = parseInt(transformed.url.port, 10) || 443;
-            req.url = transformed.url.pathname + transformed.url.search;
-          }
+          fullUrl = transformed.url.href;
+          hostname = this._normalizeConnectionHostname(transformed.url.hostname);
+          targetPort = parseInt(transformed.url.port, 10)
+            || (transformed.url.protocol === 'https:' ? 443 : 80);
+          req.url = transformed.url.pathname + transformed.url.search;
           req.headers = transformed.headers;
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
@@ -3853,9 +3958,11 @@ export class ProxyServer {
             try {
               const nextUrl = new URL(modifications.url);
               fullUrl = nextUrl.href;
-              hostname = nextUrl.hostname;
-              targetPort = parseInt(nextUrl.port, 10) || 443;
+              hostname = this._normalizeConnectionHostname(nextUrl.hostname);
+              targetPort = parseInt(nextUrl.port, 10)
+                || (nextUrl.protocol === 'https:' ? 443 : 80);
               req.url = nextUrl.pathname + nextUrl.search;
+              this._setTargetHostHeader(req.headers, nextUrl.host);
             } catch { /* keep original */ }
           }
           if (modifications.method) req.method = modifications.method;
@@ -3867,8 +3974,10 @@ export class ProxyServer {
           }
         }
 
-        // Forward to real server — try HTTP/2 upstream first
-        let upstreamProtocol = 'https';
+        // Forward to real server — try HTTP/2 upstream first for secure targets.
+        const upstreamUrl = new URL(fullUrl);
+        const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
         const emitH1Success = (
           statusCode, statusMessage, responseHeaders, resBody, remote, usedUpstreamProxy = false
@@ -3908,7 +4017,7 @@ export class ProxyServer {
         const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
         let h2RequestAttempted = false;
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
-        if (!initiallyUsesUpstreamProxy) {
+        if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(hostname, targetPort);
@@ -3974,21 +4083,13 @@ export class ProxyServer {
           }
         }
 
-        // Fallback: HTTPS/1.1 — preserve raw header case
-        const proxyOpts = {
-          hostname, port: targetPort, path: req.url, method: req.method,
-          headers: (() => {
-            const headers = this._stripUpstreamHeaders({
-              ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
-              ...req.headers
-            });
-            this._setTargetHostHeader(headers, new URL(fullUrl).host);
-            if (breakpointBodyModified) this._setContentLength(headers, body.length);
-            return headers;
-          })(),
-          ...this._getUpstreamTlsOptions(hostname, tlsSocket._clientHelloTls),
-          signal: downstream.signal
-        };
+        // Fall back to HTTP/1.1 and preserve raw header case.
+        const proxyHeaders = this._stripUpstreamHeaders({
+          ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
+          ...req.headers
+        });
+        this._setTargetHostHeader(proxyHeaders, upstreamUrl.host);
+        if (breakpointBodyModified) this._setContentLength(proxyHeaders, body.length);
 
         const handleResponse = (attempt, proxyGeneration, usedUpstreamProxy) => (proxyRes) => {
           if (downstream.aborted) {
@@ -4067,16 +4168,18 @@ export class ProxyServer {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
           const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
-          if (useUpstreamProxy) {
-            const agent = this._getUpstreamAgent();
-            proxyReq = https.request({
-              ...proxyOpts,
-              agent,
-              insecureHTTPParser: true
-            }, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
-          } else {
-            proxyReq = https.request(proxyOpts, handleResponse(attempt, proxyGeneration, useUpstreamProxy));
-          }
+          const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+            targetUrl: upstreamUrl,
+            method: req.method,
+            headers: proxyHeaders,
+            signal: downstream.signal,
+            clientHelloTls: tlsSocket._clientHelloTls,
+            useUpstreamProxy
+          });
+          proxyReq = requestLib.request(
+            options,
+            handleResponse(attempt, proxyGeneration, useUpstreamProxy)
+          );
 
           const attemptReq = proxyReq;
           attemptReq._upstreamProxyGeneration = proxyGeneration;
