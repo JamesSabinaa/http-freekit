@@ -376,14 +376,18 @@ export class ProxyServer {
     });
   }
 
-  _forwardUpstreamResponseErrors(response, request) {
+  _forwardUpstreamResponseErrors(response, request, onError) {
+    const forward = error => {
+      if (typeof onError === 'function') onError(error);
+      else request.destroy(error);
+    };
     response.once('aborted', () => {
       const err = new Error('Upstream response aborted');
       err.code = 'ECONNRESET';
       err.upstreamPhase = 'response';
-      request.destroy(err);
+      forward(err);
     });
-    response.once('error', (err) => request.destroy(err));
+    response.once('error', forward);
   }
 
   _buildH1UpstreamRequestOptions({
@@ -705,13 +709,22 @@ export class ProxyServer {
 
   _emitIncompleteUpload(data, bodyCollector, receivedBytes) {
     const message = 'Client disconnected before completing the request body';
-    const requestBody = bodyCollector.exceeded
-      ? `[Request body omitted after exceeding ${bodyCollector.limit} bytes]`
-      : this._safeBodyString(this._concatBody(bodyCollector));
+    const requestBody = this._streamedCaptureBody(
+      bodyCollector,
+      receivedBytes,
+      'Request',
+      data.requestHeaders
+    );
     this._emitRequest({
       ...data,
       requestBody,
       requestBodySize: receivedBytes,
+      ...this._incompleteBodyCaptureFields(
+        'request',
+        requestBody,
+        data.requestHeaders,
+        bodyCollector.exceeded ? 0 : bodyCollector.length
+      ),
       statusCode: 0,
       statusMessage: 'Client Upload Aborted',
       responseHeaders: {},
@@ -720,11 +733,7 @@ export class ProxyServer {
       duration: Date.now() - data.timestamp,
       error: message,
       errorCode: 'ERR_REQUEST_BODY_ABORTED',
-      errorPhase: 'request-body',
-      ...(bodyCollector.exceeded ? {
-        requestBodyTruncated: true,
-        requestBodyCapturedSize: 0
-      } : {})
+      errorPhase: 'request-body'
     });
   }
 
@@ -787,6 +796,37 @@ export class ProxyServer {
       getHeaderValues(headers, 'content-encoding')[0],
       getHeaderValues(headers, 'content-type')[0]
     );
+  }
+
+  _incompleteBodyCaptureFields(side, body, headers = {}, capturedBytes) {
+    let capturedSize = Number.isSafeInteger(capturedBytes) && capturedBytes >= 0
+      ? capturedBytes
+      : undefined;
+    if (capturedSize === undefined) {
+      if (body instanceof TruncatedBodyString) {
+        capturedSize = body.capturedSize;
+      } else if (body instanceof EncodedBodyString && body.encoding === 'base64') {
+        const match = body.toString().match(/;base64,([A-Za-z0-9+/=\r\n]*)$/);
+        capturedSize = match ? Buffer.byteLength(match[1], 'base64') : 0;
+      } else {
+        capturedSize = Buffer.byteLength(String(body || ''));
+      }
+    }
+
+    const contentEncodings = this._parseContentCodings(getHeaderValues(headers, 'content-encoding'));
+    const contentLength = getHeaderValues(headers, 'content-length')
+      .map(value => Number(value))
+      .find(value => Number.isSafeInteger(value) && value >= capturedSize);
+    const originalSize = contentEncodings.every(value => value === 'identity')
+      && contentLength !== undefined
+      ? contentLength
+      : -1;
+    const field = `${side}Body`;
+    return {
+      [`${field}Truncated`]: true,
+      [`${field}CapturedSize`]: capturedSize,
+      [`${field}DecodedSize`]: originalSize
+    };
   }
 
   _matcherSetBeforeBody(matchers, method, url, headers) {
@@ -886,6 +926,7 @@ export class ProxyServer {
     const source = this._detectSource(requestHeaders);
     let requestBodySize = 0;
     let responseBodySize = 0;
+    let requestBodyIncomplete = false;
     let requestEnded = false;
     let requestTrailers = {};
     let activeRequest = null;
@@ -924,21 +965,44 @@ export class ProxyServer {
       'Response',
       headers
     );
-    const baseRecord = () => ({
-      id: requestId,
-      protocol: captureProtocol,
-      method,
-      url: targetUrl.href,
-      host: targetUrl.hostname,
-      path: targetUrl.pathname + targetUrl.search,
-      requestHeaders,
-      requestBody: requestCapture(),
-      requestBodySize,
-      timestamp: startTime,
-      source,
-      tls: tlsDetails,
-      remote: null
-    });
+    const incompleteResponseCapture = (headers = {}) => {
+      const body = responseCapture(headers);
+      return {
+        responseBody: body,
+        ...this._incompleteBodyCaptureFields(
+          'response',
+          body,
+          headers,
+          responseBody.exceeded ? 0 : responseBody.length
+        )
+      };
+    };
+    const baseRecord = () => {
+      const body = requestCapture();
+      return {
+        id: requestId,
+        protocol: captureProtocol,
+        method,
+        url: targetUrl.href,
+        host: targetUrl.hostname,
+        path: targetUrl.pathname + targetUrl.search,
+        requestHeaders,
+        requestBody: body,
+        requestBodySize,
+        ...(requestBodyIncomplete
+          ? this._incompleteBodyCaptureFields(
+              'request',
+              body,
+              requestHeaders,
+              requestBody.exceeded ? 0 : requestBody.length
+            )
+          : {}),
+        timestamp: startTime,
+        source,
+        tls: tlsDetails,
+        remote: null
+      };
+    };
     const emitPending = () => {
       if (pendingEmitted) return;
       pendingEmitted = this._emitPendingRequest(baseRecord());
@@ -983,6 +1047,11 @@ export class ProxyServer {
         responseHeaders: result.responseHeaders || {},
         responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
         responseBodySize,
+        ...(result.responseBodyTruncated === true ? {
+          responseBodyTruncated: true,
+          responseBodyCapturedSize: result.responseBodyCapturedSize,
+          responseBodyDecodedSize: result.responseBodyDecodedSize
+        } : {}),
         duration: Date.now() - startTime,
         timing: {
           total: Date.now() - startTime,
@@ -1061,7 +1130,7 @@ export class ProxyServer {
         if (!clientRes.destroyed) clientRes.destroy(error);
         finalize({
           ...responseMetadata,
-          responseBody: responseCapture(responseMetadata.responseHeaders),
+          ...incompleteResponseCapture(responseMetadata.responseHeaders),
           error,
           request,
           proxyGeneration: context.proxyGeneration,
@@ -1171,7 +1240,9 @@ export class ProxyServer {
         } catch { /* downstream already closed */ }
         maybeFinalize();
       });
-      this._forwardUpstreamResponseErrors(proxyRes, request);
+      this._forwardUpstreamResponseErrors(proxyRes, request, error => {
+        void handleFailure(error, request, context);
+      });
       proxyRes.pipe(clientRes, { end: false });
       proxyRes.resume();
     };
@@ -1380,6 +1451,7 @@ export class ProxyServer {
 
     const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
       captureQueuedRequestChunks();
+      requestBodyIncomplete = true;
       const error = new Error('Client disconnected before completing the request body');
       error.code = 'ERR_REQUEST_BODY_ABORTED';
       error.upstreamPhase = 'request-body';
@@ -1432,7 +1504,11 @@ export class ProxyServer {
         statusCode: responseMetadata?.statusCode || 0,
         statusMessage: 'Client Disconnected',
         responseHeaders: responseMetadata?.responseHeaders || {},
-        responseBody: responseCapture(responseMetadata?.responseHeaders),
+        ...(responseMetadata
+          ? responseEnded
+            ? { responseBody: responseCapture(responseMetadata.responseHeaders) }
+            : incompleteResponseCapture(responseMetadata.responseHeaders)
+          : { responseBody: '' }),
         error
       });
     }, { once: true });
@@ -1481,6 +1557,7 @@ export class ProxyServer {
     const source = this._detectSource(requestHeaders);
     let requestBodySize = 0;
     let responseBodySize = 0;
+    let requestBodyIncomplete = false;
     let requestTrailers = {};
     let responseTrailers = {};
     let requestEnded = false;
@@ -1522,21 +1599,44 @@ export class ProxyServer {
       'Response',
       headers
     );
-    const baseRecord = () => ({
-      id: requestId,
-      protocol: 'h2',
-      method,
-      url: fullUrl,
-      host: authority,
-      path,
-      requestHeaders,
-      requestBody: requestCapture(),
-      requestBodySize,
-      timestamp: startTime,
-      source,
-      tls: tlsDetails,
-      remote: null
-    });
+    const incompleteResponseCapture = (headers = {}) => {
+      const body = responseCapture(headers);
+      return {
+        responseBody: body,
+        ...this._incompleteBodyCaptureFields(
+          'response',
+          body,
+          headers,
+          responseBody.exceeded ? 0 : responseBody.length
+        )
+      };
+    };
+    const baseRecord = () => {
+      const body = requestCapture();
+      return {
+        id: requestId,
+        protocol: 'h2',
+        method,
+        url: fullUrl,
+        host: authority,
+        path,
+        requestHeaders,
+        requestBody: body,
+        requestBodySize,
+        ...(requestBodyIncomplete
+          ? this._incompleteBodyCaptureFields(
+              'request',
+              body,
+              requestHeaders,
+              requestBody.exceeded ? 0 : requestBody.length
+            )
+          : {}),
+        timestamp: startTime,
+        source,
+        tls: tlsDetails,
+        remote: null
+      };
+    };
     const emitPending = () => {
       if (pendingEmitted) return;
       pendingEmitted = this._emitPendingRequest(baseRecord());
@@ -1577,6 +1677,11 @@ export class ProxyServer {
         responseHeaders: result.responseHeaders || {},
         responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
         responseBodySize,
+        ...(result.responseBodyTruncated === true ? {
+          responseBodyTruncated: true,
+          responseBodyCapturedSize: result.responseBodyCapturedSize,
+          responseBodyDecodedSize: result.responseBodyDecodedSize
+        } : {}),
         duration: Date.now() - startTime,
         timing: {
           total: Date.now() - startTime,
@@ -1609,16 +1714,19 @@ export class ProxyServer {
     const fail = (error, request = activeRequest, overrides = {}) => {
       if (finalized) return;
       const metadata = responseMetadata || {};
+      const responseWasIncomplete = Boolean(responseMetadata) && !responseEnded;
       responseEnded = true;
       requestEnded = true;
-      const responseBodyText = responseMetadata
-        ? responseCapture(responseMetadata.responseHeaders)
-        : `Proxy Error: ${error.message}`;
+      const responseFields = responseMetadata
+        ? responseWasIncomplete
+          ? incompleteResponseCapture(responseMetadata.responseHeaders)
+          : { responseBody: responseCapture(responseMetadata.responseHeaders) }
+        : { responseBody: `Proxy Error: ${error.message}` };
       finalize({
         statusCode: metadata.statusCode || 502,
         statusMessage: metadata.statusMessage || 'Bad Gateway',
         responseHeaders: metadata.responseHeaders || {},
-        responseBody: responseBodyText,
+        ...responseFields,
         trailers: responseTrailers,
         remote: metadata.remote,
         waiting: metadata.waiting,
@@ -1680,6 +1788,7 @@ export class ProxyServer {
     const incompleteUpload = () => {
       if (requestEnded || finalized) return;
       captureQueuedRequestChunks();
+      requestBodyIncomplete = true;
       const error = new Error('Client disconnected before completing the request body');
       error.code = 'ERR_REQUEST_BODY_ABORTED';
       error.upstreamPhase = 'request-body';
@@ -1687,9 +1796,7 @@ export class ProxyServer {
         statusCode: responseMetadata?.statusCode || 0,
         statusMessage: 'Client Upload Aborted',
         responseHeaders: responseMetadata?.responseHeaders || {},
-        responseBody: responseMetadata
-          ? responseCapture(responseMetadata.responseHeaders)
-          : ''
+        ...(responseMetadata ? {} : { responseBody: '' })
       });
     };
 
@@ -1862,7 +1969,9 @@ export class ProxyServer {
             return;
           }
         }
-        this._forwardUpstreamResponseErrors(proxyRes, request);
+        this._forwardUpstreamResponseErrors(proxyRes, request, error => {
+          failOrDefer(error, request);
+        });
         beginResponse({
           request,
           upstreamResponse: proxyRes,
@@ -2010,9 +2119,7 @@ export class ProxyServer {
         statusCode: responseMetadata?.statusCode || 0,
         statusMessage: 'Client Disconnected',
         responseHeaders: responseMetadata?.responseHeaders || {},
-        responseBody: responseMetadata
-          ? responseCapture(responseMetadata.responseHeaders)
-          : ''
+        ...(responseMetadata ? {} : { responseBody: '' })
       });
     }, { once: true });
 
@@ -2077,6 +2184,7 @@ export class ProxyServer {
     const progress = () => ({
       content: capturedChunks ? Buffer.concat(capturedChunks, streamedBytes) : null,
       size: streamedBytes,
+      originalSize: Math.max(stats.size, streamedBytes),
       truncated: capturedChunks === null || streamedBytes < stats.size,
       responseStarted
     });
@@ -2146,6 +2254,12 @@ export class ProxyServer {
         responseBody: progress?.content ? this._safeBodyString(progress.content) : '',
         responseBodySize: progress?.size || 0,
         responseBodyTruncated: progress?.truncated === true,
+        ...(progress?.truncated === true ? {
+          responseBodyCapturedSize: progress.content?.length || 0,
+          responseBodyDecodedSize: Number.isSafeInteger(progress.originalSize)
+            ? progress.originalSize
+            : -1
+        } : {}),
         error: error.message,
         errorCode: error.code
       };
@@ -2159,6 +2273,12 @@ export class ProxyServer {
         responseBody: progress.content ? this._safeBodyString(progress.content) : '',
         responseBodySize: progress.size,
         responseBodyTruncated: progress.truncated,
+        ...(progress.truncated ? {
+          responseBodyCapturedSize: progress.content?.length || 0,
+          responseBodyDecodedSize: Number.isSafeInteger(progress.originalSize)
+            ? progress.originalSize
+            : -1
+        } : {}),
         error: error.message,
         errorCode: error.code || null
       };
@@ -4488,6 +4608,10 @@ export class ProxyServer {
                 responseBody: file.content ? this._safeBodyString(file.content) : '',
                 responseBodySize: file.size,
                 responseBodyTruncated: file.truncated,
+                ...(file.truncated ? {
+                  responseBodyCapturedSize: file.content?.length || 0,
+                  responseBodyDecodedSize: file.originalSize
+                } : {}),
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                 tls: tlsDetails, remote: null,
                 originalRequest, transformedBy
@@ -4510,6 +4634,10 @@ export class ProxyServer {
                 responseHeaders: failure.responseHeaders,
                 responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
                 responseBodyTruncated: failure.responseBodyTruncated,
+                ...(failure.responseBodyTruncated ? {
+                  responseBodyCapturedSize: failure.responseBodyCapturedSize,
+                  responseBodyDecodedSize: failure.responseBodyDecodedSize
+                } : {}),
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                 error: failure.error, errorCode: failure.errorCode,
                 tls: tlsDetails, remote: null,
@@ -6246,6 +6374,10 @@ export class ProxyServer {
           responseBody: file.content ? this._safeBodyString(file.content) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
+          ...(file.truncated ? {
+            responseBodyCapturedSize: file.content?.length || 0,
+            responseBodyDecodedSize: file.originalSize
+          } : {}),
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
@@ -6268,6 +6400,10 @@ export class ProxyServer {
           responseHeaders: failure.responseHeaders,
           responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
           responseBodyTruncated: failure.responseBodyTruncated,
+          ...(failure.responseBodyTruncated ? {
+            responseBodyCapturedSize: failure.responseBodyCapturedSize,
+            responseBodyDecodedSize: failure.responseBodyDecodedSize
+          } : {}),
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           error: failure.error, errorCode: failure.errorCode,
           tls: tlsDetails, remote: null,
@@ -8113,6 +8249,10 @@ export class ProxyServer {
           responseBody: file.content ? this._safeBodyString(file.content) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
+          ...(file.truncated ? {
+            responseBodyCapturedSize: file.content?.length || 0,
+            responseBodyDecodedSize: file.originalSize
+          } : {}),
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           tls: captureTls, remote: null,
           originalRequest, transformedBy
@@ -8133,6 +8273,10 @@ export class ProxyServer {
           statusMessage: failure.statusMessage, responseHeaders: failure.responseHeaders,
           responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
           responseBodyTruncated: failure.responseBodyTruncated,
+          ...(failure.responseBodyTruncated ? {
+            responseBodyCapturedSize: failure.responseBodyCapturedSize,
+            responseBodyDecodedSize: failure.responseBodyDecodedSize
+          } : {}),
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           error: failure.error, errorCode: failure.errorCode,
           tls: captureTls, remote: null,
@@ -8603,8 +8747,8 @@ export class ProxyServer {
       } else if (body instanceof TruncatedBodyString) {
         data[field] = body.toString();
         data[`${field}Truncated`] = true;
-        data[`${field}CapturedSize`] = body.capturedSize;
-        data[`${field}DecodedSize`] = body.decodedSize;
+        data[`${field}CapturedSize`] ??= body.capturedSize;
+        data[`${field}DecodedSize`] ??= body.decodedSize;
       }
       if (typeof data[field] === 'string' && data[encodingField] === undefined) {
         data[encodingField] = 'utf8';

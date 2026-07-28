@@ -78,6 +78,9 @@ function assertSingleAbort(events, requestPath, protocol) {
     protocol,
     requestBody: PARTIAL_BODY,
     requestBodySize: Buffer.byteLength(PARTIAL_BODY),
+    requestBodyTruncated: true,
+    requestBodyCapturedSize: Buffer.byteLength(PARTIAL_BODY),
+    requestBodyDecodedSize: 1000,
     statusCode: 0,
     statusMessage: 'Client Upload Aborted',
     responseHeaders: {},
@@ -124,6 +127,7 @@ test('an aborted oversized upload omits cleared body data without concatenating 
   assert.equal(record.requestBodySize, 17);
   assert.equal(record.requestBodyTruncated, true);
   assert.equal(record.requestBodyCapturedSize, 0);
+  assert.equal(record.requestBodyDecodedSize, -1);
   assert.equal(record.statusMessage, 'Client Upload Aborted');
 });
 

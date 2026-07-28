@@ -1288,14 +1288,16 @@
         const capturedSize = Number.isFinite(request[field + 'CapturedSize'])
           ? request[field + 'CapturedSize']
           : 0;
-        const originalSize = Number.isFinite(request[field + 'DecodedSize'])
-          && request[field + 'DecodedSize'] >= 0
-          ? request[field + 'DecodedSize']
-          : request[field + 'Size'];
+        const decodedSize = request[field + 'DecodedSize'];
+        const originalSize = decodedSize === -1
+          ? -1
+          : Number.isFinite(decodedSize) && decodedSize >= 0
+            ? decodedSize
+            : request[field + 'Size'];
         const displaySize = size => size === 0 ? '0B' : formatSize(size);
         const retained = Number.isFinite(originalSize) && originalSize >= 0
           ? `${displaySize(capturedSize)} of ${displaySize(originalSize)}`
-          : displaySize(capturedSize);
+          : `${displaySize(capturedSize)}; original size unknown`;
         return `<div class="body-capture-warning" role="note">
           <i class="ph ph-warning" aria-hidden="true"></i>
           <span>Incomplete ${side} body: ${retained} retained. Viewing and body search use only these captured bytes.</span>
@@ -9332,20 +9334,22 @@
       }
       if (!body._truncated) return null;
 
-      const sizes = {};
-      for (const property of ['_capturedSize', '_originalSize']) {
-        const value = body[property];
-        if (!Number.isSafeInteger(value) || value < 0) {
-          throw new Error(`${fieldPath}.${property} must be a non-negative safe integer`);
-        }
-        sizes[property] = value;
+      const capturedSize = body._capturedSize;
+      if (!Number.isSafeInteger(capturedSize) || capturedSize < 0) {
+        throw new Error(`${fieldPath}._capturedSize must be a non-negative safe integer`);
       }
-      if (sizes._capturedSize > sizes._originalSize) {
+      const originalSize = body._originalSize;
+      if (!Number.isSafeInteger(originalSize) || originalSize < -1) {
+        throw new Error(
+          `${fieldPath}._originalSize must be a non-negative safe integer or -1`
+        );
+      }
+      if (originalSize >= 0 && capturedSize > originalSize) {
         throw new Error(`${fieldPath}._capturedSize cannot exceed _originalSize`);
       }
       return {
-        capturedSize: sizes._capturedSize,
-        originalSize: sizes._originalSize
+        capturedSize,
+        originalSize
       };
     }
 

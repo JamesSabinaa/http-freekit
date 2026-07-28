@@ -58,10 +58,67 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.match(invalidBody.body.error, /requestBody/);
   assert.deepEqual(api.trafficLog, []);
 
+  const invalidTruncations = [
+    {
+      record: {
+        responseBodyTruncated: true,
+        responseBodyCapturedSize: 11,
+        responseBodyDecodedSize: 10
+      },
+      error: /cannot exceed/
+    },
+    {
+      record: {
+        responseBodyTruncated: true,
+        responseBodyCapturedSize: 0.5,
+        responseBodyDecodedSize: 10
+      },
+      error: /safe integer/
+    },
+    {
+      record: {
+        responseBodyTruncated: true,
+        responseBodyCapturedSize: 5
+      },
+      error: /must be provided together/
+    },
+    {
+      record: { responseBodyCapturedSize: 5 },
+      error: /requires responseBodyTruncated to be true/
+    }
+  ];
+  for (const [index, scenario] of invalidTruncations.entries()) {
+    const result = await postJson(port, {
+      requests: [{
+        id: `invalid-truncation-${index}`,
+        timestamp: Date.now(),
+        ...scenario.record
+      }]
+    });
+    assert.equal(result.statusCode, 400);
+    assert.match(result.body.error, scenario.error);
+  }
+  assert.deepEqual(api.trafficLog, []);
+
+  const unknownOriginalSize = await postJson(port, {
+    requests: [{
+      id: 'unknown-original-size',
+      timestamp: Date.now(),
+      responseBody: 'x',
+      responseBodyTruncated: true,
+      responseBodyCapturedSize: 1,
+      responseBodyDecodedSize: -1
+    }]
+  });
+  assert.equal(unknownOriginalSize.statusCode, 200);
+  const unknownHar = trafficToHar(api.trafficLog, { maskSensitive: false });
+  assert.equal(unknownHar.log.entries[0].response.content._originalSize, -1);
+  assert.match(unknownHar.log.entries[0].response.content.comment, /original size unknown/);
+
   const valid = await postJson(port, {
     requests: [{ id: 'valid', timestamp: Date.now(), requestBody: 'text' }]
   });
   assert.equal(valid.statusCode, 200);
-  assert.equal(api.trafficLog.length, 1);
+  assert.equal(api.trafficLog.length, 2);
   assert.doesNotThrow(() => trafficToHar(api.trafficLog));
 });

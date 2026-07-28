@@ -144,14 +144,15 @@ function toHarBody(body, bodyEncoding, omitted = false) {
 }
 
 function toHarSize(value, fallback = 0) {
-  return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
+  return Number.isSafeInteger(value) && (value >= 0 || value === -1)
     ? value
     : fallback;
 }
 
 function toHarTruncation(request, side, body) {
   if (request[`${side}BodyTruncated`] !== true) return null;
-  const capturedSize = Number.isFinite(request[`${side}BodyCapturedSize`])
+  const capturedSize = Number.isSafeInteger(request[`${side}BodyCapturedSize`])
+    && request[`${side}BodyCapturedSize`] >= 0
     ? request[`${side}BodyCapturedSize`]
     : body?.encoding === 'base64'
       ? Buffer.byteLength(body.text, 'base64')
@@ -161,7 +162,9 @@ function toHarTruncation(request, side, body) {
     toHarSize(request[`${side}BodySize`])
   );
   return {
-    comment: `Body capture truncated: ${capturedSize} of ${originalSize} bytes retained`,
+    comment: originalSize === -1
+      ? `Body capture truncated: ${capturedSize} bytes retained; original size unknown`
+      : `Body capture truncated: ${capturedSize} of ${originalSize} bytes retained`,
     _truncated: true,
     _capturedSize: capturedSize,
     _originalSize: originalSize

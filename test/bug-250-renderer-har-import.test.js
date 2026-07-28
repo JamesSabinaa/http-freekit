@@ -326,3 +326,28 @@ test('renderer HAR import preserves truncation metadata across re-export', async
     }
   );
 });
+
+test('renderer HAR import preserves an unknown original truncation size', async () => {
+  const entry = validEntry();
+  entry.response.bodySize = -1;
+  entry.response.content = {
+    mimeType: 'text/plain',
+    text: 'partial',
+    size: 7,
+    _truncated: true,
+    _capturedSize: 7,
+    _originalSize: -1
+  };
+  const harness = createRendererHarness();
+
+  await harness.importDocument(har([entry]));
+
+  assert.equal(harness.added.length, 1);
+  assert.equal(harness.added[0].responseBodyTruncated, true);
+  assert.equal(harness.added[0].responseBodyCapturedSize, 7);
+  assert.equal(harness.added[0].responseBodyDecodedSize, -1);
+  const reexported = trafficToHar(harness.added, { maskSensitive: false })
+    .log.entries[0].response.content;
+  assert.equal(reexported._originalSize, -1);
+  assert.match(reexported.comment, /original size unknown/);
+});

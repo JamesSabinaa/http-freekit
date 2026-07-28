@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -48,6 +49,16 @@ async function createApi(t) {
   });
   t.after(() => new Promise(resolve => server.close(resolve)));
   return { api, port: server.address().port };
+}
+
+async function waitForCapture(captures, predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const capture = captures.find(predicate);
+    if (capture) return capture;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for an incomplete body capture: ${JSON.stringify(captures)}`);
 }
 
 test('large text captures retain bounded previews and export explicit HAR truncation metadata', () => {
@@ -106,6 +117,62 @@ test('omitted large binary captures are not exported as fake HAR body text', () 
   assert.equal(response.content._truncated, true);
   assert.equal(response.content._capturedSize, 0);
   assert.equal(response.content._originalSize, body.length);
+});
+
+test('premature upstream responses retain small captured prefixes as incomplete', async t => {
+  const origin = net.createServer(socket => {
+    socket.once('data', () => {
+      socket.end(
+        'HTTP/1.1 200 OK\r\n' +
+        'Content-Type: text/plain\r\n' +
+        'Content-Length: 1000\r\n' +
+        'Connection: close\r\n\r\n' +
+        'partial'
+      );
+    });
+  });
+  origin.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    origin.once('listening', resolve);
+    origin.once('error', reject);
+  });
+
+  const captures = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: capture => captures.push(capture)
+  });
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await new Promise(resolve => origin.close(resolve));
+  });
+
+  const client = net.connect(proxy.server.address().port, '127.0.0.1');
+  client.on('error', () => {});
+  t.after(() => client.destroy());
+  await new Promise(resolve => client.once('connect', resolve));
+  client.write(
+    `GET http://127.0.0.1:${origin.address().port}/partial HTTP/1.1\r\n` +
+    `Host: 127.0.0.1:${origin.address().port}\r\n` +
+    'Connection: close\r\n\r\n'
+  );
+
+  const captured = await waitForCapture(
+    captures,
+    capture => capture.path === '/partial' && !capture._pending
+  );
+  client.destroy();
+  assert.equal(captured.responseBody, 'partial');
+  assert.equal(captured.responseBodySize, 7);
+  assert.equal(captured.responseBodyTruncated, true);
+  assert.equal(captured.responseBodyCapturedSize, 7);
+  assert.equal(captured.responseBodyDecodedSize, 1000);
+
+  const harResponse = trafficToHar([captured], { maskSensitive: false })
+    .log.entries[0].response;
+  assert.equal(harResponse.content._capturedSize, 7);
+  assert.equal(harResponse.content._originalSize, 1000);
 });
 
 test('server HAR import preserves request and response truncation across re-export', async t => {
@@ -206,6 +273,18 @@ test('server HAR import rejects malformed truncation extensions', async t => {
   assert.equal(inverted.statusCode, 400);
   assert.match(inverted.body.error, /_capturedSize cannot exceed _originalSize/);
   assert.deepEqual(api.trafficLog, []);
+
+  const unknownOriginalSize = await postJson(port, '/api/traffic/import-har', makeHar({
+    _truncated: true,
+    _capturedSize: 7,
+    _originalSize: -1
+  }));
+  assert.equal(unknownOriginalSize.statusCode, 200, unknownOriginalSize.body?.error);
+  assert.equal(api.trafficLog[0].responseBodyDecodedSize, -1);
+  const reexported = trafficToHar(api.trafficLog, { maskSensitive: false })
+    .log.entries[0].response.content;
+  assert.equal(reexported._originalSize, -1);
+  assert.match(reexported.comment, /original size unknown/);
 });
 
 test('renderer warns about incomplete bodies and blocks unsafe derived actions', () => {
@@ -241,12 +320,19 @@ test('renderer warns about incomplete bodies and blocks unsafe derived actions',
     ${rendererSource.slice(resendStart, resendEnd)}
     ${rendererSource.slice(mockStart, mockEnd)}
     globalThis.warning = renderBodyCaptureWarning(requests[0], 'response');
+    globalThis.unknownWarning = renderBodyCaptureWarning({
+      responseBodyTruncated: true,
+      responseBodyCapturedSize: 7,
+      responseBodyDecodedSize: -1,
+      responseBodySize: 7
+    }, 'response');
     resendSelectedRequest();
     createMockFromRequest('truncated');
   `, context);
 
   assert.match(context.warning, /Incomplete response body: 16B of 2000B retained/);
   assert.match(context.warning, /Viewing and body search use only these captured bytes/);
+  assert.match(context.unknownWarning, /7B; original size unknown retained/);
   assert.deepEqual(toasts, [
     {
       message: 'Cannot resend this request because its captured body is incomplete.',

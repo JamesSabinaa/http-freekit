@@ -74,20 +74,22 @@ function harTruncationToTraffic(body, fieldPath) {
   }
   if (!body._truncated) return null;
 
-  const sizes = {};
-  for (const property of ['_capturedSize', '_originalSize']) {
-    const value = body[property];
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new TypeError(`${fieldPath}.${property} must be a non-negative safe integer`);
-    }
-    sizes[property] = value;
+  const capturedSize = body._capturedSize;
+  if (!Number.isSafeInteger(capturedSize) || capturedSize < 0) {
+    throw new TypeError(`${fieldPath}._capturedSize must be a non-negative safe integer`);
   }
-  if (sizes._capturedSize > sizes._originalSize) {
+  const originalSize = body._originalSize;
+  if (!Number.isSafeInteger(originalSize) || originalSize < -1) {
+    throw new TypeError(
+      `${fieldPath}._originalSize must be a non-negative safe integer or -1`
+    );
+  }
+  if (originalSize >= 0 && capturedSize > originalSize) {
     throw new TypeError(`${fieldPath}._capturedSize cannot exceed _originalSize`);
   }
   return {
-    capturedSize: sizes._capturedSize,
-    originalSize: sizes._originalSize
+    capturedSize,
+    originalSize
   };
 }
 
@@ -674,13 +676,34 @@ print(json.dumps({"providers": get_proxy_providers()}))
       }
       for (const field of bodySizeFields) {
         if (request[field] !== undefined && request[field] !== null &&
-            request[field] < 0 && request[field] !== -1) {
-          return `requests[${index}].${field} must be non-negative or -1 for an unknown size`;
+            (!Number.isSafeInteger(request[field]) || request[field] < -1)) {
+          return `requests[${index}].${field} must be a non-negative safe integer or -1 for an unknown size`;
         }
       }
       for (const field of capturedSizeFields) {
-        if (request[field] !== undefined && request[field] !== null && request[field] < 0) {
-          return `requests[${index}].${field} must be non-negative`;
+        if (request[field] !== undefined && request[field] !== null &&
+            (!Number.isSafeInteger(request[field]) || request[field] < 0)) {
+          return `requests[${index}].${field} must be a non-negative safe integer`;
+        }
+      }
+      for (const side of ['request', 'response']) {
+        const truncatedField = `${side}BodyTruncated`;
+        const capturedField = `${side}BodyCapturedSize`;
+        const decodedField = `${side}BodyDecodedSize`;
+        const hasCaptured = request[capturedField] !== undefined
+          && request[capturedField] !== null;
+        const hasDecoded = request[decodedField] !== undefined
+          && request[decodedField] !== null;
+        if (request[truncatedField] === true && hasCaptured !== hasDecoded) {
+          return `requests[${index}].${capturedField} and ${decodedField} must be provided together`;
+        }
+        if (request[truncatedField] !== true && hasCaptured) {
+          return `requests[${index}].${capturedField} requires ${truncatedField} to be true`;
+        }
+        if (request[truncatedField] === true && hasCaptured
+            && request[decodedField] >= 0
+            && request[capturedField] > request[decodedField]) {
+          return `requests[${index}].${capturedField} cannot exceed ${decodedField}`;
         }
       }
       for (const field of ['requestBodyEncoding', 'responseBodyEncoding']) {

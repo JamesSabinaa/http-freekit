@@ -12,6 +12,7 @@ import test from 'node:test';
 import tls from 'node:tls';
 
 import { ApiServer } from '../src/api/api-server.js';
+import { trafficToHar } from '../src/api/har-converter.js';
 import { CertificateAuthority } from '../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
@@ -195,6 +196,18 @@ test('mock-file early closes retain delivery progress across plain H1, intercept
       assert.equal(record.responseBody.length, record.responseBodySize,
         `${scenario.name}: streamed partial bytes retained in capture`);
       assert.equal(record.responseBodyTruncated, true, scenario.name);
+      assert.equal(record.responseBodyCapturedSize, record.responseBodySize, scenario.name);
+      assert.equal(record.responseBodyDecodedSize, FILE_SIZE, scenario.name);
+
+      const harResponse = trafficToHar([record], { maskSensitive: false })
+        .log.entries[0].response;
+      assert.equal(harResponse.content._capturedSize, record.responseBodySize, scenario.name);
+      assert.equal(harResponse.content._originalSize, FILE_SIZE, scenario.name);
+      assert.match(
+        harResponse.content.comment,
+        new RegExp(`${record.responseBodySize} of ${FILE_SIZE} bytes retained`),
+        scenario.name
+      );
     }
   });
 
