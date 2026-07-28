@@ -79,7 +79,7 @@ function configureFailedCompanion(interceptor) {
   };
 }
 
-test('confirmed companion cleanup restores reverse ownership before fallback and Stop', async t => {
+test('confirmed companion cleanup removes reverse ownership before fallback and Stop', async t => {
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'warn', () => {});
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
@@ -101,19 +101,19 @@ test('confirmed companion cleanup restores reverse ownership before fallback and
 
   const commands = [];
   let proxyReads = 0;
-  let reverseRestores = 0;
+  let reverseRemovals = 0;
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
-    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
+    reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
     commands.push(args);
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Starting: Intent { act=tech.httptoolkit.android.ACTIVATE }\nStatus: timeout\n';
     }
     if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';
-    if (args[0] === 'reverse' && args[1] === `tcp:${PROXY_PORT}` &&
-        args[2] === PREVIOUS_MAPPING) {
-      reverseRestores += 1;
+    if (args[0] === 'reverse' && args[1] === '--remove' &&
+        args[2] === `tcp:${PROXY_PORT}`) {
+      reverseRemovals += 1;
     }
     if (args.join(' ') === 'shell settings get global http_proxy') {
       proxyReads += 1;
@@ -149,17 +149,17 @@ test('confirmed companion cleanup restores reverse ownership before fallback and
 
   await interceptor.deactivate({ deviceId: DEVICE_ID });
 
-  assert.equal(reverseRestores, 1);
-  const activationReverseRestore = commands.findIndex(args =>
-    args[0] === 'reverse' && args[2] === PREVIOUS_MAPPING);
+  assert.equal(reverseRemovals, 1);
+  const activationReverseRemoval = commands.findIndex(args =>
+    args[0] === 'reverse' && args[1] === '--remove');
   const fallbackProxyWrite = commands.findIndex(args => args.join(' ') ===
     `shell settings put global http_proxy ${OWNED_PROXY}`);
   const stopProxyWrite = commands.findIndex(args => args.join(' ') ===
     `shell settings put global http_proxy ${PREVIOUS_PROXY}`);
   const stopCertRemoval = commands.findIndex(args => args.join(' ') ===
     `shell rm -f ${STAGED_CA_PATH}`);
-  assert.ok(activationReverseRestore >= 0);
-  assert.ok(fallbackProxyWrite > activationReverseRestore);
+  assert.ok(activationReverseRemoval >= 0);
+  assert.ok(fallbackProxyWrite > activationReverseRemoval);
   assert.ok(stopProxyWrite >= 0);
   assert.ok(stopCertRemoval > stopProxyWrite);
   assert.equal(interceptor.activatedDevices.size, 0);
@@ -271,12 +271,12 @@ test('proxy setup failure after confirmed companion cleanup leaves no reverse ow
   let reverseAttempts = 0;
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
-    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
+    reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) return 'Status: timeout\n';
     if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';
-    if (args[0] === 'reverse' && args[1] === `tcp:${PROXY_PORT}` &&
-        args[2] === PREVIOUS_MAPPING) {
+    if (args[0] === 'reverse' && args[1] === '--remove' &&
+        args[2] === `tcp:${PROXY_PORT}`) {
       reverseAttempts += 1;
     }
     if (args.join(' ') === 'shell settings get global http_proxy') return `${PREVIOUS_PROXY}\n`;

@@ -859,12 +859,16 @@ export class AndroidAdbInterceptor {
         ? await this._getReverseMapping(deviceId, proxyPort)
         : preparedPreviousMapping;
 
-      if (previousMapping !== localEndpoint) {
-        const createArgs = previousMapping === null
-          ? ['reverse', '--no-rebind', localEndpoint, localEndpoint]
-          : ['reverse', localEndpoint, localEndpoint];
+      if (previousMapping !== null && previousMapping !== localEndpoint) {
+        console.warn(
+          `[Interceptor] ADB reverse port ${localEndpoint} on ${deviceId} is already mapped to ${previousMapping}; preserving it`
+        );
+        return false;
+      }
+
+      if (previousMapping === null) {
         writeAttempted = true;
-        await this._adb(deviceId, createArgs, {
+        await this._adb(deviceId, ['reverse', '--no-rebind', localEndpoint, localEndpoint], {
           stdio: 'ignore',
           timeout: 5000
         });

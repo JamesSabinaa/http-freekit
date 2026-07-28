@@ -461,7 +461,7 @@ test('app-uncertain recovery rejects a missing prior reverse mapping', async t =
   assert.equal(fs.readFileSync(recoveryFile, 'utf8'), malformedJournal);
 });
 
-test('ambiguous prepared reverse creation retains its prior mapping for cleanup', async t => {
+test('prepared occupied reverse creation refuses to replace the prior mapping', async t => {
   t.mock.method(console, 'warn', () => {});
   const interceptor = new AndroidAdbInterceptor();
   let calls = 0;
@@ -470,8 +470,8 @@ test('ambiguous prepared reverse creation retains its prior mapping for cleanup'
     throw new Error(calls === 1 ? 'reverse write timed out' : 'device disconnected');
   };
 
-  assert.equal(await interceptor._createReverseTunnel(DEVICE_ID, OLD_PORT, PREVIOUS_MAPPING), true);
-  assert.equal(calls, 2);
-  assert.equal(interceptor.reverseTunnels.has(REVERSE_KEY), true);
-  assert.equal(interceptor.previousReverseMappings.get(REVERSE_KEY), PREVIOUS_MAPPING);
+  assert.equal(await interceptor._createReverseTunnel(DEVICE_ID, OLD_PORT, PREVIOUS_MAPPING), false);
+  assert.equal(calls, 0);
+  assert.equal(interceptor.reverseTunnels.has(REVERSE_KEY), false);
+  assert.equal(interceptor.previousReverseMappings.has(REVERSE_KEY), false);
 });

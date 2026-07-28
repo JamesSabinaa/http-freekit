@@ -52,7 +52,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
   original._adb = async (_serial, args) => {
     originalCommands.push(args);
     if (args[0] === 'reverse' && args[1] === '--list') {
-      return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
+      return '';
     }
     if (args[0] === 'reverse') {
       assert.equal(readJournal(original).devices[0].mode, 'app-uncertain');
@@ -85,7 +85,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
       serial: DEVICE_ID,
       mode: 'app-uncertain',
       proxyPort: PROXY_PORT,
-      previousReverseMapping: PREVIOUS_MAPPING,
+      previousReverseMapping: null,
       model: 'Test Device',
       deviceName: 'test-device',
       vpnStatusConfirmed: false
@@ -113,13 +113,13 @@ test('first ambiguous companion activation is journaled before mutation and reco
       'shell', 'am', 'start', '-W', '-a',
       'tech.httptoolkit.android.DEACTIVATE'
     ],
-    ['reverse', `tcp:${PROXY_PORT}`, PREVIOUS_MAPPING]
+    ['reverse', '--remove', `tcp:${PROXY_PORT}`]
   ]);
   assert.equal(restarted.active, false);
   assert.equal(fs.existsSync(restarted.recoveryFile), false);
 });
 
-test('confirmed companion deactivation and reverse restoration precede global fallback', async t => {
+test('confirmed companion deactivation and reverse removal precede global fallback', async t => {
   t.mock.method(console, 'warn', () => {});
   t.mock.method(console, 'log', () => {});
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
@@ -131,12 +131,12 @@ test('confirmed companion deactivation and reverse restoration precede global fa
   interceptor._getReverseMapping = async () => {
     if (reverseReads++ === 0) {
       events.push('snapshot reverse');
-      return PREVIOUS_MAPPING;
+      return null;
     }
     return `tcp:${PROXY_PORT}`;
   };
   interceptor._adb = async (_serial, args) => {
-    if (args[0] === 'reverse' && args[2] === `tcp:${PROXY_PORT}`) {
+    if (args[0] === 'reverse' && args[1] === '--no-rebind') {
       events.push('create reverse');
       assert.equal(readJournal(interceptor).devices[0].mode, 'app-uncertain');
       return '';
@@ -151,8 +151,8 @@ test('confirmed companion deactivation and reverse restoration precede global fa
       vpnActive = false;
       return 'Status: ok\n';
     }
-    if (args[0] === 'reverse' && args[2] === PREVIOUS_MAPPING) {
-      events.push('restore reverse');
+    if (args[0] === 'reverse' && args[1] === '--remove') {
+      events.push('remove reverse');
       return '';
     }
     return '';
@@ -180,7 +180,7 @@ test('confirmed companion deactivation and reverse restoration precede global fa
     'create reverse',
     'activate app',
     'deactivate app',
-    'restore reverse',
+    'remove reverse',
     'prepare fallback'
   ]);
   assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'global-proxy');
@@ -191,17 +191,17 @@ test('confirmed companion deactivation and reverse restoration precede global fa
   ), false);
 });
 
-test('confirmed deactivation with failed reverse restoration retains app uncertainty and blocks fallback', async t => {
+test('confirmed deactivation with failed reverse removal retains app uncertainty and blocks fallback', async t => {
   t.mock.method(console, 'warn', () => {});
   t.mock.method(console, 'log', () => {});
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
   configureCompanion(interceptor);
 
-  let reverseRestores = 0;
+  let reverseRemovals = 0;
   let deactivations = 0;
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
-    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
+    reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Status: timeout\n';
@@ -210,9 +210,9 @@ test('confirmed deactivation with failed reverse restoration retains app uncerta
       deactivations += 1;
       return 'Status: ok\n';
     }
-    if (args[0] === 'reverse' && args[2] === PREVIOUS_MAPPING) {
-      reverseRestores += 1;
-      if (reverseRestores === 1) throw new Error('device disconnected during reverse restore');
+    if (args[0] === 'reverse' && args[1] === '--remove') {
+      reverseRemovals += 1;
+      if (reverseRemovals === 1) throw new Error('device disconnected during reverse removal');
     }
     return '';
   };
@@ -226,15 +226,15 @@ test('confirmed deactivation with failed reverse restoration retains app uncerta
   assert.equal(activation.success, false);
   assert.match(activation.error, /retry Stop/);
   assert.equal(deactivations, 1);
-  assert.equal(reverseRestores, 1);
+  assert.equal(reverseRemovals, 1);
   assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(interceptor.reverseTunnels.has(TUNNEL_KEY), true);
-  assert.equal(readJournal(interceptor).devices[0].previousReverseMapping, PREVIOUS_MAPPING);
+  assert.equal(readJournal(interceptor).devices[0].previousReverseMapping, null);
 
   await interceptor.deactivate({ deviceId: DEVICE_ID });
 
   assert.equal(deactivations, 2);
-  assert.equal(reverseRestores, 2);
+  assert.equal(reverseRemovals, 2);
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });

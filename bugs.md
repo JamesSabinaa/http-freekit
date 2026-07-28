@@ -1452,7 +1452,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-161 — High — Android companion setup destroys an existing ADB reverse mapping
 
 - Status: **Fixed**.
-- Resolution: Companion preparation snapshots and journals the existing reverse mapping before mutation. Reverse creation uses `--no-rebind` for unused ports; after an ambiguous write failure it reads the mapping back, or retains cleanup ownership when readback is unavailable, so Stop can restore the exact prior endpoint. External changes observed during cleanup are preserved.
+- Resolution: Companion setup never replaces a non-identical mapping on an occupied device port. It reuses an identical tunnel without modifying it and uses ADB's atomic `--no-rebind` option only for a port observed as unused. Ambiguous no-rebind failures are read back or retained for cleanup, while stale prepared mappings and external changes are preserved without writes.
 
 - Evidence: `src/interceptors/android-adb-interceptor.js:124-136` creates `adb reverse tcp:<proxyPort> tcp:<proxyPort>` without checking `adb reverse --list` or using `--no-rebind`; Stop at `:139-153` removes the port instead of restoring a prior destination.
 - Impact: FreeKit can overwrite and then delete another Android development workflow's reverse tunnel.
