@@ -4,18 +4,18 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 ## Current status
 
-Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
+Status review completed on 28 July 2026 against source commit `c38e31f`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 39 of the 361 documented bugs are not fully fixed.**
+**No: 37 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 322 |
-| Partially fixed | 16 |
+| Fixed | 324 |
+| Partially fixed | 14 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, BUG-044, BUG-049, and BUG-364 were fixed after that reconciliation.
+This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-124, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
