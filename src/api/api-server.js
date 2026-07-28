@@ -2296,7 +2296,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         // Legacy frames cannot disambiguate duplicate parent lifecycles, so
         // consistently bind them to the first imported parent with that ID.
         if (!importedParentIds.has(request.id)) {
-          importedParentIds.set(request.id, id);
+          importedParentIds.set(request.id, {
+            id,
+            trafficLifecycleId: request.trafficLifecycleId || null
+          });
         }
         if (request.trafficLifecycleId) {
           const parentKey = JSON.stringify([request.id, request.trafficLifecycleId]);
@@ -2306,6 +2309,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }
       }
     }
+    const legacyParentIds = new Map();
+    for (const request of retainedExisting) {
+      if (request.protocol !== 'ws' && request.protocol !== 'wss') continue;
+      if (!legacyParentIds.has(request.id)) {
+        legacyParentIds.set(request.id, {
+          id: request.id,
+          trafficLifecycleId: request.trafficLifecycleId || null
+        });
+      }
+    }
+    // Preserve the established rule that an imported parent wins an ID
+    // collision with retained traffic when binding an imported legacy frame.
+    for (const [originalId, parent] of importedParentIds) {
+      legacyParentIds.set(originalId, parent);
+    }
     for (const request of assignedIncoming) {
       if (request.protocol !== 'ws-frame') continue;
       const parentKey = request.parentTrafficLifecycleId
@@ -2313,8 +2331,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         : null;
       if (parentKey && importedParentLifecycleIds.has(parentKey)) {
         request.parentId = importedParentLifecycleIds.get(parentKey);
-      } else if (!parentKey && importedParentIds.has(request.parentId)) {
-        request.parentId = importedParentIds.get(request.parentId);
+      } else if (!parentKey && legacyParentIds.has(request.parentId)) {
+        const parent = legacyParentIds.get(request.parentId);
+        request.parentId = parent.id;
+        if (parent.trafficLifecycleId) {
+          request.parentTrafficLifecycleId = parent.trafficLifecycleId;
+        }
       }
     }
 

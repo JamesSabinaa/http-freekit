@@ -186,6 +186,18 @@ test('traffic import requires every WebSocket frame to have a non-empty string p
   const retainedResult = await postImport(port, [linkedToRetainedParent]);
   assert.equal(retainedResult.statusCode, 200);
   assert.deepEqual(api.trafficLog.at(-1), linkedToRetainedParent);
+
+  const mixedParent = {
+    ...trafficRecord('mixed-endpoint-parent', 'wss'),
+    trafficLifecycleId: 'mixed-endpoint-lifecycle'
+  };
+  const mixedFrame = trafficRecord('mixed-endpoint-frame', 'ws-frame', mixedParent.id);
+  const mixedResult = await postImport(port, [mixedFrame, mixedParent]);
+  assert.equal(mixedResult.statusCode, 200);
+  assert.equal(
+    api.trafficLog.find(request => request.id === mixedFrame.id).parentTrafficLifecycleId,
+    mixedParent.trafficLifecycleId
+  );
 });
 
 test('JSON and HAR imports preserve WebSocket parent relationships at capacity', async t => {
@@ -301,6 +313,56 @@ test('legacy duplicate imported WebSocket parents bind frames to the first paren
   assert.equal(parents.length, 2);
   assert.notEqual(parents[0].id, parents[1].id);
   assert.equal(frame.parentId, parents[0].id);
+});
+
+test('legacy imported frames inherit the selected correlated parent lifecycle', () => {
+  const scenarios = [
+    {
+      existing: [],
+      imported: [
+        trafficRecord('mixed-frame', 'ws-frame', 'mixed-parent'),
+        { ...trafficRecord('mixed-parent', 'wss'), trafficLifecycleId: 'mixed-lifecycle' }
+      ]
+    },
+    {
+      existing: [trafficRecord('mixed-parent', 'https')],
+      imported: [
+        { ...trafficRecord('mixed-parent', 'ws'), trafficLifecycleId: 'mixed-lifecycle' },
+        trafficRecord('mixed-frame', 'ws-frame', 'mixed-parent')
+      ]
+    },
+    {
+      existing: [],
+      imported: [
+        { ...trafficRecord('mixed-parent', 'ws'), trafficLifecycleId: 'mixed-lifecycle' },
+        trafficRecord('mixed-parent', 'wss'),
+        trafficRecord('mixed-frame', 'ws-frame', 'mixed-parent')
+      ]
+    },
+    {
+      existing: [{ ...trafficRecord('mixed-parent', 'wss'), trafficLifecycleId: 'mixed-lifecycle' }],
+      imported: [trafficRecord('mixed-frame', 'ws-frame', 'mixed-parent')]
+    }
+  ];
+
+  for (const { existing, imported } of scenarios) {
+    const api = new ApiServer({ mockRules: [] }, null, null);
+    api.maxTrafficLog = 3;
+    api.trafficLog.push(...existing);
+    api._appendImportedTraffic(imported);
+
+    const parent = api.trafficLog.find(request => request.trafficLifecycleId === 'mixed-lifecycle');
+    const frame = api.trafficLog.find(request => request.id === 'mixed-frame');
+    assert.ok(parent);
+    assert.equal(frame.parentId, parent.id);
+    assert.equal(frame.parentTrafficLifecycleId, parent.trafficLifecycleId);
+
+    const reconnected = rendererHarness(api.trafficLog);
+    reconnected.context.expandTrafficRequest(parent);
+    reconnected.context.filterTraffic();
+    const visibleIds = Array.from(reconnected.context.filteredTrafficIds());
+    assert.equal(visibleIds.indexOf(frame.id), visibleIds.indexOf(parent.id) + 1);
+  }
 });
 
 test('prototype-named parent IDs survive live add, filtering, reload, and row rendering', () => {
