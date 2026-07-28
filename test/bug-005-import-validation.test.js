@@ -64,6 +64,20 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.match(invalidLifecycle.body.error, /trafficLifecycleId/);
   assert.deepEqual(api.trafficLog, []);
 
+  for (const [record, error] of [
+    [{ remote: '127.0.0.1:443' }, /remote must be an object/],
+    [{ remote: { address: 127, port: 443 } }, /remote.address/],
+    [{ remote: { address: '127.0.0.1', port: '<img src=x onerror=alert(1)>' } }, /remote.port/],
+    [{ tls: { version: ['TLSv1.3'] } }, /tls.version/]
+  ]) {
+    const invalidConnection = await postJson(port, {
+      requests: [{ id: 'invalid-connection', timestamp: Date.now(), ...record }]
+    });
+    assert.equal(invalidConnection.statusCode, 400);
+    assert.match(invalidConnection.body.error, error);
+  }
+  assert.deepEqual(api.trafficLog, []);
+
   const invalidTruncations = [
     {
       record: {

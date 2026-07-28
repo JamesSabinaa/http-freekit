@@ -1596,7 +1596,7 @@
               <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
             </div>
             ${req.responseHeaders && Object.keys(req.responseHeaders).length > 0 ? '<div class="detail-card-section" style="margin-top:12px;"><div class="section-label">Upgrade Response Headers</div>' + renderHeadersGrid(req.responseHeaders, 'response') + '</div>' : ''}
-            ${req.remote?.address ? '<div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + (req.remote.port || '') + '</div>' : ''}
+            ${req.remote?.address ? '<div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + esc(req.remote.port ?? '') + '</div>' : ''}
           </div>
         </div>`;
 
@@ -2055,7 +2055,7 @@
               ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
             </div>
           </div>`;
       } else if ((req.protocol === 'https' || req.protocol === 'wss') && req.tls) {
@@ -2068,7 +2068,7 @@
               ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
             </div>
           </div>`;
       } else if (req.protocol === 'http' || req.protocol === 'ws') {
@@ -2079,7 +2079,7 @@
               <span style="color:var(--text-watermark);">Protocol:</span>
               <span style="font-family:var(--font-mono);">${plainProtocol} (unencrypted)</span>
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${req.remote.port || ''}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
             </div>
           </div>`;
       }

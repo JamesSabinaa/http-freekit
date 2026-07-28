@@ -743,6 +743,31 @@ print(json.dumps({"providers": get_proxy_providers()}))
           if (!valid) return `requests[${index}].${field} values must be strings or string arrays`;
         }
       }
+      if (request.remote !== undefined && request.remote !== null) {
+        if (typeof request.remote !== 'object' || Array.isArray(request.remote)) {
+          return `requests[${index}].remote must be an object`;
+        }
+        if (request.remote.address !== undefined && request.remote.address !== null &&
+            typeof request.remote.address !== 'string') {
+          return `requests[${index}].remote.address must be a string`;
+        }
+        if (request.remote.port !== undefined && request.remote.port !== null &&
+            (!Number.isInteger(request.remote.port) ||
+             request.remote.port < 0 || request.remote.port > 65535)) {
+          return `requests[${index}].remote.port must be an integer from 0 to 65535`;
+        }
+      }
+      if (request.tls !== undefined && request.tls !== null) {
+        if (typeof request.tls !== 'object' || Array.isArray(request.tls)) {
+          return `requests[${index}].tls must be an object`;
+        }
+        for (const field of ['version', 'cipher']) {
+          if (request.tls[field] !== undefined && request.tls[field] !== null &&
+              typeof request.tls[field] !== 'string') {
+            return `requests[${index}].tls.${field} must be a string`;
+          }
+        }
+      }
     }
 
     const parentIds = new Set();

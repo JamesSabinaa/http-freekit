@@ -198,3 +198,25 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
     }
   }
 });
+
+test('traffic details escape remote ports in specialized and generic connection cards', () => {
+  const hostilePort = '<img src=x onerror=alert(1)>';
+  for (const scenario of [
+    { protocol: 'ws', statusCode: 101 },
+    { protocol: 'wss', statusCode: 101 },
+    { protocol: 'http', statusCode: 502, error: 'failed' },
+    { protocol: 'https', statusCode: 502, error: 'failed', tls: { version: 'TLSv1.3' } },
+    { protocol: 'h2', statusCode: 502, error: 'failed', tls: { version: 'TLSv1.3' } },
+    { protocol: 'wss', statusCode: 502, error: 'failed', tls: { version: 'TLSv1.3' } }
+  ]) {
+    const html = renderDetail(baseRequest({}, {
+      method: scenario.protocol === 'http' || scenario.protocol === 'https' || scenario.protocol === 'h2'
+        ? 'GET'
+        : 'WS',
+      remote: { address: '127.0.0.1', port: hostilePort },
+      ...scenario
+    })).html;
+    assert.doesNotMatch(html, /<img src=x onerror=alert\(1\)>/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  }
+});
