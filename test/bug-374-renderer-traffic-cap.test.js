@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
-const wsParentKeyStart = source.indexOf('function wsConnectionKey(');
+const wsParentKeyStart = source.indexOf('function isWebSocketConnection(');
 const wsParentKeyEnd = source.indexOf('// ============ VIRTUAL SCROLL STATE', wsParentKeyStart);
 const restoreStart = source.indexOf('function trimTrafficRows(');
 const restoreEnd = source.indexOf('const appliedTrafficClearIds', restoreStart);

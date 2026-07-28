@@ -17,6 +17,7 @@ const headerLookupSource = sourceBetween('function findHeaderValues(', 'function
 const detailSource = sourceBetween('function renderDetailCards(', 'function getExportFormFields(');
 const headerGridSource = sourceBetween('function renderHeadersGrid(', '// Keep old renderHeaders as alias');
 const bodyModeSource = sourceBetween('function isGrpcContentType(', 'const activeBodyEditors = {}');
+const webSocketConnectionSource = sourceBetween('function isWebSocketConnection(', 'function wsConnectionKey(');
 const breakpointEditSource = sourceBetween('function getBreakpointEditDraft(', 'async function resumeBreakpointRequest(');
 
 function escapeHtml(value) {
@@ -92,6 +93,7 @@ function renderPausedDetail(phase) {
     ${headerLookupSource}
     ${headerGridSource}
     ${bodyModeSource}
+    ${webSocketConnectionSource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);

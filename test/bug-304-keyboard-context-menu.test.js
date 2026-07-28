@@ -446,6 +446,7 @@ test('focused Traffic grid opens the selected row context menu', () => {
 test('rendered Traffic rows and header targets expose keyboard menu hooks', () => {
   const rowRenderer = extract('const _globe =', '// Render the visible virtual-scroll rows');
   const headerRenderer = extract('function renderHeadersGrid', '// Keep old renderHeaders as alias');
+  const webSocketConnectionSource = extract('function isWebSocketConnection(', 'function wsConnectionKey(');
   const context = {
     wsFramesByParent: {},
     wsExpandedConnections: new Set(),
@@ -456,6 +457,7 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
   vm.runInContext(`
     let selectedRequestId = 'row-1';
     const HEADER_DOCS = {};
+    ${webSocketConnectionSource}
     ${rowRenderer}
     ${headerRenderer}
     globalThis.renderApi = { row: buildRowHtml, headers: renderHeadersGrid };

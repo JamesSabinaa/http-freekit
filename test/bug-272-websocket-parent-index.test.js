@@ -310,3 +310,25 @@ test('reused WebSocket IDs keep frames bound to the matching parent lifecycle', 
   ]);
   assert.match(harness.context.trafficRowHtml('reused'), /ws-frame-count">1</);
 });
+
+test('secure WebSocket parents expose their frame rows and WebSocket styling', () => {
+  const parent = trafficRecord('secure-socket', 'wss');
+  const frame = trafficRecord('secure-frame', 'ws-frame', parent.id);
+  const harness = rendererHarness([parent, frame]);
+
+  harness.context.expandTraffic(parent.id);
+  harness.context.filterTraffic();
+
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    parent.id,
+    frame.id
+  ]);
+  const html = harness.context.trafficRowHtml(parent.id);
+  assert.match(html, /method-badge method-WS">WS</);
+  assert.match(html, /status-badge status-2xx/);
+  assert.match(html, /ws-frame-count">1</);
+  assert.match(
+    rendererSource,
+    /\/\/ ---- WebSocket Card ----\s+if \(isWebSocketConnection\(req\)\)/
+  );
+});

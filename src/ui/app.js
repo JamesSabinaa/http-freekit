@@ -88,6 +88,10 @@
     /** Set of WS connection lifecycle keys that are expanded to show frame sub-rows */
     const wsExpandedConnections = new Set();
 
+    function isWebSocketConnection(request) {
+      return request?.protocol === 'ws' || request?.protocol === 'wss';
+    }
+
     function wsConnectionKey(request) {
       return request?.trafficLifecycleId
         ? JSON.stringify([request.id, request.trafficLifecycleId])
@@ -520,7 +524,7 @@
       for (const r of baseList) {
         filteredRequests.push(r);
         const parentKey = wsConnectionKey(r);
-        if (r.protocol === 'ws' && wsExpandedConnections.has(parentKey)) {
+        if (isWebSocketConnection(r) && wsExpandedConnections.has(parentKey)) {
           const frames = wsFramesByParent[parentKey] || [];
           filteredRequests.push(...frames);
         }
@@ -774,14 +778,14 @@
       }
 
       // ---- Standard row ----
-      const methodClass = req.protocol === 'ws' ? 'method-WS' : `method-${req.method}`;
+      const methodClass = isWebSocketConnection(req) ? 'method-WS' : `method-${req.method}`;
       let statusClass = req.statusCode === null || req.statusCode === undefined ? 'status-pending' :
         req.error ? 'status-err' :
         req.statusCode < 200 ? 'status-1xx' :
         req.statusCode < 300 ? 'status-2xx' :
         req.statusCode < 400 ? 'status-3xx' :
         req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
-      if (req.protocol === 'ws') {
+      if (isWebSocketConnection(req)) {
         statusClass = 'status-2xx';
       }
       const source = req.source || 'proxy';
@@ -802,7 +806,7 @@
 
       // WS connection: add frame count badge and expand toggle
       let wsFrameBadge = '';
-      if (req.protocol === 'ws') {
+      if (isWebSocketConnection(req)) {
         const parentKey = wsConnectionKey(req);
         const frameCount = (wsFramesByParent[parentKey] || []).length;
         const isExpanded = wsExpandedConnections.has(parentKey);
@@ -814,7 +818,7 @@
 
       return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="-1" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${req.protocol === 'ws' ? 'WS' : esc(req.method)}</span></td>
+        <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
         <td role="gridcell" class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
         <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
@@ -1541,7 +1545,7 @@
       }
 
       // ---- WebSocket Card ----
-      if (req.protocol === 'ws') {
+      if (isWebSocketConnection(req)) {
         const wsSourceLabel = req.source || 'Unknown';
         const wsSourceIconHtml = SOURCE_ICONS[wsSourceLabel] || SOURCE_ICONS['Other'] || '';
         html += `<div class="detail-card dir-right" style="border-right-color:#4caf7d;">

@@ -29,6 +29,10 @@ const bodyModeSource = sourceBetween(
   'function isGrpcContentType(',
   'const activeBodyEditors = {}'
 );
+const webSocketConnectionSource = sourceBetween(
+  'function isWebSocketConnection(',
+  'function wsConnectionKey('
+);
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -70,6 +74,7 @@ function renderDetail(request) {
     ${headerLookupSource}
     ${headerGridSource}
     ${bodyModeSource}
+    ${webSocketConnectionSource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
