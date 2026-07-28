@@ -21,16 +21,30 @@ export class CertificateAuthority {
   }
 
   async initialize() {
+    let replacedCertificateFingerprint = null;
+    let existingCertPem = null;
+    const rememberReplacedCertificate = () => {
+      if (!existingCertPem || replacedCertificateFingerprint) return;
+      try {
+        replacedCertificateFingerprint = new crypto.X509Certificate(existingCertPem)
+          .fingerprint.replace(/:/g, '').toUpperCase();
+      } catch {
+        // Corrupt certificate data cannot correspond to an installed identity.
+      }
+    };
+
     if (fs.existsSync(this.caCertPath) && fs.existsSync(this.caKeyPath)) {
       let loadedExistingCa = false;
       try {
         const certPem = fs.readFileSync(this.caCertPath, 'utf8');
+        existingCertPem = certPem;
         const keyPem = fs.readFileSync(this.caKeyPath, 'utf8');
         this._validateCaPair(certPem, keyPem);
         this.caCert = pki.certificateFromPem(certPem);
         this.caKey = pki.privateKeyFromPem(keyPem);
         loadedExistingCa = true;
       } catch (error) {
+        rememberReplacedCertificate();
         console.warn(`[CA] Existing CA files are invalid, regenerating: ${error.message}`);
       }
 
@@ -38,6 +52,7 @@ export class CertificateAuthority {
         const expiry = this.caCert.validity.notAfter;
         const hoursLeft = (expiry - Date.now()) / (1000 * 60 * 60);
         if (hoursLeft < 48) {
+          rememberReplacedCertificate();
           console.log('[CA] Certificate expiring soon, regenerating...');
           await this._generateCA();
         } else {
@@ -54,16 +69,22 @@ export class CertificateAuthority {
       certPath: this.caCertPath,
       certContent: fs.readFileSync(this.caCertPath, 'utf8'),
       keyPath: this.caKeyPath,
-      fingerprint: this._getFingerprint()
+      fingerprint: this._getFingerprint(),
+      replacedCertificateFingerprint
     };
   }
 
   _validateCaPair(certPem, keyPem) {
     const certificate = new crypto.X509Certificate(certPem);
+    const forgeCertificate = pki.certificateFromPem(certPem);
     const privateKey = crypto.createPrivateKey(keyPem);
     const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
     const privatePublicKey = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
     const validFrom = new Date(certificate.validFrom).getTime();
+
+    if (!this._isPositiveSerial(forgeCertificate.serialNumber)) {
+      throw new Error('certificate serial number is not positive');
+    }
 
     if (!certificate.ca) {
       throw new Error('certificate is not a certificate authority');
@@ -77,6 +98,15 @@ export class CertificateAuthority {
     if (!Number.isFinite(validFrom) || validFrom > Date.now() + CA_CLOCK_SKEW_TOLERANCE_MS) {
       throw new Error('certificate is not yet valid');
     }
+  }
+
+  _isPositiveSerial(serialNumber) {
+    let serial = String(serialNumber || '').trim();
+    if (!serial || serial.startsWith('-') || !/^[0-9a-f]+$/i.test(serial)) return false;
+    if (serial.length % 2 !== 0) serial = `0${serial}`;
+    const bytes = Buffer.from(serial, 'hex');
+    return bytes.length > 0 && (bytes[0] & 0x80) === 0
+      && bytes.some(byte => byte !== 0);
   }
 
   async _generateCA() {

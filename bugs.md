@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 52 of the 360 documented bugs are not fully fixed.**
+**No: 51 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 308 |
-| Partially fixed | 22 |
+| Fixed | 309 |
+| Partially fixed | 21 |
 | Open | 30 |
 | **Total** | **360** |
 
@@ -441,12 +441,12 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-145 — High — Generated X.509 serial numbers are randomly negative
 
-- Status: **Partially fixed**.
-- Resolution: Newly generated CA and leaf certificates now always receive positive, nonzero serials. Startup still loads a pre-fix persisted CA after checking only its expiry, so an already negative CA serial can remain active for nearly a year; correcting it also requires an explicit trust-store reinstallation strategy.
+- Status: **Fixed**.
+- Resolution: Newly generated CA and leaf certificates receive positive, nonzero serials, and startup now rejects and regenerates persisted CAs whose ASN.1 serial is negative or zero. Regeneration returns the exact old SHA-1 identity so Windows installs the replacement first and then removes only that obsolete trust entry; non-Windows startup explicitly warns that manually managed trust stores need the regenerated certificate.
 
-- Evidence: CA and leaf creation assign `_randomSerial()` at `src/proxy/certificate-authority.js:47-54,88-99`; that helper at `:160-162` returns 16 unconstrained random bytes as hex. node-forge encodes the hex directly as an ASN.1 INTEGER, so values whose first nibble is 8-f have the sign bit set, with no leading zero or masking.
-- Impact: roughly half of generated CA and leaf certificates violate the X.509 positive-serial requirement and can be rejected by strict clients, making installs and host interception fail randomly.
-- Reproduction: generate certificates until `parseInt(cert.serialNumber[0], 16) >= 8`, then parse or verify one with a strict X.509 implementation.
+- Evidence: CA-pair validation parses the encoded forge serial and requires a nonzero value with a clear ASN.1 sign bit. `test/bug-145-positive-certificate-serial.test.js` covers safe generation, persisted negative-serial migration, exact-thumbprint Windows replacement, install-before-delete ordering, and both add and cleanup failure paths.
+- Impact: generated and persisted active CAs comply with the positive-serial requirement, while automatic Windows trust remains installed across migration without broad subject-name deletion.
+- Reproduction: fixed; seeding a valid self-signed persisted CA whose serial begins with `0x80` now regenerates it and reports the old trust identity for exact cleanup.
 
 ### BUG-146 — High — The proxy is an unauthenticated open relay on the LAN
 

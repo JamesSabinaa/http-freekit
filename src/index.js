@@ -3,8 +3,8 @@ import fs from 'fs';
 import crypto from 'crypto';
 import express from 'express';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 import { CertificateAuthority } from './proxy/certificate-authority.js';
+import { installWindowsCaTrust } from './proxy/windows-ca-trust.js';
 import { ProxyServer } from './proxy/proxy-server.js';
 import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
@@ -62,20 +62,31 @@ async function initializeApplication(apiPort) {
   console.log(`[Boot] CA fingerprint: ${certInfo.fingerprint.substring(0, 16)}...`);
 
   // Install CA cert into OS trust store (Windows) so browsers trust our MITM certs.
-  // Uses -f (force) which is a no-op if the identical cert is already present,
-  // and replaces it if the cert was regenerated (e.g. after expiry).
+  // Installs a regenerated CA before deleting only the prior exact thumbprint,
+  // so migration cannot leave the application without a trusted current CA.
   // The cert stays in the store across restarts — we never remove it on shutdown.
   if (process.platform === 'win32') {
     try {
-      execSync(`certutil -addstore -user -f Root "${certInfo.certPath}"`, { stdio: 'ignore' });
+      const trustResult = installWindowsCaTrust(certInfo);
       ca.systemTrustInstalled = true;
       console.log('[Boot] CA certificate present in Windows user trust store');
+      if (trustResult.replacementRemovalError) {
+        console.log(
+          '[Boot] Could not remove the replaced CA trust entry (non-critical):',
+          trustResult.replacementRemovalError.message
+        );
+      }
     } catch (err) {
       ca.systemTrustInstalled = false;
       console.log('[Boot] Could not install CA cert in trust store (non-critical):', err.message);
     }
   } else {
     ca.systemTrustInstalled = false;
+    if (certInfo.replacedCertificateFingerprint) {
+      console.warn(
+        `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`
+      );
+    }
   }
 
   // 2. Load persistent settings
