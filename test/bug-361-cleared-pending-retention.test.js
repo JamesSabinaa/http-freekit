@@ -506,3 +506,28 @@ test('URL-only original request identity cannot select between different methods
     ['get-lifecycle', 'post-lifecycle']
   );
 });
+
+test('complete heuristic identity cannot select an identical pending lifecycle', () => {
+  const proxy = new ProxyServer(null);
+  proxy.onRequest = () => {};
+  const request = {
+    id: 'identical-lifecycles', protocol: 'https', method: 'POST',
+    url: 'https://pending.test/same', host: 'pending.test', path: '/same',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  };
+
+  proxy._emitPendingRequest({ ...request }, 'first-lifecycle');
+  proxy._emitPendingRequest({ ...request }, 'second-lifecycle');
+
+  assert.equal(proxy._selectPendingTrafficLogDecision({ ...request }), null);
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...request,
+    originalRequest: { method: request.method, url: request.url }
+  }), null);
+  assert.deepEqual(
+    proxy._pendingTrafficLogDecisions.get(request.id)
+      .map(decision => decision.trafficLifecycleId),
+    ['first-lifecycle', 'second-lifecycle']
+  );
+});

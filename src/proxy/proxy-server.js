@@ -8790,7 +8790,6 @@ export class ProxyServer {
     );
     const identityFields = ['method', 'url', 'host', 'path'];
     let identity = data;
-    let requireUniqueIdentity = false;
     if (data.originalRequest && typeof data.originalRequest === 'object') {
       let originalUrl;
       try {
@@ -8810,7 +8809,6 @@ export class ProxyServer {
       };
       if (identityFields.some(field => originalIdentity[field] !== undefined)) {
         identity = originalIdentity;
-        requireUniqueIdentity = originalUrl === null || !hasOriginalMethod;
       }
     }
     const hasIdentity = identityFields.some(field => identity[field] !== undefined);
@@ -8821,9 +8819,9 @@ export class ProxyServer {
         identity[field] === undefined || decision.record?.[field] === identity[field]
       ))
     );
-    const correlatedDecision = hasIdentity
-      ? (requireUniqueIdentity && candidates.length !== 1 ? undefined : candidates[0])
-      : (hasTimestamp && candidates.length === 1 ? candidates[0] : undefined);
+    const correlatedDecision = (hasIdentity || hasTimestamp) && candidates.length === 1
+      ? candidates[0]
+      : undefined;
     return correlatedDecision ? { decision: correlatedDecision } : null;
   }
 
