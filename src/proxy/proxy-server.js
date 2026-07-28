@@ -246,6 +246,8 @@ export class ProxyServer {
     this._pendingWsCaptureFinalizations = new Set();
     this._activeWebhookRequests = new Set();
     this._pendingWebhookFinalizations = new Set();
+    this._pendingWebhookPreparations = new Set();
+    this._lifecycleGeneration = 0;
     this._stopping = false;
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
     this._pendingBreakpointOrder = new WeakMap();
@@ -3012,7 +3014,48 @@ export class ProxyServer {
     return converted;
   }
 
+  _beginWebhookPreparation() {
+    const controller = new AbortController();
+    const generation = this._lifecycleGeneration;
+    let resolveCompletion;
+    const completion = new Promise(resolve => { resolveCompletion = resolve; });
+    const preparation = {
+      controller,
+      completion,
+      isCurrent: () => !controller.signal.aborted && !this._stopping &&
+        generation === this._lifecycleGeneration,
+      finish: () => {
+        if (!this._pendingWebhookPreparations.delete(preparation)) return;
+        resolveCompletion();
+      }
+    };
+    this._pendingWebhookPreparations.add(preparation);
+    if (this._stopping) controller.abort();
+    return preparation;
+  }
+
+  _waitForMockDelay(milliseconds, webhookPreparation = null) {
+    if (!webhookPreparation) {
+      return new Promise(resolve => setTimeout(() => resolve(true), milliseconds));
+    }
+    if (!webhookPreparation.isCurrent()) return Promise.resolve(false);
+    return new Promise(resolve => {
+      const signal = webhookPreparation.controller.signal;
+      let timer = null;
+      const finish = value => {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener('abort', handleAbort);
+        resolve(value);
+      };
+      const handleAbort = () => finish(false);
+      signal.addEventListener('abort', handleAbort, { once: true });
+      timer = setTimeout(() => finish(webhookPreparation.isCurrent()), milliseconds);
+      if (signal.aborted) finish(false);
+    });
+  }
+
   start() {
+    this._lifecycleGeneration++;
     this._stopping = false;
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
@@ -3058,7 +3101,11 @@ export class ProxyServer {
   }
 
   async stop() {
+    this._lifecycleGeneration++;
     this._stopping = true;
+    for (const preparation of this._pendingWebhookPreparations) {
+      preparation.controller.abort();
+    }
     this._closeAllH2Sessions();
     this._destroyUpstreamAgent();
     for (const request of this._activeWebhookRequests) {
@@ -3072,6 +3119,10 @@ export class ProxyServer {
     }
     while (this._pendingWsCaptureFinalizations.size > 0) {
       await Promise.all([...this._pendingWsCaptureFinalizations]);
+    }
+    while (this._pendingWebhookPreparations.size > 0) {
+      await Promise.all([...this._pendingWebhookPreparations]
+        .map(preparation => preparation.completion));
     }
     while (this._activeWebhookRequests.size > 0) {
       await Promise.all([...this._activeWebhookRequests].map(request => (
@@ -8191,7 +8242,11 @@ export class ProxyServer {
       body: mockRule.response?.body || '',
       delay: 0
     };
+    const webhookPreparation = action.type === 'webhook' && action.webhookUrl
+      ? this._beginWebhookPreparation()
+      : null;
 
+    try {
     // Capture original request data before pre-steps modify it
     const origMethod = clientReq.method;
     const origUrl = targetUrl.href;
@@ -8203,7 +8258,7 @@ export class ProxyServer {
       switch (step.type) {
         case 'delay':
           if (step.ms > 0) {
-            await new Promise(r => setTimeout(r, step.ms));
+            if (!await this._waitForMockDelay(step.ms, webhookPreparation)) return;
           }
           break;
         case 'add-header':
@@ -8277,7 +8332,7 @@ export class ProxyServer {
 
     // Apply delay
     if (action.delay && action.delay > 0) {
-      await new Promise(r => setTimeout(r, action.delay));
+      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
     }
 
     // Forward action — proxy to a different host
@@ -8447,6 +8502,7 @@ export class ProxyServer {
 
     // Webhook — send a copy of the request to a configured URL
     if (action.type === 'webhook' && action.webhookUrl) {
+      if (!webhookPreparation.isCurrent()) return;
       clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
       clientRes.end('');
 
@@ -8774,6 +8830,9 @@ export class ProxyServer {
       originalRequest,
       transformedBy
     });
+    } finally {
+      webhookPreparation?.finish();
+    }
   }
 
   _snapshotTrafficRecord(data) {

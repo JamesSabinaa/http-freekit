@@ -186,3 +186,51 @@ test('proxy shutdown cancels and settles an unfinished webhook delivery', async 
   assert.equal(events[0].statusMessage, 'Webhook delivery failed');
   assert.match(events[0].error, /Proxy stopped before webhook delivery completed/);
 });
+
+test('proxy shutdown cancels delayed webhook preparation across a restart', async t => {
+  let webhookRequests = 0;
+  const webhook = http.createServer((request, response) => {
+    webhookRequests++;
+    request.resume();
+    response.writeHead(204);
+    response.end();
+  });
+  await listen(webhook);
+  t.after(() => close(webhook));
+
+  const events = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: event => events.push(event)
+  });
+  const response = createClientResponse();
+  let preparationSettled = false;
+  const delayedDelivery = proxy._serveMockResponse(
+    'delayed-webhook',
+    { method: 'POST', headers: { 'content-type': 'text/plain' } },
+    response,
+    new URL('http://target.test/resource'),
+    Buffer.from('payload'),
+    {
+      preSteps: [{ type: 'delay', ms: 200 }],
+      action: {
+        type: 'webhook',
+        webhookUrl: `http://127.0.0.1:${webhook.address().port}/late`
+      }
+    },
+    Date.now()
+  ).finally(() => { preparationSettled = true; });
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await proxy.stop();
+  assert.equal(preparationSettled, true);
+  assert.equal(proxy._pendingWebhookPreparations.size, 0);
+
+  await proxy.start();
+  await delayedDelivery;
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(response.statusCode, null);
+  assert.equal(webhookRequests, 0);
+  assert.deepEqual(events, []);
+  await proxy.stop();
+});
