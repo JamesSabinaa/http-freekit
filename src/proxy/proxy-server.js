@@ -671,11 +671,13 @@ export class ProxyServer {
 
   _trackRequestBodyCompletion(target, onIncomplete) {
     let settled = false;
+    const transport = target?.socket;
 
     const cleanup = () => {
       target?.removeListener?.('aborted', onAborted);
       target?.removeListener?.('error', onError);
       target?.removeListener?.('close', onClose);
+      transport?.removeListener?.('close', onTransportClose);
     };
     const settle = (completed, error = null) => {
       if (settled) return false;
@@ -687,12 +689,15 @@ export class ProxyServer {
     const onAborted = () => settle(false);
     const onError = (error) => settle(false, error);
     const onClose = () => settle(false);
+    const onTransportClose = () => settle(false);
 
     target?.once?.('aborted', onAborted);
     target?.once?.('error', onError);
     target?.once?.('close', onClose);
+    transport?.once?.('close', onTransportClose);
 
-    if (target?.aborted || (target?.destroyed && !target?.readableEnded)) {
+    if (target?.aborted || (target?.destroyed && !target?.readableEnded) ||
+        (transport?.destroyed && !target?.readableEnded)) {
       settle(false);
     }
 
@@ -1456,13 +1461,20 @@ export class ProxyServer {
       error.code = 'ERR_REQUEST_BODY_ABORTED';
       error.upstreamPhase = 'request-body';
       activeRequest?.destroy(error);
-      finalize({
-        statusCode: 0,
-        statusMessage: 'Client Upload Aborted',
-        responseHeaders: {},
-        responseBody: '',
-        error
-      });
+      if (responseEnded && responseResult) {
+        // An origin may reject an upload early (for example with 413) and
+        // complete a valid response before the client closes its unfinished
+        // request. Preserve that response while recording the partial upload.
+        finalize(responseResult);
+      } else {
+        finalize({
+          statusCode: 0,
+          statusMessage: 'Client Upload Aborted',
+          responseHeaders: {},
+          responseBody: '',
+          error
+        });
+      }
     });
     clientReq.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
     clientReq.on('data', chunk => {

@@ -493,6 +493,66 @@ test('an upstream reset cannot strand a backpressured HTTP/1 upload', { timeout:
   assert.equal(harRequest.postData._capturedSize, record.requestBodyCapturedSize);
 });
 
+test('a complete early response finalizes after the unfinished H1 upload socket closes',
+  { timeout: 15000 }, async t => {
+    const origin = http.createServer((_request, response) => {
+      response.writeHead(413, {
+        'content-type': 'text/plain',
+        'content-length': '4'
+      });
+      response.end('nope');
+    });
+    const destroyOriginSockets = trackSockets(origin);
+    const originPort = await listen(origin);
+    const events = [];
+    const proxy = new ProxyServer(null, { port: 0, onRequest: event => events.push(event) });
+    await proxy.start();
+    t.after(async () => {
+      await proxy.stop();
+      await close(origin, destroyOriginSockets);
+    });
+
+    const client = net.connect(proxy.server.address().port, '127.0.0.1');
+    client.on('error', () => {});
+    await once(client, 'connect');
+    const responseChunks = [];
+    client.on('data', chunk => responseChunks.push(Buffer.from(chunk)));
+    client.write(
+      `POST http://127.0.0.1:${originPort}/early-rejection HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${originPort}\r\n` +
+      'Content-Type: text/plain\r\n' +
+      'Content-Length: 999999\r\n\r\n' +
+      'x'
+    );
+
+    await withTimeout(new Promise(resolve => {
+      const checkResponse = () => {
+        if (Buffer.concat(responseChunks).includes(Buffer.from('nope'))) resolve();
+      };
+      client.on('data', checkResponse);
+      checkResponse();
+    }), 'client did not receive the early rejection');
+    client.destroy();
+
+    const record = await waitForTraffic(events, '/early-rejection', 5000);
+    assert.equal(record.statusCode, 413);
+    assert.equal(record.responseBody, 'nope');
+    assert.equal(record.responseBodySize, 4);
+    assert.equal(record.requestBody, 'x');
+    assert.equal(record.requestBodySize, 1);
+    assert.equal(record.requestBodyTruncated, true);
+    assert.equal(record.requestBodyCapturedSize, 1);
+    assert.equal(record.requestBodyDecodedSize, 999999);
+
+    const entry = trafficToHar([record], { maskSensitive: false }).log.entries[0];
+    assert.equal(entry.response.status, 413);
+    assert.equal(entry.response.content.text, 'nope');
+    assert.equal(entry.request.postData.text, 'x');
+    assert.equal(entry.request.postData._truncated, true);
+    assert.equal(entry.request.postData._capturedSize, 1);
+    assert.equal(entry.request.postData._originalSize, 999999);
+  });
+
 test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout: 20000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-reset-h2-'));
   const ca = new CertificateAuthority(dataDir);
