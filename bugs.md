@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 46 of the 361 documented bugs are not fully fixed.**
+**No: 45 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 315 |
+| Fixed | 316 |
 | Partially fixed | 19 |
-| Open | 27 |
+| Open | 26 |
 | **Total** | **361** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -809,7 +809,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-228 — Medium — A hard-coded Chromium filter silently hides traffic
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Chromium-family traffic is no longer discarded by an implicit host/path denylist. Account, update, Safe Browsing, telemetry, Web Store, Google UI, and failure requests now reach the API, UI, MCP tools, and exports; only Safe Font hosts are suppressed when the user explicitly enables that setting.
 
 - Evidence: both pending and completed emission call `_shouldSuppressTrafficLog()` at `src/proxy/proxy-server.js:3810,3837`; for Chrome-family UAs, `:3845-3926` always drops many update, Safe Browsing, account, telemetry, Web Store, and Google requests. Only safe-font filtering is configurable.
 - Impact: forwarded authentication and failure traffic never reaches API/UI/MCP/HAR, contradicting the promise to inspect every request and providing no indication that records were removed.

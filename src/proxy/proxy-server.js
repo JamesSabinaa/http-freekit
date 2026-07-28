@@ -8647,88 +8647,15 @@ export class ProxyServer {
   _shouldSuppressTrafficLog(data) {
     if (data.source !== 'Chrome' && data.source !== 'Edge' && data.source !== 'Brave') return false;
     if (data.protocol === 'ws-frame') return false;
+    if (!this.filterSafeFonts) return false;
 
     const host = String(data.host || '').toLowerCase();
-    const path = String(data.path || '').toLowerCase();
     const url = String(data.url || '').toLowerCase();
     const target = host || (() => {
       try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
     })();
 
-    if (!target) return false;
-
-    if (this.filterSafeFonts && (target === 'fonts.gstatic.com' || target === 'fonts.googleapis.com')) return true;
-
-    const exactHosts = new Set([
-      'update.googleapis.com',
-      'optimizationguide-pa.googleapis.com',
-      'safebrowsing.googleapis.com',
-      'safebrowsing.google.com',
-      'clients1.google.com',
-      'clients2.google.com',
-      'clients3.google.com',
-      'clients4.google.com',
-      'clients5.google.com',
-      'clients6.google.com',
-      'content-autofill.googleapis.com',
-      'google-ohttp-relay-safebrowsing.fastly-edge.com',
-      'redirector.gvt1.com'
-    ]);
-
-    if (exactHosts.has(target)) return true;
-    if (target.endsWith('.gvt1.com') || target.endsWith('.gvt2.com')) return true;
-    if (target.endsWith('.googleapis.com') && (
-      target.includes('update') ||
-      target.includes('safebrowsing') ||
-      target.includes('optimizationguide')
-    )) return true;
-
-    if (target === 'bam.nr-data.net' && path.startsWith('/jserrors')) return true;
-
-    if (target === 'android.clients.google.com' && (
-      path.startsWith('/c2dm/register3') ||
-      path.startsWith('/checkin')
-    )) return true;
-
-    if (target === 'clients2.googleusercontent.com' && path.startsWith('/crx/blobs')) return true;
-    if (target === 'accounts.google.com' && path.startsWith('/listaccounts')) return true;
-    if (target === 'clientservices.googleapis.com' && (
-      path.startsWith('/chrome-variations/seed') ||
-      path.startsWith('/uma/v2')
-    )) return true;
-    if (target === 'www.googleapis.com' && path.startsWith('/chromewebstore/v1.1/items/verify')) return true;
-    if (target === 'chromewebstore.googleapis.com' &&
-      path.startsWith('/v2/items/-/storemetadata:batchget')
-    ) return true;
-    if (target === 'www.gstatic.com' && (
-      path.startsWith('/og/_/js') ||
-      path.startsWith('/images/branding/googlelogo') ||
-      path === '/images/branding/searchlogo/ico/favicon.ico' ||
-      path.startsWith('/images/branding/searchlogo/ico/favicon.ico?')
-    )) return true;
-    if (target === 'play.google.com' && (path === '/log' || path.startsWith('/log?'))) return true;
-    if (target === 'ogads-pa.clients6.google.com' &&
-      path.startsWith('/$rpc/google.internal.onegoogle.asyncdata.v1.asyncdataservice/getasyncdata')
-    ) return true;
-
-    if (target === 'www.google.com' && (
-      path.startsWith('/async/folae') ||
-      path.startsWith('/async/ddljson') ||
-      path.startsWith('/async/newtab_ogb') ||
-      path.startsWith('/xjs/_/js') ||
-      path === '/complete/s' ||
-      path.startsWith('/complete/s?') ||
-      path.startsWith('/complete/search') ||
-      path.startsWith('/gen_204') ||
-      path.startsWith('/chrome/')
-    )) return true;
-
-    if ((target === 'google.com' || target === 'www.google.com' ||
-        target === 'google.co.uk' || target === 'www.google.co.uk') &&
-      path.startsWith('/domainreliability/upload')
-    ) return true;
-
-    return false;
+    return target === 'fonts.gstatic.com' || target === 'fonts.googleapis.com';
   }
 
   _detectSource(headers) {

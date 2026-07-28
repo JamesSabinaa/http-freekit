@@ -138,28 +138,18 @@ test('classifies pre-TLS disconnects as retryable and records their phase', () =
   assert.equal(proxy._getUpstreamErrorPhase(err), 'tls-handshake');
 });
 
-test('suppresses UK domain reliability uploads only when hostname and path match', () => {
-  const proxy = new ProxyServer(null);
-  const traffic = {
-    source: 'Chrome',
-    protocol: 'https',
-    host: 'www.google.co.uk',
-    path: '/domainreliability/upload'
-  };
-
-  assert.equal(proxy._shouldSuppressTrafficLog(traffic), true);
-  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, path: '/search' }), false);
-  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host: 'example.co.uk' }), false);
-});
-
-test('suppresses Google view-screen noise URLs', () => {
-  const proxy = new ProxyServer(null);
+test('captures Chromium background traffic unless Safe Font filtering is enabled', () => {
+  const emitted = [];
+  const proxy = new ProxyServer(null, { onRequest: event => emitted.push(event) });
   const traffic = {
     source: 'Chrome',
     protocol: 'https'
   };
 
-  const suppressed = [
+  const captured = [
+    ['accounts.google.com', '/ListAccounts'],
+    ['update.googleapis.com', '/service/update2/json'],
+    ['www.google.co.uk', '/domainreliability/upload'],
     ['www.gstatic.com', '/og/_/js/k=og.og2.en_US.example'],
     ['www.google.com', '/xjs/_/js/k=xjs.s.en.example'],
     ['www.google.com', '/complete/s'],
@@ -168,19 +158,35 @@ test('suppresses Google view-screen noise URLs', () => {
     ['www.gstatic.com', '/images/branding/searchlogo/ico/favicon.ico?cache=1']
   ];
 
-  for (const [host, path] of suppressed) {
-    assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host, path }), true, `${host}${path}`);
+  for (const [host, path] of captured) {
+    assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host, path }), false, `${host}${path}`);
   }
 
+  assert.equal(proxy._emitPendingRequest({
+    ...traffic,
+    id: 'chromium-background-request',
+    host: 'accounts.google.com',
+    path: '/ListAccounts'
+  }), true);
+  proxy._emitRequestUpdate({
+    ...traffic,
+    id: 'chromium-background-request',
+    host: 'accounts.google.com',
+    path: '/ListAccounts'
+  });
+  assert.deepEqual(emitted.map(event => [event._pending, event._update]), [
+    [true, undefined],
+    [undefined, true]
+  ]);
+
+  proxy.filterSafeFonts = true;
+  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host: 'fonts.gstatic.com' }), true);
+  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, url: 'https://fonts.googleapis.com/css2' }), true);
+  assert.equal(proxy._shouldSuppressTrafficLog({ ...traffic, host: 'accounts.google.com' }), false);
   assert.equal(proxy._shouldSuppressTrafficLog({
     ...traffic,
-    host: 'www.gstatic.com',
-    path: '/images/branding/searchlogo/ico/logo.png'
-  }), false);
-  assert.equal(proxy._shouldSuppressTrafficLog({
-    ...traffic,
-    host: 'www.google.com',
-    path: '/xjs/example'
+    protocol: 'ws-frame',
+    host: 'fonts.gstatic.com'
   }), false);
 });
 
