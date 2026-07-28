@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { ApiServer } from '../src/api/api-server.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -62,13 +63,21 @@ async function runBreakpointAction(t, actionType, modifications = {}) {
   let proxy;
   proxy = new ProxyServer(null, {
     port: 0,
-    onRequest: event => events.push(event),
     onBreakpoint: (event) => {
       if (event.type !== 'breakpoint-hit') return;
       const resumed = typeof modifications === 'function' ? modifications(event) : modifications;
       setImmediate(() => proxy.resumeBreakpoint(event.requestId, resumed));
     }
   });
+  const resumeBreakpoint = proxy.onBreakpoint;
+  const api = new ApiServer(proxy, null, null);
+  proxy.onBreakpoint = resumeBreakpoint;
+  const broadcasts = [];
+  api._broadcast = message => broadcasts.push(message);
+  proxy.onRequest = event => {
+    events.push(structuredClone(event));
+    api.onTrafficEvent(event);
+  };
   proxy.mockRules = [{ enabled: true, matchers: [], action: { type: actionType } }];
   await proxy.start();
   t.after(async () => {
@@ -77,7 +86,7 @@ async function runBreakpointAction(t, actionType, modifications = {}) {
   });
 
   const response = await requestThroughProxy(proxy.server.address().port, originPort);
-  return { response, originHits, originHeaders, events };
+  return { response, originHits, originHeaders, events, api, broadcasts };
 }
 
 test('request breakpoint mock actions resume into the real origin request', async (t) => {
@@ -116,7 +125,7 @@ test('response breakpoint mock actions pause the real response and apply edits',
 });
 
 test('combined breakpoint mock actions edit a real request and its real response', async (t) => {
-  const { response, originHits, originHeaders, events } = await runBreakpointAction(
+  const { response, originHits, originHeaders, events, api, broadcasts } = await runBreakpointAction(
     t,
     'breakpoint-request-response',
     event => event.phase === 'response'
@@ -135,6 +144,13 @@ test('combined breakpoint mock actions edit a real request and its real response
   assert.equal(response.headers['x-combined'], 'yes');
   assert.equal(response.body, 'combined response');
   assert.ok(events.some(event => event.breakpointPhase === 'response'));
+  assert.equal(api.trafficLog.length, 1);
+  assert.equal(api.trafficLog[0].statusCode, 202);
+  assert.equal(events[0]._pending, true);
+  assert.equal(events.slice(1).every(event => event._update === true), true);
+  assert.equal(new Set(events.map(event => event.id)).size, 1);
+  assert.equal(broadcasts[0]?.type, 'request');
+  assert.equal(broadcasts.slice(1).every(event => event.type === 'request-update'), true);
 });
 
 test('renderer exposes response breakpoint status, headers, and body edits', () => {

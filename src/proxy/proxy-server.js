@@ -1895,6 +1895,7 @@ export class ProxyServer {
       let body = this._concatBody(requestBody);
       let breakpointBodyModified = false;
       let transformedRequestHeaders = false;
+      let pendingEmitted = false;
       const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
       const downstream = this._trackDownstreamCancellation(clientRes);
 
@@ -1949,13 +1950,12 @@ export class ProxyServer {
         : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
       const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
       if (breakpoint) {
-        this._emitRequest({
-          id: requestId, protocol: 'http', method: clientReq.method, url: targetUrl.href,
+        pendingEmitted = this._emitPendingRequest({
+          id: requestId, protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
+          method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-          requestBodySize: body.length, statusCode: 0, statusMessage: 'Breakpoint',
-          responseHeaders: {}, responseBody: '', responseBodySize: 0,
-          duration: 0, timestamp: startTime, source: 'breakpoint',
+          requestBodySize: body.length, timestamp: startTime, source: 'breakpoint',
           tls: null, remote: null
         });
         try {
@@ -2069,14 +2069,17 @@ export class ProxyServer {
         };
       };
 
-      // Emit pending request immediately so it appears in the UI
-      this._emitPendingRequest({
-        id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
-        host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-        requestBodySize: body.length, timestamp: startTime, source: 'proxy',
-        tls: null, remote: null
-      });
+      // Emit pending request immediately so it appears in the UI. A request
+      // breakpoint already created this lifecycle before it paused.
+      if (!pendingEmitted) {
+        pendingEmitted = this._emitPendingRequest({
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
+          host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestBodySize: body.length, timestamp: startTime, source: 'proxy',
+          tls: null, remote: null
+        });
+      }
 
       const connectStart = Date.now();
       const sendProxyRequest = (attempt = 0) => {
@@ -3595,6 +3598,7 @@ export class ProxyServer {
 
         // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
         if (breakpointBodyModified) requestTrailers = {};
+        this._setTargetHostHeader(reqHeaders, authority);
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
         if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
         this._setTargetHostHeader(upstreamHeaders, authority);

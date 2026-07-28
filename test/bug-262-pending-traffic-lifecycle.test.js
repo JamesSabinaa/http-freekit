@@ -264,11 +264,13 @@ test('request and response breakpoints remain one lifecycle across all intercept
     const { proxy, ca } = await createInterceptingProxy(t);
     const originCertificate = await ca.generateCertForHost('localhost');
     const observedHeaders = [];
+    const observedPaths = [];
     const origin = https.createServer({
       key: originCertificate.key,
       cert: originCertificate.cert
     }, (request, response) => {
       observedHeaders.push(request.headers);
+      observedPaths.push(request.url);
       response.writeHead(203, {
         'content-type': 'text/plain',
         'content-length': '6'
@@ -338,7 +340,14 @@ test('request and response breakpoints remain one lifecycle across all intercept
               headers: { 'content-type': 'text/plain', 'content-length': '6' },
               body: 'edited'
             }
-          : { headers: { connection: 'close', 'x-combined': 'yes' } };
+          : {
+              url: `https://${authority}/combined`,
+              headers: {
+                connection: 'close',
+                host: 'stale.example.test',
+                'x-combined': 'yes'
+              }
+            };
         setImmediate(() => proxy.resumeBreakpoint(event.requestId, modifications));
       };
 
@@ -352,6 +361,15 @@ test('request and response breakpoints remain one lifecycle across all intercept
         `${protocol.name} combined removes edited header`);
       assert.equal(originHeaders['x-combined'], 'yes',
         `${protocol.name} combined forwards request edits`);
+      assert.equal(originHeaders.host, authority,
+        `${protocol.name} combined synchronizes origin Host`);
+      assert.equal(observedPaths.at(-1), '/combined',
+        `${protocol.name} combined forwards URL edits`);
+      const responseBreakpoint = capture.events.find(event => event.breakpointPhase === 'response');
+      assert.equal(responseBreakpoint?.requestHeaders?.host, authority,
+        `${protocol.name} response breakpoint captures synchronized Host`);
+      assert.equal(capture.events.at(-1)?.requestHeaders?.host, authority,
+        `${protocol.name} final capture keeps synchronized Host`);
       assertSingleLifecycle(capture, 202, `${protocol.name} combined`, 3);
     }
   });
