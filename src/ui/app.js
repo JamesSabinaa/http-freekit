@@ -1553,11 +1553,15 @@
       if (isConnectedWebSocket(req)) {
         const wsSourceLabel = req.source || 'Unknown';
         const wsSourceIconHtml = SOURCE_ICONS[wsSourceLabel] || SOURCE_ICONS['Other'] || '';
+        const wsProtocolLabel = req.protocol === 'wss' ? 'WSS' : 'WS';
+        const wsConnectionLabel = req.protocol === 'wss'
+          ? `WSS (${esc(req.tls?.version || 'TLS')})`
+          : 'WS (unencrypted)';
         html += `<div class="detail-card dir-right" style="border-right-color:#4caf7d;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
               <span class="source-icon" title="${esc(wsSourceLabel)}" style="display:inline-flex;opacity:0.7;">${wsSourceIconHtml}</span>
-              <span class="detail-pill" style="background:#4caf7d;color:#fff;">WS</span>
+              <span class="detail-pill" style="background:#4caf7d;color:#fff;">${wsProtocolLabel}</span>
               <span class="detail-card-heading">WebSocket</span>
               <span class="collapse-chevron">&#9650;</span>
             </span>
@@ -1596,7 +1600,9 @@
               <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
             </div>
             ${req.responseHeaders && Object.keys(req.responseHeaders).length > 0 ? '<div class="detail-card-section" style="margin-top:12px;"><div class="section-label">Upgrade Response Headers</div>' + renderHeadersGrid(req.responseHeaders, 'response') + '</div>' : ''}
-            ${req.remote?.address ? '<div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + esc(req.remote.port ?? '') + '</div>' : ''}
+            <div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Protocol: ${wsConnectionLabel}</div>
+            ${req.tls?.cipher ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Cipher: ' + esc(req.tls.cipher) + '</div>' : ''}
+            ${req.remote?.address ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(req.remote.address) + ':' + esc(req.remote.port ?? '') + '</div>' : ''}
           </div>
         </div>`;
 
@@ -2058,14 +2064,14 @@
               <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}
             </div>
           </div>`;
-      } else if ((req.protocol === 'https' || req.protocol === 'wss') && req.tls) {
+      } else if ((req.protocol === 'https' && req.tls) || req.protocol === 'wss') {
         const secureProtocol = req.protocol === 'wss' ? 'WSS' : 'HTTPS';
         html += `<div style="margin-top:12px;">
             <div class="section-label">Connection</div>
             <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;">
               <span style="color:var(--text-watermark);">Protocol:</span>
-              <span style="font-family:var(--font-mono);">${secureProtocol} (${esc(req.tls.version || 'TLS')})</span>
-              ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
+              <span style="font-family:var(--font-mono);">${secureProtocol} (${esc(req.tls?.version || 'TLS')})</span>
+              ${req.tls?.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${req.remote?.address ? `<span style="color:var(--text-watermark);">Remote:</span>
               <span style="font-family:var(--font-mono);">${esc(req.remote.address)}:${esc(req.remote.port ?? '')}</span>` : ''}

@@ -159,11 +159,24 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
     const connected = renderDetail(baseRequest({}, {
       protocol,
       method: 'WS',
-      statusCode: 101
+      statusCode: 101,
+      ...(protocol === 'wss' ? {
+        tls: { version: 'TLSv1.3', cipher: 'AES-256' },
+        remote: { address: '127.0.0.1', port: 443 }
+      } : {})
     })).html;
     assert.match(connected, /detail-card-heading">WebSocket</);
     assert.match(connected, /detail-card-heading">Messages</);
     assert.doesNotMatch(connected, /id="card-error"/);
+    if (protocol === 'wss') {
+      assert.match(connected, />WSS</);
+      assert.match(connected, /WSS \(TLSv1\.3\)/);
+      assert.match(connected, /Cipher: AES-256/);
+      assert.match(connected, /Remote: 127\.0\.0\.1:443/);
+    } else {
+      assert.match(connected, />WS</);
+      assert.match(connected, /WS \(unencrypted\)/);
+    }
 
     for (const failure of [
       { statusCode: null, statusMessage: 'Pending' },
@@ -195,6 +208,18 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
         assert.match(failed, />HTTP\/1\.1</);
         assert.match(failed, />WS \(unencrypted\)</);
       }
+    }
+
+    if (protocol === 'wss') {
+      const failedWithoutTls = renderDetail(baseRequest({}, {
+        protocol,
+        method: 'WS',
+        statusCode: 502,
+        error: 'TLS negotiation failed',
+        remote: { address: '10.0.0.2', port: 8443 }
+      })).html;
+      assert.match(failedWithoutTls, />WSS \(TLS\)</);
+      assert.match(failedWithoutTls, />10\.0\.0\.2:8443</);
     }
   }
 });
