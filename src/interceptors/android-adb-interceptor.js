@@ -315,7 +315,251 @@ export class AndroidAdbInterceptor {
   }
 
   async isActive() {
-    return this.active && this.activatedDevices.size > 0;
+    if (!this.active || this.activatedDevices.size === 0) return false;
+    await this._reconcileActivationStatus();
+    this.active = this.activatedDevices.size > 0;
+    return this.active;
+  }
+
+  async _reconcileActivationStatus() {
+    if (this.activationStatusReconciliation) {
+      return await this.activationStatusReconciliation;
+    }
+
+    const hasStatusToCheck = Array.from(this.activatedDevices.values()).some(info =>
+      ANDROID_INTERCEPTING_MODES.has(info?.mode) ||
+      info?.mode === 'proxy-uncertain' ||
+      info?.mode === 'app-uncertain'
+    );
+    if (!hasStatusToCheck) return;
+
+    const reconciliation = this._performActivationStatusReconciliation();
+    this.activationStatusReconciliation = reconciliation;
+    try {
+      await reconciliation;
+      this.active = this.activatedDevices.size > 0;
+    } finally {
+      if (this.activationStatusReconciliation === reconciliation) {
+        this.activationStatusReconciliation = null;
+      }
+    }
+  }
+
+  async _performActivationStatusReconciliation() {
+    const connectedDevices = new Map(
+      (await this._getConnectedDevices())
+        .filter(device => device.status === 'device')
+        .map(device => [device.serial, device])
+    );
+
+    for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
+      if (!ANDROID_INTERCEPTING_MODES.has(activeInfo?.mode) &&
+          activeInfo?.mode !== 'proxy-uncertain' &&
+          activeInfo?.mode !== 'app-uncertain') continue;
+
+      const isGlobalProxy = activeInfo.mode === 'global-proxy' ||
+        activeInfo.mode === 'proxy-uncertain';
+      if (!connectedDevices.has(serial)) {
+        this._setUncertainActivation(serial, activeInfo, isGlobalProxy
+          ? 'proxy-uncertain'
+          : 'app-uncertain');
+        continue;
+      }
+
+      if (isGlobalProxy) {
+        await this._reconcileGlobalProxyActivation(serial, activeInfo);
+      } else {
+        await this._reconcileCompanionActivation(serial, activeInfo);
+      }
+    }
+  }
+
+  _setUncertainActivation(serial, activeInfo, mode) {
+    if (activeInfo.mode === mode) {
+      this.activatedDevices.set(serial, activeInfo);
+      return;
+    }
+    const uncertainInfo = { ...activeInfo, mode };
+    try {
+      this._rememberGlobalProxyOwnership(serial, uncertainInfo);
+    } catch (err) {
+      // The existing ownership record is still sufficient for cleanup after a
+      // restart. In memory, fail closed so a status refresh never claims that
+      // an unverified interception is live.
+      console.warn(`[Interceptor] Failed to persist reconciled Android status for ${serial}:`, err.message);
+    }
+    this.activatedDevices.set(serial, uncertainInfo);
+  }
+
+  _setPersistedActivation(serial, activeInfo, mode) {
+    const nextInfo = { ...activeInfo, mode };
+    try {
+      if (mode === 'http-toolkit-app') {
+        this._forgetGlobalProxyOwnership(serial);
+      } else {
+        this._rememberGlobalProxyOwnership(serial, nextInfo);
+      }
+    } catch (err) {
+      console.warn(`[Interceptor] Failed to persist reconciled Android status for ${serial}:`, err.message);
+      return false;
+    }
+    this.activatedDevices.set(serial, nextInfo);
+    return true;
+  }
+
+  _clearInactiveCompanion(serial, activeInfo) {
+    const key = `${serial}:${activeInfo.proxyPort}`;
+    const ownsReverseTunnel = this.reverseTunnels.has(key) ||
+      Object.prototype.hasOwnProperty.call(activeInfo, 'previousReverseMapping');
+    if (ownsReverseTunnel) {
+      return this._setPersistedActivation(serial, activeInfo, 'reverse-cleanup');
+    }
+
+    try {
+      this._forgetGlobalProxyOwnership(serial);
+    } catch (err) {
+      console.warn(`[Interceptor] Failed to clear reconciled Android status for ${serial}:`, err.message);
+      this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
+      return false;
+    }
+    this.activatedDevices.delete(serial);
+    return true;
+  }
+
+  async _reconcileGlobalProxyActivation(serial, activeInfo) {
+    const ownedProxy = ipv4ToInteger(activeInfo.hostIp) !== null &&
+      Number.isInteger(activeInfo.proxyPort) &&
+      activeInfo.proxyPort >= 1 && activeInfo.proxyPort <= 65535
+      ? `${activeInfo.hostIp}:${activeInfo.proxyPort}`
+      : null;
+    const currentProxy = await this._getProxy(serial);
+    if (!ownedProxy || currentProxy?.success !== true ||
+        !this._isSafeJournalString(currentProxy.value)) {
+      this._setUncertainActivation(serial, activeInfo, 'proxy-uncertain');
+      return;
+    }
+
+    if (currentProxy.value === ownedProxy) {
+      if (activeInfo.mode !== 'global-proxy') {
+        this._setPersistedActivation(serial, activeInfo, 'global-proxy');
+      }
+      return;
+    }
+
+    // The proxy was conclusively replaced by somebody else. Preserve that
+    // setting and retain only the certificate/tunnel cleanup still owned here.
+    this._setPersistedActivation(serial, activeInfo, 'staging-cleanup');
+  }
+
+  _parseHttpToolkitVpnStatus(output, { authoritative = false } = {}) {
+    const text = String(output || '').trim();
+    if (!text) return null;
+    const escapedPackage = HTTP_TOOLKIT_ANDROID_PACKAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const packagePattern = new RegExp(escapedPackage, 'i');
+    const packageIndex = text.search(packagePattern);
+
+    if (packageIndex === -1) {
+      return authoritative && /(?:^|\n)\s*(?:VPNs?\s*:|User\s+\d+\s*:|mPackage\s*=|Active package name\s*:)/im.test(text)
+        ? false
+        : null;
+    }
+
+    const packageBlock = text.slice(packageIndex, packageIndex + 5000);
+    if (/\bstate\s*:\s*CONNECTED(?:\/CONNECTED)?\b/i.test(packageBlock) ||
+        /\bmNetworkInfo\s*=\s*\[[^\]\r\n]*\bCONNECTED(?:\/CONNECTED)?\b/i.test(packageBlock) ||
+        /\bActive vpn type\s*:\s*(?!0\b|-1\b|TYPE_VPN_NONE\b|none\b)\S+/i.test(packageBlock) ||
+        /\bmNetworkAgent\s*=\s*(?!null\b)\S+/i.test(packageBlock)) {
+      return true;
+    }
+    if (/\bstate\s*:\s*(?:DISCONNECTED|IDLE|FAILED)\b/i.test(packageBlock) ||
+        /\bActive vpn type\s*:\s*(?:0|-1|TYPE_VPN_NONE|none)\b/i.test(packageBlock) ||
+        /\bmNetworkAgent\s*=\s*null\b/i.test(packageBlock)) {
+      return false;
+    }
+    return null;
+  }
+
+  async _getHttpToolkitVpnStatus(deviceId) {
+    try {
+      const output = await this._adb(
+        deviceId,
+        ['shell', 'dumpsys', 'vpn_management'],
+        { timeout: 5000 }
+      );
+      const value = this._parseHttpToolkitVpnStatus(output, { authoritative: true });
+      if (value !== null) return { success: true, value };
+    } catch {
+      // Older Android versions do not expose vpn_management. Connectivity can
+      // still positively identify an active companion VPN on those releases.
+    }
+
+    try {
+      const output = await this._adb(
+        deviceId,
+        ['shell', 'dumpsys', 'connectivity'],
+        { timeout: 5000 }
+      );
+      const value = this._parseHttpToolkitVpnStatus(output);
+      return value === null
+        ? { success: false, error: 'Android VPN state was not reported' }
+        : { success: true, value };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  async _reconcileCompanionActivation(serial, activeInfo) {
+    let appInstalled;
+    try {
+      appInstalled = await this._queryHttpToolkitAppInstalled(serial);
+    } catch {
+      this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
+      return;
+    }
+    if (!appInstalled) {
+      this._clearInactiveCompanion(serial, activeInfo);
+      return;
+    }
+
+    const vpnStatus = await this._getHttpToolkitVpnStatus(serial);
+    if (vpnStatus?.success !== true) {
+      this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
+      return;
+    }
+    if (!vpnStatus.value) {
+      if (activeInfo.vpnStatusConfirmed === true) {
+        this._clearInactiveCompanion(serial, activeInfo);
+      } else {
+        // ACTIVATE launches an activity before the user accepts Android's VPN
+        // prompt. Until this process has observed a live VPN, an inactive
+        // readback is pending/ambiguous rather than a confirmed later stop.
+        this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
+      }
+      return;
+    }
+
+    const confirmedInfo = { ...activeInfo, vpnStatusConfirmed: true };
+    const key = `${serial}:${activeInfo.proxyPort}`;
+    const ownsReverseTunnel = this.reverseTunnels.has(key) ||
+      Object.prototype.hasOwnProperty.call(activeInfo, 'previousReverseMapping');
+    if (ownsReverseTunnel) {
+      try {
+        const currentMapping = await this._getReverseMapping(serial, activeInfo.proxyPort);
+        if (currentMapping !== `tcp:${activeInfo.proxyPort}`) {
+          this._setUncertainActivation(serial, confirmedInfo, 'app-uncertain');
+          return;
+        }
+      } catch {
+        this._setUncertainActivation(serial, confirmedInfo, 'app-uncertain');
+        return;
+      }
+    }
+
+    if (activeInfo.mode !== 'http-toolkit-app') {
+      this._setPersistedActivation(serial, confirmedInfo, 'http-toolkit-app');
+    } else {
+      this.activatedDevices.set(serial, confirmedInfo);
+    }
   }
 
   _isProxyHostReachable(host) {
@@ -423,6 +667,7 @@ export class AndroidAdbInterceptor {
   }
 
   async getMetadata() {
+    await this._reconcileActivationStatus();
     const devices = await this._getConnectedDevicesWithHostIpMetadata();
     return {
       devices,
@@ -1531,6 +1776,7 @@ export class AndroidAdbInterceptor {
       tunnelActive,
       appActivationError,
       previousProxy,
+      ...(mode === 'http-toolkit-app' ? { vpnStatusConfirmed: false } : {}),
       ...(tunnelActive ? { previousReverseMapping } : {})
     });
     this.active = true;

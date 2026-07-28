@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 51 of the 360 documented bugs are not fully fixed.**
+**No: 47 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 312 |
+| Fixed | 313 |
 | Partially fixed | 19 |
-| Open | 29 |
+| Open | 28 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -1492,7 +1492,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-197 — Medium — Android remains active after interception disappears
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Android status refreshes now revalidate every definite or uncertain activation against the current authorized-device list. Global-proxy state is promoted only after an exact owned-proxy readback and becomes cleanup-only when another setting replaces it; companion state verifies package presence, live VPN state, and any owned ADB reverse mapping. Disconnects and ambiguous ADB results become explicit uncertainty instead of a false active interception, confirmed stopped companion sessions retain only necessary tunnel cleanup, and later reconnects can promote a still-valid activation again. Cleanup ownership remains available to Stop without being presented as live interception.
 
 - Evidence: `src/interceptors/android-adb-interceptor.js:26-27` checks only the in-memory activation map. Entries added at `:454-465` are never reconciled with connected devices, Android's global proxy, the VPN app, or reverse-tunnel state.
 - Impact: unplugging a device, stopping the VPN, or changing its proxy leaves FreeKit reporting it active; reconnecting the same serial can suppress activation even though no interception exists.

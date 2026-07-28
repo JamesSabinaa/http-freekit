@@ -98,6 +98,7 @@ test('backend summary separates active, uncertain, and cleanup devices in mixed 
     interceptor.activatedDevices.set(serial, { mode });
   }
   interceptor.active = true;
+  interceptor._reconcileActivationStatus = async () => {};
   interceptor._getConnectedDevicesWithHostIpMetadata = async () => [];
 
   const expected = {
