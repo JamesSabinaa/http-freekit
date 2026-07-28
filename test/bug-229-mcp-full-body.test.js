@@ -351,6 +351,55 @@ test('opaque proxy metadata is omitted without aborting request detail', () => {
   assert.equal(detail.bodies.original_request.totalLength, 0);
 });
 
+test('MCP request detail does not execute body, metadata, size, or timestamp coercion hooks', () => {
+  let coercionReads = 0;
+  let byteLengthReads = 0;
+  const boxedBody = new String('intrinsic body');
+  const boxedMetadata = new String('intrinsic metadata');
+  for (const value of [boxedBody, boxedMetadata]) {
+    value[Symbol.toPrimitive] = () => {
+      coercionReads++;
+      return 'substituted';
+    };
+    value.toString = () => {
+      coercionReads++;
+      return 'substituted';
+    };
+  }
+  const binaryMetadata = Buffer.from([0x01, 0x02]);
+  Object.defineProperty(binaryMetadata, 'byteLength', {
+    get() {
+      byteLengthReads++;
+      return 999;
+    }
+  });
+  const timestamp = {
+    [Symbol.toPrimitive]() {
+      coercionReads++;
+      return 1_767_225_600_000;
+    }
+  };
+  const bridge = createBridge([{
+    id: 'intrinsic-metadata-values',
+    requestBody: boxedBody,
+    responseBody: '',
+    boxedMetadata,
+    binaryMetadata,
+    timestamp
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'intrinsic-metadata-values'
+  }));
+
+  assert.equal(detail.requestBody, 'intrinsic body');
+  assert.equal(detail.boxedMetadata, 'intrinsic metadata');
+  assert.equal(detail.binaryMetadata, '[Binary metadata: 2 bytes]');
+  assert.equal(detail.timestamp, null);
+  assert.equal(coercionReads, 0);
+  assert.equal(byteLengthReads, 0);
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{

@@ -22,6 +22,15 @@ const MCP_METADATA_MAX_SCANNED_ENTRIES = 160;
 const MCP_METADATA_MAX_KEY_CODE_UNITS = 128;
 const MCP_METADATA_MAX_STRING_CODE_UNITS = 4 * 1024;
 const MCP_METADATA_TOTAL_STRING_CODE_UNITS = 16 * 1024;
+const BOXED_STRING_VALUE_OF = String.prototype.valueOf;
+const TYPED_ARRAY_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'byteLength'
+).get;
+const DATA_VIEW_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
+  DataView.prototype,
+  'byteLength'
+).get;
 const guardedMcpTransports = new WeakMap();
 
 function oversizedMcpResponse(requestId) {
@@ -142,14 +151,6 @@ function ownDataValue(value, key) {
   }
 }
 
-function isInstanceOfSafely(value, constructor) {
-  try {
-    return value instanceof constructor;
-  } catch {
-    return false;
-  }
-}
-
 function isArraySafely(value) {
   try {
     return Array.isArray(value);
@@ -161,11 +162,15 @@ function isArraySafely(value) {
 function retainedBody(value, provenance = {}) {
   let boxedString = false;
   let content = '';
-  try {
-    boxedString = value instanceof String;
-    if (typeof value === 'string' || boxedString) content = String(value);
-  } catch {
-    boxedString = false;
+  if (typeof value === 'string') {
+    content = value;
+  } else {
+    try {
+      content = BOXED_STRING_VALUE_OF.call(value);
+      boxedString = true;
+    } catch {
+      // Non-string bodies are intentionally omitted.
+    }
   }
   const boxedEncoding = boxedString ? ownDataValue(value, 'encoding') : null;
   const boxedCapturedSize = boxedString ? ownDataValue(value, 'capturedSize') : null;
@@ -202,13 +207,17 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
     seen: new WeakSet()
   };
   if (value === null || value === undefined) return value;
-  if (typeof value === 'string' || isInstanceOfSafely(value, String)) {
-    let text;
+  let stringMetadata = typeof value === 'string';
+  let text = stringMetadata ? value : '';
+  if (!stringMetadata && typeof value === 'object') {
     try {
-      text = String(value);
+      text = BOXED_STRING_VALUE_OF.call(value);
+      stringMetadata = true;
     } catch {
-      return '[string omitted]';
+      // Continue with other intrinsic type checks.
     }
+  }
+  if (stringMetadata) {
     const remaining = Math.max(0,
       MCP_METADATA_TOTAL_STRING_CODE_UNITS - budget.stringCodeUnits);
     const available = Math.min(MCP_METADATA_MAX_STRING_CODE_UNITS, remaining);
@@ -227,26 +236,25 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'symbol' || typeof value === 'function') return undefined;
-  if (isInstanceOfSafely(value, Date)) {
-    try {
-      const timestamp = Date.prototype.getTime.call(value);
-      return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : 'Invalid Date';
-    } catch {
-      return '[invalid date omitted]';
-    }
-  }
-  let binaryMetadata = false;
+  let dateTimestamp;
   try {
-    binaryMetadata = Buffer.isBuffer(value) || ArrayBuffer.isView(value);
+    dateTimestamp = Date.prototype.getTime.call(value);
   } catch {
-    // Treat opaque proxies as ordinary metadata and let guarded enumeration omit them.
+    // Continue with other intrinsic type checks.
   }
-  if (binaryMetadata) {
-    try {
-      return `[Binary metadata: ${value.byteLength} bytes]`;
-    } catch {
-      return '[binary metadata omitted]';
-    }
+  if (dateTimestamp !== undefined) {
+    return Number.isFinite(dateTimestamp)
+      ? new Date(dateTimestamp).toISOString()
+      : 'Invalid Date';
+  }
+  let binaryByteLength;
+  try {
+    binaryByteLength = TYPED_ARRAY_BYTE_LENGTH.call(value);
+  } catch {
+    try { binaryByteLength = DATA_VIEW_BYTE_LENGTH.call(value); } catch {}
+  }
+  if (binaryByteLength !== undefined) {
+    return `[Binary metadata: ${binaryByteLength} bytes]`;
   }
   if (depth >= MCP_METADATA_MAX_DEPTH) return '[maximum depth omitted]';
   if (budget.seen.has(value)) return '[repeated reference omitted]';
@@ -684,10 +692,12 @@ export class McpServerBridge {
     );
     const rawTimestamp = ownDataValue(req, 'timestamp');
     let timestamp = null;
-    try {
-      timestamp = new Date(rawTimestamp).toISOString();
-    } catch {
-      // Imported traffic is validated, but omit unsafe in-process timestamps.
+    if (typeof rawTimestamp === 'number' || typeof rawTimestamp === 'string') {
+      try {
+        timestamp = new Date(rawTimestamp).toISOString();
+      } catch {
+        // Imported traffic is validated, but omit invalid in-process timestamps.
+      }
     }
     const detail = {
       ...(metadata && typeof metadata === 'object' ? metadata : {}),
