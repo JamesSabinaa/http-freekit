@@ -118,3 +118,55 @@ test('a second Stop completes a partially applied system-proxy restore', async (
   assert.equal(interceptor.previousSettings, null);
   assert.equal(interceptor.pendingRecovery, null);
 });
+
+test('a Stop retry preserves a mixed external change that is not a restore prefix', async () => {
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const settings = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  };
+  const interceptor = new SystemProxyInterceptor();
+  interceptor._isWindows = () => true;
+  interceptor.active = true;
+  interceptor.previousSettings = previousSettings;
+  interceptor.activeProxyServer = settings.server;
+  interceptor.pendingRecovery = {
+    proxyServer: settings.server,
+    ownedSettings: { ...settings },
+    previousSettings
+  };
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  let serverWriteFails = true;
+  let writes = 0;
+  interceptor._setRegistryValue = name => {
+    writes++;
+    if (name === 'ProxyServer' && serverWriteFails) {
+      serverWriteFails = false;
+      throw new Error('ProxyServer write failed');
+    }
+  };
+  interceptor._removeRecoveryState = () => {};
+
+  await assert.rejects(interceptor.deactivate(), /ProxyServer write failed/);
+  assert.equal(interceptor.restorePending, true);
+
+  settings.override = previousSettings.override;
+  const writesBeforeRetry = writes;
+  await interceptor.deactivate();
+
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: '<local>'
+  });
+  assert.equal(writes, writesBeforeRetry);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.previousSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+  assert.equal(interceptor.restorePending, false);
+});

@@ -275,6 +275,29 @@ if ($null -eq $target) {
     );
   }
 
+  _settingsCouldBelongToRestoreRetry(current, recovery) {
+    const previous = recovery.previousSettings;
+    const owned = recovery.ownedSettings || {
+      enabled: true,
+      server: recovery.proxyServer
+    };
+    const restoreOrder = ['server'];
+    if (recovery.ownedSettings) {
+      if (!Object.prototype.hasOwnProperty.call(previous, 'override')) return false;
+      restoreOrder.push('override');
+    }
+    restoreOrder.push('enabled');
+
+    // A graceful restore writes these fields in order. Only exact prefixes of
+    // that sequence can be our partial work; other owned/previous mixtures may
+    // be newer settings assembled by another application.
+    return Array.from({ length: restoreOrder.length + 1 }, (_, restoredCount) =>
+      restoreOrder.every((field, index) =>
+        current[field] === (index < restoredCount ? previous[field] : owned[field])
+      )
+    ).some(Boolean);
+  }
+
   recoverStaleSettings() {
     if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
@@ -395,7 +418,7 @@ if ($null -eq $target) {
         const settingsAreOwned = this.active && !this.restorePending
           ? this._settingsBelongToActiveSession(currentSettings)
           : this.pendingRecovery
-            && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
+            && this._settingsCouldBelongToRestoreRetry(currentSettings, this.pendingRecovery);
         if (!settingsAreOwned) {
           this._removeRecoveryState();
           this.previousSettings = null;
