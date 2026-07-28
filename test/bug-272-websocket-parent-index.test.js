@@ -397,11 +397,17 @@ test('reused WebSocket IDs keep frames bound to the matching parent lifecycle', 
 });
 
 test('secure WebSocket parents expose their frame rows and WebSocket styling', () => {
-  const parent = trafficRecord('secure-socket', 'wss');
-  const frame = trafficRecord('secure-frame', 'ws-frame', parent.id);
+  const parent = {
+    ...trafficRecord('secure-socket', 'wss'),
+    trafficLifecycleId: 'secure-lifecycle'
+  };
+  const frame = {
+    ...trafficRecord('secure-frame', 'ws-frame', parent.id),
+    parentTrafficLifecycleId: parent.trafficLifecycleId
+  };
   const harness = rendererHarness([parent, frame]);
 
-  harness.context.expandTraffic(parent.id);
+  harness.context.expandTrafficRequest(parent);
   harness.context.filterTraffic();
 
   assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
@@ -412,8 +418,27 @@ test('secure WebSocket parents expose their frame rows and WebSocket styling', (
   assert.match(html, /method-badge method-WS">WS</);
   assert.match(html, /status-badge status-2xx/);
   assert.match(html, /ws-frame-count">1</);
+  assert.match(html, /toggleWsExpand\('secure-socket','secure-lifecycle'\)/);
   assert.match(
     rendererSource,
-    /\/\/ ---- WebSocket Card ----\s+if \(isWebSocketConnection\(req\)\)/
+    /\/\/ ---- WebSocket Card ----\s+if \(isConnectedWebSocket\(req\)\)/
   );
+});
+
+test('WebSocket rows preserve pending and failure status semantics', () => {
+  for (const protocol of ['ws', 'wss']) {
+    for (const { statusCode, error, expected } of [
+      { statusCode: null, expected: /status-badge status-pending/ },
+      { statusCode: 0, error: 'downstream disconnected', expected: /status-badge status-err">ERR/ },
+      { statusCode: 401, expected: /status-badge status-4xx">401/ },
+      { statusCode: 502, error: 'upstream failed', expected: /status-badge status-err">502/ },
+      { statusCode: 101, expected: /status-badge status-2xx">101/ }
+    ]) {
+      const request = { ...trafficRecord(`${protocol}-${statusCode}`, protocol), statusCode, error };
+      const harness = rendererHarness([request]);
+      const html = harness.context.trafficRowHtml(request.id);
+      assert.match(html, /method-badge method-WS">WS/);
+      assert.match(html, expected);
+    }
+  }
 });

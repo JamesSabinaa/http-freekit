@@ -33,6 +33,10 @@ const webSocketConnectionSource = sourceBetween(
   'function isWebSocketConnection(',
   'function wsConnectionKey('
 );
+const webSocketKeySource = sourceBetween(
+  'function wsConnectionKey(',
+  'function wsFrameParentKey('
+);
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -62,6 +66,7 @@ function renderDetail(request) {
     formatBodyAs: body => escapeHtml(body),
     formatSize: size => `${size || 0} bytes`,
     getEffectiveRequest: value => value,
+    wsFramesByParent: {},
     renderBodyViewer: (elementId, body, contentType, mode) => {
       bodyViewerCalls.push({ elementId, body, contentType, mode });
     },
@@ -75,6 +80,7 @@ function renderDetail(request) {
     ${headerGridSource}
     ${bodyModeSource}
     ${webSocketConnectionSource}
+    ${webSocketKeySource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
@@ -145,5 +151,37 @@ test('traffic detail keeps binary and no-store heuristics for scalar and repeate
     const { html } = renderDetail(baseRequest(responseHeaders, { responseBody: 'image bytes' }));
     assert.match(html, /Content type is already in a compressed format\./);
     assert.match(html, /Not cacheable \(no-store\)/);
+  }
+});
+
+test('WebSocket details specialize only successful upgrade handshakes', () => {
+  for (const protocol of ['ws', 'wss']) {
+    const connected = renderDetail(baseRequest({}, {
+      protocol,
+      method: 'WS',
+      statusCode: 101
+    })).html;
+    assert.match(connected, /detail-card-heading">WebSocket</);
+    assert.match(connected, /detail-card-heading">Messages</);
+    assert.doesNotMatch(connected, /id="card-error"/);
+
+    for (const failure of [
+      { statusCode: null },
+      { statusCode: 401 },
+      { statusCode: 0, error: 'downstream disconnected' },
+      { statusCode: 502, error: 'upstream failed' },
+      { statusCode: 101, error: 'relay failed' }
+    ]) {
+      const failed = renderDetail(baseRequest({}, {
+        protocol,
+        method: 'WS',
+        ...failure
+      })).html;
+      assert.doesNotMatch(failed, /detail-card-heading">(?:WebSocket|Messages)</);
+      if (failure.error) {
+        assert.match(failed, /id="card-error"/);
+        assert.match(failed, new RegExp(failure.error));
+      }
+    }
   }
 });

@@ -92,6 +92,10 @@
       return request?.protocol === 'ws' || request?.protocol === 'wss';
     }
 
+    function isConnectedWebSocket(request) {
+      return isWebSocketConnection(request) && request.statusCode === 101 && !request.error;
+    }
+
     function wsConnectionKey(request) {
       return request?.trafficLifecycleId
         ? JSON.stringify([request.id, request.trafficLifecycleId])
@@ -785,7 +789,7 @@
         req.statusCode < 300 ? 'status-2xx' :
         req.statusCode < 400 ? 'status-3xx' :
         req.statusCode < 500 ? 'status-4xx' : 'status-5xx';
-      if (isWebSocketConnection(req)) {
+      if (isConnectedWebSocket(req)) {
         statusClass = 'status-2xx';
       }
       const source = req.source || 'proxy';
@@ -1545,7 +1549,7 @@
       }
 
       // ---- WebSocket Card ----
-      if (isWebSocketConnection(req)) {
+      if (isConnectedWebSocket(req)) {
         const wsSourceLabel = req.source || 'Unknown';
         const wsSourceIconHtml = SOURCE_ICONS[wsSourceLabel] || SOURCE_ICONS['Other'] || '';
         html += `<div class="detail-card dir-right" style="border-right-color:#4caf7d;">
