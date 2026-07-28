@@ -30,6 +30,7 @@ export class JvmInterceptor {
       || (options.dataDir
         ? path.join(options.dataDir, 'jvm-agent')
         : path.join(os.tmpdir(), `http-freekit-jvm-agent-${process.pid}`));
+    this._preparedAgentJarPath = null;
     this._adoptRecoveryJournal();
   }
 
@@ -730,14 +731,19 @@ public class ProxyAgent {
     });
   }
 
-  _getFallbackCommand(proxyHost, proxyPort) {
-    return [
-      `-Dhttp.proxyHost=${proxyHost}`,
-      `-Dhttp.proxyPort=${proxyPort}`,
-      '-Dhttp.nonProxyHosts=',
-      `-Dhttps.proxyHost=${proxyHost}`,
-      `-Dhttps.proxyPort=${proxyPort}`
-    ].join(' ');
+  _quoteManualJvmOption(option) {
+    if (this._platform() === 'win32') {
+      return `"${option.replaceAll('"', '\\"')}"`;
+    }
+    return `'${option.replaceAll("'", "'\\''")}'`;
+  }
+
+  _getFallbackCommand(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath) {
+    const caPath = this.ca?.getCertInfo?.()?.certificatePath;
+    if (!agentJar || !caPath) return null;
+    return this._quoteManualJvmOption(
+      `-javaagent:${agentJar}=${this._getAgentArgs(proxyHost, proxyPort)}`
+    );
   }
 
   async _getAgentJarPath() {
@@ -756,6 +762,7 @@ public class ProxyAgent {
 
     if (fs.existsSync(jarPath) && fs.existsSync(stampPath)
       && fs.readFileSync(stampPath, 'utf8') === sourceHash) {
+      this._preparedAgentJarPath = jarPath;
       return jarPath;
     }
 
@@ -772,8 +779,10 @@ public class ProxyAgent {
       fs.writeFileSync(stampPath, sourceHash);
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
+      this._preparedAgentJarPath = jarPath;
       return jarPath;
     } catch (err) {
+      this._preparedAgentJarPath = null;
       console.error('[Interceptor] Failed to build JVM agent JAR:', err.message);
       return null;
     }
@@ -906,6 +915,7 @@ public class AttachProxy {
       // No specific process — return metadata with process list for UI selection
       const processes = await this._getRunningProcesses();
       const proxyHost = '127.0.0.1';
+      const fallbackAgentJar = await this._getAgentJarPath();
       this.active = true;
       return {
         success: true,
@@ -913,7 +923,7 @@ public class AttachProxy {
           processes,
           activatedProcesses: this._getActivatedProcessMetadata(),
           activationUncertain: this._hasUncertainActivation(),
-          fallbackCommand: this._getFallbackCommand(proxyHost, proxyPort),
+          fallbackCommand: this._getFallbackCommand(proxyHost, proxyPort, fallbackAgentJar),
           requiresProcessSelection: true
         }
       };
@@ -928,7 +938,7 @@ public class AttachProxy {
     }
 
     const proxyHost = '127.0.0.1';
-    const fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
+    let fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
     let pendingOwnership = null;
     if (this.recoveryFile) {
       const observation = await this._observeTargetIdentity(pid);
@@ -1005,6 +1015,7 @@ public class AttachProxy {
       : await this._attachAgent(pid, proxyHost, proxyPort);
 
     if (!attachResult.success) {
+      fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
       if (attachResult.targetMutationPossible) {
         const uncertainOwnership = {
           name: process_.name,
@@ -1042,7 +1053,10 @@ public class AttachProxy {
         : '';
       return {
         success: false,
-        error: `Could not attach to PID ${pid}: ${attachResult.error}.${uncertaintyNotice} Try launching the JVM with: ${fallbackCommand}`,
+        error: `Could not attach to PID ${pid}: ${attachResult.error}.${uncertaintyNotice}` +
+          (fallbackCommand
+            ? ` Try launching the JVM with: ${fallbackCommand}`
+            : ' A CA-capable manual launch fallback could not be prepared.'),
         metadata: {
           fallbackCommand,
           processes: await this._getRunningProcesses(),

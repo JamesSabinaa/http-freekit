@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 42 of the 361 documented bugs are not fully fixed.**
+**No: 41 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 319 |
-| Partially fixed | 19 |
+| Fixed | 320 |
+| Partially fixed | 18 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 and BUG-364 were fixed after that reconciliation.
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, and BUG-364 were fixed after that reconciliation.
 
 ## Audit completion gate
 
@@ -1171,8 +1171,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-040 — High — JVM HTTPS interception does not trust the FreeKit CA
 
-- Status: **Partially fixed**.
-- Resolution: Successful dynamic attachment now installs a combined system-and-FreeKit trust manager. The attach-failure/manual fallback suggests only `-D...proxyHost` and `-D...proxyPort` flags, with no truststore or CA configuration, so its advertised HTTPS path still fails validation.
+- Status: **Fixed**.
+- Resolution: Successful dynamic attachment installs a combined system-and-FreeKit trust manager. The manual/attach-failure path now prepares and advertises the same agent as a startup `-javaagent` option, including the encoded FreeKit CA path and proxy settings. If that CA-capable agent cannot be built, the UI and error response explicitly report the fallback as unavailable instead of advertising proxy-only flags that would fail HTTPS validation.
 - Evidence: the comment at `src/interceptors/jvm-interceptor.js:98-101` claims CA trust, but the generated agent at `:112-133` only calls `System.setProperty` for proxy properties; it never updates a trust store or SSL context.
 - Impact: attached JVM applications commonly fail intercepted HTTPS with a PKIX/certificate-path error.
 - Reproduction: attach to a JVM using the default `HttpsURLConnection` trust manager and request an HTTPS URL.

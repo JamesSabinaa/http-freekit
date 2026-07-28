@@ -5297,8 +5297,12 @@
         (meta?.activatedProcesses || []).map(p => p.pid)
       );
 
-      const proxyPort = config.proxyPort || 8000;
-      const fallbackCmd = meta?.fallbackCommand || `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${proxyPort} -Dhttp.nonProxyHosts= -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${proxyPort}`;
+      const fallbackCmd = typeof meta?.fallbackCommand === 'string'
+        ? meta.fallbackCommand
+        : '';
+      const fallbackContent = fallbackCmd
+        ? `<div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM launch option" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>`
+        : '<p style="color: var(--text-watermark); font-size: 13px;">The CA-capable JVM launch agent could not be prepared. Install a full JDK and refresh.</p>';
 
       if (processes.length === 0) {
         container.innerHTML = `
@@ -5310,8 +5314,8 @@
               <li>Java JDK (not JRE) is installed with <code>jps</code> in your PATH</li>
             </ul>
             <div class="config-section" style="margin-top: 12px;">
-              <h3>Or launch with proxy flags</h3>
-              <div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM proxy flags" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>
+              <h3>Or launch with the FreeKit agent</h3>
+              ${fallbackContent}
             </div>
             <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
               <i class="ph ph-arrows-clockwise"></i> Refresh
@@ -5347,8 +5351,8 @@
             }).join('')}
           </div>
           <div class="config-section" style="margin-top: 12px;">
-            <h3>Or launch with proxy flags</h3>
-            <div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM proxy flags" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>
+            <h3>Or launch with the FreeKit agent</h3>
+            ${fallbackContent}
           </div>
           <button class="android-refresh-btn" onclick="event.stopPropagation(); refreshJvmProcesses();">
             <i class="ph ph-arrows-clockwise"></i> Refresh Processes

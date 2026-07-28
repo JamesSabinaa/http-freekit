@@ -117,12 +117,12 @@ function createCopyControl(harness, textContent = '  proxy command  ') {
   return { card, control, cardActivations: () => cardActivations };
 }
 
-test('all six interceptor copy blocks expose scoped button semantics', () => {
+test('all interceptor copy blocks expose scoped button semantics', () => {
   const copyBlocks = [
     ...appSource.matchAll(/<div class="config-code-block(?: android-qr-url)?"[^>]*>/g)
   ].map(match => match[0]);
 
-  assert.equal(copyBlocks.length, 6);
+  assert.equal(copyBlocks.length, 5);
   for (const block of copyBlocks) {
     assert.match(block, /role="button"/);
     assert.match(block, /tabindex="0"/);
@@ -136,7 +136,7 @@ test('all six interceptor copy blocks expose scoped button semantics', () => {
     ['Copy Docker Compose configuration', 1],
     ['Copy terminal command', 1],
     ['Copy Android QR connection URL', 1],
-    ['Copy JVM proxy flags', 2]
+    ['Copy JVM launch option', 1]
   ]);
   for (const [label, count] of expectedLabels) {
     assert.equal(copyBlocks.filter(block => block.includes(`aria-label="${label}"`)).length, count);

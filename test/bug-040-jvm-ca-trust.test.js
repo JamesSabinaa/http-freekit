@@ -26,3 +26,36 @@ test('generated JVM agent combines system trust with the FreeKit CA', () => {
   assert.match(source, /SSLContext\.setDefault\(context\)/);
   assert.match(source, /HttpsURLConnection\.setDefaultSSLSocketFactory/);
 });
+
+test('manual JVM fallback launches the same CA-capable proxy agent', async () => {
+  const interceptor = new JvmInterceptor({ agentDir: 'C:\\FreeKit Files\\jvm-agent' });
+  const certificatePath = 'C:\\FreeKit Files\\ca.pem';
+  const agentPath = 'C:\\FreeKit Files\\jvm-agent\\proxy-agent.jar';
+  interceptor.ca = { getCertInfo: () => ({ certificatePath }) };
+  interceptor._getAgentJarPath = async () => agentPath;
+  interceptor._getRunningProcesses = async () => [];
+
+  const result = await interceptor.activate(8080);
+  const command = result.metadata.fallbackCommand;
+
+  assert.equal(result.success, true);
+  assert.match(command, /-javaagent:/);
+  assert.ok(command.includes(agentPath));
+  assert.match(command, /http\.proxyHost=127\.0\.0\.1/);
+  assert.match(command, /http\.nonProxyHosts=/);
+  assert.match(command, /https\.proxyHost=127\.0\.0\.1/);
+  const encodedPath = command.match(/freekit\.caPathBase64=([^,"']+)/)?.[1];
+  assert.equal(Buffer.from(encodedPath, 'base64').toString('utf8'), certificatePath);
+  assert.doesNotMatch(command, /^['"]?-Dhttp\./);
+});
+
+test('manual JVM fallback is omitted when the CA-capable agent cannot be prepared', async () => {
+  const interceptor = new JvmInterceptor();
+  interceptor.ca = { getCertInfo: () => ({ certificatePath: '/tmp/ca.pem' }) };
+  interceptor._getAgentJarPath = async () => null;
+  interceptor._getRunningProcesses = async () => [];
+
+  const result = await interceptor.activate(8080);
+
+  assert.equal(result.metadata.fallbackCommand, null);
+});
