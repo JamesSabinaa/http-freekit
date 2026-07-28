@@ -6139,9 +6139,9 @@
       const editingClass = isEditing ? ' mock-rule-editing' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
 
-      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + rule.id + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, \'' + rule.id + '\')" ondragover="mockDragOver(event)" ondrop="mockDrop(event, \'' + rule.id + '\')" ondragend="mockDragEnd(event)">';
+      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
 
-      html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(\'' + rule.id + '\')">';
+      html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
       html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + summary.methodStr + '</span>';
@@ -6150,9 +6150,9 @@
         const inputVal = esc(rule.title || '').replace(/"/g, '&quot;');
         const placeholderVal = esc(summary.matchStr).replace(/"/g, '&quot;');
         html += '<span class="mock-rule-desc" onclick="event.stopPropagation()">';
-        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, \'' + rule.id + '\')" onblur="confirmInlineRename(\'' + rule.id + '\')" onclick="event.stopPropagation()" />';
+        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, this.closest(\'.mock-rule-card\').dataset.ruleId)" onblur="confirmInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" onclick="event.stopPropagation()" />';
       } else if (summary.title) {
-        html += '<span class="mock-rule-desc" onclick="event.stopPropagation(); startInlineRename(\'' + rule.id + '\')" title="Click to rename"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
+        html += '<span class="mock-rule-desc" onclick="event.stopPropagation(); startInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Click to rename"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
       } else {
         html += '<span class="mock-rule-desc">' + summary.matchStr;
       }
@@ -6164,52 +6164,52 @@
       // 1. Collapse/Expand (chevron)
       const chevron = isExpanded || isEditing ? '&#9650;' : '&#9660;';
       const collapseTitle = isExpanded || isEditing ? 'Collapse rule' : 'Show rule details';
-      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(\'' + rule.id + '\')" title="' + collapseTitle + '" aria-label="' + collapseTitle + '">';
+      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="' + collapseTitle + '" aria-label="' + collapseTitle + '">';
       html += '<span style="font-size:10px;">' + chevron + '</span>';
       html += '</button>';
 
       // 2. Save to server (when draft) or Save draft (when editing) or Edit (pencil icon)
       if (isDraft && !isEditing) {
-        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(\'' + rule.id + '\')" title="Save to server" aria-label="Save to server">';
+        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Save to server" aria-label="Save to server">';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       }
       if (isEditing) {
-        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(\'' + rule.id + '\')" title="Save as draft" aria-label="Save as draft">';
+        html += '<button class="mock-toggle-btn mock-enabled" onclick="saveMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Save as draft" aria-label="Save as draft">';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       } else {
-        html += '<button class="mock-toggle-btn" onclick="editMockRule(\'' + rule.id + '\')" title="Edit this rule" aria-label="Edit this rule">';
+        html += '<button class="mock-toggle-btn" onclick="editMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Edit this rule" aria-label="Edit this rule">';
         html += '<i class="ph ph-pencil-simple" style="font-size:14px;"></i>';
         html += '</button>';
       }
 
       // 3. Enable/Disable
       const toggleLabel = rule.enabled !== false ? 'Disable this rule' : 'Enable this rule';
-      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(\'' + rule.id + '\')" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockRuleEnabled(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
       html += rule.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 4. Rename (tag icon)
-      html += '<button class="mock-toggle-btn" onclick="renameMockRule(\'' + rule.id + '\')" title="Rename this rule" aria-label="Rename this rule">';
+      html += '<button class="mock-toggle-btn" onclick="renameMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Rename this rule" aria-label="Rename this rule">';
       html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // 5. Clone
-      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(\'' + rule.id + '\')" title="Clone this rule" aria-label="Clone this rule">';
+      html += '<button class="mock-toggle-btn" onclick="cloneMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Clone this rule" aria-label="Clone this rule">';
       html += '<i class="ph ph-copy-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
       if (containingGroup) {
-        html += '<button class="mock-toggle-btn" onclick="ungroupRule(\'' + rule.id + '\')" title="Move rule to top level" aria-label="Move rule to top level">';
+        html += '<button class="mock-toggle-btn" onclick="ungroupRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Move rule to top level" aria-label="Move rule to top level">';
         html += '<i class="ph ph-arrow-up" style="font-size:14px;"></i>';
         html += '</button>';
       }
 
       // 6. Delete
-      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(\'' + rule.id + '\')" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
@@ -6231,10 +6231,10 @@
       const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
-      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + group.id + '" aria-expanded="' + !isCollapsed + '" ondragover="mockGroupDragOver(event, \'' + group.id + '\')" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, \'' + group.id + '\')">';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + escapeHtmlAttribute(group.id) + '" aria-expanded="' + !isCollapsed + '" ondragover="mockGroupDragOver(event, this.dataset.groupId)" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, this.dataset.groupId)">';
 
       // Group header
-      html += '<div class="mock-group-header" onclick="toggleMockGroup(\'' + group.id + '\')">';
+      html += '<div class="mock-group-header" onclick="toggleMockGroup(this.closest(\'.mock-group\').dataset.groupId)">';
       html += '<span style="font-size:10px;margin-right:4px;">' + (isCollapsed ? '&#9654;' : '&#9660;') + '</span>';
       html += '<i class="ph ph-folder" style="font-size:14px;flex-shrink:0;opacity:0.5;"></i>';
       html += '<span class="mock-group-title">' + esc(group.title || 'Untitled Group') + '</span>';
@@ -6244,19 +6244,19 @@
 
       // Enable/Disable group
       const grpToggleLabel = group.enabled !== false ? 'Disable group' : 'Enable group';
-      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(\'' + group.id + '\')" title="' + grpToggleLabel + '" aria-label="' + grpToggleLabel + '">';
+      html += '<button class="mock-toggle-btn' + (group.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleMockGroupEnabled(this.closest(\'.mock-group\').dataset.groupId)" title="' + grpToggleLabel + '" aria-label="' + grpToggleLabel + '">';
       html += group.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Rename group
-      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(\'' + group.id + '\')" title="Rename group" aria-label="Rename group">';
+      html += '<button class="mock-toggle-btn" onclick="renameMockGroup(this.closest(\'.mock-group\').dataset.groupId)" title="Rename group" aria-label="Rename group">';
       html += '<i class="ph ph-tag" style="font-size:14px;"></i>';
       html += '</button>';
 
       // Delete group
-      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(\'' + group.id + '\')" title="Delete group" aria-label="Delete group" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteMockGroup(this.closest(\'.mock-group\').dataset.groupId)" title="Delete group" aria-label="Delete group" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
@@ -6368,19 +6368,19 @@
       const summary = breakpointRuleSummary(rule);
       const color = '#f1971f';
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
-      let html = '<div class="mock-rule-card mock-breakpoint-rule' + disabledClass + '" data-breakpoint-id="' + rule.id + '">';
+      let html = '<div class="mock-rule-card mock-breakpoint-rule' + disabledClass + '" data-breakpoint-id="' + escapeHtmlAttribute(rule.id) + '">';
       html += '<div class="mock-rule-summary">';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
       html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
       html += '<span class="mock-rule-desc">' + summary.matchStr + '<span class="mock-arrow">\u2192</span><span style="color:#f1971f;">Breakpoint</span></span>';
       html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
       const toggleLabel = rule.enabled !== false ? 'Disable this breakpoint' : 'Enable this breakpoint';
-      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleBreakpointRuleEnabled(\'' + rule.id + '\')" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleBreakpointRuleEnabled(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
       html += rule.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
-      html += '<button class="mock-toggle-btn" onclick="deleteBreakpointRule(\'' + rule.id + '\')" title="Delete this breakpoint" aria-label="Delete this breakpoint" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteBreakpointRule(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="Delete this breakpoint" aria-label="Delete this breakpoint" style="color:#ce3939;">';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div></div></div>';
@@ -6394,7 +6394,7 @@
       rule.enabled = enabled;
       renderMockRules();
       try {
-        const res = await fetch(API_BASE + '/api/breakpoints/' + ruleId, {
+        const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), {
           method: 'PATCH',
           headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ enabled })
@@ -6411,7 +6411,7 @@
 
     async function deleteBreakpointRule(ruleId) {
       try {
-        await fetch(API_BASE + '/api/breakpoints/' + ruleId, { method: 'DELETE' });
+        await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), { method: 'DELETE' });
         breakpointRules = breakpointRules.filter(r => r.id !== ruleId);
         renderMockRules();
         toast('Breakpoint deleted', 'success');
@@ -7518,7 +7518,7 @@
             const data = await res.json();
             if (!res.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
           } else {
-            const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
+            const res = await fetch(`${API_BASE}/api/mock-rules/${encodeURIComponent(draftId)}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
@@ -7561,7 +7561,7 @@
           const data = await res.json();
           if (data.error) throw new Error(data.error);
         } else {
-          const res = await fetch(`${API_BASE}/api/mock-rules/${draftId}`, {
+          const res = await fetch(`${API_BASE}/api/mock-rules/${encodeURIComponent(draftId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -7688,7 +7688,7 @@
           renderMockRules();
         } else {
           // Saved rule — delete from server AND reload to get fresh state
-          const response = await fetch(`${API_BASE}/api/mock-rules/${ruleId}`, { method: 'DELETE' });
+          const response = await fetch(`${API_BASE}/api/mock-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
           const data = await response.json().catch(() => ({}));
           if (!response.ok || data?.success === false || data?.error) {
             throw new Error(data?.error || `Could not delete rule (${response.status})`);
@@ -7765,7 +7765,7 @@
       const itemCount = (group.items || []).length;
       if (itemCount > 0 && !confirm('Delete group "' + (group.title || 'Untitled Group') + '" and its ' + itemCount + ' rule(s)?')) return;
       try {
-        await fetch(API_BASE + '/api/mock-rules/' + groupId, { method: 'DELETE' });
+        await fetch(API_BASE + '/api/mock-rules/' + encodeURIComponent(groupId), { method: 'DELETE' });
         toast('Group deleted', 'success');
         loadMockRules();
       } catch (err) { toast('Error: ' + err.message, 'error'); }
@@ -11277,7 +11277,8 @@
           if (data.rule?.id) {
             editMockRule(data.rule.id);
             setTimeout(() => {
-              const el = document.querySelector('[data-rule-id="' + data.rule.id + '"]');
+              const el = Array.from(document.querySelectorAll('[data-rule-id]'))
+                .find(candidate => candidate.dataset.ruleId === data.rule.id);
               if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
             }, 100);
           }

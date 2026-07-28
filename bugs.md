@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 28 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 35 of the 361 documented bugs are not fully fixed.**
+**No: 34 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 326 |
-| Partially fixed | 12 |
+| Fixed | 327 |
+| Partially fixed | 11 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2109,8 +2109,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-025 — High — Multiple persisted/server values reach `innerHTML` unescaped
 
-- Status: **Partially fixed**.
-- Resolution: The originally identified status, settings, tab, and theme values are now rendered safely. Caller-controlled mock and breakpoint IDs are still interpolated raw into `innerHTML` attributes and inline handlers, allowing the same persisted script-injection class through rule APIs.
+- Status: **Fixed**.
+- Resolution: The originally identified status, settings, tab, and theme values are rendered safely. Mock, group, and breakpoint IDs are HTML-attribute escaped into `data-*` values, inline actions read the exact decoded values through `dataset`, dynamic API path segments are URL encoded, and rule lookup compares dataset values instead of constructing selectors from caller-controlled IDs.
 - Evidence: Send status text incorporates upstream `statusMessage` and is assigned with `innerHTML` at `src/ui/app.js:7278-7289`; the value originates at `src/api/api-server.js:1197`. Certificate, CA, whitelist, and passthrough settings are interpolated at `app.js:7798`, `:7908`, `:8000`, and `:8061`. Send tab labels derived from arbitrary URLs are interpolated at `:6966-6977`. Custom-theme preview names and color values from uploaded JSON are concatenated into markup at `:9275-9283,9302-9314`; the upload validation at `:9340-9354` requires one recognized key but preserves and previews arbitrary extra keys. There is no restrictive application CSP.
 - Impact: crafted response metadata or persisted settings can execute script in the UI origin; in Electron this can reach the preload bridge.
 - Reproduction: store markup containing an event handler in one of the unescaped settings, or upload a theme containing one valid key plus an extra markup-bearing key whose value begins with `#`; observe it being parsed as DOM instead of displayed as text.

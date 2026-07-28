@@ -129,6 +129,12 @@ test('group markup exposes drop handling and grouped rules expose ungrouping', (
   const context = {
     MOCK_METHOD_COLORS: { '*': '#888' },
     esc: value => String(value),
+    escapeHtmlAttribute: value => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
     mockDraftRules: new Map(),
     mockExpandedRules: new Set(),
     mockEditingRule: null,
@@ -154,6 +160,7 @@ test('group markup exposes drop handling and grouped rules expose ungrouping', (
 
   const groupedRule = context.renderRule({ id: 'nested' });
   const topLevelRule = context.renderRule({ id: 'top-level' });
+  const hostileRule = context.renderRule({ id: 'x" onmouseover="alert(1)' });
   const emptyGroup = context.renderGroup({
     id: 'empty-group',
     type: 'group',
@@ -161,11 +168,15 @@ test('group markup exposes drop handling and grouped rules expose ungrouping', (
     items: []
   });
 
-  assert.match(groupedRule, /onclick="ungroupRule\('nested'\)"/);
+  assert.match(groupedRule, /onclick="ungroupRule\(this\.closest\('\.mock-rule-card'\)\.dataset\.ruleId\)"/);
+  assert.match(groupedRule, /data-rule-id="nested"/);
   assert.match(groupedRule, /aria-label="Move rule to top level"/);
   assert.doesNotMatch(topLevelRule, /ungroupRule/);
-  assert.match(emptyGroup, /ondragover="mockGroupDragOver\(event, 'empty-group'\)"/);
-  assert.match(emptyGroup, /ondrop="mockGroupDrop\(event, 'empty-group'\)"/);
+  assert.match(hostileRule, /data-rule-id="x&quot; onmouseover=&quot;alert\(1\)"/);
+  assert.doesNotMatch(hostileRule, /data-rule-id="x" onmouseover=/);
+  assert.match(emptyGroup, /data-group-id="empty-group"/);
+  assert.match(emptyGroup, /ondragover="mockGroupDragOver\(event, this\.dataset\.groupId\)"/);
+  assert.match(emptyGroup, /ondrop="mockGroupDrop\(event, this\.dataset\.groupId\)"/);
   assert.match(emptyGroup, /Drag a rule here/);
   assert.match(stylesSource, /\.mock-group\.mock-drag-over\s*\{/);
 });

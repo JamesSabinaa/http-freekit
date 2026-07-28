@@ -44,3 +44,33 @@ test('custom themes discard unknown or unsafe values and build previews with DOM
   assert.match(preview, /swatch\.style\.backgroundColor = s\.color/);
   assert.match(source, /JSON\.stringify\(sanitizedTheme\)/);
 });
+
+test('mock, group, and breakpoint IDs stay in escaped data attributes', () => {
+  const mockRule = functionSource('renderMockRuleRow', 'renderMockGroup');
+  const mockGroup = functionSource('renderMockGroup', '_countAllMockRules');
+  const breakpointRule = functionSource('renderBreakpointRuleRow', 'toggleBreakpointRuleEnabled');
+
+  assert.match(mockRule, /data-rule-id="' \+ escapeHtmlAttribute\(rule\.id\) \+ '"/);
+  assert.match(mockGroup, /data-group-id="' \+ escapeHtmlAttribute\(group\.id\) \+ '"/);
+  assert.match(breakpointRule, /data-breakpoint-id="' \+ escapeHtmlAttribute\(rule\.id\) \+ '"/);
+
+  assert.doesNotMatch(mockRule, /onclick="[^"]*' \+ rule\.id/);
+  assert.doesNotMatch(mockRule, /ondrag(?:start|over|drop)="[^"]*' \+ rule\.id/);
+  assert.doesNotMatch(mockGroup, /on(?:click|dragover|drop)="[^"]*' \+ group\.id/);
+  assert.doesNotMatch(breakpointRule, /onclick="[^"]*' \+ rule\.id/);
+
+  assert.match(mockRule, /this\.closest\(\\'\.mock-rule-card\\'\)\.dataset\.ruleId/);
+  assert.match(mockGroup, /this\.closest\(\\'\.mock-group\\'\)\.dataset\.groupId/);
+  assert.match(breakpointRule, /this\.closest\(\\'\.mock-breakpoint-rule\\'\)\.dataset\.breakpointId/);
+  assert.match(source, /api\/breakpoints\/' \+ encodeURIComponent\(ruleId\)/);
+  assert.match(source, /api\/mock-rules\/\$\{encodeURIComponent\(ruleId\)\}/);
+  assert.match(source, /api\/mock-rules\/' \+ encodeURIComponent\(groupId\)/);
+});
+
+test('newly created mock lookup compares data values instead of building a selector from the ID', () => {
+  const createMock = functionSource('createMockFromRequest', 'showHeaderContextMenu');
+
+  assert.match(createMock, /querySelectorAll\('\[data-rule-id\]'\)/);
+  assert.match(createMock, /candidate\.dataset\.ruleId === data\.rule\.id/);
+  assert.doesNotMatch(createMock, /querySelector\('\[data-rule-id="' \+ data\.rule\.id/);
+});
