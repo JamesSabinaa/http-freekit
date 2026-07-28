@@ -3011,6 +3011,7 @@ export class ProxyServer {
     while (this._pendingWsCaptureFinalizations.size > 0) {
       await Promise.all([...this._pendingWsCaptureFinalizations]);
     }
+    this._pendingTrafficLogDecisions.clear();
     if (this.server) console.log('[Proxy] Server stopped');
   }
 
@@ -9142,6 +9143,7 @@ export class ProxyServer {
         if (this.pendingBreakpoints.get(requestId) !== bp) return;
         bp.resolve(BREAKPOINT_CLIENT_DISCONNECTED);
         this.pendingBreakpoints.delete(requestId);
+        this._pendingTrafficLogDecisions.delete(requestId);
         try {
           this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });
         } catch (err) {

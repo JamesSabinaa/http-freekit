@@ -16,7 +16,7 @@ function waitFor(predicate, timeoutMs = 2000) {
   });
 }
 
-test('disconnecting a paused HTTP client removes its pending breakpoint', async t => {
+test('disconnecting paused HTTP clients removes their breakpoint and traffic lifecycle state', async t => {
   const proxy = new ProxyServer(null, { port: 0 });
   proxy.addBreakpoint({ matchers: [{ type: 'wildcard' }] });
   const events = [];
@@ -24,20 +24,33 @@ test('disconnecting a paused HTTP client removes its pending breakpoint', async 
   await proxy.start();
   t.after(() => proxy.stop());
 
-  const request = http.request({
-    hostname: '127.0.0.1',
-    port: proxy.server.address().port,
-    path: 'http://127.0.0.1:9/paused'
-  });
-  request.on('error', () => {});
-  request.end();
+  for (let index = 0; index < 3; index++) {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: `http://127.0.0.1:9/paused-${index}`
+    });
+    request.on('error', () => {});
+    request.end();
 
-  await waitFor(() => proxy.pendingBreakpoints.size === 1);
-  const requestId = proxy.getPendingBreakpoints()[0].id;
-  request.destroy();
-  await waitFor(() => proxy.pendingBreakpoints.size === 0);
+    await waitFor(() => proxy.pendingBreakpoints.size === 1);
+    const requestId = proxy.getPendingBreakpoints()[0].id;
+    assert.equal(proxy._pendingTrafficLogDecisions.size, 1);
+    request.destroy();
+    await waitFor(() => proxy.pendingBreakpoints.size === 0 &&
+      proxy._pendingTrafficLogDecisions.size === 0);
 
-  assert.equal(proxy.resumeBreakpoint(requestId), false);
-  assert.equal(events.at(-1).type, 'breakpoint-resumed');
-  assert.equal(events.at(-1).reason, 'client-disconnected');
+    assert.equal(proxy.resumeBreakpoint(requestId), false);
+    assert.equal(events.at(-1).type, 'breakpoint-resumed');
+    assert.equal(events.at(-1).reason, 'client-disconnected');
+  }
+});
+
+test('proxy shutdown clears any remaining traffic lifecycle decisions', async () => {
+  const proxy = new ProxyServer(null);
+  proxy._pendingTrafficLogDecisions.set('abandoned-request', true);
+
+  await proxy.stop();
+
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 });

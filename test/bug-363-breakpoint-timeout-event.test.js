@@ -109,6 +109,7 @@ test('breakpoint timeout emits one ordered resume while other completion paths s
     closeTarget.destroyed = false;
     closeTarget.closed = false;
     installPending(proxy, 'client-close', resolutions);
+    proxy._pendingTrafficLogDecisions.set('client-close', true);
     proxy._setBreakpointTimeout('client-close', closeTarget);
     const closeTimer = timers[3];
     closeTarget.emit('close');
@@ -123,6 +124,7 @@ test('breakpoint timeout emits one ordered resume while other completion paths s
       resolutionCountWhenEmitted: 3
     });
     assert.equal(events.length, 3, 'client close and its stale timer emit once total');
+    assert.equal(proxy._pendingTrafficLogDecisions.has('client-close'), false);
   });
 });
 
