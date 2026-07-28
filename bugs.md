@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 41 of the 361 documented bugs are not fully fixed.**
+**No: 40 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 320 |
-| Partially fixed | 18 |
+| Fixed | 321 |
+| Partially fixed | 17 |
 | Open | 23 |
 | **Total** | **361** |
 
-This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, and BUG-364 were fixed after that reconciliation.
+This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037, BUG-040, BUG-044, and BUG-364 were fixed after that reconciliation.
 
 ## Audit completion gate
 
@@ -1200,8 +1200,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-044 — High — System-proxy restore failures are reported as success
 
-- Status: **Partially fixed**.
-- Resolution: Restore failures are now propagated and retained for retry, except failure to delete an originally absent `ProxyServer` value is still swallowed and the recovery state is then cleared.
+- Status: **Fixed**.
+- Resolution: Registry writes and deletions now propagate real restoration failures and retain the saved recovery state for retry. Deleting an originally absent `ProxyServer` remains idempotent only when a follow-up registry read confirms that the value is already absent.
 - Evidence: `src/interceptors/system-proxy-interceptor.js:90-100` catches registry restoration failures and returns normally; the API interprets that fulfilled call as a successful deactivation.
 - Impact: Windows can remain routed through FreeKit while the UI says the interceptor stopped.
 - Reproduction: force the registry restore command to fail, deactivate, and inspect the API response and registry values.

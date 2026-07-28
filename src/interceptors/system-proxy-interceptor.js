@@ -309,12 +309,7 @@ if ($null -eq $target) {
     if (previous?.server != null) {
       this._setRegistryValue('ProxyServer', 'REG_SZ', previous.server);
     } else {
-      try {
-        this._execRegistry(['delete', INTERNET_SETTINGS_KEY, '/v', 'ProxyServer', '/f'], {
-          stdio: 'ignore',
-          timeout: 5000
-        });
-      } catch {}
+      this._deleteRegistryValue('ProxyServer');
     }
     if (Object.prototype.hasOwnProperty.call(previous, 'override')) {
       if (previous.override != null) {

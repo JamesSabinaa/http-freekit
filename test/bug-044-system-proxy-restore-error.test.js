@@ -40,3 +40,29 @@ test('partial registry restore retains the saved settings for retry', () => {
     server: 'corporate.proxy:8888'
   });
 });
+
+test('failure to delete an originally absent proxy server remains retryable', () => {
+  const interceptor = new SystemProxyInterceptor();
+  interceptor.previousSettings = { enabled: false, server: null, override: null };
+  interceptor.activeProxyServer = '127.0.0.1:8080';
+  interceptor.pendingRecovery = { previousSettings: interceptor.previousSettings };
+  interceptor._execRegistry = () => { throw new Error('ProxyServer delete failed'); };
+  interceptor._readCurrentSettings = () => ({
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  });
+  interceptor._setRegistryValue = () => assert.fail('restore must stop after deletion fails');
+
+  assert.throws(
+    () => interceptor._restorePreviousSettings(),
+    /ProxyServer delete failed/
+  );
+  assert.deepEqual(interceptor.previousSettings, {
+    enabled: false,
+    server: null,
+    override: null
+  });
+  assert.equal(interceptor.activeProxyServer, '127.0.0.1:8080');
+  assert.ok(interceptor.pendingRecovery);
+});
