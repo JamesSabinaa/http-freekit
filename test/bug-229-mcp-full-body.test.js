@@ -257,6 +257,47 @@ test('metadata traversal omits accessors and stops at a bounded number of entrie
   assert.ok(Object.keys(detail.requestHeaders).length <= 129);
 });
 
+test('metadata traversal ignores inherited keys and proxy value traps', () => {
+  let inheritedAccessorReads = 0;
+  let proxyValueReads = 0;
+  const prototype = {};
+  for (let index = 0; index < 300; index++) {
+    prototype[`inherited-${index}`] = 'untrusted';
+  }
+  Object.defineProperty(prototype, 'inherited-accessor', {
+    enumerable: true,
+    get() {
+      inheritedAccessorReads++;
+      return 'unsafe';
+    }
+  });
+  const inheritedMetadata = Object.create(prototype);
+  const proxyMetadata = new Proxy({ safe: 'retained' }, {
+    get(target, property, receiver) {
+      proxyValueReads++;
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const bridge = createBridge([{
+    id: 'own-metadata-only',
+    inheritedMetadata,
+    proxyMetadata,
+    method: 'GET',
+    requestBody: '',
+    responseBody: '',
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'own-metadata-only'
+  }));
+
+  assert.deepEqual(detail.inheritedMetadata, {});
+  assert.deepEqual(detail.proxyMetadata, { safe: 'retained' });
+  assert.equal(inheritedAccessorReads, 0);
+  assert.equal(proxyValueReads, 0);
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{

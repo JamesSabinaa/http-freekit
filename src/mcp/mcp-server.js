@@ -230,13 +230,13 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   const output = arrayOutput ? [] : Object.create(null);
   let omitted = false;
   try {
-    for (const key in value) {
+    for (const key of Object.keys(value)) {
       if (budget.scannedEntries >= MCP_METADATA_MAX_SCANNED_ENTRIES) {
         omitted = true;
         break;
       }
       budget.scannedEntries++;
-      if (!Object.prototype.hasOwnProperty.call(value, key) || excludedKeys?.has(key)) continue;
+      if (excludedKeys?.has(key)) continue;
       if (budget.entries >= MCP_METADATA_MAX_ENTRIES) {
         omitted = true;
         break;
