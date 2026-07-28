@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 66 of the 360 documented bugs are not fully fixed.**
+**No: 65 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 294 |
+| Fixed | 295 |
 | Partially fixed | 25 |
-| Open | 41 |
+| Open | 40 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -268,7 +268,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-102 — High/Medium — Transform and timeout actions silently become fixed 200s
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Transform rules now forward the request after applying configured method, URL, header, and body changes, then apply status, header, and body transformations to the upstream response. Legacy response-only transforms remain supported, and timeout rules now keep the matched downstream request pending without contacting an origin. The behavior is shared across plain HTTP, intercepted HTTPS, native H2, and H1-on-H2 routes.
 
 - Evidence: plain action dispatch implements selected types at `src/proxy/proxy-server.js:3384-3755` then treats every unknown type as a fixed response at `:3757-3794`; no path implements `transform-request`, `transform-response`, or `timeout`. HTTPS/H2 dispatch at `:1107-1397,2223-2488` omits the same actions and additionally lacks some webhook/combined-breakpoint variants.
 - Impact: valid rules displayed as transforming or timing out instead synthesize an empty successful response.

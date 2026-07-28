@@ -1125,6 +1125,155 @@ export class ProxyServer {
     }
   }
 
+  _applyMockHeaderTransform(headers, mode, replacements, removals = []) {
+    const transformed = mode === 'replace' ? {} : { ...(headers || {}) };
+    const remove = new Set(
+      (Array.isArray(removals) ? removals : [])
+        .filter(name => typeof name === 'string')
+        .map(name => name.toLowerCase())
+    );
+    for (const name of Object.keys(transformed)) {
+      if (remove.has(name.toLowerCase())) delete transformed[name];
+    }
+    if (mode === 'update' || mode === 'replace') {
+      for (const [name, value] of Object.entries(
+        replacements && typeof replacements === 'object' && !Array.isArray(replacements)
+          ? replacements
+          : {}
+      )) {
+        for (const existing of Object.keys(transformed)) {
+          if (existing.toLowerCase() === name.toLowerCase()) delete transformed[existing];
+        }
+        transformed[name] = value;
+      }
+    }
+    return transformed;
+  }
+
+  _transformMockBody(body, mode, fixedBody, matchPattern, replacement) {
+    const original = Buffer.isBuffer(body) ? body : Buffer.from(body || '');
+    if (!mode || mode === 'original') return { body: original, changed: false };
+    if (mode === 'replace-fixed') {
+      return { body: Buffer.from(String(fixedBody ?? '')), changed: true };
+    }
+    if (mode === 'json-merge') {
+      try {
+        const current = JSON.parse(original.toString('utf8'));
+        const additions = JSON.parse(String(fixedBody ?? ''));
+        if (!current || typeof current !== 'object' || Array.isArray(current)
+          || !additions || typeof additions !== 'object' || Array.isArray(additions)) {
+          return { body: original, changed: false };
+        }
+        return {
+          body: Buffer.from(JSON.stringify({ ...current, ...additions })),
+          changed: true
+        };
+      } catch {
+        return { body: original, changed: false };
+      }
+    }
+    if (mode === 'match-replace' && typeof matchPattern === 'string' && matchPattern) {
+      return {
+        body: Buffer.from(original.toString('utf8').split(matchPattern).join(String(replacement ?? ''))),
+        changed: true
+      };
+    }
+    return { body: original, changed: false };
+  }
+
+  _applyMockRequestTransform(action, request) {
+    const transformed = {
+      method: request.method,
+      url: request.url instanceof URL ? new URL(request.url.href) : new URL(request.url),
+      headers: { ...(request.headers || {}) },
+      body: Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body || ''),
+      changed: false,
+      bodyChanged: false,
+      headersChanged: false
+    };
+    if (action?.type !== 'transform-request') return transformed;
+
+    if (typeof action.methodMode === 'string' && action.methodMode !== 'original') {
+      transformed.method = action.methodMode;
+      transformed.changed = transformed.method !== request.method;
+    }
+    if (action.urlMode === 'modify' && action.urlReplace) {
+      const rewritten = this._resolveRewriteUrl(transformed.url, action.urlReplace);
+      if (rewritten) {
+        transformed.changed ||= rewritten.href !== transformed.url.href;
+        transformed.url = rewritten;
+      }
+    }
+    if (action.headersMode === 'update' || action.headersMode === 'replace') {
+      transformed.headers = this._applyMockHeaderTransform(
+        transformed.headers,
+        action.headersMode,
+        action.headers,
+        action.headersMode === 'update' ? action.removeHeaders : []
+      );
+      transformed.headersChanged = true;
+      transformed.changed = true;
+    }
+    const bodyResult = this._transformMockBody(
+      transformed.body,
+      action.bodyMode,
+      action.body,
+      action.bodyMatchPattern,
+      action.bodyReplaceWith
+    );
+    transformed.body = bodyResult.body;
+    transformed.bodyChanged = bodyResult.changed;
+    transformed.changed ||= bodyResult.changed;
+    if (bodyResult.changed) {
+      for (const name of Object.keys(transformed.headers)) {
+        if (name.toLowerCase() === 'transfer-encoding') delete transformed.headers[name];
+      }
+      this._setContentLength(transformed.headers, transformed.body.length);
+    }
+    this._setTargetHostHeader(transformed.headers, transformed.url.host);
+    return transformed;
+  }
+
+  _applyMockResponseTransform(action, response) {
+    if (!['transform-request', 'transform-response'].includes(action?.type)) return response;
+    const legacy = action.type === 'transform-response';
+    const statusMode = legacy && action.statusOverride ? 'replace' : action.resStatusMode;
+    const requestedStatus = legacy ? action.statusOverride : action.resStatusOverride;
+    const headersMode = legacy
+      ? ((action.headers || action.removeHeaders) ? 'update' : 'original')
+      : action.resHeadersMode;
+    const headers = this._applyMockHeaderTransform(
+      response.headers,
+      headersMode,
+      legacy ? action.headers : action.resHeaders,
+      legacy ? action.removeHeaders : action.resRemoveHeaders
+    );
+    const bodyResult = this._transformMockBody(
+      response.body,
+      legacy ? action.bodyMode : action.resBodyMode,
+      legacy ? action.body : action.resBody,
+      legacy ? action.bodyMatchPattern : action.resBodyMatchPattern,
+      legacy ? action.bodyReplaceWith : action.resBodyReplaceWith
+    );
+    if (bodyResult.changed) {
+      for (const name of Object.keys(headers)) {
+        const lower = name.toLowerCase();
+        if (lower === 'transfer-encoding' || lower === 'content-encoding') delete headers[name];
+      }
+      this._setContentLength(headers, bodyResult.body.length);
+    }
+    const numericStatus = Number(requestedStatus);
+    return {
+      ...response,
+      statusCode: statusMode === 'replace' && Number.isInteger(numericStatus)
+        && numericStatus >= 100 && numericStatus <= 599
+        ? numericStatus
+        : response.statusCode,
+      headers,
+      body: bodyResult.body
+    };
+  }
+
   _toH2ResponseHeaders(statusCode, headers) {
     const converted = { ':status': statusCode };
     for (const [name, value] of Object.entries(headers || {})) {
@@ -1641,17 +1790,53 @@ export class ProxyServer {
       }
       let body = this._concatBody(requestBody);
       let breakpointBodyModified = false;
+      let transformedRequestHeaders = false;
       const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
       const downstream = this._trackDownstreamCancellation(clientRes);
 
       // Check mock rules
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
       const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
-      if (mockRule && !mockBreakpointPhase) {
+      const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
+        ? mockRule.action
+        : null;
+      if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) {
+        this._emitPendingRequest({
+          id: requestId,
+          protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
+          method: clientReq.method,
+          url: targetUrl.href,
+          host: targetUrl.hostname,
+          path: targetUrl.pathname + targetUrl.search,
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeBodyString(body),
+          requestBodySize: body.length,
+          timestamp: startTime,
+          source: 'mock',
+          tls: null,
+          remote: null
+        });
+        return;
+      }
+      if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
         await this._serveMockResponse(
           requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, { downstream }
         );
         return;
+      }
+      if (mockTransformAction?.type === 'transform-request') {
+        const transformed = this._applyMockRequestTransform(mockTransformAction, {
+          method: clientReq.method,
+          url: targetUrl,
+          headers: clientReq.headers,
+          body
+        });
+        clientReq.method = transformed.method;
+        targetUrl = transformed.url;
+        clientReq.headers = transformed.headers;
+        body = transformed.body;
+        breakpointBodyModified ||= transformed.bodyChanged;
+        transformedRequestHeaders = transformed.headersChanged;
       }
 
       // Check breakpoint rules
@@ -1719,7 +1904,7 @@ export class ProxyServer {
 
       const buildOptions = (useUpstreamProxy) => {
         const headers = this._stripUpstreamHeaders({
-          ...this._rawHeadersToObject(clientReq.rawHeaders),
+          ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(clientReq.rawHeaders)),
           ...clientReq.headers
         });
         this._setTargetHostHeader(headers, targetUrl.host);
@@ -1863,6 +2048,7 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
+            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
             const duration = Date.now() - startTime;
             const timing = {
               total: Date.now() - startTime,
@@ -2268,6 +2454,7 @@ export class ProxyServer {
         }
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
+        let transformedRequestHeaders = false;
         const matcherBody = this._requestBodyForMatching(body, req.headers);
         const downstream = this._trackDownstreamCancellation(res);
 
@@ -2285,7 +2472,11 @@ export class ProxyServer {
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
-        if (mockRule && !mockBreakpointPhase) {
+        const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
+          ? mockRule.action
+          : null;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           const action = mockRule.action || {
             type: 'fixed-response',
             status: mockRule.response?.status || 200,
@@ -2679,6 +2870,27 @@ export class ProxyServer {
           return;
         }
 
+        if (mockTransformAction?.type === 'transform-request') {
+          const transformed = this._applyMockRequestTransform(mockTransformAction, {
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          });
+          req.method = transformed.method;
+          if (transformed.url.protocol === 'https:') {
+            fullUrl = transformed.url.href;
+            hostname = this._normalizeConnectionHostname(transformed.url.hostname);
+            targetPort = parseInt(transformed.url.port, 10) || 443;
+            req.url = transformed.url.pathname + transformed.url.search;
+          }
+          req.headers = transformed.headers;
+          this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
+          body = transformed.body;
+          breakpointBodyModified ||= transformed.bodyChanged;
+          transformedRequestHeaders = transformed.headersChanged;
+        }
+
         // Check breakpoint rules
         const breakpointRule = mockBreakpointPhase === 'request'
           ? mockRule
@@ -2739,7 +2951,7 @@ export class ProxyServer {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: (() => {
             const headers = this._stripUpstreamHeaders({
-              ...this._rawHeadersToObject(req.rawHeaders),
+              ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
               ...req.headers
             });
             this._setTargetHostHeader(headers, new URL(fullUrl).host);
@@ -2825,6 +3037,7 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
+              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
               downstream.complete();
               try {
                 this._sendH1Response(
@@ -2902,6 +3115,7 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
+            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
             downstream.complete();
             try {
               this._sendH1Response(
@@ -3101,7 +3315,7 @@ export class ProxyServer {
       let upstreamHostname = hostname;
       let upstreamPort = targetPort;
 
-      const reqHeaders = {};
+      let reqHeaders = {};
       for (const [key, value] of Object.entries(headers)) {
         if (!key.startsWith(':')) reqHeaders[key] = value;
       }
@@ -3163,12 +3377,37 @@ export class ProxyServer {
         // Check mock rules
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
-        if (mockRule && !mockBreakpointPhase) {
+        const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
+          ? mockRule.action
+          : null;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
             requestTrailers, startTime, tlsDetails, downstream, pendingEmitted
           });
           return;
+        }
+
+        if (mockTransformAction?.type === 'transform-request') {
+          const transformed = this._applyMockRequestTransform(mockTransformAction, {
+            method,
+            url: fullUrl,
+            headers: reqHeaders,
+            body
+          });
+          method = transformed.method;
+          if (transformed.url.protocol === 'https:') {
+            path = transformed.url.pathname + transformed.url.search;
+            upstreamHostname = this._normalizeConnectionHostname(transformed.url.hostname);
+            upstreamPort = parseInt(transformed.url.port, 10) || 443;
+            authority = this._formatHttpsAuthority(upstreamHostname, upstreamPort);
+            fullUrl = `https://${authority}${path}`;
+          }
+          reqHeaders = transformed.headers;
+          this._setTargetHostHeader(reqHeaders, authority);
+          body = transformed.body;
+          breakpointBodyModified ||= transformed.bodyChanged;
         }
 
         // Check breakpoint rules
@@ -3304,6 +3543,7 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
+              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
               const h2ResponseHeaders = this._toH2ResponseHeaders(
                 finalResponse.statusCode, finalResponse.headers
               );
@@ -3391,6 +3631,7 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
+            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
             const responseHeaders = this._toH2ResponseHeaders(
               finalResponse.statusCode, finalResponse.headers
             );
@@ -3525,6 +3766,7 @@ export class ProxyServer {
         }
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
+        let transformedRequestHeaders = false;
         const matcherBody = this._requestBodyForMatching(body, req.headers);
 
         // Emit pending request immediately so it appears in the UI
@@ -3542,12 +3784,37 @@ export class ProxyServer {
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
-        if (mockRule && !mockBreakpointPhase) {
+        const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
+          ? mockRule.action
+          : null;
+        if (mockRule?.action?.type === 'timeout' && !mockBreakpointPhase) return;
+        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
           await this._serveMockResponseH1OnH2(
             requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
             downstream, pendingEmitted
           );
           return;
+        }
+
+        if (mockTransformAction?.type === 'transform-request') {
+          const transformed = this._applyMockRequestTransform(mockTransformAction, {
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          });
+          req.method = transformed.method;
+          if (transformed.url.protocol === 'https:') {
+            fullUrl = transformed.url.href;
+            hostname = this._normalizeConnectionHostname(transformed.url.hostname);
+            targetPort = parseInt(transformed.url.port, 10) || 443;
+            req.url = transformed.url.pathname + transformed.url.search;
+          }
+          req.headers = transformed.headers;
+          this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
+          body = transformed.body;
+          breakpointBodyModified ||= transformed.bodyChanged;
+          transformedRequestHeaders = transformed.headersChanged;
         }
 
         // Check breakpoint rules
@@ -3675,6 +3942,7 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
+              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
               downstream.complete();
               try {
                 this._sendH1Response(
@@ -3711,7 +3979,7 @@ export class ProxyServer {
           hostname, port: targetPort, path: req.url, method: req.method,
           headers: (() => {
             const headers = this._stripUpstreamHeaders({
-              ...this._rawHeadersToObject(req.rawHeaders),
+              ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
               ...req.headers
             });
             this._setTargetHostHeader(headers, new URL(fullUrl).host);
@@ -3766,6 +4034,7 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
+            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
             downstream.complete();
             try {
               this._sendH1Response(
