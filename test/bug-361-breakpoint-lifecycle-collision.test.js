@@ -177,3 +177,57 @@ test('normal pending breakpoint insertion does not rescan prior entries', () => 
   assert.equal(indexingCalls, 0);
   assert.equal(proxy.getStats().pendingBreakpoints, 1_000);
 });
+
+test('alternating direct and helper insertion remains ordered without rescans', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+  let indexingCalls = 0;
+  const indexPending = proxy._indexPendingBreakpointOrder.bind(proxy);
+  proxy._indexPendingBreakpointOrder = () => {
+    indexingCalls++;
+    return indexPending();
+  };
+
+  for (let index = 0; index < 1_000; index++) {
+    proxy.pendingBreakpoints.set(`direct-${index}`, pending(`direct-life-${index}`, resolved));
+    proxy._storePendingBreakpoint(`helper-${index}`, pending(`helper-life-${index}`, resolved));
+  }
+
+  const listed = proxy.getPendingBreakpoints();
+  assert.equal(indexingCalls, 1, 'only listing scans the final collection');
+  assert.deepEqual(listed.slice(0, 4).map(bp => bp.id), [
+    'direct-0', 'helper-0', 'direct-1', 'helper-1'
+  ]);
+  assert.equal(listed.length, 2_000);
+});
+
+test('direct deletion and reinsertion assigns a fresh arrival order', () => {
+  for (const remove of ['delete', 'clear']) {
+    const proxy = new ProxyServer(null);
+    const resolved = [];
+    const reused = pending('reused-life', resolved);
+    proxy.pendingBreakpoints.set('reused', reused);
+    proxy._storePendingBreakpoint('middle', pending('middle-life', resolved));
+    if (remove === 'delete') proxy.pendingBreakpoints.delete('reused');
+    else proxy.pendingBreakpoints.clear();
+    proxy._storePendingBreakpoint('last', pending('last-life', resolved));
+    proxy.pendingBreakpoints.set('reused', reused);
+
+    const expected = remove === 'delete'
+      ? ['middle', 'last', 'reused']
+      : ['last', 'reused'];
+    assert.deepEqual(proxy.getPendingBreakpoints().map(bp => bp.id), expected);
+  }
+});
+
+test('pending breakpoint storage remains constructor-compatible with Map', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+  proxy.pendingBreakpoints.set('first', pending('first-life', resolved));
+
+  const copy = new proxy.pendingBreakpoints.constructor(proxy.pendingBreakpoints);
+  copy.set('second', pending('second-life', resolved));
+
+  assert.equal(copy instanceof Map, true);
+  assert.deepEqual([...copy.keys()], ['first', 'second']);
+});

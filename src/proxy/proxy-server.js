@@ -193,27 +193,31 @@ class EncodedBodyString extends String {
 }
 
 class PendingBreakpointMap extends Map {
-  constructor(onExternalMutation) {
-    super();
-    this.onExternalMutation = onExternalMutation;
+  constructor(iterable) {
+    super(iterable);
+    this.onSet = null;
+    this.onDelete = null;
+    this.onClear = null;
   }
 
   set(key, value) {
+    const previous = super.get(key);
     const result = super.set(key, value);
-    this.onExternalMutation();
+    this.onSet?.(key, value, previous);
     return result;
   }
 
   delete(key) {
+    const previous = super.get(key);
     const deleted = super.delete(key);
-    if (deleted) this.onExternalMutation();
+    if (deleted) this.onDelete?.(key, previous);
     return deleted;
   }
 
   clear() {
-    const hadEntries = this.size > 0;
+    const previous = this.size > 0 ? [...this.values()] : [];
     super.clear();
-    if (hadEntries) this.onExternalMutation();
+    if (previous.length > 0) this.onClear?.(previous);
   }
 
   setInternal(key, value) {
@@ -243,10 +247,22 @@ export class ProxyServer {
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
     this._pendingBreakpointOrder = new WeakMap();
     this._pendingBreakpointSequence = 0;
-    this._pendingBreakpointOrderDirty = false;
-    this.pendingBreakpoints = new PendingBreakpointMap(() => {
-      this._pendingBreakpointOrderDirty = true;
-    }); // requestId -> pending breakpoint or FIFO array for reused IDs
+    this.pendingBreakpoints = new PendingBreakpointMap(); // requestId -> pending breakpoint or FIFO array for reused IDs
+    const forgetBreakpointOrder = stored => {
+      const breakpoints = Array.isArray(stored) ? stored : [stored];
+      for (const breakpoint of breakpoints) this._pendingBreakpointOrder.delete(breakpoint);
+    };
+    this.pendingBreakpoints.onSet = (_requestId, stored, previous) => {
+      if (previous !== undefined) forgetBreakpointOrder(previous);
+      const breakpoints = Array.isArray(stored) ? stored : [stored];
+      for (const breakpoint of breakpoints) {
+        this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
+      }
+    };
+    this.pendingBreakpoints.onDelete = (_requestId, stored) => forgetBreakpointOrder(stored);
+    this.pendingBreakpoints.onClear = storedValues => {
+      for (const stored of storedValues) forgetBreakpointOrder(stored);
+    };
     this.mockRules = [];
     // Upstream proxy: { host, port, auth? } or null
     this.upstreamProxy = null;
@@ -9310,13 +9326,9 @@ export class ProxyServer {
         }
       }
     }
-    this._pendingBreakpointOrderDirty = false;
   }
 
   _storePendingBreakpoint(requestId, breakpoint) {
-    if (this._pendingBreakpointOrderDirty) {
-      this._indexPendingBreakpointOrder();
-    }
     this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) {
@@ -9340,19 +9352,18 @@ export class ProxyServer {
   }
 
   _deletePendingBreakpoint(requestId, breakpoint) {
-    if (this._pendingBreakpointOrderDirty) {
-      this._indexPendingBreakpointOrder();
-    }
     const stored = this.pendingBreakpoints.get(requestId);
     if (!stored) return false;
     if (!Array.isArray(stored)) {
       if (stored !== breakpoint) return false;
       this.pendingBreakpoints.deleteInternal(requestId);
+      this._pendingBreakpointOrder.delete(breakpoint);
       return true;
     }
     const index = stored.indexOf(breakpoint);
     if (index === -1) return false;
     stored.splice(index, 1);
+    this._pendingBreakpointOrder.delete(breakpoint);
     if (stored.length === 1) this.pendingBreakpoints.setInternal(requestId, stored[0]);
     else if (stored.length === 0) this.pendingBreakpoints.deleteInternal(requestId);
     return true;
