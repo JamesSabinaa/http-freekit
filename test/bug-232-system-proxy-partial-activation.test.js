@@ -141,3 +141,57 @@ test('graceful cleanup preserves an external change after partial activation', a
   assert.equal(interceptor.pendingRecovery, null);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
+
+test('cleanup accepts a journaled partial activation state before graceful restore begins', async t => {
+  const previousSettings = {
+    enabled: false,
+    server: 'corporate.proxy:8888',
+    override: '<local>'
+  };
+  const settings = { ...previousSettings };
+  const interceptor = new SystemProxyInterceptor({
+    dataDir: createDataDir(t),
+    ca: { systemTrustInstalled: true }
+  });
+  interceptor._isWindows = () => true;
+  interceptor._usesPerMachineProxyPolicy = () => false;
+  interceptor._processIdentityLookup = () => ({
+    pid: process.pid,
+    startedAt: '2026-01-02T03:04:05.000Z',
+    executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
+  });
+  interceptor._readCurrentSettings = () => ({ ...settings });
+  interceptor._notifyWinInet = () => {};
+  let serverWrites = 0;
+  let overrideWrites = 0;
+  interceptor._setRegistryValue = (name, type, value) => {
+    if (name === 'ProxyEnable') settings.enabled = Boolean(value);
+    if (name === 'ProxyServer') {
+      serverWrites++;
+      if (serverWrites === 2) throw new Error('ProxyServer rollback failed');
+      settings.server = value;
+    }
+    if (name === 'ProxyOverride') {
+      overrideWrites++;
+      if (overrideWrites === 1) throw new Error('ProxyOverride activation failed');
+      settings.override = value;
+    }
+  };
+
+  await assert.rejects(interceptor.activate(8080), /ProxyOverride activation failed/);
+  assert.deepEqual(settings, {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: '<local>'
+  });
+  assert.equal(interceptor.restorePending, false);
+  assert.ok(interceptor.pendingRecovery);
+
+  await interceptor.deactivate();
+
+  assert.deepEqual(settings, previousSettings);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.previousSettings, null);
+  assert.equal(interceptor.pendingRecovery, null);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+});

@@ -418,7 +418,9 @@ if ($null -eq $target) {
         const settingsAreOwned = this.active && !this.restorePending
           ? this._settingsBelongToActiveSession(currentSettings)
           : this.pendingRecovery
-            && this._settingsCouldBelongToRestoreRetry(currentSettings, this.pendingRecovery);
+            && (this.restorePending
+              ? this._settingsCouldBelongToRestoreRetry(currentSettings, this.pendingRecovery)
+              : this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery));
         if (!settingsAreOwned) {
           this._removeRecoveryState();
           this.previousSettings = null;
