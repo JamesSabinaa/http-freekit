@@ -203,3 +203,30 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
   cmdLauncher.emit('exit', 0);
   await new Promise(resolve => setImmediate(resolve));
 });
+
+test('durable cmd fallback rejects a launcher PID already reused by another executable', async () => {
+  const interceptor = new FreshTerminalInterceptor({
+    platform: 'win32',
+    recoveryFile: 'unused-fresh-terminal-journal.json'
+  });
+  const cmdLauncher = fakeLauncher(7685);
+  cmdLauncher.exitCode = 0;
+  interceptor._spawnDetached = async command => {
+    if (command === 'cmd.exe') return cmdLauncher;
+    throw new Error(`${command} unavailable`);
+  };
+  interceptor._inspectSessionIdentity = async pid => ({
+    state: 'running',
+    identity: {
+      pid,
+      startTime: '500',
+      executable: 'c:\\windows\\system32\\notepad.exe'
+    }
+  });
+  interceptor._killSession = () => assert.fail('the reused cmd PID must never be signalled');
+
+  await assert.rejects(interceptor.activate(8080), /No supported terminal found/);
+
+  assert.equal(interceptor.sessions.size, 0);
+  assert.equal(interceptor.active, false);
+});

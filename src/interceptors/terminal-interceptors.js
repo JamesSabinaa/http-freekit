@@ -1040,8 +1040,21 @@ export class FreshTerminalInterceptor {
             await this._acknowledgeWindowsShell(pidFile);
             shellPid = adoptedIdentity.pid;
             sessionIdentity = adoptedIdentity;
-          } else {
-            shellPid = this.recoveryFile ? candidateProc.pid : null;
+          } else if (this.recoveryFile) {
+            const adoptedIdentity = await this._adoptSession(
+              candidateProc.pid,
+              null,
+              'cmd.exe'
+            );
+            const confirmation = adoptedIdentity
+              ? await this._observeSessionIdentity(candidateProc.pid)
+              : null;
+            if (!adoptedIdentity || this._hasProcessExited(candidateProc) ||
+                !this._isSameSession(adoptedIdentity, confirmation)) {
+              throw new Error('the cmd launcher process identity could not be verified');
+            }
+            shellPid = adoptedIdentity.pid;
+            sessionIdentity = adoptedIdentity;
           }
           proc = candidateProc;
           break;
