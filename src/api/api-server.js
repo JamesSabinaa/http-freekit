@@ -295,9 +295,12 @@ export class ApiServer {
     });
   }
 
-  _runPythonJson(script, args = []) {
+  _execBottingToolsPythonJson(candidate, script, args = []) {
     return new Promise((resolve, reject) => {
-      execFile('python3', ['-c', script, ...args], { timeout: 30000 }, (error, stdout, stderr) => {
+      execFile(candidate.command, [...candidate.args, '-c', script, ...args], {
+        timeout: 30000,
+        windowsHide: true
+      }, (error, stdout, stderr) => {
         if (error) {
           const message = (stderr || stdout || error.message).trim();
           reject(new Error(message || error.message));
@@ -322,6 +325,19 @@ export class ApiServer {
         reject(new Error('BottingTools did not return JSON output.'));
       });
     });
+  }
+
+  async _runPythonJson(script, args = []) {
+    const candidates = this._getBottingToolsPythonCandidates();
+    const errors = [];
+    for (const candidate of candidates) {
+      try {
+        return await this._execBottingToolsPythonJson(candidate, script, args);
+      } catch (error) {
+        errors.push(`${this._formatCommand(candidate)}: ${error.message}`);
+      }
+    }
+    throw new Error(`Could not run BottingTools Python. Tried ${errors.join('; ')}`);
   }
 
   async _getBottingToolsProxy(provider = 'lemonprime', refill = true) {
@@ -679,12 +695,12 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return this._toHostPath(process.env.GENERATOR_DIR || DEFAULT_GENERATOR_DIR);
   }
 
-  _getGeneratorPythonCandidates() {
-    if (process.env.GENERATOR_PYTHON) {
-      return [{ command: process.env.GENERATOR_PYTHON, args: [] }];
+  _getPythonCandidates(configuredCommand, platform = process.platform) {
+    if (configuredCommand) {
+      return [{ command: configuredCommand, args: [] }];
     }
 
-    if (process.platform === 'win32') {
+    if (platform === 'win32') {
       return [
         { command: 'py', args: ['-3'] },
         { command: 'python', args: [] },
@@ -696,6 +712,14 @@ print(json.dumps({"providers": get_proxy_providers()}))
       { command: 'python3', args: [] },
       { command: 'python', args: [] }
     ];
+  }
+
+  _getBottingToolsPythonCandidates() {
+    return this._getPythonCandidates(process.env.BOTTINGTOOLS_PYTHON);
+  }
+
+  _getGeneratorPythonCandidates() {
+    return this._getPythonCandidates(process.env.GENERATOR_PYTHON);
   }
 
   _getGeneratorLaunchPythonCandidates(pythonCandidates = this._getGeneratorPythonCandidates()) {

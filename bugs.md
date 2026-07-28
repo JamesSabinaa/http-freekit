@@ -357,7 +357,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-113 — Medium — BottingTools hard-codes a non-portable Python command
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: BottingTools now uses the shared platform-aware Python candidate order, including `py -3`, `python`, and `python3` on Windows, and tries each interpreter until one can import and run the integration. `BOTTINGTOOLS_PYTHON` can select an explicit interpreter without affecting the generator's separate override, and aggregate failures identify every command attempted.
 
 - Evidence: `src/api/api-server.js:48-50` always executes `python3`, while the same file handles Windows candidates (`py -3`, `python`, `python3`) for generator integration at `:290-306`.
 - Impact: provider listing/rotation fails with `ENOENT` on normal Windows Python installs that expose only `py.exe` or `python.exe`.
