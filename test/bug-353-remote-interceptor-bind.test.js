@@ -183,9 +183,9 @@ test('loopback binding keeps Android companion activation available through ADB 
   });
 
   assert.equal(result.success, true);
-  assert.equal(result.metadata.mode, 'http-toolkit-app');
+  assert.equal(result.metadata.mode, 'app-uncertain');
   assert.match(result.metadata.proxyUrl, /127\.0\.0\.1:8080 via ADB reverse/);
-  assert.equal(interceptor.activatedDevices.get(device.serial).mode, 'http-toolkit-app');
+  assert.equal(interceptor.activatedDevices.get(device.serial).mode, 'app-uncertain');
 });
 
 test('loopback companion activation does not claim success when ADB reverse fails', async () => {
@@ -427,7 +427,7 @@ test('recovered global proxy ownership is not reported as intercepting after a l
   fs.writeFileSync(
     path.join(dataDir, 'android-adb-global-proxy-recovery.json'),
     JSON.stringify({
-      version: 3,
+      version: 4,
       devices: [{
         serial: device.serial,
         mode: 'global-proxy',

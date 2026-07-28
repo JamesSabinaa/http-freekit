@@ -219,11 +219,11 @@ test('successful replacement prepares, cleans, then commits without overlapping 
   });
 
   assert.equal(result.success, true);
-  assert.equal(result.metadata.mode, 'http-toolkit-app');
+  assert.equal(result.metadata.mode, 'app-uncertain');
   assert.deepEqual(events, ['prepare', 'cleanup', 'commit']);
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
+  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(interceptor.activatedDevices.get(DEVICE_ID).proxyPort, 9090);
-  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), true);
 });
 
 test('same-port companion replacement prepares against the mapping restored by old cleanup', async t => {
@@ -282,6 +282,7 @@ test('partial old-mode cleanup remains journaled and a replacement retry finishe
   let caAttempts = 0;
   let reverseRestores = 0;
   let replacementCommits = 0;
+  interceptor._getReverseMapping = async () => `tcp:${OLD_PORT}`;
   interceptor._getProxy = async () => ({ success: true, value: currentProxy });
   interceptor._adb = async (_serial, args) => {
     if (args[0] === 'shell' && args[1] === 'settings' && args[2] === 'put') {
@@ -328,8 +329,8 @@ test('partial old-mode cleanup remains journaled and a replacement retry finishe
   assert.equal(reverseRestores, 1);
   assert.equal(replacementCommits, 1);
   assert.equal(interceptor.reverseTunnels.has(REVERSE_KEY), false);
-  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
-  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
+  assert.equal(fs.existsSync(interceptor.recoveryFile), true);
 });
 
 test('ambiguous proxy commit replaces old ownership with retryable new ownership', async t => {
@@ -420,6 +421,7 @@ test('ambiguous companion commit after old cleanup remains durable and blocks fa
   assert.equal(restarted.reverseTunnels.has(replacementKey), true);
   restarted._isHttpToolkitAppInstalled = async () => true;
   restarted._bringHttpToolkitAppToFront = async () => {};
+  restarted._getReverseMapping = async () => 'tcp:9090';
   const commands = [];
   restarted._adb = async (_serial, args) => {
     commands.push(args);

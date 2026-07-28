@@ -39,6 +39,7 @@ function rememberOwnedFallback(interceptor, info = activeInfo()) {
   interceptor.activatedDevices.set(DEVICE_ID, info);
   interceptor.reverseTunnels.add(TUNNEL_KEY);
   interceptor.previousReverseMappings.set(TUNNEL_KEY, info.previousReverseMapping);
+  interceptor._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
   interceptor.active = true;
 }
 
@@ -101,11 +102,11 @@ test('confirmed companion cleanup restores reverse ownership before fallback and
   const commands = [];
   let proxyReads = 0;
   let reverseRestores = 0;
+  let reverseReads = 0;
+  interceptor._getReverseMapping = async () =>
+    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
     commands.push(args);
-    if (args[0] === 'reverse' && args[1] === '--list') {
-      return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
-    }
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Starting: Intent { act=tech.httptoolkit.android.ACTIVATE }\nStatus: timeout\n';
     }
@@ -133,7 +134,7 @@ test('confirmed companion cleanup restores reverse ownership before fallback and
     false
   );
   assert.deepEqual(readJournal(interceptor), {
-    version: 3,
+    version: 4,
     devices: [{
       serial: DEVICE_ID,
       mode: 'global-proxy',
@@ -268,10 +269,10 @@ test('proxy setup failure after confirmed companion cleanup leaves no reverse ow
   interceptor._pushCaCert = async () => STAGED_CA_PATH;
 
   let reverseAttempts = 0;
+  let reverseReads = 0;
+  interceptor._getReverseMapping = async () =>
+    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
-    if (args[0] === 'reverse' && args[1] === '--list') {
-      return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
-    }
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) return 'Status: timeout\n';
     if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';
     if (args[0] === 'reverse' && args[1] === `tcp:${PROXY_PORT}` &&
@@ -355,6 +356,7 @@ test('restart rebuilds retained reverse ownership and removes the durable journa
   assert.equal(restarted.activatedDevices.get(DEVICE_ID).recovered, true);
   restarted._restoreProxy = async () => true;
   restarted._removeCaCert = async () => true;
+  restarted._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
   const commands = [];
   restarted._adb = async (_serial, args) => {
     commands.push(args);

@@ -25,6 +25,7 @@ function configureActiveCompanion(interceptor, previousMapping = null) {
   });
   interceptor.reverseTunnels.add(TUNNEL_KEY);
   interceptor.previousReverseMappings.set(TUNNEL_KEY, previousMapping);
+  interceptor._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
   interceptor.active = true;
 }
 

@@ -18,7 +18,8 @@ const EMULATOR_HOST_IPS = ['10.0.2.2', '10.0.3.2'];
 const ANDROID_CA_STAGING_PATH = '/data/local/tmp/http-freekit-ca.pem';
 const ANDROID_LEGACY_RECOVERY_VERSION = 1;
 const ANDROID_REVERSE_RECOVERY_VERSION = 2;
-const ANDROID_RECOVERY_VERSION = 3;
+const ANDROID_UNCERTAIN_RECOVERY_VERSION = 3;
+const ANDROID_RECOVERY_VERSION = 4;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
 const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
@@ -115,13 +116,18 @@ export class AndroidAdbInterceptor {
   _normalizeJournalDevice(entry, version = ANDROID_RECOVERY_VERSION) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const allowedModes = version === ANDROID_RECOVERY_VERSION
-      ? ['global-proxy', 'proxy-uncertain', 'staging-cleanup', 'reverse-cleanup', 'app-uncertain']
-      : version === ANDROID_REVERSE_RECOVERY_VERSION
+      ? [
+          'global-proxy', 'proxy-uncertain', 'staging-cleanup',
+          'reverse-cleanup', 'app-uncertain', 'http-toolkit-app'
+        ]
+      : version === ANDROID_UNCERTAIN_RECOVERY_VERSION
+        ? ['global-proxy', 'proxy-uncertain', 'staging-cleanup', 'reverse-cleanup', 'app-uncertain']
+        : version === ANDROID_REVERSE_RECOVERY_VERSION
         ? ['global-proxy', 'proxy-uncertain', 'staging-cleanup', 'reverse-cleanup']
         : ['global-proxy', 'staging-cleanup'];
     if (!allowedModes.includes(entry.mode)) return null;
     const reverseOnly = entry.mode === 'reverse-cleanup';
-    const appOnly = entry.mode === 'app-uncertain';
+    const appOnly = entry.mode === 'app-uncertain' || entry.mode === 'http-toolkit-app';
     const allowedFields = new Set(reverseOnly || appOnly
       ? ['serial', 'mode', 'proxyPort', 'previousReverseMapping', 'model', 'deviceName']
       : [
@@ -137,7 +143,8 @@ export class AndroidAdbInterceptor {
       if (entry[field] !== undefined && !this._isSafeJournalString(entry[field], 512)) return null;
     }
     const hasReverseCleanup = Object.prototype.hasOwnProperty.call(entry, 'previousReverseMapping');
-    if ((reverseOnly || appOnly) && !hasReverseCleanup) return null;
+    if ((reverseOnly || (appOnly && version < ANDROID_RECOVERY_VERSION)) &&
+        !hasReverseCleanup) return null;
     if (hasReverseCleanup && entry.previousReverseMapping !== null &&
         !this._isSafeReverseEndpoint(entry.previousReverseMapping)) return null;
     if (reverseOnly || appOnly) {
@@ -178,6 +185,7 @@ export class AndroidAdbInterceptor {
           ![
             ANDROID_LEGACY_RECOVERY_VERSION,
             ANDROID_REVERSE_RECOVERY_VERSION,
+            ANDROID_UNCERTAIN_RECOVERY_VERSION,
             ANDROID_RECOVERY_VERSION
           ].includes(parsed.version) ||
           !Array.isArray(parsed.devices) ||
@@ -266,7 +274,8 @@ export class AndroidAdbInterceptor {
         ? { deviceName: activeInfo.deviceName }
         : {})
     };
-    if (activeInfo.mode === 'reverse-cleanup' || activeInfo.mode === 'app-uncertain') {
+    if (activeInfo.mode === 'reverse-cleanup' || activeInfo.mode === 'app-uncertain' ||
+        activeInfo.mode === 'http-toolkit-app') {
       return {
         serial,
         mode: activeInfo.mode,
@@ -394,11 +403,7 @@ export class AndroidAdbInterceptor {
   _setPersistedActivation(serial, activeInfo, mode) {
     const nextInfo = { ...activeInfo, mode };
     try {
-      if (mode === 'http-toolkit-app') {
-        this._forgetGlobalProxyOwnership(serial);
-      } else {
-        this._rememberGlobalProxyOwnership(serial, nextInfo);
-      }
+      this._rememberGlobalProxyOwnership(serial, nextInfo);
     } catch (err) {
       console.warn(`[Interceptor] Failed to persist reconciled Android status for ${serial}:`, err.message);
       return false;
@@ -454,29 +459,45 @@ export class AndroidAdbInterceptor {
   _parseHttpToolkitVpnStatus(output, { authoritative = false } = {}) {
     const text = String(output || '').trim();
     if (!text) return null;
-    const escapedPackage = HTTP_TOOLKIT_ANDROID_PACKAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const packagePattern = new RegExp(escapedPackage, 'i');
-    const packageIndex = text.search(packagePattern);
+    const boundaryPattern = /^[ \t]*(?:User\s+\d+\s*:|Active package name\s*:|mPackage\s*=)/gim;
+    const boundaries = [...text.matchAll(boundaryPattern)];
+    const packageRecords = [];
 
-    if (packageIndex === -1) {
+    for (let index = 0; index < boundaries.length; index++) {
+      const start = boundaries[index].index;
+      const markerLineEnd = text.indexOf('\n', start);
+      const markerLine = text.slice(start, markerLineEnd === -1 ? text.length : markerLineEnd);
+      const packageMatch = markerLine.match(
+        /(?:Active package name\s*:\s*|mPackage\s*=\s*)([^\r\n]+)/i
+      );
+      if (!packageMatch || packageMatch[1].trim().replace(/^["']|["']$/g, '') !==
+          HTTP_TOOLKIT_ANDROID_PACKAGE) continue;
+
+      const end = boundaries[index + 1]?.index ?? text.length;
+      packageRecords.push(text.slice(start, end));
+    }
+
+    if (packageRecords.length === 0) {
       return authoritative && /(?:^|\n)\s*(?:VPNs?\s*:|User\s+\d+\s*:|mPackage\s*=|Active package name\s*:)/im.test(text)
         ? false
         : null;
     }
 
-    const packageBlock = text.slice(packageIndex, packageIndex + 5000);
-    if (/\bstate\s*:\s*CONNECTED(?:\/CONNECTED)?\b/i.test(packageBlock) ||
-        /\bmNetworkInfo\s*=\s*\[[^\]\r\n]*\bCONNECTED(?:\/CONNECTED)?\b/i.test(packageBlock) ||
-        /\bActive vpn type\s*:\s*(?!0\b|-1\b|TYPE_VPN_NONE\b|none\b)\S+/i.test(packageBlock) ||
-        /\bmNetworkAgent\s*=\s*(?!null\b)\S+/i.test(packageBlock)) {
-      return true;
-    }
-    if (/\bstate\s*:\s*(?:DISCONNECTED|IDLE|FAILED)\b/i.test(packageBlock) ||
-        /\bActive vpn type\s*:\s*(?:0|-1|TYPE_VPN_NONE|none)\b/i.test(packageBlock) ||
-        /\bmNetworkAgent\s*=\s*null\b/i.test(packageBlock)) {
-      return false;
-    }
-    return null;
+    const statuses = packageRecords.map(record => {
+      const activeType = record.match(/\bActive vpn type\s*:\s*([^\s\r\n]+)/i)?.[1];
+      if (activeType !== undefined) {
+        return /^(?:0|-1|TYPE_VPN_NONE|none)$/i.test(activeType) ? false : true;
+      }
+      if (/\bstate\s*:\s*(?:DISCONNECTED|IDLE|FAILED)\b/i.test(record)) return false;
+      if (/\bstate\s*:\s*CONNECTED(?:\/CONNECTED)?\b/i.test(record) ||
+          /\bmNetworkInfo\s*=\s*\[[^\]\r\n]*\bCONNECTED(?:\/CONNECTED)?\b/i.test(record)) {
+        return true;
+      }
+      if (/\bmNetworkAgent\s*=\s*null\b/i.test(record)) return false;
+      if (/\bmNetworkAgent\s*=\s*\S+/i.test(record)) return true;
+      return null;
+    });
+    return statuses.every(status => status === statuses[0]) ? statuses[0] : null;
   }
 
   async _getHttpToolkitVpnStatus(deviceId) {
@@ -862,6 +883,15 @@ export class AndroidAdbInterceptor {
       const previousMapping = this.previousReverseMappings.get(key) ?? null;
 
       if (previousMapping !== localEndpoint) {
+        const currentMapping = await this._getReverseMapping(deviceId, proxyPort);
+        if (currentMapping !== localEndpoint) {
+          console.warn(
+            `[Interceptor] ADB reverse changed externally on ${deviceId}; preserving ${currentMapping || 'no mapping'}`
+          );
+          this.previousReverseMappings.delete(key);
+          this.reverseTunnels.delete(key);
+          return true;
+        }
         const restoreArgs = previousMapping === null
           ? ['reverse', '--remove', localEndpoint]
           : ['reverse', localEndpoint, previousMapping];
@@ -1564,11 +1594,18 @@ export class AndroidAdbInterceptor {
       if (appActivation.success) {
         mode = 'http-toolkit-app';
         if (tunnelActive) {
-          previousReverseMapping = this.previousReverseMappings.get(`${deviceId}:${proxyPort}`);
+          const tunnelKey = `${deviceId}:${proxyPort}`;
+          previousReverseMapping = this.previousReverseMappings.has(tunnelKey)
+            ? this.previousReverseMappings.get(tunnelKey)
+            : Object.prototype.hasOwnProperty.call(appActivation, 'previousReverseMapping')
+              ? appActivation.previousReverseMapping
+              : preparedAppActivation?.previousReverseMapping;
+          if (previousReverseMapping !== null &&
+              !this._isSafeReverseEndpoint(previousReverseMapping)) {
+            throw new Error(`Successful companion reverse tunnel ownership for ${deviceId} could not be tracked safely`);
+          }
         }
         if (pendingAppActivation) {
-          this._forgetGlobalProxyOwnership(deviceId);
-          this.activatedDevices.delete(deviceId);
           pendingAppActivation = null;
         }
       } else {
@@ -1765,30 +1802,35 @@ export class AndroidAdbInterceptor {
       });
     }
 
-    this.activatedDevices.set(deviceId, {
+    const activationMode = mode === 'http-toolkit-app' ? 'app-uncertain' : mode;
+    const activatedInfo = {
       model: device.model,
       deviceName: device.deviceName,
       hostIp,
       remoteCertPath,
       proxyPort,
-      mode,
+      mode: activationMode,
       appInstalled,
       tunnelActive,
       appActivationError,
       previousProxy,
       ...(mode === 'http-toolkit-app' ? { vpnStatusConfirmed: false } : {}),
       ...(tunnelActive ? { previousReverseMapping } : {})
-    });
+    };
+    if (mode === 'http-toolkit-app') {
+      this._rememberGlobalProxyOwnership(deviceId, activatedInfo);
+    }
+    this.activatedDevices.set(deviceId, activatedInfo);
     this.active = true;
 
-    console.log(`[Interceptor] Android ADB interceptor activated for ${deviceId} (${device.model}) via ${mode}`);
+    console.log(`[Interceptor] Android ADB interceptor activated for ${deviceId} (${device.model}) via ${activationMode}`);
 
     return {
       success: true,
       metadata: {
         deviceId,
         model: device.model,
-        mode,
+        mode: activationMode,
         proxyUrl: mode === 'http-toolkit-app'
           ? `HTTP Toolkit Android VPN app -> http://127.0.0.1:${proxyPort} via ADB reverse`
           : `http://${hostIp}:${proxyPort}`,

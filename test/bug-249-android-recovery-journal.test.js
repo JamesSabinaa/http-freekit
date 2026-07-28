@@ -62,7 +62,7 @@ test('a restarted manager adopts global-proxy cleanup ownership and can Stop it'
   });
   assert.equal(activation.success, true);
   assert.deepEqual(readJournal(original), {
-    version: 3,
+    version: 4,
     devices: [validJournalEntry({ deviceName: 'device-1-device' })]
   });
 
@@ -173,7 +173,7 @@ test('malformed or untrusted journals are not adopted or used for device command
   const recoveryFile = path.join(dataDir, 'android-adb-global-proxy-recovery.json');
   const invalidJournals = [
     '{not-json',
-    JSON.stringify({ version: 4, devices: [validJournalEntry()] }),
+    JSON.stringify({ version: 5, devices: [validJournalEntry()] }),
     JSON.stringify({
       version: 1,
       devices: [validJournalEntry(), validJournalEntry({ serial: '--all' })]
@@ -226,7 +226,7 @@ test('journal persistence failure aborts before CA or proxy mutation', async t =
   );
 });
 
-test('HTTP Toolkit app activation remains in-memory and does not create the global journal', async t => {
+test('HTTP Toolkit app activation remains pending and durable until VPN confirmation', async t => {
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
   interceptor._getConnectedDevices = async () => [device('device-1')];
   interceptor._getQrMetadata = async () => ({});
@@ -248,8 +248,12 @@ test('HTTP Toolkit app activation remains in-memory and does not create the glob
     useHttpToolkitApp: true
   });
   assert.equal(result.success, true);
-  assert.equal(interceptor.activatedDevices.get('device-1').mode, 'http-toolkit-app');
-  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+  assert.equal(result.metadata.mode, 'app-uncertain');
+  assert.equal(result.metadata.interceptionActive, false);
+  assert.equal(result.metadata.activationUncertain, true);
+  assert.equal(interceptor.activatedDevices.get('device-1').mode, 'app-uncertain');
+  assert.equal(fs.existsSync(interceptor.recoveryFile), true);
+  assert.equal(JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8')).version, 4);
 
   interceptor._deactivateHttpToolkitApp = async () => true;
   await interceptor.deactivate({ deviceId: 'device-1' });

@@ -80,7 +80,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(original.reverseTunnels.has(TUNNEL_KEY), true);
   assert.deepEqual(readJournal(original), {
-    version: 3,
+    version: 4,
     devices: [{
       serial: DEVICE_ID,
       mode: 'app-uncertain',
@@ -93,6 +93,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
 
   const restarted = new AndroidAdbInterceptor({ dataDir });
   configureCompanion(restarted);
+  restarted._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
   const cleanupCommands = [];
   restarted._adb = async (_serial, args) => {
     cleanupCommands.push(args);
@@ -125,11 +126,15 @@ test('confirmed companion deactivation and reverse restoration precede global fa
 
   const events = [];
   let vpnActive = false;
-  interceptor._adb = async (_serial, args) => {
-    if (args[0] === 'reverse' && args[1] === '--list') {
+  let reverseReads = 0;
+  interceptor._getReverseMapping = async () => {
+    if (reverseReads++ === 0) {
       events.push('snapshot reverse');
-      return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
+      return PREVIOUS_MAPPING;
     }
+    return `tcp:${PROXY_PORT}`;
+  };
+  interceptor._adb = async (_serial, args) => {
     if (args[0] === 'reverse' && args[2] === `tcp:${PROXY_PORT}`) {
       events.push('create reverse');
       assert.equal(readJournal(interceptor).devices[0].mode, 'app-uncertain');
@@ -193,10 +198,10 @@ test('confirmed deactivation with failed reverse restoration retains app uncerta
 
   let reverseRestores = 0;
   let deactivations = 0;
+  let reverseReads = 0;
+  interceptor._getReverseMapping = async () =>
+    reverseReads++ === 0 ? PREVIOUS_MAPPING : `tcp:${PROXY_PORT}`;
   interceptor._adb = async (_serial, args) => {
-    if (args[0] === 'reverse' && args[1] === '--list') {
-      return `${DEVICE_ID} tcp:${PROXY_PORT} ${PREVIOUS_MAPPING}\n`;
-    }
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Status: timeout\n';
     }

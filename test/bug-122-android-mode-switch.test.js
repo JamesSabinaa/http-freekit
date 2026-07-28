@@ -50,7 +50,8 @@ test('switching Android modes cleans the previous mode before replacement', asyn
 
   assert.equal(result.success, true);
   assert.deepEqual(cleanups, [['device-1', previous]]);
-  assert.equal(interceptor.activatedDevices.get('device-1').mode, 'http-toolkit-app');
+  assert.equal(result.metadata.mode, 'app-uncertain');
+  assert.equal(interceptor.activatedDevices.get('device-1').mode, 'app-uncertain');
   assert.equal(interceptor.activatedDevices.get('device-1').proxyPort, 9090);
 });
 

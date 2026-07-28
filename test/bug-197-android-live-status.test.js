@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { AndroidAdbInterceptor } from '../src/interceptors/android-adb-interceptor.js';
@@ -146,6 +149,80 @@ test('missing owned reverse tunnel makes a running companion activation uncertai
   assert.equal(interceptor.toJSON().activationUncertain, true);
 });
 
+test('Stop preserves a reverse mapping replaced by another owner', async t => {
+  t.mock.method(console, 'warn', () => {});
+  const interceptor = new AndroidAdbInterceptor();
+  configureCompanion(interceptor);
+  const commands = [];
+  interceptor._adb = async (_deviceId, args) => {
+    commands.push(args);
+    if (args[0] === 'reverse' && args[1] === '--list') {
+      return `${DEVICE_ID} tcp:${PROXY_PORT} tcp:9999\n`;
+    }
+    return '';
+  };
+
+  assert.equal(await interceptor._removeReverseTunnel(DEVICE_ID, PROXY_PORT), true);
+  assert.deepEqual(commands, [['reverse', '--list']]);
+  assert.equal(interceptor.reverseTunnels.has(TUNNEL_KEY), false);
+  assert.equal(interceptor.previousReverseMappings.has(TUNNEL_KEY), false);
+});
+
+test('confirmed companion ownership survives restart and remains stoppable', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-197-recovery-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const original = new AndroidAdbInterceptor({ dataDir });
+  configureCompanion(original);
+  original.activatedDevices.get(DEVICE_ID).mode = 'app-uncertain';
+  original._rememberGlobalProxyOwnership(
+    DEVICE_ID,
+    original.activatedDevices.get(DEVICE_ID)
+  );
+  original._getConnectedDevices = async () => [connectedDevice()];
+  original._queryHttpToolkitAppInstalled = async () => true;
+  original._getHttpToolkitVpnStatus = async () => ({ success: true, value: true });
+  original._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
+
+  assert.equal(await original.isActive(), true);
+  assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
+  assert.deepEqual(JSON.parse(fs.readFileSync(original.recoveryFile, 'utf8')), {
+    version: 4,
+    devices: [{
+      serial: DEVICE_ID,
+      mode: 'http-toolkit-app',
+      proxyPort: PROXY_PORT,
+      previousReverseMapping: null
+    }]
+  });
+
+  const restarted = new AndroidAdbInterceptor({ dataDir });
+  assert.equal(restarted.active, true);
+  assert.equal(restarted.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
+  assert.equal(restarted.reverseTunnels.has(TUNNEL_KEY), true);
+  restarted._deactivateHttpToolkitApp = async () => true;
+  await restarted.deactivate({ deviceId: DEVICE_ID });
+  assert.equal(restarted.active, false);
+  assert.equal(fs.existsSync(restarted.recoveryFile), false);
+});
+
+test('version 4 can recover companion ownership without an ADB reverse tunnel', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-197-no-tunnel-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dataDir, 'android-adb-global-proxy-recovery.json'), JSON.stringify({
+    version: 4,
+    devices: [{
+      serial: DEVICE_ID,
+      mode: 'app-uncertain',
+      proxyPort: PROXY_PORT
+    }]
+  }));
+
+  const restarted = new AndroidAdbInterceptor({ dataDir });
+  assert.equal(restarted.active, true);
+  assert.equal(restarted.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
+  assert.equal(restarted.reverseTunnels.size, 0);
+});
+
 test('VPN dumpsys parsing distinguishes connected, stopped, absent, and unknown state', () => {
   const interceptor = new AndroidAdbInterceptor();
   assert.equal(interceptor._parseHttpToolkitVpnStatus(`
@@ -173,4 +250,42 @@ test('VPN dumpsys parsing distinguishes connected, stopped, absent, and unknown 
     authoritative: true
   }), false);
   assert.equal(interceptor._parseHttpToolkitVpnStatus('Connectivity service ready'), null);
+  assert.equal(interceptor._parseHttpToolkitVpnStatus(`
+    VPNs:
+      User 0:
+        Active package name: tech.httptoolkit.android.v1
+        Active vpn type: -1
+        mNetworkAgent=null
+      User 10:
+        Active package name: com.corporate.vpn
+        Active vpn type: 1
+        mNetworkAgent=NetworkAgentInfo{VPN}
+  `, { authoritative: true }), false);
+  assert.equal(interceptor._parseHttpToolkitVpnStatus(`
+    VPNs:
+      User 0:
+        Active package name: tech.httptoolkit.android.v1
+        Active vpn type: -1
+        mNetworkAgent=NetworkAgentInfo{stale}
+  `, { authoritative: true }), false, 'the authoritative active type wins contradictory fields');
+  assert.equal(interceptor._parseHttpToolkitVpnStatus(`
+    VPNs:
+      User 0:
+        Active package name: tech.httptoolkit.android.v1
+        Active vpn type: -1
+      User 10:
+        Active package name: tech.httptoolkit.android.v1
+        Active vpn type: 1
+  `, { authoritative: true }), null, 'conflicting target-package users are ambiguous');
+});
+
+test('pending companion launches use warning feedback instead of an activated success toast', () => {
+  const appSource = fs.readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  const stylesSource = fs.readFileSync(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
+
+  assert.match(
+    appSource,
+    /activationUncertain\s*===\s*true[\s\S]*complete the VPN prompts on the device`\s*,\s*'warning'/
+  );
+  assert.match(stylesSource, /\.toast-warning\s*\{[^}]*var\(--warning-color\)/);
 });

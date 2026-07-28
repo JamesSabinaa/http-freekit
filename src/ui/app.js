@@ -4976,7 +4976,14 @@
         }
 
         if (isCurrentInterceptorOperation(operation)) {
-          toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+          if (data.metadata?.activationUncertain === true) {
+            toast(
+              `Android app launched for ${data.metadata?.model || deviceId}; complete the VPN prompts on the device`,
+              'warning'
+            );
+          } else {
+            toast(`Android device ${data.metadata?.model || deviceId} activated`, 'success');
+          }
         }
       } catch (err) {
         if (isCurrentInterceptorOperation(operation)) {
