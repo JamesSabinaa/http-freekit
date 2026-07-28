@@ -66,6 +66,11 @@ function renderDetail(request) {
     formatBodyAs: body => escapeHtml(body),
     formatSize: size => `${size || 0} bytes`,
     getEffectiveRequest: value => value,
+    getBreakpointEditDraft: req => req.breakpointPhase === 'response' ? {
+      _phase: 'response', status: 200, headers: {}, body: ''
+    } : {
+      _phase: 'request', method: req.method, url: req.url, headers: {}, body: ''
+    },
     wsFramesByParent: {},
     renderBodyViewer: (elementId, body, contentType, mode) => {
       bodyViewerCalls.push({ elementId, body, contentType, mode });
@@ -227,6 +232,23 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
       assert.match(failedWithoutTls, />WSS \(TLS\)</);
       assert.match(failedWithoutTls, />10\.0\.0\.2:8443</);
     }
+  }
+});
+
+test('paused breakpoint details use an amber Paused response status', () => {
+  for (const breakpointPhase of ['request', 'response']) {
+    const html = renderDetail(baseRequest({}, {
+      source: 'breakpoint',
+      statusCode: 0,
+      statusMessage: `Breakpoint (${breakpointPhase})`,
+      breakpointPhase
+    })).html;
+
+    assert.match(html, new RegExp(`>${breakpointPhase === 'response' ? 'Response' : 'Request'} Paused at Breakpoint<`));
+    assert.match(html, /background:#f1971f;color:#fff;">Paused/);
+    assert.match(html, /border-left-color:#f1971f/);
+    assert.doesNotMatch(html, />ERR</);
+    assert.doesNotMatch(html, /background:#ce3939;color:#fff;">/);
   }
 });
 

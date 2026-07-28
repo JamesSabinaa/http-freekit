@@ -1365,8 +1365,9 @@
 
       const content = document.getElementById('detailContent');
       const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
+      const statusBreakpoint = req.source === 'breakpoint' && req.statusCode === 0;
       const statusPending = req.statusCode === null || req.statusCode === undefined;
-      const statusColor = statusPending ? '#888' :
+      const statusColor = statusBreakpoint ? '#f1971f' : statusPending ? '#888' :
         req.error || req.statusCode === 0 ? '#ce3939' :
         req.statusCode < 200 ? '#888' :
         req.statusCode < 300 ? '#4caf7d' :
@@ -1882,10 +1883,14 @@
       }
 
       // ---- Response Card (border-left, pills left, heading right) ----
-      const responseStatus = req.statusCode === null || req.statusCode === undefined
+      const responseStatus = statusBreakpoint
+        ? 'Paused'
+        : req.statusCode === null || req.statusCode === undefined
         ? 'Pending'
         : req.statusCode || 'ERR';
-      const responseStatusMessage = responseStatus === 'Pending' && req.statusMessage === 'Pending'
+      const responseStatusMessage = statusBreakpoint
+        ? ''
+        : responseStatus === 'Pending' && req.statusMessage === 'Pending'
         ? ''
         : req.statusMessage || '';
       html += `<div class="detail-card dir-left" id="card-response" aria-expanded="true" style="border-left-color:${statusColor};">
