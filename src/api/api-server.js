@@ -11,6 +11,7 @@ import { trafficToHar } from './har-converter.js';
 import { validateOpenApiSubmission } from './openapi-validation.js';
 import { validatePortRange } from '../proxy/port-range.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
+import { validateMockRule } from '../proxy/mock-rule-validation.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 // A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
@@ -55,18 +56,6 @@ function normalizeHarBodySize(value) {
     : 0;
 }
 
-function hasCompleteMockMatchers(matchers) {
-  if (!Array.isArray(matchers) || matchers.length === 0) return false;
-  const nameMatchers = new Set(['header', 'query', 'cookie', 'form-data', 'multipart-form-data']);
-  const valueOptionalMatchers = new Set(['wildcard', 'raw-body-exact', 'exact-query']);
-  return matchers.every(matcher => {
-    if (!matcher || typeof matcher.type !== 'string') return false;
-    if (nameMatchers.has(matcher.type)) return typeof matcher.name === 'string' && matcher.name.trim().length > 0;
-    if (valueOptionalMatchers.has(matcher.type)) return true;
-    return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
-  });
-}
-
 function publicClientCertificates(certificates) {
   if (!Array.isArray(certificates)) return [];
   return certificates.map(certificate => ({
@@ -84,24 +73,20 @@ function normalizeImportedMockRule(rule, allowGroup = true) {
     if (!allowGroup || !Array.isArray(rule.items)) return null;
     const items = rule.items.map(item => normalizeImportedMockRule(item, false));
     if (items.some(item => !item)) return null;
-    return {
+    const group = {
       ...normalizedRule,
       enabled: rule.enabled !== false,
       items
     };
+    return validateMockRule(group) ? null : group;
   }
 
-  const hasNewFormat = hasCompleteMockMatchers(rule.matchers)
-    && rule.action && typeof rule.action === 'object' && !Array.isArray(rule.action);
-  const hasLegacyFormat = typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0
-    && rule.response && typeof rule.response === 'object' && !Array.isArray(rule.response);
-  if (!hasNewFormat && !hasLegacyFormat) return null;
-
-  return {
+  const normalized = {
     ...normalizedRule,
     enabled: rule.enabled !== false,
     priority: rule.priority || 'normal'
   };
+  return validateMockRule(normalized) ? null : normalized;
 }
 
 function normalizeImportedBreakpointRule(rule) {
@@ -1335,29 +1320,28 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/mock-rules', (req, res) => {
       // Support new format (matchers + action) and legacy format (method + urlPattern + response)
-      const body = req.body;
+      const body = req.body || {};
 
-      if (body.matchers && body.action) {
-        if (!hasCompleteMockMatchers(body.matchers)) {
-          return res.status(400).json({ error: 'At least one complete matcher is required' });
-        }
+      if (body.matchers !== undefined || body.action !== undefined) {
         // New format
-        const rule = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
+        const candidate = {
           enabled: body.enabled !== undefined ? body.enabled : true,
           priority: body.priority || 'normal',
           matchers: body.matchers,
           preSteps: body.preSteps || undefined,
           action: body.action
-        }));
+        };
+        const validationError = validateMockRule(candidate);
+        if (validationError) return res.status(400).json({ error: validationError });
+        const rule = this._mutateRules(
+          'mockRules', 'mockRules', () => this.proxy.addMockRule(candidate)
+        );
         return res.json({ success: true, rule });
       }
 
       // Legacy format
       const { method, urlPattern, response } = body;
-      if (!urlPattern && !body.matchers) {
-        return res.status(400).json({ error: 'matchers+action or urlPattern+response are required' });
-      }
-      const rule = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
+      const candidate = {
         method: method || '*',
         urlPattern,
         enabled: true,
@@ -1367,7 +1351,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           headers: response?.headers || { 'Content-Type': 'application/json' },
           body: response?.body || ''
         }
-      }));
+      };
+      const validationError = validateMockRule(candidate);
+      if (validationError) return res.status(400).json({ error: validationError });
+      const rule = this._mutateRules(
+        'mockRules', 'mockRules', () => this.proxy.addMockRule(candidate)
+      );
       res.json({ success: true, rule });
     });
 
@@ -1393,9 +1382,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.put('/api/mock-rules/:id', (req, res) => {
-      if (req.body?.matchers && !hasCompleteMockMatchers(req.body.matchers)) {
-        return res.status(400).json({ error: 'At least one complete matcher is required' });
-      }
+      const existing = this._findRuleById(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Rule not found' });
+      const validationError = validateMockRule({ ...existing, ...(req.body || {}) });
+      if (validationError) return res.status(400).json({ error: validationError });
       const updated = this._mutateRules(
         'mockRules',
         'mockRules',
@@ -1431,16 +1421,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Create a rule group
     router.post('/api/mock-rules/group', (req, res) => {
       const items = Array.isArray(req.body.items) ? req.body.items : [];
-      if (items.some(item => item?.type === 'group')) {
-        return res.status(400).json({ error: 'Mock groups cannot contain other groups' });
-      }
-      const group = this._mutateRules('mockRules', 'mockRules', () => this.proxy.addMockRule({
+      const candidate = {
         type: 'group',
         title: req.body.title || 'New Group',
         enabled: true,
         items,
         collapsed: false
-      }));
+      };
+      const validationError = validateMockRule(candidate);
+      if (validationError) return res.status(400).json({ error: validationError });
+      const group = this._mutateRules(
+        'mockRules', 'mockRules', () => this.proxy.addMockRule(candidate)
+      );
       res.json({ success: true, group });
     });
 

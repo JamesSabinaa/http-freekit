@@ -90,23 +90,29 @@ test('legacy deeply nested rules remain editable and removable', () => {
 
 test('loading persisted rules flattens nested groups for the renderer', () => {
   const proxy = new ProxyServer(null);
+  const mockRule = (id, enabled = true) => ({
+    id,
+    enabled,
+    matchers: [],
+    action: { type: 'fixed-response' }
+  });
   const result = proxy.loadMockRules([{
     id: 'outer',
     type: 'group',
     enabled: true,
     items: [
-      { id: 'first', enabled: true },
+      mockRule('first'),
       {
         id: 'inner',
         type: 'group',
         enabled: true,
         items: [
-          { id: 'second', enabled: true },
+          mockRule('second'),
           {
             id: 'disabled-group',
             type: 'group',
             enabled: false,
-            items: [{ id: 'disabled-child', enabled: true }]
+            items: [mockRule('disabled-child')]
           }
         ]
       }

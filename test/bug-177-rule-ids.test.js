@@ -150,11 +150,17 @@ test('mock imports and groups replace duplicate client IDs with server IDs', asy
 
 test('persisted mock IDs retain unique legacy values and repair numeric duplicates', () => {
   const proxy = new ProxyServer(null);
+  const persistedRule = attributes => ({
+    enabled: true,
+    matchers: [],
+    action: { type: 'fixed-response' },
+    ...attributes
+  });
   const restored = proxy.loadMockRules([
-    { id: 'stable-id', enabled: true },
-    { id: 1, enabled: true },
-    { id: '1', enabled: true },
-    { enabled: true }
+    persistedRule({ id: 'stable-id' }),
+    persistedRule({ id: 1 }),
+    persistedRule({ id: '1' }),
+    persistedRule({})
   ]);
   const ids = proxy.mockRules.map(rule => rule.id);
 

@@ -22,6 +22,7 @@ import {
   parseClosePayload
 } from './ws-frame-parser.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
+import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
 import { getApiSpecBaseHost, isObjectRecord } from '../api/openapi-validation.js';
 
 const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
@@ -5352,10 +5353,11 @@ export class ProxyServer {
 
   _flattenMockRules(rules) {
     const flat = [];
-    for (const item of rules) {
+    for (const item of Array.isArray(rules) ? rules : []) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       if (item.type === 'group') {
         if (item.enabled !== false) {
-          flat.push(...this._flattenMockRules(item.items || []));
+          flat.push(...this._flattenMockRules(item.items));
         }
       } else {
         flat.push(item);
@@ -5365,28 +5367,68 @@ export class ProxyServer {
   }
 
   loadMockRules(rules) {
-    let migrated = false;
+    let migrated = !Array.isArray(rules);
     const input = structuredClone(Array.isArray(rules) ? rules : []);
+    const normalizeLeaf = (item, parentEnabled = true) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        migrated = true;
+        return null;
+      }
+      let normalized = item;
+      if (!Object.prototype.hasOwnProperty.call(normalized, 'enabled')) {
+        normalized = { ...normalized, enabled: true };
+        migrated = true;
+      }
+      if (!parentEnabled && normalized.enabled !== false) {
+        normalized = { ...normalized, enabled: false };
+        migrated = true;
+      }
+      if (validateMockRule(normalized, { allowGroup: false, allowEmptyMatchers: true })) {
+        migrated = true;
+        return null;
+      }
+      return normalized;
+    };
     const flattenGroupItems = (items, parentEnabled = true) => {
       const flattened = [];
+      if (!Array.isArray(items)) migrated = true;
       for (const item of Array.isArray(items) ? items : []) {
         if (item?.type === 'group') {
           migrated = true;
-          flattened.push(...flattenGroupItems(item.items, parentEnabled && item.enabled !== false));
-        } else if (item && typeof item === 'object') {
-          flattened.push(parentEnabled || item.enabled === false
-            ? item
-            : { ...item, enabled: false });
+          if (Object.prototype.hasOwnProperty.call(item, 'enabled') && typeof item.enabled !== 'boolean') {
+            continue;
+          }
+          flattened.push(...flattenGroupItems(
+            item.items,
+            parentEnabled && item.enabled !== false
+          ));
+        } else {
+          const normalized = normalizeLeaf(item, parentEnabled);
+          if (normalized) flattened.push(normalized);
         }
       }
       return flattened;
     };
 
-    const normalized = input.map(item => {
-      if (item?.type !== 'group') return item;
-      const items = flattenGroupItems(item.items);
-      return migrated ? { ...item, items } : item;
-    });
+    const normalized = [];
+    for (const item of input) {
+      if (item?.type === 'group') {
+        if (Object.prototype.hasOwnProperty.call(item, 'enabled') && typeof item.enabled !== 'boolean') {
+          migrated = true;
+          continue;
+        }
+        const group = {
+          ...item,
+          enabled: item.enabled !== false,
+          items: flattenGroupItems(item.items)
+        };
+        if (group.enabled !== item.enabled || group.items.length !== item.items?.length) migrated = true;
+        normalized.push(group);
+        continue;
+      }
+      const leaf = normalizeLeaf(item);
+      if (leaf) normalized.push(leaf);
+    }
     if (this._normalizeMockRuleIds(normalized)) migrated = true;
     this.mockRules = normalized;
     return { rules: normalized, migrated };
@@ -5402,20 +5444,21 @@ export class ProxyServer {
     });
 
     const matchedRule = sorted.find(rule => {
-      if (!rule.enabled) return false;
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule) || !rule.enabled
+        || validateMockRule(rule, { allowGroup: false, allowEmptyMatchers: true })) return false;
 
       // New format: matchers + action
-      if (rule.matchers && rule.action) {
+      if (Array.isArray(rule.matchers)
+        && rule.action && typeof rule.action === 'object' && !Array.isArray(rule.action)) {
         return rule.matchers.every(m => this._evaluateMatcher(m, method, url, headers, body));
       }
 
       // Legacy format: method + urlPattern + response
-      if (rule.method && rule.method !== '*' && rule.method.toUpperCase() !== method.toUpperCase()) return false;
-      if (rule.urlPattern) {
-        if (rule.urlPattern instanceof RegExp) {
-          return rule.urlPattern.test(url);
-        }
-        return url.includes(rule.urlPattern);
+      if (typeof rule.method === 'string' && rule.method !== '*'
+        && rule.method.toUpperCase() !== String(method || '').toUpperCase()) return false;
+      if (rule.urlPattern instanceof RegExp) return rule.urlPattern.test(String(url || ''));
+      if (typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0) {
+        return String(url || '').includes(rule.urlPattern);
       }
       return false;
     });
@@ -5425,10 +5468,14 @@ export class ProxyServer {
   }
 
   _evaluateMatcher(matcher, method, url, headers, body) {
+    if (!isCompleteMockMatcher(matcher)) return false;
     if (BLANK_VALUE_MATCH_ALL_TYPES.has(matcher?.type)
       && (typeof matcher.value !== 'string' || matcher.value.trim() === '')) {
       return false;
     }
+    method = typeof method === 'string' ? method : '';
+    url = typeof url === 'string' ? url : '';
+    headers = headers && typeof headers === 'object' && !Array.isArray(headers) ? headers : {};
     body = body == null ? '' : String(body);
 
     switch (matcher.type) {

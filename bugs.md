@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 67 of the 360 documented bugs are not fully fixed.**
+**No: 66 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 293 |
-| Partially fixed | 26 |
+| Fixed | 294 |
+| Partially fixed | 25 |
 | Open | 41 |
 | **Total** | **360** |
 
@@ -260,8 +260,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-101 — High — Malformed mock rules are accepted and later crash evaluation
 
-- Status: **Partially fixed**.
-- Resolution: Ordinary create/import validation now rejects several malformed rule shapes, but malformed persisted rules and rules nested in groups can still reach runtime matcher evaluation.
+- Status: **Fixed**.
+- Resolution: Mock rule validation is now shared by create, update, import, group, and persistence-loading paths. Startup removes malformed leaves at every group depth and persists the sanitized tree, while runtime flattening and matcher evaluation independently fail closed if invalid data bypasses those boundaries.
 - Evidence: API create and replacement-import paths now call `hasCompleteMockMatchers()`, but `loadMockRules()` assigns persisted non-group rule objects without validating them. `_findMockRule()` still assumes `rule.matchers` is an array and calls `.every()`, while individual evaluators call string methods such as `.toLowerCase()` and `.startsWith()` on unvalidated fields.
 - Impact: one invalid persisted rule can throw on every matching request and may terminate the Node process through an unhandled rejection.
 - Reproduction: persist or otherwise load an enabled rule with `matchers: {}` and an action, then send a request; evaluation throws `rule.matchers.every is not a function`.
