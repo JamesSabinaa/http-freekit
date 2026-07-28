@@ -591,8 +591,8 @@ export class McpServerBridge {
       throw new Error('body_side is required when body_offset or body_limit is provided');
     }
 
-    const offset = body_offset ?? 0;
-    const limit = body_limit ?? MCP_BODY_PAGE_MAX_CODE_UNITS;
+    const offset = body_offset === undefined ? 0 : body_offset;
+    const limit = body_limit === undefined ? MCP_BODY_PAGE_MAX_CODE_UNITS : body_limit;
     if (!Number.isSafeInteger(offset) || offset < 0) {
       throw new Error('body_offset must be a non-negative safe integer');
     }

@@ -728,4 +728,20 @@ test('MCP request detail requires a side for offsets and validates direct calls'
     }),
     /body_offset/
   );
+  assert.throws(
+    () => bridge._handleGetRequestDetail({
+      request_id: 'validation-request',
+      body_side: 'request',
+      body_offset: null
+    }),
+    /body_offset/
+  );
+  assert.throws(
+    () => bridge._handleGetRequestDetail({
+      request_id: 'validation-request',
+      body_side: 'request',
+      body_limit: null
+    }),
+    /body_limit/
+  );
 });
