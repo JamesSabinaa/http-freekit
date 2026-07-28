@@ -62,10 +62,9 @@ const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 
 function getHeaderValues(headers, name) {
   const normalizedName = String(name || '').toLowerCase();
-  const entry = Object.entries(headers).find(([headerName]) =>
-    headerName.toLowerCase() === normalizedName);
-  if (!entry) return [];
-  return (Array.isArray(entry[1]) ? entry[1] : [entry[1]])
+  return Object.entries(headers)
+    .filter(([headerName]) => headerName.toLowerCase() === normalizedName)
+    .flatMap(([, value]) => Array.isArray(value) ? value : [value])
     .filter(value => value !== undefined && value !== null)
     .map(String);
 }
@@ -124,6 +123,48 @@ function parseQuotedParameter(value, parameterName) {
   ));
   if (!match) return null;
   return match[1] === undefined ? match[2] : match[1].replace(/\\(.)/g, '$1');
+}
+
+function findMultipartDelimiter(body, boundary, startIndex) {
+  const token = `--${boundary}`;
+  let index = body.indexOf(token, startIndex);
+  while (index !== -1) {
+    const startsLine = index === 0 || body.slice(index - 2, index) === '\r\n';
+    let cursor = index + token.length;
+    let closing = false;
+    if (body.slice(cursor, cursor + 2) === '--') {
+      closing = true;
+      cursor += 2;
+    }
+    while (body[cursor] === ' ' || body[cursor] === '\t') cursor++;
+    const endsLine = body.slice(cursor, cursor + 2) === '\r\n';
+    if (startsLine && (endsLine || (closing && cursor === body.length))) {
+      return {
+        index,
+        contentStart: endsLine ? cursor + 2 : cursor,
+        closing
+      };
+    }
+    index = body.indexOf(token, index + token.length);
+  }
+  return null;
+}
+
+function splitMultipartBody(body, boundary) {
+  const parts = [];
+  let delimiter = findMultipartDelimiter(body, boundary, 0);
+  if (!delimiter || delimiter.closing) return parts;
+  let contentStart = delimiter.contentStart;
+  while (true) {
+    delimiter = findMultipartDelimiter(body, boundary, contentStart);
+    if (!delimiter) return [];
+    const contentEnd = body.slice(delimiter.index - 2, delimiter.index) === '\r\n'
+      ? delimiter.index - 2
+      : delimiter.index;
+    parts.push(body.slice(contentStart, contentEnd));
+    if (delimiter.closing) return parts;
+    contentStart = delimiter.contentStart;
+  }
 }
 
 class TruncatedBodyString extends String {
@@ -1214,21 +1255,27 @@ export class ProxyServer {
 
   // Convert rawHeaders array to an object preserving original case.
   // Node.js lowercases header names in req.headers; this keeps e.g. "User-Agent" not "user-agent".
-  // Filters out proxy-specific headers that shouldn't be forwarded upstream.
-  _rawHeadersToObject(rawHeaders) {
+  // Filters out proxy-specific headers that shouldn't be forwarded upstream unless
+  // the caller needs the untouched values for request matching.
+  _rawHeadersToObject(rawHeaders, { stripUpstreamHeaders = true } = {}) {
     const headers = {};
     for (let i = 0; i < rawHeaders.length; i += 2) {
       const name = rawHeaders[i];
       const value = rawHeaders[i + 1];
       const lower = name.toLowerCase();
-      if (this._shouldStripUpstreamHeader(lower)) continue;
-      if (headers[name] !== undefined) {
+      if (stripUpstreamHeaders && this._shouldStripUpstreamHeader(lower)) continue;
+      if (Object.prototype.hasOwnProperty.call(headers, name)) {
         // Multiple values — combine (cookie is common)
         headers[name] = Array.isArray(headers[name])
           ? [...headers[name], value]
           : [headers[name], value];
       } else {
-        headers[name] = value;
+        Object.defineProperty(headers, name, {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true
+        });
       }
     }
     return headers;
@@ -2111,10 +2158,13 @@ export class ProxyServer {
       let transformedRequestHeaders = false;
       let pendingEmitted = false;
       const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
+      const matcherHeaders = this._rawHeadersToObject(clientReq.rawHeaders, {
+        stripUpstreamHeaders: false
+      });
       const downstream = this._trackDownstreamCancellation(clientRes);
 
       // Check mock rules
-      const mockRule = this._findMockRule(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
+      const mockRule = this._findMockRule(clientReq.method, targetUrl.href, matcherHeaders, matcherBody);
       const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
       const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
         ? mockRule.action
@@ -2161,7 +2211,12 @@ export class ProxyServer {
       // Check breakpoint rules
       const breakpoint = ['request', 'request-response'].includes(mockBreakpointPhase)
         ? mockRule
-        : this._checkBreakpoint(clientReq.method, targetUrl.href, clientReq.headers, matcherBody);
+        : this._checkBreakpoint(
+          clientReq.method,
+          targetUrl.href,
+          transformedRequestHeaders ? clientReq.headers : matcherHeaders,
+          matcherBody
+        );
       const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
       if (breakpoint) {
         pendingEmitted = this._emitPendingRequest({
@@ -2781,6 +2836,9 @@ export class ProxyServer {
         let breakpointBodyModified = false;
         let transformedRequestHeaders = false;
         const matcherBody = this._requestBodyForMatching(body, req.headers);
+        const matcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
+          stripUpstreamHeaders: false
+        });
         const downstream = this._trackDownstreamCancellation(res);
 
         // Emit pending request immediately so it appears in the UI
@@ -2795,7 +2853,7 @@ export class ProxyServer {
           : data => this._emitRequest(data);
 
         // Check mock rules
-        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
+        const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
@@ -3228,7 +3286,12 @@ export class ProxyServer {
         // Check breakpoint rules
         const breakpointRule = ['request', 'request-response'].includes(mockBreakpointPhase)
           ? mockRule
-          : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
+          : this._checkBreakpoint(
+            req.method,
+            fullUrl,
+            transformedRequestHeaders ? req.headers : matcherHeaders,
+            matcherBody
+          );
         const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
         if (breakpointRule) {
           emitCapturedRequest({
@@ -4114,6 +4177,9 @@ export class ProxyServer {
         let breakpointBodyModified = false;
         let transformedRequestHeaders = false;
         const matcherBody = this._requestBodyForMatching(body, req.headers);
+        const matcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
+          stripUpstreamHeaders: false
+        });
 
         // Emit pending request immediately so it appears in the UI
         const downstream = this._trackDownstreamCancellation(res);
@@ -4128,7 +4194,7 @@ export class ProxyServer {
           : data => this._emitRequest(data);
 
         // Check mock rules
-        const mockRule = this._findMockRule(req.method, fullUrl, req.headers, matcherBody);
+        const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
@@ -4173,7 +4239,12 @@ export class ProxyServer {
         // Check breakpoint rules
         const breakpointRule = ['request', 'request-response'].includes(mockBreakpointPhase)
           ? mockRule
-          : this._checkBreakpoint(req.method, fullUrl, req.headers, matcherBody);
+          : this._checkBreakpoint(
+            req.method,
+            fullUrl,
+            transformedRequestHeaders ? req.headers : matcherHeaders,
+            matcherBody
+          );
         const responseBreakpoint = ['response', 'request-response'].includes(mockBreakpointPhase);
         if (breakpointRule) {
           emitCapturedRequest({
@@ -6226,6 +6297,7 @@ export class ProxyServer {
 
           // Check that all keys in expected exist in actual with matching values
           return actual !== null && typeof actual === 'object'
+            && Array.isArray(actual) === Array.isArray(expected)
             && expectedKeys.every(k => Object.prototype.hasOwnProperty.call(actual, k)
               && jsonValuesEqual(actual[k], expected[k]));
         } catch { return false; }
@@ -6237,7 +6309,7 @@ export class ProxyServer {
         try { return new URL(url).protocol.replace(':', '') === matcher.value.toLowerCase(); } catch { return false; }
       }
       case 'cookie': {
-        const cookieHeader = headers['cookie'] || '';
+        const cookieHeader = getHeaderValues(headers, 'cookie').join('; ');
         const cookies = new Map();
         for (const cookie of cookieHeader.split(';')) {
           const separatorIndex = cookie.indexOf('=');
@@ -6266,7 +6338,7 @@ export class ProxyServer {
         if (!contentType) return false;
         const boundary = parseQuotedParameter(contentType, 'boundary');
         if (!boundary) return false;
-        const parts = body.split('--' + boundary);
+        const parts = splitMultipartBody(body, boundary);
         for (const part of parts) {
           const bodyStart = part.indexOf('\r\n\r\n');
           if (bodyStart === -1) continue;

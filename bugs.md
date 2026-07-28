@@ -376,7 +376,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-115 — Low/Medium — Valid multipart, cookie, and JSON matchers fail
 
 - Status: **Fixed**.
-- Resolution: Cookie parsing preserves padded values and prototype-named cookies. Multipart parsing accepts quoted boundaries and parameter reordering, exact and nested partial JSON comparisons ignore object key order while retaining array order, DNS host matchers normalize case, and header wildcard matching treats all punctuation except `*` literally across case-insensitive header names and repeated values.
+- Resolution: Cookie parsing preserves padded values and prototype-named cookies. Multipart parsing accepts quoted boundaries and parameter reordering while recognizing delimiters only at MIME line boundaries. Exact and nested partial JSON comparisons ignore object key order while retaining array order and container type. DNS host matchers normalize case, and header wildcard matching treats all punctuation except `*` literally across case-insensitive header names and raw repeated values.
 
 - Evidence: multipart parsing retains quotes around `boundary="abc"` at `src/proxy/proxy-server.js:3293-3309`; cookie parsing splits on every `=` at `:3277-3283`; JSON exact matching compares property-order-sensitive `JSON.stringify()` output at `:3256-3261`. Host/hostname matchers compare normalized URL hosts to raw case-sensitive values at `:3206-3220`, and header wildcard conversion leaves regex metacharacters unescaped at `:3224-3233`.
 - Impact: quoted multipart boundaries, padded cookie values, semantically equal reordered JSON, uppercase DNS matchers, and literal punctuation in wildcard header values can all produce false results.
