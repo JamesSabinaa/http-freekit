@@ -20,9 +20,11 @@ test('generated JVM agent combines system trust with the FreeKit CA', () => {
 
   assert.match(source, /CertificateFactory\.getInstance\("X\.509"\)/);
   assert.match(source, /systemFactory\.init\(\(KeyStore\) null\)/);
-  assert.match(source, /caStore\.setCertificateEntry\("http-freekit", caCertificate\)/);
-  assert.match(source, /systemTrust\.checkServerTrusted/);
-  assert.match(source, /caTrust\.checkServerTrusted/);
+  assert.match(source, /systemTrust\.getAcceptedIssuers\(\)/);
+  assert.match(source, /combinedStore\.setCertificateEntry\("system-" \+ issuerIndex, issuer\)/);
+  assert.match(source, /combinedStore\.setCertificateEntry\("http-freekit", caCertificate\)/);
+  assert.match(source, /combinedFactory\.init\(combinedStore\)/);
+  assert.doesNotMatch(source, /new X509TrustManager\(\) \{/);
   assert.match(source, /SSLContext\.setDefault\(context\)/);
   assert.match(source, /HttpsURLConnection\.setDefaultSSLSocketFactory/);
 });

@@ -450,10 +450,8 @@ import java.lang.instrument.Instrumentation;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -580,41 +578,23 @@ public class ProxyAgent {
             caCertificate = certificates.generateCertificate(input);
         }
 
-        KeyStore caStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        caStore.load(null, null);
-        caStore.setCertificateEntry("http-freekit", caCertificate);
-
-        TrustManagerFactory caFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        caFactory.init(caStore);
-        final X509TrustManager caTrust = findX509TrustManager(caFactory.getTrustManagers());
-
         TrustManagerFactory systemFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         systemFactory.init((KeyStore) null);
-        final X509TrustManager systemTrust = findX509TrustManager(systemFactory.getTrustManagers());
+        X509TrustManager systemTrust = findX509TrustManager(systemFactory.getTrustManagers());
 
-        X509TrustManager combinedTrust = new X509TrustManager() {
-            public X509Certificate[] getAcceptedIssuers() {
-                X509Certificate[] systemIssuers = systemTrust.getAcceptedIssuers();
-                X509Certificate[] caIssuers = caTrust.getAcceptedIssuers();
-                X509Certificate[] combined = Arrays.copyOf(systemIssuers, systemIssuers.length + caIssuers.length);
-                System.arraycopy(caIssuers, 0, combined, systemIssuers.length, caIssuers.length);
-                return combined;
-            }
-            public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-                try {
-                    systemTrust.checkClientTrusted(chain, authType);
-                } catch (CertificateException systemError) {
-                    caTrust.checkClientTrusted(chain, authType);
-                }
-            }
-            public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-                try {
-                    systemTrust.checkServerTrusted(chain, authType);
-                } catch (CertificateException systemError) {
-                    caTrust.checkServerTrusted(chain, authType);
-                }
-            }
-        };
+        KeyStore combinedStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        combinedStore.load(null, null);
+        int issuerIndex = 0;
+        for (X509Certificate issuer : systemTrust.getAcceptedIssuers()) {
+            combinedStore.setCertificateEntry("system-" + issuerIndex, issuer);
+            issuerIndex++;
+        }
+        combinedStore.setCertificateEntry("http-freekit", caCertificate);
+        TrustManagerFactory combinedFactory = TrustManagerFactory.getInstance(
+            TrustManagerFactory.getDefaultAlgorithm()
+        );
+        combinedFactory.init(combinedStore);
+        X509TrustManager combinedTrust = findX509TrustManager(combinedFactory.getTrustManagers());
 
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(null, new TrustManager[] { combinedTrust }, null);
@@ -756,6 +736,11 @@ public class ProxyAgent {
     return first.dev === second.dev && first.ino === second.ino;
   }
 
+  _sameFileSnapshot(first, second) {
+    return this._sameFileIdentity(first, second) && first.size === second.size &&
+      first.mtimeMs === second.mtimeMs && first.ctimeMs === second.ctimeMs;
+  }
+
   _readBoundedRegularFile(filePath, minimumBytes, maximumBytes, description) {
     const pathStat = fs.lstatSync(filePath);
     if (!pathStat.isFile() || pathStat.nlink !== 1 || pathStat.size < minimumBytes ||
@@ -766,7 +751,7 @@ public class ProxyAgent {
     try {
       const openedStat = fs.fstatSync(descriptor);
       if (!openedStat.isFile() || openedStat.nlink !== 1 ||
-          !this._sameFileIdentity(pathStat, openedStat)) {
+          !this._sameFileSnapshot(pathStat, openedStat)) {
         throw new Error(`${description} changed before it was opened`);
       }
       const bytes = fs.readFileSync(descriptor);
@@ -775,8 +760,8 @@ public class ProxyAgent {
       if (bytes.length !== openedStat.size || finalDescriptorStat.size !== openedStat.size ||
           finalDescriptorStat.nlink !== 1 || !finalPathStat.isFile() ||
           finalPathStat.nlink !== 1 ||
-          !this._sameFileIdentity(openedStat, finalDescriptorStat) ||
-          !this._sameFileIdentity(openedStat, finalPathStat)) {
+          !this._sameFileSnapshot(openedStat, finalDescriptorStat) ||
+          !this._sameFileSnapshot(openedStat, finalPathStat)) {
         throw new Error(`${description} changed while it was read`);
       }
       return bytes;
@@ -809,14 +794,17 @@ public class ProxyAgent {
     }
   }
 
-  _readAgentJarBytes(jarPath) {
+  _readAgentJarBytes(jarPath, expectedAgentClass = null) {
     const bytes = this._readBoundedRegularFile(
       jarPath,
       22,
       MAX_JVM_AGENT_JAR_BYTES,
       'cached JVM agent JAR'
     );
-    this._validateAgentJarArchive(bytes);
+    const contents = this._validateAgentJarArchive(bytes);
+    if (expectedAgentClass && !contents.agentClass.equals(expectedAgentClass)) {
+      throw new Error('cached JVM agent JAR does not contain the compiled ProxyAgent class');
+    }
     return bytes;
   }
 
@@ -938,10 +926,11 @@ public class ProxyAgent {
         agentClass.readUInt16BE(6) !== AGENT_BYTECODE_POLICY.classMajorVersion) {
       throw new Error('cached JVM agent JAR contains incompatible ProxyAgent bytecode');
     }
+    return { manifest, agentClass };
   }
 
-  _getAgentJarCacheStamp(jarPath, sourceHash) {
-    const jarBytes = this._readAgentJarBytes(jarPath);
+  _getAgentJarCacheStamp(jarPath, sourceHash, expectedAgentClass = null) {
+    const jarBytes = this._readAgentJarBytes(jarPath, expectedAgentClass);
     return {
       version: JVM_AGENT_CACHE_VERSION,
       sourceHash,
@@ -949,7 +938,7 @@ public class ProxyAgent {
     };
   }
 
-  _agentJarCacheIsValid(jarPath, stampPath, sourceHash) {
+  _agentJarCacheIsValid(jarPath, stampPath, sourceHash, expectedAgentClass = null) {
     const stamp = JSON.parse(this._readBoundedRegularFile(
       stampPath,
       1,
@@ -960,7 +949,7 @@ public class ProxyAgent {
         !/^[a-f0-9]{64}$/.test(stamp.jarHash || '')) {
       return false;
     }
-    const actualStamp = this._getAgentJarCacheStamp(jarPath, sourceHash);
+    const actualStamp = this._getAgentJarCacheStamp(jarPath, sourceHash, expectedAgentClass);
     return actualStamp.jarHash === stamp.jarHash;
   }
 
@@ -993,7 +982,12 @@ public class ProxyAgent {
   }
 
   _parseAgentManifestMainAttributes(manifest) {
-    const attributes = new Map();
+    if (typeof manifest !== 'string') {
+      throw new Error('cached JVM agent JAR manifest is invalid');
+    }
+    const sections = [];
+    let attributes = new Map();
+    let attributeOrder = [];
     let currentName = null;
     let currentValue = '';
     const commitAttribute = () => {
@@ -1003,14 +997,33 @@ public class ProxyAgent {
         throw new Error(`cached JVM agent JAR manifest repeats ${currentName}`);
       }
       attributes.set(normalizedName, currentValue);
+      attributeOrder.push(normalizedName);
       currentName = null;
       currentValue = '';
     };
+    const commitSection = () => {
+      commitAttribute();
+      if (attributeOrder.length === 0) {
+        throw new Error('cached JVM agent JAR manifest contains an empty section');
+      }
+      sections.push({ attributes, attributeOrder });
+      attributes = new Map();
+      attributeOrder = [];
+    };
 
-    for (const line of manifest.split(/\r\n|\n|\r/)) {
+    const lines = manifest.split(/\r\n|\n|\r/);
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
       if (line === '') {
-        commitAttribute();
-        break;
+        if (index === lines.length - 1) {
+          if (currentName !== null || attributeOrder.length !== 0) commitSection();
+          break;
+        }
+        commitSection();
+        continue;
+      }
+      if (Buffer.byteLength(line, 'utf8') > 72) {
+        throw new Error('cached JVM agent JAR manifest line exceeds 72 bytes');
       }
       if (line.startsWith(' ')) {
         if (currentName === null) {
@@ -1020,15 +1033,24 @@ public class ProxyAgent {
         continue;
       }
       commitAttribute();
-      const match = /^([A-Za-z0-9][A-Za-z0-9_-]*): (.*)$/.exec(line);
+      const match = /^([A-Za-z0-9][A-Za-z0-9_-]{0,69}): ([^\0]*)$/.exec(line);
       if (!match) {
-        throw new Error('cached JVM agent JAR manifest has an invalid main attribute');
+        throw new Error('cached JVM agent JAR manifest has an invalid attribute');
       }
       currentName = match[1];
       currentValue = match[2];
     }
-    commitAttribute();
-    return attributes;
+    if (currentName !== null || attributeOrder.length !== 0) commitSection();
+    if (sections.length === 0 || sections[0].attributeOrder[0] !== 'manifest-version' ||
+        !/^\d+(?:\.\d+)*$/.test(sections[0].attributes.get('manifest-version') || '')) {
+      throw new Error('cached JVM agent JAR manifest has no valid main version');
+    }
+    for (const section of sections.slice(1)) {
+      if (section.attributeOrder[0] !== 'name' || !section.attributes.get('name')) {
+        throw new Error('cached JVM agent JAR manifest has an invalid named section');
+      }
+    }
+    return sections[0].attributes;
   }
 
   async _getAgentJarPath() {
@@ -1036,7 +1058,7 @@ public class ProxyAgent {
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
     const stampPath = path.join(agentDir, 'source.sha256');
     const agentSource = this._getAgentSource();
-    const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n';
+    const manifest = 'Manifest-Version: 1.0\nPremain-Class: ProxyAgent\nAgent-Class: ProxyAgent\nCan-Retransform-Classes: true\nCan-Redefine-Classes: true\n\n';
     const sourceHash = crypto.createHash('sha256')
       .update(agentSource)
       .update(manifest)
@@ -1104,16 +1126,21 @@ public class ProxyAgent {
       this._writeNewAgentBuildFile(builtJarPath, packagedAgent);
       this._writeNewAgentBuildFile(
         builtStampPath,
-        JSON.stringify(this._getAgentJarCacheStamp(builtJarPath, sourceHash))
+        JSON.stringify(this._getAgentJarCacheStamp(builtJarPath, sourceHash, compiledClass))
       );
-      if (!this._agentJarCacheIsValid(builtJarPath, builtStampPath, sourceHash)) {
+      if (!this._agentJarCacheIsValid(
+        builtJarPath,
+        builtStampPath,
+        sourceHash,
+        compiledClass
+      )) {
         throw new Error('JVM agent build outputs changed before publication');
       }
       this._assertAgentCacheTargetIsReplaceable(jarPath);
       this._assertAgentCacheTargetIsReplaceable(stampPath);
       this._publishAgentCacheFile(builtJarPath, jarPath);
       this._publishAgentCacheFile(builtStampPath, stampPath);
-      if (!this._agentJarCacheIsValid(jarPath, stampPath, sourceHash)) {
+      if (!this._agentJarCacheIsValid(jarPath, stampPath, sourceHash, compiledClass)) {
         throw new Error('JVM agent cache changed during publication');
       }
 
