@@ -12,6 +12,9 @@ const AGENT_BYTECODE_POLICY = Object.freeze({
 const JVM_RECOVERY_VERSION = 1;
 const MAX_JVM_RECOVERY_BYTES = 128 * 1024;
 const MAX_JVM_RECOVERY_PROCESSES = 128;
+const JVM_AGENT_CACHE_VERSION = 1;
+const MAX_JVM_AGENT_JAR_BYTES = 2 * 1024 * 1024;
+const MAX_JVM_AGENT_STAMP_BYTES = 4096;
 
 export class JvmInterceptor {
   constructor(options = {}) {
@@ -746,6 +749,41 @@ public class ProxyAgent {
     );
   }
 
+  _readAgentJarBytes(jarPath) {
+    const stat = fs.lstatSync(jarPath);
+    if (!stat.isFile() || stat.size < 4 || stat.size > MAX_JVM_AGENT_JAR_BYTES) {
+      throw new Error('cached JVM agent JAR is not a bounded regular file');
+    }
+    const bytes = fs.readFileSync(jarPath);
+    if (bytes.length !== stat.size || bytes.readUInt32BE(0) !== 0x504b0304) {
+      throw new Error('cached JVM agent JAR is not a valid JAR archive');
+    }
+    return bytes;
+  }
+
+  _getAgentJarCacheStamp(jarPath, sourceHash) {
+    const jarBytes = this._readAgentJarBytes(jarPath);
+    return {
+      version: JVM_AGENT_CACHE_VERSION,
+      sourceHash,
+      jarHash: crypto.createHash('sha256').update(jarBytes).digest('hex')
+    };
+  }
+
+  _agentJarCacheIsValid(jarPath, stampPath, sourceHash) {
+    const stampStat = fs.lstatSync(stampPath);
+    if (!stampStat.isFile() || stampStat.size <= 0 || stampStat.size > MAX_JVM_AGENT_STAMP_BYTES) {
+      throw new Error('JVM agent cache stamp is not a bounded regular file');
+    }
+    const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
+    if (stamp?.version !== JVM_AGENT_CACHE_VERSION || stamp.sourceHash !== sourceHash ||
+        !/^[a-f0-9]{64}$/.test(stamp.jarHash || '')) {
+      return false;
+    }
+    const actualStamp = this._getAgentJarCacheStamp(jarPath, sourceHash);
+    return actualStamp.jarHash === stamp.jarHash;
+  }
+
   async _getAgentJarPath() {
     const agentDir = this.agentDir;
     const jarPath = path.join(agentDir, 'proxy-agent.jar');
@@ -760,10 +798,14 @@ public class ProxyAgent {
       .update(this._getAgentBytecodePolicy())
       .digest('hex');
 
-    if (fs.existsSync(jarPath) && fs.existsSync(stampPath)
-      && fs.readFileSync(stampPath, 'utf8') === sourceHash) {
-      this._preparedAgentJarPath = jarPath;
-      return jarPath;
+    try {
+      if (fs.existsSync(jarPath) && fs.existsSync(stampPath)
+          && this._agentJarCacheIsValid(jarPath, stampPath, sourceHash)) {
+        this._preparedAgentJarPath = jarPath;
+        return jarPath;
+      }
+    } catch (err) {
+      console.warn('[Interceptor] Ignoring invalid cached JVM agent JAR:', err.message);
     }
 
     try {
@@ -776,7 +818,10 @@ public class ProxyAgent {
 
       // Package into JAR
       await this._packageAgentJar(jarPath, manifestPath, agentDir);
-      fs.writeFileSync(stampPath, sourceHash);
+      fs.writeFileSync(
+        stampPath,
+        JSON.stringify(this._getAgentJarCacheStamp(jarPath, sourceHash))
+      );
 
       console.log('[Interceptor] JVM proxy agent JAR created at', jarPath);
       this._preparedAgentJarPath = jarPath;

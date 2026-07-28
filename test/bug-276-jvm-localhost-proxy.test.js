@@ -114,3 +114,65 @@ test('JVM UI copy command matches the backend fallback agent option', () => {
   assert.doesNotMatch(container.innerHTML, /-Dhttp\.proxyHost/);
   assert.doesNotMatch(container.innerHTML, /aria-label="Copy JVM launch option"/);
 });
+
+test('JVM attach failure metadata replaces and renders a stale fallback command', async () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+  const stateStart = source.indexOf('let allInterceptors = [];');
+  const stateEnd = source.indexOf('// Interceptors that have expandable config components', stateStart);
+  const activateStart = source.indexOf('async function activateJvmProcess(');
+  const activateEnd = source.indexOf('async function refreshJvmProcesses(', activateStart);
+  const renders = [];
+  const button = { disabled: false, innerHTML: 'Attach' };
+  const container = {};
+  const context = {
+    API_BASE: '',
+    console,
+    fetch: async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        success: false,
+        error: 'attach denied',
+        metadata: {
+          fallbackCommand: null,
+          processes: [{ pid: '123', name: 'Example' }],
+          activatedProcesses: []
+        }
+      })
+    }),
+    document: {
+      querySelector: () => ({ querySelector: () => button }),
+      getElementById: id => id === 'interceptConfig-jvm' ? container : null
+    },
+    filterInterceptors: () => {},
+    renderConnectedSources: () => {},
+    renderJvmConfig: () => renders.push(JSON.parse(
+      vm.runInContext('JSON.stringify(expandedInterceptorMetadata)', context)
+    )),
+    toast: () => {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${source.slice(stateStart, stateEnd)}
+    ${source.slice(activateStart, activateEnd)}
+    expandedInterceptorId = 'jvm';
+    expandedInterceptorMetadata = {
+      marker: 'preserved',
+      fallbackCommand: 'stale command',
+      processes: [],
+      activatedProcesses: []
+    };
+  `, context);
+
+  await context.activateJvmProcess('123');
+
+  assert.equal(renders.length, 1);
+  assert.deepEqual(renders[0], {
+    marker: 'preserved',
+    fallbackCommand: null,
+    processes: [{ pid: '123', name: 'Example' }],
+    activatedProcesses: []
+  });
+  assert.equal(button.disabled, false);
+  assert.equal(button.innerHTML, 'Attach');
+});

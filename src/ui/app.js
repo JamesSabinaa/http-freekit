@@ -5381,16 +5381,30 @@
           body: JSON.stringify({ pid })
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
         if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh process and activation info
-        if (data.metadata) {
+        let metadataUpdated = false;
+        if (data.metadata && typeof data.metadata === 'object' && !Array.isArray(data.metadata)) {
           expandedInterceptorMetadata = {
             ...expandedInterceptorMetadata,
-            processes: data.metadata.processes || expandedInterceptorMetadata?.processes || [],
-            activatedProcesses: data.metadata.activatedProcesses || expandedInterceptorMetadata?.activatedProcesses || []
+            ...data.metadata,
+            processes: Array.isArray(data.metadata.processes)
+              ? data.metadata.processes
+              : expandedInterceptorMetadata?.processes || [],
+            activatedProcesses: Array.isArray(data.metadata.activatedProcesses)
+              ? data.metadata.activatedProcesses
+              : expandedInterceptorMetadata?.activatedProcesses || []
           };
+          metadataUpdated = true;
+        }
+
+        if (res.ok === false || data.error || data.success === false) {
+          // Error responses can contain a newly available or unavailable
+          // manual fallback, so render their metadata before surfacing the error.
+          const container = document.getElementById('interceptConfig-jvm');
+          if (metadataUpdated && container) renderJvmConfig(container);
+          throw new Error(data.error || `HTTP ${res.status}`);
         }
 
         // Re-render the config area
@@ -5439,6 +5453,7 @@
         if (!isCurrentInterceptorOperation(operation)) return;
         expandedInterceptorMetadata = {
           ...expandedInterceptorMetadata,
+          ...metadata,
           processes: metadata.processes,
           activatedProcesses: metadata.activatedProcesses
         };

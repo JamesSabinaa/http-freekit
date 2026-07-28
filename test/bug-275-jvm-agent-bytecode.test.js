@@ -101,7 +101,7 @@ test('agent cache invalidates when its bytecode policy changes', async t => {
   };
   interceptor._packageAgentJar = async (jarPath) => {
     packages += 1;
-    fs.writeFileSync(jarPath, 'jar');
+    fs.writeFileSync(jarPath, Buffer.from([0x50, 0x4b, 0x03, 0x04, packages]));
   };
 
   assert.equal(await interceptor._getAgentJarPath(), path.join(agentDir, 'proxy-agent.jar'));
@@ -117,6 +117,41 @@ test('agent cache invalidates when its bytecode policy changes', async t => {
   assert.equal(compiles, 2);
   assert.equal(packages, 2);
   assert.notEqual(secondStamp, firstStamp);
+});
+
+test('agent cache rebuilds a JAR whose contents no longer match its stamp', async t => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-corrupt-cache-'));
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const interceptor = new JvmInterceptor({ agentDir });
+  let packages = 0;
+  interceptor._compileAgentJava = async () => {};
+  interceptor._packageAgentJar = async jarPath => {
+    packages++;
+    fs.writeFileSync(jarPath, Buffer.from([0x50, 0x4b, 0x03, 0x04, packages]));
+  };
+
+  const jarPath = await interceptor._getAgentJarPath();
+  fs.writeFileSync(jarPath, 'corrupt');
+
+  assert.equal(await interceptor._getAgentJarPath(), jarPath);
+  assert.equal(packages, 2);
+});
+
+test('unreadable agent cache metadata degrades to an unavailable fallback', async t => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-jvm-unreadable-cache-'));
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  t.mock.method(console, 'error', () => {});
+  t.mock.method(console, 'warn', () => {});
+  fs.writeFileSync(path.join(agentDir, 'proxy-agent.jar'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  fs.mkdirSync(path.join(agentDir, 'source.sha256'));
+  const interceptor = new JvmInterceptor({ agentDir });
+  interceptor._compileAgentJava = async () => {};
+  interceptor._packageAgentJar = async () => {};
+
+  assert.equal(await interceptor._getAgentJarPath(), null);
+  assert.equal(interceptor._preparedAgentJarPath, null);
 });
 
 test('available javac produces major-version-52 agent bytecode in the class and JAR', async t => {

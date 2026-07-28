@@ -79,7 +79,8 @@ for (const target of targets) {
   test(`${target.id} refresh replaces lists only after a confirmed success`, async () => {
     const metadata = {
       [target.listKey]: [{ id: 'fresh' }],
-      [target.activatedListKey]: [{ id: 'fresh-active' }]
+      [target.activatedListKey]: [{ id: 'fresh-active' }],
+      refreshedMetadata: target.id
     };
     const harness = createHarness(target, async () => jsonResponse({ success: true, metadata }));
 
