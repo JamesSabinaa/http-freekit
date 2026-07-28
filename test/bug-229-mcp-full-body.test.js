@@ -428,15 +428,22 @@ test('MCP request detail does not execute body, metadata, size, or timestamp coe
   assert.equal(byteLengthReads, 0);
 });
 
-test('MCP request detail marks detached binary metadata as omitted', () => {
+test('MCP request detail distinguishes inaccessible and valid empty binary metadata', () => {
   const buffer = new ArrayBuffer(8);
-  const detachedMetadata = new DataView(buffer);
+  const detachedDataView = new DataView(buffer);
+  const detachedTypedArray = new Uint8Array(buffer);
   structuredClone(buffer, { transfer: [buffer] });
+  const resizableBuffer = new ArrayBuffer(8, { maxByteLength: 16 });
+  const outOfBoundsTypedArray = new Uint8Array(resizableBuffer, 4, 4);
+  resizableBuffer.resize(2);
   const bridge = createBridge([{
     id: 'detached-binary-metadata',
     requestBody: '',
     responseBody: '',
-    detachedMetadata,
+    detachedDataView,
+    detachedTypedArray,
+    outOfBoundsTypedArray,
+    emptyTypedArray: new Uint8Array(0),
     timestamp: 1_767_225_600_000
   }]);
 
@@ -444,7 +451,10 @@ test('MCP request detail marks detached binary metadata as omitted', () => {
     request_id: 'detached-binary-metadata'
   }));
 
-  assert.equal(detail.detachedMetadata, '[binary metadata omitted]');
+  assert.equal(detail.detachedDataView, '[binary metadata omitted]');
+  assert.equal(detail.detachedTypedArray, '[binary metadata omitted]');
+  assert.equal(detail.outOfBoundsTypedArray, '[binary metadata omitted]');
+  assert.equal(detail.emptyTypedArray, '[Binary metadata: 0 bytes]');
 });
 
 test('one MCP request detail page stays bounded for a near-limit capture', () => {

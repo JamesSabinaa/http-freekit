@@ -27,6 +27,7 @@ const TYPED_ARRAY_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8Array.prototype),
   'byteLength'
 ).get;
+const TYPED_ARRAY_VALUES = Object.getPrototypeOf(Uint8Array.prototype).values;
 const DATA_VIEW_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
   DataView.prototype,
   'byteLength'
@@ -255,10 +256,19 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
     // Continue without trusting an exotic object's binary brand.
   }
   let binaryByteLength;
+  let typedArrayView = false;
   try {
     binaryByteLength = TYPED_ARRAY_BYTE_LENGTH.call(value);
+    typedArrayView = true;
   } catch {
     try { binaryByteLength = DATA_VIEW_BYTE_LENGTH.call(value); } catch {}
+  }
+  if (typedArrayView && binaryByteLength === 0) {
+    try {
+      TYPED_ARRAY_VALUES.call(value);
+    } catch {
+      return '[binary metadata omitted]';
+    }
   }
   if (binaryByteLength !== undefined) {
     return `[Binary metadata: ${binaryByteLength} bytes]`;
