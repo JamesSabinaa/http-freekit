@@ -70,10 +70,17 @@ async function initializeApplication(apiPort) {
       const trustResult = installWindowsCaTrust(certInfo);
       ca.systemTrustInstalled = true;
       console.log('[Boot] CA certificate present in Windows user trust store');
-      if (trustResult.replacementRemovalError) {
+      try {
+        ca.setPendingReplacementFingerprints(trustResult.remainingReplacementFingerprints);
+      } catch (error) {
+        // Leaving the previous journal intact is safe: exact-thumbprint cleanup
+        // will be retried after the next successful installation.
+        console.log('[Boot] Could not update CA replacement state (non-critical):', error.message);
+      }
+      if (trustResult.replacementRemovalErrors.length > 0) {
         console.log(
-          '[Boot] Could not remove the replaced CA trust entry (non-critical):',
-          trustResult.replacementRemovalError.message
+          '[Boot] Could not remove replaced CA trust entries (non-critical):',
+          trustResult.replacementRemovalErrors.map(item => item.error.message).join('; ')
         );
       }
     } catch (err) {
@@ -82,7 +89,7 @@ async function initializeApplication(apiPort) {
     }
   } else {
     ca.systemTrustInstalled = false;
-    if (certInfo.replacedCertificateFingerprint) {
+    if (certInfo.replacedCertificateFingerprints.length > 0) {
       console.warn(
         `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`
       );

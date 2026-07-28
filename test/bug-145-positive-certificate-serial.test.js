@@ -8,7 +8,10 @@ import test from 'node:test';
 import forge from 'node-forge';
 
 import { CertificateAuthority } from '../src/proxy/certificate-authority.js';
-import { installWindowsCaTrust } from '../src/proxy/windows-ca-trust.js';
+import {
+  getWindowsCertutilPath,
+  installWindowsCaTrust
+} from '../src/proxy/windows-ca-trust.js';
 
 const { pki } = forge;
 
@@ -77,7 +80,105 @@ test('startup replaces a persisted CA with a negative serial', async t => {
 
   assert.notEqual(replacementPem, oldCertificatePem);
   assert.equal(info.replacedCertificateFingerprint, oldFingerprint);
+  assert.deepEqual(info.replacedCertificateFingerprints, [oldFingerprint]);
   assert.equal(ca._isPositiveSerial(replacement.serialNumber), true);
+});
+
+test('startup records an obsolete certificate even when its private key is missing', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-missing-ca-key-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  const oldCertificatePem = createPersistedCa(dataDir, '01');
+  const oldFingerprint = new crypto.X509Certificate(oldCertificatePem)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  fs.unlinkSync(path.join(dataDir, 'ca.key'));
+  const ca = new CertificateAuthority(dataDir);
+  ca._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+
+  const info = await ca.initialize();
+
+  assert.equal(info.replacedCertificateFingerprint, oldFingerprint);
+  assert.deepEqual(info.replacedCertificateFingerprints, [oldFingerprint]);
+  assert.equal(fs.existsSync(ca.caReplacementStatePath), true);
+});
+
+test('pending replacement cleanup survives trust failures and restarts', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-cleanup-retry-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const oldCertificatePem = createPersistedCa(dataDir, '80' + '02'.repeat(15));
+  const oldFingerprint = new crypto.X509Certificate(oldCertificatePem)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  const firstCa = new CertificateAuthority(dataDir);
+  firstCa._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+  const firstInfo = await firstCa.initialize();
+
+  assert.throws(() => installWindowsCaTrust(firstInfo, () => {
+    throw new Error('temporary add failure');
+  }), /temporary add failure/);
+  const afterAddFailure = await new CertificateAuthority(dataDir).initialize();
+  assert.deepEqual(afterAddFailure.replacedCertificateFingerprints, [oldFingerprint]);
+
+  const removalResult = installWindowsCaTrust(afterAddFailure, (_command, args) => {
+    if (args[0] === '-delstore') throw new Error('temporary delete failure');
+  });
+  firstCa.setPendingReplacementFingerprints(removalResult.remainingReplacementFingerprints);
+  const afterDeleteFailure = await new CertificateAuthority(dataDir).initialize();
+  assert.deepEqual(afterDeleteFailure.replacedCertificateFingerprints, [oldFingerprint]);
+
+  const success = installWindowsCaTrust(afterDeleteFailure, () => {});
+  firstCa.setPendingReplacementFingerprints(success.remainingReplacementFingerprints);
+  const afterSuccess = await new CertificateAuthority(dataDir).initialize();
+  assert.deepEqual(afterSuccess.replacedCertificateFingerprints, []);
+  assert.equal(fs.existsSync(firstCa.caReplacementStatePath), false);
+});
+
+test('replacement stops before overwriting the CA when its cleanup journal cannot be saved', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-journal-failure-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.mock.method(console, 'warn', () => {});
+  const oldCertificatePem = createPersistedCa(dataDir, '80' + '03'.repeat(15));
+  const oldKeyPem = fs.readFileSync(path.join(dataDir, 'ca.key'), 'utf8');
+  const ca = new CertificateAuthority(dataDir);
+  ca.setPendingReplacementFingerprints = () => {
+    throw new Error('journal is read-only');
+  };
+
+  await assert.rejects(ca.initialize(), /journal is read-only/);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'ca.pem'), 'utf8'), oldCertificatePem);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'ca.key'), 'utf8'), oldKeyPem);
+});
+
+test('malformed pending replacement state fails closed', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-journal-corrupt-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  createPersistedCa(dataDir, '01');
+  fs.writeFileSync(path.join(dataDir, 'ca-replacements.json'), '{broken');
+
+  await assert.rejects(new CertificateAuthority(dataDir).initialize(), SyntaxError);
+});
+
+test('startup never schedules the active CA fingerprint for deletion', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-active-journal-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  const certificatePem = createPersistedCa(dataDir, '01');
+  const activeFingerprint = new crypto.X509Certificate(certificatePem)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  fs.writeFileSync(path.join(dataDir, 'ca-replacements.json'), JSON.stringify({
+    version: 1,
+    fingerprints: ['44'.repeat(20), activeFingerprint]
+  }));
+
+  const ca = new CertificateAuthority(dataDir);
+  const info = await ca.initialize();
+
+  assert.deepEqual(info.replacedCertificateFingerprints, ['44'.repeat(20)]);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(ca.caReplacementStatePath, 'utf8')).fingerprints,
+    ['44'.repeat(20)]
+  );
 });
 
 test('Windows trust installs the replacement before deleting the exact old thumbprint', () => {
@@ -89,10 +190,14 @@ test('Windows trust installs the replacement before deleting the exact old thumb
   }, (command, args, options) => calls.push([command, args, options]));
 
   assert.deepEqual(calls, [
-    ['certutil', ['-addstore', '-user', '-f', 'Root', 'C:\\FreeKit Data\\ca.pem'], {
+    [getWindowsCertutilPath(), ['-addstore', '-user', '-f', 'Root', 'C:\\FreeKit Data\\ca.pem'], {
       stdio: 'ignore'
     }],
-    ['certutil', ['-delstore', '-user', 'Root', oldFingerprint], { stdio: 'ignore' }]
+    [getWindowsCertutilPath(), ['-delstore', '-user', 'Root', oldFingerprint], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    }]
   ]);
   assert.equal(result.replacedFingerprint, oldFingerprint);
   assert.equal(result.replacementRemovalError, null);
@@ -124,4 +229,46 @@ test('an obsolete trust-entry cleanup failure keeps the new CA installed', () =>
 
   assert.equal(calls.length, 2);
   assert.match(result.replacementRemovalError.message, /already absent/);
+  assert.deepEqual(result.remainingReplacementFingerprints, ['01'.repeat(20)]);
+});
+
+test('an already absent exact trust entry completes idempotent cleanup', () => {
+  const result = installWindowsCaTrust({
+    certPath: 'C:\\ca.pem',
+    replacedCertificateFingerprint: '01'.repeat(20)
+  }, (_command, args) => {
+    if (args[0] !== '-delstore') return;
+    const error = new Error('certutil deletion failed');
+    error.stderr = Buffer.from('CertUtil: 0x80092004 (CRYPT_E_NOT_FOUND)');
+    throw error;
+  });
+
+  assert.deepEqual(result.replacementRemovalErrors, []);
+  assert.deepEqual(result.remainingReplacementFingerprints, []);
+});
+
+test('Windows trust retains only failed fingerprints from a multi-CA cleanup', () => {
+  const firstFingerprint = '11'.repeat(20);
+  const secondFingerprint = '22'.repeat(20);
+  const deleted = [];
+  const result = installWindowsCaTrust({
+    certPath: 'C:\\ca.pem',
+    replacedCertificateFingerprints: [firstFingerprint, secondFingerprint]
+  }, (_command, args) => {
+    if (args[0] !== '-delstore') return;
+    deleted.push(args[3]);
+    if (args[3] === secondFingerprint) throw new Error('still in use');
+  });
+
+  assert.deepEqual(deleted, [firstFingerprint, secondFingerprint]);
+  assert.deepEqual(result.remainingReplacementFingerprints, [secondFingerprint]);
+  assert.equal(result.replacementRemovalErrors[0].fingerprint, secondFingerprint);
+});
+
+test('Windows trust uses an absolute System32 certutil path', () => {
+  assert.equal(
+    getWindowsCertutilPath({ SystemRoot: 'D:\\Windows' }),
+    'D:\\Windows\\System32\\certutil.exe'
+  );
+  assert.equal(path.win32.isAbsolute(getWindowsCertutilPath({})), true);
 });
