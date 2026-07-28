@@ -1975,6 +1975,7 @@ export class ProxyServer {
           this._setContentLength(clientReq.headers, body.length);
           breakpointBodyModified = true;
         }
+        this._setTargetHostHeader(clientReq.headers, targetUrl.host);
       }
 
       try {
@@ -2867,8 +2868,9 @@ export class ProxyServer {
               try {
                 const nextUrl = new URL(modifications.url);
                 fullUrl = nextUrl.href;
-                hostname = nextUrl.hostname;
-                targetPort = parseInt(nextUrl.port, 10) || 443;
+                hostname = this._normalizeConnectionHostname(nextUrl.hostname);
+                targetPort = parseInt(nextUrl.port, 10)
+                  || (nextUrl.protocol === 'https:' ? 443 : 80);
                 req.url = nextUrl.pathname + nextUrl.search;
               } catch { /* keep original */ }
             }
@@ -2879,6 +2881,7 @@ export class ProxyServer {
               this._setContentLength(req.headers, body.length);
               breakpointBodyModified = true;
             }
+            this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
             // Fall through to normal proxy behavior
           }
 
@@ -3047,6 +3050,7 @@ export class ProxyServer {
         // Forward to real server — preserve raw header case to avoid bot detection
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        this._setTargetHostHeader(req.headers, upstreamUrl.host);
         const proxyHeaders = this._stripUpstreamHeaders({
           ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
           ...req.headers
@@ -3982,6 +3986,7 @@ export class ProxyServer {
         // Forward to real server — try HTTP/2 upstream first for secure targets.
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
+        this._setTargetHostHeader(req.headers, upstreamUrl.host);
         let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
         const emitH1Success = (
@@ -6368,6 +6373,7 @@ export class ProxyServer {
         body = Buffer.from(String(modifications.body || ''));
         this._setContentLength(clientReq.headers, body.length);
       }
+      this._setTargetHostHeader(clientReq.headers, targetUrl.host);
       // Fall through to normal proxy behavior (don't return here)
     }
 
@@ -6469,6 +6475,7 @@ export class ProxyServer {
         body = Buffer.from(String(reqModifications.body || ''));
         this._setContentLength(clientReq.headers, body.length);
       }
+      this._setTargetHostHeader(clientReq.headers, targetUrl.host);
 
       // Phase 2: Pause on the response
       emitRequest({

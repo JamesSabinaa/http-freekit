@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review completed on 27 July 2026 against source commit `00f3f7c`. This was a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it was not a new clean-loop pass under the completion gate below.
 
-**No: 64 of the 360 documented bugs are not fully fixed.**
+**No: 63 of the 360 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 296 |
+| Fixed | 297 |
 | Partially fixed | 25 |
-| Open | 39 |
+| Open | 38 |
 | **Total** | **360** |
 
 This review promoted BUG-038, BUG-057, BUG-091, BUG-094, BUG-104, and BUG-124 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly. BUG-037 was fixed after that reconciliation.
@@ -294,7 +294,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-106 — Medium — H1 breakpoint URL rewrites retain Host and the old transport
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: H1 breakpoint URL edits now select the outbound HTTP or HTTPS transport from the rewritten URL and synchronize the request's Host header with its rewritten authority after all breakpoint edits. Regression coverage verifies HTTP→HTTPS for plain proxy requests and HTTPS→HTTP for both intercepted H1 implementations.
 
 - Evidence: plain H1 changes `targetUrl` at `src/proxy/proxy-server.js:622-624,3624-3626` but builds headers from the old Host at `:638-680`. Request-library selection around `:696` and HTTPS paths at `:1554-1563,2097-2107` does not follow an HTTP↔HTTPS rewrite.
 - Impact: rewritten requests reach the wrong virtual host or use TLS/plaintext against the wrong scheme.
