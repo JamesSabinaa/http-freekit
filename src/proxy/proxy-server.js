@@ -796,12 +796,13 @@ export class ProxyServer {
   _endH1Request(request, body, trailers) {
     const cleanTrailers = this._cleanTrailers(trailers);
     const hasTrailers = Object.keys(cleanTrailers).length > 0;
-    if (hasTrailers) {
-      for (const name of request.getHeaderNames?.() || []) {
-        if (name.toLowerCase() === 'content-length') request.removeHeader(name);
+    for (const name of request.getHeaderNames?.() || []) {
+      const lowerName = name.toLowerCase();
+      if (lowerName === 'trailer' || (hasTrailers && lowerName === 'content-length')) {
+        request.removeHeader(name);
       }
-      request.setHeader('trailer', Object.keys(cleanTrailers).join(', '));
     }
+    if (hasTrailers) request.setHeader('trailer', Object.keys(cleanTrailers).join(', '));
     if (body?.length) request.write(body);
     if (hasTrailers) request.addTrailers(cleanTrailers);
     request.end();
@@ -809,16 +810,18 @@ export class ProxyServer {
 
   _sendH1Response(response, statusCode, headers, body, trailers) {
     const cleanTrailers = this._cleanTrailers(trailers);
+    const hasTrailers = Object.keys(cleanTrailers).length > 0;
     const outgoingHeaders = { ...(headers || {}) };
-    if (Object.keys(cleanTrailers).length > 0) {
-      for (const name of Object.keys(outgoingHeaders)) {
-        if (name.toLowerCase() === 'content-length') delete outgoingHeaders[name];
+    for (const name of Object.keys(outgoingHeaders)) {
+      const lowerName = name.toLowerCase();
+      if (lowerName === 'trailer' || (hasTrailers && lowerName === 'content-length')) {
+        delete outgoingHeaders[name];
       }
-      outgoingHeaders.trailer = Object.keys(cleanTrailers).join(', ');
     }
+    if (hasTrailers) outgoingHeaders.trailer = Object.keys(cleanTrailers).join(', ');
     response.writeHead(statusCode, outgoingHeaders);
     if (body?.length) response.write(body);
-    if (Object.keys(cleanTrailers).length > 0) response.addTrailers(cleanTrailers);
+    if (hasTrailers) response.addTrailers(cleanTrailers);
     response.end();
   }
 

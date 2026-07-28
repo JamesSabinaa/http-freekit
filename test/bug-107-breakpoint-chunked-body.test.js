@@ -221,6 +221,55 @@ test('response body edits discard stale chunked response trailers', async t => {
   assert.deepEqual(response.trailers, {});
 });
 
+test('H1 conversion removes trailer declarations when no trailers arrived', async t => {
+  const proxy = new ProxyServer(null);
+  let observedRequest;
+  const origin = http.createServer(async (request, response) => {
+    observedRequest = await captureRequest(request);
+    proxy._sendH1Response(response, 200, {
+      'Content-Length': '8',
+      TrAiLeR: 'X-Checksum'
+    }, Buffer.from('response'), {});
+  });
+  const originPort = await listen(origin);
+  t.after(() => close(origin));
+
+  const receivedResponse = await new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: originPort,
+      method: 'POST',
+      headers: {
+        'Content-Length': '8',
+        TrAiLeR: 'X-Checksum'
+      }
+    }, response => {
+      captureRequest(response).then(captured => resolve({
+        ...captured,
+        statusCode: response.statusCode
+      }), reject);
+    });
+    request.once('error', reject);
+    try {
+      proxy._endH1Request(request, Buffer.from('original'), {});
+    } catch (error) {
+      reject(error);
+    }
+  });
+
+  assert.equal(observedRequest.headers['content-length'], '8');
+  assert.equal(observedRequest.headers.trailer, undefined);
+  assert.equal(observedRequest.headers['transfer-encoding'], undefined);
+  assert.equal(observedRequest.body, 'original');
+  assert.deepEqual(observedRequest.trailers, {});
+  assert.equal(receivedResponse.statusCode, 200);
+  assert.equal(receivedResponse.headers['content-length'], '8');
+  assert.equal(receivedResponse.headers.trailer, undefined);
+  assert.equal(receivedResponse.headers['transfer-encoding'], undefined);
+  assert.equal(receivedResponse.body, 'response');
+  assert.deepEqual(receivedResponse.trailers, {});
+});
+
 test('intercepted H1 body edits replace chunked framing in both TLS modes',
   { timeout: 30000 }, async t => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-breakpoint-chunked-'));
