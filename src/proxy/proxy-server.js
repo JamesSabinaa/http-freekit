@@ -60,6 +60,72 @@ const HOP_BY_HOP_HEADER_NAMES = new Set([
 ]);
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 
+function getHeaderValues(headers, name) {
+  const normalizedName = String(name || '').toLowerCase();
+  const entry = Object.entries(headers).find(([headerName]) =>
+    headerName.toLowerCase() === normalizedName);
+  if (!entry) return [];
+  return (Array.isArray(entry[1]) ? entry[1] : [entry[1]])
+    .filter(value => value !== undefined && value !== null)
+    .map(String);
+}
+
+function wildcardValueMatches(pattern, value) {
+  let patternIndex = 0;
+  let valueIndex = 0;
+  let starIndex = -1;
+  let starValueIndex = 0;
+  while (valueIndex < value.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === value[valueIndex]) {
+      patternIndex++;
+      valueIndex++;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
+      starIndex = patternIndex++;
+      starValueIndex = valueIndex;
+    } else if (starIndex !== -1) {
+      patternIndex = starIndex + 1;
+      valueIndex = ++starValueIndex;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[patternIndex] === '*') patternIndex++;
+  return patternIndex === pattern.length;
+}
+
+function jsonValuesEqual(left, right) {
+  const pending = [[left, right]];
+  while (pending.length > 0) {
+    const [currentLeft, currentRight] = pending.pop();
+    if (currentLeft === currentRight) continue;
+    if (currentLeft === null || currentRight === null
+      || typeof currentLeft !== 'object' || typeof currentRight !== 'object') {
+      return false;
+    }
+
+    const leftIsArray = Array.isArray(currentLeft);
+    if (leftIsArray !== Array.isArray(currentRight)) return false;
+    const leftKeys = Object.keys(currentLeft);
+    const rightKeys = Object.keys(currentRight);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+      if (!Object.prototype.hasOwnProperty.call(currentRight, key)) return false;
+      pending.push([currentLeft[key], currentRight[key]]);
+    }
+  }
+  return true;
+}
+
+function parseQuotedParameter(value, parameterName) {
+  const escapedName = parameterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = value.match(new RegExp(
+    `(?:^|;)\\s*${escapedName}\\s*=\\s*(?:"((?:\\\\.|[^"\\\\])*)"|([^;\\s]+))`,
+    'i'
+  ));
+  if (!match) return null;
+  return match[1] === undefined ? match[2] : match[1].replace(/\\(.)/g, '$1');
+}
+
 class TruncatedBodyString extends String {
   constructor(value, capturedSize, decodedSize) {
     super(value);
@@ -6079,33 +6145,32 @@ export class ProxyServer {
       case 'host': {
         let urlHost;
         try { urlHost = new URL(url).host; } catch { urlHost = ''; }
-        if (matcher.value.startsWith('*')) {
-          return urlHost.endsWith(matcher.value.slice(1));
+        const expectedHost = matcher.value.toLowerCase();
+        if (expectedHost.startsWith('*')) {
+          return urlHost.toLowerCase().endsWith(expectedHost.slice(1));
         }
-        return urlHost === matcher.value;
+        return urlHost.toLowerCase() === expectedHost;
       }
       case 'hostname': {
         let urlHostname;
         try { urlHostname = new URL(url).hostname; } catch { urlHostname = ''; }
-        if (matcher.value.startsWith('*')) {
-          return urlHostname.endsWith(matcher.value.slice(1));
+        const expectedHostname = matcher.value.toLowerCase();
+        if (expectedHostname.startsWith('*')) {
+          return urlHostname.toLowerCase().endsWith(expectedHostname.slice(1));
         }
-        return urlHostname === matcher.value;
+        return urlHostname.toLowerCase() === expectedHostname;
       }
       case 'url-contains':
         return url.includes(matcher.value);
       case 'header': {
         if (!matcher.name) return false;
-        const headerVal = headers[matcher.name.toLowerCase()];
-        if (headerVal === undefined) return false;
+        const headerValues = getHeaderValues(headers, matcher.name);
+        if (headerValues.length === 0) return false;
         if (!matcher.value) return true; // just check presence
         if (matcher.value.includes('*')) {
-          try {
-            const regex = new RegExp('^' + matcher.value.replace(/\*/g, '.*') + '$');
-            return regex.test(headerVal);
-          } catch { return false; }
+          return headerValues.some(value => wildcardValueMatches(matcher.value, value));
         }
-        return headerVal === matcher.value;
+        return headerValues.includes(matcher.value);
       }
       case 'query': {
         try {
@@ -6130,7 +6195,7 @@ export class ProxyServer {
         try {
           const actual = JSON.parse(body);
           const expected = JSON.parse(matcher.value);
-          return JSON.stringify(actual) === JSON.stringify(expected);
+          return jsonValuesEqual(actual, expected);
         } catch { return false; }
       }
       case 'json-body-includes': {
@@ -6144,11 +6209,13 @@ export class ProxyServer {
           // Scalars and empty containers have no partial structure to compare.
           // Treat them as exact JSON values instead of matching vacuously.
           if (expectedKeys.length === 0) {
-            return JSON.stringify(actual) === JSON.stringify(expected);
+            return jsonValuesEqual(actual, expected);
           }
 
           // Check that all keys in expected exist in actual with matching values
-          return expectedKeys.every(k => JSON.stringify(actual[k]) === JSON.stringify(expected[k]));
+          return actual !== null && typeof actual === 'object'
+            && expectedKeys.every(k => Object.prototype.hasOwnProperty.call(actual, k)
+              && jsonValuesEqual(actual[k], expected[k]));
         } catch { return false; }
       }
       case 'port': {
@@ -6182,17 +6249,21 @@ export class ProxyServer {
       case 'multipart-form-data': {
         // Match multipart/form-data field by name and optional value
         if (!body || !matcher.name) return false;
-        const ct = headers['content-type'] || '';
-        const boundaryMatch = ct.match(/boundary=([^\s;]+)/);
-        if (!boundaryMatch) return false;
-        const boundary = boundaryMatch[1];
+        const contentType = getHeaderValues(headers, 'content-type').find(value =>
+          /^multipart\/form-data(?:\s*;|\s*$)/i.test(value));
+        if (!contentType) return false;
+        const boundary = parseQuotedParameter(contentType, 'boundary');
+        if (!boundary) return false;
         const parts = body.split('--' + boundary);
         for (const part of parts) {
-          const dispMatch = part.match(/Content-Disposition:\s*form-data;\s*name="([^"]+)"/i);
-          if (!dispMatch || dispMatch[1] !== matcher.name) continue;
-          if (!matcher.value) return true; // field exists
           const bodyStart = part.indexOf('\r\n\r\n');
           if (bodyStart === -1) continue;
+          const headerBlock = part.slice(0, bodyStart);
+          const disposition = headerBlock.match(/^Content-Disposition\s*:\s*([^\r\n]*)$/im)?.[1];
+          if (!disposition || !/^form-data(?:\s*;|\s*$)/i.test(disposition)) continue;
+          const fieldName = parseQuotedParameter(disposition, 'name');
+          if (fieldName !== matcher.name) continue;
+          if (!matcher.value) return true; // field exists
           const fieldValue = part.slice(bodyStart + 4).replace(/\r\n$/, '');
           if (fieldValue === matcher.value) return true;
         }
