@@ -5,6 +5,7 @@ import https from 'https';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { performance } from 'node:perf_hooks';
 import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
@@ -169,6 +170,9 @@ export class ApiServer {
       options.clearedPendingTrafficTtlMs > 0
       ? options.clearedPendingTrafficTtlMs
       : 60 * 60 * 1000;
+    this._clearedPendingTrafficNow = typeof options.clearedPendingTrafficNow === 'function'
+      ? options.clearedPendingTrafficNow
+      : () => performance.now();
     this.authToken = options.authToken || null;
     this.onShutdown = options.onShutdown || null;
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
@@ -2398,13 +2402,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const idx = this.trafficLog.findIndex(r => r.id === data.id);
       if (idx !== -1) {
         this.trafficLog[idx] = data;
+        this._broadcast({ type: 'request-update', data });
       } else {
+        // A completion whose pending row was evicted must be surfaced as a new
+        // row so backend and renderer state stay consistent.
         this.trafficLog.push(data);
         if (this.trafficLog.length > this.maxTrafficLog) {
           this.trafficLog.shift();
         }
+        this._broadcast({ type: 'request', data });
       }
-      this._broadcast({ type: 'request-update', data });
       this._maybeAutoRotateProxyOnError(data);
     } else {
       // New request (pending or complete)
@@ -2617,7 +2624,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _clearTraffic() {
     const clearId = crypto.randomUUID();
-    const expiresAt = Date.now() + this.clearedPendingTrafficTtlMs;
+    const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
     for (const id of this._pendingTrafficIds) {
       this._clearedPendingTrafficIds.delete(id);
       this._clearedPendingTrafficIds.set(id, expiresAt);
@@ -2629,7 +2636,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return clearId;
   }
 
-  _pruneClearedPendingTrafficIds(now = Date.now()) {
+  _pruneClearedPendingTrafficIds(now = this._clearedPendingTrafficNow()) {
     for (const [id, expiresAt] of this._clearedPendingTrafficIds) {
       if (expiresAt > now) break;
       this._clearedPendingTrafficIds.delete(id);

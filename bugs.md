@@ -1127,7 +1127,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-361 — Low/Medium — Cleared pending-request IDs are retained indefinitely
 
 - Status: **Fixed**.
-- Resolution: Cleared pending-request tombstones now expire after one hour and are capped at the 10,000-row traffic-log limit, while completions inside that bounded retention window remain suppressed as before. Normal completions and ID reuse still remove their tombstones immediately.
+- Resolution: Cleared pending-request tombstones now use a monotonic one-hour expiry and are capped at the 10,000-row traffic-log limit. Retained completions remain suppressed; after expiry or capacity eviction, a late completion is surfaced consistently as a new row in the API, MCP/export data, and renderer instead of becoming backend-only. Normal retained completions and ID reuse still remove their tombstones immediately.
 
 - Evidence: `_clearTraffic()` copies every live pending ID into `_clearedPendingTrafficIds`. Entries are deleted only if a later event reuses or completes the same ID; the set has no size limit, expiry, or other cleanup path.
 - Impact: pending requests that never produce a completion leave permanent tombstones. Repeated pending-and-clear cycles can grow backend memory even while the bounded traffic log stays small.
