@@ -116,6 +116,12 @@ function renderedControl(html, field) {
   return match[0];
 }
 
+function renderedResumeButton(html) {
+  const match = html.match(/<button\b[^>]*class="btn btn-primary"[^>]*>/);
+  assert.ok(match, 'Resume button must be rendered');
+  return match[0];
+}
+
 function attribute(tag, name) {
   const match = tag.match(new RegExp(`${name}="([^"]+)"`));
   assert.ok(match, `${name} must be rendered on ${tag}`);
@@ -181,11 +187,14 @@ test('breakpoint identity attributes escape quotes before rendering', () => {
     trafficLifecycleId: "life' onfocus='attack"
   });
   const control = renderedControl(html, 'method');
+  const resumeButton = renderedResumeButton(html);
 
-  assert.equal(attribute(control, 'data-request-id'), 'paused&quot; onmouseover=&quot;attack');
-  assert.equal(attribute(control, 'data-lifecycle-id'), 'life&#39; onfocus=&#39;attack');
-  assert.doesNotMatch(control, /data-request-id="paused" onmouseover=/);
-  assert.doesNotMatch(control, /data-lifecycle-id="life' onfocus=/);
+  for (const element of [control, resumeButton]) {
+    assert.equal(attribute(element, 'data-request-id'), 'paused&quot; onmouseover=&quot;attack');
+    assert.equal(attribute(element, 'data-lifecycle-id'), 'life&#39; onfocus=&#39;attack');
+    assert.doesNotMatch(element, /data-request-id="paused" onmouseover=/);
+    assert.doesNotMatch(element, /data-lifecycle-id="life' onfocus=/);
+  }
 });
 
 function createEditHarness() {

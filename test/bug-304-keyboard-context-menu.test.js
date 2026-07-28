@@ -255,12 +255,17 @@ function createHarness() {
   vm.createContext(context);
 
   const editableHelper = extract('function isEditableKeyboardTarget', 'function isClearTrafficShortcut');
+  const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+  const trafficAction = extract('function trafficActionRequest', 'function togglePinRequest');
   const menuBlock = extract('let activeContextMenu = null;', '// --- Traffic row context menu ---');
   const trafficMenu = extract('function showTrafficContextMenu', 'function copyResponseHeadersForMock');
   const headerMenu = extract('window._detailHeaders = { request: {}, response: {} };', '// ============ HELPERS ============');
   vm.runInContext(`
     let selectedRequestId = 'request-1';
+    let selectedRequestLifecycleId = null;
     let requests = [{ id: 'request-1', url: 'https://example.test/path' }];
+    ${identityHelpers}
+    ${trafficAction}
     ${editableHelper}
     ${menuBlock}
     ${trafficMenu}
@@ -451,11 +456,17 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
     wsFramesByParent: {},
     wsExpandedConnections: new Set(),
     formatSize: value => String(value || 0),
-    esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;')
+    esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
+    escapeHtmlAttribute: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
+    isSelectedTrafficRequest: request => request.id === 'row-1',
+    trafficRowDomId: request => `row-${request.id}`,
+    trafficRowIdentityAttributes: request =>
+      `data-id="${request.id}" data-lifecycle-id="${request.trafficLifecycleId || ''}"`
   };
   vm.createContext(context);
   vm.runInContext(`
     let selectedRequestId = 'row-1';
+    let selectedRequestLifecycleId = null;
     const HEADER_DOCS = {};
     ${webSocketConnectionSource}
     ${rowRenderer}
@@ -467,7 +478,7 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
     id: 'row-1', method: 'GET', statusCode: 200, source: 'proxy', host: 'example.test', path: '/', pinned: false
   }, 2);
   assert.match(rowHtml, /aria-haspopup="menu" tabindex="-1"/);
-  assert.match(rowHtml, /oncontextmenu="showTrafficContextMenu\(event, 'row-1'\)"/);
+  assert.match(rowHtml, /oncontextmenu="showTrafficContextMenu\(event, this\.dataset\.id, this, this\.dataset\.lifecycleId\)"/);
 
   const headerHtml = context.renderApi.headers({ 'x-test': 'value' }, 'request');
   const targets = [...headerHtml.matchAll(/<span class="header-(?:name|value)"([^>]*)>/g)];

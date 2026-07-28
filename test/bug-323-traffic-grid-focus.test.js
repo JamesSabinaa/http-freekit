@@ -17,9 +17,17 @@ const activeDescendantSource = extract(
   'function updateTrafficActiveDescendant(',
   'function selectRequest('
 );
+const identitySource = extract(
+  'function normalizeTrafficLifecycleId(',
+  'function mergeServerTrafficRequest('
+);
 const rowSelectionSource = extract(
   'function updateTrafficActiveDescendant(',
   'function selectBreakpointRequest('
+);
+const breakpointSelectionSource = extract(
+  'function selectBreakpointRequest(',
+  '// ============ DETAIL PANEL'
 );
 const virtualRowsSource = extract('function renderVirtualRows()', 'function renderTraffic()');
 const keyboardSelectionSource = extract(
@@ -59,14 +67,15 @@ test('active descendant is set only for a rendered row owned by the grid', () =>
     ['row-stale', staleRow]
   ]);
   const context = {
+    trafficRowDomId: request => `row-${request.id}`,
     document: { getElementById: id => elements.get(id) || null }
   };
   vm.createContext(context);
   vm.runInContext(`${activeDescendantSource}; globalThis.syncActiveRow = updateTrafficActiveDescendant;`, context);
 
-  context.syncActiveRow('owned');
+  context.syncActiveRow({ id: 'owned' });
   assert.equal(attributes.get('aria-activedescendant'), 'row-owned');
-  context.syncActiveRow('stale');
+  context.syncActiveRow({ id: 'stale' });
   assert.equal(attributes.has('aria-activedescendant'), false);
   context.syncActiveRow(null);
   assert.equal(attributes.has('aria-activedescendant'), false);
@@ -99,6 +108,7 @@ function createVirtualGridHarness() {
   const context = {
     filteredRequests: requests,
     selectedRequestId: null,
+    selectedRequestLifecycleId: null,
     VS_ROW_HEIGHT: 32,
     VS_HEADER_HEIGHT: 38,
     VS_BUFFER: 15,
@@ -109,6 +119,17 @@ function createVirtualGridHarness() {
     history: { replaceState() {} },
     buildTrafficViewHash: id => `#/view/${id}`,
     showDetail() {},
+    normalizeTrafficLifecycleId: value => value || null,
+    isSelectedTrafficRequest: request =>
+      request.id === context.selectedRequestId &&
+      (request.trafficLifecycleId || null) === context.selectedRequestLifecycleId,
+    getSelectedTrafficRequest: collection => collection.find(request =>
+      request.id === context.selectedRequestId &&
+      (request.trafficLifecycleId || null) === context.selectedRequestLifecycleId
+    ) || null,
+    trafficRowDomId: request => request.trafficLifecycleId
+      ? `row-${encodeURIComponent(request.id)}--${encodeURIComponent(request.trafficLifecycleId)}`
+      : `row-${request.id}`,
     scrollRowIntoView(index) { wrapper.scrollTop = Math.max(0, index * 32 - 64); },
     buildRowHtml(request, index) {
       return `<tr id="row-${request.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${request.id === context.selectedRequestId}"></tr>`;
@@ -249,6 +270,7 @@ test('Ctrl+[ focuses the grid owner, and mouse selection does not force focus', 
     requests: [request],
     filteredRequests: [request],
     selectedRequestId: null,
+    selectedRequestLifecycleId: null,
     vsForceRender: false,
     document: {
       activeElement: originalFocus,
@@ -257,6 +279,15 @@ test('Ctrl+[ focuses the grid owner, and mouse selection does not force focus', 
     window: { location: { hash: '#/view' } },
     history: { replaceState() {} },
     buildTrafficViewHash: id => `#/view/${id}`,
+    normalizeTrafficLifecycleId: value => value || null,
+    findTrafficRequestByIdentity: (collection, id, lifecycleId) => collection.find(candidate =>
+      candidate.id === id &&
+      (lifecycleId === undefined || (candidate.trafficLifecycleId || null) === (lifecycleId || null))
+    ) || null,
+    isSelectedTrafficRequest: candidate =>
+      candidate.id === mouseContext.selectedRequestId &&
+      (candidate.trafficLifecycleId || null) === mouseContext.selectedRequestLifecycleId,
+    trafficRowDomId: candidate => `row-${candidate.id}`,
     scrollRowIntoView() {},
     renderVirtualRows() {},
     showDetail() {},
@@ -266,4 +297,51 @@ test('Ctrl+[ focuses the grid owner, and mouse selection does not force focus', 
   vm.runInContext(`${rowSelectionSource}; selectRequest('request-1');`, mouseContext);
   assert.equal(mouseContext.selectedRequestId, 'request-1');
   assert.equal(mouseContext.document.activeElement, originalFocus);
+});
+
+test('mouse and breakpoint selection target the exact duplicate-ID lifecycle', () => {
+  const first = { id: 'duplicate', trafficLifecycleId: 'life-1', path: '/first' };
+  const second = { id: 'duplicate', trafficLifecycleId: 'life-2', path: '/second' };
+  const shown = [];
+  let closeCalls = 0;
+  const context = {
+    requests: [first, second],
+    filteredRequests: [first, second],
+    selectedRequestId: null,
+    selectedRequestLifecycleId: null,
+    vsForceRender: false,
+    document: { getElementById: () => null },
+    window: { location: { hash: '#/view' } },
+    history: { replaceState() {} },
+    buildTrafficViewHash: (id, lifecycleId) => `#/view/${id}?trafficLifecycleId=${lifecycleId}`,
+    scrollRowIntoView() {},
+    renderVirtualRows() {},
+    showDetail: request => shown.push(request),
+    closeDetail: () => {
+      closeCalls++;
+      context.selectedRequestId = null;
+      context.selectedRequestLifecycleId = null;
+    },
+    setTimeout: callback => callback()
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${identitySource}
+    ${rowSelectionSource}
+    ${breakpointSelectionSource}
+    globalThis.selectionApi = { selectRequest, selectBreakpointRequest };
+  `, context);
+
+  context.selectionApi.selectRequest('duplicate', true, 'life-2');
+  assert.equal(context.selectedRequestId, 'duplicate');
+  assert.equal(context.selectedRequestLifecycleId, 'life-2');
+  assert.equal(shown.at(-1), second);
+
+  context.selectionApi.selectRequest('duplicate', true, 'life-2');
+  assert.equal(closeCalls, 1, 'only the same lifecycle toggles the detail closed');
+
+  context.selectionApi.selectRequest('duplicate', true, 'life-1');
+  context.selectionApi.selectBreakpointRequest('duplicate', 'life-2');
+  assert.equal(context.selectedRequestLifecycleId, 'life-2');
+  assert.equal(shown.at(-1), second);
 });

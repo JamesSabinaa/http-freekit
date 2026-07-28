@@ -30,6 +30,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
     requests: structuredClone(initialRequests),
     filteredRequests: [],
     selectedRequestId,
+    selectedRequestLifecycleId: null,
     requestCounter: initialRequests.length,
     wsFramesByParent: Object.create(null),
     wsExpandedConnections: new Set(),
@@ -46,6 +47,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
     closeDetail(renderSelection) {
       closeCalls.push(renderSelection);
       context.selectedRequestId = null;
+      context.selectedRequestLifecycleId = null;
     },
     showDetail(value) { shown.push(value); },
     renderTraffic() {

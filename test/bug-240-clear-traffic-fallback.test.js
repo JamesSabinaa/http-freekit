@@ -113,6 +113,7 @@ function createRenderer(fetch) {
     ];
     let filteredRequests = [...requests];
     let selectedRequestId = 'remove-me';
+    let selectedRequestLifecycleId = null;
     let requestCounter = requests.length;
     let vsRenderStart = 4;
     let vsRenderEnd = 8;
@@ -126,7 +127,15 @@ function createRenderer(fetch) {
     }
     function closeDetail() {
       selectedRequestId = null;
+      selectedRequestLifecycleId = null;
       closeCalls++;
+    }
+    function getSelectedTrafficRequest(collection = requests) {
+      if (selectedRequestId === null) return null;
+      return collection.find(request =>
+        request.id === selectedRequestId &&
+        (request.trafficLifecycleId || null) === selectedRequestLifecycleId
+      ) || null;
     }
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}

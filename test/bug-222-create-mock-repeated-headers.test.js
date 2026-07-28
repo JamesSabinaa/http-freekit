@@ -50,6 +50,7 @@ function buildRendererSubmission() {
     }],
     setTimeout: () => {},
     switchPanel: () => {},
+    trafficActionRequest: requestId => context.requests.find(request => request.id === requestId),
     toast: () => {}
   };
   vm.createContext(context);

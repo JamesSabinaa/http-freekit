@@ -14,7 +14,8 @@ function extract(startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-const targetActions = extract('function togglePinRequest', 'function resendSelectedRequest');
+const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+const targetActions = extract('function trafficActionRequest', 'function resendSelectedRequest');
 const contextMenu = extract('function showTrafficContextMenu', 'function createMockFromRequest');
 const breakpointAction = extract('function createBreakpointFromRequest', 'function toast(');
 
@@ -71,6 +72,8 @@ function createHarness() {
   vm.runInContext(`
     let requests = __requests;
     let selectedRequestId = null;
+    let selectedRequestLifecycleId = null;
+    ${identityHelpers}
     ${targetActions}
     ${contextMenu}
     ${breakpointAction}

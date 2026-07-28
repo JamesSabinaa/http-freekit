@@ -108,7 +108,13 @@ function renderTrafficRow(request) {
   const context = {
     SOURCE_ICONS: { tunnel: '', proxy: '', breakpoint: '' },
     selectedRequestId: null,
+    selectedRequestLifecycleId: null,
     esc: escapeHtml,
+    escapeHtmlAttribute: escapeHtml,
+    isSelectedTrafficRequest: () => false,
+    trafficRowDomId: request => `row-${request.id}`,
+    trafficRowIdentityAttributes: request =>
+      `data-id="${escapeHtml(request.id)}" data-lifecycle-id="${escapeHtml(request.trafficLifecycleId || '')}"`,
     formatSize: size => `${size || 0} bytes`,
     isWebSocketConnection: () => false,
     isConnectedWebSocket: () => false,

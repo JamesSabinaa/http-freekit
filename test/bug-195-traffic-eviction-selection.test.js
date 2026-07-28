@@ -53,6 +53,7 @@ function createHarness(selectedIndex) {
   const context = {
     requests,
     selectedRequestId: selected.id,
+    selectedRequestLifecycleId: null,
     requestCounter: requests.length,
     wsFramesByParent: {},
     vsForceRender: false,

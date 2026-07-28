@@ -362,6 +362,7 @@ test('renderer warns about incomplete bodies and blocks unsafe derived actions',
   const toasts = [];
   const context = {
     selectedRequestId: 'truncated',
+    selectedRequestLifecycleId: null,
     requests: [{
       id: 'truncated',
       requestBodyTruncated: true,
@@ -375,6 +376,8 @@ test('renderer warns about incomplete bodies and blocks unsafe derived actions',
     fetch: () => { throw new Error('unsafe action reached fetch'); },
     toast: (message, type) => toasts.push({ message, type })
   };
+  context.trafficActionRequest = requestId =>
+    context.requests.find(request => request.id === requestId) || null;
   vm.createContext(context);
   vm.runInContext(`
     ${rendererSource.slice(warningStart, warningEnd)}

@@ -160,6 +160,7 @@ test('resend expands captured header arrays into repeated editor rows', () => {
   let loadedTab;
   const context = {
     selectedRequestId: 'request-1',
+    selectedRequestLifecycleId: null,
     requests: [{
       id: 'request-1',
       method: 'GET',
@@ -180,6 +181,8 @@ test('resend expands captured header arrays into repeated editor rows', () => {
     renderSendTabs() {},
     toast() {}
   };
+  context.trafficActionRequest = requestId =>
+    context.requests.find(request => request.id === requestId) || null;
   vm.createContext(context);
   vm.runInContext(`
     ${rendererSource.slice(allocatorStart, allocatorEnd)}

@@ -14,6 +14,7 @@ function extract(startMarker, endMarker) {
 }
 
 const hashHelpers = extract('function buildTrafficViewHash', '// ============ WEBSOCKET FRAMES STATE');
+const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
 const wsMessageHandler = extract('function handleWsMessage', '// ============ TRAFFIC ============');
 const rowSelection = extract('function updateTrafficActiveDescendant', 'function selectBreakpointRequest');
 const keyboardSelection = extract('function selectRequestByIndex', '// ============ WS FRAME EXPAND/COLLAPSE');
@@ -37,7 +38,11 @@ function evaluate(script, context = {}) {
 
 test('traffic view hash helpers round-trip opaque IDs exactly once', () => {
   const context = evaluate(`${hashHelpers}
-    globalThis.hashApi = { build: buildTrafficViewHash, parse: parseTrafficViewHash };
+    globalThis.hashApi = {
+      build: buildTrafficViewHash,
+      parse: parseTrafficViewHash,
+      parseLifecycle: parseTrafficViewLifecycleHash
+    };
   `);
 
   for (const id of opaqueIds) {
@@ -48,6 +53,13 @@ test('traffic view hash helpers round-trip opaque IDs exactly once', () => {
 
   assert.equal(context.hashApi.build('already%2Fencoded'), '#/view/already%252Fencoded');
   assert.equal(context.hashApi.parse('#/view/already%252Fencoded'), 'already%2Fencoded');
+  const lifecycleHash = context.hashApi.build('duplicate/id', 'life 2/%');
+  assert.equal(
+    lifecycleHash,
+    '#/view/duplicate%2Fid?trafficLifecycleId=life%202%2F%25'
+  );
+  assert.equal(context.hashApi.parse(lifecycleHash), 'duplicate/id');
+  assert.equal(context.hashApi.parseLifecycle(lifecycleHash), 'life 2/%');
 });
 
 test('malformed percent escapes fail parsing without throwing', () => {
@@ -69,6 +81,7 @@ function createSelectionHarness(id) {
     requests: [request],
     filteredRequests: [request],
     selectedRequestId: null,
+    selectedRequestLifecycleId: null,
     vsForceRender: false,
     window: { location },
     history: {
@@ -85,6 +98,7 @@ function createSelectionHarness(id) {
   };
   evaluate([
     hashHelpers,
+    identityHelpers,
     rowSelection,
     keyboardSelection,
     `globalThis.selectionApi = {
@@ -143,6 +157,7 @@ function createWsReaderHarness(hash, id) {
   };
   evaluate([
     hashHelpers,
+    identityHelpers,
     wsMessageHandler,
     'globalThis.readInitialHash = () => handleWsMessage({ type: \'init\', proxyPort: 8000, apiPort: 8001 });'
   ].join('\n'), context);
@@ -168,6 +183,7 @@ function createNavigationHarness(hash, id) {
   };
   evaluate([
     hashHelpers,
+    identityHelpers,
     hashNavigation,
     'globalThis.navigate = navigateFromHash;'
   ].join('\n'), context);

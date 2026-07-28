@@ -3,6 +3,7 @@
     let requests = [];
     let filteredRequests = [];
     let selectedRequestId = null;
+    let selectedRequestLifecycleId = null;
     let isPaused = false;
     let sortField = null;
     let sortDirection = 'desc';
@@ -68,18 +69,32 @@
       }
     }
 
-    function buildTrafficViewHash(requestId) {
-      return '#/view/' + encodeURIComponent(requestId);
+    function buildTrafficViewHash(requestId, trafficLifecycleId = null) {
+      const base = '#/view/' + encodeURIComponent(requestId);
+      return trafficLifecycleId
+        ? base + '?trafficLifecycleId=' + encodeURIComponent(trafficLifecycleId)
+        : base;
     }
 
-    function parseTrafficViewHash(hash) {
-      const match = String(hash || '').match(/^#\/view\/(.+)$/);
+    function parseTrafficViewIdentityHash(hash) {
+      const match = String(hash || '').match(/^#\/view\/([^?]+)(?:\?trafficLifecycleId=([^&]*))?$/);
       if (!match) return null;
       try {
-        return decodeURIComponent(match[1]);
+        return {
+          requestId: decodeURIComponent(match[1]),
+          trafficLifecycleId: match[2] ? decodeURIComponent(match[2]) : null
+        };
       } catch {
         return null;
       }
+    }
+
+    function parseTrafficViewHash(hash) {
+      return parseTrafficViewIdentityHash(hash)?.requestId ?? null;
+    }
+
+    function parseTrafficViewLifecycleHash(hash) {
+      return parseTrafficViewIdentityHash(hash)?.trafficLifecycleId ?? null;
     }
 
     // ============ WEBSOCKET FRAMES STATE ============
@@ -206,8 +221,67 @@
       return rows;
     }
 
+    function normalizeTrafficLifecycleId(trafficLifecycleId) {
+      return trafficLifecycleId === undefined || trafficLifecycleId === null || trafficLifecycleId === ''
+        ? null
+        : String(trafficLifecycleId);
+    }
+
+    function trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId) {
+      if (request?.id !== requestId) return false;
+      if (trafficLifecycleId === undefined) return true;
+      return normalizeTrafficLifecycleId(request.trafficLifecycleId) ===
+        normalizeTrafficLifecycleId(trafficLifecycleId);
+    }
+
+    function findTrafficRequestByIdentity(collection, requestId, trafficLifecycleId) {
+      return collection.find(request =>
+        trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId)
+      ) || null;
+    }
+
+    function trafficRequestIdentityKey(request) {
+      return JSON.stringify([
+        String(request?.id || ''),
+        normalizeTrafficLifecycleId(request?.trafficLifecycleId)
+      ]);
+    }
+
+    function isSelectedTrafficRequest(request) {
+      return selectedRequestId !== null && trafficRequestMatchesIdentity(
+        request,
+        selectedRequestId,
+        selectedRequestLifecycleId
+      );
+    }
+
+    function getSelectedTrafficRequest(collection = requests) {
+      if (selectedRequestId === null) return null;
+      return findTrafficRequestByIdentity(
+        collection,
+        selectedRequestId,
+        selectedRequestLifecycleId
+      );
+    }
+
+    function trafficRowDomId(request) {
+      const lifecycleId = normalizeTrafficLifecycleId(request?.trafficLifecycleId);
+      return lifecycleId === null
+        ? 'row-' + String(request?.id || '')
+        : 'row-' + encodeURIComponent(String(request?.id || '')) + '--' + encodeURIComponent(lifecycleId);
+    }
+
+    function trafficRowIdentityAttributes(request) {
+      return `data-id="${escapeHtmlAttribute(request?.id || '')}" ` +
+        `data-lifecycle-id="${escapeHtmlAttribute(request?.trafficLifecycleId || '')}"`;
+    }
+
     function mergeServerTrafficRequest(currentRequest, serverRequest) {
       const restoredRequest = { ...serverRequest };
+      if (restoredRequest.trafficLifecycleId === undefined &&
+          currentRequest?.trafficLifecycleId !== undefined) {
+        restoredRequest.trafficLifecycleId = currentRequest.trafficLifecycleId;
+      }
       delete restoredRequest.pinned;
       delete restoredRequest._rendererOnly;
       if (currentRequest?.pinned) restoredRequest.pinned = true;
@@ -219,11 +293,14 @@
       const currentById = new Map(
         existingRequests
           .filter(request => request?.id !== null && request?.id !== undefined)
-          .map(request => [request.id, request])
+          .map(request => [trafficRequestIdentityKey(request), request])
       );
       const restoredServerRequests = (Array.isArray(serverRequests) ? serverRequests : [])
-        .map(request => mergeServerTrafficRequest(currentById.get(request?.id), request));
-      const serverIds = new Set(restoredServerRequests.map(request => request.id));
+        .map(request => mergeServerTrafficRequest(
+          currentById.get(trafficRequestIdentityKey(request)),
+          request
+        ));
+      const serverIds = new Set(restoredServerRequests.map(trafficRequestIdentityKey));
       const rendererOnlyPins = [];
       const restoredPinIds = new Set();
       for (let index = existingRequests.length - 1; index >= 0; index--) {
@@ -231,10 +308,10 @@
         if (
           request?.pinned &&
           request._rendererOnly === true &&
-          !serverIds.has(request.id) &&
-          !restoredPinIds.has(request.id)
+          !serverIds.has(trafficRequestIdentityKey(request)) &&
+          !restoredPinIds.has(trafficRequestIdentityKey(request))
         ) {
-          restoredPinIds.add(request.id);
+          restoredPinIds.add(trafficRequestIdentityKey(request));
           rendererOnlyPins.push(request);
         }
       }
@@ -245,9 +322,7 @@
     function restoreTrafficDump(serverRequests) {
       requests = mergeTrafficDumpPins(requests, serverRequests);
       requestCounter = requests.length;
-      const selectedRequest = selectedRequestId === null
-        ? null
-        : requests.find(request => request.id === selectedRequestId);
+      const selectedRequest = getSelectedTrafficRequest();
       if (
         selectedRequestId !== null &&
         !selectedRequest
@@ -275,7 +350,7 @@
       vsRenderStart = -1;
       vsRenderEnd = -1;
       applyFilter();
-      if (!requests.find(request => request.id === selectedRequestId)) closeDetail();
+      if (selectedRequestId !== null && !getSelectedTrafficRequest()) closeDetail();
       return true;
     }
 
@@ -356,10 +431,11 @@
           loadMcpStatus();
           // Check for deep-linked request to auto-select after traffic loads
           const deepLinkId = parseTrafficViewHash(window.location.hash);
+          const deepLinkLifecycleId = parseTrafficViewLifecycleHash(window.location.hash);
           if (deepLinkId !== null) {
             setTimeout(() => {
-              if (requests.find(r => r.id === deepLinkId)) {
-                selectRequest(deepLinkId, false);
+              if (findTrafficRequestByIdentity(requests, deepLinkId, deepLinkLifecycleId ?? undefined)) {
+                selectRequest(deepLinkId, false, deepLinkLifecycleId ?? undefined);
               }
             }, 1500);
           }
@@ -384,9 +460,7 @@
               applyFilter();
               // If this request is currently selected, refresh the detail view
               const detailPanel = document.getElementById('detailPanel');
-              if (selectedRequestId === msg.data.id &&
-                  (msg.data.trafficLifecycleId === undefined ||
-                    detailPanel._request?.trafficLifecycleId === msg.data.trafficLifecycleId)) {
+              if (isSelectedTrafficRequest(msg.data)) {
                 detailPanel._request = msg.data;
                 renderDetailCards(msg.data);
               }
@@ -416,7 +490,7 @@
               switchPanel(viewTab, 'traffic');
             }
           }
-          selectBreakpointRequest(msg.requestId);
+          selectBreakpointRequest(msg.requestId, msg.trafficLifecycleId);
           break;
         case 'breakpoint-resumed':
           clearBreakpointEditDraft(msg.requestId, msg.trafficLifecycleId);
@@ -444,7 +518,11 @@
             switchPanel(viewTab2, 'traffic');
           }
           if (msg.requestId) {
-            setTimeout(() => selectRequest(msg.requestId, false), 200);
+            setTimeout(() => selectRequest(
+              msg.requestId,
+              false,
+              msg.trafficLifecycleId
+            ), 200);
           }
           toast('Request selected by AI', 'success');
           break;
@@ -467,7 +545,7 @@
       }
       if (
         selectedRequestId !== null &&
-        !requests.some(request => request.id === selectedRequestId)
+        !getSelectedTrafficRequest()
       ) {
         closeDetail(false);
       }
@@ -751,15 +829,19 @@
     }
 
     function buildRowHtml(req, index) {
+      const rowSelected = isSelectedTrafficRequest(req);
+      const selected = rowSelected ? 'selected' : '';
+      const rowId = escapeHtmlAttribute(trafficRowDomId(req));
+      const identityAttributes = trafficRowIdentityAttributes(req);
+      const selectHandler = "selectRequest(this.dataset.id, true, this.dataset.lifecycleId)";
       // ---- WebSocket frame sub-row ----
       if (req.protocol === 'ws-frame') {
-        const selected = req.id === selectedRequestId ? 'selected' : '';
         const dirArrow = req.direction === 'client' ? '&rarr;' : '&larr;';
         const dirClass = req.direction === 'client' ? 'ws-frame-client' : 'ws-frame-server';
         const preview = esc((req.requestBody || '').substring(0, 80)) + (req.requestBody && req.requestBody.length > 80 ? '...' : '');
         const byteCount = formatSize(req.requestBodySize);
         const opName = esc(req.opcodeName || 'data');
-        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
           <td role="gridcell" colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
           <td role="gridcell" style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
@@ -769,10 +851,9 @@
 
       // ---- TLS error row (italic, 28px, centered text) ----
       if (req.protocol === 'tls-error') {
-        const selected = req.id === selectedRequestId ? 'selected' : '';
         const source = req.source || 'tls-error';
         const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS['tls-error'];
-        return `<tr class="tls-error-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+        return `<tr class="tls-error-row ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
           <td role="gridcell"><span class="status-badge status-5xx">ERR</span></td>
@@ -783,7 +864,6 @@
 
       // ---- Tunnel row (italic, 28px, centered text) ----
       if (req.protocol === 'tunnel') {
-        const selected = req.id === selectedRequestId ? 'selected' : '';
         const source = req.source || 'tunnel';
         const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
         const bytesSent = formatSize(req.requestBodySize || 0);
@@ -793,7 +873,7 @@
           req.remote?.port,
           443
         );
-        return `<tr class="tunnel-row ${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+        return `<tr class="tunnel-row ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
           <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
@@ -816,7 +896,6 @@
       }
       const source = req.source || 'proxy';
       const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
-      const selected = req.id === selectedRequestId ? 'selected' : '';
       const markerColor = req.source === 'breakpoint' ? '#f1971f' :
         ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
         source === 'mock' ? '#6e40aa' : '#888';
@@ -838,11 +917,11 @@
         const isExpanded = wsExpandedConnections.has(parentKey);
         const expandIcon = isExpanded ? '&#9660;' : '&#9654;';
         if (frameCount > 0) {
-          wsFrameBadge = `<span class="ws-expand-toggle" onclick="event.stopPropagation();toggleWsExpand('${req.id}','${req.trafficLifecycleId || ''}')" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
+          wsFrameBadge = `<span class="ws-expand-toggle" ${identityAttributes} onclick="event.stopPropagation();toggleWsExpand(this.dataset.id,this.dataset.lifecycleId)" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
         }
       }
 
-      return `<tr class="${selected}" id="row-${req.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${req.id === selectedRequestId}" aria-haspopup="menu" tabindex="-1" data-id="${req.id}" onclick="selectRequest('${req.id}')" oncontextmenu="showTrafficContextMenu(event, '${req.id}')">
+      return `<tr class="${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" aria-haspopup="menu" tabindex="-1" ${identityAttributes} onclick="${selectHandler}" oncontextmenu="showTrafficContextMenu(event, this.dataset.id, this, this.dataset.lifecycleId)">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
         <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
@@ -874,7 +953,7 @@
 
       // Skip re-render if range and selection haven't changed
       if (!vsForceRender && renderStart === vsRenderStart && renderEnd === vsRenderEnd) {
-        updateTrafficActiveDescendant(selectedRequestId);
+        updateTrafficActiveDescendant(getSelectedTrafficRequest(filteredRequests));
         return;
       }
 
@@ -896,7 +975,7 @@
       vsRenderStart = renderStart;
       vsRenderEnd = renderEnd;
       vsForceRender = false;
-      updateTrafficActiveDescendant(selectedRequestId);
+      updateTrafficActiveDescendant(getSelectedTrafficRequest(filteredRequests));
     }
 
     function renderTraffic() {
@@ -976,11 +1055,11 @@
       renderVirtualRows();
     }
 
-    function updateTrafficActiveDescendant(id) {
+    function updateTrafficActiveDescendant(request) {
       const grid = document.getElementById('trafficGrid');
       if (!grid) return;
       const tbody = document.getElementById('trafficBody');
-      const row = id ? document.getElementById('row-' + id) : null;
+      const row = request ? document.getElementById(trafficRowDomId(request)) : null;
       const rowIsOwned = Boolean(row) && (!tbody?.contains || tbody.contains(row));
       if (rowIsOwned) {
         grid.setAttribute('aria-activedescendant', row.id);
@@ -989,19 +1068,20 @@
       }
     }
 
-    function selectRequest(id, toggle = true) {
-      if (selectedRequestId === id && toggle) {
+    function selectRequest(id, toggle = true, trafficLifecycleId) {
+      const req = findTrafficRequestByIdentity(requests, id, trafficLifecycleId);
+      if (!req) return;
+      if (isSelectedTrafficRequest(req) && toggle) {
         closeDetail();
         return;
       }
-      const req = requests.find(r => r.id === id);
-      if (!req) return;
       selectedRequestId = id;
+      selectedRequestLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
-        history.replaceState(null, '', buildTrafficViewHash(id));
+        history.replaceState(null, '', buildTrafficViewHash(id, selectedRequestLifecycleId));
       }
       // Scroll selected row into view (center alignment)
-      const idx = filteredRequests.findIndex(r => r.id === id);
+      const idx = filteredRequests.findIndex(request => isSelectedTrafficRequest(request));
       if (idx !== -1) {
         scrollRowIntoView(idx, 'center');
       }
@@ -1013,17 +1093,21 @@
       showDetail(req);
     }
 
-    function selectBreakpointRequest(requestId, attempts = 0) {
+    function selectBreakpointRequest(requestId, trafficLifecycleId, attempts = 0) {
       if (!requestId) return;
-      const req = requests.find(r => r.id === requestId);
+      const req = findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId);
       if (req) {
-        if (selectedRequestId !== requestId) {
-          selectRequest(requestId);
+        if (!isSelectedTrafficRequest(req)) {
+          selectRequest(requestId, false, trafficLifecycleId);
         }
         return;
       }
       if (attempts < 5) {
-        setTimeout(() => selectBreakpointRequest(requestId, attempts + 1), 100);
+        setTimeout(() => selectBreakpointRequest(
+          requestId,
+          trafficLifecycleId,
+          attempts + 1
+        ), 100);
       }
     }
 
@@ -1058,6 +1142,7 @@
       if (emptyEl) emptyEl.style.display = 'flex';
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
+      selectedRequestLifecycleId = null;
       updateTrafficActiveDescendant(null);
       // Re-render to remove selection highlight
       if (renderSelection) {
@@ -1072,7 +1157,7 @@
     // ============ DETAIL FOOTER ACTIONS ============
     function scrollToSelectedRequest() {
       if (!selectedRequestId) return;
-      const idx = filteredRequests.findIndex(r => r.id === selectedRequestId);
+      const idx = filteredRequests.findIndex(request => isSelectedTrafficRequest(request));
       if (idx === -1) return;
       scrollRowIntoView(idx, 'center');
     }
@@ -1095,12 +1180,20 @@
       }
     }
 
-    function togglePinRequest(requestId = selectedRequestId) {
+    function trafficActionRequest(requestId = selectedRequestId, trafficLifecycleId) {
+      if (!requestId) return null;
+      const resolvedLifecycleId = trafficLifecycleId === undefined && requestId === selectedRequestId
+        ? selectedRequestLifecycleId
+        : trafficLifecycleId;
+      return findTrafficRequestByIdentity(requests, requestId, resolvedLifecycleId);
+    }
+
+    function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = requests.find(r => r.id === requestId);
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (req) {
         req.pinned = !req.pinned;
-        if (selectedRequestId === requestId) updatePinIcon(req.pinned);
+        if (isSelectedTrafficRequest(req)) updatePinIcon(req.pinned);
         renderTraffic();
         toast(req.pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
       }
@@ -1111,23 +1204,23 @@
       if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
     }
 
-    function deleteSelectedRequest(requestId = selectedRequestId) {
+    function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const idx = requests.findIndex(r => r.id === requestId);
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const idx = req ? requests.indexOf(req) : -1;
       if (idx !== -1) {
-        const req = requests[idx];
         if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
         if (!confirm('Are you sure you want to delete this request?')) return;
         requests.splice(idx, 1);
-        if (selectedRequestId === requestId) closeDetail();
+        if (isSelectedTrafficRequest(req)) closeDetail();
         applyFilter();
         toast('Exchange deleted', 'success');
       }
     }
 
-    function resendSelectedRequest(requestId = selectedRequestId) {
+    function resendSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = requests.find(r => r.id === requestId);
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
       if (req.requestBodyTruncated === true) {
         toast('Cannot resend this request because its captured body is incomplete.', 'error');
@@ -1453,7 +1546,7 @@
                 <div style="font-weight:bold;color:#f1971f;margin-bottom:4px;">${responsePhase ? 'Response' : 'Request'} Paused at Breakpoint</div>
                 <div id="breakpoint-edit-instructions" style="font-size:12px;color:var(--text-lowlight);">Double-click a field, or focus it and press Enter or Space, to edit before resuming.</div>
               </div>
-              <button class="btn btn-primary" data-request-id="${esc(req.id)}" data-lifecycle-id="${esc(req.trafficLifecycleId || '')}" onclick="resumeBreakpointRequest(this.dataset.requestId, this.dataset.lifecycleId)" style="padding:8px 20px;">
+              <button class="btn btn-primary" data-request-id="${escapeHtmlAttribute(req.id)}" data-lifecycle-id="${escapeHtmlAttribute(req.trafficLifecycleId || '')}" onclick="resumeBreakpointRequest(this.dataset.requestId, this.dataset.lifecycleId)" style="padding:8px 20px;">
                 Resume
               </button>
             </div>
@@ -1657,7 +1750,7 @@
                   const byteStr = formatSize(f.requestBodySize);
                   const timeStr = new Date(f.timestamp).toLocaleTimeString();
                   const isClose = f.opcode === 8;
-                  return `<div class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" onclick="selectRequest('${f.id}')" title="Click to view details">
+                  return `<div class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" ${trafficRowIdentityAttributes(f)} onclick="selectRequest(this.dataset.id, true, this.dataset.lifecycleId)" title="Click to view details">
                     <span class="ws-msg-index">#${i + 1}</span>
                     <span class="ws-msg-dir">${dirArrow}</span>
                     <span class="ws-msg-opcode">${opLabel}</span>
@@ -3069,7 +3162,7 @@
 
     function refreshVisibleBodyViewers() {
       const req = document.getElementById('detailPanel')?._request;
-      if (req && selectedRequestId === req.id) renderDetailCards(req);
+      if (req && isSelectedTrafficRequest(req)) renderDetailCards(req);
       const sendViewer = standaloneBodyViewers.sendResBody;
       if (sendViewer) renderBodyViewer('sendResBody', sendViewer.body, sendViewer.contentType, sendViewer.mode || 'text', sendViewer.context || {});
     }
@@ -9167,7 +9260,7 @@
           viewLink.onclick = () => {
             const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
             if (trafficTab) switchPanel(trafficTab, 'traffic');
-            selectRequest(syntheticReq.id);
+            selectRequest(syntheticReq.id, true, syntheticReq.trafficLifecycleId);
           };
         }
 
@@ -9375,7 +9468,7 @@
     function selectRequestByIndex(delta) {
       if (filteredRequests.length === 0) return;
       let currentIdx = selectedRequestId
-        ? filteredRequests.findIndex(r => r.id === selectedRequestId)
+        ? filteredRequests.findIndex(request => isSelectedTrafficRequest(request))
         : -1;
       let newIdx;
       if (delta === 'first') newIdx = 0;
@@ -9384,8 +9477,9 @@
 
       const req = filteredRequests[newIdx];
       selectedRequestId = req.id;
+      selectedRequestLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
-        history.replaceState(null, '', buildTrafficViewHash(req.id));
+        history.replaceState(null, '', buildTrafficViewHash(req.id, selectedRequestLifecycleId));
       }
       // Scroll the selected row into view
       scrollRowIntoView(newIdx);
@@ -10840,10 +10934,11 @@
         }
         // Try to select the request after traffic loads
         const requestId = parseTrafficViewHash(window.location.hash);
+        const trafficLifecycleId = parseTrafficViewLifecycleHash(window.location.hash);
         if (requestId !== null) {
           setTimeout(() => {
-            if (requests.find(r => r.id === requestId)) {
-              selectRequest(requestId, false);
+            if (findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId ?? undefined)) {
+              selectRequest(requestId, false, trafficLifecycleId ?? undefined);
             }
           }, 1000);
         }
@@ -11002,7 +11097,10 @@
     function selectedTrafficRow() {
       if (!selectedRequestId) return null;
       return Array.from(document.querySelectorAll('#trafficBody tr[data-id]'))
-        .find(row => row.dataset.id === selectedRequestId) || null;
+        .find(row =>
+          row.dataset.id === selectedRequestId &&
+          normalizeTrafficLifecycleId(row.dataset.lifecycleId) === selectedRequestLifecycleId
+        ) || null;
     }
 
     function handleContextMenuShortcut(event) {
@@ -11022,10 +11120,11 @@
       const grid = document.getElementById('trafficGrid');
       let row = event.target?.closest?.('#trafficBody tr[data-id]') || null;
       if (!row && (event.target === grid || event.target === wrapper)) row = selectedTrafficRow();
-      if (!row || row.dataset.id !== selectedRequestId) return false;
+      if (!row || row.dataset.id !== selectedRequestId ||
+          normalizeTrafficLifecycleId(row.dataset.lifecycleId) !== selectedRequestLifecycleId) return false;
 
       consumeContextMenuKey(event);
-      showTrafficContextMenu(event, selectedRequestId, row);
+      showTrafficContextMenu(event, selectedRequestId, row, selectedRequestLifecycleId);
       return true;
     }
 
@@ -11037,13 +11136,13 @@
     });
 
     // --- Traffic row context menu ---
-    function showTrafficContextMenu(e, requestId, menuInvoker) {
+    function showTrafficContextMenu(e, requestId, menuInvoker, trafficLifecycleId) {
       e.preventDefault();
-      const req = requests.find(r => r.id === requestId);
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
 
-      if (selectedRequestId !== requestId) {
-        selectRequest(requestId);
+      if (!isSelectedTrafficRequest(req)) {
+        selectRequest(requestId, false, req.trafficLifecycleId);
       }
 
       const invoker = menuInvoker || e.currentTarget || e.target;
@@ -11056,12 +11155,12 @@
           navigator.clipboard.writeText(snippet).then(() => toast('cURL command copied', 'success'));
         }},
         { separator: true },
-        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId) },
-        { label: 'Create mock rule', action: () => createMockFromRequest(requestId) },
-        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId) },
+        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId, req.trafficLifecycleId) },
+        { label: 'Create mock rule', action: () => createMockFromRequest(requestId, req.trafficLifecycleId) },
+        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId, req.trafficLifecycleId) },
         { separator: true },
-        { label: 'Pin exchange', action: () => togglePinRequest(requestId) },
-        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId) },
+        { label: 'Pin exchange', action: () => togglePinRequest(requestId, req.trafficLifecycleId) },
+        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId, req.trafficLifecycleId) },
       ], { invoker, focusFirst: keyboardInvoked });
     }
 
@@ -11080,8 +11179,8 @@
       return copiedHeaders;
     }
 
-    function createMockFromRequest(requestId) {
-      const req = requests.find(r => r.id === requestId);
+    function createMockFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
       if (req.requestBodyTruncated === true || req.responseBodyTruncated === true) {
         toast('Cannot create a mock because this exchange contains an incomplete body capture.', 'error');
@@ -11387,9 +11486,9 @@
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
-    function createBreakpointFromRequest(requestId = selectedRequestId) {
+    function createBreakpointFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = requests.find(r => r.id === requestId);
+      const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
 
       fetch(API_BASE + '/api/breakpoints', {
@@ -11778,7 +11877,7 @@
       // Ctrl+M: Create mock rule from selected exchange
       if (e.key === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput) {
         e.preventDefault();
-        if (selectedRequestId) createMockFromRequest(selectedRequestId);
+        if (selectedRequestId) createMockFromRequest();
         return;
       }
 

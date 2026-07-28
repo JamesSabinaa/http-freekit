@@ -76,6 +76,7 @@ function rendererHarness(initialRequests = []) {
     requests: structuredClone(initialRequests),
     filteredRequests: [],
     selectedRequestId: null,
+    selectedRequestLifecycleId: null,
     requestCounter: initialRequests.length,
     sortField: null,
     sortDirection: 'desc',
@@ -91,6 +92,12 @@ function rendererHarness(initialRequests = []) {
     showDetail: () => {},
     renderTraffic: () => { renders++; },
     esc: value => String(value ?? ''),
+    escapeHtmlAttribute: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
     formatSize: value => `${value || 0} B`,
     SOURCE_ICONS: { proxy: '' }
   };
@@ -543,7 +550,8 @@ test('secure WebSocket parents expose their frame rows and WebSocket styling', (
   assert.match(html, /method-badge method-WS">WS</);
   assert.match(html, /status-badge status-2xx/);
   assert.match(html, /ws-frame-count">1</);
-  assert.match(html, /toggleWsExpand\('secure-socket','secure-lifecycle'\)/);
+  assert.match(html, /data-id="secure-socket" data-lifecycle-id="secure-lifecycle"/);
+  assert.match(html, /toggleWsExpand\(this\.dataset\.id,this\.dataset\.lifecycleId\)/);
   assert.match(
     rendererSource,
     /\/\/ ---- WebSocket Card ----\s+if \(isConnectedWebSocket\(req\)\)/

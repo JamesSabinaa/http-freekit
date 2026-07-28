@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
-function createRestoreHarness(currentRequests, selectedRequestId) {
+function createRestoreHarness(currentRequests, selectedRequestId, selectedRequestLifecycleId = null) {
   const start = source.indexOf('function trimTrafficRows(');
   const end = source.indexOf('function connectWebSocket()', start);
   assert.ok(start >= 0 && end > start, 'traffic dump restoration functions must be present');
@@ -20,6 +20,7 @@ function createRestoreHarness(currentRequests, selectedRequestId) {
     requests: currentRequests,
     requestCounter: currentRequests.length,
     selectedRequestId,
+    selectedRequestLifecycleId,
     applyFilter: () => { filterCalls++; },
     closeDetail: () => { closeCalls++; },
     showDetail: request => {
@@ -44,7 +45,7 @@ function createRestoreHarness(currentRequests, selectedRequestId) {
   };
 }
 
-function createUpdateHarness(currentRequests, selectedRequestId) {
+function createUpdateHarness(currentRequests, selectedRequestId, selectedRequestLifecycleId = null) {
   const start = source.indexOf('function trimTrafficRows(');
   const end = source.indexOf('// ============ TRAFFIC ============', start);
   assert.ok(start >= 0 && end > start, 'traffic update functions must be present');
@@ -55,6 +56,7 @@ function createUpdateHarness(currentRequests, selectedRequestId) {
   const context = {
     requests: currentRequests,
     selectedRequestId,
+    selectedRequestLifecycleId,
     applyFilter: () => { filterCalls++; },
     document: {
       getElementById(id) {
@@ -151,7 +153,11 @@ test('request updates target the matching reused-ID lifecycle', () => {
   const currentRequest = {
     id: 'reused', trafficLifecycleId: 'current-lifecycle', path: '/current', statusCode: null
   };
-  const harness = createUpdateHarness([oldRequest, currentRequest], 'reused');
+  const harness = createUpdateHarness(
+    [oldRequest, currentRequest],
+    'reused',
+    'current-lifecycle'
+  );
   harness.detailPanel._request = currentRequest;
 
   harness.context.callHandleWsMessage({
@@ -176,6 +182,25 @@ test('request updates target the matching reused-ID lifecycle', () => {
   assert.equal(harness.detailPanel._request, harness.context.requests[1]);
   assert.deepEqual(harness.rendered, [harness.context.requests[1]]);
   assert.equal(harness.filterCalls, 2);
+});
+
+test('traffic dump preserves duplicate-ID pins and selection by lifecycle', () => {
+  const harness = createRestoreHarness([
+    { id: 'reused', trafficLifecycleId: 'life-1', path: '/old-1', pinned: true },
+    { id: 'reused', trafficLifecycleId: 'life-2', path: '/old-2' }
+  ], 'reused', 'life-2');
+
+  harness.context.callRestoreTrafficDump([
+    { id: 'reused', trafficLifecycleId: 'life-1', path: '/new-1' },
+    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2' }
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
+    { id: 'reused', trafficLifecycleId: 'life-1', path: '/new-1', pinned: true },
+    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2' }
+  ]);
+  assert.equal(harness.closeCalls, 0);
+  assert.equal(harness.detailPanel._request, harness.context.requests[1]);
 });
 
 test('traffic dump retains pinned renderer-only records after authoritative server rows', () => {
