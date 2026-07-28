@@ -91,6 +91,10 @@ export class ProxyServer {
     this._h2Sessions = new Map();
     // Set of origins known not to support h2: Set<"host:port">
     this._h2Blacklist = new Set();
+    // Failed capability probes are negative-cached only briefly so a transient
+    // outage cannot disable H2 for the lifetime of the proxy process.
+    this._h2BlacklistExpiresAt = new Map();
+    this._h2BlacklistTtlMs = options.h2BlacklistTtlMs ?? 60000;
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
     this._upstreamProxyGeneration = 0;
@@ -4731,7 +4735,7 @@ export class ProxyServer {
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // Known not to support h2
-    if (this._h2Blacklist.has(cacheKey)) return Promise.resolve(null);
+    if (this._isH2Blacklisted(cacheKey)) return Promise.resolve(null);
 
     // Already connecting — wait for it rather than exposing a session that has
     // not completed its TLS/ALPN handshake yet.
@@ -4779,7 +4783,7 @@ export class ProxyServer {
         if (isCurrentAttempt()) {
           // Delete ownership before destruction can synchronously emit more events.
           this._h2Sessions.delete(cacheKey);
-          this._h2Blacklist.add(cacheKey);
+          this._blacklistH2Origin(cacheKey);
         }
         if (destroy && !session.destroyed) session.destroy();
         resolve(null);
@@ -4839,6 +4843,23 @@ export class ProxyServer {
     return pending;
   }
 
+  _blacklistH2Origin(origin) {
+    if (!Number.isFinite(this._h2BlacklistTtlMs) || this._h2BlacklistTtlMs <= 0) return;
+    this._h2Blacklist.add(origin);
+    this._h2BlacklistExpiresAt.set(origin, Date.now() + this._h2BlacklistTtlMs);
+  }
+
+  _isH2Blacklisted(origin) {
+    if (!this._h2Blacklist.has(origin)) return false;
+    const expiresAt = this._h2BlacklistExpiresAt.get(origin);
+    // Preserve deliberately seeded capability exclusions used by internal
+    // routing and tests; connection failures always have an expiry entry.
+    if (expiresAt === undefined || Date.now() < expiresAt) return true;
+    this._h2Blacklist.delete(origin);
+    this._h2BlacklistExpiresAt.delete(origin);
+    return false;
+  }
+
   _evictH2Session(origin, expectedSession = null, expectedAttempt = null) {
     const cached = this._h2Sessions.get(origin);
     if (!cached ||
@@ -4864,6 +4885,7 @@ export class ProxyServer {
     // its listeners or install a replacement session.
     this._h2Sessions.clear();
     this._h2Blacklist.clear();
+    this._h2BlacklistExpiresAt.clear();
     for (const cached of cachedSessions) {
       clearTimeout(cached.timer);
       cached.abortPending?.();

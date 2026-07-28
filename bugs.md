@@ -321,7 +321,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-109 — Medium — One transient H2 failure blacklists an origin until restart
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Failed H2 capability probes now enter a bounded 60-second negative-cache cooldown. Requests avoid repeated H2 setup work during that cooldown, then automatically retry H2 so a recovered or newly H2-capable origin no longer requires a FreeKit restart. Resetting H2 state clears both sessions and cooldown metadata.
 
 - Evidence: `_getH2Session()` immediately rejects blacklisted origins at `src/proxy/proxy-server.js:2541`; any initial error or five-second timeout adds the origin at `:2575-2581,2596-2605`. The set clears only during full shutdown at `:2635-2644`.
 - Impact: after a temporary outage, an H2-only origin stays unreachable for the rest of the process because every request tries H1.
