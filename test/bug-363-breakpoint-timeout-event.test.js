@@ -46,6 +46,8 @@ test('breakpoint timeout emits one ordered resume while other completion paths s
     const proxy = new ProxyServer(null);
     const events = [];
     const resolutions = [];
+    const trafficUpdates = [];
+    proxy.onRequest = event => trafficUpdates.push(structuredClone(event));
     proxy.onBreakpoint = event => {
       events.push({
         ...event,
@@ -125,6 +127,14 @@ test('breakpoint timeout emits one ordered resume while other completion paths s
     });
     assert.equal(events.length, 3, 'client close and its stale timer emit once total');
     assert.equal(proxy._pendingTrafficLogDecisions.has('client-close'), false);
+    assert.equal(trafficUpdates.length, 1);
+    assert.equal(trafficUpdates[0].id, 'client-close');
+    assert.equal(trafficUpdates[0].method, 'GET');
+    assert.equal(trafficUpdates[0].statusCode, 0);
+    assert.equal(trafficUpdates[0].statusMessage, 'Client Disconnected');
+    assert.equal(trafficUpdates[0]._mergeUpdate, true);
+    assert.equal(trafficUpdates[0]._update, true);
+    assert.ok(trafficUpdates[0].duration >= 0);
   });
 });
 

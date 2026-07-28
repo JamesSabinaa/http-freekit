@@ -9143,7 +9143,17 @@ export class ProxyServer {
         if (this.pendingBreakpoints.get(requestId) !== bp) return;
         bp.resolve(BREAKPOINT_CLIENT_DISCONNECTED);
         this.pendingBreakpoints.delete(requestId);
-        this._pendingTrafficLogDecisions.delete(requestId);
+        this._emitRequestUpdate({
+          id: requestId,
+          method: bp.method,
+          url: bp.url,
+          host: bp.host,
+          path: bp.path,
+          _mergeUpdate: true,
+          statusCode: 0,
+          statusMessage: 'Client Disconnected',
+          duration: Math.max(0, Date.now() - bp.timestamp)
+        });
         try {
           this.onBreakpoint({ type: 'breakpoint-resumed', requestId, reason: 'client-disconnected' });
         } catch (err) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 
+import { ApiServer } from '../src/api/api-server.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 function waitFor(predicate, timeoutMs = 2000) {
@@ -20,7 +21,11 @@ test('disconnecting paused HTTP clients removes their breakpoint and traffic lif
   const proxy = new ProxyServer(null, { port: 0 });
   proxy.addBreakpoint({ matchers: [{ type: 'wildcard' }] });
   const events = [];
+  const trafficBroadcasts = [];
+  const api = new ApiServer(proxy, null, null);
+  api._broadcast = event => trafficBroadcasts.push(structuredClone(event));
   proxy.onBreakpoint = event => events.push(event);
+  proxy.onRequest = event => api.onTrafficEvent(event);
   await proxy.start();
   t.after(() => proxy.stop());
 
@@ -43,7 +48,17 @@ test('disconnecting paused HTTP clients removes their breakpoint and traffic lif
     assert.equal(proxy.resumeBreakpoint(requestId), false);
     assert.equal(events.at(-1).type, 'breakpoint-resumed');
     assert.equal(events.at(-1).reason, 'client-disconnected');
+    assert.equal(api._pendingTrafficIds.size, 0);
+    const terminal = api.trafficLog.find(request => request.id === requestId);
+    assert.equal(terminal?.statusCode, 0);
+    assert.equal(terminal?.statusMessage, 'Client Disconnected');
+    assert.equal(terminal?.method, 'GET');
+    assert.equal(terminal?._mergeUpdate, undefined);
   }
+
+  assert.equal(api.trafficLog.length, 3);
+  assert.equal(trafficBroadcasts.filter(event => event.type === 'request-update'
+    && event.data.statusMessage === 'Client Disconnected').length, 3);
 });
 
 test('proxy shutdown clears any remaining traffic lifecycle decisions', async () => {

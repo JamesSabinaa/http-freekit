@@ -2394,6 +2394,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     if (data._update) {
       // Update an existing pending request in-place
       delete data._update;
+      const mergeUpdate = data._mergeUpdate === true;
+      delete data._mergeUpdate;
       this._pendingTrafficIds.delete(data.id);
       if (this._clearedPendingTrafficIds.delete(data.id)) {
         this._maybeAutoRotateProxyOnError(data);
@@ -2401,6 +2403,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       const idx = this.trafficLog.findIndex(r => r.id === data.id);
       if (idx !== -1) {
+        if (mergeUpdate) data = { ...this.trafficLog[idx], ...data };
         this.trafficLog[idx] = data;
         this._broadcast({ type: 'request-update', data });
       } else {
