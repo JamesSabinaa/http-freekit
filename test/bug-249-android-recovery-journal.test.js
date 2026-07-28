@@ -175,6 +175,28 @@ test('malformed or untrusted journals are not adopted or used for device command
     '{not-json',
     JSON.stringify({ version: 6, devices: [validJournalEntry()] }),
     JSON.stringify({
+      version: 5,
+      devices: [{ serial: 'device-1', mode: 'app-uncertain', proxyPort: 8080 }]
+    }),
+    JSON.stringify({
+      version: 5,
+      devices: [{
+        serial: 'device-1',
+        mode: 'app-uncertain',
+        proxyPort: 8080,
+        vpnStatusConfirmed: 'yes'
+      }]
+    }),
+    JSON.stringify({
+      version: 5,
+      devices: [{
+        serial: 'device-1',
+        mode: 'http-toolkit-app',
+        proxyPort: 8080,
+        vpnStatusConfirmed: false
+      }]
+    }),
+    JSON.stringify({
       version: 1,
       devices: [validJournalEntry(), validJournalEntry({ serial: '--all' })]
     }),

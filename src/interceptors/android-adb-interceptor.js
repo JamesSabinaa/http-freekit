@@ -154,6 +154,8 @@ export class AndroidAdbInterceptor {
         !this._isSafeReverseEndpoint(entry.previousReverseMapping)) return null;
     if (appOnly && version >= ANDROID_RECOVERY_VERSION &&
         (!hasVpnConfirmation || typeof entry.vpnStatusConfirmed !== 'boolean')) return null;
+    if (entry.mode === 'http-toolkit-app' && version >= ANDROID_RECOVERY_VERSION &&
+        entry.vpnStatusConfirmed !== true) return null;
     if (reverseOnly || appOnly) {
       return {
         serial: entry.serial,
@@ -222,7 +224,8 @@ export class AndroidAdbInterceptor {
           ...((entry.mode === 'app-uncertain' || entry.mode === 'http-toolkit-app')
             ? {
                 vpnStatusConfirmed: entry.vpnStatusConfirmed === true ||
-                  entry.mode === 'http-toolkit-app'
+                  (parsed.version < ANDROID_RECOVERY_VERSION &&
+                    entry.mode === 'http-toolkit-app')
               }
             : {}),
           ...(proxyStillReachable
