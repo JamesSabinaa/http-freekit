@@ -315,6 +315,15 @@ test('request and response breakpoints remain one lifecycle across all intercept
         assert.equal(response.body, phase === 'response' ? 'edited' : 'origin',
           `${protocol.name} ${phase}`);
         const originHeaders = observedHeaders.at(-1);
+        const activePauses = capture.events.filter(
+          event => event.source === 'breakpoint' && event.statusCode === 0
+        );
+        assert.ok(activePauses.length > 0, `${protocol.name} emits an active pause`);
+        assert.equal(
+          activePauses.every(event => event.breakpointActive === true),
+          true,
+          `${protocol.name} marks active pause traffic`
+        );
         if (phase === 'request') {
           assert.equal(originHeaders.authorization, undefined, `${protocol.name} removes authorization`);
           assert.equal(originHeaders['x-remove-me'], undefined, `${protocol.name} removes edited header`);

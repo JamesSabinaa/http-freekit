@@ -103,12 +103,17 @@ function renderDetail(request) {
   return { html: detailContent.innerHTML, bodyViewerCalls };
 }
 
-function renderTunnelRow(request) {
+function renderTrafficRow(request) {
   const context = {
-    SOURCE_ICONS: { tunnel: '' },
+    SOURCE_ICONS: { tunnel: '', proxy: '', breakpoint: '' },
     selectedRequestId: null,
     esc: escapeHtml,
-    formatSize: size => `${size || 0} bytes`
+    formatSize: size => `${size || 0} bytes`,
+    isWebSocketConnection: () => false,
+    isConnectedWebSocket: () => false,
+    wsFramesByParent: {},
+    wsExpandedConnections: new Set(),
+    wsConnectionKey: () => ''
   };
   vm.createContext(context);
   vm.runInContext(`
@@ -265,6 +270,7 @@ test('paused breakpoint details use an amber Paused response status', () => {
   for (const breakpointPhase of ['request', 'response']) {
     const html = renderDetail(baseRequest({}, {
       source: 'breakpoint',
+      breakpointActive: true,
       statusCode: 0,
       statusMessage: `Breakpoint (${breakpointPhase})`,
       breakpointPhase
@@ -275,6 +281,31 @@ test('paused breakpoint details use an amber Paused response status', () => {
     assert.match(html, /border-left-color:#f1971f/);
     assert.doesNotMatch(html, />ERR</);
     assert.doesNotMatch(html, /background:#ce3939;color:#fff;">/);
+  }
+});
+
+test('terminal breakpoint details show the failure without a Resume action', () => {
+  for (const terminal of [
+    { statusMessage: 'Client Disconnected' },
+    { statusMessage: 'Breakpoint' },
+    { statusMessage: 'Breakpoint (request)', error: 'downstream failed' }
+  ]) {
+    const request = baseRequest({}, {
+      source: 'breakpoint',
+      breakpointActive: false,
+      statusCode: 0,
+      breakpointPhase: 'request',
+      ...terminal
+    });
+    const html = renderDetail(request).html;
+    const row = renderTrafficRow(request);
+
+    assert.doesNotMatch(html, /Paused at Breakpoint|resumeBreakpointRequest|>Paused</);
+    assert.match(html, /background:#ce3939;color:#fff;">ERR/);
+    if (terminal.error) assert.match(html, /downstream failed/);
+    else assert.match(html, new RegExp(terminal.statusMessage));
+    assert.match(row, /status-badge status-err">ERR/);
+    assert.doesNotMatch(row, /status-breakpoint|Paused at breakpoint/);
   }
 });
 
@@ -354,7 +385,7 @@ test('tunnel rows and details preserve explicit ports and format IPv6 endpoints'
       remote: { address: '2001:db8::5', port }
     });
     const endpointPattern = new RegExp(`\\[2001:db8::5\\]:${expectedPort}`);
-    const row = renderTunnelRow(request);
+    const row = renderTrafficRow(request);
     const detail = renderDetail(request).html;
 
     assert.match(row, endpointPattern);

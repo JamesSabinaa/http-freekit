@@ -821,7 +821,7 @@
         source === 'mock' ? '#6e40aa' : '#888';
       const statusHtml = req.statusCode === null || req.statusCode === undefined
         ? '<span class="status-badge status-pending" title="Pending..."><svg width="14" height="14" viewBox="0 0 16 16" style="animation:spin 0.8s linear infinite;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="28 10" stroke-linecap="round" opacity="0.8"/></svg></span>'
-        : req.source === 'breakpoint' && req.statusCode === 0
+        : req.breakpointActive === true
         ? '<span class="status-badge status-breakpoint" title="Paused at breakpoint">&#9208;</span>'
         : `<span class="status-badge ${statusClass}">${req.statusCode || 'ERR'}</span>`;
       const pinIcon = req.pinned ? '<span class="row-pin" title="Pinned">&#128204;</span>' : '';
@@ -1385,7 +1385,7 @@
 
       const content = document.getElementById('detailContent');
       const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
-      const statusBreakpoint = req.source === 'breakpoint' && req.statusCode === 0;
+      const statusBreakpoint = req.breakpointActive === true;
       const statusPending = req.statusCode === null || req.statusCode === undefined;
       const statusColor = statusBreakpoint ? '#f1971f' : statusPending ? '#888' :
         req.error || req.statusCode === 0 ? '#ce3939' :
@@ -1411,7 +1411,7 @@
       let html = '';
 
       // ---- Breakpoint Card (if paused) ----
-      if (req.source === 'breakpoint' && req.statusCode === 0) {
+      if (req.breakpointActive === true) {
         const draft = getBreakpointEditDraft(req);
         const responsePhase = draft._phase === 'response';
         const breakpointFields = responsePhase ? `

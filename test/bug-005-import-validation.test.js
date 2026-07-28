@@ -64,6 +64,13 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.match(invalidLifecycle.body.error, /trafficLifecycleId/);
   assert.deepEqual(api.trafficLog, []);
 
+  const invalidBreakpointState = await postJson(port, {
+    requests: [{ id: 'x', timestamp: Date.now(), breakpointActive: 'yes' }]
+  });
+  assert.equal(invalidBreakpointState.statusCode, 400);
+  assert.match(invalidBreakpointState.body.error, /breakpointActive/);
+  assert.deepEqual(api.trafficLog, []);
+
   for (const [record, error] of [
     [{ remote: '127.0.0.1:443' }, /remote must be an object/],
     [{ remote: { address: 127, port: 443 } }, /remote.address/],
@@ -154,6 +161,18 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
     requests: [{ id: 'valid', timestamp: Date.now(), requestBody: 'text' }]
   });
   assert.equal(valid.statusCode, 200);
-  assert.equal(api.trafficLog.length, 3);
+  const historicalBreakpoint = await postJson(port, {
+    requests: [{
+      id: 'historical-breakpoint',
+      timestamp: Date.now(),
+      source: 'breakpoint',
+      statusCode: 0,
+      statusMessage: 'Breakpoint',
+      breakpointActive: true
+    }]
+  });
+  assert.equal(historicalBreakpoint.statusCode, 200);
+  assert.equal(api.trafficLog.at(-1).breakpointActive, undefined);
+  assert.equal(api.trafficLog.length, 4);
   assert.doesNotThrow(() => trafficToHar(api.trafficLog));
 });

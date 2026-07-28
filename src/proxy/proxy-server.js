@@ -8700,6 +8700,13 @@ export class ProxyServer {
     return record;
   }
 
+  _markBreakpointTrafficState(data) {
+    data.breakpointActive = data.source === 'breakpoint' &&
+      data.statusCode === 0 &&
+      !data.error &&
+      ['Breakpoint', 'Breakpoint (request)', 'Breakpoint (response)'].includes(data.statusMessage);
+  }
+
   _selectPendingTrafficLogDecision(data, trafficLifecycleId = data.trafficLifecycleId) {
     const stored = this._pendingTrafficLogDecisions.get(data.id);
     if (stored === undefined) return null;
@@ -8786,6 +8793,7 @@ export class ProxyServer {
     const lifecycleComplete = data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
+    this._markBreakpointTrafficState(data);
     // Auto-detect source from User-Agent if source is 'proxy' (generic)
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
@@ -8865,6 +8873,7 @@ export class ProxyServer {
     delete data._trafficLifecycleComplete;
     data._update = true;
     this._normalizeCapturedBodies(data);
+    this._markBreakpointTrafficState(data);
     // Auto-detect source
     if (data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);

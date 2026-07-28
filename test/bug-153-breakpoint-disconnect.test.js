@@ -55,6 +55,7 @@ test('disconnecting paused HTTP clients removes their breakpoint and traffic lif
     const terminal = api.trafficLog.find(request => request.id === requestId);
     assert.equal(terminal?.statusCode, 0);
     assert.equal(terminal?.statusMessage, 'Client Disconnected');
+    assert.equal(terminal?.breakpointActive, false);
     assert.equal(terminal?.method, 'GET');
     assert.equal(terminal?._mergeUpdate, undefined);
   }

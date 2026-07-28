@@ -40,6 +40,7 @@ function pausedRequest(phase) {
     url: 'https://example.test/<edit>?a=1&b=2',
     path: '/<edit>',
     source: 'breakpoint',
+    breakpointActive: true,
     breakpointPhase: phase,
     statusCode: 0,
     statusMessage: '',

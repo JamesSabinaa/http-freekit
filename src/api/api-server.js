@@ -647,7 +647,9 @@ print(json.dumps({"providers": get_proxy_providers()}))
     ];
     const capturedSizeFields = ['requestBodyCapturedSize', 'responseBodyCapturedSize'];
     const numberFields = ['statusCode', 'duration', ...bodySizeFields, ...capturedSizeFields];
-    const booleanFields = ['requestBodyTruncated', 'responseBodyTruncated'];
+    const booleanFields = [
+      'requestBodyTruncated', 'responseBodyTruncated', 'breakpointActive'
+    ];
 
     for (let index = 0; index < requests.length; index++) {
       const request = requests[index];
@@ -2322,7 +2324,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       reservedIds.add(id);
       assignedIds.add(id);
-      const assignedRequest = { ...request, id };
+      // Imported traffic is historical and cannot own a live resumable breakpoint.
+      const { breakpointActive: _importedBreakpointActive, ...historicalRequest } = request;
+      const assignedRequest = { ...historicalRequest, id };
       assignedIncoming.push(assignedRequest);
       if (request.protocol === 'ws' || request.protocol === 'wss') {
         // Legacy frames cannot disambiguate duplicate parent lifecycles, so
