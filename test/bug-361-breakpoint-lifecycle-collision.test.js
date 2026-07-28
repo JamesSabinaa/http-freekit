@@ -220,6 +220,27 @@ test('direct deletion and reinsertion assigns a fresh arrival order', () => {
   }
 });
 
+test('direct replacement preserves the order of retained breakpoint objects', () => {
+  const proxy = new ProxyServer(null);
+  const resolved = [];
+  const first = pending('first-life', resolved);
+  const added = pending('added-life', resolved);
+
+  proxy.pendingBreakpoints.set('first', first);
+  proxy.pendingBreakpoints.set('middle', pending('middle-life', resolved));
+  proxy.pendingBreakpoints.set('first', first);
+
+  assert.deepEqual(proxy.getPendingBreakpoints().map(bp => bp.trafficLifecycleId), [
+    'first-life', 'middle-life'
+  ]);
+
+  proxy.pendingBreakpoints.set('first', [first, added]);
+
+  assert.deepEqual(proxy.getPendingBreakpoints().map(bp => bp.trafficLifecycleId), [
+    'first-life', 'middle-life', 'added-life'
+  ]);
+});
+
 test('pending breakpoint storage remains constructor-compatible with Map', () => {
   const proxy = new ProxyServer(null);
   const resolved = [];

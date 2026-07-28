@@ -253,10 +253,18 @@ export class ProxyServer {
       for (const breakpoint of breakpoints) this._pendingBreakpointOrder.delete(breakpoint);
     };
     this.pendingBreakpoints.onSet = (_requestId, stored, previous) => {
-      if (previous !== undefined) forgetBreakpointOrder(previous);
       const breakpoints = Array.isArray(stored) ? stored : [stored];
+      if (previous !== undefined) {
+        const retained = new Set(breakpoints);
+        const previousBreakpoints = Array.isArray(previous) ? previous : [previous];
+        for (const breakpoint of previousBreakpoints) {
+          if (!retained.has(breakpoint)) this._pendingBreakpointOrder.delete(breakpoint);
+        }
+      }
       for (const breakpoint of breakpoints) {
-        this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
+        if (!this._pendingBreakpointOrder.has(breakpoint)) {
+          this._pendingBreakpointOrder.set(breakpoint, this._pendingBreakpointSequence++);
+        }
       }
     };
     this.pendingBreakpoints.onDelete = (_requestId, stored) => forgetBreakpointOrder(stored);
