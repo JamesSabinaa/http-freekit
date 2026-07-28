@@ -454,3 +454,27 @@ test('original request identity is authoritative for transformed completions', (
   assert.equal(proxy._pendingTrafficLogDecisions.get('transformed').trafficLifecycleId,
     'current-lifecycle');
 });
+
+test('partial original request identity cannot select an ambiguous lifecycle', () => {
+  const proxy = new ProxyServer(null);
+  proxy.onRequest = () => {};
+  const request = path => ({
+    id: 'partial-original', protocol: 'https', method: 'GET',
+    url: `https://pending.test${path}`, host: 'pending.test', path,
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  });
+
+  proxy._emitPendingRequest(request('/first'), 'first-lifecycle');
+  proxy._emitPendingRequest(request('/second'), 'second-lifecycle');
+
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...request('/second'),
+    originalRequest: { method: 'GET' }
+  }), null);
+  assert.deepEqual(
+    proxy._pendingTrafficLogDecisions.get('partial-original')
+      .map(decision => decision.trafficLifecycleId),
+    ['first-lifecycle', 'second-lifecycle']
+  );
+});
