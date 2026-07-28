@@ -31,6 +31,7 @@ const DATA_VIEW_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
   DataView.prototype,
   'byteLength'
 ).get;
+const ARRAY_BUFFER_IS_VIEW = ArrayBuffer.isView;
 const guardedMcpTransports = new WeakMap();
 
 function oversizedMcpResponse(requestId) {
@@ -247,6 +248,12 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
       ? new Date(dateTimestamp).toISOString()
       : 'Invalid Date';
   }
+  let binaryView = false;
+  try {
+    binaryView = ARRAY_BUFFER_IS_VIEW(value);
+  } catch {
+    // Continue without trusting an exotic object's binary brand.
+  }
   let binaryByteLength;
   try {
     binaryByteLength = TYPED_ARRAY_BYTE_LENGTH.call(value);
@@ -256,6 +263,7 @@ function boundedMetadata(value, state = null, depth = 0, excludedKeys = null) {
   if (binaryByteLength !== undefined) {
     return `[Binary metadata: ${binaryByteLength} bytes]`;
   }
+  if (binaryView) return '[binary metadata omitted]';
   if (depth >= MCP_METADATA_MAX_DEPTH) return '[maximum depth omitted]';
   if (budget.seen.has(value)) return '[repeated reference omitted]';
   budget.seen.add(value);

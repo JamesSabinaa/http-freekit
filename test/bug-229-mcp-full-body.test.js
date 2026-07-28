@@ -428,6 +428,25 @@ test('MCP request detail does not execute body, metadata, size, or timestamp coe
   assert.equal(byteLengthReads, 0);
 });
 
+test('MCP request detail marks detached binary metadata as omitted', () => {
+  const buffer = new ArrayBuffer(8);
+  const detachedMetadata = new DataView(buffer);
+  structuredClone(buffer, { transfer: [buffer] });
+  const bridge = createBridge([{
+    id: 'detached-binary-metadata',
+    requestBody: '',
+    responseBody: '',
+    detachedMetadata,
+    timestamp: 1_767_225_600_000
+  }]);
+
+  const detail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'detached-binary-metadata'
+  }));
+
+  assert.equal(detail.detachedMetadata, '[binary metadata omitted]');
+});
+
 test('one MCP request detail page stays bounded for a near-limit capture', () => {
   const requestBody = `${'x'.repeat(24 * 1024 * 1024)}tail-token`;
   const bridge = createBridge([{
