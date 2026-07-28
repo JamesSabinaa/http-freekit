@@ -243,7 +243,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-063 — Medium — Corrupt or mismatched CA files are never recovered
 
 - Status: **Fixed**.
-- Resolution: Startup now parses and validates the persisted certificate/key pair before accepting it. The certificate must be a self-signed CA and its SPKI public key must match the stored private key; corrupt, non-CA, non-self-signed, or mismatched files are regenerated automatically before initialization returns.
+- Resolution: Startup now parses and validates the persisted certificate/key pair before accepting it. The certificate must be a currently usable self-signed CA (allowing five minutes of clock skew) and its SPKI public key must match the stored private key; corrupt, non-CA, non-self-signed, future-dated, or mismatched files are regenerated automatically before initialization returns. Regeneration also reapplies owner-only permissions to an existing key file.
 
 - Evidence: `src/proxy/certificate-authority.js:20-38` assumes that any existing `ca.pem` and `ca.key` parse and belong together. Parse failures are not caught, and no public/private key match is verified before the pair is used to sign host certificates.
 - Impact: a partial/corrupt file prevents startup entirely; a valid but mismatched key lets startup succeed but produces host certificates clients cannot validate against the advertised CA.

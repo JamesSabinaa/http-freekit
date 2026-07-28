@@ -6,6 +6,7 @@ import net from 'net';
 import { refreshTerminalCaBundle, terminalCaBundlePath } from './terminal-ca-bundle.js';
 
 const { pki, md, asn1 } = forge;
+const CA_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 
 export class CertificateAuthority {
   constructor(dataDir) {
@@ -62,6 +63,7 @@ export class CertificateAuthority {
     const privateKey = crypto.createPrivateKey(keyPem);
     const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
     const privatePublicKey = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
+    const validFrom = new Date(certificate.validFrom).getTime();
 
     if (!certificate.ca) {
       throw new Error('certificate is not a certificate authority');
@@ -71,6 +73,9 @@ export class CertificateAuthority {
     }
     if (!certificatePublicKey.equals(privatePublicKey)) {
       throw new Error('certificate and private key do not match');
+    }
+    if (!Number.isFinite(validFrom) || validFrom > Date.now() + CA_CLOCK_SKEW_TOLERANCE_MS) {
+      throw new Error('certificate is not yet valid');
     }
   }
 
@@ -112,6 +117,7 @@ export class CertificateAuthority {
 
     fs.writeFileSync(this.caCertPath, certPem);
     fs.writeFileSync(this.caKeyPath, keyPem, { mode: 0o600 });
+    fs.chmodSync(this.caKeyPath, 0o600);
     console.log('[CA] CA certificate generated and saved');
   }
 
