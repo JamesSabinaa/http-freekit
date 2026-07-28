@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -117,8 +120,122 @@ test('cURL exports keep leading-at bodies and multipart text fields literal', ()
   }, 'curl');
 
   assert.ok(multipart.includes(`--form-string ${shellLiteral('literal=@/private/secret.txt')}`));
-  assert.ok(multipart.includes(`-F ${shellLiteral('upload=@payload.bin;type=application/octet-stream')}`));
+  assert.ok(multipart.includes(`-F ${shellLiteral('upload=@"payload.bin";type=application/octet-stream')}`));
   assert.doesNotMatch(multipart, /-F 'literal=/);
+});
+
+test('cURL multipart file metadata is quoted for cURL form parsing', () => {
+  const multipart = generateExportSnippet({
+    method: 'POST',
+    url: 'https://example.test/form',
+    bodyType: 'multipart',
+    requestHeaders: {},
+    formFields: [{
+      key: 'upload',
+      type: 'file',
+      fileName: 'intended;headers=@leak-headers.txt\\"quoted.bin',
+      fileType: 'application/x-review'
+    }]
+  }, 'curl');
+
+  assert.ok(multipart.includes(shellLiteral(
+    'upload=@"intended;headers=@leak-headers.txt\\\\\\"quoted.bin";type=application/x-review'
+  )));
+  assert.doesNotMatch(multipart, /@intended;headers=/);
+  assert.doesNotMatch(multipart, /;type=application\/x-review;headers=/);
+
+  const unsafeContentType = generateExportSnippet({
+    method: 'POST',
+    url: 'https://example.test/form',
+    bodyType: 'multipart',
+    requestHeaders: {},
+    formFields: [{
+      key: 'upload',
+      type: 'file',
+      fileName: 'payload.bin',
+      fileType: 'application/x-review;headers=@leak-headers.txt'
+    }]
+  }, 'curl');
+  assert.match(unsafeContentType, /^# EXACT REPLAY UNAVAILABLE/);
+  assert.doesNotMatch(unsafeContentType, /(?:^|\s)-F(?:\s|$)/);
+  assert.doesNotMatch(unsafeContentType, /headers=@/);
+
+  for (const unsafeField of [
+    { key: 'upload=@secret.txt', fileName: 'payload.bin', fileType: 'application/octet-stream' },
+    { key: 'upload', fileName: '-', fileType: 'application/octet-stream' }
+  ]) {
+    const unavailable = generateExportSnippet({
+      method: 'POST',
+      url: 'https://example.test/form',
+      bodyType: 'multipart',
+      requestHeaders: {},
+      formFields: [{ ...unsafeField, type: 'file' }]
+    }, 'curl');
+    assert.match(unavailable, /^# EXACT REPLAY UNAVAILABLE/);
+    assert.doesNotMatch(unavailable, /(?:^|\s)-F(?:\s|$)/);
+  }
+});
+
+test('generated cURL multipart command cannot load injected form header files', async (t) => {
+  const shell = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\sh.exe' : '/bin/sh';
+  if (!fs.existsSync(shell)) {
+    t.skip(`POSIX shell is unavailable at ${shell}`);
+    return;
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freekit-curl-form-'));
+  const fileName = 'intended;headers=@leak-headers.txt';
+  fs.writeFileSync(path.join(tempDir, fileName), 'INTENDED-FILE-CONTENTS');
+  fs.writeFileSync(path.join(tempDir, 'leak-headers.txt'), 'X-Local-Leak: LOCAL-HEADER-FILE-READ\n');
+
+  let receivedBody = '';
+  const server = http.createServer((request, response) => {
+    request.setEncoding('latin1');
+    request.on('data', chunk => { receivedBody += chunk; });
+    request.on('end', () => {
+      response.writeHead(204);
+      response.end();
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const { port } = server.address();
+    const snippet = generateExportSnippet({
+      method: 'POST',
+      url: `http://127.0.0.1:${port}/upload`,
+      bodyType: 'multipart',
+      requestHeaders: {},
+      formFields: [{
+        key: 'upload',
+        type: 'file',
+        fileName,
+        fileType: 'application/x-review'
+      }]
+    }, 'curl');
+
+    const result = await new Promise(resolve => {
+      const child = spawn(shell, ['-c', snippet], { cwd: tempDir, windowsHide: true });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', error => resolve({ code: null, stderr: error.message }));
+      child.on('close', code => resolve({ code, stderr }));
+    });
+
+    if (result.code === null && /ENOENT/i.test(result.stderr)) {
+      t.skip(`cURL is unavailable: ${result.stderr}`);
+      return;
+    }
+    assert.equal(result.code, 0, `${result.stderr}\nGenerated snippet:\n${snippet}`);
+    assert.match(receivedBody, /INTENDED-FILE-CONTENTS/);
+    assert.match(receivedBody, /filename="intended;headers=@leak-headers\.txt"/);
+    assert.match(receivedBody, /Content-Type: application\/x-review/i);
+    assert.doesNotMatch(receivedBody, /X-Local-Leak: LOCAL-HEADER-FILE-READ/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 function escapeRegex(value) {

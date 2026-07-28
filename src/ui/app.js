@@ -2299,6 +2299,14 @@
       return String(value ?? '').replace(/'/g, "'\\''");
     }
 
+    function curlFormQuotedValue(value) {
+      return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    }
+
+    function isSafeCurlFormContentType(value) {
+      return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(value));
+    }
+
     function powerShellStringLiteral(value) {
       return `'${String(value ?? '').replace(/'/g, "''")}'`;
     }
@@ -2385,12 +2393,27 @@
       if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
 
       if (format === 'curl') {
+        const unsafeFileField = fields.find((field) => {
+          if (field.type !== 'file') return false;
+          const fileName = String(field.file?.name || field.fileName || 'file');
+          const contentType = field.file?.type || field.fileType;
+          return String(field.key).includes('=')
+            || fileName === '-'
+            || (contentType && !isSafeCurlFormContentType(contentType));
+        });
+        if (unsafeFileField) {
+          return generateUnavailableExportSnippet(
+            format,
+            'The captured file metadata cannot be represented safely in cURL form syntax.'
+          );
+        }
         let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
         headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
         fields.forEach((field) => {
           if (field.type === 'file') {
             const contentType = field.file?.type || field.fileType;
-            const value = `@${field.file?.name || field.fileName || 'file'}${contentType ? `;type=${contentType}` : ''}`;
+            const fileName = curlFormQuotedValue(field.file?.name || field.fileName || 'file');
+            const value = `@${fileName}${contentType ? `;type=${contentType}` : ''}`;
             cmd += ` \\\n  -F '${shellSingleQuote(field.key)}=${shellSingleQuote(value)}'`;
           } else {
             cmd += ` \\\n  --form-string '${shellSingleQuote(field.key)}=${shellSingleQuote(field.value || '')}'`;

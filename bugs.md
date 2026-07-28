@@ -2257,7 +2257,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-134 — High — Generated request snippets permit shell and code injection
 
 - Status: **Fixed**.
-- Resolution: Language and shell literals are escaped. cURL raw text bodies use `--data-raw`, multipart text fields use `--form-string`, and only actual file fields use `-F`, preventing captured values beginning with `@` from being reinterpreted as local file paths.
+- Resolution: Language and shell literals are escaped. cURL raw text bodies use `--data-raw`, multipart text fields use `--form-string`, and only actual file fields use `-F`. File paths are also quoted for cURL's form parser, while file metadata that cannot be represented safely produces a non-executable warning instead of a command; captured values and form modifiers can no longer trigger unintended local-file reads.
 
 - Evidence: `generateExportSnippet()` interpolates captured URLs and headers directly into single-quoted cURL at `src/ui/app.js:1962-1968` despite the safe `shellSingleQuote()` helper at `:1778-1780`. Python, JavaScript, PowerShell, wget, PHP, and Go output similarly interpolates values without language-specific escaping at `:1971-2055`; the context menu copies these snippets at `:8498-8503`.
 - Impact: running a snippet copied from an untrusted captured request can execute attacker-controlled shell commands or source code.
