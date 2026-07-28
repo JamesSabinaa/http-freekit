@@ -8704,7 +8704,16 @@ export class ProxyServer {
       };
     }
     if (decisions.length === 1) return { decision: decisions[0] };
-    const objectDecisions = decisions.filter(
+    const legacyBarrierIndex = decisions.findIndex(
+      decision => !decision || typeof decision !== 'object'
+    );
+    const selectableDecisions = legacyBarrierIndex === -1
+      ? decisions
+      : decisions.slice(0, legacyBarrierIndex);
+    if (selectableDecisions.length === 0) {
+      return { decision: decisions[0] };
+    }
+    const objectDecisions = selectableDecisions.filter(
       decision => decision && typeof decision === 'object'
     );
     const timestampMatches = data.timestamp === undefined

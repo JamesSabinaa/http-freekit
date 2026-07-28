@@ -298,19 +298,23 @@ test('exact lifecycle IDs bind transformed completions and same-time WebSocket f
 });
 
 test('legacy boolean decisions retain FIFO order beside correlated lifecycles', () => {
-  const proxy = new ProxyServer(null);
-  const events = [];
-  proxy.onRequest = event => events.push(event);
-  const correlatedDecision = {
-    emitted: true,
-    trafficLifecycleId: 'current-lifecycle',
-    lifecycleToken: Symbol('current'),
-    record: { id: 'mixed', path: '/current', timestamp: 2 }
-  };
-  proxy._pendingTrafficLogDecisions.set('mixed', [false, correlatedDecision]);
+  for (const legacyDecision of [false, true]) {
+    const proxy = new ProxyServer(null);
+    const events = [];
+    proxy.onRequest = event => events.push(event);
+    const correlatedDecision = {
+      emitted: true,
+      trafficLifecycleId: 'current-lifecycle',
+      lifecycleToken: Symbol('current'),
+      record: { id: 'mixed', path: '/current', timestamp: 2 }
+    };
+    proxy._pendingTrafficLogDecisions.set('mixed', [legacyDecision, correlatedDecision]);
 
-  proxy._emitRequestUpdate({ id: 'mixed', statusCode: 500 });
+    proxy._emitRequestUpdate({
+      id: 'mixed', path: '/current', timestamp: 2, statusCode: 500
+    });
 
-  assert.deepEqual(events, []);
-  assert.equal(proxy._pendingTrafficLogDecisions.get('mixed'), correlatedDecision);
+    assert.equal(events.length, legacyDecision ? 1 : 0);
+    assert.equal(proxy._pendingTrafficLogDecisions.get('mixed'), correlatedDecision);
+  }
 });
