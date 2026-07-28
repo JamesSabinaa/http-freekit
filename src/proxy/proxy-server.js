@@ -8800,15 +8800,17 @@ export class ProxyServer {
       } catch {
         originalUrl = null;
       }
+      const hasOriginalMethod = typeof data.originalRequest.method === 'string' &&
+        data.originalRequest.method.length > 0;
       const originalIdentity = {
-        method: data.originalRequest.method,
+        method: hasOriginalMethod ? data.originalRequest.method : undefined,
         url: data.originalRequest.url,
         host: originalUrl?.hostname,
         path: originalUrl ? originalUrl.pathname + originalUrl.search : undefined
       };
       if (identityFields.some(field => originalIdentity[field] !== undefined)) {
         identity = originalIdentity;
-        requireUniqueIdentity = originalUrl === null;
+        requireUniqueIdentity = originalUrl === null || !hasOriginalMethod;
       }
     }
     const hasIdentity = identityFields.some(field => identity[field] !== undefined);

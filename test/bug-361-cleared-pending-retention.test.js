@@ -478,3 +478,31 @@ test('partial original request identity cannot select an ambiguous lifecycle', (
     ['first-lifecycle', 'second-lifecycle']
   );
 });
+
+test('URL-only original request identity cannot select between different methods', () => {
+  const proxy = new ProxyServer(null);
+  proxy.onRequest = () => {};
+  const request = method => ({
+    id: 'url-only-original', protocol: 'https', method,
+    url: 'https://pending.test/shared', host: 'pending.test', path: '/shared',
+    requestHeaders: {}, requestBody: '', requestBodySize: 0,
+    timestamp: 1_000, source: 'proxy'
+  });
+
+  proxy._emitPendingRequest(request('GET'), 'get-lifecycle');
+  proxy._emitPendingRequest(request('POST'), 'post-lifecycle');
+
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...request('POST'),
+    originalRequest: { url: 'https://pending.test/shared' }
+  }), null);
+  assert.equal(proxy._selectPendingTrafficLogDecision({
+    ...request('POST'),
+    originalRequest: { method: 'POST', url: 'https://pending.test/shared' }
+  }).decision.trafficLifecycleId, 'post-lifecycle');
+  assert.deepEqual(
+    proxy._pendingTrafficLogDecisions.get('url-only-original')
+      .map(decision => decision.trafficLifecycleId),
+    ['get-lifecycle', 'post-lifecycle']
+  );
+});
