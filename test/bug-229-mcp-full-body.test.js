@@ -583,8 +583,18 @@ test('direct MCP stdio terminates after an unanswerable request ID', async t => 
   await bridge.startStdio({
     stdin,
     stdout,
-    onFatalError: error => resolveFatal(error)
+    onFatalError: async error => {
+      await bridge.stop();
+      resolveFatal(error);
+    }
   });
+  let closeCalls = 0;
+  const transport = bridge.stdioTransport;
+  const originalClose = transport.close.bind(transport);
+  transport.close = (...args) => {
+    closeCalls++;
+    return originalClose(...args);
+  };
   t.after(async () => {
     stdin.destroy();
     stdout.destroy();
@@ -607,6 +617,7 @@ test('direct MCP stdio terminates after an unanswerable request ID', async t => 
   assert.equal(stdin.listenerCount('data'), 0);
   assert.equal(stdout.writableEnded, true);
   assert.equal(bridge.getStatus().stdioActive, false);
+  assert.equal(closeCalls, 1);
 });
 
 test('MCP request detail requires a side for offsets and validates direct calls', () => {

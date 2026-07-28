@@ -54,18 +54,32 @@ function capMcpResponse(message) {
 function guardMcpTransportRequestIds(transport, onRejectedRequest = () => {}) {
   const existing = guardedMcpTransports.get(transport);
   if (existing) return existing;
+  let closeStarted = false;
+  let resolveClose;
+  let rejectClose;
+  const closePromise = new Promise((resolve, reject) => {
+    resolveClose = resolve;
+    rejectClose = reject;
+  });
+  const closeOnce = () => {
+    if (closeStarted) return closePromise;
+    closeStarted = true;
+    try {
+      Promise.resolve(transport.close()).then(resolveClose, rejectClose);
+    } catch (error) {
+      rejectClose(error);
+    }
+    return closePromise;
+  };
   const guarded = new Proxy(transport, {
     get(target, property) {
+      if (property === 'close') return closeOnce;
       const value = Reflect.get(target, property, target);
       if (property === 'send' && typeof value === 'function') {
         return (message, ...args) => {
           const boundedMessage = capMcpResponse(message);
           if (boundedMessage) return value.call(target, boundedMessage, ...args);
-          try {
-            Promise.resolve(target.close()).catch(() => {});
-          } catch {
-            // The oversized message must still be dropped when cleanup fails.
-          }
+          closeOnce().catch(() => {});
           return Promise.reject(new Error(
             `MCP message exceeds the ${MCP_REQUEST_DETAIL_MAX_BYTES}-byte limit`
           ));
@@ -89,11 +103,7 @@ function guardMcpTransportRequestIds(transport, onRejectedRequest = () => {}) {
             } catch {
               // The request must still be dropped when rejection handling fails.
             }
-            try {
-              Promise.resolve(target.close()).catch(() => {});
-            } catch {
-              // The request must still be dropped when transport cleanup fails.
-            }
+            closeOnce().catch(() => {});
             return;
           }
           value(message, extra);
