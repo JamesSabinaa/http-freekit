@@ -167,6 +167,33 @@ test('every legacy global-proxy descendant is migrated conservatively', () => {
   }
 });
 
+test('replacement cannot erase legacy CA-removal ownership', async t => {
+  const dataDir = createDataDir(t);
+  writeLegacyGlobalProxyJournal(dataDir);
+  const interceptor = new AndroidAdbInterceptor({ dataDir });
+  interceptor._getConnectedDevices = async () => [{
+    serial: DEVICE_ID,
+    status: 'device',
+    model: 'Legacy Android',
+    deviceName: 'legacy-device'
+  }];
+  interceptor._getQrMetadata = async () => ({});
+  interceptor._cleanupActivatedDevice = async () => assert.fail('legacy ownership must not be replaced');
+  interceptor._pushCaCert = async () => assert.fail('replacement must not stage a new CA');
+
+  const result = await interceptor.activate(9090, {
+    deviceId: DEVICE_ID,
+    useHttpToolkitApp: false
+  });
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /complete the legacy HTTP FreeKit CA removal/);
+  assert.equal(interceptor.activatedDevices.get(DEVICE_ID).manualCaRemovalRequired, true);
+  const journal = JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8'));
+  assert.equal(journal.version, 5);
+  assert.equal(Object.hasOwn(journal.devices[0], 'manualCaRemovalRequired'), false);
+});
+
 test('the deactivation API returns the structured legacy-CA confirmation requirement', async t => {
   const error = new Error('Remove the legacy CA before Stop');
   error.code = 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED';

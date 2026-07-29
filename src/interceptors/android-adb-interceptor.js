@@ -1549,6 +1549,13 @@ export class AndroidAdbInterceptor {
     });
 
     const previousActivation = this.activatedDevices.get(deviceId);
+    if (previousActivation?.manualCaRemovalRequired === true) {
+      return {
+        success: false,
+        error: `Stop ${deviceId} and complete the legacy HTTP FreeKit CA removal before replacing its Android interception`,
+        metadata: currentStateMetadata()
+      };
+    }
     if (useHttpToolkitApp) {
       try {
         preparedAppActivation = await this._prepareHttpToolkitAppActivation(
