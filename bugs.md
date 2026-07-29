@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 11 of the 361 documented bugs are not fully fixed.**
+**No: 10 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 350 |
-| Partially fixed | 5 |
+| Fixed | 351 |
+| Partially fixed | 4 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2327,8 +2327,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-137 — Medium — Opening another mock editor silently discards the current edit
 
-- Status: **Partially fixed**.
-- Resolution: Direct editor switching now preserves valid edits. Collapse All still clears the live editor without saving, and a single-rule collapse ignores a failed validation result before clearing the invalid edit.
+- Status: **Fixed**.
+- Resolution: Every editor-navigation path now preserves the open edit first. Opening or adding another rule, expanding another card, collapsing the edited rule, and Collapse All save a valid edit as a local draft; if validation fails, the requested navigation is cancelled without changing the editor or expanded-card state. Collapsing a different expanded card no longer clears the active editor.
+- Regression coverage: `test/bug-137-preserve-mock-editor.test.js` exercises valid and invalid edits through single-card collapse, Collapse All, and expansion of a different rule, in addition to checking direct Add/Edit navigation ownership.
 
 - Evidence: `addNewMockRule()` overwrites `mockEditingRule` and `mockEditDraft` at `src/ui/app.js:5617-5635`; `editMockRule()` repeats this at `:5642-5649`. The previous edit becomes a saved draft only when that same rule is collapsed at `:5658-5667`.
 - Impact: switching directly from rule A's editor to rule B or Add Rule loses A's changes, and the unsaved-changes warning cannot see them.

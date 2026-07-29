@@ -6130,6 +6130,7 @@
 
     function collapseAllMockRules() {
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+      if (!preserveOpenMockEdit(null)) return;
       mockExpandedRules.clear();
       mockEditingRule = null;
       mockEditDraft = null;
@@ -7552,16 +7553,17 @@
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (mockExpandedRules.has(ruleId)) {
         // Collapse
-        mockExpandedRules.delete(ruleId);
         // If we were editing this rule, save as draft on collapse
         if (mockEditingRule === ruleId && mockEditDraft) {
-          saveMockRule(ruleId);
+          if (!saveMockRule(ruleId)) return;
         }
-        mockEditingRule = null;
-        mockEditDraft = null;
+        mockExpandedRules.delete(ruleId);
+        if (mockEditingRule === ruleId) {
+          mockEditingRule = null;
+          mockEditDraft = null;
+        }
       } else {
         // Expand = edit
-        mockExpandedRules.add(ruleId);
         editMockRule(ruleId);
       }
       renderMockRules();
