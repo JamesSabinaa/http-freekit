@@ -118,6 +118,7 @@ async function initializeApplication(apiPort) {
     dataDir: DATA_DIR,
     proxyBindHost
   });
+  await interceptors.initialize();
 
   // 4. Initialize Proxy Server
   const rangeLabel = proxyPortRange.minPort === proxyPortRange.maxPort

@@ -22,6 +22,7 @@ export class InterceptorManager {
     this.closing = false;
     this.ca = ca;
     this.onStatusChange = null;
+    this._initializationPromise = Promise.resolve(false);
 
     const staleProfileCleanup = cleanupStaleBrowserProfiles();
     if (staleProfileCleanup.removed.length > 0) {
@@ -40,8 +41,8 @@ export class InterceptorManager {
     this._register(new FreshTerminalInterceptor({ dataDir: options.dataDir }));
     this._register(new ExistingTerminalInterceptor());
     const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });
-    systemProxy.recoverStaleSettings();
     this._register(systemProxy);
+    this._initializationPromise = systemProxy.recoverStaleSettings();
     this._register(new DockerInterceptor({ proxyBindHost: options.proxyBindHost }));
     this._register(new ElectronInterceptor({ dataDir: options.dataDir }));
     this._register(new AndroidAdbInterceptor({
@@ -65,6 +66,10 @@ export class InterceptorManager {
       else this._publishStatus(event);
     };
     this.interceptors.set(interceptor.id, interceptor);
+  }
+
+  async initialize() {
+    return await this._initializationPromise;
   }
 
   _publishStatus(event) {
@@ -140,6 +145,7 @@ export class InterceptorManager {
   }
 
   async getAll() {
+    await this.initialize();
     const results = [];
     for (const interceptor of this.interceptors.values()) {
       const activable = await interceptor.isActivable();
@@ -165,6 +171,7 @@ export class InterceptorManager {
   }
 
   async activate(id, proxyPort, options = {}) {
+    await this.initialize();
     this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
@@ -187,6 +194,7 @@ export class InterceptorManager {
   }
 
   async deactivate(id, options = {}) {
+    await this.initialize();
     this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
@@ -223,6 +231,7 @@ export class InterceptorManager {
   }
 
   async focus(id) {
+    await this.initialize();
     this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
@@ -233,6 +242,7 @@ export class InterceptorManager {
   }
 
   async openUrl(id, proxyPort, url) {
+    await this.initialize();
     this._assertAcceptingOperations();
     const interceptor = this.interceptors.get(id);
     if (!interceptor) throw new Error(`Unknown interceptor: ${id}`);
@@ -263,6 +273,7 @@ export class InterceptorManager {
 
   async deactivateAll() {
     this.beginShutdown();
+    await this.initialize();
     for (const interceptor of this.interceptors.values()) {
       try {
         await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});

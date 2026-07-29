@@ -20,7 +20,7 @@ function configureProcessIdentity(interceptor) {
   });
 }
 
-test('registry snapshots distinguish missing, empty, and populated ProxyOverride values', () => {
+test('registry snapshots distinguish missing, empty, and populated ProxyOverride values', async () => {
   const interceptor = new SystemProxyInterceptor();
 
   interceptor._execRegistry = () => `
@@ -29,7 +29,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     ProxyServer      REG_SZ       corporate.proxy:8080
     ProxyOverride    REG_SZ       intranet.example;<local>
 `;
-  assert.deepEqual(interceptor._readCurrentSettings(), {
+  assert.deepEqual(await interceptor._readCurrentSettings(), {
     enabled: true,
     server: 'corporate.proxy:8080',
     override: 'intranet.example;<local>'
@@ -40,7 +40,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     ProxyOverride    REG_SZ
     MigrateProxy     REG_DWORD    0x1
 `;
-  assert.deepEqual(interceptor._readCurrentSettings(), {
+  assert.deepEqual(await interceptor._readCurrentSettings(), {
     enabled: false,
     server: null,
     override: ''
@@ -50,7 +50,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings
     MigrateProxy     REG_DWORD    0x1
 `;
-  assert.equal(interceptor._readCurrentSettings().override, null);
+  assert.equal((await interceptor._readCurrentSettings()).override, null);
 });
 
 test('activation clears bypasses and normal Stop restores the exact populated value', async t => {
@@ -98,14 +98,14 @@ test('activation clears bypasses and normal Stop restores the exact populated va
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
 
-test('restoration preserves the difference between absent and existing empty overrides', () => {
+test('restoration preserves the difference between absent and existing empty overrides', async () => {
   const missing = new SystemProxyInterceptor();
   const missingOperations = [];
   missing.previousSettings = { enabled: false, server: 'old.proxy:8080', override: null };
   missing._setRegistryValue = (...args) => missingOperations.push(['set', ...args]);
   missing._deleteRegistryValue = name => missingOperations.push(['delete', name]);
   missing._notifyWinInet = () => {};
-  missing._restorePreviousSettings();
+  await missing._restorePreviousSettings();
   assert.deepEqual(missingOperations, [
     ['set', 'ProxyServer', 'REG_SZ', 'old.proxy:8080'],
     ['delete', 'ProxyOverride'],
@@ -118,7 +118,7 @@ test('restoration preserves the difference between absent and existing empty ove
   empty._setRegistryValue = (...args) => emptyOperations.push(['set', ...args]);
   empty._deleteRegistryValue = name => emptyOperations.push(['delete', name]);
   empty._notifyWinInet = () => {};
-  empty._restorePreviousSettings();
+  await empty._restorePreviousSettings();
   assert.deepEqual(emptyOperations, [
     ['set', 'ProxyServer', 'REG_SZ', 'old.proxy:8080'],
     ['set', 'ProxyOverride', 'REG_SZ', ''],
@@ -126,19 +126,19 @@ test('restoration preserves the difference between absent and existing empty ove
   ]);
 });
 
-test('missing override deletion is idempotent but real registry failures propagate', () => {
+test('missing override deletion is idempotent but real registry failures propagate', async () => {
   const interceptor = new SystemProxyInterceptor();
   const denial = new Error('registry access denied');
   interceptor._execRegistry = () => { throw denial; };
   interceptor._readCurrentSettings = () => ({ enabled: false, server: null, override: null });
-  assert.doesNotThrow(() => interceptor._deleteRegistryValue('ProxyOverride'));
+  await assert.doesNotReject(interceptor._deleteRegistryValue('ProxyOverride'));
 
   interceptor._readCurrentSettings = () => ({
     enabled: true,
     server: '127.0.0.1:8080',
     override: 'still-present.example'
   });
-  assert.throws(() => interceptor._deleteRegistryValue('ProxyOverride'), /registry access denied/);
+  await assert.rejects(interceptor._deleteRegistryValue('ProxyOverride'), /registry access denied/);
 });
 
 test('activation failure rolls back a previously missing bypass value', async t => {
@@ -196,7 +196,7 @@ test('Stop preserves an external ProxyOverride change even when the proxy endpoi
   assert.equal(interceptor.previousSettings, null);
 });
 
-test('stale recovery restores complete and partial owned state but preserves external changes', t => {
+test('stale recovery restores complete and partial owned state but preserves external changes', async t => {
   const ownedDataDir = makeDataDir(t);
   const ownedRecoveryFile = path.join(ownedDataDir, 'system-proxy-recovery.json');
   fs.writeFileSync(ownedRecoveryFile, JSON.stringify({
@@ -217,7 +217,7 @@ test('stale recovery restores complete and partial owned state but preserves ext
   owned._setRegistryValue = (...args) => ownedWrites.push(args);
   owned._notifyWinInet = () => {};
 
-  assert.equal(owned.recoverStaleSettings(), true);
+  assert.equal(await owned.recoverStaleSettings(), true);
   assert.deepEqual(ownedWrites, [
     ['ProxyServer', 'REG_SZ', 'corporate.proxy:8080'],
     ['ProxyOverride', 'REG_SZ', 'intranet.example;<local>'],
@@ -245,7 +245,7 @@ test('stale recovery restores complete and partial owned state but preserves ext
   partial._deleteRegistryValue = name => partialOperations.push(['delete', name]);
   partial._notifyWinInet = () => {};
 
-  assert.equal(partial.recoverStaleSettings(), true);
+  assert.equal(await partial.recoverStaleSettings(), true);
   assert.deepEqual(partialOperations, [
     ['set', 'ProxyServer', 'REG_SZ', 'old.proxy:8080'],
     ['delete', 'ProxyOverride'],
@@ -270,6 +270,6 @@ test('stale recovery restores complete and partial owned state but preserves ext
   });
   external._setRegistryValue = () => assert.fail('external override must not be overwritten');
 
-  assert.equal(external.recoverStaleSettings(), false);
+  assert.equal(await external.recoverStaleSettings(), false);
   assert.equal(fs.existsSync(externalRecoveryFile), false);
 });

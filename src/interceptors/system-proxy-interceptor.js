@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -42,20 +42,29 @@ export class SystemProxyInterceptor {
     );
   }
 
+  _execFile(command, args, options) {
+    return new Promise((resolve, reject) => {
+      execFile(command, args, options, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
+    });
+  }
+
   _execRegistry(args, options) {
-    return execFileSync('reg', args, options);
+    return this._execFile('reg', args, options);
   }
 
   _execPowerShell(script, options = {}) {
-    return execFileSync(
+    return this._execFile(
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
       { timeout: 5000, windowsHide: true, ...options }
     );
   }
 
-  _usesPerMachineProxyPolicy() {
-    const output = this._execPowerShell(`
+  async _usesPerMachineProxyPolicy() {
+    const output = await this._execPowerShell(`
 $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\Internet Settings')
 try {
   $value = if ($null -eq $key) { 1 } else { $key.GetValue('ProxySettingsPerUser', 1) }
@@ -67,8 +76,8 @@ try {
     return String(output).trim() === '0';
   }
 
-  _notifyWinInet() {
-    this._execPowerShell(`
+  async _notifyWinInet() {
+    await this._execPowerShell(`
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -86,8 +95,8 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
 `);
   }
 
-  _readCurrentSettings() {
-    const output = this._execRegistry(['query', INTERNET_SETTINGS_KEY], {
+  async _readCurrentSettings() {
+    const output = await this._execRegistry(['query', INTERNET_SETTINGS_KEY], {
       encoding: 'utf8',
       timeout: 5000
     });
@@ -103,21 +112,22 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     };
   }
 
-  _setRegistryValue(name, type, value) {
-    this._execRegistry([
+  async _setRegistryValue(name, type, value) {
+    await this._execRegistry([
       'add', INTERNET_SETTINGS_KEY,
       '/v', name,
       '/t', type,
       '/d', String(value),
       '/f'
-    ], { stdio: 'ignore', timeout: 5000 });
+    ], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   }
 
-  _deleteRegistryValue(name) {
+  async _deleteRegistryValue(name) {
     try {
-      this._execRegistry(['delete', INTERNET_SETTINGS_KEY, '/v', name, '/f'], {
+      await this._execRegistry(['delete', INTERNET_SETTINGS_KEY, '/v', name, '/f'], {
         encoding: 'utf8',
-        timeout: 5000
+        timeout: 5000,
+        windowsHide: true
       });
     } catch (err) {
       const settingsField = {
@@ -126,7 +136,7 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       }[name];
       if (settingsField) {
         try {
-          if (this._readCurrentSettings()[settingsField] === null) return;
+          if ((await this._readCurrentSettings())[settingsField] === null) return;
         } catch {
           // Preserve the original deletion failure when state cannot be read.
         }
@@ -148,11 +158,11 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     }
   }
 
-  _queryWindowsProcessIdentity(pid) {
+  async _queryWindowsProcessIdentity(pid) {
     if (!Number.isInteger(pid) || pid <= 0) {
       throw new Error('Process ID is missing or invalid');
     }
-    const output = this._execPowerShell(`
+    const output = await this._execPowerShell(`
 $target = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop | Select-Object -First 1
 if ($null -eq $target) {
   [Console]::Out.Write('null')
@@ -207,18 +217,18 @@ if ($null -eq $target) {
     };
   }
 
-  _lookupValidatedProcessIdentity(pid) {
-    const identity = this._processIdentityLookup(pid);
+  async _lookupValidatedProcessIdentity(pid) {
+    const identity = await this._processIdentityLookup(pid);
     if (identity === null) return null;
     return this._normalizeProcessIdentity(identity, pid);
   }
 
-  _recoveryOwnerIsActive(recovery) {
+  async _recoveryOwnerIsActive(recovery) {
     if (Object.prototype.hasOwnProperty.call(recovery, 'owner')) {
       const owner = this._normalizeProcessIdentity(recovery.owner, recovery.owner?.pid);
       let currentIdentity;
       try {
-        currentIdentity = this._lookupValidatedProcessIdentity(owner.pid);
+        currentIdentity = await this._lookupValidatedProcessIdentity(owner.pid);
       } catch (err) {
         throw new Error(`Recovery owner identity is ambiguous: ${err.message}`);
       }
@@ -310,11 +320,11 @@ if ($null -eq $target) {
     return fields.every(field => current[field] === previous[field]);
   }
 
-  recoverStaleSettings() {
+  async recoverStaleSettings() {
     if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
       const recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
-      if (this._recoveryOwnerIsActive(recovery)) return false;
+      if (await this._recoveryOwnerIsActive(recovery)) return false;
       if (!recovery.previousSettings || typeof recovery.previousSettings !== 'object') {
         throw new Error('Recovery file does not contain previous proxy settings');
       }
@@ -322,7 +332,7 @@ if ($null -eq $target) {
       if (Object.prototype.hasOwnProperty.call(recovery, 'restorePhase') && !notificationPending) {
         throw new Error('Recovery file contains an invalid restore phase');
       }
-      const currentSettings = this._readCurrentSettings();
+      const currentSettings = await this._readCurrentSettings();
       // An activation journal can contain a partial registry transition. Once
       // the durable notification phase is present, however, every restore
       // write completed and only the exact restored state remains ours.
@@ -341,7 +351,7 @@ if ($null -eq $target) {
       this.restoreBaselineSettings = notificationPending ? null : { ...currentSettings };
       this.restorePending = true;
       this.restoreNotificationPending = notificationPending;
-      this._restorePreviousSettings();
+      await this._restorePreviousSettings();
       this.active = false;
       console.log('[Interceptor] Restored system proxy settings left by an interrupted session');
       return true;
@@ -358,22 +368,22 @@ if ($null -eq $target) {
     }
   }
 
-  _restorePreviousSettings() {
+  async _restorePreviousSettings() {
     const previous = this.previousSettings;
     if (!previous) throw new Error('No saved system proxy settings are available to restore');
     if (previous?.server != null) {
-      this._setRegistryValue('ProxyServer', 'REG_SZ', previous.server);
+      await this._setRegistryValue('ProxyServer', 'REG_SZ', previous.server);
     } else {
-      this._deleteRegistryValue('ProxyServer');
+      await this._deleteRegistryValue('ProxyServer');
     }
     if (Object.prototype.hasOwnProperty.call(previous, 'override')) {
       if (previous.override != null) {
-        this._setRegistryValue('ProxyOverride', 'REG_SZ', previous.override);
+        await this._setRegistryValue('ProxyOverride', 'REG_SZ', previous.override);
       } else {
-        this._deleteRegistryValue('ProxyOverride');
+        await this._deleteRegistryValue('ProxyOverride');
       }
     }
-    this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
+    await this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
     // Registry restoration is complete. If notification or journal cleanup
     // fails from here, a retry may own only this exact restored state; the
     // broader prefix matcher is reserved for interrupted registry writes.
@@ -386,7 +396,7 @@ if ($null -eq $target) {
       this.pendingRecovery = notificationRecovery;
       if (this.recoveryFile) this._persistRecoveryState(notificationRecovery);
     }
-    this._notifyWinInet();
+    await this._notifyWinInet();
     this._removeRecoveryState();
     this.previousSettings = null;
     this.activeProxyServer = null;
@@ -425,14 +435,14 @@ if ($null -eq $target) {
       }
       let registryMutationStarted = false;
       try {
-        if (this._usesPerMachineProxyPolicy()) {
+        if (await this._usesPerMachineProxyPolicy()) {
           throw new Error('System Proxy cannot change a machine-wide proxy policy; ask an administrator to enable per-user proxy settings');
         }
-        const owner = this._lookupValidatedProcessIdentity(process.pid);
+        const owner = await this._lookupValidatedProcessIdentity(process.pid);
         if (owner === null) {
           throw new Error('Current FreeKit process identity could not be found');
         }
-        if (!this.active && !this.previousSettings) this.previousSettings = this._readCurrentSettings();
+        if (!this.active && !this.previousSettings) this.previousSettings = await this._readCurrentSettings();
         const proxyServer = `127.0.0.1:${proxyPort}`;
         this.pendingRecovery = {
           owner,
@@ -446,17 +456,17 @@ if ($null -eq $target) {
         };
         this._persistRecoveryState(this.pendingRecovery);
         registryMutationStarted = true;
-        this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
-        this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
-        this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
-        this._notifyWinInet();
+        await this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
+        await this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
+        await this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
+        await this._notifyWinInet();
         this.activeProxyServer = proxyServer;
         this.active = true;
         console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
         return { success: true };
       } catch (err) {
         if (registryMutationStarted && this.previousSettings) {
-          try { this._restorePreviousSettings(); } catch {}
+          try { await this._restorePreviousSettings(); } catch {}
         } else if (!this.active) {
           this.previousSettings = null;
           this.pendingRecovery = null;
@@ -477,7 +487,7 @@ if ($null -eq $target) {
       }
       if (!this.active && !this.previousSettings) return;
       try {
-        const currentSettings = this._readCurrentSettings();
+        const currentSettings = await this._readCurrentSettings();
         let settingsAreOwned;
         if (this.restoreNotificationPending) {
           settingsAreOwned = this._settingsMatchCompletedRestore(currentSettings);
@@ -510,7 +520,7 @@ if ($null -eq $target) {
           this.restoreBaselineSettings = { ...currentSettings };
         }
         this.restorePending = true;
-        this._restorePreviousSettings();
+        await this._restorePreviousSettings();
         this.active = false;
         console.log('[Interceptor] Previous system proxy settings restored');
       } catch (err) {

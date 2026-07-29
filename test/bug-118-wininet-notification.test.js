@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
-function createDurableNotificationRetry(t) {
+async function createDurableNotificationRetry(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-wininet-retry-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const previousSettings = {
@@ -39,7 +39,7 @@ function createDurableNotificationRetry(t) {
   };
   interceptor._notifyWinInet = () => { throw new Error('WinINet refresh failed'); };
 
-  assert.throws(() => interceptor._restorePreviousSettings(), /WinINet refresh failed/);
+  await assert.rejects(interceptor._restorePreviousSettings(), /WinINet refresh failed/);
   assert.deepEqual(settings, previousSettings);
   assert.equal(interceptor.restoreNotificationPending, true);
   assert.equal(
@@ -74,12 +74,12 @@ test('system proxy activation and restoration notify WinINet clients', async () 
   assert.equal(notifications, 2);
 });
 
-test('WinINet notification sends settings-changed and refresh flags', () => {
+test('WinINet notification sends settings-changed and refresh flags', async () => {
   const interceptor = new SystemProxyInterceptor();
   let script;
   interceptor._execPowerShell = value => { script = value; };
 
-  interceptor._notifyWinInet();
+  await interceptor._notifyWinInet();
 
   assert.match(script, /InternetSetOption\(\[IntPtr\]::Zero, 39,/);
   assert.match(script, /InternetSetOption\(\[IntPtr\]::Zero, 37,/);
@@ -261,8 +261,8 @@ test('duplicate Start is rejected without replacing active System Proxy ownershi
   assert.deepEqual(interceptor.pendingRecovery, originalRecovery);
 });
 
-test('notification-pending recovery survives restart and republishes exact restored settings', t => {
-  const { dataDir, previousSettings, settings } = createDurableNotificationRetry(t);
+test('notification-pending recovery survives restart and republishes exact restored settings', async t => {
+  const { dataDir, previousSettings, settings } = await createDurableNotificationRetry(t);
   const restarted = new SystemProxyInterceptor({ dataDir });
   restarted._isWindows = () => true;
   restarted._recoveryOwnerIsActive = () => false;
@@ -275,15 +275,15 @@ test('notification-pending recovery survives restart and republishes exact resto
   let notifications = 0;
   restarted._notifyWinInet = () => { notifications += 1; };
 
-  assert.equal(restarted.recoverStaleSettings(), true);
+  assert.equal(await restarted.recoverStaleSettings(), true);
   assert.equal(notifications, 1);
   assert.deepEqual(settings, previousSettings);
   assert.equal(fs.existsSync(restarted.recoveryFile), false);
   assert.equal(restarted.restoreNotificationPending, false);
 });
 
-test('notification-pending recovery preserves an external change across restart', t => {
-  const { dataDir, settings } = createDurableNotificationRetry(t);
+test('notification-pending recovery preserves an external change across restart', async t => {
+  const { dataDir, settings } = await createDurableNotificationRetry(t);
   settings.enabled = true;
   const restarted = new SystemProxyInterceptor({ dataDir });
   restarted._isWindows = () => true;
@@ -294,7 +294,7 @@ test('notification-pending recovery preserves an external change across restart'
   let notifications = 0;
   restarted._notifyWinInet = () => { notifications += 1; };
 
-  assert.equal(restarted.recoverStaleSettings(), false);
+  assert.equal(await restarted.recoverStaleSettings(), false);
   assert.deepEqual(settings, {
     enabled: true,
     server: 'corporate.proxy:8888',
@@ -339,7 +339,7 @@ test('an invalid durable restore phase blocks activation without replacing its j
   interceptor._readCurrentSettings = () => ({ ...recovery.ownedSettings });
   interceptor._usesPerMachineProxyPolicy = () => assert.fail('blocked Start must stop before policy access');
 
-  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.equal(await interceptor.recoverStaleSettings(), false);
   assert.equal(await interceptor.needsDeactivation(), true);
   await assert.rejects(
     interceptor.activate(9090),
@@ -392,7 +392,7 @@ test('stale partial activation recovery retains its observed baseline after a tr
   };
   interceptor._notifyWinInet = () => {};
 
-  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.equal(await interceptor.recoverStaleSettings(), false);
   assert.deepEqual(interceptor.restoreBaselineSettings, settings);
   assert.equal(fs.existsSync(recoveryFile), true);
 

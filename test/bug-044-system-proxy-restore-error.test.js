@@ -25,7 +25,7 @@ test('system-proxy deactivation reports restore failures and remains active', as
   });
 });
 
-test('partial registry restore retains the saved settings for retry', () => {
+test('partial registry restore retains the saved settings for retry', async () => {
   const interceptor = new SystemProxyInterceptor();
   interceptor.previousSettings = { enabled: true, server: 'corporate.proxy:8888' };
   let calls = 0;
@@ -34,14 +34,14 @@ test('partial registry restore retains the saved settings for retry', () => {
     if (calls === 2) throw new Error('ProxyEnable write failed');
   };
 
-  assert.throws(() => interceptor._restorePreviousSettings(), /ProxyEnable write failed/);
+  await assert.rejects(interceptor._restorePreviousSettings(), /ProxyEnable write failed/);
   assert.deepEqual(interceptor.previousSettings, {
     enabled: true,
     server: 'corporate.proxy:8888'
   });
 });
 
-test('failure to delete an originally absent proxy server remains retryable', () => {
+test('failure to delete an originally absent proxy server remains retryable', async () => {
   const interceptor = new SystemProxyInterceptor();
   interceptor.previousSettings = { enabled: false, server: null, override: null };
   interceptor.activeProxyServer = '127.0.0.1:8080';
@@ -54,8 +54,8 @@ test('failure to delete an originally absent proxy server remains retryable', ()
   });
   interceptor._setRegistryValue = () => assert.fail('restore must stop after deletion fails');
 
-  assert.throws(
-    () => interceptor._restorePreviousSettings(),
+  await assert.rejects(
+    interceptor._restorePreviousSettings(),
     /ProxyServer delete failed/
   );
   assert.deepEqual(interceptor.previousSettings, {

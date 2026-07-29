@@ -54,7 +54,7 @@ test('system proxy activation journals settings and normal stop removes the jour
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
 
-test('a new process restores a stale system-proxy journal', (t) => {
+test('a new process restores a stale system-proxy journal', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const recoveryFile = path.join(dataDir, 'system-proxy-recovery.json');
@@ -76,7 +76,7 @@ test('a new process restores a stale system-proxy journal', (t) => {
   interceptor._setRegistryValue = (...args) => writes.push(args);
   interceptor._notifyWinInet = () => {};
 
-  assert.equal(interceptor.recoverStaleSettings(), true);
+  assert.equal(await interceptor.recoverStaleSettings(), true);
   assert.deepEqual(writes, [
     ['ProxyServer', 'REG_SZ', 'corporate.proxy:8888'],
     ['ProxyEnable', 'REG_DWORD', 1]
@@ -85,7 +85,7 @@ test('a new process restores a stale system-proxy journal', (t) => {
   assert.equal(interceptor.previousSettings, null);
 });
 
-test('legacy system-proxy recovery conservatively preserves a journal with a live PID', (t) => {
+test('legacy system-proxy recovery conservatively preserves a journal with a live PID', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const recoveryFile = path.join(dataDir, 'system-proxy-recovery.json');
@@ -99,6 +99,6 @@ test('legacy system-proxy recovery conservatively preserves a journal with a liv
   interceptor._isWindows = () => true;
   interceptor._setRegistryValue = () => assert.fail('live session must not be restored');
 
-  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.equal(await interceptor.recoverStaleSettings(), false);
   assert.equal(fs.existsSync(recoveryFile), true);
 });

@@ -58,7 +58,7 @@ function configureRegistry(interceptor, currentSettings) {
   return operations;
 }
 
-test('Windows process identity lookup is bounded and normalizes every strong field', () => {
+test('Windows process identity lookup is bounded and normalizes every strong field', async () => {
   const interceptor = new SystemProxyInterceptor();
   let invocation;
   interceptor._execPowerShell = (script, options) => {
@@ -70,7 +70,7 @@ test('Windows process identity lookup is bounded and normalizes every strong fie
     });
   };
 
-  const identity = interceptor._lookupValidatedProcessIdentity(OWNER.pid);
+  const identity = await interceptor._lookupValidatedProcessIdentity(OWNER.pid);
 
   assert.deepEqual(identity, OWNER);
   assert.match(invocation.script, /Get-CimInstance -ClassName Win32_Process/);
@@ -117,7 +117,7 @@ test('activation journals normalized strong ownership before its first registry 
   assert.equal(checkedJournalBeforeMutation, true);
 });
 
-test('stale recovery skips only the same live strong owner', t => {
+test('stale recovery skips only the same live strong owner', async t => {
   const { dataDir, recoveryFile } = writeRecovery(t, strongRecovery({
     ...OWNER,
     executablePath: 'C:\\Program Files\\HTTP FreeKit\\FreeKit.exe'
@@ -130,11 +130,11 @@ test('stale recovery skips only the same live strong owner', t => {
   interceptor._readCurrentSettings = () => assert.fail('a live owner must skip registry inspection');
   interceptor._setRegistryValue = () => assert.fail('a live owner must skip registry writes');
 
-  assert.equal(interceptor.recoverStaleSettings(), false);
+  assert.equal(await interceptor.recoverStaleSettings(), false);
   assert.equal(fs.existsSync(recoveryFile), true);
 });
 
-test('a reused PID with a different start timestamp restores stale owned settings', t => {
+test('a reused PID with a different start timestamp restores stale owned settings', async t => {
   const { dataDir, recoveryFile } = writeRecovery(t, strongRecovery());
   const interceptor = new SystemProxyInterceptor({
     dataDir,
@@ -145,7 +145,7 @@ test('a reused PID with a different start timestamp restores stale owned setting
   });
   const operations = configureRegistry(interceptor, OWNED_SETTINGS);
 
-  assert.equal(interceptor.recoverStaleSettings(), true);
+  assert.equal(await interceptor.recoverStaleSettings(), true);
   assert.deepEqual(operations, [
     ['set', 'ProxyServer', 'REG_SZ', PREVIOUS_SETTINGS.server],
     ['set', 'ProxyOverride', 'REG_SZ', PREVIOUS_SETTINGS.override],
@@ -155,7 +155,7 @@ test('a reused PID with a different start timestamp restores stale owned setting
   assert.equal(fs.existsSync(recoveryFile), false);
 });
 
-test('a definitely absent strong owner restores partial activation state', t => {
+test('a definitely absent strong owner restores partial activation state', async t => {
   const { dataDir, recoveryFile } = writeRecovery(t, strongRecovery({
     ...OWNER,
     executablePath: 'C:\\Program Files\\HTTP FreeKit\\FreeKit.exe'
@@ -170,12 +170,12 @@ test('a definitely absent strong owner restores partial activation state', t => 
     override: PREVIOUS_SETTINGS.override
   });
 
-  assert.equal(interceptor.recoverStaleSettings(), true);
+  assert.equal(await interceptor.recoverStaleSettings(), true);
   assert.equal(operations.length, 4);
   assert.equal(fs.existsSync(recoveryFile), false);
 });
 
-test('identity lookup failures and malformed results preserve registry state and journal', t => {
+test('identity lookup failures and malformed results preserve registry state and journal', async t => {
   const errors = [];
   t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
   const lookups = [
@@ -190,7 +190,7 @@ test('identity lookup failures and malformed results preserve registry state and
     interceptor._readCurrentSettings = () => assert.fail('ambiguous identity must skip registry inspection');
     interceptor._setRegistryValue = () => assert.fail('ambiguous identity must skip registry writes');
 
-    assert.equal(interceptor.recoverStaleSettings(), false);
+    assert.equal(await interceptor.recoverStaleSettings(), false);
     assert.equal(fs.existsSync(recoveryFile), true);
   }
 
@@ -252,7 +252,7 @@ test('activation refuses registry mutation when durable journal storage is unava
   assert.equal(interceptor.active, false);
 });
 
-test('legacy journals restore only when their PID is definitely dead', t => {
+test('legacy journals restore only when their PID is definitely dead', async t => {
   const legacy = {
     pid: OWNER.pid,
     proxyServer: OWNED_SETTINGS.server,
@@ -267,7 +267,7 @@ test('legacy journals restore only when their PID is definitely dead', t => {
   deadOwner._isProcessRunning = () => false;
   configureRegistry(deadOwner, OWNED_SETTINGS);
 
-  assert.equal(deadOwner.recoverStaleSettings(), true);
+  assert.equal(await deadOwner.recoverStaleSettings(), true);
   assert.equal(fs.existsSync(dead.recoveryFile), false);
 
   const live = writeRecovery(t, legacy);
@@ -282,7 +282,7 @@ test('legacy journals restore only when their PID is definitely dead', t => {
   const errors = [];
   t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
 
-  assert.equal(liveOwner.recoverStaleSettings(), false);
+  assert.equal(await liveOwner.recoverStaleSettings(), false);
   assert.equal(fs.existsSync(live.recoveryFile), true);
   assert.match(errors.at(-1), /PID is live but the journal has no strong owner identity/);
 
@@ -293,7 +293,7 @@ test('legacy journals restore only when their PID is definitely dead', t => {
   unknownOwner._readCurrentSettings = () => assert.fail('unknown legacy liveness must skip registry inspection');
   unknownOwner._setRegistryValue = () => assert.fail('unknown legacy liveness must skip registry writes');
 
-  assert.equal(unknownOwner.recoverStaleSettings(), false);
+  assert.equal(await unknownOwner.recoverStaleSettings(), false);
   assert.equal(fs.existsSync(unknown.recoveryFile), true);
   assert.match(errors.at(-1), /Legacy recovery owner is ambiguous: liveness query denied/);
 });

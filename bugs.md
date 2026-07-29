@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 32 of the 361 documented bugs are not fully fixed.**
+**No: 31 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 329 |
-| Partially fixed | 10 |
+| Fixed | 330 |
+| Partially fixed | 9 |
 | Open | 22 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1272,8 +1272,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-054 — Medium — Synchronous interceptor discovery can stall all proxy traffic
 
-- Status: **Partially fixed**.
-- Resolution: Runtime browser, Docker, JVM, and ADB discovery moved off the event loop. Windows System Proxy activation, discovery, recovery, notification, and restoration still use synchronous registry and PowerShell calls with multi-second timeouts.
+- Status: **Fixed**.
+- Resolution: Runtime browser, Docker, JVM, ADB, terminal, and Windows System Proxy discovery and lifecycle commands now run asynchronously. Startup awaits stale System Proxy recovery before exposing interceptor operations, while registry queries, policy and owner discovery, activation, WinINet notification, recovery, and restoration yield to other event-loop work.
 - Evidence: browser monitoring invokes synchronous process snapshots with five-second timeouts (`src/interceptors/browser-lifecycle.js:92-131`) from a recurring monitor. Docker, JVM, and ADB discovery/activation also use multi-second `execSync`/`execFileSync` calls on the proxy's single Node event loop.
 - Impact: slow WMI, `ps`, Docker, ADB, or JDK commands freeze proxy forwarding and the management UI until completion/timeout.
 - Reproduction: delay one of the external discovery commands while proxying traffic and observe the event-loop pause.

@@ -145,7 +145,7 @@ test('untrusted CA does not block stale recovery and non-Windows behavior is unc
   });
   recovery._isProcessRunning = () => false;
 
-  assert.equal(recovery.recoverStaleSettings(), true);
+  assert.equal(await recovery.recoverStaleSettings(), true);
   assert.deepEqual(settings, {
     enabled: false,
     server: null,

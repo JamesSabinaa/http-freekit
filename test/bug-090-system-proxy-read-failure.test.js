@@ -27,14 +27,14 @@ test('system proxy activation does not mutate settings after a failed snapshot',
   assert.equal(interceptor.active, false);
 });
 
-test('missing proxy values in a readable key are captured as disabled', () => {
+test('missing proxy values in a readable key are captured as disabled', async () => {
   const interceptor = new SystemProxyInterceptor();
   interceptor._execRegistry = () => `
 HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings
     MigrateProxy    REG_DWORD    0x1
 `;
 
-  assert.deepEqual(interceptor._readCurrentSettings(), {
+  assert.deepEqual(await interceptor._readCurrentSettings(), {
     enabled: false,
     server: null,
     override: null

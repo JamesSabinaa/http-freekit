@@ -17,7 +17,7 @@ test('system proxy activation rejects machine-wide proxy policy', async () => {
   assert.equal(interceptor.previousSettings, null);
 });
 
-test('per-machine policy detection reads ProxySettingsPerUser', () => {
+test('per-machine policy detection reads ProxySettingsPerUser', async () => {
   const interceptor = new SystemProxyInterceptor();
   let script;
   interceptor._execPowerShell = value => {
@@ -25,7 +25,7 @@ test('per-machine policy detection reads ProxySettingsPerUser', () => {
     return '0';
   };
 
-  assert.equal(interceptor._usesPerMachineProxyPolicy(), true);
+  assert.equal(await interceptor._usesPerMachineProxyPolicy(), true);
   assert.match(script, /ProxySettingsPerUser/);
   assert.match(script, /LocalMachine\.OpenSubKey/);
 });
