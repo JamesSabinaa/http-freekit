@@ -33,11 +33,32 @@ export class InterceptorManager {
     }
 
     // Register all interceptors (order matches HTTP Toolkit's sidebar)
-    this._register(new BrowserInterceptor('chrome', 'Chrome', 'chrome'));
-    this._register(new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome'));
-    this._register(new BrowserInterceptor('firefox', 'Firefox', 'firefox'));
-    this._register(new BrowserInterceptor('edge', 'Edge', 'edge'));
-    this._register(new BrowserInterceptor('brave', 'Brave', 'brave'));
+    const isolatedBrowsers = [
+      new BrowserInterceptor('chrome', 'Chrome', 'chrome'),
+      new BrowserInterceptor('firefox', 'Firefox', 'firefox'),
+      new BrowserInterceptor('edge', 'Edge', 'edge'),
+      new BrowserInterceptor('brave', 'Brave', 'brave')
+    ];
+    this._register(isolatedBrowsers[0]);
+    this._register(new ExistingBrowserInterceptor(
+      'existing-chrome',
+      'Global Chrome',
+      'chrome',
+      { dataDir: options.dataDir }
+    ));
+    this._register(isolatedBrowsers[1]);
+    this._register(isolatedBrowsers[2]);
+    this._register(isolatedBrowsers[3]);
+    for (const browser of isolatedBrowsers) {
+      const recoverableProfiles = staleProfileCleanup.recoverable.filter(
+        record => record.browserType === browser.browserType
+      );
+      if (browser.recoverProfiles(recoverableProfiles)) {
+        console.log(
+          `[Interceptor] Recovered ${recoverableProfiles.length} active ${browser.name} profile(s)`
+        );
+      }
+    }
     this._register(new FreshTerminalInterceptor({ dataDir: options.dataDir }));
     this._register(new ExistingTerminalInterceptor());
     const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });

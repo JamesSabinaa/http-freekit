@@ -332,7 +332,8 @@ function inspectProfileOwner(profileDir) {
     owner: {
       pid: marker.ownerPid,
       createdAt: Date.parse(marker.createdAt),
-      startedAt
+      startedAt,
+      browserType: marker.browserType
     }
   };
 }
@@ -494,6 +495,21 @@ export function collectRelatedProcessIds(processes, profileDir, rootPids = [], p
   return inspectRelatedBrowserProcesses(processes, profileDir, rootPids, platform).processIds;
 }
 
+function inferLoopbackProxyPort(processes, processIds, platform = process.platform) {
+  const relatedIds = processIds instanceof Set ? processIds : new Set(processIds);
+  const ports = new Set();
+  for (const row of processes) {
+    if (!relatedIds.has(row?.pid)) continue;
+    for (const arg of splitProcessCommandLine(row.command, platform)) {
+      const match = arg.match(/^--proxy-server=(?:https?:\/\/)?127\.0\.0\.1:(\d{1,5})$/i);
+      if (!match) continue;
+      const port = Number(match[1]);
+      if (port >= 1 && port <= 65535) ports.add(port);
+    }
+  }
+  return ports.size === 1 ? [...ports][0] : null;
+}
+
 function requireUnambiguousRelatedProcessIds(processes, profileDir, rootPids, platform) {
   const inspection = inspectRelatedBrowserProcesses(processes, profileDir, rootPids, platform);
   if (inspection.ambiguousProcessIds.size > 0) {
@@ -613,7 +629,7 @@ export function removeManagedBrowserProfile(profileDir, options = {}) {
  */
 export function cleanupStaleBrowserProfiles(options = {}) {
   const tempDir = path.resolve(options.tempDir || os.tmpdir());
-  const result = { removed: [], skippedActive: [], failed: [] };
+  const result = { removed: [], skippedActive: [], recoverable: [], failed: [] };
 
   let entries;
   try {
@@ -659,9 +675,25 @@ export function cleanupStaleBrowserProfiles(options = {}) {
     }
 
     const processInspection = inspectRelatedBrowserProcesses(snapshot, profileDir);
-    if (isProfileOwnerActive(ownership.owner, snapshot) ||
-        processInspection.processIds.size > 0 ||
-        processInspection.ambiguousProcessIds.size > 0) {
+    const ownerActive = isProfileOwnerActive(ownership.owner, snapshot);
+    if (!ownerActive &&
+        processInspection.processIds.size > 0 &&
+        processInspection.ambiguousProcessIds.size === 0) {
+      result.recoverable.push({
+        profileDir,
+        browserType: ownership.owner.browserType,
+        createdAt: ownership.owner.createdAt,
+        processIds: [...processInspection.processIds].sort((left, right) => left - right),
+        proxyPort: inferLoopbackProxyPort(
+          snapshot,
+          processInspection.processIds,
+          options.platform || process.platform
+        )
+      });
+      result.skippedActive.push(profileDir);
+      continue;
+    }
+    if (ownerActive || processInspection.ambiguousProcessIds.size > 0) {
       result.skippedActive.push(profileDir);
       continue;
     }

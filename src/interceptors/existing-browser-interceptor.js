@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { getProcessArgv0, getProcessSnapshotAsync } from './browser-lifecycle.js';
@@ -6,8 +7,12 @@ import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 import { waitForSpawnStability } from './command-runner.js';
 
+const GLOBAL_BROWSER_OWNERSHIP_VERSION = 1;
+const MAX_OWNERSHIP_JOURNAL_BYTES = 16 * 1024;
+const MAX_EXECUTABLE_IDENTITY_LENGTH = 4096;
+
 export class ExistingBrowserInterceptor {
-  constructor(id, name, browserType) {
+  constructor(id, name, browserType, options = {}) {
     this.id = id;
     this.name = name;
     this.browserType = browserType;
@@ -18,7 +23,14 @@ export class ExistingBrowserInterceptor {
     this.gracefulExitTimeoutMs = 2000;
     this.forceExitTimeoutMs = 2000;
     this.startupConfirmationMs = 500;
+    this.processExitPollIntervalMs = 50;
     this.onStatusChange = null;
+    this.recoveryFile = options.dataDir
+      ? path.join(options.dataDir, `existing-browser-${browserType}-ownership.json`)
+      : options.recoveryFile || null;
+    this.ownership = null;
+    this.recoveryJournalError = null;
+    this._loadOwnershipJournal();
   }
 
   async isActivable() {
@@ -26,7 +38,12 @@ export class ExistingBrowserInterceptor {
   }
 
   async isActive() {
+    if (this.ownership) return await this._refreshOwnedProcess();
     return this.active;
+  }
+
+  needsDeactivation() {
+    return Boolean(this.active || this.process || this.ownership || this.recoveryJournalError);
   }
 
   _findBrowserPath() {
@@ -39,6 +56,188 @@ export class ExistingBrowserInterceptor {
 
   _getPlatform() {
     return process.platform;
+  }
+
+  _normalizeExecutableIdentity(executable, platform = this._getPlatform()) {
+    if (typeof executable !== 'string') throw new Error('Browser executable identity is missing');
+    const value = executable.trim();
+    if (!value || value.length > MAX_EXECUTABLE_IDENTITY_LENGTH || /[\0\r\n]/.test(value)) {
+      throw new Error('Browser executable identity is invalid');
+    }
+    const pathApi = platform === 'win32' ? path.win32 : path.posix;
+    const normalized = pathApi.normalize(value).normalize('NFC');
+    return platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  _sameOwnership(left, right) {
+    return Boolean(left && right) &&
+      left.version === right.version &&
+      left.id === right.id &&
+      left.browserType === right.browserType &&
+      left.pid === right.pid &&
+      left.startedAt === right.startedAt &&
+      left.executable === right.executable &&
+      left.platform === right.platform;
+  }
+
+  _validateOwnershipJournal(record) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      throw new Error('Global browser ownership journal must contain an object');
+    }
+    const expectedKeys = ['browserType', 'executable', 'id', 'pid', 'platform', 'startedAt', 'version'];
+    if (Object.keys(record).sort().join('\0') !== expectedKeys.join('\0') ||
+        record.version !== GLOBAL_BROWSER_OWNERSHIP_VERSION ||
+        record.id !== this.id || record.browserType !== this.browserType ||
+        record.platform !== this._getPlatform() ||
+        !Number.isSafeInteger(record.pid) || record.pid <= 0 || record.pid > 0xffffffff ||
+        !Number.isFinite(record.startedAt)) {
+      throw new Error('Global browser ownership journal has an invalid schema');
+    }
+    return Object.freeze({
+      version: GLOBAL_BROWSER_OWNERSHIP_VERSION,
+      id: this.id,
+      browserType: this.browserType,
+      pid: record.pid,
+      startedAt: record.startedAt,
+      executable: this._normalizeExecutableIdentity(record.executable),
+      platform: record.platform
+    });
+  }
+
+  _loadOwnershipJournal() {
+    if (!this.recoveryFile) return;
+    try {
+      const stats = fs.lstatSync(this.recoveryFile);
+      if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_OWNERSHIP_JOURNAL_BYTES) {
+        throw new Error('Global browser ownership journal must be a bounded regular file');
+      }
+      const parsed = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
+      this.ownership = this._validateOwnershipJournal(parsed);
+      this.active = true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      this.recoveryJournalError = error;
+      console.warn('[Interceptor] Ignoring invalid Global browser ownership journal:', error.message);
+    }
+  }
+
+  _persistOwnershipJournal(ownership) {
+    if (!this.recoveryFile) return;
+    fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
+    const tempPath = path.join(
+      path.dirname(this.recoveryFile),
+      `.${path.basename(this.recoveryFile)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    );
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(ownership), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      fs.renameSync(tempPath, this.recoveryFile);
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+
+  _clearOwnership(expected = null) {
+    if (expected && this.ownership && !this._sameOwnership(this.ownership, expected)) return false;
+    if (this.recoveryFile) {
+      try {
+        fs.unlinkSync(this.recoveryFile);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    if (!expected || !this.ownership || this._sameOwnership(this.ownership, expected)) {
+      this.ownership = null;
+      this.recoveryJournalError = null;
+    }
+    return true;
+  }
+
+  async _observeOwnedProcess(ownership) {
+    let snapshot;
+    try {
+      snapshot = await this._getProcessSnapshot();
+      if (!Array.isArray(snapshot)) throw new Error('Process snapshot is not an array');
+    } catch (error) {
+      return { state: 'unknown', error };
+    }
+    const row = snapshot.find(candidate => candidate?.pid === ownership.pid);
+    if (!row) return { state: 'absent' };
+    try {
+      const startedAt = typeof row.startedAt === 'number'
+        ? row.startedAt
+        : Date.parse(row.startedAt);
+      if (!Number.isFinite(startedAt)) throw new Error('Browser process start identity is unavailable');
+      const authoritativePosixCommand = this._getPlatform() !== 'win32' &&
+        typeof row.commandName === 'string' && path.posix.isAbsolute(row.commandName)
+        ? row.commandName
+        : null;
+      const executable = row.executablePath || authoritativePosixCommand ||
+        row.argv0 || (this._getPlatform() === 'win32' ? null : row.commandName);
+      return {
+        state: 'running',
+        identity: {
+          pid: row.pid,
+          startedAt,
+          executable: this._normalizeExecutableIdentity(executable)
+        }
+      };
+    } catch (error) {
+      return { state: 'unknown', error };
+    }
+  }
+
+  _observationMatches(ownership, observation) {
+    return observation?.state === 'running' &&
+      observation.identity?.pid === ownership.pid &&
+      observation.identity?.startedAt === ownership.startedAt &&
+      observation.identity?.executable === ownership.executable;
+  }
+
+  async _refreshOwnedProcess() {
+    const ownership = this.ownership;
+    if (!ownership) return this.active;
+    const observation = await this._observeOwnedProcess(ownership);
+    if (observation.state === 'unknown') {
+      this.active = true;
+      return true;
+    }
+    if (this._observationMatches(ownership, observation)) {
+      this.active = true;
+      return true;
+    }
+    try {
+      if (this.process?.pid === ownership.pid) this.process = null;
+      this._clearOwnership(ownership);
+      this.active = false;
+      return false;
+    } catch (error) {
+      this.recoveryJournalError = error;
+      this.active = true;
+      return true;
+    }
+  }
+
+  async _captureLaunchedOwnership(launchedProcess, browserPath) {
+    const provisional = {
+      pid: launchedProcess.pid
+    };
+    const observation = await this._observeOwnedProcess(provisional);
+    if (observation.state !== 'running') {
+      throw observation.error || new Error('Global browser process exited before ownership was recorded');
+    }
+    const expectedExecutable = this._normalizeExecutableIdentity(browserPath);
+    if (observation.identity.executable !== expectedExecutable) {
+      throw new Error('Launched Global browser executable identity does not match the selected browser');
+    }
+    return Object.freeze({
+      version: GLOBAL_BROWSER_OWNERSHIP_VERSION,
+      id: this.id,
+      browserType: this.browserType,
+      pid: launchedProcess.pid,
+      startedAt: observation.identity.startedAt,
+      executable: observation.identity.executable,
+      platform: this._getPlatform()
+    });
   }
 
   async _isBrowserRunning(browserPath) {
@@ -131,13 +330,50 @@ export class ExistingBrowserInterceptor {
     });
   }
 
+  _killOwnedPid(pid, signal) {
+    return process.kill(pid, signal);
+  }
+
+  async _requestRecoveredProcessExit(ownership, signal, timeoutMs) {
+    const beforeSignal = await this._observeOwnedProcess(ownership);
+    if (beforeSignal.state === 'unknown') throw beforeSignal.error;
+    if (!this._observationMatches(ownership, beforeSignal)) return { exited: true, identityChanged: true };
+
+    let signalSent;
+    try {
+      signalSent = this._killOwnedPid(ownership.pid, signal);
+    } catch (error) {
+      if (error.code === 'ESRCH') return { exited: true };
+      throw error;
+    }
+    if (!signalSent) throw new Error(`${signal} was not delivered`);
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, this.processExitPollIntervalMs));
+      const observation = await this._observeOwnedProcess(ownership);
+      if (observation.state === 'unknown') throw observation.error;
+      if (!this._observationMatches(ownership, observation)) return { exited: true };
+    }
+    return { exited: false };
+  }
+
   async activate(proxyPort, options = {}) {
     const launchOptions = { ...options };
     if (launchOptions.url) {
       launchOptions.url = normalizeBrowserUrl(launchOptions.url);
     }
 
-    if (this.active || this.process) {
+    if (this.recoveryJournalError) {
+      throw new Error(
+        `${this.name} ownership journal is invalid and must be resolved before launch: ` +
+        this.recoveryJournalError.message
+      );
+    }
+    if (this.ownership && await this._refreshOwnedProcess()) {
+      throw new Error(`${this.name} is already running`);
+    }
+    if (this.active || this.process || this.ownership) {
       throw new Error(`${this.name} is already running`);
     }
     if (this.ca?.systemTrustInstalled !== true) {
@@ -171,16 +407,22 @@ export class ExistingBrowserInterceptor {
       stdio: 'ignore'
     });
     await this._waitForSpawn(launchedProcess);
+    let ownership = null;
     this.process = launchedProcess;
-
-    this.active = true;
-    this._emitStatus('active');
 
     launchedProcess.on('exit', () => {
       if (this.process !== launchedProcess) return;
       if (this.deactivatingProcess === launchedProcess) return;
       this.active = false;
       this.process = null;
+      if (ownership && this._sameOwnership(this.ownership, ownership)) {
+        try {
+          this._clearOwnership(ownership);
+        } catch (error) {
+          this.recoveryJournalError = error;
+          console.warn(`[Interceptor] Failed to remove ${this.name} ownership journal after exit:`, error.message);
+        }
+      }
       this._emitStatus('exited', { pid: launchedProcess.pid });
     });
 
@@ -191,51 +433,137 @@ export class ExistingBrowserInterceptor {
       this._emitStatus('process-error', { pid: launchedProcess.pid, error: err.message });
     });
 
+    if (this.recoveryFile) {
+      try {
+        ownership = await this._captureLaunchedOwnership(launchedProcess, browserPath);
+        if (this._hasExited(launchedProcess)) {
+          throw new Error(`${this.name} exited before its ownership could be recorded`);
+        }
+        this._persistOwnershipJournal(ownership);
+        this.ownership = ownership;
+        if (this._hasExited(launchedProcess)) {
+          this._clearOwnership(ownership);
+          throw new Error(`${this.name} exited before its ownership could be recorded`);
+        }
+      } catch (error) {
+        let exited = this._hasExited(launchedProcess);
+        if (!exited) {
+          const graceful = await this._signalAndWaitForExit(
+            launchedProcess,
+            'SIGTERM',
+            this.gracefulExitTimeoutMs
+          );
+          exited = graceful.exited;
+        }
+        if (!exited) {
+          const forced = await this._signalAndWaitForExit(
+            launchedProcess,
+            'SIGKILL',
+            this.forceExitTimeoutMs
+          );
+          exited = forced.exited;
+        }
+        if (!exited) {
+          this.active = true;
+          this._emitStatus('cleanup-failed', {
+            pid: launchedProcess.pid,
+            launchFailed: true,
+            error: error.message
+          });
+        } else {
+          if (this.process === launchedProcess) this.process = null;
+          if (ownership && this._sameOwnership(this.ownership, ownership)) {
+            try { this._clearOwnership(ownership); } catch (cleanupError) {
+              this.recoveryJournalError = cleanupError;
+            }
+          }
+        }
+        throw new Error(`Could not record ${this.name} ownership safely: ${error.message}`);
+      }
+    }
+
+    this.active = true;
+    this._emitStatus('active');
+
     return { success: true, pid: launchedProcess.pid, browser: this.name };
   }
 
   async deactivate() {
     const launchedProcess = this.process;
-    if (!launchedProcess) {
+    const ownership = this.ownership;
+    if (this.recoveryJournalError && !ownership) {
+      throw new Error(
+        `Failed to stop ${this.name} safely: ownership journal is invalid. ` +
+        'Stop can be retried after the journal is resolved'
+      );
+    }
+    if (!launchedProcess && !ownership) {
       this.active = false;
       this._emitStatus('inactive', { pid: null });
       return;
     }
 
-    this.deactivatingProcess = launchedProcess;
+    if (ownership) {
+      if (launchedProcess && launchedProcess.pid !== ownership.pid) {
+        throw new Error(`Live ${this.name} process handle does not match its ownership record`);
+      }
+      const observation = await this._observeOwnedProcess(ownership);
+      if (observation.state === 'unknown') {
+        this.active = true;
+        this._emitStatus('stop-failed', { pid: ownership.pid, error: observation.error?.message });
+        throw new Error(
+          `Could not verify ${this.name} ownership: ${observation.error?.message || 'unknown error'}. ` +
+          'Stop can be retried'
+        );
+      }
+      if (!this._observationMatches(ownership, observation)) {
+        if (this.process?.pid === ownership.pid) this.process = null;
+        this._clearOwnership(ownership);
+        this.active = false;
+        this._emitStatus('inactive', { pid: ownership.pid });
+        return;
+      }
+    }
+
+    this.deactivatingProcess = launchedProcess || ownership;
     const errors = [];
-    let exited = this._hasExited(launchedProcess);
+    let exited = launchedProcess ? this._hasExited(launchedProcess) : false;
 
     try {
       if (!exited) {
-        const gracefulResult = await this._signalAndWaitForExit(
-          launchedProcess,
-          'SIGTERM',
-          this.gracefulExitTimeoutMs
-        );
+        const gracefulResult = launchedProcess
+          ? await this._signalAndWaitForExit(
+            launchedProcess,
+            'SIGTERM',
+            this.gracefulExitTimeoutMs
+          )
+          : await this._requestRecoveredProcessExit(
+            ownership,
+            'SIGTERM',
+            this.gracefulExitTimeoutMs
+          );
         exited = gracefulResult.exited;
         if (gracefulResult.error) errors.push(gracefulResult.error);
       }
 
       if (!exited) {
-        const forcedResult = await this._signalAndWaitForExit(
-          launchedProcess,
-          'SIGKILL',
-          this.forceExitTimeoutMs
-        );
+        const forcedResult = launchedProcess
+          ? await this._signalAndWaitForExit(
+            launchedProcess,
+            'SIGKILL',
+            this.forceExitTimeoutMs
+          )
+          : await this._requestRecoveredProcessExit(
+            ownership,
+            'SIGKILL',
+            this.forceExitTimeoutMs
+          );
         exited = forcedResult.exited;
         if (forcedResult.error) errors.push(forcedResult.error);
       }
 
       if (!exited) {
-        if (this.process === launchedProcess) {
-          this.active = true;
-          const error = errors.at(-1);
-          this._emitStatus('stop-failed', {
-            pid: launchedProcess.pid,
-            ...(error ? { error: error.message } : {})
-          });
-        }
+        this.active = true;
         const detail = errors.at(-1)?.message;
         throw new Error(
           `${this.name} did not exit${detail ? `: ${detail}` : ''}; ` +
@@ -243,13 +571,33 @@ export class ExistingBrowserInterceptor {
         );
       }
 
-      if (this.process === launchedProcess) {
-        this.process = null;
-        this.active = false;
-        this._emitStatus('inactive', { pid: launchedProcess.pid });
+      if (launchedProcess && this.process === launchedProcess) this.process = null;
+      if (ownership && this._sameOwnership(this.ownership, ownership)) {
+        try {
+          this._clearOwnership(ownership);
+        } catch (error) {
+          this.active = false;
+          this.recoveryJournalError = error;
+          this._emitStatus('stop-failed', { pid: ownership.pid, error: error.message });
+          throw new Error(
+            `${this.name} exited but its ownership journal could not be removed: ${error.message}. ` +
+            'Stop can be retried'
+          );
+        }
       }
+      this.active = false;
+      this._emitStatus('inactive', { pid: launchedProcess?.pid || ownership?.pid });
+    } catch (error) {
+      if (!/ownership journal could not be removed/.test(error.message)) {
+        this.active = true;
+        this._emitStatus('stop-failed', {
+          pid: launchedProcess?.pid || ownership?.pid,
+          error: error.message
+        });
+      }
+      throw error;
     } finally {
-      if (this.deactivatingProcess === launchedProcess) {
+      if (this.deactivatingProcess === (launchedProcess || ownership)) {
         this.deactivatingProcess = null;
       }
     }
@@ -262,7 +610,7 @@ export class ExistingBrowserInterceptor {
       name: this.name,
       type: this.browserType,
       active: this.active,
-      pid: this.process?.pid || null,
+      pid: this.process?.pid || this.ownership?.pid || null,
       reason,
       ...extra
     });
@@ -274,7 +622,7 @@ export class ExistingBrowserInterceptor {
       name: this.name,
       type: this.browserType,
       active: this.active,
-      pid: this.process?.pid || null
+      pid: this.process?.pid || this.ownership?.pid || null
     };
   }
 }

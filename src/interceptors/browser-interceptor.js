@@ -39,6 +39,7 @@ export class BrowserInterceptor {
     this.statusMonitorGeneration = 0;
     this.lifecycleGeneration = 0;
     this.cleanupPending = false;
+    this.recoveredProfiles = new Map();
     this.startupConfirmationMs = 500;
   }
 
@@ -97,7 +98,8 @@ export class BrowserInterceptor {
   }
 
   canFocus() {
-    return this._platform() === 'win32' || this._platform() === 'darwin';
+    return this.recoveredProfiles.size === 0 &&
+      (this._platform() === 'win32' || this._platform() === 'darwin');
   }
 
   _createManagedProfile() {
@@ -105,6 +107,9 @@ export class BrowserInterceptor {
   }
 
   async isActive() {
+    if (this.recoveredProfiles.size > 0) {
+      return await this._refreshRecoveredProfiles();
+    }
     if (!this.active) return false;
     const lifecycle = this._captureLifecycle();
     const running = await this._isBrowserStillRunning(lifecycle);
@@ -118,7 +123,102 @@ export class BrowserInterceptor {
       || this.cleanupPending
       || Boolean(this.process)
       || Boolean(this.profileDir)
-      || this.trackedProcessIds.size > 0;
+      || this.trackedProcessIds.size > 0
+      || this.recoveredProfiles.size > 0;
+  }
+
+  recoverProfiles(records) {
+    if (!Array.isArray(records) || records.length === 0) return false;
+    if (this.process || this.profileDir || this.recoveredProfiles.size > 0) {
+      throw new Error(`${this.name} already owns a browser lifecycle`);
+    }
+
+    const recovered = records.map(record => {
+      if (!record || record.browserType !== this.browserType ||
+          typeof record.profileDir !== 'string' || !record.profileDir ||
+          !Array.isArray(record.processIds) || record.processIds.length === 0 ||
+          record.processIds.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) {
+        throw new Error(`Invalid recovered ${this.name} profile ownership`);
+      }
+      const proxyPort = Number.isSafeInteger(record.proxyPort) &&
+        record.proxyPort >= 1 && record.proxyPort <= 65535
+        ? record.proxyPort
+        : null;
+      return {
+        profileDir: record.profileDir,
+        processIds: new Set(record.processIds),
+        proxyPort,
+        running: true
+      };
+    });
+
+    for (const record of recovered) {
+      this.recoveredProfiles.set(record.profileDir, record);
+    }
+    this.active = true;
+    this.cleanupPending = false;
+    this._startRecoveredStatusMonitor();
+    return true;
+  }
+
+  async _refreshRecoveredProfiles() {
+    let anyRunning = false;
+    let cleanupFailed = false;
+    for (const [profileDir, record] of [...this.recoveredProfiles]) {
+      let processIds;
+      try {
+        processIds = await this._getRelatedProcessIds(profileDir, []);
+      } catch (err) {
+        record.running = true;
+        anyRunning = true;
+        if (!this.lifecycleInspectionErrorLogged) {
+          console.warn(`[Interceptor] Could not inspect recovered ${this.name} profile: ${err.message}`);
+          this.lifecycleInspectionErrorLogged = true;
+        }
+        continue;
+      }
+
+      this.lifecycleInspectionErrorLogged = false;
+      record.processIds = new Set(processIds);
+      record.running = processIds.size > 0;
+      if (record.running) {
+        anyRunning = true;
+        continue;
+      }
+
+      const cleanup = this._cleanup(profileDir);
+      if (cleanup.removed === true) this.recoveredProfiles.delete(profileDir);
+      else cleanupFailed = true;
+    }
+
+    this.active = anyRunning;
+    this.cleanupPending = cleanupFailed;
+    return anyRunning;
+  }
+
+  _startRecoveredStatusMonitor() {
+    this._stopStatusMonitor();
+    const monitorGeneration = this.statusMonitorGeneration;
+    this.statusMonitor = setInterval(() => {
+      if (monitorGeneration !== this.statusMonitorGeneration || this.statusInspectionInFlight) return;
+      this.statusInspectionInFlight = true;
+      Promise.resolve(this._refreshRecoveredProfiles())
+        .then(running => {
+          if (monitorGeneration !== this.statusMonitorGeneration || running) return;
+          this._stopStatusMonitor();
+          if (this.recoveredProfiles.size > 0) {
+            this._emitStatus('cleanup-failed', { profileRemoved: false });
+          } else {
+            this._emitStatus('closed', { recovered: true, profileRemoved: true });
+          }
+        })
+        .finally(() => {
+          if (monitorGeneration === this.statusMonitorGeneration) {
+            this.statusInspectionInFlight = false;
+          }
+        });
+    }, 1500);
+    this.statusMonitor.unref?.();
   }
 
   _captureLifecycle() {
@@ -190,6 +290,9 @@ export class BrowserInterceptor {
   async activate(proxyPort, options = {}) {
     if (await this.isActive()) {
       throw new Error(`${this.name} is already running`);
+    }
+    if (this.recoveredProfiles.size > 0) {
+      throw new Error(`Could not launch ${this.name}; recovered profile cleanup is still pending`);
     }
 
     const browserPath = this._findBrowserPath();
@@ -337,6 +440,37 @@ export class BrowserInterceptor {
    */
   async openUrl(url) {
     const normalizedUrl = normalizeBrowserUrl(url);
+    if (this.recoveredProfiles.size > 0) {
+      if (!(await this.isActive())) {
+        const error = new Error(`${this.name} is not running`);
+        error.code = BROWSER_BECAME_INACTIVE_ERROR_CODE;
+        error.normalizedUrl = normalizedUrl;
+        throw error;
+      }
+      if (this.browserType === 'firefox') {
+        throw new Error('Opening a new tab in an active isolated Firefox profile is not supported');
+      }
+      const recovered = [...this.recoveredProfiles.values()].find(record => record.running);
+      if (!recovered || !Number.isSafeInteger(recovered.proxyPort)) {
+        throw new Error(`Could not recover the proxy port for the running ${this.name}; stop and restart it`);
+      }
+      const browserPath = this._findBrowserPath();
+      if (!browserPath) throw new Error(`${this.name} not found on this system`);
+      const args = this._getChromiumArgs(
+        recovered.proxyPort,
+        { url: normalizedUrl },
+        recovered.profileDir
+      );
+      await new Promise((resolve, reject) => {
+        const opener = spawn(browserPath, args, { detached: false, stdio: 'ignore' });
+        opener.once('error', reject);
+        opener.once('spawn', () => {
+          opener.unref();
+          resolve();
+        });
+      });
+      return { success: true, browser: this.name, url: normalizedUrl };
+    }
     if (this.cleanupPending) {
       const cleanupError = new Error(
         `Could not reopen ${this.name}; its previous profile cleanup is still pending`
@@ -490,6 +624,9 @@ export class BrowserInterceptor {
   }
 
   async deactivate() {
+    if (this.recoveredProfiles.size > 0) {
+      return await this._deactivateRecoveredProfiles();
+    }
     if (!this.active && !this.profileDir) return;
 
     console.log(`[Interceptor] Stopping ${this.name} and its profile process tree...`);
@@ -536,6 +673,97 @@ export class BrowserInterceptor {
       terminatedProcessCount: Math.max(0, targetIds.size - (remainingIds?.size || 0)),
       remainingProcessCount: remainingIds?.size ?? null,
       profileRemoved: cleanupResult.removed === true
+    });
+  }
+
+  async _waitForRecoveredProfileProcessesToExit(profileDir, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      let remainingIds;
+      try {
+        remainingIds = await this._getRelatedProcessIds(profileDir, []);
+      } catch {
+        return null;
+      }
+      if (remainingIds.size === 0 || Date.now() >= deadline) return remainingIds;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  async _terminateRecoveredProfile(record) {
+    let targetIds;
+    try {
+      targetIds = await this._getRelatedProcessIds(record.profileDir, []);
+    } catch {
+      return null;
+    }
+    record.processIds = new Set(targetIds);
+    if (targetIds.size > 0) this._signalProcesses(targetIds, 'SIGTERM');
+    let remainingIds = await this._waitForRecoveredProfileProcessesToExit(
+      record.profileDir,
+      2000
+    );
+    if (remainingIds === null || remainingIds.size === 0) return remainingIds;
+    await this._forceTerminateProcesses(remainingIds);
+    remainingIds = await this._waitForRecoveredProfileProcessesToExit(
+      record.profileDir,
+      2000
+    );
+    return remainingIds;
+  }
+
+  async _deactivateRecoveredProfiles() {
+    console.log(`[Interceptor] Stopping recovered ${this.name} profile process tree(s)...`);
+    this._stopStatusMonitor();
+    let anyRunning = false;
+    const failures = [];
+    let terminatedProcessCount = 0;
+
+    for (const [profileDir, record] of [...this.recoveredProfiles]) {
+      const initialCount = record.processIds.size;
+      const remainingIds = await this._terminateRecoveredProfile(record);
+      if (remainingIds === null) {
+        record.running = true;
+        anyRunning = true;
+        failures.push(`${profileDir}: process state could not be verified`);
+        continue;
+      }
+      record.processIds = new Set(remainingIds);
+      record.running = remainingIds.size > 0;
+      terminatedProcessCount += Math.max(0, initialCount - remainingIds.size);
+      if (record.running) {
+        anyRunning = true;
+        failures.push(`${profileDir}: ${remainingIds.size} process(es) are still running`);
+        continue;
+      }
+      const cleanup = this._cleanup(profileDir);
+      if (cleanup.removed === true) this.recoveredProfiles.delete(profileDir);
+      else failures.push(`${profileDir}: ${cleanup.reason || 'profile cleanup failed'}`);
+    }
+
+    this.active = anyRunning;
+    this.cleanupPending = this.recoveredProfiles.size > 0;
+    if (failures.length > 0) {
+      if (anyRunning) this._startRecoveredStatusMonitor();
+      this._emitStatus('cleanup-failed', {
+        recovered: true,
+        remainingProfileCount: this.recoveredProfiles.size,
+        profileRemoved: false
+      });
+      throw new Error(
+        `Could not fully stop recovered ${this.name}; ownership was preserved so Stop can be retried: ` +
+        failures.join('; ')
+      );
+    }
+
+    this.recoveredProfiles.clear();
+    this.active = false;
+    this.cleanupPending = false;
+    this._emitStatus('inactive', {
+      recovered: true,
+      terminatedProcessCount,
+      remainingProfileCount: 0,
+      profileRemoved: true
     });
   }
 
@@ -731,12 +959,15 @@ export class BrowserInterceptor {
 
   _emitStatus(reason, extra = {}) {
     if (typeof this.onStatusChange !== 'function') return;
+    const recoveredPid = [...this.recoveredProfiles.values()]
+      .flatMap(record => [...record.processIds])
+      .find(pid => Number.isSafeInteger(pid)) || null;
     this.onStatusChange({
       id: this.id,
       name: this.name,
       type: this.browserType,
       active: this.active,
-      pid: this.process?.pid || null,
+      pid: this.process?.pid || recoveredPid,
       reason,
       ...extra
     });
@@ -745,6 +976,9 @@ export class BrowserInterceptor {
   async focus() {
     if (!(await this.isActive())) {
       throw new Error(`${this.name} is not running`);
+    }
+    if (this.recoveredProfiles.size > 0) {
+      throw new Error(`Focusing a recovered ${this.name} session is not supported; stop and restart it first`);
     }
 
     const platform = this._platform();
@@ -991,12 +1225,15 @@ if (!focused) throw new Error('No matching managed browser application could be 
   }
 
   toJSON() {
+    const recoveredPid = [...this.recoveredProfiles.values()]
+      .flatMap(record => [...record.processIds])
+      .find(pid => Number.isSafeInteger(pid)) || null;
     return {
       id: this.id,
       name: this.name,
       type: this.browserType,
       active: this.active,
-      pid: this.process?.pid || null,
+      pid: this.process?.pid || recoveredPid,
       focusable: this.active && this.canFocus(),
       cleanupPending: this.cleanupPending
     };
