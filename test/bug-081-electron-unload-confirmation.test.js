@@ -12,10 +12,11 @@ const {
   installUnloadConfirmation
 } = require('../electron/unload-confirmation.cjs');
 
-function createUnloadHarness({ response = 1, prepared = false, throwDialog = false } = {}) {
+function createUnloadHarness({ response = 1, prepared = false, allowUnload = false, throwDialog = false } = {}) {
   const webContents = new EventEmitter();
   const dialogCalls = [];
   const errors = [];
+  let canceledCalls = 0;
   const mainWindow = { webContents };
   installUnloadConfirmation(mainWindow, {
     dialog: {
@@ -28,19 +29,22 @@ function createUnloadHarness({ response = 1, prepared = false, throwDialog = fal
     // A completed renderer preflight must not become a long-lived unload
     // bypass while Squirrel.Mac is still waiting to begin its native quit.
     shouldAllowPreparedUnload: () => prepared,
+    shouldAllowUnload: () => allowUnload,
+    onUnloadCanceled: () => { canceledCalls++; },
     logger: { error: (...args) => errors.push(args.join(' ')) }
   });
   let preventCalls = 0;
   webContents.emit('will-prevent-unload', {
     preventDefault() { preventCalls++; }
   });
-  return { dialogCalls, errors, mainWindow, preventCalls };
+  return { canceledCalls, dialogCalls, errors, mainWindow, preventCalls };
 }
 
 test('Electron keeps the page when Stay is selected', () => {
   const result = createUnloadHarness({ response: 1 });
 
   assert.equal(result.preventCalls, 0);
+  assert.equal(result.canceledCalls, 1);
   assert.equal(result.dialogCalls.length, 1);
   assert.equal(result.dialogCalls[0][0], result.mainWindow);
   assert.deepEqual(result.dialogCalls[0][1], UNSAVED_CHANGES_DIALOG);
@@ -52,6 +56,7 @@ test('Electron permits the unload only when Leave is selected', () => {
   const result = createUnloadHarness({ response: 0 });
 
   assert.equal(result.preventCalls, 1);
+  assert.equal(result.canceledCalls, 0);
   assert.equal(result.dialogCalls.length, 1);
 });
 
@@ -59,13 +64,23 @@ test('a completed updater preflight does not bypass a later native unload confir
   const result = createUnloadHarness({ prepared: true });
 
   assert.equal(result.preventCalls, 0);
+  assert.equal(result.canceledCalls, 1);
   assert.equal(result.dialogCalls.length, 1);
+});
+
+test('an irrevocable native updater handoff bypasses the duplicate prompt', () => {
+  const result = createUnloadHarness({ allowUnload: true });
+
+  assert.equal(result.preventCalls, 1);
+  assert.equal(result.canceledCalls, 0);
+  assert.equal(result.dialogCalls.length, 0);
 });
 
 test('native dialog failures fail closed and are reported', () => {
   const result = createUnloadHarness({ throwDialog: true });
 
   assert.equal(result.preventCalls, 0);
+  assert.equal(result.canceledCalls, 1);
   assert.match(result.errors[0], /dialog unavailable/);
 });
 
@@ -78,7 +93,8 @@ function deferred() {
 function loadUpdater({
   prepareResult = true,
   prepareError = null,
-  prepareOperation = null
+  prepareOperation = null,
+  quitOperation = null
 } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
@@ -90,7 +106,10 @@ function loadUpdater({
   autoUpdater.checkForUpdates = () => Promise.resolve(null);
   autoUpdater.downloadUpdate = () => Promise.resolve();
   autoUpdater.setFeedURL = () => {};
-  autoUpdater.quitAndInstall = () => { quitCalls++; };
+  autoUpdater.quitAndInstall = () => {
+    quitCalls++;
+    if (quitOperation) quitOperation(autoUpdater, quitCalls);
+  };
   const ipcHandlers = new Map();
   const statuses = [];
   const electron = {
@@ -138,6 +157,7 @@ function loadUpdater({
   });
   return {
     autoUpdater,
+    cancelInstall: module.exports.cancelUpdateInstall,
     install: ipcHandlers.get('updater-install'),
     statuses,
     get prepareCalls() { return prepareCalls; },
@@ -213,11 +233,48 @@ test('an updater install error revokes the prepared-unload allowance', async () 
   assert.equal(failure.quitCalls, 2);
 });
 
+test('canceling a native update close releases the pending request for retry', async () => {
+  const updater = loadUpdater();
+
+  const firstResult = await updater.install({});
+  assert.equal(firstResult.started, true);
+  assert.equal(updater.cancelInstall(), true);
+  assert.equal(updater.cancelInstall(), false);
+  assert.equal(updater.preparationFailureCalls, 1);
+  assert.equal(updater.statuses.at(-1).status, 'install-canceled');
+
+  const retryResult = await updater.install({});
+  assert.equal(retryResult.started, true);
+  assert.equal(updater.prepareCalls, 2);
+  assert.equal(updater.quitCalls, 2);
+});
+
+test('a synchronous installer error does not report a started update', async () => {
+  const updater = loadUpdater({
+    quitOperation: (autoUpdater, quitCalls) => {
+      if (quitCalls === 1) autoUpdater.emit('error', new Error('installer launch failed'));
+    }
+  });
+
+  const failedResult = await updater.install({});
+  assert.equal(failedResult.started, false);
+  assert.equal(failedResult.inProgress, false);
+  assert.equal(updater.preparationFailureCalls, 1);
+  assert.equal(updater.statuses.at(-1).status, 'error');
+
+  const retryResult = await updater.install({});
+  assert.equal(retryResult.started, true);
+  assert.equal(updater.prepareCalls, 2);
+  assert.equal(updater.quitCalls, 2);
+});
+
 test('main process wires native unload confirmation and updater preparation together', () => {
   const mainSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.cjs'), 'utf8');
 
   assert.match(mainSource, /installUnloadConfirmation\(mainWindow/);
   assert.doesNotMatch(mainSource, /shouldAllowPreparedUnload/);
+  assert.match(mainSource, /shouldAllowUnload: \(\) => updateInstallQuitStarted && process\.platform !== 'darwin'/);
+  assert.match(mainSource, /if \(updateInstallQuitStarted\) cancelUpdateInstall\(\)/);
   assert.match(mainSource, /nativeAutoUpdater\.on\('before-quit-for-update'/);
   assert.match(mainSource, /updateInstallQuitStarted = updateInstallPrepared/);
   assert.match(mainSource, /prepareForInstall: async \(\) =>/);
@@ -232,4 +289,5 @@ test('renderer disables Restart to install while its request is pending', () => 
   assert.match(rendererSource, /if \(installUpdateRequestPending\) return/);
   assert.match(rendererSource, /setAttribute\('aria-disabled', pending \? 'true' : 'false'\)/);
   assert.match(rendererSource, /await window\.electronApi\.installUpdate\(\)/);
+  assert.match(rendererSource, /case 'install-canceled':/);
 });

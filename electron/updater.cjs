@@ -29,6 +29,25 @@ let configuredFeedUrl = null;
 let prepareForInstall = async () => true;
 let onInstallPreparationFailed = () => {};
 let installRequestInFlight = false;
+let installRequestGeneration = 0;
+
+function releaseInstallRequest() {
+  const wasInFlight = installRequestInFlight;
+  installRequestInFlight = false;
+  if (wasInFlight) installRequestGeneration++;
+  return wasInFlight;
+}
+
+function cancelUpdateInstall() {
+  if (!releaseInstallRequest()) return false;
+  onInstallPreparationFailed();
+  sendStatus({
+    status: 'install-canceled',
+    version: currentStatus.version,
+    manual: true
+  });
+  return true;
+}
 
 function getWebUrl(value) {
   if (typeof value !== 'string') return null;
@@ -225,7 +244,7 @@ function initAutoUpdater(win, options = {}) {
   });
 
   autoUpdater.on('error', (err) => {
-    installRequestInFlight = false;
+    releaseInstallRequest();
     onInstallPreparationFailed();
     const wasManual = currentCheckIsManual;
     currentCheckIsManual = false;
@@ -250,19 +269,25 @@ function initAutoUpdater(win, options = {}) {
     if (installRequestInFlight) return { started: false, inProgress: true };
 
     installRequestInFlight = true;
+    const requestGeneration = ++installRequestGeneration;
     try {
       if (!await prepareForInstall()) {
-        installRequestInFlight = false;
+        releaseInstallRequest();
+        return { started: false, inProgress: false };
+      }
+      if (!installRequestInFlight || requestGeneration !== installRequestGeneration) {
         return { started: false, inProgress: false };
       }
       // The renderer has explicitly accepted losing mock drafts and has safely
       // persisted Send state, so every platform can now follow its updater-
       // specific window-close sequence.
       autoUpdater.quitAndInstall(false, true);
+      if (!installRequestInFlight || requestGeneration !== installRequestGeneration) {
+        return { started: false, inProgress: false };
+      }
       return { started: true, inProgress: true };
     } catch (err) {
-      installRequestInFlight = false;
-      onInstallPreparationFailed();
+      if (releaseInstallRequest()) onInstallPreparationFailed();
       sendStatus({ status: 'error', error: err.message, manual: true });
       return { started: false, inProgress: false };
     }
@@ -298,8 +323,8 @@ function stopAutoUpdater() {
   validateIpcSender = () => false;
   prepareForInstall = async () => true;
   onInstallPreparationFailed = () => {};
-  installRequestInFlight = false;
+  releaseInstallRequest();
   configuredFeedUrl = null;
 }
 
-module.exports = { initAutoUpdater, stopAutoUpdater };
+module.exports = { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall };

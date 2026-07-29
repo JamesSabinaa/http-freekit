@@ -16,7 +16,7 @@ const http = require('http');
 const windowStateKeeper = require('electron-window-state');
 const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
-const { initAutoUpdater, stopAutoUpdater } = require('./updater.cjs');
+const { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
@@ -343,7 +343,16 @@ function createWindow({ showOnReady = true } = {}) {
 
   windowState.manage(mainWindow);
 
-  installUnloadConfirmation(mainWindow, { dialog });
+  installUnloadConfirmation(mainWindow, {
+    dialog,
+    // Windows launches its installer before the native quit begins, so a
+    // second prompt cannot offer a reliable retry. macOS can still cancel the
+    // delayed Squirrel handoff and must release the pending install request.
+    shouldAllowUnload: () => updateInstallQuitStarted && process.platform !== 'darwin',
+    onUnloadCanceled: () => {
+      if (updateInstallQuitStarted) cancelUpdateInstall();
+    }
+  });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAllowedRendererUrl(url, apiPort)) return;

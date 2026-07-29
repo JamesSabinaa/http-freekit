@@ -13561,6 +13561,11 @@
           case 'update-dismissed':
             if (data.manual) toast('Update postponed', 'success');
             break;
+          case 'install-canceled':
+            setInstallUpdateActionPending(false);
+            showUpdateReadyToast(data.version || updateVersion);
+            if (data.manual) toast('Update restart canceled', 'success');
+            break;
           case 'error':
             setInstallUpdateActionPending(false);
             if (data.manual) toast('Update check failed: ' + (data.error || 'unknown error'), 'error');
