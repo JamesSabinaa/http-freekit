@@ -51,6 +51,7 @@ function createHarness(fetchImpl) {
     const mockNewDraftIds = new Set();
     let breakpointRules = [];
     let mockExpandedRules = new Set();
+    let mockSaveInProgress = false;
     function _applyDraftToLocal(ruleId, draft) {
       const rule = mockRules.find(candidate => candidate.id === ruleId);
       if (rule) Object.assign(rule, draft);

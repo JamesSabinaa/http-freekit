@@ -6088,7 +6088,7 @@
     }
 
     async function clearAllMockRules() {
-      if (mockResetInProgress) return;
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) return;
       mockResetInProgress = true;
       try {
         // Reorders are serialized client-side. Let every operation already in
@@ -6133,6 +6133,7 @@
     }
 
     function mockDragStart(e, ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       mockDragId = ruleId;
       e.dataTransfer.effectAllowed = 'move';
       e.currentTarget.classList.add('mock-rule-dragging');
@@ -6172,7 +6173,7 @@
     }
 
     function mockGroupDrop(e, groupId) {
-      if (mockResetInProgress) {
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) {
         mockDragId = null;
         return;
       }
@@ -6302,7 +6303,7 @@
 
     function mockDrop(e, targetId) {
       e.preventDefault();
-      if (mockResetInProgress) {
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) {
         mockDragId = null;
         return;
       }
@@ -6371,6 +6372,7 @@
     }
 
     function startInlineRename(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       if (mockRenamingRuleId === ruleId) return;
       mockRenamingRuleId = ruleId;
       renderMockRules();
@@ -6384,6 +6386,7 @@
     }
 
     function confirmInlineRename(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       if (mockRenamingRuleId !== ruleId) return;
       const input = document.getElementById('mock-rename-input');
       if (!input) { mockRenamingRuleId = null; return; }
@@ -7474,6 +7477,7 @@
     }
 
     function addNewMockRule() {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       if (!preserveOpenMockEdit('__new__')) return;
       mockEditingRule = '__new__';
       mockEditDraft = {
@@ -7501,6 +7505,7 @@
     }
 
     function editMockRule(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       if (!preserveOpenMockEdit(ruleId)) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
@@ -7513,6 +7518,7 @@
     }
 
     function cancelMockEdit() {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       mockEditingRule = null;
       mockEditDraft = null;
       mockEditDirty = false;
@@ -7520,6 +7526,7 @@
     }
 
     function toggleMockRuleExpand(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       if (mockExpandedRules.has(ruleId)) {
         // Collapse
         mockExpandedRules.delete(ruleId);
@@ -7538,6 +7545,7 @@
     }
 
     function toggleMockRuleEnabled(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       rule.enabled = rule.enabled === false ? true : false;
@@ -7982,6 +7990,7 @@
     }
 
     function saveMockRule(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return false;
       if (!mockEditDraft) return false;
 
       if (!Array.isArray(mockEditDraft.matchers) || mockEditDraft.matchers.length === 0
@@ -8239,14 +8248,29 @@
       const saveAllBtn = document.getElementById('mockSaveAllBtn');
       const revertBtn = document.getElementById('mockRevertBtn');
       const unsavedBadge = document.getElementById('mockUnsavedBadge');
+      const rulesList = document.getElementById('mockRulesList');
       const hasDrafts = hasUnsavedMockChanges();
+      const serverMutationLocked = mockSaveInProgress || mockRevertInProgress;
       if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
-      if (saveAllBtn) saveAllBtn.disabled = mockSaveInProgress || mockRevertInProgress;
+      if (saveAllBtn) saveAllBtn.disabled = serverMutationLocked;
       if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
-      if (revertBtn) revertBtn.disabled = mockSaveInProgress || mockRevertInProgress;
-      document.querySelectorAll?.('.mock-save-server, .mock-rule-delete').forEach(button => {
-        button.disabled = mockSaveInProgress || mockRevertInProgress;
-      });
+      if (revertBtn) revertBtn.disabled = serverMutationLocked;
+      if (rulesList) {
+        rulesList.classList?.toggle('mock-server-save-locked', serverMutationLocked);
+        rulesList.setAttribute?.('aria-busy', String(serverMutationLocked));
+        rulesList.querySelectorAll?.('button, input, select, textarea').forEach(control => {
+          if (serverMutationLocked) {
+            if (!control.disabled) {
+              control.disabled = true;
+              control.dataset.mockSaveLockDisabled = 'true';
+            }
+          } else if (control.dataset.mockSaveLockDisabled === 'true'
+              || control.matches?.('.mock-save-server, .mock-rule-delete')) {
+            control.disabled = false;
+            delete control.dataset.mockSaveLockDisabled;
+          }
+        });
+      }
       if (unsavedBadge) {
         unsavedBadge.style.display = hasDrafts ? '' : 'none';
         unsavedBadge.textContent = mockDraftRules.size + ' unsaved change' + (mockDraftRules.size !== 1 ? 's' : '');
@@ -8293,6 +8317,7 @@
     }
 
     function cloneMockRule(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       const clone = JSON.parse(JSON.stringify(rule));
@@ -8315,6 +8340,7 @@
     }
 
     function toggleMockGroupEnabled(groupId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       group.enabled = group.enabled === false ? true : false;
@@ -8328,6 +8354,7 @@
     }
 
     function renameMockGroup(groupId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       const name = prompt('Group name:', group.title || '');
@@ -8343,6 +8370,7 @@
     }
 
     async function deleteMockGroup(groupId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       const itemCount = (group.items || []).length;
@@ -8355,6 +8383,7 @@
     }
 
     async function createMockGroup() {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const name = prompt('Group name:', 'New Group');
       if (name === null) return;
       try {
@@ -8368,7 +8397,7 @@
     }
 
     function moveRuleToGroup(ruleId, groupId) {
-      if (mockResetInProgress) return;
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) return;
       return _queueMockCollectionMutation(async () => {
         try {
           const res = await fetch(API_BASE + '/api/mock-rules/move-to-group', {
@@ -8384,6 +8413,7 @@
     }
 
     async function ungroupRule(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       try {
         const res = await fetch(API_BASE + '/api/mock-rules/ungroup', {
           method: 'POST', headers: {'Content-Type':'application/json'},

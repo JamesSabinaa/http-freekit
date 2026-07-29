@@ -3041,6 +3041,11 @@
     .mock-toggle-btn.mock-save-server {
       color: #e8a030;
     }
+    .mock-rules-list.mock-server-save-locked .mock-rule-card,
+    .mock-rules-list.mock-server-save-locked .mock-group {
+      cursor: progress;
+      pointer-events: none;
+    }
 
     .mock-page-scroll {
       flex: 1;

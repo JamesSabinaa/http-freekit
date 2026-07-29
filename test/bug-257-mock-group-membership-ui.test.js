@@ -72,6 +72,8 @@ test('mock groups accept drops from top-level rules and other groups', async () 
     ];
     let mockDragId = null;
     let mockResetInProgress = false;
+    let mockSaveInProgress = false;
+    let mockRevertInProgress = false;
     ${containingGroupSource}
     ${groupDragSource}
     globalThis.beginDrag = ruleId => { mockDragId = ruleId; };
@@ -109,6 +111,8 @@ test('group drops do not replace rule reordering or move within the same group',
     let mockRules = [{ id: 'group-a', type: 'group', items: [{ id: 'nested' }] }];
     let mockDragId = null;
     let mockResetInProgress = false;
+    let mockSaveInProgress = false;
+    let mockRevertInProgress = false;
     ${containingGroupSource}
     ${groupDragSource}
     globalThis.beginDrag = ruleId => { mockDragId = ruleId; };

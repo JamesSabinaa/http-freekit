@@ -86,6 +86,8 @@ function createRenderer(fetch) {
     let mockReorderQueue = Promise.resolve();
     let mockRulesLoadGeneration = 0;
     let mockResetInProgress = false;
+    let mockSaveInProgress = false;
+    let mockRevertInProgress = false;
     let renders = 0;
     let buttonUpdates = 0;
     function _replaceMockRulesFromServer(rules) { mockRules = rules; }
