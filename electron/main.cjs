@@ -25,6 +25,7 @@ const { waitForServer } = require('./server-readiness.cjs');
 const { shutdownServerProcess } = require('./server-shutdown.cjs');
 const { prepareRendererForQuit, runQuitCleanup } = require('./quit-cleanup.cjs');
 const { installUnloadConfirmation } = require('./unload-confirmation.cjs');
+const { installWindowToTray, showTrayWindow } = require('./window-to-tray.cjs');
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -169,8 +170,7 @@ function showMainWindow() {
     return;
   }
   showMainWindowWhenReady = false;
-  if (!mainWindow.isVisible()) mainWindow.show();
-  mainWindow.focus();
+  showTrayWindow(mainWindow);
 }
 
 function handleMainWindowReady(windowForReady, showOnReady) {
@@ -352,6 +352,12 @@ function createWindow({ showOnReady = true } = {}) {
     onUnloadCanceled: () => {
       if (updateInstallQuitStarted) cancelUpdateInstall();
     }
+  });
+
+  installWindowToTray(mainWindow, {
+    // The first quit request is held by before-quit while renderer/server
+    // cleanup runs. Only the final app.quit() may actually close the window.
+    shouldAllowClose: () => quitCleanupComplete
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {

@@ -1,5 +1,6 @@
 const { Tray, Menu, nativeImage, app } = require('electron');
 const path = require('path');
+const { showTrayWindow } = require('./window-to-tray.cjs');
 
 let tray = null;
 
@@ -87,8 +88,7 @@ function createTray(mainWindow) {
           if (mainWindow.isVisible()) {
             mainWindow.hide();
           } else {
-            mainWindow.show();
-            mainWindow.focus();
+            showTrayWindow(mainWindow);
           }
           updateContextMenu();
         }
@@ -118,8 +118,7 @@ function createTray(mainWindow) {
     if (mainWindow.isVisible()) {
       mainWindow.focus();
     } else {
-      mainWindow.show();
-      mainWindow.focus();
+      showTrayWindow(mainWindow);
     }
   });
 }

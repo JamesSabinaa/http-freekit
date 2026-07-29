@@ -25,7 +25,16 @@ const recoverySource = [
 
 function createHarness({ parse, open }) {
   const calls = { errors: [], focus: 0, show: 0, opened: [] };
-  const context = { calls, parse, open, console };
+  const context = {
+    calls,
+    parse,
+    open,
+    console,
+    showTrayWindow(window) {
+      if (!window.isVisible()) window.show();
+      window.focus();
+    }
+  };
   vm.runInNewContext(`
     const windowStub = {
       visible: false,
