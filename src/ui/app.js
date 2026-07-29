@@ -6009,6 +6009,7 @@
     let mockExpandedRules = new Set();
     let mockEditingRule = null;
     let mockEditDraft = null;
+    let mockEditDirty = false;
     let mockDragId = null;
     let mockReorderGeneration = 0;
     let mockReorderQueue = Promise.resolve();
@@ -7459,6 +7460,7 @@
           delay: 0
         }
       };
+      mockEditDirty = false;
       renderMockRules();
       setTimeout(() => {
         const el = document.getElementById('mockEditor___new__');
@@ -7473,6 +7475,7 @@
       const nr = normalizeMockRule(rule);
       mockEditingRule = ruleId;
       mockEditDraft = JSON.parse(JSON.stringify(nr));
+      mockEditDirty = false;
       mockExpandedRules.add(ruleId);
       renderMockRules();
     }
@@ -7480,6 +7483,7 @@
     function cancelMockEdit() {
       mockEditingRule = null;
       mockEditDraft = null;
+      mockEditDirty = false;
       renderMockRules();
     }
 
@@ -7845,9 +7849,63 @@
       container.innerHTML = html;
     }
 
-    /** Check if there are any unsaved mock rule drafts */
+    function mockRuleDraftComparable(rule) {
+      return {
+        enabled: rule?.enabled !== false,
+        priority: rule?.priority || 'normal',
+        matchers: rule?.matchers,
+        preSteps: (rule?.preSteps || []).filter(step => step && step.type),
+        action: rule?.action,
+        title: rule?.title || undefined
+      };
+    }
+
+    function hasOpenMockEditChanges() {
+      if (!mockEditDraft) return false;
+      if (mockEditDirty) return true;
+      if (!mockEditingRule || mockEditingRule === '__new__') return true;
+      if (mockDraftRules.has(mockEditingRule)) return false;
+      const original = _findMockRuleDeep(mockEditingRule);
+      if (!original) return true;
+      try {
+        return JSON.stringify(mockRuleDraftComparable(normalizeMockRule(original))) !==
+          JSON.stringify(mockRuleDraftComparable(mockEditDraft));
+      } catch {
+        // If the editor cannot be compared safely, fail closed instead of
+        // allowing navigation to discard it silently.
+        return true;
+      }
+    }
+
+    /** Check if there are any locally staged mock rule drafts */
     function hasUnsavedMockChanges() {
       return mockDraftRules.size > 0;
+    }
+
+    function hasUnsavedMockWork() {
+      return hasUnsavedMockChanges() || hasOpenMockEditChanges();
+    }
+
+    function markOpenMockEditDirty(event) {
+      const editor = event?.target?.closest?.('.mock-rule-editor');
+      if (mockEditDraft && editor?.id?.startsWith('mockEditor_')) {
+        mockEditDirty = true;
+      }
+    }
+
+    function guardUnsavedMockChangesBeforeUnload(event) {
+      if (!hasUnsavedMockWork()) return true;
+      event?.preventDefault?.();
+      if (event) event.returnValue = '';
+      return false;
+    }
+
+    function prepareRendererForQuit() {
+      if (hasUnsavedMockWork() &&
+          !confirm('You have unsaved mock rule changes. Quit without saving?')) {
+        return false;
+      }
+      return persistActiveSendTabBeforeUnload();
     }
 
     /** Save current editor state to draft (local only, not to server) */
@@ -11630,7 +11688,7 @@
     function switchPanel(el, panelId) {
       // Warn if leaving mock page with unsaved changes
       const currentPanel = document.querySelector('.sidebar-item.active')?.dataset?.panel;
-      if (currentPanel === 'mock' && panelId !== 'mock' && hasUnsavedMockChanges()) {
+      if (currentPanel === 'mock' && panelId !== 'mock' && hasUnsavedMockWork()) {
         if (!confirm('You have unsaved mock rule changes. Leave without saving?')) {
           return;
         }
@@ -13040,9 +13098,13 @@
     // Restore send tabs from localStorage
     restoreSendTabs();
     initializeSendTabs();
+    document.addEventListener('input', markOpenMockEditDirty);
+    document.addEventListener('change', markOpenMockEditDirty);
     window.addEventListener('storage', handleSendTabStorageEvent);
     window.prepareSendTabPersistenceForQuit = persistActiveSendTabBeforeUnload;
+    window.prepareRendererForQuit = prepareRendererForQuit;
     window.addEventListener('beforeunload', persistActiveSendTabBeforeUnload);
+    window.addEventListener('beforeunload', guardUnsavedMockChangesBeforeUnload);
 
     // Apply hash-based routing on initial page load
     if (window.location.hash) {

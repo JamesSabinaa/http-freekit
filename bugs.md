@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 18 of the 361 documented bugs are not fully fixed.**
+**No: 17 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 343 |
+| Fixed | 344 |
 | Partially fixed | 6 |
-| Open | 12 |
+| Open | 11 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2226,7 +2226,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-081 — Medium — Reload/New Session discards mock drafts without warning
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: The renderer now distinguishes staged mock drafts and a genuinely changed open editor from an unchanged editor, with delegated input tracking that detects focused text edits before blur. Reload, New Session, navigation, window close, Quit, and Restart all block on unsaved mock work; browser unloads use the standard leave-page prompt, while Electron's destructive quit preflight asks explicitly before persisting Send state and destroying the renderer.
+- Regression coverage: `test/bug-081-mock-unload-guard.test.js` covers staged drafts, new and changed editors, focused pre-blur input, unchanged editors, canceled/accepted unloads, Send persistence failure, handler registration, and Electron's combined quit preflight.
 
 - Evidence: draft state is memory-only (`src/ui/app.js:17-20,6020-6023`). The unsaved-change warning runs only in `switchPanel()` at `:8321-8328`; Electron's New Session and Reload commands directly reload at `electron/menu.cjs:24-31,56-60`, and no `beforeunload` guard exists.
 - Impact: users can lose an entire unsaved rule edit despite the application having a warning mechanism.

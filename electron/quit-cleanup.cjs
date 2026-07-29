@@ -1,7 +1,8 @@
 'use strict';
 
 const PREPARE_RENDERER_FOR_QUIT_SCRIPT = `(() => {
-  const prepare = globalThis.prepareSendTabPersistenceForQuit;
+  const prepare = globalThis.prepareRendererForQuit ||
+    globalThis.prepareSendTabPersistenceForQuit;
   return typeof prepare === 'function' && prepare() === true;
 })()`;
 
