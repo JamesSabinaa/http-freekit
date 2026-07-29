@@ -303,20 +303,51 @@ test('repeated same-version update cancellations restore the restart action', as
   const harness = createHarness();
   harness.context.readyToastForTest('2.0');
   const installAction = harness.document.getElementById('installUpdateBtn');
-  const canceledStatus = { status: 'install-canceled', version: '2.0', manual: true };
+  const firstCanceledStatus = {
+    status: 'install-canceled', eventId: 1, version: '2.0', manual: true
+  };
+  const secondCanceledStatus = {
+    status: 'install-canceled', eventId: 2, version: '2.0', manual: true
+  };
 
   installAction.dispatch('click');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(installAction.textContent, 'Restarting…');
-  harness.context.updaterStatusForTest(canceledStatus);
+  harness.context.updaterStatusForTest(firstCanceledStatus);
+  harness.context.updaterStatusForTest(firstCanceledStatus);
   assert.equal(installAction.textContent, 'Restart to install');
   assert.equal(installAction.getAttribute('aria-disabled'), 'false');
+  assert.equal(harness.container.children.length, 2, 'live cancellation and its replay announce once');
 
   installAction.dispatch('click');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(installAction.textContent, 'Restarting…');
-  harness.context.updaterStatusForTest(canceledStatus);
+  harness.context.updaterStatusForTest(secondCanceledStatus);
+  harness.context.updaterStatusForTest(secondCanceledStatus);
   assert.equal(installAction.textContent, 'Restart to install');
   assert.equal(installAction.getAttribute('aria-disabled'), 'false');
+  assert.equal(harness.container.children.length, 3, 'the new cancellation announces once');
   assert.deepEqual(harness.installCalls, ['install', 'install']);
+});
+
+test('repeated installer errors recover each retry without duplicating status replay', async () => {
+  const harness = createHarness();
+  harness.context.readyToastForTest('2.0');
+  const installAction = harness.document.getElementById('installUpdateBtn');
+
+  for (const eventId of [1, 2]) {
+    installAction.dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(installAction.textContent, 'Restarting…');
+    const errorStatus = {
+      status: 'error', eventId, error: 'installer launch failed', manual: true
+    };
+    harness.context.updaterStatusForTest(errorStatus);
+    harness.context.updaterStatusForTest(errorStatus);
+    assert.equal(installAction.textContent, 'Restart to install');
+    assert.equal(installAction.getAttribute('aria-disabled'), 'false');
+  }
+
+  assert.deepEqual(harness.installCalls, ['install', 'install']);
+  assert.equal(harness.container.children.length, 3, 'each distinct failure announces exactly once');
 });

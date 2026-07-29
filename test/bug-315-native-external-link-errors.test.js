@@ -237,12 +237,14 @@ test('Linux updater reports external-open rejection and resets its prompt state'
   assert.deepEqual(plain(statuses.find(status => status.status === 'error')), {
     status: 'error',
     error: 'download page blocked',
-    manual: false
+    manual: false,
+    eventId: 2
   });
   assert.deepEqual(plain(statuses.at(-1)), {
     status: 'update-dismissed',
     version: '3.0.1',
-    manual: false
+    manual: false,
+    eventId: 4
   });
   assert.deepEqual(unhandled, []);
   harness.stopAutoUpdater();

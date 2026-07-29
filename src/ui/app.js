@@ -13532,8 +13532,7 @@
       function handleUpdaterStatus(data) {
         if (!data || typeof data.status !== 'string') return;
         const statusKey = JSON.stringify(data);
-        const repeatableTerminalStatus = data.status === 'install-canceled' || data.status === 'error';
-        if (statusKey === lastUpdaterStatusKey && !repeatableTerminalStatus) return;
+        if (statusKey === lastUpdaterStatusKey) return;
         lastUpdaterStatusKey = statusKey;
         switch (data.status) {
           case 'checking':

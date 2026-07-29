@@ -11,7 +11,7 @@ const { shouldForceLinuxUpdateChecks } = require('./update-platform.cjs');
  *
  * The module communicates with the renderer through IPC events prefixed with
  * 'updater-'. The renderer listens on the 'updater-status' channel for
- * status objects: { status, version?, url?, error? }.
+ * status objects: { status, eventId?, version?, url?, error? }.
  */
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -25,6 +25,7 @@ let updatePromptOpen = false;
 let lastPromptedVersion = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
+let statusEventId = 0;
 let configuredFeedUrl = null;
 let prepareForInstall = async () => true;
 let onInstallPreparationFailed = () => {};
@@ -95,6 +96,7 @@ function getLinuxDownloadUrl(info = {}) {
  * Send an updater status event to the renderer.
  */
 function sendStatus(data) {
+  data = { ...data, eventId: ++statusEventId };
   currentStatus = { ...data };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('updater-status', data);

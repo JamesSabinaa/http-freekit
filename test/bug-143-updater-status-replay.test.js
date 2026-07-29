@@ -8,6 +8,8 @@ const preload = fs.readFileSync(path.join(process.cwd(), 'electron', 'preload.cj
 const renderer = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
 test('main process stores and exposes the latest validated updater status', () => {
+  assert.match(updater, /let statusEventId = 0/);
+  assert.match(updater, /data = \{ \.\.\.data, eventId: \+\+statusEventId \}/);
   assert.match(updater, /currentStatus = \{ \.\.\.data \}/);
   assert.match(updater, /ipcMain\.handle\('updater-get-status',[\s\S]*validateIpcSender\(event\)[\s\S]*return \{ \.\.\.currentStatus \}/);
 });
@@ -27,4 +29,5 @@ test('renderer subscribes before replaying current updater state', () => {
   assert.notEqual(subscribeIndex, -1);
   assert.ok(queryIndex > subscribeIndex);
   assert.match(ui, /if \(document\.getElementById\('installUpdateBtn'\)\) return/);
+  assert.match(ui, /if \(statusKey === lastUpdaterStatusKey\) return/);
 });
