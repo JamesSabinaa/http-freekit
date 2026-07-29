@@ -19,6 +19,7 @@ test('isolated browser activation waits for spawn confirmation', async () => {
   interceptor._findBrowserPath = () => '/test/chrome';
   interceptor._createManagedProfile = () => '/test/profile';
   interceptor._spawn = () => child;
+  interceptor.startupConfirmationMs = 10;
   interceptor.ca = { systemTrustInstalled: true };
 
   let settled = false;
@@ -31,6 +32,8 @@ test('isolated browser activation waits for spawn confirmation', async () => {
 
   child.pid = 7101;
   child.emit('spawn');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'spawn alone must not confirm startup stability');
   const result = await activation;
 
   assert.equal(result.success, true);
@@ -71,6 +74,7 @@ test('Global Chrome activation waits for spawn confirmation', async () => {
   interceptor._findBrowserPath = () => '/test/chrome';
   interceptor._isBrowserRunning = async () => false;
   interceptor._spawn = () => child;
+  interceptor.startupConfirmationMs = 10;
   interceptor.ca = { systemTrustInstalled: true };
 
   let settled = false;
@@ -83,6 +87,8 @@ test('Global Chrome activation waits for spawn confirmation', async () => {
 
   child.pid = 7201;
   child.emit('spawn');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'spawn alone must not confirm startup stability');
   const result = await activation;
 
   assert.equal(result.success, true);
@@ -106,4 +112,57 @@ test('Global Chrome activation rejects spawn errors without becoming active', as
   await assert.rejects(activation, /spawn EACCES/);
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.process, null);
+});
+
+test('isolated browser activation rejects an early post-spawn exit and removes its profile', async () => {
+  const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+  const child = fakeChild(7301);
+  const cleanedProfiles = [];
+  interceptor._findBrowserPath = () => '/test/corrupt-chrome';
+  interceptor._createManagedProfile = () => '/test/profile';
+  interceptor._spawn = () => child;
+  interceptor._cleanup = profileDir => {
+    cleanedProfiles.push(profileDir);
+    return { removed: true };
+  };
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const activation = interceptor.activate(8080);
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.exitCode = 1;
+  child.emit('exit', 1, null);
+
+  await assert.rejects(activation, /Chrome exited during startup \(exit code 1\)/);
+  assert.deepEqual(cleanedProfiles, ['/test/profile']);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.process, null);
+  assert.equal(interceptor.profileDir, null);
+  assert.equal(child.listenerCount('spawn'), 0);
+  assert.equal(child.listenerCount('exit'), 0);
+  assert.equal(child.listenerCount('error'), 0);
+});
+
+test('Global Chrome activation rejects an early post-spawn exit', async () => {
+  const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
+  const child = fakeChild(7401);
+  interceptor._findBrowserPath = () => '/test/corrupt-chrome';
+  interceptor._isBrowserRunning = async () => false;
+  interceptor._spawn = () => child;
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const activation = interceptor.activate(8080);
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.signalCode = 'SIGABRT';
+  child.emit('exit', null, 'SIGABRT');
+
+  await assert.rejects(activation, /Global Chrome exited during startup \(signal SIGABRT\)/);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.process, null);
+  assert.equal(child.listenerCount('spawn'), 0);
+  assert.equal(child.listenerCount('exit'), 0);
+  assert.equal(child.listenerCount('error'), 0);
 });

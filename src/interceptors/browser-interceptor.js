@@ -9,7 +9,7 @@ import {
   getRelatedProcessIdsAsync,
   removeManagedBrowserProfile
 } from './browser-lifecycle.js';
-import { execFileAsync } from './command-runner.js';
+import { execFileAsync, waitForSpawnStability } from './command-runner.js';
 
 export const BROWSER_BECAME_INACTIVE_ERROR_CODE = 'BROWSER_BECAME_INACTIVE';
 
@@ -33,6 +33,7 @@ export class BrowserInterceptor {
     this.statusMonitorGeneration = 0;
     this.lifecycleGeneration = 0;
     this.cleanupPending = false;
+    this.startupConfirmationMs = 500;
   }
 
   async isActivable() {
@@ -52,18 +53,9 @@ export class BrowserInterceptor {
   }
 
   _waitForSpawn(launchedProcess) {
-    return new Promise((resolve, reject) => {
-      const onSpawn = () => {
-        launchedProcess.removeListener('error', onError);
-        resolve();
-      };
-      const onError = (err) => {
-        launchedProcess.removeListener('spawn', onSpawn);
-        reject(err);
-      };
-
-      launchedProcess.once('spawn', onSpawn);
-      launchedProcess.once('error', onError);
+    return waitForSpawnStability(launchedProcess, {
+      graceMs: this.startupConfirmationMs,
+      label: this.name
     });
   }
 

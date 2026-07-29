@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 30 of the 361 documented bugs are not fully fixed.**
+**No: 29 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 331 |
-| Partially fixed | 9 |
+| Fixed | 332 |
+| Partially fixed | 8 |
 | Open | 21 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1462,8 +1462,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-162 — Medium — Browser interceptors report success before spawn is confirmed
 
-- Status: **Partially fixed**.
-- Resolution: Activation now waits for the child `spawn` event and catches errors such as ENOENT and EACCES. A corrupt or otherwise unusable browser that spawns successfully and exits immediately can still be returned as active/successful before its exit handler reverses the state.
+- Status: **Fixed**.
+- Resolution: isolated and Global browser activation now shares a post-spawn stability check. The activation remains pending for a 500 ms startup confirmation window, rejects both launch errors and any exit/signal during that window, removes temporary listeners deterministically, and lets the isolated-browser failure path remove or retain its managed profile according to the existing ownership-safe cleanup result.
+- Regression coverage: `test/bug-162-browser-spawn-confirmation.test.js` covers pending state before `spawn`, pending state after `spawn` but before stability confirmation, successful stable activation, pre-spawn errors, post-spawn exit/signal failures, managed-profile cleanup, and listener cleanup for both isolated and Global Chrome.
 - Evidence: `src/interceptors/browser-paths.js:41-47` verifies only that the path exists. Isolated browsers at `browser-interceptor.js:65-92` and Global Chrome at `existing-browser-interceptor.js:51-70` mark active and return immediately after `spawn()`, while launch failure is handled only by a later error listener.
 - Impact: API/UI confirms activation for a non-executable or corrupt browser binary and only silently changes state afterward.
 - Reproduction: leave a non-executable file at a detected browser path and activate its interceptor.

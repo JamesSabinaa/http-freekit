@@ -4,6 +4,7 @@ import { findBrowserPath } from './browser-paths.js';
 import { getProcessArgv0, getProcessSnapshotAsync } from './browser-lifecycle.js';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import { normalizeBrowserUrl } from './browser-url.js';
+import { waitForSpawnStability } from './command-runner.js';
 
 export class ExistingBrowserInterceptor {
   constructor(id, name, browserType) {
@@ -16,6 +17,7 @@ export class ExistingBrowserInterceptor {
     this.deactivatingProcess = null;
     this.gracefulExitTimeoutMs = 2000;
     this.forceExitTimeoutMs = 2000;
+    this.startupConfirmationMs = 500;
     this.onStatusChange = null;
   }
 
@@ -78,18 +80,9 @@ export class ExistingBrowserInterceptor {
   }
 
   _waitForSpawn(launchedProcess) {
-    return new Promise((resolve, reject) => {
-      const onSpawn = () => {
-        launchedProcess.removeListener('error', onError);
-        resolve();
-      };
-      const onError = (err) => {
-        launchedProcess.removeListener('spawn', onSpawn);
-        reject(err);
-      };
-
-      launchedProcess.once('spawn', onSpawn);
-      launchedProcess.once('error', onError);
+    return waitForSpawnStability(launchedProcess, {
+      graceMs: this.startupConfirmationMs,
+      label: this.name
     });
   }
 
