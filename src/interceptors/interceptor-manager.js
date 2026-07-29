@@ -87,10 +87,13 @@ export class InterceptorManager {
 
   _publishFailureEvents(events, activeBeforeOperation) {
     for (const event of events) {
+      const reportsFailureState = event?.reason === 'cleanup-failed'
+        || event?.reason === 'stop-failed'
+        || event?.launchFailed === true;
       const reportsSuccessfulTransition = event?.reason === 'active'
         || event?.reason === 'inactive'
         || Boolean(event?.active) !== activeBeforeOperation;
-      if (!reportsSuccessfulTransition) {
+      if (reportsFailureState || !reportsSuccessfulTransition) {
         this._publishStatus(event);
       }
     }

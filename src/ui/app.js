@@ -5657,7 +5657,13 @@
       } catch (err) {
         interceptorsInProgress.delete(id);
         filterInterceptors();
-        if (isCurrentInterceptorOperation(operation, false)) toast(`Error: ${err.message}`, 'error');
+        if (isCurrentInterceptorOperation(operation, false)) {
+          toast(`Error: ${err.message}`, 'error');
+          // A failed Start can conservatively retain cleanup ownership (for
+          // example when a browser process scan is unavailable). Refresh even
+          // if the status WebSocket is disconnected so the card exposes Stop.
+          setTimeout(loadInterceptors, 300);
+        }
       }
     }
 

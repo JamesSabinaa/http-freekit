@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { BrowserInterceptor } from '../src/interceptors/browser-interceptor.js';
 import { ExistingBrowserInterceptor } from '../src/interceptors/existing-browser-interceptor.js';
+import { InterceptorManager } from '../src/interceptors/interceptor-manager.js';
+
+const uiSource = readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
 
 function fakeChild(pid = undefined) {
   const child = new EventEmitter();
@@ -227,6 +231,63 @@ test('isolated browser preserves startup ownership when descendant inspection is
   assert.equal(child.listenerCount('exit'), 0);
   assert.equal(child.listenerCount('error'), 0);
   interceptor._clearLifecycleState();
+});
+
+test('manager publishes inspection-unknown startup ownership after activation rejects', async () => {
+  const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+  const child = fakeChild(7381);
+  interceptor._findBrowserPath = () => '/test/chrome-launcher';
+  interceptor._createManagedProfile = () => '/test/profile';
+  interceptor._spawn = () => child;
+  interceptor._cleanup = () => assert.fail('an unverified startup profile must not be removed');
+  interceptor._refreshTrackedProcessIds = async () => null;
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const manager = Object.create(InterceptorManager.prototype);
+  manager.interceptors = new Map();
+  manager.operationsInProgress = new Map();
+  manager.statusOperations = new Map();
+  manager.closing = false;
+  manager._initializationPromise = Promise.resolve(false);
+  manager._register(interceptor);
+  const events = [];
+  manager.onStatusChange = event => events.push(event);
+
+  const activation = manager.activate('chrome', 8080);
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.exitCode = 12;
+  child.emit('exit', 12, null);
+
+  await assert.rejects(activation, /Chrome exited during startup \(exit code 12\)/);
+  assert.deepEqual(events.map(event => ({
+    active: event.active,
+    reason: event.reason,
+    launchFailed: event.launchFailed,
+    processStateUnknown: event.processStateUnknown
+  })), [{
+    active: true,
+    reason: 'cleanup-failed',
+    launchFailed: true,
+    processStateUnknown: true
+  }]);
+  assert.equal(interceptor.active, true);
+  assert.equal(interceptor.cleanupPending, true);
+  interceptor._clearLifecycleState();
+});
+
+test('UI refreshes interceptor state after an activation error', () => {
+  const start = uiSource.indexOf('async function toggleInterceptor');
+  const end = uiSource.indexOf('// ============ MOCK RULES', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const toggleSource = uiSource.slice(start, end);
+
+  assert.match(
+    toggleSource,
+    /catch \(err\) \{[\s\S]*toast\(`Error: \$\{err\.message\}`, 'error'\);[\s\S]*setTimeout\(loadInterceptors, 300\);/
+  );
 });
 
 test('Global Chrome activation rejects an early post-spawn exit', async () => {
