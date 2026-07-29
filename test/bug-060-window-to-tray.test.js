@@ -58,15 +58,25 @@ test('minimize and ordinary close hide the live window without ending its sessio
   assert.equal(window.hideCalls, 2);
 });
 
-test('cleanup-approved Quit can close while tray restoration restores and focuses', () => {
+test('prepared updater or cleanup-approved Quit can close while tray restoration restores and focuses', () => {
   const window = new FakeWindow();
-  let allowClose = false;
-  installWindowToTray(window, { shouldAllowClose: () => allowClose });
+  let updatePrepared = false;
+  let cleanupComplete = false;
+  installWindowToTray(window, {
+    shouldAllowClose: () => updatePrepared || cleanupComplete
+  });
 
-  allowClose = true;
+  updatePrepared = true;
   const close = cancellableEvent();
   window.emit('close', close);
   assert.equal(close.prevented, false);
+  assert.equal(window.hideCalls, 0);
+
+  updatePrepared = false;
+  cleanupComplete = true;
+  const finalClose = cancellableEvent();
+  window.emit('close', finalClose);
+  assert.equal(finalClose.prevented, false);
   assert.equal(window.hideCalls, 0);
 
   window.visible = false;
@@ -84,9 +94,13 @@ test('cleanup-approved Quit can close while tray restoration restores and focuse
 test('Electron main and tray wire hide/restore to the cleanup-aware lifecycle', () => {
   const main = fs.readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const tray = fs.readFileSync(new URL('../electron/tray.cjs', import.meta.url), 'utf8');
+  const styles = fs.readFileSync(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
 
-  assert.match(main, /installWindowToTray\(mainWindow,\s*\{[\s\S]*shouldAllowClose:\s*\(\) => quitCleanupComplete/);
+  assert.match(main, /installWindowToTray\(mainWindow,\s*\{[\s\S]*shouldAllowClose:\s*\(\) => quitCleanupComplete \|\| updateInstallPrepared/);
   assert.match(main, /function showMainWindow\(\)[\s\S]*showTrayWindow\(mainWindow\)/);
   assert.match(tray, /showTrayWindow\(mainWindow\)/);
   assert.match(main, /app\.on\('before-quit'[\s\S]*runQuitCleanup\(/);
+  assert.match(main, /useWaylandWindowControlsOverlay[\s\S]*titleBarStyle:\s*'hidden'[\s\S]*titleBarOverlay:/);
+  assert.match(styles, /body::before[\s\S]*env\(titlebar-area-height, 0px\)[\s\S]*-webkit-app-region:\s*drag/);
+  assert.match(styles, /height:\s*calc\(100vh - env\(titlebar-area-height, 0px\)\)/);
 });

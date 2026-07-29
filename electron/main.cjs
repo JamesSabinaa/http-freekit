@@ -321,6 +321,11 @@ function createWindow({ showOnReady = true } = {}) {
     if (windowIcon.isEmpty()) windowIcon = undefined;
   } catch {}
 
+  const useWaylandWindowControlsOverlay = process.platform === 'linux' && (
+    Boolean(process.env.WAYLAND_DISPLAY) ||
+    String(process.env.XDG_SESSION_TYPE || '').toLowerCase() === 'wayland'
+  );
+
   mainWindow = new BrowserWindow({
     x: windowState.x,
     y: windowState.y,
@@ -331,6 +336,17 @@ function createWindow({ showOnReady = true } = {}) {
     show: false,
     title: 'HTTP FreeKit',
     icon: windowIcon,
+    ...(useWaylandWindowControlsOverlay ? {
+      // Wayland does not expose native minimized state/events. Electron's
+      // client-side Window Controls Overlay does emit the minimize event that
+      // the tray lifecycle intercepts.
+      titleBarStyle: 'hidden',
+      titleBarOverlay: {
+        color: '#1e2028',
+        symbolColor: '#ffffff',
+        height: 38
+      }
+    } : {}),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -350,14 +366,14 @@ function createWindow({ showOnReady = true } = {}) {
     // delayed Squirrel handoff and must release the pending install request.
     shouldAllowUnload: () => updateInstallQuitStarted && process.platform !== 'darwin',
     onUnloadCanceled: () => {
-      if (updateInstallQuitStarted) cancelUpdateInstall();
+      if (updateInstallPrepared) cancelUpdateInstall();
     }
   });
 
   installWindowToTray(mainWindow, {
     // The first quit request is held by before-quit while renderer/server
     // cleanup runs. Only the final app.quit() may actually close the window.
-    shouldAllowClose: () => quitCleanupComplete
+    shouldAllowClose: () => quitCleanupComplete || updateInstallPrepared
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {

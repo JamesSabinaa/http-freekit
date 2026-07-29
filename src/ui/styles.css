@@ -390,6 +390,21 @@
       line-height: 1.4;
     }
 
+    /* Electron exposes these dimensions only when the Wayland Window Controls
+       Overlay is active. The zero fallbacks leave browser/native-frame layouts
+       unchanged while reserving a draggable client-side title bar on Wayland. */
+    body::before {
+      content: '';
+      position: fixed;
+      top: env(titlebar-area-y, 0px);
+      left: env(titlebar-area-x, 0px);
+      width: env(titlebar-area-width, 0px);
+      height: env(titlebar-area-height, 0px);
+      background: var(--bg-container);
+      -webkit-app-region: drag;
+      z-index: 10001;
+    }
+
     /* ---- Skip to content (accessibility) ---- */
     .skip-to-content {
       position: absolute;
@@ -406,7 +421,7 @@
       transition: top 0.2s;
     }
     .skip-to-content:focus {
-      top: 0;
+      top: env(titlebar-area-height, 0px);
     }
 
     /* ---- Typography: large headings use Saira ---- */
@@ -456,7 +471,8 @@
       display: grid;
       grid-template-columns: 75px 1fr;
       grid-template-rows: 1fr auto;
-      height: 100vh;
+      height: calc(100vh - env(titlebar-area-height, 0px));
+      margin-top: env(titlebar-area-height, 0px);
     }
 
     /* ============================================================

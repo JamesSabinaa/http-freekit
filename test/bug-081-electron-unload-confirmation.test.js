@@ -274,7 +274,7 @@ test('main process wires native unload confirmation and updater preparation toge
   assert.match(mainSource, /installUnloadConfirmation\(mainWindow/);
   assert.doesNotMatch(mainSource, /shouldAllowPreparedUnload/);
   assert.match(mainSource, /shouldAllowUnload: \(\) => updateInstallQuitStarted && process\.platform !== 'darwin'/);
-  assert.match(mainSource, /if \(updateInstallQuitStarted\) cancelUpdateInstall\(\)/);
+  assert.match(mainSource, /if \(updateInstallPrepared\) cancelUpdateInstall\(\)/);
   assert.match(mainSource, /nativeAutoUpdater\.on\('before-quit-for-update'/);
   assert.match(mainSource, /updateInstallQuitStarted = updateInstallPrepared/);
   assert.match(mainSource, /prepareForInstall: async \(\) =>/);
