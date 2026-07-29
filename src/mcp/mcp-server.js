@@ -500,6 +500,7 @@ export class McpServerBridge {
     this.stdioTransport = null;
     this.stdioOutput = null;
     this.onStdioFatalError = null;
+    this._stdioStartOptions = null;
     this._stopPromise = null;
     this._pendingCleanupResources = [];
     this._cleanupFailureMessages = [];
@@ -1100,11 +1101,12 @@ export class McpServerBridge {
     if (this._stopPromise) {
       throw new Error('MCP bridge is stopping');
     }
-    const server = this.server;
-    if (!server) return;
     if (this.stdioTransport) {
       throw new Error('MCP stdio transport is already active');
     }
+    this._stdioStartOptions = { stdin, stdout, onFatalError };
+    const server = this.server;
+    if (!server) return;
     const transport = new StdioServerTransport(stdin, stdout);
     this.stdioTransport = transport;
     this.stdioOutput = stdout;
@@ -1120,6 +1122,10 @@ export class McpServerBridge {
       if (this._stopPromise || this.server !== server || this.stdioTransport !== transport) {
         throw new Error('MCP stdio startup was interrupted by shutdown');
       }
+      // StdioServerTransport.close() pauses stdin after removing its final data
+      // listener. A newly attached transport must explicitly resume the same
+      // stream or an off/on toggle remains connected but never receives input.
+      if (typeof stdin.resume === 'function') stdin.resume();
     } catch (error) {
       await this._cleanupFailedStdioStart(server, transport, stdin);
       if (this.stdioTransport === transport) this.stdioTransport = null;
@@ -1261,6 +1267,9 @@ export class McpServerBridge {
     if (enabled) {
       if (!this.server) this._createServer();
       this.enabled = true;
+      if (this._stdioStartOptions && !this.stdioTransport) {
+        await this.startStdio(this._stdioStartOptions);
+      }
       return;
     }
     await this.stop();
