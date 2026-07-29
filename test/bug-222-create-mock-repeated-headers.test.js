@@ -36,7 +36,7 @@ function buildRendererSubmission() {
     editMockRule: () => {},
     fetch: (_url, options) => {
       submission = JSON.parse(options.body);
-      return Promise.resolve({ json: async () => ({ rule: {} }) });
+      return Promise.resolve({ ok: true, json: async () => ({ rule: {} }) });
     },
     loadMockRules: async () => {},
     requests: [{
@@ -51,7 +51,12 @@ function buildRendererSubmission() {
     setTimeout: () => {},
     switchPanel: () => {},
     trafficActionRequest: requestId => context.requests.find(request => request.id === requestId),
-    toast: () => {}
+    toast: () => {},
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
+    mockResetInProgress: false,
+    mockCollectionMutationCount: 0,
+    _queueMockCollectionMutation: mutation => mutation()
   };
   vm.createContext(context);
   vm.runInContext(`

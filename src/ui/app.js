@@ -6868,6 +6868,11 @@
       const summary = breakpointRuleSummary(rule);
       const color = '#f1971f';
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
+      const serverMutationDisabled = mockSaveInProgress || mockRevertInProgress ||
+        mockResetInProgress || mockCollectionMutationCount > 0;
+      const serverMutationDisabledAttr = serverMutationDisabled
+        ? ' disabled data-mock-save-lock-disabled="true"'
+        : '';
       let html = '<div class="mock-rule-card mock-breakpoint-rule' + disabledClass + '" data-breakpoint-id="' + escapeHtmlAttribute(rule.id) + '">';
       html += '<div class="mock-rule-summary">';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
@@ -6875,12 +6880,12 @@
       html += '<span class="mock-rule-desc">' + summary.matchStr + '<span class="mock-arrow">\u2192</span><span style="color:#f1971f;">Breakpoint</span></span>';
       html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
       const toggleLabel = rule.enabled !== false ? 'Disable this breakpoint' : 'Enable this breakpoint';
-      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleBreakpointRuleEnabled(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="' + toggleLabel + '" aria-label="' + toggleLabel + '">';
+      html += '<button class="mock-toggle-btn' + (rule.enabled !== false ? ' mock-enabled' : '') + '" onclick="toggleBreakpointRuleEnabled(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="' + toggleLabel + '" aria-label="' + toggleLabel + '"' + serverMutationDisabledAttr + '>';
       html += rule.enabled !== false
         ? '<i class="ph ph-toggle-right" style="font-size:14px;"></i>'
         : '<i class="ph ph-toggle-left" style="font-size:14px;"></i>';
       html += '</button>';
-      html += '<button class="mock-toggle-btn" onclick="deleteBreakpointRule(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="Delete this breakpoint" aria-label="Delete this breakpoint" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn" onclick="deleteBreakpointRule(this.closest(\'.mock-breakpoint-rule\').dataset.breakpointId)" title="Delete this breakpoint" aria-label="Delete this breakpoint" style="color:#ce3939;"' + serverMutationDisabledAttr + '>';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div></div></div>';
@@ -6888,36 +6893,40 @@
     }
 
     async function toggleBreakpointRuleEnabled(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const rule = breakpointRules.find(r => r.id === ruleId);
       if (!rule) return;
       const enabled = rule.enabled === false;
-      rule.enabled = enabled;
-      renderMockRules();
-      try {
-        const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), {
-          method: 'PATCH',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ enabled })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.error) throw new Error(data.error || 'Failed to update breakpoint');
-        toast(enabled ? 'Breakpoint enabled' : 'Breakpoint disabled', 'success');
-        loadBreakpointRules();
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-        loadBreakpointRules();
-      }
+      return _queueMockCollectionMutation(async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), {
+            method: 'PATCH',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ enabled })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.error) throw new Error(data.error || 'Failed to update breakpoint');
+          toast(enabled ? 'Breakpoint enabled' : 'Breakpoint disabled', 'success');
+        } catch (err) {
+          toast('Error: ' + err.message, 'error');
+        }
+        await loadBreakpointRules();
+      });
     }
 
     async function deleteBreakpointRule(ruleId) {
-      try {
-        await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), { method: 'DELETE' });
-        breakpointRules = breakpointRules.filter(r => r.id !== ruleId);
-        renderMockRules();
-        toast('Breakpoint deleted', 'success');
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-      }
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+      return _queueMockCollectionMutation(async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.error) throw new Error(data.error || 'Failed to delete breakpoint');
+          toast('Breakpoint deleted', 'success');
+          await loadBreakpointRules();
+        } catch (err) {
+          toast('Error: ' + err.message, 'error');
+        }
+      });
     }
 
     function renderMockRuleDetail(nr) {
@@ -12229,6 +12238,7 @@
         toast('Cannot create a mock because this exchange contains an incomplete body capture.', 'error');
         return;
       }
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
       // Build rich matchers from the request
       const matchers = [
@@ -12269,32 +12279,37 @@
         body: req.responseBody || ''
       };
 
-      fetch(API_BASE + '/api/mock-rules', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          title: req.method + ' ' + req.host + (req.path ? req.path.split('?')[0] : ''),
-          matchers,
-          action,
-          _originalRequestBody: req.requestBody || '',
-          _originalResponseBody: req.responseBody || ''
-        })
-      }).then(r => r.json()).then(data => {
+      return _queueMockCollectionMutation(async () => {
+        const response = await fetch(API_BASE + '/api/mock-rules', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            title: req.method + ' ' + req.host + (req.path ? req.path.split('?')[0] : ''),
+            matchers,
+            action,
+            _originalRequestBody: req.requestBody || '',
+            _originalResponseBody: req.responseBody || ''
+          })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
+        await loadMockRules();
+        return data;
+      }).then(data => {
+        if (!data) return;
         toast('Mock rule created from exchange', 'success');
         // Switch to Mock tab
         const mockTab = document.querySelector('.sidebar-item[data-panel="mock"]');
         if (mockTab) switchPanel(mockTab, 'mock');
-        // Reload rules then expand the new one in edit mode
-        loadMockRules().then(() => {
-          if (data.rule?.id) {
-            editMockRule(data.rule.id);
-            setTimeout(() => {
-              const el = Array.from(document.querySelectorAll('[data-rule-id]'))
-                .find(candidate => candidate.dataset.ruleId === data.rule.id);
-              if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-            }, 100);
-          }
-        });
+        // The shared mutation lock has released, so the new rule can open safely.
+        if (data.rule?.id) {
+          editMockRule(data.rule.id);
+          setTimeout(() => {
+            const el = Array.from(document.querySelectorAll('[data-rule-id]'))
+              .find(candidate => candidate.dataset.ruleId === data.rule.id);
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }, 100);
+        }
       }).catch(err => toast('Error: ' + err.message, 'error'));
     }
 
@@ -12546,19 +12561,23 @@
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
-      fetch(API_BASE + '/api/breakpoints', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          matchers: [
-            { type: 'method', value: req.method },
-            { type: 'host', value: req.host }
-          ]
-        })
-      }).then(() => {
+      return _queueMockCollectionMutation(async () => {
+        const res = await fetch(API_BASE + '/api/breakpoints', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            matchers: [
+              { type: 'method', value: req.method },
+              { type: 'host', value: req.host }
+            ]
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || 'Failed to create breakpoint');
         toast('Breakpoint created for ' + req.method + ' ' + req.host, 'success');
-        loadBreakpointRules();
+        await loadBreakpointRules();
       }).catch(err => toast('Error: ' + err.message, 'error'));
     }
 

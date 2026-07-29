@@ -85,7 +85,12 @@ function createHarness() {
           : { success: true }
       };
     },
-    loadBreakpointRules: () => { state.breakpointReloads++; }
+    loadBreakpointRules: () => { state.breakpointReloads++; },
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
+    mockResetInProgress: false,
+    mockCollectionMutationCount: 0,
+    _queueMockCollectionMutation: mutation => mutation()
   };
   context.__invokeMenuAction = label => {
     const item = state.menuItems.find(candidate => candidate.label === label);
