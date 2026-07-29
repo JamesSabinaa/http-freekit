@@ -10108,9 +10108,10 @@
       setTimeout(async () => {
         const tabBeforeEditor = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
         await initSendBodyEditor(tabBeforeEditor?.body || '', tabBeforeEditor?.bodyFormat || 'text');
-        // Tab selection can change while Monaco is loading; always reconcile with current state.
-        const currentTab = sendTabs.find(tab => tab.id === activeSendTab) || sendTabs[0];
-        if (currentTab) loadSendTabState(currentTab);
+        // Reconcile presentation only. The live form and textarea may contain edits made
+        // while Monaco was loading, so reloading the stored tab here would discard them.
+        updateSendBodyLanguage();
+        updateSendBodyType();
       }, 100);
     }
 

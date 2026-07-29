@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 9 of the 361 documented bugs are not fully fixed.**
+**No: 8 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 352 |
-| Partially fixed | 3 |
+| Fixed | 353 |
+| Partially fixed | 2 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2363,8 +2363,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-141 — Medium — Send editor startup can mix one tab's form with another active ID
 
-- Status: **Partially fixed**.
-- Resolution: Active-tab changes during Monaco startup are reconciled, but startup still renders a usable form before awaiting Monaco and then reloads the stored tab. Edits made during a slow load are overwritten when initialization finishes.
+- Status: **Fixed**.
+- Resolution: Send-tab state is loaded synchronously before Monaco startup. When the editor finishes loading, startup now reconciles only the current body language and raw/form presentation instead of reloading persisted tab values, preserving form and textarea edits made during the await as well as tab changes.
+- Regression coverage: `test/bug-141-send-editor-startup.test.js` holds Monaco initialization pending, edits the live request form, and verifies completion does not reload stored state while still refreshing the current editor presentation.
 
 - Evidence: startup captures `initialTab`, awaits Monaco initialization, then unconditionally reloads the captured tab at `src/ui/app.js:7163-7171`. During the await, `switchSendTab()` or `addSendTab()` can change `activeSendTab` at `:7124-7138`, while body loading before the editor exists is ineffective at `:6613-6617`.
 - Impact: the active tab ID and visible form diverge; later save/send actions can write the first tab's request into the newly active tab.
