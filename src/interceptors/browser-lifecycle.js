@@ -110,7 +110,7 @@ function sanitizeProcessIdentity(value) {
   return sanitized;
 }
 
-function flattenedCommandHasExactArgument(commandLine, prefix, value) {
+function flattenedCommandHasUnambiguousPathArgument(commandLine, prefix, value) {
   const command = String(commandLine || '');
   const token = prefix + value;
   let index = command.indexOf(token);
@@ -118,7 +118,26 @@ function flattenedCommandHasExactArgument(commandLine, prefix, value) {
     const startsAtBoundary = index === 0 || /\s/.test(command[index - 1]);
     const suffix = command.slice(index + token.length);
     const endsAtBoundary = suffix === '' || /^\s+-/.test(suffix);
-    if (startsAtBoundary && endsAtBoundary) return true;
+    if (startsAtBoundary && endsAtBoundary) {
+      // ps flattens argv, so "<managed path> --suffix" could either be an
+      // exact path followed by a flag or one longer path argument. Browsers
+      // create/use their profile directory before we inspect them; reject the
+      // match if any longer interpretation exists on disk.
+      let ambiguous = false;
+      const possibleEnds = [suffix.length];
+      for (const match of suffix.matchAll(/\s+-/g)) {
+        if (match.index > 0) possibleEnds.push(match.index);
+      }
+      for (const end of possibleEnds) {
+        if (end === 0) continue;
+        const extendedPath = value + suffix.slice(0, end);
+        if (fs.existsSync(extendedPath)) {
+          ambiguous = true;
+          break;
+        }
+      }
+      if (!ambiguous) return true;
+    }
     index = command.indexOf(token, index + 1);
   }
   return false;
@@ -154,15 +173,15 @@ export function commandUsesBrowserProfile(
   const executableName = compare(pathApi.basename(snapshotCommandName || args[0]));
 
   // Darwin's flattened ps args also lose boundaries around argument values
-  // containing spaces. Managed launch arguments are followed by another flag,
-  // which provides an exact end boundary for the known profile path.
+  // containing spaces. Resolve the remaining boundary ambiguity against the
+  // profile directories that actually exist on disk.
   if (platform === 'darwin' && snapshotCommandName) {
-    if (platformNames.chromium.has(executableName) && flattenedCommandHasExactArgument(
+    if (platformNames.chromium.has(executableName) && flattenedCommandHasUnambiguousPathArgument(
       commandLine,
       '--user-data-dir=',
       expectedProfile
     )) return true;
-    if (platformNames.firefox.has(executableName) && flattenedCommandHasExactArgument(
+    if (platformNames.firefox.has(executableName) && flattenedCommandHasUnambiguousPathArgument(
       commandLine,
       '-profile ',
       expectedProfile

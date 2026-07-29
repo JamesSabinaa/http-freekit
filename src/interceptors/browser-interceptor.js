@@ -73,6 +73,20 @@ export class BrowserInterceptor {
     });
   }
 
+  _getLaunchInvocation(browserPath, args) {
+    if (this._platform() !== 'darwin') return { command: browserPath, args };
+    const appMarker = '.app/Contents/MacOS/';
+    const markerIndex = browserPath.indexOf(appMarker);
+    if (markerIndex === -1) {
+      throw new Error(`Could not resolve the ${this.name} macOS application bundle`);
+    }
+    const applicationBundle = browserPath.slice(0, markerIndex + '.app'.length);
+    return {
+      command: '/usr/bin/open',
+      args: ['-W', '-n', '-a', applicationBundle, '--args', ...args]
+    };
+  }
+
   canFocus() {
     return this._platform() === 'win32' || this._platform() === 'darwin';
   }
@@ -219,7 +233,8 @@ export class BrowserInterceptor {
         throw new Error(`${this.name} launch was superseded during preparation`);
       }
       console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
-      launchedProcess = this._spawn(browserPath, args, {
+      const launch = this._getLaunchInvocation(browserPath, args);
+      launchedProcess = this._spawn(launch.command, launch.args, {
         detached: false,
         stdio: 'ignore'
       });

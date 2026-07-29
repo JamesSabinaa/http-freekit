@@ -37,6 +37,31 @@ function managedCommandName(interceptor) {
   }[interceptor.browserType];
 }
 
+test('macOS isolated browsers launch through LaunchServices with their exact arguments', () => {
+  const interceptor = macBrowser();
+  const invocation = interceptor._getLaunchInvocation(
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    ['--user-data-dir=/tmp/http-freekit-chrome-focus', '--no-first-run']
+  );
+
+  assert.deepEqual(invocation, {
+    command: '/usr/bin/open',
+    args: [
+      '-W',
+      '-n',
+      '-a',
+      '/Applications/Google Chrome.app',
+      '--args',
+      '--user-data-dir=/tmp/http-freekit-chrome-focus',
+      '--no-first-run'
+    ]
+  });
+  assert.throws(
+    () => interceptor._getLaunchInvocation('/usr/local/bin/google-chrome', []),
+    /Could not resolve the Chrome macOS application bundle/
+  );
+});
+
 test('macOS Focus activates only a freshly revalidated managed-profile process', async () => {
   const interceptor = macBrowser();
   interceptor._getProcessSnapshot = async () => [

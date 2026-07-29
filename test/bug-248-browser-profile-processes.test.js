@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   collectRelatedProcessIds,
@@ -118,4 +121,43 @@ test('explicit browser roots and complete descendant trees do not depend on prof
   ];
 
   assert.deepEqual(sortedProcessIds(processes, profileDir, [rootPid]), [701, 702, 703]);
+});
+
+test('macOS flattened arguments reject an existing longer profile interpretation', t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-argv-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const profileDir = path.join(tempRoot, 'managed');
+  fs.mkdirSync(profileDir);
+  fs.mkdirSync(`${profileDir} --suffix`);
+  fs.mkdirSync(`${profileDir} -suffix`);
+
+  const processes = [
+    {
+      pid: 801,
+      ppid: 1,
+      commandName: 'Google Chrome',
+      command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome ` +
+        `--user-data-dir=${profileDir} --suffix`
+    },
+    {
+      pid: 802,
+      ppid: 1,
+      commandName: 'firefox',
+      command: `/Applications/Firefox.app/Contents/MacOS/firefox -profile ${profileDir} -suffix`
+    }
+  ];
+
+  assert.deepEqual(sortedProcessIds(processes, profileDir, [], 'darwin'), []);
+  assert.equal(commandUsesBrowserProfile(
+    processes[0].command,
+    profileDir,
+    'darwin',
+    processes[0].commandName
+  ), false);
+  assert.equal(commandUsesBrowserProfile(
+    processes[1].command,
+    profileDir,
+    'darwin',
+    processes[1].commandName
+  ), false);
 });
