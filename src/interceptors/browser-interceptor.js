@@ -66,6 +66,15 @@ export class BrowserInterceptor {
     return getProcessSnapshotAsync();
   }
 
+  _getRelatedProcessIds(profileDir, rootPids) {
+    return getRelatedProcessIdsAsync(
+      profileDir,
+      rootPids,
+      undefined,
+      this._platform()
+    );
+  }
+
   _waitForSpawn(launchedProcess) {
     return waitForSpawnStability(launchedProcess, {
       graceMs: this.startupConfirmationMs,
@@ -636,7 +645,7 @@ export class BrowserInterceptor {
 
     const rootPids = this._isSpawnedProcessRunning(lifecycle.process) ? [lifecycle.process.pid] : [];
     try {
-      const relatedIds = await getRelatedProcessIdsAsync(lifecycle.profileDir, rootPids);
+      const relatedIds = await this._getRelatedProcessIds(lifecycle.profileDir, rootPids);
       if (this._isLifecycleCurrent(lifecycle)) {
         this.trackedProcessIds = relatedIds;
         this.lastProcessInspectionAt = now;

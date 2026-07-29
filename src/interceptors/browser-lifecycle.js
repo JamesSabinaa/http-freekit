@@ -110,10 +110,15 @@ function sanitizeProcessIdentity(value) {
   return sanitized;
 }
 
-function flattenedCommandHasUnambiguousPathArgument(commandLine, prefix, value) {
+const PROFILE_MATCH_NONE = 'none';
+const PROFILE_MATCH_EXACT = 'exact';
+const PROFILE_MATCH_AMBIGUOUS = 'ambiguous';
+
+function flattenedPathArgumentMatch(commandLine, prefix, value) {
   const command = String(commandLine || '');
   const token = prefix + value;
   let index = command.indexOf(token);
+  let foundAmbiguousMatch = false;
   while (index !== -1) {
     const startsAtBoundary = index === 0 || /\s/.test(command[index - 1]);
     const suffix = command.slice(index + token.length);
@@ -136,25 +141,25 @@ function flattenedCommandHasUnambiguousPathArgument(commandLine, prefix, value) 
           break;
         }
       }
-      if (!ambiguous) return true;
+      if (!ambiguous) return PROFILE_MATCH_EXACT;
+      foundAmbiguousMatch = true;
     }
     index = command.indexOf(token, index + 1);
   }
-  return false;
+  return foundAmbiguousMatch ? PROFILE_MATCH_AMBIGUOUS : PROFILE_MATCH_NONE;
 }
 
 export function getProcessArgv0(commandLine, platform = process.platform) {
   return sanitizeProcessIdentity(splitProcessCommandLine(commandLine, platform)[0]);
 }
 
-/** Match only browser launch arguments that select this exact profile. */
-export function commandUsesBrowserProfile(
+function browserProfileCommandMatch(
   commandLine,
   profileDir,
   platform = process.platform,
   commandName = null
 ) {
-  if (typeof profileDir !== 'string' || !profileDir) return false;
+  if (typeof profileDir !== 'string' || !profileDir) return PROFILE_MATCH_NONE;
 
   const platformNames = BROWSER_PROCESS_NAMES[platform] || BROWSER_PROCESS_NAMES.linux;
   const compare = platform === 'win32'
@@ -162,7 +167,7 @@ export function commandUsesBrowserProfile(
     : value => String(value);
   const expectedProfile = compare(profileDir);
   const args = splitProcessCommandLine(commandLine, platform);
-  if (args.length === 0) return false;
+  if (args.length === 0) return PROFILE_MATCH_NONE;
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   // macOS ps flattens argv without restoring quotes, so an application path
   // such as "Google Chrome.app/.../Google Chrome" cannot supply argv[0]
@@ -176,31 +181,39 @@ export function commandUsesBrowserProfile(
   // containing spaces. Resolve the remaining boundary ambiguity against the
   // profile directories that actually exist on disk.
   if (platform === 'darwin' && snapshotCommandName) {
-    if (platformNames.chromium.has(executableName) && flattenedCommandHasUnambiguousPathArgument(
-      commandLine,
-      '--user-data-dir=',
-      expectedProfile
-    )) return true;
-    if (platformNames.firefox.has(executableName) && flattenedCommandHasUnambiguousPathArgument(
-      commandLine,
-      '-profile ',
-      expectedProfile
-    )) return true;
+    if (platformNames.chromium.has(executableName)) {
+      return flattenedPathArgumentMatch(commandLine, '--user-data-dir=', expectedProfile);
+    }
+    if (platformNames.firefox.has(executableName)) {
+      return flattenedPathArgumentMatch(commandLine, '-profile ', expectedProfile);
+    }
+    return PROFILE_MATCH_NONE;
   }
 
   for (let index = 0; index < args.length; index++) {
     const argument = compare(args[index]);
     if (platformNames.chromium.has(executableName) && argument.startsWith('--user-data-dir=')) {
-      if (argument.slice('--user-data-dir='.length) === expectedProfile) return true;
+      if (argument.slice('--user-data-dir='.length) === expectedProfile) return PROFILE_MATCH_EXACT;
       continue;
     }
     if (platformNames.firefox.has(executableName) && argument === '-profile' && index + 1 < args.length) {
-      if (compare(args[index + 1]) === expectedProfile) return true;
+      if (compare(args[index + 1]) === expectedProfile) return PROFILE_MATCH_EXACT;
       index += 1;
     }
   }
 
-  return false;
+  return PROFILE_MATCH_NONE;
+}
+
+/** Match only browser launch arguments that unambiguously select this exact profile. */
+export function commandUsesBrowserProfile(
+  commandLine,
+  profileDir,
+  platform = process.platform,
+  commandName = null
+) {
+  return browserProfileCommandMatch(commandLine, profileDir, platform, commandName) ===
+    PROFILE_MATCH_EXACT;
 }
 
 /** Verify that a recursive-delete target is one of our direct temp children. */
@@ -433,21 +446,30 @@ export async function getProcessSnapshotAsync() {
  * Find every process using a profile and all descendants of those processes.
  * Descendant tracking catches Chromium subprocesses that omit --user-data-dir.
  */
-export function collectRelatedProcessIds(processes, profileDir, rootPids = [], platform = process.platform) {
+export function inspectRelatedBrowserProcesses(
+  processes,
+  profileDir,
+  rootPids = [],
+  platform = process.platform
+) {
   const rows = Array.isArray(processes) ? processes : [];
   const explicitRoots = new Set(
     rootPids.filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
   );
   const related = new Set(explicitRoots);
+  const ambiguous = new Set();
 
   for (const row of rows) {
-    if (explicitRoots.has(row.pid) || commandUsesBrowserProfile(
+    const profileMatch = browserProfileCommandMatch(
       row.command,
       profileDir,
       platform,
       row.commandName
-    )) {
+    );
+    if (explicitRoots.has(row.pid) || profileMatch === PROFILE_MATCH_EXACT) {
       if (row.pid > 0 && row.pid !== process.pid) related.add(row.pid);
+    } else if (profileMatch === PROFILE_MATCH_AMBIGUOUS && row.pid > 0 && row.pid !== process.pid) {
+      ambiguous.add(row.pid);
     }
   }
 
@@ -462,15 +484,49 @@ export function collectRelatedProcessIds(processes, profileDir, rootPids = [], p
     }
   }
 
-  return related;
+  return { processIds: related, ambiguousProcessIds: ambiguous };
 }
 
-export function getRelatedProcessIds(profileDir, rootPids = [], snapshot) {
-  return collectRelatedProcessIds(snapshot || getProcessSnapshot(), profileDir, rootPids);
+export function collectRelatedProcessIds(processes, profileDir, rootPids = [], platform = process.platform) {
+  return inspectRelatedBrowserProcesses(processes, profileDir, rootPids, platform).processIds;
 }
 
-export async function getRelatedProcessIdsAsync(profileDir, rootPids = [], snapshot) {
-  return collectRelatedProcessIds(snapshot || await getProcessSnapshotAsync(), profileDir, rootPids);
+function requireUnambiguousRelatedProcessIds(processes, profileDir, rootPids, platform) {
+  const inspection = inspectRelatedBrowserProcesses(processes, profileDir, rootPids, platform);
+  if (inspection.ambiguousProcessIds.size > 0) {
+    const error = new Error('Browser profile process arguments are ambiguous');
+    error.code = 'AMBIGUOUS_BROWSER_PROFILE_PROCESS';
+    throw error;
+  }
+  return inspection.processIds;
+}
+
+export function getRelatedProcessIds(
+  profileDir,
+  rootPids = [],
+  snapshot,
+  platform = process.platform
+) {
+  return requireUnambiguousRelatedProcessIds(
+    snapshot || getProcessSnapshot(),
+    profileDir,
+    rootPids,
+    platform
+  );
+}
+
+export async function getRelatedProcessIdsAsync(
+  profileDir,
+  rootPids = [],
+  snapshot,
+  platform = process.platform
+) {
+  return requireUnambiguousRelatedProcessIds(
+    snapshot || await getProcessSnapshotAsync(),
+    profileDir,
+    rootPids,
+    platform
+  );
 }
 
 /** Remove one verified managed profile, with built-in retries for Windows locks. */
@@ -599,8 +655,10 @@ export function cleanupStaleBrowserProfiles(options = {}) {
       continue;
     }
 
-    const relatedPids = collectRelatedProcessIds(snapshot, profileDir);
-    if (isProfileOwnerActive(ownership.owner, snapshot) || relatedPids.size > 0) {
+    const processInspection = inspectRelatedBrowserProcesses(snapshot, profileDir);
+    if (isProfileOwnerActive(ownership.owner, snapshot) ||
+        processInspection.processIds.size > 0 ||
+        processInspection.ambiguousProcessIds.size > 0) {
       result.skippedActive.push(profileDir);
       continue;
     }
@@ -621,8 +679,13 @@ export function cleanupStaleBrowserProfiles(options = {}) {
           };
         }
 
-        const refreshedRelatedPids = collectRelatedProcessIds(refreshedSnapshot, revalidatedPath);
-        if (isProfileOwnerActive(owner, refreshedSnapshot) || refreshedRelatedPids.size > 0) {
+        const refreshedInspection = inspectRelatedBrowserProcesses(
+          refreshedSnapshot,
+          revalidatedPath
+        );
+        if (isProfileOwnerActive(owner, refreshedSnapshot) ||
+            refreshedInspection.processIds.size > 0 ||
+            refreshedInspection.ambiguousProcessIds.size > 0) {
           return {
             safeToRemove: false,
             active: true,

@@ -5,7 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   collectRelatedProcessIds,
-  commandUsesBrowserProfile
+  commandUsesBrowserProfile,
+  getRelatedProcessIds,
+  inspectRelatedBrowserProcesses
 } from '../src/interceptors/browser-lifecycle.js';
 
 function sortedProcessIds(processes, profileDir, rootPids = [], platform = 'linux') {
@@ -148,6 +150,13 @@ test('macOS flattened arguments reject an existing longer profile interpretation
   ];
 
   assert.deepEqual(sortedProcessIds(processes, profileDir, [], 'darwin'), []);
+  const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'darwin');
+  assert.deepEqual([...inspection.processIds], []);
+  assert.deepEqual([...inspection.ambiguousProcessIds], [801, 802]);
+  assert.throws(
+    () => getRelatedProcessIds(profileDir, [], processes, 'darwin'),
+    error => error?.code === 'AMBIGUOUS_BROWSER_PROFILE_PROCESS'
+  );
   assert.equal(commandUsesBrowserProfile(
     processes[0].command,
     profileDir,

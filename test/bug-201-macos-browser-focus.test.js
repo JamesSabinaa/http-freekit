@@ -118,6 +118,29 @@ test('macOS Focus fails closed when managed-profile process inspection is unavai
   assert.equal(interceptor.lifecycleInspectionErrorLogged, true);
 });
 
+test('macOS Stop preserves ownership when profile process arguments are ambiguous', async () => {
+  const interceptor = macBrowser();
+  const profileDir = interceptor.profileDir;
+  const signalled = [];
+  interceptor._getRelatedProcessIds = async () => {
+    const error = new Error('Browser profile process arguments are ambiguous');
+    error.code = 'AMBIGUOUS_BROWSER_PROFILE_PROCESS';
+    throw error;
+  };
+  interceptor._signalProcesses = processIds => signalled.push([...processIds]);
+  interceptor._cleanup = () => assert.fail('an ambiguous live profile must not be removed');
+
+  await assert.rejects(
+    interceptor.deactivate(),
+    /Could not fully stop Chrome/
+  );
+
+  assert.deepEqual(signalled, [[8201]]);
+  assert.equal(interceptor.profileDir, profileDir);
+  assert.equal(interceptor.cleanupPending, true);
+  assert.equal(interceptor.active, true);
+});
+
 test('macOS Focus rejects an empty managed-profile process set', async () => {
   const interceptor = macBrowser();
   interceptor._getProcessSnapshot = async () => [];

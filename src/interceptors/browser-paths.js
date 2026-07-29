@@ -78,6 +78,7 @@ export function findBrowserPath(browser, options = {}) {
   const platform = options.platform || process.platform;
   const env = options.env || process.env;
   const existsSync = options.existsSync || fs.existsSync;
+  const realpathSync = options.realpathSync || fs.realpathSync;
   const homeDir = options.homeDir || os.homedir();
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const delimiter = platform === 'win32' ? ';' : ':';
@@ -98,7 +99,15 @@ export function findBrowserPath(browser, options = {}) {
   }
 
   for (const p of new Set(candidates)) {
-    if (existsSync(p)) return p;
+    if (!existsSync(p)) continue;
+    if (platform !== 'darwin' || p.includes('.app/Contents/MacOS/')) return p;
+    try {
+      const resolved = realpathSync(p);
+      if (resolved.includes('.app/Contents/MacOS/')) return resolved;
+    } catch {
+      // A PATH entry that cannot be resolved to an application bundle cannot
+      // be launched safely through LaunchServices.
+    }
   }
   return null;
 }
