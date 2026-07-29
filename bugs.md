@@ -4,18 +4,18 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 ## Current status
 
-Status review updated on 28 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
+Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 33 of the 361 documented bugs are not fully fixed.**
+**No: 32 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 328 |
+| Fixed | 329 |
 | Partially fixed | 10 |
-| Open | 23 |
+| Open | 22 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -3054,7 +3054,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-069 — High — Imported and Send traffic exists only in one browser tab
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: HAR selections are validated in the renderer and submitted to the server traffic-import route. The server broadcasts the retained, collision-remapped records to every connected UI, and its log remains the source for reloads, HAR/API search, and MCP consumers. Send now traverses the running proxy with an authenticated one-use internal correlation token that is stripped before matching and forwarding; proxy/upstream/mock behavior applies, the emitted row is labeled `Send` with its route source retained, and the API returns that authoritative traffic ID instead of creating a renderer-only duplicate.
 
 - Evidence: the HAR picker at `src/ui/app.js:7459-7493` parses entries and calls local `addRequest()` instead of the existing `/api/traffic/import-har` route. Send similarly creates a synthetic object and calls only `addRequest()` at `:7291-7330`; `src/api/api-server.js:1125-1134,1174-1208` sends directly with Node HTTP/HTTPS instead of using the proxy or adding to `trafficLog`.
 - Impact: these requests appear in the table but are absent from server HAR export, API search/stats, MCP tools, and every other UI client; they also vanish on reload. Send additionally bypasses configured upstream routing and all matching mock rules.

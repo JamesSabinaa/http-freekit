@@ -69,6 +69,7 @@ const HOP_BY_HOP_HEADER_NAMES = new Set([
   'http2-settings'
 ]);
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
+const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 
 function getHeaderValues(headers, name) {
   const normalizedName = String(name || '').toLowerCase();
@@ -247,6 +248,8 @@ export class ProxyServer {
     this._activeWebhookRequests = new Set();
     this._pendingWebhookFinalizations = new Set();
     this._pendingWebhookPreparations = new Set();
+    this._internalSendTokens = new Map();
+    this._internalSendRequestIds = new Map();
     this._lifecycleGeneration = 0;
     this._stopping = false;
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
@@ -298,6 +301,65 @@ export class ProxyServer {
     this.maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 32 * 1024 * 1024;
     this.maxDecompressedBodyBytes = options.maxDecompressedBodyBytes ?? 32 * 1024 * 1024;
     this.maxWsCapturedMessageBytes = options.maxWsCapturedMessageBytes ?? DEFAULT_MAX_WS_MESSAGE_PAYLOAD;
+  }
+
+  _registerInternalSendRequest(ttlMs = 120000) {
+    const token = `${uuidv4()}-${uuidv4()}`;
+    const requestId = uuidv4();
+    const timeout = Number.isSafeInteger(ttlMs) && ttlMs > 0 ? ttlMs : 120000;
+    const context = { token, requestId, timer: null };
+    context.timer = setTimeout(() => this._finishInternalSendRequest(requestId), timeout);
+    context.timer.unref?.();
+    this._internalSendTokens.set(token, context);
+    this._internalSendRequestIds.set(requestId, context);
+    return { headerName: INTERNAL_SEND_HEADER_NAME, token, requestId };
+  }
+
+  _cancelInternalSendRequest(token) {
+    const context = this._internalSendTokens.get(token);
+    if (!context) return false;
+    this._finishInternalSendRequest(context.requestId);
+    return true;
+  }
+
+  _finishInternalSendRequest(requestId) {
+    const context = this._internalSendRequestIds.get(requestId);
+    if (!context) return false;
+    clearTimeout(context.timer);
+    this._internalSendRequestIds.delete(requestId);
+    this._internalSendTokens.delete(context.token);
+    return true;
+  }
+
+  _consumeInternalSendRequest(request) {
+    let token = null;
+    for (const [name, value] of Object.entries(request.headers || {})) {
+      if (name.toLowerCase() !== INTERNAL_SEND_HEADER_NAME) continue;
+      token = Array.isArray(value) && value.length === 1 ? value[0] : value;
+      delete request.headers[name];
+    }
+    if (Array.isArray(request.rawHeaders)) {
+      for (let index = request.rawHeaders.length - 2; index >= 0; index -= 2) {
+        if (String(request.rawHeaders[index]).toLowerCase() === INTERNAL_SEND_HEADER_NAME) {
+          request.rawHeaders.splice(index, 2);
+        }
+      }
+    }
+    const context = typeof token === 'string' ? this._internalSendTokens.get(token) : null;
+    if (!context) return null;
+    this._internalSendTokens.delete(token);
+    return context;
+  }
+
+  _tagInternalSendTraffic(data) {
+    if (!this._internalSendRequestIds.has(data?.id)) return false;
+    if (data.source !== 'Send') {
+      data.routeSource = ['mock', 'breakpoint'].includes(data.source)
+        ? data.source
+        : 'proxy';
+      data.source = 'Send';
+    }
+    return true;
   }
 
   async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
@@ -3133,6 +3195,9 @@ export class ProxyServer {
       await Promise.all([...this._pendingWebhookFinalizations]);
     }
     this._pendingTrafficLogDecisions.clear();
+    for (const context of this._internalSendRequestIds.values()) clearTimeout(context.timer);
+    this._internalSendTokens.clear();
+    this._internalSendRequestIds.clear();
     if (this.server) console.log('[Proxy] Server stopped');
   }
 
@@ -3751,7 +3816,8 @@ export class ProxyServer {
   // Handle plain HTTP requests (non-CONNECT)
   _handleHttpRequest(clientReq, clientRes) {
     const startTime = Date.now();
-    const requestId = uuidv4();
+    const internalSend = this._consumeInternalSendRequest(clientReq);
+    const requestId = internalSend?.requestId || uuidv4();
     const trafficLifecycleId = uuidv4();
     this.requestCount++;
 
@@ -8948,9 +9014,13 @@ export class ProxyServer {
     delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
     this._markBreakpointTrafficState(data);
+    const internalSend = this._tagInternalSendTraffic(data);
     // Auto-detect source from User-Agent if source is 'proxy' (generic)
-    if (data.source === 'proxy' && data.requestHeaders) {
+    if (!internalSend && data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
+    }
+    if (internalSend && data._pending !== true && lifecycleComplete) {
+      this._finishInternalSendRequest(data.id);
     }
     const pendingSelection = data._pending !== true && data.id !== undefined
       ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
@@ -9039,10 +9109,12 @@ export class ProxyServer {
     data._update = true;
     this._normalizeCapturedBodies(data);
     this._markBreakpointTrafficState(data);
+    const internalSend = this._tagInternalSendTraffic(data);
     // Auto-detect source
-    if (data.source === 'proxy' && data.requestHeaders) {
+    if (!internalSend && data.source === 'proxy' && data.requestHeaders) {
       data.source = this._detectSource(data.requestHeaders);
     }
+    if (internalSend && lifecycleComplete) this._finishInternalSendRequest(data.id);
     const pendingSelection = data.id !== undefined
       ? this._selectPendingTrafficLogDecision(data, trafficLifecycleId)
       : null;

@@ -51,10 +51,22 @@ function createRendererHarness() {
   const added = [];
   const inputs = [];
   const toasts = [];
+  const fetches = [];
   let nextId = 0;
   const context = {
     URL,
+    API_BASE: '',
     addRequest: request => added.push(request),
+    fetch: async (url, options) => {
+      fetches.push({ url, options });
+      const requests = JSON.parse(options.body).requests;
+      added.push(...requests);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, imported: requests.length })
+      };
+    },
     crypto: { randomUUID: () => `renderer-har-${++nextId}` },
     document: {
       createElement: () => {
@@ -78,6 +90,7 @@ function createRendererHarness() {
   return {
     added,
     context,
+    fetches,
     toasts,
     async importDocument(documentOrText) {
       context.importHarForTest();
@@ -204,10 +217,9 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   await harness.importDocument(har([rich, unknownSizes]));
 
   assert.equal(harness.added.length, 2);
-  assert.deepEqual(harness.toasts, [{
-    message: 'Imported 2 requests from HAR',
-    type: 'success'
-  }]);
+  assert.deepEqual(harness.toasts, []);
+  assert.equal(harness.fetches.length, 1);
+  assert.equal(harness.fetches[0].url, '/api/traffic/import');
   const imported = harness.added[0];
   assert.equal(imported.id, 'renderer-har-1');
   assert.equal(imported.protocol, 'h2');

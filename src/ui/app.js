@@ -454,7 +454,7 @@
           break;
         }
         case 'request':
-          if (!isPaused) {
+          if (!isPaused || msg.data?.source === 'Send') {
             addRequest(msg.data);
           }
           break;
@@ -492,6 +492,7 @@
           restoreTrafficDump(msg.requests);
           break;
         case 'traffic-imported':
+          addRequests(msg.requests);
           toast(`Imported ${msg.count} requests`, 'success');
           break;
         case 'breakpoint-hit':
@@ -542,6 +543,26 @@
     }
 
     // ============ TRAFFIC ============
+    function addRequests(incomingRequests) {
+      if (!Array.isArray(incomingRequests) || incomingRequests.length === 0) return;
+      for (const req of incomingRequests) {
+        if (!req || typeof req !== 'object') continue;
+        requestCounter++;
+        req._index = requestCounter;
+        requests.push(req);
+      }
+
+      // Child frames are useful only while their parent row remains inspectable.
+      requests = trimTrafficRows(requests);
+      if (
+        selectedRequestId !== null &&
+        !getSelectedTrafficRequest()
+      ) {
+        closeDetail(false);
+      }
+      applyFilter();
+    }
+
     function addRequest(req) {
       requestCounter++;
       req._index = requestCounter;
@@ -9072,11 +9093,13 @@
         try { responsePath = new URL(tab.response.url || tab.url || '').pathname; } catch {}
         const responseContext = {
           request: {
+            id: tab.response.trafficId,
             method: tab.response.method || tab.method || 'GET',
             url: tab.response.url || tab.url || '',
             path: responsePath,
             responseHeaders: tab.response.responseHeaders || {},
-            responseBodyEncoding: tab.response.bodyEncoding || 'utf8'
+            responseBodyEncoding: tab.response.bodyEncoding || 'utf8',
+            source: 'Send'
           },
           section: 'response'
         };
@@ -9088,9 +9111,15 @@
           tab.response.mode,
           responseContext
         );
-        // Hide "View in traffic" when restoring tab (no synthetic entry linkage)
         const viewLink = document.getElementById('sendViewInTraffic');
-        if (viewLink) viewLink.style.display = 'none';
+        if (viewLink) {
+          viewLink.style.display = tab.response.trafficId ? 'inline-flex' : 'none';
+          viewLink.onclick = tab.response.trafficId ? () => {
+            const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
+            if (trafficTab) switchPanel(trafficTab, 'traffic');
+            selectRequest(tab.response.trafficId, true);
+          } : null;
+        }
       } else {
         if (resEl) resEl.style.display = 'none';
         if (emptyEl) emptyEl.style.display = 'flex';
@@ -9286,9 +9315,10 @@
         document.getElementById('sendResDuration').textContent = duration;
         document.getElementById('sendResHeaders').innerHTML = headersHtml;
 
-        // Add to traffic log as synthetic entry
-        const syntheticReq = {
-          id: crypto.randomUUID ? crypto.randomUUID() : 'send-' + Date.now(),
+        // The proxy owns the authoritative traffic row; this object only gives
+        // the response body viewer request context.
+        const responseRequest = {
+          id: data.trafficId,
           protocol: url.startsWith('https') ? 'https' : 'http',
           method, url,
           host: new URL(url).hostname,
@@ -9304,21 +9334,19 @@
           responseBodySize: Number.isFinite(data.bodySize) ? data.bodySize : (data.body ? data.body.length : 0),
           duration: data.duration,
           timestamp: Date.now(),
-          source: 'Send',
-          _rendererOnly: true
+          source: 'Send'
         };
-        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, { request: syntheticReq, section: 'response' });
-        addRequest(syntheticReq);
+        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, { request: responseRequest, section: 'response' });
 
         // Show "View in traffic" link
         const viewLink = document.getElementById('sendViewInTraffic');
         if (viewLink) {
-          viewLink.style.display = 'inline-flex';
-          viewLink.onclick = () => {
+          viewLink.style.display = data.trafficId ? 'inline-flex' : 'none';
+          viewLink.onclick = data.trafficId ? () => {
             const trafficTab = document.querySelector('.sidebar-item[data-panel="traffic"]');
             if (trafficTab) switchPanel(trafficTab, 'traffic');
-            selectRequest(syntheticReq.id, true, syntheticReq.trafficLifecycleId);
-          };
+            selectRequest(data.trafficId, true);
+          } : null;
         }
 
         // Save response to current tab
@@ -9336,7 +9364,8 @@
             mode: defaultMode,
             duration,
             url,
-            method
+            method,
+            trafficId: data.trafficId
           };
         }
         saveSendTabState();
@@ -9803,8 +9832,7 @@
         } : {}),
         duration,
         timestamp,
-        source: 'import',
-        _rendererOnly: true
+        source: 'import'
       };
     }
 
@@ -9826,9 +9854,15 @@
           const text = await file.text();
           const har = JSON.parse(text);
           const imported = normalizeHarEntries(har);
-
-          imported.forEach(r => addRequest(r));
-          toast('Imported ' + imported.length + ' requests from HAR', 'success');
+          const response = await fetch(API_BASE + '/api/traffic/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requests: imported })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || result.success !== true) {
+            throw new Error(result.error || `Traffic import returned HTTP ${response.status}`);
+          }
         } catch (err) {
           toast('Failed to import HAR: ' + err.message, 'error');
         }

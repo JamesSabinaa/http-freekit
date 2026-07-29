@@ -16,6 +16,7 @@ import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
+const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 // A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
 export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
@@ -1271,8 +1272,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (validationError) {
           return res.status(400).json({ error: `Invalid import format: ${validationError}` });
         }
-        this._appendImportedTraffic(requests);
-        this._broadcast({ type: 'traffic-imported', count: requests.length });
+        const retainedRequests = this._appendImportedTraffic(requests);
+        this._broadcast({
+          type: 'traffic-imported',
+          count: requests.length,
+          requests: retainedRequests
+        });
         res.json({ success: true, imported: requests.length });
       } catch (err) {
         res.status(400).json({ error: err.message });
@@ -1369,8 +1374,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (validationError) {
           return res.status(400).json({ error: `Invalid HAR format: ${validationError}` });
         }
-        this._appendImportedTraffic(imported);
-        this._broadcast({ type: 'traffic-imported', count: imported.length });
+        const retainedRequests = this._appendImportedTraffic(imported);
+        this._broadcast({
+          type: 'traffic-imported',
+          count: imported.length,
+          requests: retainedRequests
+        });
         res.json({ success: true, imported: imported.length });
       } catch (err) {
         res.status(400).json({ error: 'Failed to parse HAR: ' + err.message });
@@ -2379,6 +2388,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this.trafficLog.length = 0;
     for (const request of retainedExisting) this.trafficLog.push(request);
     for (const request of assignedIncoming) this.trafficLog.push(request);
+    return assignedIncoming;
   }
 
   _removeRuleById(ruleId, rules = this.proxy.mockRules) {
@@ -2399,6 +2409,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         throw new Error(`Unsupported Send URL protocol: ${parsedUrl.protocol}`);
       }
       const outboundHeaders = { ...headers };
+      for (const name of Object.keys(outboundHeaders)) {
+        if (name.toLowerCase() === INTERNAL_SEND_HEADER_NAME) delete outboundHeaders[name];
+      }
       const hasExplicitAuthorization = Object.keys(outboundHeaders)
         .some(name => name.toLowerCase() === 'authorization');
       if (!hasExplicitAuthorization && (parsedUrl.username !== '' || parsedUrl.password !== '')) {
@@ -2415,22 +2428,60 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       parsedUrl.username = '';
       parsedUrl.password = '';
+      parsedUrl.hash = '';
       const isHttps = parsedUrl.protocol === 'https:';
-      const lib = isHttps ? https : http;
-
-      const options = {
-        hostname: parsedUrl.hostname,
-        port: parsedUrl.port || (isHttps ? 443 : 80),
-        path: parsedUrl.pathname + parsedUrl.search,
-        method,
-        headers: outboundHeaders,
-        ...(isHttps ? this.proxy._getUpstreamTlsOptions(parsedUrl.hostname) : {})
-      };
-
-      const startTime = Date.now();
       const connectTimeoutMs = this.sendConnectTimeoutMs ?? 10000;
       const idleTimeoutMs = this.sendIdleTimeoutMs ?? 30000;
       const totalTimeoutMs = this.sendTotalTimeoutMs ?? 60000;
+      const proxyAddress = this.proxy?.server?.listening
+        ? this.proxy.server.address()
+        : null;
+      const proxyPort = proxyAddress && typeof proxyAddress === 'object'
+        ? proxyAddress.port
+        : this.proxy?.port;
+      const canUseProxy = Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort <= 65535
+        && typeof this.proxy?._registerInternalSendRequest === 'function'
+        && typeof this.proxy?._cancelInternalSendRequest === 'function';
+      const sendContextTtl = Number.isSafeInteger(totalTimeoutMs) && totalTimeoutMs > 0
+        ? totalTimeoutMs + 5000
+        : 120000;
+      const sendContext = canUseProxy
+        ? this.proxy._registerInternalSendRequest(sendContextTtl)
+        : null;
+      const proxyBindHost = String(this.proxy?.bindHost || '127.0.0.1');
+      const proxyHostname = proxyBindHost === '0.0.0.0'
+        ? '127.0.0.1'
+        : (proxyBindHost === '::' || proxyBindHost === '[::]')
+          ? '::1'
+          : proxyBindHost.replace(/^\[|\]$/g, '');
+      const transportIsHttps = isHttps && !sendContext;
+      const lib = transportIsHttps ? https : http;
+
+      if (sendContext) {
+        const hasExplicitHost = Object.keys(outboundHeaders)
+          .some(name => name.toLowerCase() === 'host');
+        if (!hasExplicitHost) outboundHeaders.Host = parsedUrl.host;
+        outboundHeaders[sendContext.headerName] = sendContext.token;
+      }
+
+      const options = sendContext
+        ? {
+            hostname: proxyHostname,
+            port: proxyPort,
+            path: parsedUrl.href,
+            method,
+            headers: outboundHeaders
+          }
+        : {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method,
+            headers: outboundHeaders,
+            ...(isHttps ? this.proxy._getUpstreamTlsOptions(parsedUrl.hostname) : {})
+          };
+
+      const startTime = Date.now();
       let settled = false;
       let connectTimer;
       let totalTimer;
@@ -2440,6 +2491,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         clearTimeout(totalTimer);
         req?.setTimeout(0);
         signal?.removeEventListener('abort', abortRequest);
+        if (sendContext) this.proxy._cancelInternalSendRequest(sendContext.token);
       };
       const fail = (err) => {
         if (settled) return;
@@ -2495,7 +2547,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
               : responseBody.toString('utf8'),
             bodyEncoding,
             bodySize: responseBody.length,
-            duration: Date.now() - startTime
+            duration: Date.now() - startTime,
+            ...(sendContext ? { trafficId: sendContext.requestId } : {})
           });
         });
       });
@@ -2507,8 +2560,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         fail(new Error(`Send request timeout after ${totalTimeoutMs}ms`));
       }, totalTimeoutMs);
       req.once('socket', socket => {
-        const connectedEvent = isHttps ? 'secureConnect' : 'connect';
-        if (!socket.connecting && (!isHttps || socket.encrypted)) {
+        const connectedEvent = transportIsHttps ? 'secureConnect' : 'connect';
+        if (!socket.connecting && (!transportIsHttps || socket.encrypted)) {
           clearTimeout(connectTimer);
         } else {
           socket.once(connectedEvent, () => clearTimeout(connectTimer));

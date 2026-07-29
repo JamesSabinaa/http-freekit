@@ -128,10 +128,21 @@ test('visible renderer HAR import and export preserve the same size model', asyn
 
   const added = [];
   const inputs = [];
+  let nextId = 0;
   const context = {
+    API_BASE: '',
     URL,
     addRequest: request => added.push(request),
-    crypto: { randomUUID: () => `renderer-size-${added.length + 1}` },
+    crypto: { randomUUID: () => `renderer-size-${++nextId}` },
+    fetch: async (_url, options) => {
+      const requests = JSON.parse(options.body).requests;
+      added.push(...requests);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, imported: requests.length })
+      };
+    },
     document: {
       createElement: () => {
         const input = { click: () => {} };
