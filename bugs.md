@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 15 of the 361 documented bugs are not fully fixed.**
+**No: 14 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 346 |
+| Fixed | 347 |
 | Partially fixed | 6 |
-| Open | 9 |
+| Open | 8 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2259,7 +2259,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-084 — Medium — Concurrent MCP disable/enable can end disabled after enable succeeds
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: MCP toggle requests now enter a promise queue in arrival order, so persistence and responses cannot overtake an earlier state change. The bridge also waits for its active stop promise before applying enable, then creates a fresh server only after session and transport cleanup has completed.
+- Regression coverage: `test/bug-082-mcp-enabled-persistence.test.js` holds the first API mutation and verifies concurrent disable/enable requests, persisted writes, and responses remain ordered. `test/bug-084-mcp-toggle-race.test.js` holds a real SSE session close, proves the overlapping enable remains pending, and verifies the final bridge owns a fresh enabled server without degraded cleanup.
 
 - Evidence: `setEnabled(false)` awaits transport/server closure before nulling state (`src/mcp/mcp-server.js:482-493`). An overlapping `setEnabled(true)` sees the still-present server and does nothing at `:496-503`, but the API immediately reports the requested enabled value at `src/api/api-server.js:1144-1151`.
 - Impact: rapid toggles or two clients can receive a successful enable response while final bridge state is disabled/null.
