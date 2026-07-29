@@ -139,6 +139,43 @@ expanded: [${aliases}]
   assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(20\)/);
 });
 
+test('YAML at the alias limit cannot expand beyond the serialized graph budget', async () => {
+  const harness = createHarness();
+  const repeated = (anchor) => Array.from({ length: 5 }, () => `*${anchor}`).join(', ');
+  await harness.select('amplified.yaml', `
+openapi: 3.1.0
+paths: {}
+base: &base "${'x'.repeat(20000)}"
+level1: &level1 [${repeated('base')}]
+level2: &level2 [${repeated('level1')}]
+level3: &level3 [${repeated('level2')}]
+expanded: [${repeated('level3')}]
+`);
+
+  assert.equal(harness.fetches.length, 0);
+  assert.equal(harness.prompts.length, 0);
+  assert.equal(harness.reloads, 0);
+  assert.deepEqual(harness.toasts, [
+    { message: 'Failed to load spec: API specification expands beyond 10 MiB after parsing', type: 'error' }
+  ]);
+});
+
+test('cyclic YAML aliases are rejected before the base URL prompt', async () => {
+  const harness = createHarness();
+  await harness.select('cyclic.yaml', `
+openapi: 3.1.0
+paths: {}
+cycle: &cycle
+  - *cycle
+`);
+
+  assert.equal(harness.fetches.length, 0);
+  assert.equal(harness.prompts.length, 0);
+  assert.deepEqual(harness.toasts, [
+    { message: 'Failed to load spec: API specification contains cyclic YAML aliases', type: 'error' }
+  ]);
+});
+
 test('oversized API spec files are rejected before their contents are read', async () => {
   const harness = createHarness();
   await harness.select('large.yaml', 'openapi: 3.1.0\npaths: {}\n', 10 * 1024 * 1024 + 1);
