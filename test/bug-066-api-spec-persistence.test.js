@@ -136,11 +136,16 @@ test('startup discards malformed specs and repairs non-canonical identities', t 
   proxy.addApiSpec({ title: 'Runtime only', baseUrl: '', spec: { paths: {} } });
   assert.equal(settings.get('apiSpecs').length, 2, 'settings must not share the live array');
 
-  const cleanRestart = restoreSavedApiSpecs(new ProxyServer(null), new Settings(dataDir), {
+  const cleanSettings = new Settings(dataDir);
+  const cleanProxy = new ProxyServer(null);
+  const cleanRestart = restoreSavedApiSpecs(cleanProxy, cleanSettings, {
     log() {}, warn() {}
   });
   assert.equal(cleanRestart.migrated, false);
   assert.equal(cleanRestart.discarded, 0);
+  assert.notEqual(cleanProxy.apiSpecs[0].spec, cleanSettings.get('apiSpecs')[0].spec);
+  cleanProxy.apiSpecs[0].spec.paths['/runtime-only'] = { get: {} };
+  assert.equal(cleanSettings.get('apiSpecs')[0].spec.paths['/runtime-only'], undefined);
 });
 
 test('persistence failures roll live API spec mutations back', async t => {

@@ -10080,7 +10080,15 @@ export class ProxyServer {
         migrated = true;
       }
 
-      restored.push({ id, ...validation.value });
+      let clonedSpec;
+      try {
+        clonedSpec = structuredClone(validation.value.spec);
+      } catch {
+        discarded++;
+        migrated = true;
+        continue;
+      }
+      restored.push({ id, ...validation.value, spec: clonedSpec });
     }
 
     this.apiSpecs = restored;
