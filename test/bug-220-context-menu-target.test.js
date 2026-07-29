@@ -15,6 +15,7 @@ function extract(startMarker, endMarker) {
 }
 
 const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+const deletionState = extract('function applyTrafficDeleted', 'function connectWebSocket');
 const targetActions = extract('function trafficActionRequest', 'function resendSelectedRequest');
 const contextMenu = extract('function showTrafficContextMenu', 'function createMockFromRequest');
 const breakpointAction = extract('function createBreakpointFromRequest', 'function toast(');
@@ -59,7 +60,20 @@ function createHarness() {
     toast: (message, type) => state.toasts.push({ message, type }),
     fetch: async (url, options) => {
       state.fetches.push({ url, options });
-      return { ok: true };
+      const trafficMatch = url.match(/^\/api\/traffic\/([^?]+)/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => trafficMatch
+          ? {
+              success: true,
+              requestId: decodeURIComponent(trafficMatch[1]),
+              trafficLifecycleId: null,
+              webSocketConnection: false,
+              removed: 1
+            }
+          : { success: true }
+      };
     },
     loadBreakpointRules: () => { state.breakpointReloads++; }
   };
@@ -73,7 +87,16 @@ function createHarness() {
     let requests = __requests;
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
+    let requestCounter = requests.length;
+    const wsExpandedConnections = new Set();
+    function isWebSocketConnection(request) {
+      return request?.protocol === 'ws' || request?.protocol === 'wss';
+    }
+    function wsConnectionKey(request) {
+      return JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId]);
+    }
     ${identityHelpers}
+    ${deletionState}
     ${targetActions}
     ${contextMenu}
     ${breakpointAction}
@@ -84,6 +107,7 @@ function createHarness() {
       select(requestId) { selectedRequestId = requestId; },
       selected() { return selectedRequestId; },
       invoke(label) { return __invokeMenuAction(label); },
+      requestIds() { return requests.map(request => request.id); },
       deleteDefault: deleteSelectedRequest,
       pinDefault: togglePinRequest,
       breakpointDefault: createBreakpointFromRequest
@@ -131,19 +155,19 @@ test('context-menu pin toggles row A without changing selected row B or its deta
   assert.equal(harness.state.renderCalls, 1);
 });
 
-test('context-menu delete removes row A without closing selected row B details', () => {
+test('context-menu delete removes row A without closing selected row B details', async () => {
   const harness = createHarness();
 
-  actionAfterSelectionMoves(harness, 'Delete exchange');
+  await actionAfterSelectionMoves(harness, 'Delete exchange');
 
-  assert.deepEqual(harness.requests.map(request => request.id), ['B']);
+  assert.deepEqual(harness.api.requestIds(), ['B']);
   assert.equal(harness.api.selected(), 'B');
   assert.equal(harness.state.detailId, 'B');
   assert.equal(harness.state.closeCalls, 0);
   assert.equal(harness.state.filterCalls, 1);
 });
 
-test('default selected-row pin and delete behavior remains intact', () => {
+test('default selected-row pin and delete behavior remains intact', async () => {
   const pinHarness = createHarness();
   pinHarness.api.select('A');
   pinHarness.state.detailId = 'A';
@@ -154,8 +178,8 @@ test('default selected-row pin and delete behavior remains intact', () => {
   const deleteHarness = createHarness();
   deleteHarness.api.select('A');
   deleteHarness.state.detailId = 'A';
-  deleteHarness.api.deleteDefault();
-  assert.deepEqual(deleteHarness.requests.map(request => request.id), ['B']);
+  await deleteHarness.api.deleteDefault();
+  assert.deepEqual(deleteHarness.api.requestIds(), ['B']);
   assert.equal(deleteHarness.api.selected(), null);
   assert.equal(deleteHarness.state.detailId, null);
   assert.equal(deleteHarness.state.closeCalls, 1);

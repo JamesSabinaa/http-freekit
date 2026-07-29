@@ -366,6 +366,31 @@
       return true;
     }
 
+    function applyTrafficDeleted(
+      requestId,
+      trafficLifecycleId,
+      webSocketConnection = false
+    ) {
+      const target = findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId);
+      const removeFrames = webSocketConnection || isWebSocketConnection(target);
+      const originalLength = requests.length;
+      requests = requests.filter(request => {
+        if (trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId)) return false;
+        return !(removeFrames &&
+          request.protocol === 'ws-frame' &&
+          request.parentId === requestId &&
+          normalizeTrafficLifecycleId(request.parentTrafficLifecycleId) ===
+            normalizeTrafficLifecycleId(trafficLifecycleId));
+      });
+      if (requests.length === originalLength) return false;
+
+      if (removeFrames && target) wsExpandedConnections.delete(wsConnectionKey(target));
+      requestCounter = requests.length;
+      applyFilter();
+      if (selectedRequestId !== null && !getSelectedTrafficRequest()) closeDetail();
+      return true;
+    }
+
     function connectWebSocket() {
       const wsUrl = authenticatedApiUrl(`ws://${window.location.hostname}:${window.location.port}/ws`);
       ws = new WebSocket(wsUrl);
@@ -487,6 +512,13 @@
           break;
         case 'traffic-cleared':
           applyTrafficCleared(msg.clearId);
+          break;
+        case 'traffic-deleted':
+          applyTrafficDeleted(
+            msg.requestId,
+            msg.trafficLifecycleId,
+            msg.webSocketConnection === true
+          );
           break;
         case 'traffic-dump':
           restoreTrafficDump(msg.requests);
@@ -1268,17 +1300,41 @@
       if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
     }
 
-    function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    const trafficDeleteInFlight = new Set();
+
+    async function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
-      const idx = req ? requests.indexOf(req) : -1;
-      if (idx !== -1) {
-        if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
-        if (!confirm('Are you sure you want to delete this request?')) return;
-        requests.splice(idx, 1);
-        if (isSelectedTrafficRequest(req)) closeDetail();
-        applyFilter();
+      if (!req) return;
+      if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
+      const identityKey = trafficRequestIdentityKey(req);
+      if (trafficDeleteInFlight.has(identityKey)) return;
+      if (!confirm('Are you sure you want to delete this request?')) return;
+
+      trafficDeleteInFlight.add(identityKey);
+      try {
+        const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
+        const query = lifecycleId === null
+          ? ''
+          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+        const response = await fetch(
+          API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + query,
+          { method: 'DELETE' }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success !== true || data.requestId !== req.id) {
+          throw new Error(data.error || `Delete exchange returned HTTP ${response.status}`);
+        }
+        applyTrafficDeleted(
+          data.requestId,
+          data.trafficLifecycleId,
+          data.webSocketConnection === true
+        );
         toast('Exchange deleted', 'success');
+      } catch (err) {
+        toast('Failed to delete exchange: ' + err.message, 'error');
+      } finally {
+        trafficDeleteInFlight.delete(identityKey);
       }
     }
 

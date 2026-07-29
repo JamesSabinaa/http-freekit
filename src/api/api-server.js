@@ -166,6 +166,7 @@ export class ApiServer {
     this._pendingTrafficIds = new Set();
     this._pendingTrafficLifecycles = new Map();
     this._clearedPendingTrafficIds = new Map();
+    this._deletedPendingTrafficIdentities = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
       options.maxClearedPendingTrafficIds > 0
@@ -1264,6 +1265,59 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const request = this.trafficLog.find(r => r.id === req.params.id);
       if (!request) return res.status(404).json({ error: 'Request not found' });
       res.json(request);
+    });
+
+    router.delete('/api/traffic/:id', (req, res) => {
+      const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
+      if (lifecycleProvided &&
+          (typeof req.query.trafficLifecycleId !== 'string' || !req.query.trafficLifecycleId)) {
+        return res.status(400).json({ error: 'trafficLifecycleId must be a non-empty string' });
+      }
+
+      const candidates = this.trafficLog.filter(request =>
+        request.id === req.params.id &&
+        (!lifecycleProvided || request.trafficLifecycleId === req.query.trafficLifecycleId)
+      );
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'Request not found' });
+      }
+      if (candidates.length > 1) {
+        return res.status(409).json({
+          error: lifecycleProvided
+            ? 'Multiple requests have this traffic identity'
+            : 'Multiple request lifecycles have this ID; provide trafficLifecycleId'
+        });
+      }
+
+      const request = candidates[0];
+      const trafficLifecycleId = request.trafficLifecycleId ?? null;
+      const webSocketConnection = request.protocol === 'ws' || request.protocol === 'wss';
+      const isMatchingFrame = row => webSocketConnection &&
+        row.protocol === 'ws-frame' &&
+        row.parentId === request.id &&
+        (row.parentTrafficLifecycleId ?? null) === trafficLifecycleId;
+      const removed = this.trafficLog.reduce(
+        (count, row) => count + (row === request || isMatchingFrame(row) ? 1 : 0),
+        0
+      );
+      this.trafficLog = this.trafficLog.filter(row => row !== request && !isMatchingFrame(row));
+
+      if (this._pendingTrafficIds.has(request.id)) {
+        const identityKey = this._trafficIdentityKey(request.id, trafficLifecycleId);
+        const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
+        this._deletedPendingTrafficIdentities.delete(identityKey);
+        this._deletedPendingTrafficIdentities.set(identityKey, expiresAt);
+        this._pruneDeletedPendingTrafficIdentities();
+      }
+
+      const deletion = {
+        requestId: request.id,
+        trafficLifecycleId,
+        webSocketConnection,
+        removed
+      };
+      this._broadcast({ type: 'traffic-deleted', ...deletion });
+      res.json({ success: true, ...deletion });
     });
 
     // Import traffic
@@ -2728,6 +2782,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   onTrafficEvent(data) {
     this._pruneClearedPendingTrafficIds();
+    this._pruneDeletedPendingTrafficIdentities();
     // Enrich with API spec match
     let apiMatch = null;
     try {
@@ -2753,6 +2808,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         this._clearedPendingTrafficIds.delete(data.id);
         this._maybeAutoRotateProxyOnError(data);
       }
+      return;
+    }
+
+    const deletedIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
+    if ((data._update || trafficLifecycleToken !== undefined) &&
+        this._deletedPendingTrafficIdentities.has(deletedIdentityKey)) {
+      delete data._update;
+      delete data._mergeUpdate;
+      this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
+      this._maybeAutoRotateProxyOnError(data);
       return;
     }
 
@@ -3036,6 +3101,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
     this._pendingTrafficLifecycles.clear();
+    this._deletedPendingTrafficIdentities.clear();
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
     return clearId;
@@ -3049,6 +3115,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     while (this._clearedPendingTrafficIds.size > this.maxClearedPendingTrafficIds) {
       const oldestId = this._clearedPendingTrafficIds.keys().next().value;
       this._clearedPendingTrafficIds.delete(oldestId);
+    }
+  }
+
+  _trafficIdentityKey(id, trafficLifecycleId) {
+    return JSON.stringify([String(id), trafficLifecycleId ?? null]);
+  }
+
+  _pruneDeletedPendingTrafficIdentities(now = this._clearedPendingTrafficNow()) {
+    for (const [identityKey, expiresAt] of this._deletedPendingTrafficIdentities) {
+      if (expiresAt > now) break;
+      this._deletedPendingTrafficIdentities.delete(identityKey);
+    }
+    while (this._deletedPendingTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
+      const oldestIdentity = this._deletedPendingTrafficIdentities.keys().next().value;
+      this._deletedPendingTrafficIdentities.delete(oldestIdentity);
     }
   }
 

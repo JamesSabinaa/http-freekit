@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 23 of the 361 documented bugs are not fully fixed.**
+**No: 22 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 338 |
+| Fixed | 339 |
 | Partially fixed | 6 |
-| Open | 17 |
+| Open | 16 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2171,7 +2171,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-075 — Medium — Deleting an exchange removes only the renderer copy
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Exchange deletion now goes through a lifecycle-aware REST mutation before the initiating renderer removes anything. The server removes the authoritative record and matching WebSocket frames, broadcasts the deletion to every renderer, and suppresses late completion events for deleted pending requests. Ambiguous reused IDs require an exact lifecycle, while rejected mutations preserve the local row.
+- Regression coverage: `test/bug-075-delete-traffic.test.js` covers authoritative API/search/export removal, reused WebSocket identities, ambiguity rejection, pending-completion suppression, renderer broadcast/response races, and renderer failure preservation.
 
 - Evidence: `src/ui/app.js:786-797` splices the selected item from local arrays and reports success without sending an API/WebSocket mutation. Server detail, search, and export continue reading `trafficLog` (`src/api/api-server.js:613-647`).
 - Impact: a record the user deleted remains available in API/MCP results and exports and returns after any future full synchronization.
