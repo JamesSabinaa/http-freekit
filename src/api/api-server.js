@@ -166,6 +166,7 @@ export class ApiServer {
     this._pendingTrafficIds = new Set();
     this._pendingTrafficLifecycles = new Map();
     this._clearedPendingTrafficIds = new Map();
+    this._activeTrafficIdentities = new Set();
     this._deletedTrafficIdentities = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
@@ -1303,7 +1304,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.trafficLog = this.trafficLog.filter(row => row !== request && !isMatchingFrame(row));
 
       const identityKey = this._trafficIdentityKey(request.id, trafficLifecycleId);
-      const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
+      const expiresAt = this._activeTrafficIdentities.has(identityKey)
+        ? Infinity
+        : this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
       this._deletedTrafficIdentities.delete(identityKey);
       this._deletedTrafficIdentities.set(identityKey, expiresAt);
       this._pruneDeletedTrafficIdentities();
@@ -2795,12 +2798,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     const trafficClearGeneration = data._trafficClearGeneration;
     const trafficLifecycleToken = data._trafficLifecycleToken;
+    const trafficLifecycleComplete = data._pending !== true &&
+      data._trafficLifecycleComplete !== false;
     const preservePendingTrafficLifecycle = data._preservePendingTrafficLifecycle === true;
     delete data._trafficClearGeneration;
     delete data._trafficLifecycleToken;
+    delete data._trafficLifecycleComplete;
     delete data._preservePendingTrafficLifecycle;
+    const trafficIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
     if (trafficClearGeneration !== undefined &&
         trafficClearGeneration !== this._trafficClearGeneration) {
+      this._activeTrafficIdentities.delete(trafficIdentityKey);
       if (data._update || trafficLifecycleToken !== undefined) {
         this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
         this._clearedPendingTrafficIds.delete(data.id);
@@ -2808,13 +2816,23 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       return;
     }
+    if (trafficLifecycleComplete) this._activeTrafficIdentities.delete(trafficIdentityKey);
+    else this._activeTrafficIdentities.add(trafficIdentityKey);
 
-    const deletedIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
+    const deletedIdentityKey = trafficIdentityKey;
     const deletedParentIdentityKey = data.protocol === 'ws-frame'
       ? this._trafficIdentityKey(data.parentId, data.parentTrafficLifecycleId ?? null)
       : null;
-    if (this._deletedTrafficIdentities.has(deletedIdentityKey) ||
+    const deletedOwnIdentity = this._deletedTrafficIdentities.has(deletedIdentityKey);
+    if (deletedOwnIdentity ||
         (deletedParentIdentityKey && this._deletedTrafficIdentities.has(deletedParentIdentityKey))) {
+      if (deletedOwnIdentity && trafficLifecycleComplete) {
+        this._deletedTrafficIdentities.set(
+          deletedIdentityKey,
+          this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs
+        );
+        this._pruneDeletedTrafficIdentities();
+      }
       delete data._update;
       delete data._mergeUpdate;
       this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
@@ -3102,6 +3120,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
     this._pendingTrafficLifecycles.clear();
+    this._activeTrafficIdentities.clear();
     this._deletedTrafficIdentities.clear();
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
@@ -3125,12 +3144,20 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _pruneDeletedTrafficIdentities(now = this._clearedPendingTrafficNow()) {
     for (const [identityKey, expiresAt] of this._deletedTrafficIdentities) {
-      if (expiresAt > now) break;
-      this._deletedTrafficIdentities.delete(identityKey);
+      if (Number.isFinite(expiresAt) && expiresAt <= now) {
+        this._deletedTrafficIdentities.delete(identityKey);
+      }
     }
-    while (this._deletedTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
-      const oldestIdentity = this._deletedTrafficIdentities.keys().next().value;
-      this._deletedTrafficIdentities.delete(oldestIdentity);
+    let retainedCompletedIdentities = 0;
+    for (const expiresAt of this._deletedTrafficIdentities.values()) {
+      if (Number.isFinite(expiresAt)) retainedCompletedIdentities++;
+    }
+    if (retainedCompletedIdentities <= this.maxClearedPendingTrafficIds) return;
+    for (const [identityKey, expiresAt] of this._deletedTrafficIdentities) {
+      if (!Number.isFinite(expiresAt)) continue;
+      this._deletedTrafficIdentities.delete(identityKey);
+      retainedCompletedIdentities--;
+      if (retainedCompletedIdentities <= this.maxClearedPendingTrafficIds) break;
     }
   }
 

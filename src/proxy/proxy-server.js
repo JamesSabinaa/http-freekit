@@ -9099,7 +9099,7 @@ export class ProxyServer {
   }
 
   _emitRequest(data, trafficLifecycleId = data.trafficLifecycleId) {
-    const lifecycleComplete = data._trafficLifecycleComplete !== false;
+    const lifecycleComplete = data._pending !== true && data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
     this._markBreakpointTrafficState(data);
@@ -9150,6 +9150,10 @@ export class ProxyServer {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
     if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
+    Object.defineProperty(data, '_trafficLifecycleComplete', {
+      value: lifecycleComplete,
+      configurable: true
+    });
     try {
       this.onRequest(data);
       return true;
@@ -9245,6 +9249,10 @@ export class ProxyServer {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
     if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return;
+    Object.defineProperty(data, '_trafficLifecycleComplete', {
+      value: lifecycleComplete,
+      configurable: true
+    });
     try {
       this.onRequest(data);
     } catch (err) {

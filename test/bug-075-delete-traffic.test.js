@@ -7,12 +7,12 @@ import vm from 'node:vm';
 
 import { ApiServer } from '../src/api/api-server.js';
 
-function createApi() {
+function createApi(options = {}) {
   return new ApiServer({
     onBreakpoint: null,
     onUpstreamProxyRetry: null,
     matchApiSpec: () => null
-  }, null, null);
+  }, null, null, options);
 }
 
 function listen(server) {
@@ -171,7 +171,12 @@ test('a late completion cannot restore a deleted pending traffic lifecycle', asy
 });
 
 test('deleting an active WebSocket suppresses later frames and its final update', async t => {
-  const api = createApi();
+  let now = 0;
+  const api = createApi({
+    maxClearedPendingTrafficIds: 1,
+    clearedPendingTrafficTtlMs: 5,
+    clearedPendingTrafficNow: () => now
+  });
   const lifecycleToken = Symbol('active-websocket');
   api._broadcast = () => {};
   api.onTrafficEvent({
@@ -185,6 +190,7 @@ test('deleting an active WebSocket suppresses later frames and its final update'
     id: 'socket',
     trafficLifecycleId: 'socket-lifecycle',
     _trafficLifecycleToken: lifecycleToken,
+    _trafficLifecycleComplete: false,
     _update: true,
     protocol: 'wss',
     statusCode: 101
@@ -200,6 +206,17 @@ test('deleting an active WebSocket suppresses later frames and its final update'
     'DELETE'
   );
   assert.equal(response.statusCode, 200);
+  const socketIdentity = api._trafficIdentityKey('socket', 'socket-lifecycle');
+  assert.equal(api._deletedTrafficIdentities.get(socketIdentity), Infinity);
+
+  for (const id of ['completed-one', 'completed-two']) {
+    api.trafficLog.push({ id, protocol: 'http' });
+    const completedResponse = await requestJson(port, `/api/traffic/${id}`, 'DELETE');
+    assert.equal(completedResponse.statusCode, 200);
+  }
+  now = 10;
+  api._pruneDeletedTrafficIdentities();
+  assert.equal(api._deletedTrafficIdentities.get(socketIdentity), Infinity);
 
   api.onTrafficEvent({
     id: 'frame-after-delete',
@@ -218,6 +235,7 @@ test('deleting an active WebSocket suppresses later frames and its final update'
 
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._deletedTrafficIdentities.size, 1);
+  assert.equal(api._deletedTrafficIdentities.get(socketIdentity), 15);
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
