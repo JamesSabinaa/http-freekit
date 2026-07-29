@@ -45,15 +45,18 @@ function fakeChild(pid = 329) {
   return child;
 }
 
-test('macOS bundle metadata is read with plutil using an argument array', () => {
+test('macOS bundle metadata is read with plutil using an argument array', async () => {
   const interceptor = new ElectronInterceptor();
   let invocation;
-  interceptor._execFileSync = (command, args, options) => {
+  interceptor._execFile = (command, args, options) => {
     invocation = { command, args, options };
-    return 'Electron Main\n';
+    return Promise.resolve({ stdout: 'Electron Main\n', stderr: '' });
   };
 
-  assert.equal(interceptor._readMacBundleExecutable('/Applications/Test.app/Contents/Info.plist'), 'Electron Main');
+  assert.equal(
+    await interceptor._readMacBundleExecutable('/Applications/Test.app/Contents/Info.plist'),
+    'Electron Main'
+  );
   assert.equal(invocation.command, '/usr/bin/plutil');
   assert.deepEqual(invocation.args, [
     '-extract', 'CFBundleExecutable', 'raw', '-o', '-',
@@ -87,7 +90,7 @@ test('macOS Electron bundle launch resolves and directly spawns its declared exe
   assert.equal(interceptor.process, child);
 });
 
-test('ordinary executable commands and paths retain existing launch resolution', t => {
+test('ordinary executable commands and paths retain existing launch resolution', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-329-executable-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const executablePath = path.join(root, 'ordinary-electron');
@@ -95,13 +98,13 @@ test('ordinary executable commands and paths retain existing launch resolution',
 
   const interceptor = new ElectronInterceptor();
   interceptor._platform = () => 'darwin';
-  assert.equal(interceptor._resolveLaunchPath('electron-on-path'), 'electron-on-path');
-  assert.equal(interceptor._resolveLaunchPath('electron-on-path.app'), 'electron-on-path.app');
-  assert.equal(interceptor._resolveLaunchPath(executablePath), executablePath);
+  assert.equal(await interceptor._resolveLaunchPath('electron-on-path'), 'electron-on-path');
+  assert.equal(await interceptor._resolveLaunchPath('electron-on-path.app'), 'electron-on-path.app');
+  assert.equal(await interceptor._resolveLaunchPath(executablePath), executablePath);
 
   const bundle = createBundle(t);
   interceptor._platform = () => 'win32';
-  assert.equal(interceptor._resolveLaunchPath(bundle.bundlePath), bundle.bundlePath);
+  assert.equal(await interceptor._resolveLaunchPath(bundle.bundlePath), bundle.bundlePath);
 });
 
 test('macOS launch rejects non-bundle directories and .app files before spawning', async t => {
@@ -137,26 +140,26 @@ test('macOS launch rejects non-bundle directories and .app files before spawning
   assert.equal(interceptor.process, null);
 });
 
-test('macOS bundle validation rejects missing structure, plist metadata, and executables', t => {
+test('macOS bundle validation rejects missing structure, plist metadata, and executables', async t => {
   const missingMacOs = createBundle(t);
   fs.rmSync(missingMacOs.macOsPath, { recursive: true, force: true });
   const interceptor = launchableInterceptor(missingMacOs.executableName);
-  assert.throws(
-    () => interceptor._resolveLaunchPath(missingMacOs.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(missingMacOs.bundlePath),
     /missing its Contents\/MacOS directory/
   );
 
   const missingPlist = createBundle(t, { infoPlist: false });
   interceptor._readMacBundleExecutable = () => missingPlist.executableName;
-  assert.throws(
-    () => interceptor._resolveLaunchPath(missingPlist.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(missingPlist.bundlePath),
     /missing Contents\/Info\.plist/
   );
 
   const missingExecutable = createBundle(t, { executable: false });
   interceptor._readMacBundleExecutable = () => missingExecutable.executableName;
-  assert.throws(
-    () => interceptor._resolveLaunchPath(missingExecutable.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(missingExecutable.bundlePath),
     /bundle executable "Selected Electron" does not exist/
   );
 
@@ -164,24 +167,24 @@ test('macOS bundle validation rejects missing structure, plist metadata, and exe
   interceptor._readMacBundleExecutable = () => {
     throw new Error('macOS application bundle has no readable CFBundleExecutable metadata');
   };
-  assert.throws(
-    () => interceptor._resolveLaunchPath(unreadableMetadata.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(unreadableMetadata.bundlePath),
     /no readable CFBundleExecutable metadata/
   );
 });
 
-test('CFBundleExecutable cannot escape the bundle executable directory', t => {
+test('CFBundleExecutable cannot escape the bundle executable directory', async t => {
   const bundle = createBundle(t);
   const interceptor = launchableInterceptor('../outside-app');
 
-  assert.throws(
-    () => interceptor._resolveLaunchPath(bundle.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(bundle.bundlePath),
     /invalid CFBundleExecutable metadata/
   );
 
   interceptor._readMacBundleExecutable = () => '/tmp/outside-app';
-  assert.throws(
-    () => interceptor._resolveLaunchPath(bundle.bundlePath),
+  await assert.rejects(
+    interceptor._resolveLaunchPath(bundle.bundlePath),
     /invalid CFBundleExecutable metadata/
   );
 });

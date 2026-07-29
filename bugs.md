@@ -1273,7 +1273,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-054 — Medium — Synchronous interceptor discovery can stall all proxy traffic
 
 - Status: **Fixed**.
-- Resolution: Runtime browser, Docker, JVM, ADB, terminal, and Windows System Proxy discovery and lifecycle commands now run asynchronously. Startup awaits stale System Proxy recovery before exposing interceptor operations, while registry queries, policy and owner discovery, activation, WinINet notification, recovery, and restoration yield to other event-loop work.
+- Resolution: Runtime browser, Docker, JVM, ADB, terminal, Electron, and Windows System Proxy discovery and lifecycle commands now run asynchronously. Startup awaits stale System Proxy recovery before exposing interceptor operations, while macOS bundle metadata, registry queries, policy and owner discovery, activation, WinINet notification, recovery, and restoration yield to other event-loop work.
 - Evidence: browser monitoring invokes synchronous process snapshots with five-second timeouts (`src/interceptors/browser-lifecycle.js:92-131`) from a recurring monitor. Docker, JVM, and ADB discovery/activation also use multi-second `execSync`/`execFileSync` calls on the proxy's single Node event loop.
 - Impact: slow WMI, `ps`, Docker, ADB, or JDK commands freeze proxy forwarding and the management UI until completion/timeout.
 - Reproduction: delay one of the external discovery commands while proxying traffic and observe the event-loop pause.

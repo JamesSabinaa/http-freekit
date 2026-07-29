@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { DockerInterceptor } from '../src/interceptors/docker-interceptor.js';
+import { ElectronInterceptor } from '../src/interceptors/electron-interceptor.js';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
 const runtimeInterceptors = [
@@ -10,6 +11,7 @@ const runtimeInterceptors = [
   'src/interceptors/jvm-interceptor.js',
   'src/interceptors/android-adb-interceptor.js',
   'src/interceptors/terminal-interceptors.js',
+  'src/interceptors/electron-interceptor.js',
   'src/interceptors/system-proxy-interceptor.js'
 ];
 
@@ -66,4 +68,21 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     server: '127.0.0.1:8080',
     override: null
   });
+});
+
+test('slow macOS Electron bundle metadata discovery yields to other event-loop work', async () => {
+  const interceptor = new ElectronInterceptor();
+  let commandFinished = false;
+  interceptor._execFile = () => new Promise(resolve => {
+    setTimeout(() => {
+      commandFinished = true;
+      resolve({ stdout: 'Electron Main\n', stderr: '' });
+    }, 25);
+  });
+
+  const discovery = interceptor._readMacBundleExecutable('/Applications/Test.app/Contents/Info.plist');
+  await Promise.resolve();
+
+  assert.equal(commandFinished, false);
+  assert.equal(await discovery, 'Electron Main');
 });

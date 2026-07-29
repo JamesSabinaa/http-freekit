@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
@@ -483,26 +483,23 @@ export class ElectronInterceptor {
     return process.platform;
   }
 
-  _execFileSync(command, args, options) {
-    return execFileSync(command, args, options);
-  }
-
-  _readMacBundleExecutable(infoPlistPath) {
+  async _readMacBundleExecutable(infoPlistPath) {
     try {
-      return this._execFileSync('/usr/bin/plutil', [
+      const { stdout } = await this._execFile('/usr/bin/plutil', [
         '-extract', 'CFBundleExecutable', 'raw', '-o', '-', infoPlistPath
       ], {
         encoding: 'utf8',
         timeout: 5000,
         maxBuffer: 64 * 1024,
         stdio: ['ignore', 'pipe', 'ignore']
-      }).replace(/\r?\n$/, '');
+      });
+      return stdout.replace(/\r?\n$/, '');
     } catch {
       throw new Error('macOS application bundle has no readable CFBundleExecutable metadata');
     }
   }
 
-  _resolveMacApplicationBundle(bundlePath) {
+  async _resolveMacApplicationBundle(bundlePath) {
     const bundleRoot = fs.realpathSync(bundlePath);
     const contentsPath = path.join(bundleRoot, 'Contents');
     const macOsPath = path.join(contentsPath, 'MacOS');
@@ -521,7 +518,7 @@ export class ElectronInterceptor {
       throw new Error('macOS application bundle is missing Contents/Info.plist');
     }
 
-    const executableName = this._readMacBundleExecutable(infoPlistPath);
+    const executableName = await this._readMacBundleExecutable(infoPlistPath);
     if (!executableName || /[\\/\0\r\n]/.test(executableName) ||
         executableName === '.' || executableName === '..' ||
         path.basename(executableName) !== executableName) {
@@ -553,7 +550,7 @@ export class ElectronInterceptor {
     return executablePath;
   }
 
-  _resolveLaunchPath(appPath) {
+  async _resolveLaunchPath(appPath) {
     if (typeof appPath !== 'string' || !appPath.trim() || appPath.includes('\0')) {
       throw new Error('Electron application path is invalid');
     }
@@ -575,7 +572,7 @@ export class ElectronInterceptor {
       if (!isApplicationBundle) {
         throw new Error('Electron application path is a directory, not a macOS .app bundle');
       }
-      return this._resolveMacApplicationBundle(appPath);
+      return await this._resolveMacApplicationBundle(appPath);
     }
     if (isApplicationBundle) {
       throw new Error('macOS .app selection is not an application bundle directory');
@@ -724,7 +721,7 @@ export class ElectronInterceptor {
     let launchedProcess;
     let pendingLaunch;
     try {
-      const launchPath = this._resolveLaunchPath(appPath);
+      const launchPath = await this._resolveLaunchPath(appPath);
       console.log(`[Interceptor] Launching Electron app: ${launchPath}`);
       pendingLaunch = await this._spawnConfirmed(launchPath, launchArgs, {
         detached: false,
