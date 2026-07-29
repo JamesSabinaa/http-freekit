@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 19 of the 361 documented bugs are not fully fixed.**
+**No: 18 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 342 |
+| Fixed | 343 |
 | Partially fixed | 6 |
-| Open | 13 |
+| Open | 12 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2215,7 +2215,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-080 — Low/Medium — Restored multipart tabs display files they no longer contain
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Multipart file rows now distinguish a live browser `File` from remembered metadata. After a tab is restored, the row explicitly marks the remembered file as unavailable, asks the user to choose it again, and uses warning styling; reselecting a file restores the normal selected-file state.
+- Regression coverage: `test/bug-080-restored-multipart-files.test.js` covers restored metadata, live selected files, empty file rows, and the rendered warning/picker state.
 
 - Evidence: persistence deliberately strips `File` objects but retains filenames at `src/ui/app.js:6980-6989,7025-7033`. Restore renders the old name at `:7039-7051,6763-6767`, while serialization requires `field.file` at `:6851-6857`.
 - Impact: the tab looks ready to send but fails with “Choose a file”.

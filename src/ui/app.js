@@ -8796,6 +8796,35 @@
       scheduleSendExportUpdate();
     }
 
+    function getSendMultipartFilePresentation(field) {
+      if (field?.file) {
+        const fileName = String(field.file.name || 'Selected file');
+        return {
+          buttonLabel: 'Replace file',
+          displayName: fileName,
+          title: fileName,
+          missing: false
+        };
+      }
+
+      const rememberedFileName = String(field?.fileName || '');
+      if (rememberedFileName) {
+        return {
+          buttonLabel: 'Choose file again',
+          displayName: `Unavailable after reload: ${rememberedFileName}`,
+          title: `The browser did not retain "${rememberedFileName}". Choose it again before sending.`,
+          missing: true
+        };
+      }
+
+      return {
+        buttonLabel: 'Choose file',
+        displayName: 'No file selected',
+        title: 'No file selected',
+        missing: false
+      };
+    }
+
     function renderSendFormFields() {
       const container = document.getElementById('sendFormBodyRows');
       if (!container) return;
@@ -8815,10 +8844,13 @@
               <option value="file"${field.type === 'file' ? ' selected' : ''}>File</option>
             </select>`
           : '<span></span>';
-        const valueEditor = bodyType === 'multipart' && field.type === 'file'
+        const filePresentation = bodyType === 'multipart' && field.type === 'file'
+          ? getSendMultipartFilePresentation(field)
+          : null;
+        const valueEditor = filePresentation
           ? `<span class="send-file-picker">
-              <label class="send-file-picker-label">Choose file<input type="file" hidden onchange="updateSendFormFile(${index}, this.files[0])"></label>
-              <span class="send-file-name" title="${esc(field.file?.name || field.fileName || 'No file selected')}">${esc(field.file?.name || field.fileName || 'No file selected')}</span>
+              <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input type="file" hidden onchange="updateSendFormFile(${index}, this.files[0])"></label>
+              <span class="send-file-name${filePresentation.missing ? ' send-file-name-missing' : ''}" title="${esc(filePresentation.title)}" aria-live="polite">${esc(filePresentation.displayName)}</span>
             </span>`
           : `<input type="text" value="${esc(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
 

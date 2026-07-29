@@ -3873,6 +3873,9 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .send-file-name-missing {
+      color: var(--warning-color);
+    }
 
     @media (max-width: 800px) {
       .send-form-row {
