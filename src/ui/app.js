@@ -8376,7 +8376,12 @@
     function toggleMockGroup(groupId) {
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
-      if (group) { group.collapsed = !group.collapsed; renderMockRules(); }
+      if (!group) return;
+      const hidesActiveEditor = group.collapsed !== true
+        && (group.items || []).some(rule => rule.id === mockEditingRule);
+      if (hidesActiveEditor && !preserveOpenMockEdit(null)) return;
+      group.collapsed = !group.collapsed;
+      renderMockRules();
     }
 
     function toggleMockGroupEnabled(groupId) {

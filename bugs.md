@@ -2328,8 +2328,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-137 — Medium — Opening another mock editor silently discards the current edit
 
 - Status: **Fixed**.
-- Resolution: Every editor-navigation path now preserves the open edit first. Opening or adding another rule, expanding another card, collapsing the edited rule, and Collapse All save a valid edit as a local draft; if validation fails, the requested navigation is cancelled without changing the editor or expanded-card state. Collapsing a different expanded card no longer clears the active editor.
-- Regression coverage: `test/bug-137-preserve-mock-editor.test.js` exercises valid and invalid edits through single-card collapse, Collapse All, and expansion of a different rule, in addition to checking direct Add/Edit navigation ownership.
+- Resolution: Every editor-navigation path now preserves the open edit first. Opening or adding another rule, expanding another card, collapsing the edited rule or its containing group, and Collapse All save a valid edit as a local draft; if validation fails, the requested navigation is cancelled without changing the editor or expanded-card state. Collapsing a different card or unrelated group no longer clears or stages the active editor.
+- Regression coverage: `test/bug-137-preserve-mock-editor.test.js` exercises valid and invalid edits through single-card collapse, containing-group collapse, Collapse All, and expansion of a different rule, in addition to checking unrelated-group collapse and direct Add/Edit navigation ownership.
 
 - Evidence: `addNewMockRule()` overwrites `mockEditingRule` and `mockEditDraft` at `src/ui/app.js:5617-5635`; `editMockRule()` repeats this at `:5642-5649`. The previous edit becomes a saved draft only when that same rule is collapsed at `:5658-5667`.
 - Impact: switching directly from rule A's editor to rule B or Add Rule loses A's changes, and the unsaved-changes warning cannot see them.
