@@ -88,6 +88,19 @@ test('renderer execution failures keep the application and backend alive', async
   assert.equal(mainWindow.isDestroyed(), false);
 });
 
+test('a loading but interactive renderer must still pass persistence preflight', async () => {
+  let executeCalls = 0;
+  const mainWindow = createWindow(async () => {
+    executeCalls++;
+    return false;
+  });
+  mainWindow.webContents.isLoadingMainFrame = () => true;
+
+  assert.equal(await prepareRendererForQuit(mainWindow), false);
+  assert.equal(executeCalls, 1);
+  assert.equal(mainWindow.isDestroyed(), false);
+});
+
 test('renderer exposes the synchronous Send journal preflight to Electron', () => {
   const appSource = fs.readFileSync(
     path.join(process.cwd(), 'src', 'ui', 'app.js'),

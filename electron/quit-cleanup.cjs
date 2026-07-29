@@ -9,8 +9,6 @@ async function prepareRendererForQuit(mainWindow, logger = console) {
   if (!mainWindow || mainWindow.isDestroyed?.()) return true;
   const webContents = mainWindow.webContents;
   if (!webContents || webContents.isDestroyed?.()) return true;
-  // A renderer that has not loaded cannot contain user-editable Send state yet.
-  if (webContents.isLoadingMainFrame?.()) return true;
 
   try {
     return await webContents.executeJavaScript(PREPARE_RENDERER_FOR_QUIT_SCRIPT, true) === true;
