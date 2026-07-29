@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 24 of the 361 documented bugs are not fully fixed.**
+**No: 23 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 337 |
+| Fixed | 338 |
 | Partially fixed | 6 |
-| Open | 18 |
+| Open | 17 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2666,7 +2666,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-235 — Low/Medium — Reset rules to default restores no defaults
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: Reset now atomically replaces the persisted mock-rule collection through the existing validated bulk endpoint with the shipped pass-through default, then applies the authoritative response and clears obsolete local drafts/editor state. Empty rule lists can also be reset, and rejected or persistence-failed requests preserve the current local and server collections.
+- Regression coverage: `test/bug-235-reset-default-rules.test.js` executes the renderer reset flow, verifies the single atomic replacement request and complete local-state reset, covers renderer failure preservation, and proves a persistence failure rolls the server collection back. Existing atomic replacement API tests cover validation.
 
 - Evidence: the visible control promises Reset rules to default at `src/ui/index.html:202`, but `clearAllMockRules()` only deletes everything at `src/ui/app.js:4446-4453`. Default creation is startup-only and blocked by the retained `http-freekit-defaults-created` key at `:4627-4645`.
 - Impact: Reset permanently leaves an empty rule list across reloads instead of restoring the shipped defaults.

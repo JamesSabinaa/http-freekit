@@ -5764,14 +5764,38 @@
       ) || null;
     }
 
+    function _createDefaultMockRule() {
+      return {
+        title: 'Default: Pass through all requests',
+        enabled: true,
+        priority: 'normal',
+        matchers: [{ type: 'method', value: '*' }],
+        action: { type: 'passthrough' }
+      };
+    }
+
     async function clearAllMockRules() {
-      if (mockRules.length === 0) return;
       try {
-        await fetch(API_BASE + '/api/mock-rules', { method: 'DELETE' });
+        const response = await fetch(API_BASE + '/api/mock-rules', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ rules: [_createDefaultMockRule()], mode: 'replace' })
+        });
+        const data = await _readMockRulesResponse(response, 'Resetting mock rules');
+        if (data?.success !== true || !Array.isArray(data.rules) || data.rules.length !== 1) {
+          throw new Error('Resetting mock rules returned an invalid response');
+        }
         mockDraftRules.clear();
         mockNewDraftIds.clear();
-        toast('All rules cleared', 'success');
-        loadMockRules();
+        mockExpandedRules.clear();
+        mockEditingRule = null;
+        mockEditDraft = null;
+        mockRenamingRuleId = null;
+        _replaceMockRulesFromServer(data.rules);
+        updateMockSaveButtons();
+        renderMockRules();
+        safeLocalStorageSet('http-freekit-defaults-created', 'true');
+        toast('Rules reset to default', 'success');
       } catch (err) {
         toast('Error: ' + err.message, 'error');
       }
@@ -6073,17 +6097,15 @@
 
       // Create a default passthrough rule
       try {
-        await fetch(API_BASE + '/api/mock-rules', {
+        const response = await fetch(API_BASE + '/api/mock-rules', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            title: 'Default: Pass through all requests',
-            enabled: true,
-            priority: 'normal',
-            matchers: [{ type: 'method', value: '*' }],
-            action: { type: 'passthrough' }
-          })
+          body: JSON.stringify(_createDefaultMockRule())
         });
+        const data = await _readMockRulesResponse(response, 'Creating default mock rules');
+        if (data?.success !== true || !data.rule) {
+          throw new Error('Creating default mock rules returned an invalid response');
+        }
         safeLocalStorageSet('http-freekit-defaults-created', 'true');
         await loadMockRules();
       } catch (e) { console.error('[Error]', e.message); }
