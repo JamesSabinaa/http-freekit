@@ -5,7 +5,9 @@ import { findBrowserPath } from './browser-paths.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import {
+  collectRelatedProcessIds,
   createManagedBrowserProfile,
+  getProcessSnapshotAsync,
   getRelatedProcessIdsAsync,
   removeManagedBrowserProfile
 } from './browser-lifecycle.js';
@@ -58,6 +60,10 @@ export class BrowserInterceptor {
 
   _execFile(command, args, options) {
     return execFileAsync(command, args, options);
+  }
+
+  _getProcessSnapshot() {
+    return getProcessSnapshotAsync();
   }
 
   _waitForSpawn(launchedProcess) {
@@ -764,13 +770,40 @@ exit 1
 
     if (platform === 'darwin') {
       const lifecycle = this._captureLifecycle();
-      const relatedIds = await this._refreshTrackedProcessIds(true, lifecycle);
-      if (!this._isLifecycleCurrent(lifecycle) || relatedIds === null) {
+      let processSnapshot;
+      try {
+        processSnapshot = await this._getProcessSnapshot();
+        if (!Array.isArray(processSnapshot)) throw new Error('process snapshot is not an array');
+      } catch {
         throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
       }
-      const candidatePids = [...relatedIds]
-        .filter(pid => Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff);
-      if (candidatePids.length === 0) {
+      const rootPids = this._isSpawnedProcessRunning(lifecycle.process)
+        ? [lifecycle.process.pid]
+        : [];
+      const relatedIds = collectRelatedProcessIds(
+        processSnapshot,
+        lifecycle.profileDir,
+        rootPids,
+        platform
+      );
+      if (!this._isLifecycleCurrent(lifecycle)) {
+        throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
+      }
+      this.trackedProcessIds = relatedIds;
+      this.lastProcessInspectionAt = Date.now();
+      this.lastProcessInspectionFailed = false;
+      const candidateProcesses = processSnapshot.flatMap(processInfo => {
+        const pid = processInfo?.pid;
+        const startedAt = typeof processInfo?.startedAt === 'number'
+          ? processInfo.startedAt
+          : Date.parse(processInfo?.startedAt);
+        return relatedIds.has(pid)
+          && Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff
+          && Number.isFinite(startedAt)
+          ? [{ pid, startedAt }]
+          : [];
+      });
+      if (candidateProcesses.length === 0) {
         throw new Error(`Could not find the managed ${this.name} application process to focus`);
       }
       const bundleIdentifiers = {
@@ -785,14 +818,19 @@ exit 1
       }
       const script = `
 ObjC.import('AppKit');
-const candidatePids = ${JSON.stringify(candidatePids)};
+const candidateProcesses = ${JSON.stringify(candidateProcesses)};
 const expectedBundleIdentifier = ${JSON.stringify(expectedBundleIdentifier)};
 let focused = false;
-for (const pid of candidatePids) {
-  const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+for (const candidate of candidateProcesses) {
+  const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(candidate.pid);
   if (!app) continue;
   const bundleIdentifier = ObjC.unwrap(app.bundleIdentifier);
   if (bundleIdentifier !== expectedBundleIdentifier) continue;
+  const launchDate = app.launchDate;
+  if (!launchDate) continue;
+  const launchTime = Number(launchDate.timeIntervalSince1970) * 1000;
+  if (!Number.isFinite(launchTime) ||
+      Math.floor(launchTime / 1000) !== Math.floor(candidate.startedAt / 1000)) continue;
   if (app.activateWithOptions($.NSApplicationActivateIgnoringOtherApps)) {
     focused = true;
     break;
