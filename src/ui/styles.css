@@ -3958,8 +3958,11 @@
       height: 100%;
       display: flex;
       align-items: center;
+      background: transparent;
+      border: 0;
       color: var(--text-watermark);
       cursor: pointer;
+      font: inherit;
       font-size: 16px;
     }
     .send-tab-add:hover { color: var(--text-main); }

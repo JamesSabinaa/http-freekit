@@ -26,28 +26,28 @@
         </svg>
       </div>
 
-      <div class="sidebar-item active" id="tab-intercept" data-panel="intercept" role="tab" aria-selected="true" aria-controls="panel-intercept" onclick="switchPanel(this, 'intercept')" title="Connect clients to HTTP FreeKit (Ctrl+1)">
+      <div class="sidebar-item active" id="tab-intercept" data-panel="intercept" role="tab" tabindex="0" aria-selected="true" aria-controls="panel-intercept" onclick="switchPanel(this, 'intercept')" onkeydown="handleSidebarTabKeydown(event)" title="Connect clients to HTTP FreeKit (Ctrl+1)">
         <i class="ph ph-plug"></i>
         <span>Intercept</span>
       </div>
 
-      <div class="sidebar-item" id="tab-traffic" data-panel="traffic" role="tab" aria-selected="false" aria-controls="panel-traffic" onclick="switchPanel(this, 'traffic')" title="View intercepted HTTP traffic (Ctrl+2)">
+      <div class="sidebar-item" id="tab-traffic" data-panel="traffic" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-traffic" onclick="switchPanel(this, 'traffic')" onkeydown="handleSidebarTabKeydown(event)" title="View intercepted HTTP traffic (Ctrl+2)">
         <i class="ph ph-magnifying-glass"></i>
         <span>View</span>
       </div>
 
-      <div class="sidebar-item" id="tab-mock" data-panel="mock" role="tab" aria-selected="false" aria-controls="panel-mock" onclick="switchPanel(this, 'mock')" title="Add rules to transform &amp; mock HTTP traffic (Ctrl+3)">
+      <div class="sidebar-item" id="tab-mock" data-panel="mock" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-mock" onclick="switchPanel(this, 'mock')" onkeydown="handleSidebarTabKeydown(event)" title="Add rules to transform &amp; mock HTTP traffic (Ctrl+3)">
         <i class="ph ph-pencil-simple"></i>
         <span>Mock</span>
       </div>
 
-      <div class="sidebar-item" id="tab-send" data-panel="send" role="tab" aria-selected="false" aria-controls="panel-send" onclick="switchPanel(this, 'send')" title="Send HTTP requests directly (Ctrl+4)">
+      <div class="sidebar-item" id="tab-send" data-panel="send" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-send" onclick="switchPanel(this, 'send')" onkeydown="handleSidebarTabKeydown(event)" title="Send HTTP requests directly (Ctrl+4)">
         <i class="ph ph-paper-plane-tilt"></i>
         <span>Send</span>
       </div>
 
       <div class="sidebar-bottom">
-        <div class="sidebar-item" id="tab-settings" data-panel="settings" role="tab" aria-selected="false" aria-controls="panel-settings" onclick="switchPanel(this, 'settings')" title="Settings (Ctrl+9)">
+        <div class="sidebar-item" id="tab-settings" data-panel="settings" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-settings" onclick="switchPanel(this, 'settings')" onkeydown="handleSidebarTabKeydown(event)" title="Settings (Ctrl+9)">
           <i class="ph ph-gear"></i>
           <span>Settings</span>
         </div>
@@ -225,7 +225,7 @@
       <!-- Send Panel -->
       <div class="panel" id="panel-send" role="tabpanel" aria-labelledby="tab-send" style="overflow:hidden;">
         <div class="send-tab-bar" id="sendTabBar"></div>
-        <div style="display:flex;flex:1;overflow:hidden;">
+        <div id="sendTabPanel" role="tabpanel" style="display:flex;flex:1;overflow:hidden;">
           <div id="sendRequestPane" style="flex:1;overflow-y:auto;padding:20px;border-right:none;">
             <div class="card" style="margin-bottom:0;">
               <div style="display:flex;gap:0;margin-bottom:16px;box-shadow:0 2px 3px 0 rgba(0,0,0,0.12);">

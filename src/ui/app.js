@@ -9248,7 +9248,8 @@
       bar.setAttribute('role', 'tablist');
       bar.setAttribute('aria-label', 'Request tabs');
       bar.textContent = '';
-      sendTabs.forEach(tab => {
+      let activeTabDomId = null;
+      sendTabs.forEach((tab, index) => {
         const isActive = tab.id === activeSendTab;
         let label = 'New request';
         if (tab.url) {
@@ -9256,10 +9257,16 @@
         }
         const tabEl = document.createElement('div');
         tabEl.className = 'send-tab' + (isActive ? ' active' : '');
+        tabEl.id = 'send-request-tab-' + index;
         tabEl.setAttribute('role', 'tab');
         tabEl.setAttribute('aria-selected', String(isActive));
+        tabEl.setAttribute('aria-controls', 'sendTabPanel');
+        tabEl.setAttribute('aria-label', label);
+        tabEl.tabIndex = isActive ? 0 : -1;
         tabEl.title = tab.url || 'New request';
         tabEl.addEventListener('click', () => switchSendTab(tab.id));
+        tabEl.addEventListener('keydown', handleSendTabKeydown);
+        if (isActive) activeTabDomId = tabEl.id;
 
         const labelEl = document.createElement('span');
         labelEl.textContent = label;
@@ -9270,6 +9277,7 @@
         closeEl.className = 'send-tab-close';
         closeEl.title = 'Close tab';
         closeEl.setAttribute('aria-label', 'Close tab');
+        closeEl.tabIndex = isActive ? 0 : -1;
         closeEl.textContent = '×';
         closeEl.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -9279,7 +9287,11 @@
         bar.appendChild(tabEl);
       });
 
-      const addEl = document.createElement('div');
+      const panel = document.getElementById('sendTabPanel');
+      if (panel && activeTabDomId) panel.setAttribute('aria-labelledby', activeTabDomId);
+
+      const addEl = document.createElement('button');
+      addEl.type = 'button';
       addEl.className = 'send-tab-add';
       addEl.title = 'New request tab';
       addEl.setAttribute('aria-label', 'New request tab');
@@ -11753,13 +11765,52 @@
       'settings': 'settings'
     };
 
+    function handleTablistKeydown(event, previousKey, nextKey) {
+      const currentTab = event.currentTarget;
+      if (event.target !== currentTab) return;
+      const tablist = currentTab.closest('[role="tablist"]');
+      if (!tablist) return;
+      const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      const currentIndex = tabs.indexOf(currentTab);
+      if (currentIndex === -1) return;
+
+      let targetTab = null;
+      if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+        targetTab = currentTab;
+      } else if (event.key === previousKey) {
+        targetTab = tabs[(currentIndex - 1 + tabs.length) % tabs.length];
+      } else if (event.key === nextKey) {
+        targetTab = tabs[(currentIndex + 1) % tabs.length];
+      } else if (event.key === 'Home') {
+        targetTab = tabs[0];
+      } else if (event.key === 'End') {
+        targetTab = tabs[tabs.length - 1];
+      }
+      if (!targetTab) return;
+
+      event.preventDefault();
+      targetTab.click();
+      const activeTab = tablist.querySelector('[role="tab"][aria-selected="true"]');
+      (activeTab || targetTab).focus();
+    }
+
+    function handleSidebarTabKeydown(event) {
+      handleTablistKeydown(event, 'ArrowUp', 'ArrowDown');
+    }
+
+    function handleSendTabKeydown(event) {
+      handleTablistKeydown(event, 'ArrowLeft', 'ArrowRight');
+    }
+
     function setActiveSidebarTab(el) {
       document.querySelectorAll('.sidebar-item').forEach(item => {
         item.classList.remove('active');
         item.setAttribute('aria-selected', 'false');
+        item.tabIndex = -1;
       });
       el.classList.add('active');
       el.setAttribute('aria-selected', 'true');
+      el.tabIndex = 0;
     }
 
     function switchPanel(el, panelId) {
