@@ -132,6 +132,9 @@ async function initializeApplication(apiPort) {
     ...proxyPortRange,
     onRequest: (data) => {
       return api.onTrafficEvent(data);
+    },
+    onSuppressedRequestCompletion: (data) => {
+      return api.onSuppressedTrafficCompletion(data);
     }
   });
 

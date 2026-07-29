@@ -164,6 +164,7 @@ export class ApiServer {
     this._stopping = false;
     this.trafficLog = []; // In-memory traffic log
     this.capturePaused = false;
+    this.captureStateSessionId = crypto.randomUUID();
     this.captureStateRevision = 0;
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
@@ -1309,7 +1310,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.get('/api/traffic/capture', (req, res) => {
-      res.json({ paused: this.capturePaused, revision: this.captureStateRevision });
+      res.json({
+        paused: this.capturePaused,
+        sessionId: this.captureStateSessionId,
+        revision: this.captureStateRevision
+      });
     });
 
     router.put('/api/traffic/capture', (req, res) => {
@@ -1320,6 +1325,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({
         success: true,
         paused: this.capturePaused,
+        sessionId: this.captureStateSessionId,
         revision: this.captureStateRevision
       });
     });
@@ -3253,6 +3259,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._broadcast({
       type: 'capture-state',
       paused: next,
+      sessionId: this.captureStateSessionId,
       revision: this.captureStateRevision
     });
     return true;
@@ -3406,6 +3413,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _broadcast(message) {
     this._broadcastSequence([message]);
+  }
+
+  onSuppressedTrafficCompletion(data) {
+    this._maybeAutoRotateProxyOnError(data);
+    return false;
   }
 
   _broadcastSequence(messages) {
@@ -3574,6 +3586,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           trafficCount: this.trafficLog.length,
           trafficLimit: this.maxTrafficLog,
           capturePaused: this.capturePaused,
+          captureStateSessionId: this.captureStateSessionId,
           captureStateRevision: this.captureStateRevision,
           proxyPort: this.proxy.port,
           apiPort: this.port

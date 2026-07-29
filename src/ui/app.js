@@ -5,6 +5,7 @@
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
     let isPaused = false;
+    let captureStateSessionId = null;
     let captureStateRevision = -1;
     let pauseMutationPending = false;
     let sortField = null;
@@ -648,7 +649,12 @@
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
           config.apiPort = msg.apiPort;
-          applyCapturePausedState(msg.capturePaused === true, msg.captureStateRevision);
+          applyCapturePausedState(
+            msg.capturePaused === true,
+            msg.captureStateSessionId,
+            msg.captureStateRevision,
+            true
+          );
           ws.send(JSON.stringify({
             type: 'get-traffic',
             limit: msg.trafficLimit || msg.trafficCount || 100
@@ -716,7 +722,7 @@
           handleInterceptorStatusEvent(msg.data);
           break;
         case 'capture-state':
-          applyCapturePausedState(msg.paused === true, msg.revision);
+          applyCapturePausedState(msg.paused === true, msg.sessionId, msg.revision);
           break;
         case 'traffic-cleared':
           applyTrafficClearedMessage(msg);
@@ -792,10 +798,17 @@
       }
     }
 
-    function applyCapturePausedState(paused, revision) {
-      if (!Number.isSafeInteger(revision) || revision < 0 || revision <= captureStateRevision) {
+    function applyCapturePausedState(paused, sessionId, revision, acceptNewSession = false) {
+      if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128 ||
+          !Number.isSafeInteger(revision) || revision < 0) {
         return false;
       }
+      if (sessionId !== captureStateSessionId) {
+        if (captureStateSessionId !== null && !acceptNewSession) return false;
+        captureStateSessionId = sessionId;
+        captureStateRevision = -1;
+      }
+      if (revision <= captureStateRevision) return false;
       captureStateRevision = revision;
       isPaused = paused === true;
       const btn = document.getElementById('pauseBtn');
@@ -11830,10 +11843,12 @@
           });
           const result = await response.json();
           if (!response.ok || typeof result?.paused !== 'boolean' ||
+              typeof result?.sessionId !== 'string' || !result.sessionId ||
+              result.sessionId.length > 128 ||
               !Number.isSafeInteger(result?.revision) || result.revision < 0) {
             throw new Error(result?.error || 'Server returned an invalid capture state');
           }
-          applyCapturePausedState(result.paused, result.revision);
+          applyCapturePausedState(result.paused, result.sessionId, result.revision);
         } catch (error) {
           toast('Could not change capture state: ' + error.message, 'error');
         } finally {

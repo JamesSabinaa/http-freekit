@@ -108,7 +108,10 @@ test('paused capture drops whole new proxy lifecycles but completes rows retaine
 test('proxy decisions suppress long paused lifecycles and their WebSocket frames through Resume', async () => {
   const proxy = new ProxyServer(null);
   const api = new ApiServer(proxy, null, null);
+  const rotated = [];
   proxy.onRequest = data => api.onTrafficEvent(data);
+  proxy.onSuppressedRequestCompletion = data => api.onSuppressedTrafficCompletion(data);
+  api._maybeAutoRotateProxyOnError = data => rotated.push(data.id);
   api.maxClearedPendingTrafficIds = 1;
   api.clearedPendingTrafficTtlMs = 1;
   api._setCapturePaused(true);
@@ -176,10 +179,15 @@ test('proxy decisions suppress long paused lifecycles and their WebSocket frames
 
   assert.deepEqual(api.trafficLog, []);
   assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
+  assert.deepEqual(rotated, ['paused-first', 'paused-second', 'paused-socket']);
+
+  const startup = fs.readFileSync(path.join(process.cwd(), 'src', 'index.js'), 'utf8');
+  assert.match(startup, /onSuppressedRequestCompletion:[\s\S]*api\.onSuppressedTrafficCompletion\(data\)/);
 });
 
 test('capture state API validates, applies, and broadcasts one shared state', async t => {
   const api = createApi();
+  api.captureStateSessionId = 'capture-session-a';
   const broadcasts = [];
   api._broadcast = message => broadcasts.push(message);
   const server = http.createServer(api.app);
@@ -204,11 +212,25 @@ test('capture state API validates, applies, and broadcasts one shared state', as
 
   assert.deepEqual(paused, {
     statusCode: 200,
-    body: { success: true, paused: true, revision: 1 }
+    body: {
+      success: true,
+      paused: true,
+      sessionId: 'capture-session-a',
+      revision: 1
+    }
   });
   assert.deepEqual(duplicate, paused);
-  assert.deepEqual(current, { statusCode: 200, body: { paused: true, revision: 1 } });
-  assert.deepEqual(broadcasts, [{ type: 'capture-state', paused: true, revision: 1 }]);
+  assert.deepEqual(current, {
+    statusCode: 200,
+    body: { paused: true, sessionId: 'capture-session-a', revision: 1 }
+  });
+  assert.deepEqual(broadcasts, [{
+    type: 'capture-state',
+    paused: true,
+    sessionId: 'capture-session-a',
+    revision: 1
+  }]);
+  assert.notEqual(createApi().captureStateSessionId, api.captureStateSessionId);
 });
 
 test('renderer requests authoritative pause changes and renders server broadcasts', async () => {
@@ -238,7 +260,12 @@ test('renderer requests authoritative pause changes and renders server broadcast
       return await new Promise(resolve => {
         resolveFetch = () => resolve({
           ok: true,
-          json: async () => ({ success: true, paused: true, revision: 1 })
+          json: async () => ({
+            success: true,
+            paused: true,
+            sessionId: 'capture-session-a',
+            revision: 1
+          })
         });
       });
     },
@@ -247,6 +274,7 @@ test('renderer requests authoritative pause changes and renders server broadcast
   });
   vm.runInContext(`
     let isPaused = false;
+    let captureStateSessionId = null;
     let captureStateRevision = -1;
     let pauseMutationPending = false;
     ${pauseSource}
@@ -260,16 +288,22 @@ test('renderer requests authoritative pause changes and renders server broadcast
   assert.equal(requests[0].url, '/api/traffic/capture');
   assert.equal(requests[0].options.method, 'PUT');
   assert.deepEqual(JSON.parse(requests[0].options.body), { paused: true });
-  context.applyPauseForTest(true, 1);
-  context.applyPauseForTest(false, 2);
+  context.applyPauseForTest(true, 'capture-session-a', 1);
+  context.applyPauseForTest(false, 'capture-session-a', 2);
   resolveFetch();
   await toggle;
+
+  // A WebSocket init may establish a new server epoch. Responses/messages
+  // from the old epoch must not replace that newly initialized state.
+  context.applyPauseForTest(true, 'capture-session-a', 3);
+  context.applyPauseForTest(false, 'capture-session-b', 0, true);
+  context.applyPauseForTest(true, 'capture-session-a', 4);
 
   assert.equal(button.title, 'Pause capture');
   assert.equal(button.attributes.get('aria-pressed'), 'false');
   assert.equal(button.attributes.get('aria-disabled'), 'false');
-  assert.equal(renders, 2);
-  assert.match(websocketSource, /case 'init':[\s\S]*applyCapturePausedState\(msg\.capturePaused === true, msg\.captureStateRevision\)/);
-  assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.revision\)/);
+  assert.equal(renders, 4);
+  assert.match(websocketSource, /case 'init':[\s\S]*msg\.captureStateSessionId,[\s\S]*msg\.captureStateRevision,[\s\S]*true/);
+  assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.sessionId, msg\.revision\)/);
   assert.doesNotMatch(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
 });

@@ -238,6 +238,7 @@ export class ProxyServer {
     this.minPort = options.minPort ?? this.port;
     this.maxPort = options.maxPort ?? this.port;
     this.onRequest = options.onRequest || (() => {});
+    this.onSuppressedRequestCompletion = options.onSuppressedRequestCompletion || (() => {});
     this.onBreakpoint = options.onBreakpoint || (() => {});
     this.onUpstreamProxyRetry = options.onUpstreamProxyRetry || (async () => false);
     this._pendingTrafficLogDecisions = new Map();
@@ -9098,6 +9099,16 @@ export class ProxyServer {
     else if (stored.length === 0) this._pendingTrafficLogDecisions.delete(id);
   }
 
+  _notifySuppressedRequestCompletion(data, lifecycleComplete) {
+    if (!lifecycleComplete) return false;
+    try {
+      this.onSuppressedRequestCompletion(data);
+    } catch (err) {
+      console.error('[Proxy] Error in suppressed request completion handler:', err.message);
+    }
+    return false;
+  }
+
   _emitRequest(data, trafficLifecycleId = data.trafficLifecycleId) {
     const lifecycleComplete = data._pending !== true && data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
@@ -9149,7 +9160,12 @@ export class ProxyServer {
     if (hasPendingDecision && lifecycleComplete) {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
-    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
+    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) {
+      if (hasPendingDecision && !pendingWasEmitted) {
+        return this._notifySuppressedRequestCompletion(data, lifecycleComplete);
+      }
+      return false;
+    }
     Object.defineProperty(data, '_trafficLifecycleComplete', {
       value: lifecycleComplete,
       configurable: true
@@ -9247,7 +9263,12 @@ export class ProxyServer {
     if (hasPendingDecision && lifecycleComplete) {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
-    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
+    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) {
+      if (hasPendingDecision && !pendingWasEmitted) {
+        return this._notifySuppressedRequestCompletion(data, lifecycleComplete);
+      }
+      return false;
+    }
     Object.defineProperty(data, '_trafficLifecycleComplete', {
       value: lifecycleComplete,
       configurable: true
