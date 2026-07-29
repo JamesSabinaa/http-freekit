@@ -146,13 +146,21 @@ test('macOS flattened arguments reject an existing longer profile interpretation
       ppid: 1,
       commandName: 'firefox',
       command: `/Applications/Firefox.app/Contents/MacOS/firefox -profile ${profileDir} -suffix`
+    },
+    {
+      pid: 803,
+      ppid: 1,
+      commandName: 'Google Chrome',
+      command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome ` +
+        `--user-data-dir=${profileDir} --no-first-run ` +
+        `--user-data-dir=${profileDir} --suffix`
     }
   ];
 
   assert.deepEqual(sortedProcessIds(processes, profileDir, [], 'darwin'), []);
   const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'darwin');
   assert.deepEqual([...inspection.processIds], []);
-  assert.deepEqual([...inspection.ambiguousProcessIds], [801, 802]);
+  assert.deepEqual([...inspection.ambiguousProcessIds], [801, 802, 803]);
   assert.throws(
     () => getRelatedProcessIds(profileDir, [], processes, 'darwin'),
     error => error?.code === 'AMBIGUOUS_BROWSER_PROFILE_PROCESS'
@@ -169,4 +177,33 @@ test('macOS flattened arguments reject an existing longer profile interpretation
     'darwin',
     processes[1].commandName
   ), false);
+});
+
+test('ambiguous browser descendants never enter the exact process closure', t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-descendant-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const profileDir = path.join(tempRoot, 'managed');
+  fs.mkdirSync(profileDir);
+  fs.mkdirSync(`${profileDir} --suffix`);
+  const processes = [
+    {
+      pid: 810,
+      ppid: 1,
+      commandName: 'Google Chrome',
+      command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome ` +
+        `--user-data-dir=${profileDir} --no-first-run`
+    },
+    {
+      pid: 811,
+      ppid: 810,
+      commandName: 'Google Chrome',
+      command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome ` +
+        `--user-data-dir=${profileDir} --suffix`
+    },
+    { pid: 812, ppid: 811, command: 'chrome helper' }
+  ];
+
+  const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'darwin');
+  assert.deepEqual([...inspection.processIds], [810]);
+  assert.deepEqual([...inspection.ambiguousProcessIds], [811]);
 });

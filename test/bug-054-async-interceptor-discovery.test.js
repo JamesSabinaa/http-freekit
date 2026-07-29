@@ -25,7 +25,8 @@ test('runtime interceptor discovery does not use synchronous child processes', (
     new URL('../src/interceptors/browser-interceptor.js', import.meta.url),
     'utf8'
   );
-  assert.match(browserSource, /await getRelatedProcessIdsAsync\(/);
+  assert.match(browserSource, /return getRelatedProcessIdsAsync\(/);
+  assert.match(browserSource, /await this\._getRelatedProcessIds\(/);
 });
 
 test('slow Docker discovery yields to other event-loop work', async () => {

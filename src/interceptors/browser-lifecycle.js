@@ -118,6 +118,7 @@ function flattenedPathArgumentMatch(commandLine, prefix, value) {
   const command = String(commandLine || '');
   const token = prefix + value;
   let index = command.indexOf(token);
+  let foundExactMatch = false;
   let foundAmbiguousMatch = false;
   while (index !== -1) {
     const startsAtBoundary = index === 0 || /\s/.test(command[index - 1]);
@@ -141,12 +142,13 @@ function flattenedPathArgumentMatch(commandLine, prefix, value) {
           break;
         }
       }
-      if (!ambiguous) return PROFILE_MATCH_EXACT;
-      foundAmbiguousMatch = true;
+      if (ambiguous) foundAmbiguousMatch = true;
+      else foundExactMatch = true;
     }
     index = command.indexOf(token, index + 1);
   }
-  return foundAmbiguousMatch ? PROFILE_MATCH_AMBIGUOUS : PROFILE_MATCH_NONE;
+  if (foundAmbiguousMatch) return PROFILE_MATCH_AMBIGUOUS;
+  return foundExactMatch ? PROFILE_MATCH_EXACT : PROFILE_MATCH_NONE;
 }
 
 export function getProcessArgv0(commandLine, platform = process.platform) {
@@ -477,7 +479,8 @@ export function inspectRelatedBrowserProcesses(
   while (changed) {
     changed = false;
     for (const row of rows) {
-      if (row.pid > 0 && row.pid !== process.pid && related.has(row.ppid) && !related.has(row.pid)) {
+      if (row.pid > 0 && row.pid !== process.pid &&
+          related.has(row.ppid) && !related.has(row.pid) && !ambiguous.has(row.pid)) {
         related.add(row.pid);
         changed = true;
       }
