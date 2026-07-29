@@ -5,6 +5,7 @@
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
     let isPaused = false;
+    let pauseMutationPending = false;
     let sortField = null;
     let sortDirection = 'desc';
     let config = {};
@@ -646,6 +647,7 @@
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
           config.apiPort = msg.apiPort;
+          applyCapturePausedState(msg.capturePaused === true);
           ws.send(JSON.stringify({
             type: 'get-traffic',
             limit: msg.trafficLimit || msg.trafficCount || 100
@@ -683,9 +685,7 @@
           break;
         }
         case 'request':
-          if (!isPaused || msg.data?.source === 'Send') {
-            addRequest(msg.data);
-          }
+          addRequest(msg.data);
           break;
         case 'request-update':
           // Update an existing request in-place (pending → complete)
@@ -713,6 +713,9 @@
           break;
         case 'interceptor-status':
           handleInterceptorStatusEvent(msg.data);
+          break;
+        case 'capture-state':
+          applyCapturePausedState(msg.paused === true);
           break;
         case 'traffic-cleared':
           applyTrafficClearedMessage(msg);
@@ -786,6 +789,25 @@
           toast('Request selected by AI', 'success');
           break;
       }
+    }
+
+    function applyCapturePausedState(paused) {
+      isPaused = paused === true;
+      const btn = document.getElementById('pauseBtn');
+      if (!btn) return;
+      if (isPaused) {
+        btn.innerHTML = '<i class="ph ph-play" style="font-size:14px;"></i>';
+        btn.title = 'Resume capture';
+        btn.style.color = 'var(--warning-color)';
+      } else {
+        btn.innerHTML = '<i class="ph ph-pause" style="font-size:14px;"></i>';
+        btn.title = 'Pause capture';
+        btn.style.color = '';
+      }
+      btn.setAttribute('aria-pressed', isPaused ? 'true' : 'false');
+      btn.setAttribute('aria-label', isPaused ? 'Resume capture' : 'Pause capture');
+      // Re-render to update empty state if needed
+      renderTraffic();
     }
 
     // ============ TRAFFIC ============
@@ -11789,20 +11811,29 @@
     }
 
     function togglePause() {
-      isPaused = !isPaused;
+      if (pauseMutationPending) return;
+      pauseMutationPending = true;
       const btn = document.getElementById('pauseBtn');
-      if (!btn) return;
-      if (isPaused) {
-        btn.innerHTML = '<i class="ph ph-play" style="font-size:14px;"></i>';
-        btn.title = 'Resume capture';
-        btn.style.color = 'var(--warning-color)';
-      } else {
-        btn.innerHTML = '<i class="ph ph-pause" style="font-size:14px;"></i>';
-        btn.title = 'Pause capture';
-        btn.style.color = '';
-      }
-      // Re-render to update empty state if needed
-      renderTraffic();
+      btn?.setAttribute('aria-disabled', 'true');
+      return (async () => {
+        try {
+          const response = await fetch(API_BASE + '/api/traffic/capture', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused: !isPaused })
+          });
+          const result = await response.json();
+          if (!response.ok || typeof result?.paused !== 'boolean') {
+            throw new Error(result?.error || 'Server returned an invalid capture state');
+          }
+          applyCapturePausedState(result.paused);
+        } catch (error) {
+          toast('Could not change capture state: ' + error.message, 'error');
+        } finally {
+          pauseMutationPending = false;
+          btn?.setAttribute('aria-disabled', 'false');
+        }
+      })();
     }
 
     function downloadCert() {

@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 5 of the 361 documented bugs are not fully fixed.**
+**No: 4 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 356 |
+| Fixed | 357 |
 | Partially fixed | 0 |
-| Open | 5 |
+| Open | 4 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -3076,7 +3076,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-056 — Medium — Pause changes only the renderer and does not pause capture
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Pause is now an authenticated server-owned capture state exposed through the management API, included in WebSocket initialization, and broadcast to every connected UI. While paused, the API server neither retains nor broadcasts new intercepted traffic; Send traffic and explicit imports remain available. A bounded lifecycle map prevents requests that began during Pause from appearing when they finish after Resume, while completion updates for pending rows captured before Pause are still applied so retained traffic cannot remain permanently pending. The renderer now requests the authoritative state instead of filtering request events locally, reflects changes from other clients, disables overlapping mutations, and exposes the toggle state to assistive technology.
 
 - Evidence: `src/ui/app.js:8218-8232` only flips a local boolean and button state. Incoming `request` events are discarded locally at `:142-146`; no API/proxy pause is sent, so `src/api/api-server.js:1212-1235` continues recording and broadcasting all traffic.
 - Impact: while the UI says capture is paused, sensitive/large traffic continues accumulating and remains available to exports/API/MCP. The UI never backfills those discarded events when resuming.

@@ -163,6 +163,8 @@ export class ApiServer {
     this._stopPromise = null;
     this._stopping = false;
     this.trafficLog = []; // In-memory traffic log
+    this.capturePaused = false;
+    this._captureSuppressedTrafficIdentities = new Map();
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
     this._pendingTrafficLifecycles = new Map();
@@ -1268,7 +1270,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         proxy: this.proxy.getStats(),
         traffic: {
           total: this.trafficLog.length,
-          clients: this.clients.size
+          clients: this.clients.size,
+          capturePaused: this.capturePaused
         }
       });
     });
@@ -1303,6 +1306,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         total: filtered.length,
         requests: filtered.slice(offset, offset + limit)
       });
+    });
+
+    router.get('/api/traffic/capture', (req, res) => {
+      res.json({ paused: this.capturePaused });
+    });
+
+    router.put('/api/traffic/capture', (req, res) => {
+      if (typeof req.body?.paused !== 'boolean') {
+        return res.status(400).json({ error: 'paused must be a boolean' });
+      }
+      this._setCapturePaused(req.body.paused);
+      res.json({ success: true, paused: this.capturePaused });
     });
 
     // Clear traffic
@@ -3226,7 +3241,59 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this.trafficLog.length = writeIndex;
   }
 
+  _setCapturePaused(paused) {
+    const next = paused === true;
+    if (this.capturePaused === next) return false;
+    this.capturePaused = next;
+    this._broadcast({ type: 'capture-state', paused: next });
+    return true;
+  }
+
+  _pruneCaptureSuppressedTrafficIdentities() {
+    const now = this._clearedPendingTrafficNow();
+    for (const [identity, expiresAt] of this._captureSuppressedTrafficIdentities) {
+      if (expiresAt <= now) this._captureSuppressedTrafficIdentities.delete(identity);
+    }
+    while (this._captureSuppressedTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
+      this._captureSuppressedTrafficIdentities.delete(
+        this._captureSuppressedTrafficIdentities.keys().next().value
+      );
+    }
+  }
+
+  _shouldSuppressPausedTrafficEvent(data) {
+    this._pruneCaptureSuppressedTrafficIdentities();
+    const lifecycleComplete = data._pending !== true &&
+      data._trafficLifecycleComplete !== false;
+    const identity = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
+    if (this._captureSuppressedTrafficIdentities.has(identity)) {
+      if (lifecycleComplete) this._captureSuppressedTrafficIdentities.delete(identity);
+      return true;
+    }
+    if (!this.capturePaused || data.source === 'Send') return false;
+
+    if (data._update === true) {
+      const retainedPending = this.trafficLog.some(request =>
+        request.id === data.id &&
+        (request.trafficLifecycleId ?? null) === (data.trafficLifecycleId ?? null)
+      );
+      if (retainedPending) return false;
+    }
+    if (!lifecycleComplete) {
+      this._captureSuppressedTrafficIdentities.set(
+        identity,
+        this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs
+      );
+      this._pruneCaptureSuppressedTrafficIdentities();
+    }
+    return true;
+  }
+
   onTrafficEvent(data) {
+    if (this._shouldSuppressPausedTrafficEvent(data)) {
+      if (data._pending !== true) this._maybeAutoRotateProxyOnError(data);
+      return false;
+    }
     this._pruneClearedPendingTrafficIds();
     this._pruneDeletedTrafficIdentities();
     // Enrich with API spec match
@@ -3524,6 +3591,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           type: 'init',
           trafficCount: this.trafficLog.length,
           trafficLimit: this.maxTrafficLog,
+          capturePaused: this.capturePaused,
           proxyPort: this.proxy.port,
           apiPort: this.port
         }));
