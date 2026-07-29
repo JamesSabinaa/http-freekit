@@ -655,7 +655,9 @@
           loadUiSettings();
           loadProtobufSchemas();
           loadInterceptors();
-          loadMockRules().then(() => ensureDefaultMockRules());
+          loadMockRules().then(loaded => {
+            if (loaded) ensureDefaultMockRules();
+          });
           loadBreakpointRules();
           loadUpstreamProxy();
           loadBottingToolsProxyProviders();
@@ -6451,21 +6453,24 @@
 
     async function ensureDefaultMockRules() {
       if (mockRules.length > 0 || safeLocalStorageGet('http-freekit-defaults-created')) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
-      // Create a default passthrough rule
-      try {
-        const response = await fetch(API_BASE + '/api/mock-rules', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(_createDefaultMockRule())
-        });
-        const data = await _readMockRulesResponse(response, 'Creating default mock rules');
-        if (data?.success !== true || !data.rule) {
-          throw new Error('Creating default mock rules returned an invalid response');
-        }
-        safeLocalStorageSet('http-freekit-defaults-created', 'true');
-        await loadMockRules();
-      } catch (e) { console.error('[Error]', e.message); }
+      return _queueMockCollectionMutation(async () => {
+        // Create a default passthrough rule while owning the empty collection.
+        try {
+          const response = await fetch(API_BASE + '/api/mock-rules', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(_createDefaultMockRule())
+          });
+          const data = await _readMockRulesResponse(response, 'Creating default mock rules');
+          if (data?.success !== true || !data.rule) {
+            throw new Error('Creating default mock rules returned an invalid response');
+          }
+          safeLocalStorageSet('http-freekit-defaults-created', 'true');
+          await loadMockRules();
+        } catch (e) { console.error('[Error]', e.message); }
+      });
     }
 
     function normalizeMockRule(rule) {

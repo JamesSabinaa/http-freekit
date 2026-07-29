@@ -22,6 +22,9 @@ const breakpointMutationSource = source.slice(breakpointMutationStart, breakpoin
 const importStart = source.indexOf('function importMockRules()');
 const importEnd = source.indexOf('// ============ TRANSFORM HEADER HELPERS', importStart);
 const importSource = source.slice(importStart, importEnd);
+const ensureDefaultStart = source.indexOf('async function ensureDefaultMockRules()');
+const ensureDefaultEnd = source.indexOf('function normalizeMockRule', ensureDefaultStart);
+const ensureDefaultSource = source.slice(ensureDefaultStart, ensureDefaultEnd);
 
 function deferred() {
   let resolve;
@@ -140,6 +143,8 @@ function createTrafficMockHarness() {
   };
   vm.runInNewContext(`
     const API_BASE = 'http://api.test';
+    let mockRules = [];
+    let defaultsCreated = false;
     const request = {
       id: 'exchange',
       method: 'GET',
@@ -172,11 +177,19 @@ function createTrafficMockHarness() {
     function toast() {}
     function updateMockSaveButtons() { calls.updates++; }
     async function loadMockRules() { calls.load++; }
+    function safeLocalStorageGet() { return defaultsCreated ? 'true' : null; }
+    function safeLocalStorageSet() { defaultsCreated = true; }
+    function _createDefaultMockRule() {
+      return { matchers: [{ type: 'method', value: '*' }], action: { type: 'passthrough' } };
+    }
+    async function _readMockRulesResponse(response) { return response.json(); }
     ${queueSource}
     ${saveFunctionsSource}
     ${createMockSource}
+    ${ensureDefaultSource}
     globalThis.harness = {
       createMockFromRequest,
+      ensureDefaultMockRules,
       saveAllMockRules,
       state: () => ({
         collectionMutationCount: mockCollectionMutationCount,
@@ -380,6 +393,36 @@ test('traffic-derived mock creation and Save All exclude each other in request o
   });
   await Promise.all([createRequest, blockedSave]);
   assert.equal(createFirst.harness.state().draftCount, 1);
+  assert.equal(createFirst.harness.state().collectionMutationCount, 0);
+});
+
+test('automatic default creation and traffic-derived creation exclude each other', async () => {
+  const defaultFirst = createTrafficMockHarness();
+  const defaultRequest = defaultFirst.harness.ensureDefaultMockRules();
+  assert.equal(defaultFirst.harness.state().collectionMutationCount, 1);
+  const blockedCreate = defaultFirst.harness.createMockFromRequest('exchange');
+  assert.equal(blockedCreate, undefined);
+  await Promise.resolve();
+  assert.equal(defaultFirst.calls.fetch, 1);
+  defaultFirst.response.resolve({
+    ok: true,
+    json: async () => ({ success: true, rule: { id: 'default-rule' } })
+  });
+  await defaultRequest;
+  assert.equal(defaultFirst.harness.state().collectionMutationCount, 0);
+
+  const createFirst = createTrafficMockHarness();
+  const createRequest = createFirst.harness.createMockFromRequest('exchange');
+  assert.equal(createFirst.harness.state().collectionMutationCount, 1);
+  const blockedDefault = createFirst.harness.ensureDefaultMockRules();
+  await blockedDefault;
+  await Promise.resolve();
+  assert.equal(createFirst.calls.fetch, 1);
+  createFirst.response.resolve({
+    ok: true,
+    json: async () => ({ rule: { id: 'derived-rule' } })
+  });
+  await createRequest;
   assert.equal(createFirst.harness.state().collectionMutationCount, 0);
 });
 
