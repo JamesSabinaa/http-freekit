@@ -127,7 +127,6 @@ test('Fresh and Existing Terminal paths share the bundle without disabling TLS v
       PATH: '/usr/bin:/bin',
       NODE_TLS_REJECT_UNAUTHORIZED: '0'
     });
-    terminal._confirmLauncherStartup = async () => {};
     terminal._createPidFilePath = () => path.join(dataDir, `${platform}.pid`);
     const sessionPid = 9370 + index;
     let sessionRunning = true;

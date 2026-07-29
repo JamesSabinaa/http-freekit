@@ -25,7 +25,6 @@ test('Windows Terminal new tabs inherit the supplied FreeKit environment', async
   const launcher = fakeLauncher(6101);
   const launches = [];
   interceptor._platform = () => 'win32';
-  interceptor._launcherStartupGraceMs = () => 1;
   interceptor._waitForWindowsShellReport = async () => ({
     pid: 6102,
     startTime: '6102',

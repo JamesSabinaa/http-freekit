@@ -107,7 +107,6 @@ test('Existing Terminal instructions stay consistent with Fresh Terminal environ
   let launchedEnvironment;
   interceptor.ca = { getCertInfo: () => ({ certificatePath: certPath }) };
   interceptor._platform = () => 'win32';
-  interceptor._launcherStartupGraceMs = () => 1;
   const identity = {
     pid: 7331,
     startTime: '7331',

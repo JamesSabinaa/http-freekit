@@ -71,7 +71,6 @@ test('Fresh Terminal configures its host shell while Docker emits container-reac
     terminalLaunch = { command, args, options };
     return launcher;
   };
-  terminal._confirmLauncherStartup = async () => {};
   terminal._startStatusMonitor = () => {};
 
   await terminal.activate(8080);

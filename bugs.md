@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 29 of the 361 documented bugs are not fully fixed.**
+**No: 28 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 332 |
-| Partially fixed | 8 |
+| Fixed | 333 |
+| Partially fixed | 7 |
 | Open | 21 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1479,8 +1479,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-164 — Medium — Fresh Terminal never falls back after an early launcher failure
 
-- Status: **Partially fixed**.
-- Resolution: Candidate launchers now fall back when they fail within a fixed 100 ms grace period. A launcher that exits nonzero just after that window is returned as a successful activation and later becomes inactive without trying the next working candidate.
+- Status: **Fixed**.
+- Resolution: Fresh Terminal no longer guesses launcher health from a fixed 100 ms window. Each Windows, macOS, or Linux launcher remains watched for errors, signals, and nonzero exit until the existing durable shell PID/identity handshake succeeds; clean exits from client-style launchers remain valid while that handshake is pending. A failed candidate cancels its pending handshake wait, removes temporary listeners, stops the exact launcher, and advances to the next candidate, while the Windows Terminal fallback still waits for any unacknowledged child to close safely.
+- Regression coverage: `test/bug-164-terminal-launcher-fallback.test.js` covers immediate failure, Windows failure after the old 100 ms boundary, Linux failure after that boundary, handshake-wait cancellation, temporary-listener cleanup, successful fallback, and exhaustion of every candidate without false activation.
 
 - Evidence: the spawn helper resolves on the child's spawn event at `src/interceptors/terminal-interceptors.js:3-16`; candidate loops at `:69-81,95-103` stop at that point without checking for an immediate nonzero exit, and `:110-125` reports success.
 - Impact: an installed but unusable first-choice terminal prevents later working candidates from being attempted.

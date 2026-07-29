@@ -174,17 +174,13 @@ export class FreshTerminalInterceptor {
     return spawnDetached(command, args, options);
   }
 
-  _launcherStartupGraceMs() {
-    return 100;
-  }
-
   _windowsHandshakeCloseDelayMs() {
     return 3250;
   }
 
-  _confirmLauncherStartup(proc, graceMs = this._launcherStartupGraceMs()) {
+  _confirmLauncherStartup(proc, waitUntilReady) {
     const failure = (code, signal) => {
-      const detail = signal ? `signal ${signal}` : `exit code ${code}`;
+      const detail = signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`;
       return new Error(`Terminal launcher failed during startup (${detail})`);
     };
 
@@ -192,34 +188,47 @@ export class FreshTerminalInterceptor {
       return Promise.reject(failure(proc.exitCode, proc.signalCode));
     }
     if (proc.exitCode !== null) {
-      return proc.exitCode === 0
-        ? Promise.resolve()
-        : Promise.reject(failure(proc.exitCode, null));
+      if (proc.exitCode !== 0) return Promise.reject(failure(proc.exitCode, null));
     }
 
     return new Promise((resolve, reject) => {
-      let timer;
+      let settled = false;
+      const abortController = new AbortController();
       const cleanup = () => {
-        clearTimeout(timer);
+        abortController.abort();
         proc.removeListener('exit', onExit);
         proc.removeListener('error', onError);
       };
       const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
         cleanup();
         callback(value);
       };
       const onExit = (code, signal) => {
-        if (code === 0 && !signal) {
-          finish(resolve);
-        } else {
+        if (code !== 0 || signal) {
           finish(reject, failure(code, signal));
         }
       };
       const onError = (err) => finish(reject, err);
+      const onReady = value => {
+        if (proc.signalCode !== null || (proc.exitCode !== null && proc.exitCode !== 0)) {
+          finish(reject, failure(proc.exitCode, proc.signalCode));
+        } else {
+          finish(resolve, value);
+        }
+      };
 
-      proc.once('exit', onExit);
+      proc.on('exit', onExit);
       proc.once('error', onError);
-      timer = setTimeout(() => finish(resolve), graceMs);
+      let ready;
+      try {
+        ready = waitUntilReady(abortController.signal);
+      } catch (error) {
+        finish(reject, error);
+        return;
+      }
+      Promise.resolve(ready).then(onReady, error => finish(reject, error));
     });
   }
 
@@ -253,9 +262,10 @@ export class FreshTerminalInterceptor {
     }
   }
 
-  async _waitForShellPid(pidFile, timeoutMs = 3000) {
+  async _waitForShellPid(pidFile, timeoutMs = 3000, signal = null) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('Terminal shell PID wait was cancelled');
       try {
         const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
         if (Number.isInteger(pid) && pid > 0) return pid;
@@ -265,9 +275,10 @@ export class FreshTerminalInterceptor {
     throw new Error('Terminal shell did not report its process ID');
   }
 
-  async _waitForWindowsShellReport(reportFile, timeoutMs = 3000) {
+  async _waitForWindowsShellReport(reportFile, timeoutMs = 3000, signal = null) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('Terminal shell identity wait was cancelled');
       try {
         const stat = fs.lstatSync(reportFile);
         if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0 ||
@@ -983,9 +994,11 @@ export class FreshTerminalInterceptor {
   async _launchTrackedPosixTerminal(command, args, env, pidFile) {
     const proc = await this._spawnDetached(command, args, { detached: true, stdio: 'ignore', env });
     try {
-      await this._confirmLauncherStartup(proc);
+      const shellPid = await this._confirmLauncherStartup(
+        proc,
+        signal => this._waitForShellPid(pidFile, 3000, signal)
+      );
       proc.unref();
-      const shellPid = await this._waitForShellPid(pidFile);
       return { proc, shellPid };
     } catch (err) {
       try { proc.kill(); } catch {}
@@ -1064,7 +1077,7 @@ export class FreshTerminalInterceptor {
       for (const terminal of terminals) {
         if (this.recoveryFile && !terminal.reportsPid) continue;
         let candidateProc;
-        let launcherStarted = false;
+        let launcherSpawned = false;
         const handshake = terminal.reportsPid ? this._createWindowsHandshake() : null;
         try {
           candidateProc = await this._spawnDetached(terminal.cmd, terminal.buildArgs(handshake), {
@@ -1072,11 +1085,15 @@ export class FreshTerminalInterceptor {
             stdio: 'ignore',
             env
           });
-          await this._confirmLauncherStartup(candidateProc);
-          launcherStarted = true;
+          launcherSpawned = true;
+          const reportedIdentity = await this._confirmLauncherStartup(
+            candidateProc,
+            signal => handshake
+              ? this._waitForWindowsShellReport(handshake.reportFile, 3000, signal)
+              : Promise.resolve(null)
+          );
           candidateProc.unref();
           if (handshake) {
-            const reportedIdentity = await this._waitForWindowsShellReport(handshake.reportFile);
             const adoptedIdentity = await this._adoptSession(
               reportedIdentity.pid,
               reportedIdentity,
@@ -1093,7 +1110,7 @@ export class FreshTerminalInterceptor {
           break;
         } catch {
           try { candidateProc?.kill(); } catch {}
-          if (launcherStarted && handshake && terminal.cmd === 'wt.exe') {
+          if (launcherSpawned && handshake && terminal.cmd === 'wt.exe') {
             // wt.exe is only a client for the new tab. The unacknowledged
             // PowerShell command exits after three seconds; wait past that
             // boundary before starting a fallback shell.

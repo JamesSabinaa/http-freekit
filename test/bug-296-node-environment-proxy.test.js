@@ -51,7 +51,6 @@ async function captureFreshTerminalEnvironment(proxyPort) {
     no_proxy: '*',
     NODE_USE_ENV_PROXY: '0'
   });
-  interceptor._confirmLauncherStartup = async () => {};
   interceptor._startStatusMonitor = () => {};
   interceptor._waitForWindowsShellReport = async () => ({
     pid: 8297,

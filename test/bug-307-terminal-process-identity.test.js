@@ -145,7 +145,6 @@ test('failed identity acquisition tracks only the launcher handle, not the repor
   const interceptor = new FreshTerminalInterceptor();
   const launcher = fakeLauncher(7201);
   interceptor._platform = () => 'linux';
-  interceptor._launcherStartupGraceMs = () => 1;
   interceptor._createPidFilePath = () => '/tmp/freekit-bug-307.pid';
   interceptor._waitForShellPid = async () => 7202;
   interceptor._spawnDetached = async () => launcher;

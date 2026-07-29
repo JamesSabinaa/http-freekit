@@ -78,7 +78,6 @@ function exitLauncher(proc, signal = null) {
 
 function configurePosixLaunch(interceptor, owner, launcher) {
   interceptor.ca = { getTerminalCaBundlePath: () => process.execPath };
-  interceptor._launcherStartupGraceMs = () => 0;
   interceptor._createPidFilePath = () => path.join(os.tmpdir(), `bug-336-${owner.pid}.pid`);
   interceptor._waitForShellPid = async () => owner.pid;
   interceptor._spawnDetached = async () => launcher;
@@ -171,7 +170,6 @@ test('Windows Terminal records its durable PowerShell child rather than the wt l
   const launcher = fakeLauncher(9363);
   const interceptor = new FreshTerminalInterceptor({ dataDir, platform: 'win32' });
   interceptor.ca = { getTerminalCaBundlePath: () => process.execPath };
-  interceptor._launcherStartupGraceMs = () => 0;
   interceptor._createWindowsHandshake = () => ({
     directory: null,
     reportFile: path.join(os.tmpdir(), `bug-336-win-${owner.pid}.json`),

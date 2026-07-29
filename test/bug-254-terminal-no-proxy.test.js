@@ -73,7 +73,6 @@ test('Fresh Terminal overrides inherited bypass variables on every platform', as
       no_proxy: 'localhost,example.test',
       PRESERVED_VALUE: 'yes'
     });
-    interceptor._launcherStartupGraceMs = () => 1;
     interceptor._createPidFilePath = () => `/tmp/http-freekit-${platform}.pid`;
     const sessionPid = 9250 + index;
     let sessionRunning = true;
