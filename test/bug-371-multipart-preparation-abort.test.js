@@ -85,6 +85,7 @@ function createHarness({ firstRead }) {
     let sendMultipartFields = globalThis.__fields;
     let sendMultipartBoundary = '';
     let currentSendAbort = null;
+    let activeSendTab = 'tab-1';
     ${multipartSource}
     ${payloadSource}
     ${sendSource}

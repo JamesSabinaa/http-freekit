@@ -9528,6 +9528,7 @@
     async function sendRequest() {
       if (currentSendAbort) return;
 
+      const initiatingTabId = activeSendTab;
       const method = document.getElementById('sendMethod').value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
@@ -9559,6 +9560,29 @@
         const modes = getBodyViewModes(data.body, resCt);
         const defaultMode = modes[0]?.value || 'text';
         const duration = data.duration + 'ms';
+
+        const responseTab = sendTabs.find(tab => tab.id === initiatingTabId);
+        if (!responseTab) return;
+        responseTab.response = {
+          statusCode: data.statusCode,
+          statusMessage: data.statusMessage || '',
+          headersHtml,
+          responseHeaders: data.headers || {},
+          body: data.body || '',
+          bodyEncoding: data.bodyEncoding || 'utf8',
+          bodySize: Number.isFinite(data.bodySize) ? data.bodySize : (data.body ? data.body.length : 0),
+          contentType: resCt,
+          mode: defaultMode,
+          duration,
+          url,
+          method,
+          trafficId: data.trafficId
+        };
+        renderSendTabs();
+
+        // Keep a background response with the tab that initiated it. Loading the
+        // tab later will render this response without disturbing the active tab.
+        if (activeSendTab !== initiatingTabId) return;
 
         document.getElementById('sendResponse').style.display = 'block';
         document.getElementById('sendEmptyResponse').style.display = 'none';
@@ -9600,27 +9624,7 @@
           } : null;
         }
 
-        // Save response to current tab
-        const currentTab = sendTabs.find(t => t.id === activeSendTab);
-        if (currentTab) {
-          currentTab.response = {
-            statusCode: data.statusCode,
-            statusMessage: data.statusMessage || '',
-            headersHtml,
-            responseHeaders: data.headers || {},
-            body: data.body || '',
-            bodyEncoding: data.bodyEncoding || 'utf8',
-            bodySize: Number.isFinite(data.bodySize) ? data.bodySize : (data.body ? data.body.length : 0),
-            contentType: resCt,
-            mode: defaultMode,
-            duration,
-            url,
-            method,
-            trafficId: data.trafficId
-          };
-        }
         saveSendTabState();
-        renderSendTabs();
       } catch (err) {
         if (err.name === 'AbortError') return; // handled by abortSendRequest
         toast(`Error: ${err.message}`, 'error');

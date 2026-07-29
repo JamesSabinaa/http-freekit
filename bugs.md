@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 22 of the 361 documented bugs are not fully fixed.**
+**No: 20 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 339 |
+| Fixed | 341 |
 | Partially fixed | 6 |
-| Open | 16 |
+| Open | 14 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2193,7 +2193,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-078 — Medium — Slow Send responses are written into whichever tab is active later
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Send now captures the initiating tab before asynchronous request preparation and fetch work. A completed response is stored only on that exact tab, rendered only while that tab is active, and discarded if the tab was closed, so switching or deleting tabs cannot redirect or resurrect the response.
+- Regression coverage: `test/bug-078-send-tab-response.test.js` covers background completion, closed-tab completion, and the unchanged active-tab response path.
 
 - Evidence: `sendRequest()` does not capture the initiating tab before awaiting fetch at `src/ui/app.js:7252-7274`; after completion, it updates the current DOM and finds the then-current `activeSendTab` at `:7285-7330`.
 - Impact: switching from tab A to B while A is in flight displays and saves A's response against B.

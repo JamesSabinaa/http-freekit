@@ -21,6 +21,7 @@ function createSendHarness() {
   const context = {
     AbortController,
     API_BASE: 'http://127.0.0.1:8080',
+    activeSendTab: 'tab-1',
     currentSendAbort: null,
     document: { getElementById: id => elements[id] },
     prepareSendRequestPayload: async () => ({ body: '', bodyEncoding: 'utf8' }),
