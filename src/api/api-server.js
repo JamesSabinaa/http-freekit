@@ -2316,12 +2316,30 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/specs', (req, res) => {
       const validation = validateOpenApiSubmission(req.body);
       if (validation.error) return res.status(400).json({ error: validation.error });
-      const result = this.proxy.addApiSpec(validation.value);
+      let result;
+      try {
+        result = this._mutateRules(
+          'apiSpecs',
+          'apiSpecs',
+          () => this.proxy.addApiSpec(validation.value)
+        );
+      } catch (err) {
+        return res.status(500).json({ error: err.message || 'Failed to persist API spec' });
+      }
       res.json({ success: true, spec: { id: result.id, title: result.title, baseUrl: result.baseUrl } });
     });
 
     router.delete('/api/specs/:id', (req, res) => {
-      this.proxy.removeApiSpec(req.params.id);
+      try {
+        this._mutateRules(
+          'apiSpecs',
+          'apiSpecs',
+          () => this.proxy.removeApiSpec(req.params.id),
+          removed => removed
+        );
+      } catch (err) {
+        return res.status(500).json({ error: err.message || 'Failed to persist API spec removal' });
+      }
       res.json({ success: true });
     });
 

@@ -20,6 +20,7 @@ import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 import { startWithValidatedApiPort } from './startup-config.js';
 import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
+import { restoreSavedApiSpecs } from './startup-api-spec-restoration.js';
 import { resolveProxyBindAddress } from './interceptors/proxy-bind-reachability.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -153,6 +154,7 @@ async function initializeApplication(apiPort) {
   const savedTlsFingerprint = settings.get('tlsFingerprint');
   if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
   restoreSavedRuleSettings(proxy, settings);
+  restoreSavedApiSpecs(proxy, settings);
 
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, {

@@ -27,7 +27,11 @@ import {
 } from './ws-permessage-deflate.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
-import { getApiSpecBaseHost, isObjectRecord } from '../api/openapi-validation.js';
+import {
+  getApiSpecBaseHost,
+  isObjectRecord,
+  validateOpenApiSubmission
+} from '../api/openapi-validation.js';
 
 const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'ECONNABORTED',
@@ -10028,13 +10032,57 @@ export class ProxyServer {
   }
 
   addApiSpec(spec) {
-    spec.id = spec.id || uuidv4();
-    this.apiSpecs.push(spec);
-    return spec;
+    const stored = { ...spec, id: spec.id || uuidv4() };
+    this.apiSpecs.push(stored);
+    return stored;
   }
 
   removeApiSpec(id) {
-    this.apiSpecs = this.apiSpecs.filter(s => s.id !== id);
+    const remaining = this.apiSpecs.filter(s => s.id !== id);
+    if (remaining.length === this.apiSpecs.length) return false;
+    this.apiSpecs = remaining;
+    return true;
+  }
+
+  loadApiSpecs(savedSpecs) {
+    if (!Array.isArray(savedSpecs)) {
+      this.apiSpecs = [];
+      return { specs: this.apiSpecs, discarded: 1, migrated: true };
+    }
+
+    const restored = [];
+    const usedIds = new Set();
+    let discarded = 0;
+    let migrated = false;
+    for (const candidate of savedSpecs) {
+      const validation = validateOpenApiSubmission(candidate);
+      if (validation.error) {
+        discarded++;
+        migrated = true;
+        continue;
+      }
+
+      const rawId = typeof candidate.id === 'string' ? candidate.id : '';
+      const trimmedId = rawId.trim();
+      const id = trimmedId && !usedIds.has(trimmedId) ? trimmedId : uuidv4();
+      usedIds.add(id);
+
+      const canonicalKeys = ['id', 'title', 'baseUrl', 'spec'];
+      if (
+        id !== rawId ||
+        candidate.title !== validation.value.title ||
+        candidate.baseUrl !== validation.value.baseUrl ||
+        Object.keys(candidate).some(key => !canonicalKeys.includes(key)) ||
+        canonicalKeys.some(key => !Object.prototype.hasOwnProperty.call(candidate, key))
+      ) {
+        migrated = true;
+      }
+
+      restored.push({ id, ...validation.value });
+    }
+
+    this.apiSpecs = restored;
+    return { specs: this.apiSpecs, discarded, migrated };
   }
 
   getApiSpecs() {
