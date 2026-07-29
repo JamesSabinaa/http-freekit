@@ -368,7 +368,9 @@ if ($null -eq $target) {
         // Publishing a fully written hard link is atomic and, unlike rename on
         // Windows, refuses to replace a journal belonging to another process.
         fs.linkSync(tempPath, recoveryFile);
-        fs.unlinkSync(tempPath);
+        // Once the canonical link exists, temp-link cleanup is best-effort:
+        // failing it must not make the caller forget the published journal.
+        try { fs.unlinkSync(tempPath); } catch {}
       } else {
         fs.renameSync(tempPath, recoveryFile);
       }
@@ -632,6 +634,11 @@ if ($null -eq $target) {
     if (this._isWindows()) {
       if (this.ca?.systemTrustInstalled !== true) {
         throw new Error('System Proxy requires the HTTP FreeKit CA to be installed in the Windows trust store');
+      }
+      if (this.recoveryBlockedReason || this.winHttpRecoveryBlockedReason) {
+        // A different process may have exited or gracefully released its
+        // journals since startup. Revalidate exact ownership on each retry.
+        await this.recoverStaleSettings();
       }
       if (this.recoveryBlockedReason) {
         throw new Error(`System Proxy cleanup is blocked by an unresolved recovery journal: ${this.recoveryBlockedReason}`);

@@ -274,8 +274,14 @@ test('malformed WinHTTP recovery blocks activation without overwriting its only 
 });
 
 test('live strong owners block activation for both recovery journals until ownership is released', async t => {
-  const dataDir = makeDataDir(t);
-  const owner = { ...OWNER, executablePath: OWNER.executablePath.toLowerCase() };
+  const harness = configureInterceptor(t);
+  const { interceptor } = harness;
+  const owner = {
+    ...OWNER,
+    pid: OWNER.pid + 100000,
+    executablePath: OWNER.executablePath.toLowerCase()
+  };
+  interceptor._processIdentityLookup = pid => pid === owner.pid ? owner : OWNER;
   const ownedWinInet = {
     enabled: true,
     server: '127.0.0.1:8080',
@@ -288,12 +294,6 @@ test('live strong owners block activation for both recovery journals until owner
     autoConfigUrl: '',
     autoDetect: false
   };
-  const interceptor = new SystemProxyInterceptor({
-    dataDir,
-    ca: { systemTrustInstalled: true },
-    processIdentityLookup: () => owner
-  });
-  interceptor._isWindows = () => true;
   const winInetJournal = JSON.stringify({
     owner,
     proxyServer: ownedWinInet.server,
@@ -307,8 +307,6 @@ test('live strong owners block activation for both recovery journals until owner
   });
   fs.writeFileSync(interceptor.recoveryFile, winInetJournal);
   fs.writeFileSync(interceptor.winHttpRecoveryFile, winHttpJournal);
-  interceptor._readCurrentSettings = async () => assert.fail('live ownership must skip WinINet inspection');
-  interceptor._readWinHttpSettings = async () => assert.fail('live ownership must skip WinHTTP inspection');
 
   assert.equal(await interceptor.recoverStaleSettings(), false);
   assert.match(interceptor.recoveryBlockedReason, /active FreeKit process/);
@@ -320,10 +318,56 @@ test('live strong owners block activation for both recovery journals until owner
 
   fs.unlinkSync(interceptor.recoveryFile);
   fs.unlinkSync(interceptor.winHttpRecoveryFile);
-  assert.equal(await interceptor.recoverStaleSettings(), false);
+  await interceptor.activate(8081);
   assert.equal(interceptor.recoveryBlockedReason, null);
   assert.equal(interceptor.winHttpRecoveryBlockedReason, null);
+  assert.equal(interceptor.active, true);
+  await interceptor.deactivate();
   assert.equal(await interceptor.needsDeactivation(), false);
+});
+
+test('activation retries exact-owner recovery after the prior process exits', async t => {
+  const harness = configureInterceptor(t);
+  const { interceptor } = harness;
+  const owner = {
+    ...OWNER,
+    pid: OWNER.pid + 100001,
+    executablePath: OWNER.executablePath.toLowerCase()
+  };
+  interceptor._processIdentityLookup = pid => pid === owner.pid ? owner : OWNER;
+  const ownedWinInet = { enabled: true, server: '127.0.0.1:8080', override: '' };
+  const ownedWinHttp = {
+    scope: 'machine', proxy: '127.0.0.1:8080', proxyBypass: '', autoConfigUrl: '', autoDetect: false
+  };
+  harness.setWinInet(ownedWinInet);
+  harness.setWinHttp(ownedWinHttp);
+  fs.writeFileSync(interceptor.recoveryFile, JSON.stringify({
+    owner,
+    proxyServer: ownedWinInet.server,
+    previousSettings: PREVIOUS_WININET,
+    ownedSettings: ownedWinInet
+  }));
+  fs.writeFileSync(interceptor.winHttpRecoveryFile, JSON.stringify({
+    owner,
+    previousSettings: PREVIOUS_WINHTTP,
+    ownedSettings: ownedWinHttp
+  }));
+
+  assert.equal(await interceptor.recoverStaleSettings(), false);
+  interceptor._processIdentityLookup = pid => pid === owner.pid ? null : OWNER;
+
+  await interceptor.activate(8083);
+
+  assert.equal(interceptor.active, true);
+  assert.deepEqual(interceptor.previousSettings, PREVIOUS_WININET);
+  assert.deepEqual(interceptor.previousWinHttpSettings, PREVIOUS_WINHTTP);
+  assert.deepEqual(harness.getWinInet(), {
+    enabled: true, server: '127.0.0.1:8083', override: ''
+  });
+  assert.deepEqual(harness.getWinHttp(), {
+    scope: 'machine', proxy: '127.0.0.1:8083', proxyBypass: '', autoConfigUrl: '', autoDetect: false
+  });
+  await interceptor.deactivate();
 });
 
 test('exclusive journal publication never replaces a concurrently owned proxy baseline', async t => {
@@ -347,6 +391,29 @@ test('exclusive journal publication never replaces a concurrently owned proxy ba
       assert.equal(harness.operations.length, 0);
     });
   }
+});
+
+test('temp-link cleanup failure cannot hide successfully published recovery journals', async t => {
+  const harness = configureInterceptor(t);
+  const { interceptor } = harness;
+  const unlinkSync = fs.unlinkSync.bind(fs);
+  t.mock.method(fs, 'unlinkSync', target => {
+    if (String(target).endsWith('.tmp')) throw new Error('temp unlink denied');
+    return unlinkSync(target);
+  });
+
+  await interceptor.activate(8084);
+
+  assert.equal(interceptor.active, true);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), true);
+  assert.equal(fs.existsSync(interceptor.winHttpRecoveryFile), true);
+  assert.equal(
+    fs.readdirSync(path.dirname(interceptor.recoveryFile)).filter(name => name.endsWith('.tmp')).length,
+    2
+  );
+  await interceptor.deactivate();
+  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+  assert.equal(fs.existsSync(interceptor.winHttpRecoveryFile), false);
 });
 
 test('WinHTTP netsh helpers parse localized prefixes and verify the applied machine settings', async () => {
