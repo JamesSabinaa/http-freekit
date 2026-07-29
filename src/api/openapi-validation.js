@@ -59,26 +59,44 @@ export function normalizeApiSpecMatchHost(host) {
 
 export function compileOpenApiPathPattern(pathPattern) {
   if (typeof pathPattern !== 'string') return null;
-  const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const parameterPattern = /\{[^{}\/]+\}/g;
-  for (const segment of pathPattern.split('/')) {
+  const templateSegments = pathPattern.split('/').map(segment => {
+    const literals = [];
+    let cursor = 0;
     parameterPattern.lastIndex = 0;
-    if (parameterPattern.exec(segment) && parameterPattern.exec(segment)) return null;
-  }
-  parameterPattern.lastIndex = 0;
-  let source = '^';
-  let cursor = 0;
-  for (const match of pathPattern.matchAll(parameterPattern)) {
-    source += escapeRegex(pathPattern.slice(cursor, match.index));
-    source += '[^/]+';
-    cursor = match.index + match[0].length;
-  }
-  source += escapeRegex(pathPattern.slice(cursor)) + '$';
-  try {
-    return new RegExp(source);
-  } catch {
-    return null;
-  }
+    for (let match = parameterPattern.exec(segment); match; match = parameterPattern.exec(segment)) {
+      literals.push(segment.slice(cursor, match.index));
+      cursor = match.index + match[0].length;
+    }
+    literals.push(segment.slice(cursor));
+    return literals;
+  });
+
+  const matchSegment = (value, literals) => {
+    if (literals.length === 1) return value === literals[0];
+    const prefix = literals[0];
+    const suffix = literals[literals.length - 1];
+    if (!value.startsWith(prefix) || !value.endsWith(suffix)) return false;
+
+    let cursor = prefix.length;
+    const suffixStart = value.length - suffix.length;
+    for (let index = 1; index < literals.length - 1; index++) {
+      const literal = literals[index];
+      const literalStart = value.indexOf(literal, cursor + 1);
+      if (literalStart < 0 || literalStart + literal.length > suffixStart) return false;
+      cursor = literalStart + literal.length;
+    }
+    return cursor < suffixStart;
+  };
+
+  return {
+    test(value) {
+      if (typeof value !== 'string') return false;
+      const valueSegments = value.split('/');
+      return valueSegments.length === templateSegments.length &&
+        templateSegments.every((literals, index) => matchSegment(valueSegments[index], literals));
+    }
+  };
 }
 
 function validateParameters(parameters, location) {
@@ -113,11 +131,6 @@ export function validateOpenApiSubmission(payload) {
   for (const [pathPattern, pathItem] of Object.entries(spec.paths || {})) {
     if (!pathPattern.startsWith('/')) {
       return { error: `spec.paths key ${JSON.stringify(pathPattern)} must start with /` };
-    }
-    if (!compileOpenApiPathPattern(pathPattern)) {
-      return {
-        error: `spec.paths key ${JSON.stringify(pathPattern)} must contain at most one parameter per path segment`
-      };
     }
     if (!isObjectRecord(pathItem)) {
       return { error: `spec.paths[${JSON.stringify(pathPattern)}] must be an object` };

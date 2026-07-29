@@ -109,26 +109,39 @@ test('compiled patterns escape all literal segments around parameters', () => {
   assert.equal(pattern.test('/v1/42/price.$+USD'), false);
 });
 
-test('multiple placeholders in one segment are rejected without compiling a backtracking regex', () => {
+test('multiple placeholders use deterministic matching without rejecting valid templates', () => {
   const ambiguousPath = '/v1/{a}{b}{c}{d}{e}{f}{g}{h}/suffix';
-  assert.equal(compileOpenApiPathPattern(ambiguousPath), null);
+  const adjacentMatcher = compileOpenApiPathPattern(ambiguousPath);
+  assert.ok(adjacentMatcher);
+  const started = performance.now();
+  assert.equal(adjacentMatcher.test('/v1/xxxxxxxxxxxxxxxxxxxxxxxx/suffiy'), false);
+  assert.ok(performance.now() - started < 250, 'nonmatching adjacent parameters must remain bounded');
 
   const validation = validateOpenApiSubmission({
-    title: 'Ambiguous',
+    title: 'Multiple parameters',
     baseUrl: 'api.example.com',
     spec: {
       paths: {
-        [ambiguousPath]: { get: { operationId: 'ambiguous' } }
+        '/files/{name}.{ext}': { get: { operationId: 'fileByExtension' } },
+        [ambiguousPath]: { get: { operationId: 'adjacent' } }
       }
     }
   });
-  assert.match(validation.error, /at most one parameter per path segment/);
+  assert.equal(validation.error, undefined);
 
   const proxy = new ProxyServer(null);
-  proxy.apiSpecs = [{
-    title: 'Legacy ambiguous',
+  const restored = proxy.loadApiSpecs([{
+    id: 'multi-parameter',
+    title: 'Stored multiple parameters',
     baseUrl: 'api.example.com',
-    spec: { paths: { [ambiguousPath]: { get: { operationId: 'legacy' } } } }
-  }];
-  assert.equal(proxy.matchApiSpec('GET', '/v1/xxxxxxxxxxxxxxxxxxxxxxxx/suffiy', 'api.example.com'), null);
+    spec: validation.value.spec
+  }]);
+  assert.equal(restored.discarded, 0);
+  assert.equal(proxy.matchApiSpec('GET', '/files/report.pdf', 'api.example.com').operationId, 'fileByExtension');
+  assert.equal(proxy.matchApiSpec('GET', '/files/.pdf', 'api.example.com'), null);
+  assert.equal(proxy.matchApiSpec('GET', '/files/report.', 'api.example.com'), null);
+  assert.equal(
+    proxy.matchApiSpec('GET', '/v1/abcdefgh/suffix', 'api.example.com').operationId,
+    'adjacent'
+  );
 });
