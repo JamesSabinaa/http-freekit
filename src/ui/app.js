@@ -5916,6 +5916,10 @@
     }
 
     function mockGroupDrop(e, groupId) {
+      if (mockResetInProgress) {
+        mockDragId = null;
+        return;
+      }
       if (!mockDragId || _findContainingMockGroup(mockDragId)?.id === groupId) return;
       if (e.target.closest('.mock-rule-card')) return;
       e.preventDefault();
@@ -6033,6 +6037,13 @@
       }
     }
 
+    function _queueMockCollectionMutation(mutation) {
+      const request = mockReorderQueue.then(mutation);
+      // Keep later collection mutations ordered even after a rejected request.
+      mockReorderQueue = request.catch(() => {});
+      return request;
+    }
+
     function mockDrop(e, targetId) {
       e.preventDefault();
       if (mockResetInProgress) {
@@ -6059,38 +6070,39 @@
 
       const ids = mockRules.map(r => r.id);
       const operation = ++mockReorderGeneration;
-      const reorderRequest = mockReorderQueue.then(
+      const reorderRequest = _queueMockCollectionMutation(
         () => _persistMockRuleOrder(operation, ids, previousIds)
       );
-      // Keep later writes ordered even if an unexpected implementation error escapes.
-      mockReorderQueue = reorderRequest.catch(() => {});
 
       renderMockRules();
       document.querySelectorAll('.mock-rule-card').forEach(c => c.classList.remove('mock-drag-over', 'mock-drag-combine', 'mock-rule-dragging'));
       return reorderRequest;
     }
 
-    async function combineRulesAsGroup(ruleId1, ruleId2) {
-      try {
-        const res = await fetch(API_BASE + '/api/mock-rules/combine', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ title: 'New Group', ruleIds: [ruleId1, ruleId2] })
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || 'Failed to combine rules');
-        if (data.success !== true || !data.group?.id || !Array.isArray(data.rules)) {
-          throw new Error('Server returned an incomplete combined group');
-        }
+    function combineRulesAsGroup(ruleId1, ruleId2) {
+      if (mockResetInProgress) return;
+      return _queueMockCollectionMutation(async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/mock-rules/combine', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ title: 'New Group', ruleIds: [ruleId1, ruleId2] })
+          });
+          const data = await res.json();
+          if (!res.ok || data.error) throw new Error(data.error || 'Failed to combine rules');
+          if (data.success !== true || !data.group?.id || !Array.isArray(data.rules)) {
+            throw new Error('Server returned an incomplete combined group');
+          }
 
-        _replaceMockRulesFromServer(data.rules);
-        updateMockSaveButtons();
-        renderMockRules();
-        toast('Rules combined into a group (hold Shift + drop)', 'success');
-      } catch (err) {
-        await loadMockRules();
-        toast('Error: ' + err.message, 'error');
-      }
+          _replaceMockRulesFromServer(data.rules);
+          updateMockSaveButtons();
+          renderMockRules();
+          toast('Rules combined into a group (hold Shift + drop)', 'success');
+        } catch (err) {
+          await loadMockRules();
+          toast('Error: ' + err.message, 'error');
+        }
+      });
     }
 
     function mockDragEnd(e) {
@@ -7997,17 +8009,20 @@
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
 
-    async function moveRuleToGroup(ruleId, groupId) {
-      try {
-        const res = await fetch(API_BASE + '/api/mock-rules/move-to-group', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ ruleId, groupId })
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        toast('Rule moved to group', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+    function moveRuleToGroup(ruleId, groupId) {
+      if (mockResetInProgress) return;
+      return _queueMockCollectionMutation(async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/mock-rules/move-to-group', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ ruleId, groupId })
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          toast('Rule moved to group', 'success');
+          await loadMockRules();
+        } catch (err) { toast('Error: ' + err.message, 'error'); }
+      });
     }
 
     async function ungroupRule(ruleId) {

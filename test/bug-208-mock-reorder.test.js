@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const reorderStart = rendererSource.indexOf('let mockDragId = null;');
-const reorderEnd = rendererSource.indexOf('async function combineRulesAsGroup', reorderStart);
+const reorderEnd = rendererSource.indexOf('function combineRulesAsGroup', reorderStart);
 assert.ok(reorderStart >= 0 && reorderEnd > reorderStart, 'mock reorder functions must be present');
 const reorderSource = rendererSource.slice(reorderStart, reorderEnd);
 

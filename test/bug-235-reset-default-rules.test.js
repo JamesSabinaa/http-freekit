@@ -18,6 +18,16 @@ const loadEnd = source.indexOf('async function ensureDefaultMockRules()', loadSt
 assert.notEqual(loadStart, -1);
 assert.notEqual(loadEnd, -1);
 const loadSource = source.slice(loadStart, loadEnd);
+const queueStart = source.indexOf('function _queueMockCollectionMutation(');
+const queueEnd = source.indexOf('function mockDrop(', queueStart);
+const combineStart = source.indexOf('function combineRulesAsGroup(');
+const combineEnd = source.indexOf('function mockDragEnd(', combineStart);
+assert.notEqual(queueStart, -1);
+assert.notEqual(queueEnd, -1);
+assert.notEqual(combineStart, -1);
+assert.notEqual(combineEnd, -1);
+const queueSource = source.slice(queueStart, queueEnd);
+const combineSource = source.slice(combineStart, combineEnd);
 
 function response(body, { ok = true, status = ok ? 200 : 500 } = {}) {
   return { ok, status, json: async () => body };
@@ -95,6 +105,8 @@ function createRenderer(fetch) {
       return data.rules;
     }
     ${loadSource}
+    ${queueSource}
+    ${combineSource}
     globalThis.queueMockReorder = promise => {
       const operation = ++mockReorderGeneration;
       mockReorderQueue = promise.then(rules => {
@@ -239,6 +251,39 @@ test('Reset waits for queued reorders and remains the final collection mutation'
     { id: 'default', title: 'Default', action: { type: 'passthrough' } }
   ]);
   assert.equal(renderer.state().mockResetInProgress, false);
+});
+
+test('Reset remains final when an older Shift-drop combine is in flight', async () => {
+  let resolveCombine;
+  const delayedCombine = new Promise(resolve => { resolveCombine = resolve; });
+  const renderer = createRenderer((url) => {
+    if (url.endsWith('/combine')) return delayedCombine;
+    return response({
+      success: true,
+      rules: [{ id: 'default', title: 'Default', action: { type: 'passthrough' } }]
+    });
+  });
+
+  const combining = renderer.context.combineRulesAsGroup('old', 'other');
+  await Promise.resolve();
+  const resetting = renderer.context.clearAllMockRules();
+  await Promise.resolve();
+  assert.deepEqual(renderer.requests.map(request => request.url), ['/api/mock-rules/combine']);
+
+  resolveCombine(response({
+    success: true,
+    group: { id: 'stale-group' },
+    rules: [{ id: 'stale-group', type: 'group', items: [] }]
+  }));
+  await Promise.all([combining, resetting]);
+
+  assert.deepEqual(renderer.requests.map(request => request.url), [
+    '/api/mock-rules/combine',
+    '/api/mock-rules'
+  ]);
+  assert.deepEqual(renderer.state().mockRules, [
+    { id: 'default', title: 'Default', action: { type: 'passthrough' } }
+  ]);
 });
 
 test('server persistence failure rolls an atomic default replacement back', async t => {
