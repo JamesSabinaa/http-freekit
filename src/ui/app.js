@@ -8664,13 +8664,36 @@
     }
 
     // ============ cURL PASTE PARSER ============
+    function encodeCurlComponent(value) {
+      let encoded = '';
+      for (const byte of new TextEncoder().encode(value)) {
+        const isUnreserved =
+          (byte >= 0x41 && byte <= 0x5a) ||
+          (byte >= 0x61 && byte <= 0x7a) ||
+          (byte >= 0x30 && byte <= 0x39) ||
+          byte === 0x2d || byte === 0x2e || byte === 0x5f || byte === 0x7e;
+        encoded += isUnreserved
+          ? String.fromCharCode(byte)
+          : '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+      }
+      return encoded;
+    }
+
     function encodeCurlDataUrlValue(value) {
       const equalsIndex = value.indexOf('=');
       if (equalsIndex > 0) {
-        return value.slice(0, equalsIndex + 1) + encodeURIComponent(value.slice(equalsIndex + 1));
+        return value.slice(0, equalsIndex + 1) + encodeCurlComponent(value.slice(equalsIndex + 1));
       }
-      if (equalsIndex === 0) return encodeURIComponent(value.slice(1));
-      return encodeURIComponent(value);
+      if (equalsIndex === 0) return encodeCurlComponent(value.slice(1));
+      return encodeCurlComponent(value);
+    }
+
+    function curlDataValueReadsFile(option, value) {
+      if (option === '--data-raw') return false;
+      if (option === '--data-urlencode') {
+        return !value.includes('=') && value.includes('@');
+      }
+      return value.startsWith('@');
     }
 
     function encodeBasicAuthorization(value) {
@@ -8701,7 +8724,7 @@
     }
 
     function parseCurlCommand(curlStr) {
-      const result = { method: 'GET', url: '', headers: {}, body: '' };
+      const result = { method: 'GET', url: '', headers: {}, body: '', hasData: false };
       const dataParts = [];
       const explicitHeaderNames = new Set();
       
@@ -8714,21 +8737,33 @@
       
       const tokens = [];
       let current = '';
-      let inSingle = false, inDouble = false, escaped = false;
+      let inSingle = false, inDouble = false, escaped = false, tokenStarted = false;
       
       for (let i = 0; i < cmd.length; i++) {
         const ch = cmd[i];
-        if (escaped) { current += ch; escaped = false; continue; }
-        if (ch === '\\' && !inSingle) { escaped = true; continue; }
-        if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
-        if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+        if (escaped) { current += ch; escaped = false; tokenStarted = true; continue; }
+        if (ch === '\\' && !inSingle) {
+          const next = cmd[i + 1];
+          if (inDouble && next && !['\\', '"', '$', '`'].includes(next)) {
+            current += ch;
+            tokenStarted = true;
+          } else {
+            escaped = true;
+            tokenStarted = true;
+          }
+          continue;
+        }
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; tokenStarted = true; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; tokenStarted = true; continue; }
         if (/\s/.test(ch) && !inSingle && !inDouble) {
-          if (current) { tokens.push(current); current = ''; }
+          if (tokenStarted) { tokens.push(current); current = ''; tokenStarted = false; }
           continue;
         }
         current += ch;
+        tokenStarted = true;
       }
-      if (current) tokens.push(current);
+      if (escaped) current += '\\';
+      if (tokenStarted) tokens.push(current);
       
       for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
@@ -8747,11 +8782,21 @@
               explicitHeaderNames.add(name.toLowerCase());
             }
           }
-        } else if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary') {
-          dataParts.push(tokens[++i] || '');
+        } else if (t === '-d' || t === '--data' || t === '--data-ascii' || t === '--data-raw' || t === '--data-binary') {
+          const value = tokens[++i] ?? '';
+          if (curlDataValueReadsFile(t, value)) {
+            return { error: `File-backed ${t} values cannot be imported from a pasted cURL command` };
+          }
+          dataParts.push(value);
+          result.hasData = true;
           if (result.method === 'GET') result.method = 'POST';
         } else if (t === '--data-urlencode') {
-          dataParts.push(encodeCurlDataUrlValue(tokens[++i] || ''));
+          const value = tokens[++i] ?? '';
+          if (curlDataValueReadsFile(t, value)) {
+            return { error: 'File-backed --data-urlencode values cannot be imported from a pasted cURL command' };
+          }
+          dataParts.push(encodeCurlDataUrlValue(value));
+          result.hasData = true;
           if (result.method === 'GET') result.method = 'POST';
         } else if (t === '-A' || t === '--user-agent') {
           setCurlHeader(result.headers, 'User-Agent', tokens[++i] || '');
@@ -13831,6 +13876,10 @@
       if (text.toLowerCase().startsWith('curl ')) {
         e.preventDefault();
         const parsed = parseCurlCommand(text);
+        if (parsed?.error) {
+          toast(parsed.error, 'error');
+          return;
+        }
         if (parsed) {
           document.getElementById('sendUrl').value = parsed.url;
           document.getElementById('sendMethod').value = parsed.method;
@@ -13838,7 +13887,7 @@
           if (Object.keys(parsed.headers).length > 0) {
             loadSendHeadersFromJson(JSON.stringify(parsed.headers));
           }
-          if (parsed.body) {
+          if (parsed.hasData) {
             setSendBodyValue(parsed.body);
           }
           saveSendTabState();

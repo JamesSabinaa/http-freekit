@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 8 of the 361 documented bugs are not fully fixed.**
+**No: 7 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 353 |
-| Partially fixed | 2 |
+| Fixed | 354 |
+| Partially fixed | 1 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2373,8 +2373,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-142 — Medium — cURL paste corrupts valid multi-data commands
 
-- Status: **Partially fixed**.
-- Resolution: Repeated data, single-quoted backslashes, and Unicode Basic auth are improved. Quoted Windows paths still lose backslashes, an empty data argument consumes the following option, lowercase content-type can gain a conflicting default, `--data-urlencode` is not curl-compatible, and `@file` modes are treated as literal text.
+- Status: **Fixed**.
+- Resolution: Repeated data options are joined in command order, empty quoted arguments remain distinct tokens, and shell quoting preserves single-quoted plus non-special double-quoted backslashes. URL-encoded data now implements curl's `content`, `=content`, and `name=content` forms with UTF-8 percent encoding. File-backed data forms that cannot be reconstructed from clipboard text are rejected with a visible error instead of being sent literally. Header lookup remains case-insensitive and Basic auth encodes Unicode credentials as UTF-8.
+- Regression coverage: `test/bug-142-curl-parser.test.js` covers mixed repeated data options, all representable URL-encoded forms, quoted Windows paths, empty data, lowercase Content-Type, Unicode Basic auth, literal `--data-raw @...`, safe rejection of file-backed operands, and paste-handler error/empty-body behavior.
 
 - Evidence: every `-d`, `--data`, `--data-raw`, or `--data-binary` overwrites `result.body` at `src/ui/app.js:6511-6513`, although cURL joins repeated data options with `&`. `--data-urlencode` is copied without encoding at `:6514-6519`; the tokenizer strips backslashes inside single quotes at `:6487-6492`, and Unicode basic-auth values can throw through `btoa()` at `:6524-6525`.
 - Impact: the Send request differs from the pasted command, and some valid cURL input aborts paste handling entirely.

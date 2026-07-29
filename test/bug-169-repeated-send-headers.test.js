@@ -12,7 +12,7 @@ const editorStart = rendererSource.indexOf('let sendHeadersList = []');
 const editorEnd = rendererSource.indexOf('// ============ SEND TAB MANAGEMENT', editorStart);
 const normalizeStart = rendererSource.indexOf('function normalizeSendHeaderRows(');
 const normalizeEnd = rendererSource.indexOf('function parseSendTabId(', normalizeStart);
-const curlStart = rendererSource.indexOf('function encodeCurlDataUrlValue(');
+const curlStart = rendererSource.indexOf('function encodeCurlComponent(');
 const curlEnd = rendererSource.indexOf('// ============ SEND REQUEST', curlStart);
 assert.notEqual(editorStart, -1);
 assert.notEqual(editorEnd, -1);
