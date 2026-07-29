@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 20 of the 361 documented bugs are not fully fixed.**
+**No: 19 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 341 |
+| Fixed | 342 |
 | Partially fixed | 6 |
-| Open | 14 |
+| Open | 13 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2204,7 +2204,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-079 — Medium — Current Send edits are lost on reload/exit
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: The renderer now captures the active Send editor synchronously during `beforeunload` and merges it with every locally queued tab upsert and deletion. Successful unload persistence invalidates older queued writers, preserving the final URL, headers, body, body mode, format, and form state across Reload, New Session, and normal application exit without discarding other windows' tabs.
+- Regression coverage: `test/bug-079-send-unload-persistence.test.js` covers unsent edits, preservation of remote tabs, delayed stale writers, queued deletion tombstones, and unload-handler registration.
 
 - Evidence: URL/body edits update only current DOM/editor state (`src/ui/index.html:230-235`, `src/ui/app.js:6651,6780-6821`). `saveSendTabState()` persists only during selected tab operations, sending, or cURL paste (`app.js:7009-7036,7124-7160,7329,9553`); there is no unload save.
 - Impact: unsent edits in the active tab silently revert after Reload, New Session, or application exit.

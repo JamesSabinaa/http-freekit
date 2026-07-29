@@ -9018,6 +9018,9 @@
     const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
     const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace';
     let sendTabPersistenceQueue = Promise.resolve();
+    let sendTabPersistenceEpoch = 0;
+    const pendingSendTabUpserts = new Map();
+    const pendingSendTabDeletions = new Set();
 
     function normalizeSendHeaderRows(headers) {
       const rows = [];
@@ -9236,9 +9239,25 @@
         .map(serializeSendTab)
         .filter(Boolean);
       const deletions = Array.isArray(deletedTabIds) ? deletedTabIds.slice() : [];
+      for (const tab of upserts) {
+        if (!pendingSendTabDeletions.has(tab.id)) pendingSendTabUpserts.set(tab.id, tab);
+      }
+      for (const id of deletions) {
+        if (parseSendTabId(id) === null) continue;
+        pendingSendTabDeletions.add(id);
+        pendingSendTabUpserts.delete(id);
+      }
+      const persistenceEpoch = sendTabPersistenceEpoch;
       const persist = () => withSendTabStorageLock(() => {
+        if (persistenceEpoch !== sendTabPersistenceEpoch) return readStoredSendWorkspace();
         const workspace = mergeStoredSendWorkspace(readStoredSendWorkspace(), upserts, deletions);
-        safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace));
+        const saved = safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace));
+        if (saved) {
+          for (const tab of upserts) {
+            if (pendingSendTabUpserts.get(tab.id) === tab) pendingSendTabUpserts.delete(tab.id);
+          }
+          for (const id of deletions) pendingSendTabDeletions.delete(id);
+        }
         return workspace;
       });
       const pending = sendTabPersistenceQueue.then(persist, persist);
@@ -9291,9 +9310,9 @@
       } catch {}
     }
 
-    function saveSendTabState() {
+    function captureActiveSendTabState() {
       const tab = sendTabs.find(t => t.id === activeSendTab);
-      if (!tab) return;
+      if (!tab) return null;
       tab.method = document.getElementById('sendMethod')?.value || 'GET';
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
@@ -9303,8 +9322,31 @@
       tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
       tab.multipartFields = cloneSendFormFields(sendMultipartFields);
       tab.multipartBoundary = sendMultipartBoundary;
-      // Persist tabs to localStorage
-      persistSendTabs([tab]);
+      return tab;
+    }
+
+    function saveSendTabState() {
+      const tab = captureActiveSendTabState();
+      if (!tab) return;
+      return persistSendTabs([tab]);
+    }
+
+    function persistActiveSendTabBeforeUnload() {
+      const tab = serializeSendTab(captureActiveSendTabState());
+      if (tab && !pendingSendTabDeletions.has(tab.id)) {
+        pendingSendTabUpserts.set(tab.id, tab);
+      }
+      const workspace = mergeStoredSendWorkspace(
+        readStoredSendWorkspace(),
+        Array.from(pendingSendTabUpserts.values()),
+        Array.from(pendingSendTabDeletions)
+      );
+      // beforeunload cannot await the cross-window lock. This final synchronous
+      // merge includes every queued local change, then invalidates older queued
+      // writers so they cannot replace the just-captured editor contents.
+      if (safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace))) {
+        sendTabPersistenceEpoch++;
+      }
     }
 
     function restoreSendTabs() {
@@ -12631,6 +12673,7 @@
     restoreSendTabs();
     initializeSendTabs();
     window.addEventListener('storage', handleSendTabStorageEvent);
+    window.addEventListener('beforeunload', persistActiveSendTabBeforeUnload);
 
     // Apply hash-based routing on initial page load
     if (window.location.hash) {
