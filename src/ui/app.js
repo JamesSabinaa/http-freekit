@@ -8452,6 +8452,9 @@
 
     function moveRuleToGroup(ruleId, groupId) {
       if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress || mockCollectionMutationCount > 0) return;
+      const targetGroup = mockRules.find(rule => rule.id === groupId && rule.type === 'group');
+      if (targetGroup?.collapsed === true && ruleId === mockEditingRule
+          && !preserveOpenMockEdit(null)) return;
       return _queueMockCollectionMutation(async () => {
         try {
           const res = await fetch(API_BASE + '/api/mock-rules/move-to-group', {

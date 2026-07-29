@@ -18,9 +18,15 @@ const editorSource = section('function preserveOpenMockEdit', 'function toggleMo
 const saveSource = section('function isMockMatcherComplete', '/** Apply a draft');
 const collapseAllSource = section('function collapseAllMockRules', 'function mockDragStart');
 const toggleGroupSource = section('function toggleMockGroup(groupId)', 'function toggleMockGroupEnabled');
+const moveToGroupSource = section('function moveRuleToGroup(ruleId, groupId)', 'async function ungroupRule');
 
-function createEditorHarness({ valid = false, expanded = ['A'], grouped = false } = {}) {
-  const calls = { renders: 0, toasts: [] };
+function createEditorHarness({
+  valid = false,
+  expanded = ['A'],
+  grouped = false,
+  collapsedTarget = false
+} = {}) {
+  const calls = { fetches: 0, renders: 0, toasts: [] };
   const context = { calls };
   vm.runInNewContext(`
     const baseAction = { type: 'fixed-response', status: 200, headers: {}, body: '' };
@@ -37,7 +43,7 @@ function createEditorHarness({ valid = false, expanded = ['A'], grouped = false 
     let mockRules = ${grouped
       ? `[
           { id: 'group-A', type: 'group', collapsed: false, items: [ruleA] },
-          { id: 'group-B', type: 'group', collapsed: false, items: [ruleB] }
+          { id: 'group-B', type: 'group', collapsed: ${collapsedTarget}, items: [ruleB] }
         ]`
       : '[ruleA, ruleB]'};
     const mockDraftRules = new Map();
@@ -60,9 +66,16 @@ function createEditorHarness({ valid = false, expanded = ['A'], grouped = false 
     let mockRevertInProgress = false;
     let mockResetInProgress = false;
     let mockCollectionMutationCount = 0;
+    const API_BASE = 'http://api.test';
     function toast(message, type) { calls.toasts.push({ message, type }); }
     function renderMockRules() { calls.renders++; }
     function updateMockSaveButtons() {}
+    function _queueMockCollectionMutation(mutation) { return mutation(); }
+    async function fetch() {
+      calls.fetches++;
+      return { ok: true, json: async () => ({ success: true }) };
+    }
+    async function loadMockRules() {}
     function _findMockRuleDeep(ruleId) {
       for (const item of mockRules) {
         if (item.id === ruleId) return item;
@@ -82,8 +95,10 @@ function createEditorHarness({ valid = false, expanded = ['A'], grouped = false 
     ${editorSource}
     ${saveSource}
     ${toggleGroupSource}
+    ${moveToGroupSource}
     globalThis.harness = {
       collapseAllMockRules,
+      moveRuleToGroup,
       toggleMockGroup,
       toggleMockRuleExpand,
       state: () => ({
@@ -101,6 +116,7 @@ function createEditorHarness({ valid = false, expanded = ['A'], grouped = false 
     calls,
     harness: {
       collapseAllMockRules: context.harness.collapseAllMockRules,
+      moveRuleToGroup: context.harness.moveRuleToGroup,
       toggleMockGroup: context.harness.toggleMockGroup,
       toggleMockRuleExpand: context.harness.toggleMockRuleExpand,
       state: () => JSON.parse(JSON.stringify(context.harness.state()))
@@ -213,4 +229,29 @@ test('collapsing an unrelated group leaves the nested active editor untouched', 
     ['group-A', false],
     ['group-B', true]
   ]);
+});
+
+test('moving the active editor into a collapsed group preserves or blocks it first', async () => {
+  const invalid = createEditorHarness({ grouped: true, collapsedTarget: true });
+  await invalid.harness.moveRuleToGroup('A', 'group-B');
+  assert.equal(invalid.calls.fetches, 0);
+  assert.equal(invalid.harness.state().editingRule, 'A');
+  assert.equal(invalid.harness.state().hasEditDraft, true);
+  assert.equal(invalid.harness.state().draftCount, 0);
+
+  const valid = createEditorHarness({ grouped: true, collapsedTarget: true, valid: true });
+  await valid.harness.moveRuleToGroup('A', 'group-B');
+  assert.equal(valid.calls.fetches, 1);
+  assert.equal(valid.harness.state().editingRule, null);
+  assert.equal(valid.harness.state().draftCount, 1);
+  assert.equal(valid.harness.state().savedPath, '/changed');
+});
+
+test('moving the active editor into an expanded group keeps the live edit open', async () => {
+  const editor = createEditorHarness({ grouped: true });
+  await editor.harness.moveRuleToGroup('A', 'group-B');
+  assert.equal(editor.calls.fetches, 1);
+  assert.equal(editor.harness.state().editingRule, 'A');
+  assert.equal(editor.harness.state().hasEditDraft, true);
+  assert.equal(editor.harness.state().draftCount, 0);
 });
