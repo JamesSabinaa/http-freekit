@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 26 of the 361 documented bugs are not fully fixed.**
+**No: 25 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 335 |
-| Partially fixed | 7 |
+| Fixed | 336 |
+| Partially fixed | 6 |
 | Open | 19 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2043,8 +2043,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-347 — High/Medium — Browser open actions bypass lifecycle serialization
 
-- Status: **Partially fixed**.
-- Resolution: Browser Open now runs inside the manager's per-interceptor exclusive operation and safely handles a browser closing during the action. Focus still calls the interceptor outside that serialization, so it can race Stop or replacement activation against stale process state.
+- Status: **Fixed**.
+- Resolution: Browser Open and Focus now both run inside the manager's per-interceptor exclusive operation. Focus can no longer overlap Stop, replacement activation, or another browser operation and act on lifecycle state that changes underneath it.
+- Regression coverage: `test/bug-347-browser-focus-serialization.test.js` holds Focus and Stop at their operation boundaries and verifies that each rejects a concurrent operation for the same browser while unrelated browser operations remain independent.
 
 - Evidence: `InterceptorManager.openUrl()` calls an active browser's `openUrl()` outside `_runExclusive()` at `src/interceptors/interceptor-manager.js:115-127`; `focus()` bypasses the lock similarly at `:107-113`. Stop can clear the browser's process, profile, and proxy state while the open path is between its active checks and launch.
 - Impact: a URL action can finish after Stop and spawn an untracked browser using cleared `profileDir` or `proxyPort` values. Focus can likewise target stale or already terminated process state.

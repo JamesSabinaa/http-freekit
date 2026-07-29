@@ -250,7 +250,7 @@ export class InterceptorManager {
     if (typeof interceptor.focus !== 'function') {
       throw new Error(`${interceptor.name} cannot be focused`);
     }
-    return await interceptor.focus();
+    return await this._runExclusive(id, interceptor, () => interceptor.focus());
   }
 
   async openUrl(id, proxyPort, url) {
