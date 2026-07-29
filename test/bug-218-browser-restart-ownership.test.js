@@ -10,7 +10,8 @@ import { ExistingBrowserInterceptor } from '../src/interceptors/existing-browser
 import { InterceptorManager } from '../src/interceptors/interceptor-manager.js';
 import {
   cleanupStaleBrowserProfiles,
-  createManagedBrowserProfile
+  createManagedBrowserProfile,
+  parsePosixProcessSnapshot
 } from '../src/interceptors/browser-lifecycle.js';
 
 const JOURNAL_NAME = 'existing-browser-chrome-ownership.json';
@@ -50,6 +51,12 @@ function processRow(pid, executable, startedAt = 1722254400000) {
     argv0: executable,
     commandName: path.basename(executable)
   };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(resolvePromise => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
 
 test('startup classifies exact browser processes from a dead profile owner as recoverable', t => {
@@ -153,6 +160,64 @@ test('unknown isolated-profile process state preserves recovery ownership withou
   browser._stopStatusMonitor();
 });
 
+test('a delayed isolated-profile refresh cannot resurrect state after Stop', async t => {
+  const profileDir = createManagedBrowserProfile('chrome');
+  t.after(() => fs.rmSync(profileDir, { recursive: true, force: true }));
+  const browser = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+  browser.recoverProfiles([{
+    profileDir,
+    browserType: 'chrome',
+    processIds: [8230],
+    proxyPort: 8080
+  }]);
+  browser._stopStatusMonitor();
+  const snapshot = deferred();
+  browser._getRelatedProcessIds = () => snapshot.promise;
+
+  const refresh = browser.isActive();
+  browser.recoveredProfilesGeneration += 1;
+  browser.recoveredProfiles.clear();
+  browser.active = false;
+  browser.cleanupPending = false;
+  snapshot.resolve(new Set([8230]));
+
+  assert.equal(await refresh, false);
+  assert.equal(browser.active, false);
+  assert.equal(browser.recoveredProfiles.size, 0);
+});
+
+test('macOS Global Chrome capture restores the full executable identity safely', async () => {
+  const browserPath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const rows = parsePosixProcessSnapshot(
+    ` 8231 Google Chrome 8231 1 Wed Jul 29 10:20:30 2026 ${browserPath} --proxy-server=127.0.0.1:8080`
+  );
+  assert.equal(rows[0].argv0, '/Applications/Google');
+  const interceptor = new ExistingBrowserInterceptor(
+    'existing-chrome',
+    'Global Chrome',
+    'chrome'
+  );
+  interceptor._getPlatform = () => 'darwin';
+  interceptor._getProcessSnapshot = async () => rows;
+
+  const ownership = await interceptor._captureLaunchedOwnership({ pid: 8231 }, browserPath);
+
+  assert.equal(ownership.executable, browserPath);
+  assert.equal(interceptor._observationMatches(
+    ownership,
+    await interceptor._observeOwnedProcess(ownership)
+  ), true);
+
+  const wrongPathRows = parsePosixProcessSnapshot(
+    ' 8231 Google Chrome 8231 1 Wed Jul 29 10:20:30 2026 /tmp/Google Chrome --proxy-server=127.0.0.1:8080'
+  );
+  interceptor._getProcessSnapshot = async () => wrongPathRows;
+  assert.equal(interceptor._observationMatches(
+    ownership,
+    await interceptor._observeOwnedProcess(ownership)
+  ), false);
+});
+
 test('Global Chrome ownership is journaled, adopted after restart, and revalidated before Stop', async t => {
   const dataDir = tempDir(t, 'http-freekit-bug-218-global-');
   const browserPath = process.platform === 'win32'
@@ -244,6 +309,42 @@ test('an immediate Global Chrome exit cannot leave stale restart ownership', asy
   assert.equal(interceptor.ownership, null);
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_NAME)), false);
+});
+
+test('a delayed Global Chrome refresh cannot resurrect ownership after Stop', async t => {
+  const dataDir = tempDir(t, 'http-freekit-bug-218-refresh-race-');
+  const recoveryFile = path.join(dataDir, JOURNAL_NAME);
+  const executable = process.platform === 'win32'
+    ? 'c:\\program files\\google\\chrome\\application\\chrome.exe'
+    : '/opt/google/chrome/chrome';
+  const ownership = {
+    version: 1,
+    id: 'existing-chrome',
+    browserType: 'chrome',
+    pid: 8232,
+    startedAt: 1722254400000,
+    executable,
+    platform: process.platform
+  };
+  fs.writeFileSync(recoveryFile, JSON.stringify(ownership));
+  const interceptor = new ExistingBrowserInterceptor(
+    'existing-chrome',
+    'Global Chrome',
+    'chrome',
+    { dataDir }
+  );
+  const snapshot = deferred();
+  interceptor._getProcessSnapshot = () => snapshot.promise;
+
+  const refresh = interceptor.isActive();
+  interceptor._clearOwnership(interceptor.ownership);
+  interceptor.active = false;
+  snapshot.resolve([processRow(ownership.pid, executable, ownership.startedAt)]);
+
+  assert.equal(await refresh, false);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.ownership, null);
+  assert.equal(fs.existsSync(recoveryFile), false);
 });
 
 test('Global Chrome restart ownership never signals a reused PID', async t => {

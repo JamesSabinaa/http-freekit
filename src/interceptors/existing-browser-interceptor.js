@@ -163,16 +163,35 @@ export class ExistingBrowserInterceptor {
     const row = snapshot.find(candidate => candidate?.pid === ownership.pid);
     if (!row) return { state: 'absent' };
     try {
+      const platform = this._getPlatform();
       const startedAt = typeof row.startedAt === 'number'
         ? row.startedAt
         : Date.parse(row.startedAt);
       if (!Number.isFinite(startedAt)) throw new Error('Browser process start identity is unavailable');
-      const authoritativePosixCommand = this._getPlatform() !== 'win32' &&
+      const authoritativePosixCommand = platform !== 'win32' &&
         typeof row.commandName === 'string' && path.posix.isAbsolute(row.commandName)
         ? row.commandName
         : null;
-      const executable = row.executablePath || authoritativePosixCommand ||
-        row.argv0 || (this._getPlatform() === 'win32' ? null : row.commandName);
+      let executable = row.executablePath || authoritativePosixCommand || row.argv0 ||
+        (platform === 'win32' ? null : row.commandName);
+
+      // macOS `ps` flattens an unquoted application path containing spaces, so
+      // argv0 alone becomes `/Applications/Google`. Pair the authoritative comm
+      // name with the exact expected command prefix before restoring the full
+      // executable identity. A same-named executable at another path cannot
+      // satisfy this check.
+      if (platform === 'darwin' && ownership.executable && !row.executablePath &&
+          !authoritativePosixCommand) {
+        const expected = this._normalizeExecutableIdentity(ownership.executable, platform);
+        const commandName = typeof row.commandName === 'string'
+          ? row.commandName.trim().normalize('NFC')
+          : '';
+        const command = typeof row.command === 'string' ? row.command.trimStart() : '';
+        const expectedName = path.posix.basename(expected);
+        const exactCommandPrefix = command === expected || command.startsWith(`${expected} `) ||
+          command === `"${expected}"` || command.startsWith(`"${expected}" `);
+        if (commandName === expectedName && exactCommandPrefix) executable = expected;
+      }
       return {
         state: 'running',
         identity: {
@@ -197,6 +216,9 @@ export class ExistingBrowserInterceptor {
     const ownership = this.ownership;
     if (!ownership) return this.active;
     const observation = await this._observeOwnedProcess(ownership);
+    if (!this._sameOwnership(this.ownership, ownership)) {
+      return Boolean(this.active && (this.process || this.ownership));
+    }
     if (observation.state === 'unknown') {
       this.active = true;
       return true;
@@ -218,14 +240,15 @@ export class ExistingBrowserInterceptor {
   }
 
   async _captureLaunchedOwnership(launchedProcess, browserPath) {
+    const expectedExecutable = this._normalizeExecutableIdentity(browserPath);
     const provisional = {
-      pid: launchedProcess.pid
+      pid: launchedProcess.pid,
+      executable: expectedExecutable
     };
     const observation = await this._observeOwnedProcess(provisional);
     if (observation.state !== 'running') {
       throw observation.error || new Error('Global browser process exited before ownership was recorded');
     }
-    const expectedExecutable = this._normalizeExecutableIdentity(browserPath);
     if (observation.identity.executable !== expectedExecutable) {
       throw new Error('Launched Global browser executable identity does not match the selected browser');
     }

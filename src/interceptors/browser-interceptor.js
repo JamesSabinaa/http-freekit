@@ -40,6 +40,7 @@ export class BrowserInterceptor {
     this.lifecycleGeneration = 0;
     this.cleanupPending = false;
     this.recoveredProfiles = new Map();
+    this.recoveredProfilesGeneration = 0;
     this.startupConfirmationMs = 500;
   }
 
@@ -155,6 +156,7 @@ export class BrowserInterceptor {
     for (const record of recovered) {
       this.recoveredProfiles.set(record.profileDir, record);
     }
+    this.recoveredProfilesGeneration += 1;
     this.active = true;
     this.cleanupPending = false;
     this._startRecoveredStatusMonitor();
@@ -162,6 +164,7 @@ export class BrowserInterceptor {
   }
 
   async _refreshRecoveredProfiles() {
+    const recoveredProfilesGeneration = this.recoveredProfilesGeneration;
     let anyRunning = false;
     let cleanupFailed = false;
     for (const [profileDir, record] of [...this.recoveredProfiles]) {
@@ -169,6 +172,10 @@ export class BrowserInterceptor {
       try {
         processIds = await this._getRelatedProcessIds(profileDir, []);
       } catch (err) {
+        if (recoveredProfilesGeneration !== this.recoveredProfilesGeneration ||
+            this.recoveredProfiles.get(profileDir) !== record) {
+          return this.active;
+        }
         record.running = true;
         anyRunning = true;
         if (!this.lifecycleInspectionErrorLogged) {
@@ -176,6 +183,10 @@ export class BrowserInterceptor {
           this.lifecycleInspectionErrorLogged = true;
         }
         continue;
+      }
+      if (recoveredProfilesGeneration !== this.recoveredProfilesGeneration ||
+          this.recoveredProfiles.get(profileDir) !== record) {
+        return this.active;
       }
 
       this.lifecycleInspectionErrorLogged = false;
@@ -191,6 +202,7 @@ export class BrowserInterceptor {
       else cleanupFailed = true;
     }
 
+    if (recoveredProfilesGeneration !== this.recoveredProfilesGeneration) return this.active;
     this.active = anyRunning;
     this.cleanupPending = cleanupFailed;
     return anyRunning;
@@ -715,6 +727,7 @@ export class BrowserInterceptor {
   async _deactivateRecoveredProfiles() {
     console.log(`[Interceptor] Stopping recovered ${this.name} profile process tree(s)...`);
     this._stopStatusMonitor();
+    this.recoveredProfilesGeneration += 1;
     let anyRunning = false;
     const failures = [];
     let terminatedProcessCount = 0;
@@ -757,6 +770,7 @@ export class BrowserInterceptor {
     }
 
     this.recoveredProfiles.clear();
+    this.recoveredProfilesGeneration += 1;
     this.active = false;
     this.cleanupPending = false;
     this._emitStatus('inactive', {
