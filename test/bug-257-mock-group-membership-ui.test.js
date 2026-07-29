@@ -142,6 +142,8 @@ test('group markup exposes drop handling and grouped rules expose ungrouping', (
     mockEditingRule: null,
     mockEditDraft: null,
     mockRenamingRuleId: null,
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
     mockRules: [
       { id: 'top-level' },
       { id: 'target-group', type: 'group', collapsed: false, items: [{ id: 'nested' }] }

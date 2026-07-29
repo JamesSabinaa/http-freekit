@@ -11,7 +11,13 @@ assert.notEqual(functionStart, -1);
 assert.notEqual(functionEnd, -1);
 const deleteMockRuleSource = source.slice(functionStart, functionEnd);
 
-function createHarness({ ruleId = 'saved-rule', newDraft = false, response, fetchError } = {}) {
+function createHarness({
+  ruleId = 'saved-rule',
+  newDraft = false,
+  response,
+  fetchError,
+  saveInProgress = false
+} = {}) {
   const calls = { fetch: 0, load: 0, render: 0, update: 0, toasts: [] };
   const context = {
     calls,
@@ -26,6 +32,8 @@ function createHarness({ ruleId = 'saved-rule', newDraft = false, response, fetc
     const mockDraftRules = new Map([['${ruleId}', { title: 'unsaved draft' }]]);
     const mockExpandedRules = new Set(['${ruleId}']);
     const mockNewDraftIds = new Set(${newDraft ? `['${ruleId}']` : '[]'});
+    let mockSaveInProgress = ${saveInProgress};
+    let mockRevertInProgress = false;
     let mockEditingRule = '${ruleId}';
     let mockEditDraft = { title: 'live editor state' };
     let mockRules = [{ id: '${ruleId}', title: 'unsaved draft' }];
@@ -139,4 +147,20 @@ test('a brand-new unsaved draft still deletes locally without an API request', a
     { fetch: 0, load: 0, render: 1, update: 1 }
   );
   assertToasts(calls, [['Draft rule deleted', 'success']]);
+});
+
+test('deletion is blocked while a server save owns the draft snapshot', async () => {
+  const { harness, calls } = createHarness({
+    saveInProgress: true,
+    fetchError: new Error('fetch must not run while saving')
+  });
+
+  await harness.deleteMockRule('saved-rule');
+
+  assertSavedEditorPreserved(harness.state());
+  assert.deepEqual(
+    { fetch: calls.fetch, load: calls.load, render: calls.render, update: calls.update },
+    { fetch: 0, load: 0, render: 0, update: 0 }
+  );
+  assertToasts(calls, []);
 });

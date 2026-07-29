@@ -6619,6 +6619,8 @@
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
       const editingClass = isEditing ? ' mock-rule-editing' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
+      const serverMutationDisabled = mockSaveInProgress || mockRevertInProgress;
+      const serverMutationDisabledAttr = serverMutationDisabled ? ' disabled' : '';
 
       let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
 
@@ -6651,7 +6653,7 @@
 
       // 2. Save to server (when draft) or Save draft (when editing) or Edit (pencil icon)
       if (isDraft && !isEditing) {
-        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Save to server" aria-label="Save to server">';
+        html += '<button class="mock-toggle-btn mock-save-server" onclick="saveOneMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Save to server" aria-label="Save to server"' + serverMutationDisabledAttr + '>';
         html += '<i class="ph ph-floppy-disk" style="font-size:14px;"></i>';
         html += '</button>';
       }
@@ -6690,7 +6692,7 @@
       }
 
       // 6. Delete
-      html += '<button class="mock-toggle-btn" onclick="deleteMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;">';
+      html += '<button class="mock-toggle-btn mock-rule-delete" onclick="deleteMockRule(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Delete this rule" aria-label="Delete this rule" style="color:#ce3939;"' + serverMutationDisabledAttr + '>';
       html += '<i class="ph ph-trash-simple" style="font-size:14px;"></i>';
       html += '</button>';
 
@@ -8117,8 +8119,11 @@
 
     /** Send a single draft rule to the server */
     async function saveOneMockRule(draftId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       const draft = mockDraftRules.get(draftId);
       if (!draft) return;
+      mockSaveInProgress = true;
+      updateMockSaveButtons();
       try {
         const payload = { ...draft };
         delete payload.id;
@@ -8129,7 +8134,7 @@
             body: JSON.stringify(payload)
           });
           const data = await res.json();
-          if (data.error) throw new Error(data.error);
+          if (!res.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
         } else {
           const res = await fetch(`${API_BASE}/api/mock-rules/${encodeURIComponent(draftId)}`, {
             method: 'PUT',
@@ -8137,14 +8142,17 @@
             body: JSON.stringify(payload)
           });
           const data = await res.json();
-          if (data.error) throw new Error(data.error);
+          if (!res.ok || data.error) throw new Error(data.error || 'Server rejected the rule');
         }
         mockDraftRules.delete(draftId);
         mockNewDraftIds.delete(draftId);
         toast('Rule saved to server', 'success');
-        loadMockRules();
+        await loadMockRules();
       } catch (err) {
         toast('Error: ' + err.message, 'error');
+      } finally {
+        mockSaveInProgress = false;
+        updateMockSaveButtons();
       }
     }
 
@@ -8236,6 +8244,9 @@
       if (saveAllBtn) saveAllBtn.disabled = mockSaveInProgress || mockRevertInProgress;
       if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
       if (revertBtn) revertBtn.disabled = mockSaveInProgress || mockRevertInProgress;
+      document.querySelectorAll?.('.mock-save-server, .mock-rule-delete').forEach(button => {
+        button.disabled = mockSaveInProgress || mockRevertInProgress;
+      });
       if (unsavedBadge) {
         unsavedBadge.style.display = hasDrafts ? '' : 'none';
         unsavedBadge.textContent = mockDraftRules.size + ' unsaved change' + (mockDraftRules.size !== 1 ? 's' : '');
@@ -8243,6 +8254,7 @@
     }
 
     async function deleteMockRule(ruleId) {
+      if (mockSaveInProgress || mockRevertInProgress) return;
       try {
         if (mockNewDraftIds.has(ruleId)) {
           // Unsaved draft — remove locally only (it's not on the server yet)

@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 12 of the 361 documented bugs are not fully fixed.**
+**No: 11 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 349 |
-| Partially fixed | 6 |
+| Fixed | 350 |
+| Partially fixed | 5 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2317,8 +2317,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-136 — Medium — Concurrent or retried Save All duplicates new mock rules
 
-- Status: **Partially fixed**.
-- Resolution: Save All itself is serialized, but per-rule Save controls share no lock with it or with each other; overlapping Save-to-server actions can still POST the same new draft twice, and revert/delete remain enabled during the snapshot.
+- Status: **Fixed**.
+- Resolution: Save All and every per-rule Save-to-server action now acquire the same synchronous in-flight lock before issuing a request. The lock disables the global Save All/Revert controls and each rendered per-rule Save/Delete control, while direct delete and revert handlers also reject attempts during the owned snapshot. Each successful batch entry is still removed immediately, so a retry after a later failure cannot upload it again.
+- Regression coverage: `test/bug-136-mock-save-all-lock.test.js` holds a new-rule POST open and verifies duplicate per-rule saves, Save All overlap in both directions, lock release, per-row disabled state, and incremental batch cleanup. `test/bug-210-mock-delete-draft.test.js` verifies deletion cannot mutate an in-flight save snapshot.
 
 - Evidence: the button invokes `saveAllMockRules()` without being disabled at `src/ui/index.html:184-185`. Every invocation snapshots all drafts and POSTs new ones without IDs at `src/ui/app.js:6117-6148`; drafts clear only after the whole batch succeeds.
 - Impact: double-clicking creates equivalent rules with different IDs, and retrying after a later batch item fails duplicates every earlier successful new rule.
