@@ -4,7 +4,8 @@ import test from 'node:test';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
-  normalizeApiSpecMatchHost
+  normalizeApiSpecMatchHost,
+  validateOpenApiSubmission
 } from '../src/api/openapi-validation.js';
 import { ProxyServer } from '../src/proxy/proxy-server.js';
 
@@ -46,6 +47,22 @@ test('configured and observed API hosts require canonical exact equality', () =>
     assert.equal(normalizeApiSpecMatchHost(malformed), null, malformed);
     assert.equal(proxy.matchApiSpec('GET', '/v1/a.b', malformed), null, malformed);
   }
+});
+
+test('bare captured IPv6 hostnames match bracketed OpenAPI server URLs', () => {
+  const proxy = new ProxyServer(null);
+  proxy.addApiSpec({
+    title: 'IPv6 API',
+    baseUrl: 'https://[2001:db8::1]:8443',
+    spec: { paths: { '/health': { get: { operationId: 'health' } } } }
+  });
+
+  assert.equal(getApiSpecBaseHost('https://[2001:db8::1]:8443'), '2001:db8::1');
+  assert.equal(normalizeApiSpecMatchHost('2001:db8::1'), '2001:db8::1');
+  assert.equal(normalizeApiSpecMatchHost('[2001:db8::1]:443'), '2001:db8::1');
+  assert.equal(proxy.matchApiSpec('GET', '/health', '2001:db8::1').operationId, 'health');
+  assert.equal(proxy.matchApiSpec('GET', '/health', '[2001:db8::1]:443').operationId, 'health');
+  assert.equal(proxy.matchApiSpec('GET', '/health', '2001:db8::2'), null);
 });
 
 test('regex punctuation in OpenAPI path literals matches only itself', () => {
@@ -90,4 +107,28 @@ test('compiled patterns escape all literal segments around parameters', () => {
   assert.equal(pattern.test('/v1/42/price.$+(USD)'), true);
   assert.equal(pattern.test('/v1/42/priceX$+(USD)'), false);
   assert.equal(pattern.test('/v1/42/price.$+USD'), false);
+});
+
+test('multiple placeholders in one segment are rejected without compiling a backtracking regex', () => {
+  const ambiguousPath = '/v1/{a}{b}{c}{d}{e}{f}{g}{h}/suffix';
+  assert.equal(compileOpenApiPathPattern(ambiguousPath), null);
+
+  const validation = validateOpenApiSubmission({
+    title: 'Ambiguous',
+    baseUrl: 'api.example.com',
+    spec: {
+      paths: {
+        [ambiguousPath]: { get: { operationId: 'ambiguous' } }
+      }
+    }
+  });
+  assert.match(validation.error, /at most one parameter per path segment/);
+
+  const proxy = new ProxyServer(null);
+  proxy.apiSpecs = [{
+    title: 'Legacy ambiguous',
+    baseUrl: 'api.example.com',
+    spec: { paths: { [ambiguousPath]: { get: { operationId: 'legacy' } } } }
+  }];
+  assert.equal(proxy.matchApiSpec('GET', '/v1/xxxxxxxxxxxxxxxxxxxxxxxx/suffiy', 'api.example.com'), null);
 });

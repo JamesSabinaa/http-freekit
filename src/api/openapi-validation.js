@@ -6,6 +6,13 @@ export function isObjectRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function canonicalizeApiHostname(hostname) {
+  return String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+}
+
 export function getApiSpecBaseHost(baseUrl) {
   if (typeof baseUrl !== 'string') return null;
   const trimmed = baseUrl.trim();
@@ -19,7 +26,7 @@ export function getApiSpecBaseHost(baseUrl) {
     const parsed = new URL(candidate);
     if (!['http:', 'https:'].includes(parsed.protocol)) return null;
     if (!parsed.hostname || parsed.username || parsed.password) return null;
-    return parsed.hostname.toLowerCase().replace(/\.$/, '');
+    return canonicalizeApiHostname(parsed.hostname);
   } catch {
     return null;
   }
@@ -29,14 +36,24 @@ export function normalizeApiSpecMatchHost(host) {
   if (typeof host !== 'string') return null;
   const trimmed = host.trim();
   if (!trimmed || /[\u0000-\u001f\u007f\/?#@]/.test(trimmed)) return null;
-  try {
-    const parsed = new URL(`http://${trimmed}`);
+  const parseAuthority = authority => {
+    const parsed = new URL(`http://${authority}`);
     if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
       return null;
     }
-    return parsed.hostname.toLowerCase().replace(/\.$/, '');
+    return canonicalizeApiHostname(parsed.hostname);
+  };
+  try {
+    return parseAuthority(trimmed);
   } catch {
-    return null;
+    // Captured URL.hostname values for IPv6 are bare (`::1`), while URL
+    // authorities require brackets. Retry only that unambiguous host shape.
+    if (!trimmed.includes(':') || trimmed.startsWith('[') || trimmed.endsWith(']')) return null;
+    try {
+      return parseAuthority(`[${trimmed}]`);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -44,6 +61,11 @@ export function compileOpenApiPathPattern(pathPattern) {
   if (typeof pathPattern !== 'string') return null;
   const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const parameterPattern = /\{[^{}\/]+\}/g;
+  for (const segment of pathPattern.split('/')) {
+    parameterPattern.lastIndex = 0;
+    if (parameterPattern.exec(segment) && parameterPattern.exec(segment)) return null;
+  }
+  parameterPattern.lastIndex = 0;
   let source = '^';
   let cursor = 0;
   for (const match of pathPattern.matchAll(parameterPattern)) {
@@ -91,6 +113,11 @@ export function validateOpenApiSubmission(payload) {
   for (const [pathPattern, pathItem] of Object.entries(spec.paths || {})) {
     if (!pathPattern.startsWith('/')) {
       return { error: `spec.paths key ${JSON.stringify(pathPattern)} must start with /` };
+    }
+    if (!compileOpenApiPathPattern(pathPattern)) {
+      return {
+        error: `spec.paths key ${JSON.stringify(pathPattern)} must contain at most one parameter per path segment`
+      };
     }
     if (!isObjectRecord(pathItem)) {
       return { error: `spec.paths[${JSON.stringify(pathPattern)}] must be an object` };
