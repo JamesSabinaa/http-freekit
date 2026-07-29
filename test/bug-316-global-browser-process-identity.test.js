@@ -127,20 +127,20 @@ test('Windows snapshots expose sanitized executable paths and argv0 separately f
   assert.equal(rows[1].argv0, 'notepad.exe');
 });
 
-test('POSIX snapshots merge robust comm fields without changing profile command tracking', () => {
+test('POSIX snapshots use macOS comm when application paths are unquoted', () => {
   const profileDir = '/tmp/HTTP FreeKit/http-freekit-chrome-live';
   const processOutput = [
-    ` 201 Google Chrome 201 1 Sun Jul 26 10:20:30 2026 "${MAC_CHROME}" --user-data-dir="${profileDir}"`,
+    ` 201 Google Chrome 201 1 Sun Jul 26 10:20:30 2026 ${MAC_CHROME} --user-data-dir=${profileDir}`,
     ' 202 Google Chrome Helper (Renderer) 202 201 Sun Jul 26 10:20:31 2026 chrome --type=renderer'
   ].join('\n');
 
   const rows = parsePosixProcessSnapshot(processOutput);
 
   assert.equal(rows[0].commandName, 'Google Chrome');
-  assert.equal(rows[0].argv0, MAC_CHROME);
+  assert.equal(rows[0].argv0, '/Applications/Google');
   assert.equal(
     rows[0].command,
-    `"${MAC_CHROME}" --user-data-dir="${profileDir}"`
+    `${MAC_CHROME} --user-data-dir=${profileDir}`
   );
   assert.equal(rows[1].commandName, 'Google Chrome Helper (Renderer)');
   assert.equal(rows[1].argv0, 'chrome');

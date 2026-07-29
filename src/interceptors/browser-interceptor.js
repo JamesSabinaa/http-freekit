@@ -826,9 +826,109 @@ exit 1
       if (!expectedBundleIdentifier) {
         throw new Error(`Focusing ${this.name} is not supported on macOS`);
       }
-      const script = `
+      const observationScript = `
 ObjC.import('AppKit');
 const candidateProcesses = ${JSON.stringify(candidateProcesses)};
+const expectedBundleIdentifier = ${JSON.stringify(expectedBundleIdentifier)};
+const observedApplications = [];
+for (const candidate of candidateProcesses) {
+  const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(candidate.pid);
+  if (!app) continue;
+  const bundleIdentifier = ObjC.unwrap(app.bundleIdentifier);
+  if (bundleIdentifier !== expectedBundleIdentifier) continue;
+  const launchDate = app.launchDate;
+  if (!launchDate) continue;
+  const launchTime = Number(launchDate.timeIntervalSince1970);
+  if (!Number.isFinite(launchTime) ||
+      Math.floor(launchTime) !== Math.floor(candidate.startedAt / 1000)) continue;
+  observedApplications.push({ pid: candidate.pid, launchTime });
+}
+JSON.stringify(observedApplications);
+`;
+      let observedOutput;
+      try {
+        observedOutput = await this._execFile(
+          'osascript',
+          ['-l', 'JavaScript', '-e', observationScript],
+          { encoding: 'utf8', timeout: 5000 }
+        );
+      } catch {
+        throw new Error(`Could not safely verify the managed ${this.name} application process`);
+      }
+      if (!this._isLifecycleCurrent(lifecycle)) {
+        throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
+      }
+
+      let observedApplications;
+      try {
+        observedApplications = JSON.parse(String(observedOutput).trim());
+      } catch {
+        throw new Error(`Could not safely verify the managed ${this.name} application process`);
+      }
+      const candidateByPid = new Map(candidateProcesses.map(candidate => [candidate.pid, candidate]));
+      const observedPids = new Set();
+      if (!Array.isArray(observedApplications) || observedApplications.some(observed => {
+        const candidate = candidateByPid.get(observed?.pid);
+        const invalid = !candidate || observedPids.has(observed.pid) ||
+          !Number.isFinite(observed.launchTime) ||
+          Math.floor(observed.launchTime) !== Math.floor(candidate.startedAt / 1000);
+        observedPids.add(observed?.pid);
+        return invalid;
+      })) {
+        throw new Error(`Could not safely verify the managed ${this.name} application process`);
+      }
+      if (observedApplications.length === 0) {
+        throw new Error(`Could not find the managed ${this.name} application process to focus`);
+      }
+
+      let revalidatedSnapshot;
+      try {
+        revalidatedSnapshot = await this._getProcessSnapshot();
+        if (!Array.isArray(revalidatedSnapshot)) throw new Error('process snapshot is not an array');
+      } catch (err) {
+        if (this._isLifecycleCurrent(lifecycle)) {
+          this.lastProcessInspectionAt = Date.now();
+          this.lastProcessInspectionFailed = true;
+          if (!this.lifecycleInspectionErrorLogged) {
+            console.warn(`[Interceptor] Could not inspect ${this.name} process tree: ${err.message}`);
+            this.lifecycleInspectionErrorLogged = true;
+          }
+        }
+        throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
+      }
+      const revalidatedIds = collectRelatedProcessIds(
+        revalidatedSnapshot,
+        lifecycle.profileDir,
+        [],
+        platform
+      );
+      if (!this._isLifecycleCurrent(lifecycle)) {
+        throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
+      }
+      this.trackedProcessIds = revalidatedIds;
+      this.lastProcessInspectionAt = Date.now();
+      this.lastProcessInspectionFailed = false;
+      this.lifecycleInspectionErrorLogged = false;
+      const revalidatedByPid = new Map(revalidatedSnapshot.map(processInfo => [
+        processInfo?.pid,
+        processInfo
+      ]));
+      observedApplications = observedApplications.filter(observed => {
+        const original = candidateByPid.get(observed.pid);
+        const revalidated = revalidatedByPid.get(observed.pid);
+        const revalidatedStartedAt = typeof revalidated?.startedAt === 'number'
+          ? revalidated.startedAt
+          : Date.parse(revalidated?.startedAt);
+        return revalidatedIds.has(observed.pid) && Number.isFinite(revalidatedStartedAt) &&
+          Math.floor(revalidatedStartedAt / 1000) === Math.floor(original.startedAt / 1000);
+      });
+      if (observedApplications.length === 0) {
+        throw new Error(`Could not find the managed ${this.name} application process to focus`);
+      }
+
+      const activationScript = `
+ObjC.import('AppKit');
+const candidateProcesses = ${JSON.stringify(observedApplications)};
 const expectedBundleIdentifier = ${JSON.stringify(expectedBundleIdentifier)};
 let focused = false;
 for (const candidate of candidateProcesses) {
@@ -838,9 +938,8 @@ for (const candidate of candidateProcesses) {
   if (bundleIdentifier !== expectedBundleIdentifier) continue;
   const launchDate = app.launchDate;
   if (!launchDate) continue;
-  const launchTime = Number(launchDate.timeIntervalSince1970) * 1000;
-  if (!Number.isFinite(launchTime) ||
-      Math.floor(launchTime / 1000) !== Math.floor(candidate.startedAt / 1000)) continue;
+  const launchTime = Number(launchDate.timeIntervalSince1970);
+  if (!Number.isFinite(launchTime) || launchTime !== candidate.launchTime) continue;
   if (app.activateWithOptions($.NSApplicationActivateIgnoringOtherApps)) {
     focused = true;
     break;
@@ -848,7 +947,7 @@ for (const candidate of candidateProcesses) {
 }
 if (!focused) throw new Error('No matching managed browser application could be activated');
 `;
-      await this._execFile('osascript', ['-l', 'JavaScript', '-e', script], {
+      await this._execFile('osascript', ['-l', 'JavaScript', '-e', activationScript], {
         stdio: 'ignore',
         timeout: 5000
       });

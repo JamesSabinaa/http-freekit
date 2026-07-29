@@ -110,12 +110,31 @@ function sanitizeProcessIdentity(value) {
   return sanitized;
 }
 
+function flattenedCommandHasExactArgument(commandLine, prefix, value) {
+  const command = String(commandLine || '');
+  const token = prefix + value;
+  let index = command.indexOf(token);
+  while (index !== -1) {
+    const startsAtBoundary = index === 0 || /\s/.test(command[index - 1]);
+    const suffix = command.slice(index + token.length);
+    const endsAtBoundary = suffix === '' || /^\s+-/.test(suffix);
+    if (startsAtBoundary && endsAtBoundary) return true;
+    index = command.indexOf(token, index + 1);
+  }
+  return false;
+}
+
 export function getProcessArgv0(commandLine, platform = process.platform) {
   return sanitizeProcessIdentity(splitProcessCommandLine(commandLine, platform)[0]);
 }
 
 /** Match only browser launch arguments that select this exact profile. */
-export function commandUsesBrowserProfile(commandLine, profileDir, platform = process.platform) {
+export function commandUsesBrowserProfile(
+  commandLine,
+  profileDir,
+  platform = process.platform,
+  commandName = null
+) {
   if (typeof profileDir !== 'string' || !profileDir) return false;
 
   const platformNames = BROWSER_PROCESS_NAMES[platform] || BROWSER_PROCESS_NAMES.linux;
@@ -126,7 +145,29 @@ export function commandUsesBrowserProfile(commandLine, profileDir, platform = pr
   const args = splitProcessCommandLine(commandLine, platform);
   if (args.length === 0) return false;
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
-  const executableName = compare(pathApi.basename(args[0]));
+  // macOS ps flattens argv without restoring quotes, so an application path
+  // such as "Google Chrome.app/.../Google Chrome" cannot supply argv[0]
+  // reliably. Its comm column remains an authoritative executable name.
+  const snapshotCommandName = platform === 'darwin'
+    ? sanitizeProcessIdentity(commandName)
+    : null;
+  const executableName = compare(pathApi.basename(snapshotCommandName || args[0]));
+
+  // Darwin's flattened ps args also lose boundaries around argument values
+  // containing spaces. Managed launch arguments are followed by another flag,
+  // which provides an exact end boundary for the known profile path.
+  if (platform === 'darwin' && snapshotCommandName) {
+    if (platformNames.chromium.has(executableName) && flattenedCommandHasExactArgument(
+      commandLine,
+      '--user-data-dir=',
+      expectedProfile
+    )) return true;
+    if (platformNames.firefox.has(executableName) && flattenedCommandHasExactArgument(
+      commandLine,
+      '-profile ',
+      expectedProfile
+    )) return true;
+  }
 
   for (let index = 0; index < args.length; index++) {
     const argument = compare(args[index]);
@@ -381,7 +422,12 @@ export function collectRelatedProcessIds(processes, profileDir, rootPids = [], p
   const related = new Set(explicitRoots);
 
   for (const row of rows) {
-    if (explicitRoots.has(row.pid) || commandUsesBrowserProfile(row.command, profileDir, platform)) {
+    if (explicitRoots.has(row.pid) || commandUsesBrowserProfile(
+      row.command,
+      profileDir,
+      platform,
+      row.commandName
+    )) {
       if (row.pid > 0 && row.pid !== process.pid) related.add(row.pid);
     }
   }
