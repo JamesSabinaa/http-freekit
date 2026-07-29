@@ -20,6 +20,10 @@ const installActionStateSource = sourceBetween(
   'let installUpdateRequestPending = false;',
   'function handleUpdaterStatus('
 );
+const updaterStatusSource = sourceBetween(
+  'function handleUpdaterStatus(',
+  'window.electronApi.onUpdaterStatus(handleUpdaterStatus);'
+);
 const readyToastSource = sourceBetween('function showUpdateReadyToast(', 'function showLinuxUpdateToast(');
 const linuxToastSource = sourceBetween('function showLinuxUpdateToast(', 'function escapeHtml(');
 const escapeHtmlSource = sourceBetween('function escapeHtml(', '// Expose manual check for Settings page');
@@ -213,13 +217,17 @@ function createHarness() {
   vm.createContext(context);
   vm.runInContext(`
     ${toastSource}
+    let updateVersion = null;
+    let lastUpdaterStatusKey = null;
     ${installActionStateSource}
+    ${updaterStatusSource}
     ${readyToastSource}
     ${linuxToastSource}
     ${escapeHtmlSource}
     globalThis.toastForTest = toast;
     globalThis.readyToastForTest = showUpdateReadyToast;
     globalThis.linuxToastForTest = showLinuxUpdateToast;
+    globalThis.updaterStatusForTest = handleUpdaterStatus;
   `, context);
   return { container, context, document, installCalls, timers };
 }
@@ -289,4 +297,26 @@ test('updater action toasts announce their full text and retain the current focu
     'Update v3.0 available. Download'
   ]);
   assert.deepEqual(harness.timers.map(timer => timer.delay), [15000]);
+});
+
+test('repeated same-version update cancellations restore the restart action', async () => {
+  const harness = createHarness();
+  harness.context.readyToastForTest('2.0');
+  const installAction = harness.document.getElementById('installUpdateBtn');
+  const canceledStatus = { status: 'install-canceled', version: '2.0', manual: true };
+
+  installAction.dispatch('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(installAction.textContent, 'Restarting…');
+  harness.context.updaterStatusForTest(canceledStatus);
+  assert.equal(installAction.textContent, 'Restart to install');
+  assert.equal(installAction.getAttribute('aria-disabled'), 'false');
+
+  installAction.dispatch('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(installAction.textContent, 'Restarting…');
+  harness.context.updaterStatusForTest(canceledStatus);
+  assert.equal(installAction.textContent, 'Restart to install');
+  assert.equal(installAction.getAttribute('aria-disabled'), 'false');
+  assert.deepEqual(harness.installCalls, ['install', 'install']);
 });
