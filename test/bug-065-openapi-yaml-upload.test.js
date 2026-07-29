@@ -17,6 +17,7 @@ function createHarness({ parser = jsyaml } = {}) {
   const prompts = [];
   const toasts = [];
   let reloads = 0;
+  let reads = 0;
   const input = { click() {}, onchange: null };
   const context = {
     API_BASE: '',
@@ -41,9 +42,18 @@ function createHarness({ parser = jsyaml } = {}) {
   vm.runInContext(`${uploadSource}\nglobalThis.beginUpload = uploadApiSpec;`, context);
   context.beginUpload();
 
-  async function select(name, text) {
+  async function select(name, text, size = Buffer.byteLength(text)) {
     await input.onchange({
-      target: { files: [{ name, text: async () => text }] }
+      target: {
+        files: [{
+          name,
+          size,
+          text: async () => {
+            reads++;
+            return text;
+          }
+        }]
+      }
     });
   }
 
@@ -51,6 +61,7 @@ function createHarness({ parser = jsyaml } = {}) {
     fetches,
     input,
     prompts,
+    get reads() { return reads; },
     select,
     toasts,
     get reloads() { return reloads; }
@@ -108,6 +119,36 @@ test('invalid YAML and scalar documents fail before prompting or uploading', asy
       assert.match(harness.toasts[0].message, /^Failed to load spec: /);
     });
   }
+});
+
+test('alias-heavy YAML is rejected before prompting or serializing an upload', async () => {
+  const harness = createHarness();
+  const aliases = Array.from({ length: 21 }, () => '*shared').join(', ');
+  await harness.select('alias-heavy.yaml', `
+openapi: 3.1.0
+paths: {}
+shared: &shared
+  type: string
+expanded: [${aliases}]
+`);
+
+  assert.equal(harness.fetches.length, 0);
+  assert.equal(harness.prompts.length, 0);
+  assert.equal(harness.reloads, 0);
+  assert.equal(harness.toasts.length, 1);
+  assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(20\)/);
+});
+
+test('oversized API spec files are rejected before their contents are read', async () => {
+  const harness = createHarness();
+  await harness.select('large.yaml', 'openapi: 3.1.0\npaths: {}\n', 10 * 1024 * 1024 + 1);
+
+  assert.equal(harness.reads, 0);
+  assert.equal(harness.fetches.length, 0);
+  assert.equal(harness.prompts.length, 0);
+  assert.deepEqual(harness.toasts, [
+    { message: 'Failed to load spec: API specification files must not exceed 10 MiB', type: 'error' }
+  ]);
 });
 
 test('a missing YAML browser parser reports a load error without an upload', async () => {

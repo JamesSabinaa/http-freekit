@@ -11767,6 +11767,9 @@
       return data;
     }
 
+    const MAX_API_SPEC_FILE_BYTES = 10 * 1024 * 1024;
+    const MAX_API_SPEC_YAML_ALIASES = 20;
+
     function parseApiSpecDocument(text, fileName) {
       const normalizedName = String(fileName || '').trim().toLowerCase();
       const isYaml = normalizedName.endsWith('.yaml') || normalizedName.endsWith('.yml');
@@ -11775,7 +11778,10 @@
         if (typeof globalThis.jsyaml?.load !== 'function') {
           throw new Error('YAML parser is unavailable');
         }
-        spec = globalThis.jsyaml.load(text, { schema: globalThis.jsyaml.JSON_SCHEMA });
+        spec = globalThis.jsyaml.load(text, {
+          schema: globalThis.jsyaml.JSON_SCHEMA,
+          maxAliases: MAX_API_SPEC_YAML_ALIASES
+        });
       } else {
         spec = JSON.parse(text);
       }
@@ -11793,6 +11799,9 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
+          if (Number.isFinite(file.size) && file.size > MAX_API_SPEC_FILE_BYTES) {
+            throw new Error('API specification files must not exceed 10 MiB');
+          }
           const text = await file.text();
           const spec = parseApiSpecDocument(text, file.name);
 
