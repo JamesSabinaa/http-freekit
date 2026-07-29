@@ -13636,6 +13636,9 @@
           case 'checking':
             if (data.manual) toast('Checking for updates...', 'success');
             break;
+          case 'check-deferred':
+            if (data.manual) toast('Update check queued until the current update action finishes', 'success');
+            break;
           case 'update-available':
             updateVersion = data.version;
             toast('Update v' + data.version + ' available', 'success');

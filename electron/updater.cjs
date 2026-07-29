@@ -23,11 +23,15 @@ let activeCheck = null;
 let activeDownload = null;
 let activeUpdatePrompt = null;
 let lastPromptedUpdate = null;
+let pendingManualCheck = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
 let statusEventId = 0;
 let configuredFeedUrl = null;
 let activeInstallRequest = null;
+let installerHandoffMayEmit = false;
+let staleOperationDrain = null;
+const inFlightUpstreamOperations = new Set();
 let updaterLifecycle = 0;
 let updaterRunning = false;
 let registeredUpdaterEvents = [];
@@ -39,6 +43,40 @@ const UPDATER_IPC_CHANNELS = [
 
 function isCurrentUpdaterLifecycle(lifecycle) {
   return updaterRunning && lifecycle === updaterLifecycle;
+}
+
+function createOperationCompletion() {
+  let resolve;
+  let settled = false;
+  const promise = new Promise(resolvePromise => { resolve = resolvePromise; });
+  return {
+    promise,
+    settle() {
+      if (settled) return;
+      settled = true;
+      resolve();
+    }
+  };
+}
+
+function trackUpstreamOperation(operation) {
+  const promise = Promise.resolve(operation);
+  inFlightUpstreamOperations.add(promise);
+  promise.then(
+    () => inFlightUpstreamOperations.delete(promise),
+    () => inFlightUpstreamOperations.delete(promise)
+  );
+  return promise;
+}
+
+function captureStaleOperationDrain() {
+  const operations = [...inFlightUpstreamOperations];
+  if (staleOperationDrain) operations.push(staleOperationDrain);
+  if (operations.length === 0) return;
+  const drain = Promise.allSettled(operations).then(() => {
+    if (staleOperationDrain === drain) staleOperationDrain = null;
+  });
+  staleOperationDrain = drain;
 }
 
 function removeUpdaterEventHandlers() {
@@ -65,6 +103,7 @@ function ownsInstallRequest(request) {
 function releaseInstallRequest(request = activeInstallRequest) {
   if (!request || activeInstallRequest !== request) return false;
   activeInstallRequest = null;
+  request.completion.settle();
   return true;
 }
 
@@ -72,6 +111,7 @@ function cancelUpdateInstall() {
   const request = activeInstallRequest;
   if (!request || !releaseInstallRequest(request)) return false;
   if (!isCurrentUpdaterLifecycle(request.lifecycle)) return false;
+  installerHandoffMayEmit = false;
   request.onPreparationFailed();
   sendStatus({
     status: 'install-canceled',
@@ -152,16 +192,56 @@ function reportCheckError(check, error) {
 
 function reportInstallError(request, error) {
   if (!ownsInstallRequest(request) || !releaseInstallRequest(request)) return false;
+  installerHandoffMayEmit = false;
   request.onPreparationFailed();
   sendStatus({ status: 'error', error: error.message, manual: true }, request.lifecycle);
   return true;
 }
 
+function completeDownloadIfSettled(download) {
+  if (activeDownload !== download || !download.terminal || !download.upstreamSettled) return;
+  activeDownload = null;
+  download.completion.settle();
+}
+
 function reportDownloadError(download, error) {
   if (activeDownload !== download || !isCurrentUpdaterLifecycle(download.lifecycle)) return false;
-  activeDownload = null;
-  sendStatus({ status: 'error', error: error.message, manual: download.manual }, download.lifecycle);
+  if (!download.errorReported) {
+    download.errorReported = true;
+    download.terminal = true;
+    sendStatus({ status: 'error', error: error.message, manual: download.manual }, download.lifecycle);
+  }
+  completeDownloadIfSettled(download);
   return true;
+}
+
+function getUpdaterBlocker(lifecycle, ignoredInstallRequest = null) {
+  if (staleOperationDrain) return staleOperationDrain;
+  if (activeUpdatePrompt?.lifecycle === lifecycle) return activeUpdatePrompt.completion.promise;
+  if (activeDownload?.lifecycle === lifecycle) return activeDownload.completion.promise;
+  if (activeInstallRequest?.lifecycle === lifecycle
+      && activeInstallRequest !== ignoredInstallRequest) {
+    return activeInstallRequest.completion.promise;
+  }
+  return null;
+}
+
+function queueManualCheck(lifecycle) {
+  if (pendingManualCheck?.lifecycle === lifecycle) return pendingManualCheck.promise;
+  const queuedCheck = { lifecycle, promise: null };
+  pendingManualCheck = queuedCheck;
+  sendStatus({ status: 'check-deferred', manual: true }, lifecycle);
+  queuedCheck.promise = (async () => {
+    while (isCurrentUpdaterLifecycle(lifecycle)) {
+      const blocker = getUpdaterBlocker(lifecycle);
+      if (!blocker) return checkForUpdates(true, lifecycle);
+      await blocker;
+    }
+    return null;
+  })().finally(() => {
+    if (pendingManualCheck === queuedCheck) pendingManualCheck = null;
+  });
+  return queuedCheck.promise;
 }
 
 function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
@@ -190,10 +270,16 @@ function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
 
   // electron-updater exposes one shared error event without operation metadata.
   // Keep its check/download/install operations disjoint so every error has one
-  // unambiguous owner.
-  if (activeInstallRequest?.lifecycle === lifecycle
-      || activeUpdatePrompt?.lifecycle === lifecycle
-      || activeDownload?.lifecycle === lifecycle) {
+  // unambiguous owner. Automatic checks may wait for stale upstream work but
+  // are otherwise expendable; explicit checks are queued and acknowledged.
+  const blocker = getUpdaterBlocker(lifecycle);
+  if (blocker) {
+    if (requestedManual) return queueManualCheck(lifecycle);
+    if (staleOperationDrain === blocker) {
+      return blocker.then(() => isCurrentUpdaterLifecycle(lifecycle)
+        ? checkForUpdates(false, lifecycle)
+        : null);
+    }
     return Promise.resolve(null);
   }
 
@@ -208,7 +294,7 @@ function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
   activeCheck = check;
   let upstreamCheck;
   try {
-    upstreamCheck = autoUpdater.checkForUpdates();
+    upstreamCheck = trackUpstreamOperation(autoUpdater.checkForUpdates());
   } catch (err) {
     activeCheck = null;
     if (isCurrentUpdaterLifecycle(lifecycle)) {
@@ -231,12 +317,13 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
   const version = info.version;
   const manual = Boolean(options.manual);
 
+  if (activeInstallRequest?.lifecycle === lifecycle) return;
   if (activeDownload?.lifecycle === lifecycle || activeUpdatePrompt?.lifecycle === lifecycle) return;
   if (!manual
       && lastPromptedUpdate?.lifecycle === lifecycle
       && lastPromptedUpdate.version === version) return;
 
-  const prompt = { lifecycle, version };
+  const prompt = { lifecycle, version, completion: createOperationCompletion() };
   const promptWindow = mainWindow;
   let download = null;
   lastPromptedUpdate = { lifecycle, version };
@@ -255,6 +342,7 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
         cancelId: 1
       });
       if (!isCurrentUpdaterLifecycle(lifecycle) || activeUpdatePrompt !== prompt) return;
+      if (activeInstallRequest?.lifecycle === lifecycle) return;
       if (result.response === 0) {
         await shell.openExternal(url);
       } else {
@@ -273,16 +361,31 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
       cancelId: 1
     });
     if (!isCurrentUpdaterLifecycle(lifecycle) || activeUpdatePrompt !== prompt) return;
+    if (activeInstallRequest?.lifecycle === lifecycle) return;
 
     if (result.response !== 0) {
       sendStatus({ status: 'update-dismissed', version, manual }, lifecycle);
       return;
     }
 
-    download = { lifecycle, version, manual };
+    download = {
+      lifecycle,
+      version,
+      manual,
+      completion: createOperationCompletion(),
+      errorReported: false,
+      terminal: false,
+      upstreamSettled: false
+    };
     activeDownload = download;
     sendStatus({ status: 'download-started', version, manual }, lifecycle);
-    await autoUpdater.downloadUpdate();
+    download.upstreamPromise = trackUpstreamOperation(autoUpdater.downloadUpdate());
+    try {
+      await download.upstreamPromise;
+    } finally {
+      download.upstreamSettled = true;
+      completeDownloadIfSettled(download);
+    }
   } catch (err) {
     if (download) {
       reportDownloadError(download, err);
@@ -291,6 +394,7 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
     }
   } finally {
     if (activeUpdatePrompt === prompt) activeUpdatePrompt = null;
+    prompt.completion.settle();
   }
 }
 
@@ -301,6 +405,10 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
  *   onInstallPreparationFailed?: function}} options - IPC sender validation and quit preflight
  */
 function initAutoUpdater(win, options = {}) {
+  // A successful native handoff has no completion promise and may still emit
+  // through the shared updater. The process is expected to quit; do not attach
+  // a new lifecycle that could consume those untagged terminal events.
+  if (installerHandoffMayEmit) return false;
   if (updaterRunning || startupCheckTimer !== null || checkInterval !== null) {
     stopAutoUpdater();
   }
@@ -387,9 +495,11 @@ function initAutoUpdater(win, options = {}) {
 
   registerUpdaterEvent('update-downloaded', (info) => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
-    if (activeDownload?.lifecycle !== lifecycle) return;
-    activeDownload = null;
+    const download = activeDownload?.lifecycle === lifecycle ? activeDownload : null;
+    if (!download) return;
+    download.terminal = true;
     sendStatus({ status: 'update-downloaded', version: info.version }, lifecycle);
+    completeDownloadIfSettled(download);
   });
 
   registerUpdaterEvent('error', (err) => {
@@ -433,6 +543,7 @@ function initAutoUpdater(win, options = {}) {
     const request = {
       lifecycle,
       phase: 'waiting-for-check',
+      completion: createOperationCompletion(),
       prepareForInstall: lifecyclePrepareForInstall,
       onPreparationFailed: lifecycleOnInstallPreparationFailed
     };
@@ -442,6 +553,14 @@ function initAutoUpdater(win, options = {}) {
       if (check && !check.promiseSettled) await check.promise;
       if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
       if (activeCheck === check && check?.promiseSettled) activeCheck = null;
+
+      request.phase = 'waiting-for-idle';
+      while (ownsInstallRequest(request)) {
+        const blocker = getUpdaterBlocker(lifecycle, request);
+        if (!blocker) break;
+        await blocker;
+      }
+      if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
 
       request.phase = 'preparing';
       if (!await request.prepareForInstall()) {
@@ -453,6 +572,7 @@ function initAutoUpdater(win, options = {}) {
       // persisted Send state, so every platform can now follow its updater-
       // specific window-close sequence.
       request.phase = 'handoff';
+      installerHandoffMayEmit = true;
       autoUpdater.quitAndInstall(false, true);
       if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
       request.phase = 'started';
@@ -476,6 +596,7 @@ function initAutoUpdater(win, options = {}) {
   checkInterval = setInterval(() => {
     if (isCurrentUpdaterLifecycle(lifecycle)) checkForUpdates(false, lifecycle);
   }, SIX_HOURS_MS);
+  return true;
 }
 
 /**
@@ -484,6 +605,7 @@ function initAutoUpdater(win, options = {}) {
 function stopAutoUpdater() {
   updaterRunning = false;
   updaterLifecycle++;
+  captureStaleOperationDrain();
   if (startupCheckTimer !== null) {
     clearTimeout(startupCheckTimer);
     startupCheckTimer = null;
@@ -496,7 +618,9 @@ function stopAutoUpdater() {
   validateIpcSender = () => false;
   releaseInstallRequest();
   activeCheck = null;
+  activeDownload?.completion.settle();
   activeDownload = null;
+  activeUpdatePrompt?.completion.settle();
   activeUpdatePrompt = null;
   lastPromptedUpdate = null;
   configuredFeedUrl = null;

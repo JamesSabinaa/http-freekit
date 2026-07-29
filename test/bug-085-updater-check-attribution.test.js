@@ -18,7 +18,8 @@ function deferred() {
 function loadUpdater(checks, {
   prepareOperation = null,
   prepareOperations = [],
-  dialogOperations = []
+  dialogOperations = [],
+  downloadOperations = []
 } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
@@ -36,9 +37,10 @@ function loadUpdater(checks, {
   let dialogCalls = 0;
   const pendingPreparations = [...prepareOperations];
   const pendingDialogs = [...dialogOperations];
+  const pendingDownloads = [...downloadOperations];
   autoUpdater.downloadUpdate = () => {
     downloadCalls++;
-    return Promise.resolve();
+    return pendingDownloads.shift()?.promise || Promise.resolve();
   };
   autoUpdater.setFeedURL = () => {};
   autoUpdater.quitAndInstall = () => { quitCalls++; };
@@ -281,6 +283,8 @@ test('stop and re-init replace a pending update prompt without stale side effect
 
   updater.reinitialize();
   const newManualCheck = updater.checkNow();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.checkCalls, 2);
   updater.autoUpdater.emit('update-available', { version: '3.0.0' });
   assert.equal(updater.dialogCalls, 2);
   newCheck.resolve(null);
@@ -297,6 +301,104 @@ test('stop and re-init replace a pending update prompt without stale side effect
   assert.equal(dismissals.length, 1);
   assert.equal(dismissals[0].version, '3.0.0');
   assert.equal(dismissals[0].manual, true);
+});
+
+test('an install claimed during a check prevents that check from opening a download prompt', async () => {
+  const check = deferred();
+  const updater = loadUpdater([check]);
+
+  updater.runStartupCheck();
+  const install = updater.install();
+  updater.autoUpdater.emit('update-available', { version: '4.0.0' });
+  assert.equal(updater.dialogCalls, 0);
+  check.resolve(null);
+
+  const result = await install;
+  assert.equal(result.started, true);
+  assert.equal(updater.quitCalls, 1);
+  assert.equal(updater.downloadCalls, 0);
+});
+
+test('install waits for both the active download event and its upstream promise', async () => {
+  const check = deferred();
+  const dialog = deferred();
+  const download = deferred();
+  const updater = loadUpdater([check], {
+    dialogOperations: [dialog],
+    downloadOperations: [download]
+  });
+
+  updater.runStartupCheck();
+  updater.autoUpdater.emit('update-available', { version: '5.0.0' });
+  dialog.resolve({ response: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.downloadCalls, 1);
+  check.resolve(null);
+  await check.promise;
+
+  const install = updater.install();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.prepareCalls, 0);
+  updater.autoUpdater.emit('update-downloaded', { version: '5.0.0' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.prepareCalls, 0, 'the download promise is still pending');
+
+  download.resolve(null);
+  const result = await install;
+  assert.equal(result.started, true);
+  assert.equal(updater.prepareCalls, 1);
+  assert.equal(updater.quitCalls, 1);
+});
+
+test('re-init drains an old download before running a queued manual check', async () => {
+  const oldCheck = deferred();
+  const newCheck = deferred();
+  const oldDialog = deferred();
+  const oldDownload = deferred();
+  const updater = loadUpdater([oldCheck, newCheck], {
+    dialogOperations: [oldDialog],
+    downloadOperations: [oldDownload]
+  });
+
+  updater.runStartupCheck();
+  updater.autoUpdater.emit('update-available', { version: '6.0.0' });
+  oldDialog.resolve({ response: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.downloadCalls, 1);
+  oldCheck.resolve(null);
+  await oldCheck.promise;
+
+  updater.reinitialize();
+  const manual = updater.checkNow();
+  assert.equal(updater.checkCalls, 1);
+  assert.equal(updater.statuses.at(-1).status, 'check-deferred');
+
+  const oldError = new Error('late old download failure');
+  updater.autoUpdater.emit('error', oldError);
+  oldDownload.reject(oldError);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.checkCalls, 2);
+  assert.equal(updater.statuses.some(status => status.error === oldError.message), false);
+
+  updater.autoUpdater.emit('checking-for-update');
+  updater.autoUpdater.emit('update-not-available');
+  newCheck.resolve(null);
+  await manual;
+  assert.equal(updater.statuses.at(-1).status, 'up-to-date');
+  assert.equal(updater.statuses.at(-1).manual, true);
+});
+
+test('a native installer handoff rejects re-init until it errors or is canceled', async () => {
+  const updater = loadUpdater([]);
+
+  const install = await updater.install();
+  assert.equal(install.started, true);
+  assert.equal(updater.reinitialize(), false);
+  assert.equal(updater.autoUpdater.listenerCount('error'), 1);
+
+  updater.autoUpdater.emit('error', new Error('installer failed'));
+  assert.equal(updater.preparationFailureCalls, 1);
+  assert.equal(updater.reinitialize(), true);
 });
 
 test('stop cancels a check queued in the result-settlement gap', async () => {

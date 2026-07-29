@@ -290,4 +290,6 @@ test('renderer disables Restart to install while its request is pending', () => 
   assert.match(rendererSource, /setAttribute\('aria-disabled', pending \? 'true' : 'false'\)/);
   assert.match(rendererSource, /await window\.electronApi\.installUpdate\(\)/);
   assert.match(rendererSource, /case 'install-canceled':/);
+  assert.match(rendererSource, /case 'check-deferred':/);
+  assert.match(rendererSource, /Update check queued until the current update action finishes/);
 });
