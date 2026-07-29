@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 10 of the 361 documented bugs are not fully fixed.**
+**No: 9 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 351 |
-| Partially fixed | 4 |
+| Fixed | 352 |
+| Partially fixed | 3 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2337,8 +2337,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-138 — Medium — A blank matcher creates a match-everything mock
 
-- Status: **Partially fixed**.
-- Resolution: Blank broad matchers and new empty matcher arrays are rejected, while legacy explicit match-all arrays remain compatible. `raw-body-exact` and `exact-query` are still accepted without a `value`; the runtime distinguishes a missing value from the intended empty string, leaving the visually blank exact rule inert.
+- Status: **Fixed**.
+- Resolution: Blank broad matchers and new empty matcher arrays are rejected, while legacy explicit match-all arrays remain compatible. Exact query and raw-body matchers now require a string-valued `value` at both renderer and server validation boundaries, but intentionally allow the empty string. Changing a matcher to either exact-empty type initializes that explicit empty value, so the visually blank editor correctly represents “no query string” or “empty body” instead of an inert missing property.
+- Regression coverage: `test/bug-138-blank-matcher.test.js` verifies broad blanks never match, missing exact values fail shared/server validation, explicit empty exact values are accepted and match empty inputs, and the renderer initializes both exact-empty matcher types with `value: ''`.
 
 - Evidence: `saveMockRule()` rejects blank conditions only if the matcher array is also empty at `src/ui/app.js:6026-6036`; a nonempty blank matcher passes. URL Contains then evaluates `url.includes("")` at `src/proxy/proxy-server.js:3222-3223`, which is true for every URL.
 - Impact: a visually blank rule can unexpectedly return its mock response for all traffic.

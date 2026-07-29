@@ -27,7 +27,8 @@ const MOCK_MATCHER_TYPES = new Set([
 const NAME_MATCHER_TYPES = new Set([
   'header', 'query', 'cookie', 'form-data', 'multipart-form-data'
 ]);
-const OPTIONAL_VALUE_MATCHER_TYPES = new Set(['wildcard', 'raw-body-exact', 'exact-query']);
+const OPTIONAL_VALUE_MATCHER_TYPES = new Set(['wildcard']);
+const EMPTY_VALUE_MATCHER_TYPES = new Set(['raw-body-exact', 'exact-query']);
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const MOCK_ACTION_TYPES = new Set([
   'fixed-response',
@@ -312,6 +313,9 @@ export function isCompleteMockMatcher(matcher) {
   }
   if (OPTIONAL_VALUE_MATCHER_TYPES.has(matcher.type)) {
     return matcher.value === undefined || typeof matcher.value === 'string';
+  }
+  if (EMPTY_VALUE_MATCHER_TYPES.has(matcher.type)) {
+    return typeof matcher.value === 'string';
   }
   return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
 }

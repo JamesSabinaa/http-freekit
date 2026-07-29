@@ -7602,8 +7602,10 @@
           case 'hostname': newM.value = ''; break;
           case 'header': newM.name = ''; newM.value = ''; break;
           case 'query': newM.name = ''; newM.value = ''; break;
+          case 'exact-query': newM.value = ''; break;
           case 'url-contains': newM.value = ''; break;
           case 'body-contains': newM.value = ''; break;
+          case 'raw-body-exact': newM.value = ''; break;
           case 'multipart-form-data': newM.name = ''; newM.value = ''; break;
         }
         mockEditDraft.matchers[idx] = newM;
@@ -8015,7 +8017,10 @@
       if (['header', 'query', 'cookie', 'form-data', 'multipart-form-data'].includes(matcher.type)) {
         return typeof matcher.name === 'string' && matcher.name.trim().length > 0;
       }
-      if (['wildcard', 'raw-body-exact', 'exact-query'].includes(matcher.type)) return true;
+      if (matcher.type === 'wildcard') return true;
+      if (['raw-body-exact', 'exact-query'].includes(matcher.type)) {
+        return typeof matcher.value === 'string';
+      }
       return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
     }
 
