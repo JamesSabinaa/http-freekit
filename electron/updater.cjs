@@ -31,6 +31,35 @@ let prepareForInstall = async () => true;
 let onInstallPreparationFailed = () => {};
 let installRequestInFlight = false;
 let installRequestGeneration = 0;
+let updaterLifecycle = 0;
+let updaterRunning = false;
+let registeredUpdaterEvents = [];
+const UPDATER_IPC_CHANNELS = [
+  'updater-check-now',
+  'updater-get-status',
+  'updater-install'
+];
+
+function isCurrentUpdaterLifecycle(lifecycle) {
+  return updaterRunning && lifecycle === updaterLifecycle;
+}
+
+function removeUpdaterEventHandlers() {
+  for (const [eventName, handler] of registeredUpdaterEvents) {
+    autoUpdater.removeListener(eventName, handler);
+  }
+  registeredUpdaterEvents = [];
+}
+
+function registerUpdaterEvent(eventName, handler) {
+  autoUpdater.on(eventName, handler);
+  registeredUpdaterEvents.push([eventName, handler]);
+}
+
+function removeUpdaterIpcHandlers() {
+  if (typeof ipcMain.removeHandler !== 'function') return;
+  for (const channel of UPDATER_IPC_CHANNELS) ipcMain.removeHandler(channel);
+}
 
 function releaseInstallRequest() {
   const wasInFlight = installRequestInFlight;
@@ -103,23 +132,42 @@ function sendStatus(data) {
   }
 }
 
-function completeCheckStatus() {
-  if (!activeCheck) return false;
+function completeCheckStatus(lifecycle = updaterLifecycle) {
+  if (!activeCheck || activeCheck.lifecycle !== lifecycle) return false;
   const check = activeCheck;
   check.statusReported = true;
   if (check.promiseSettled) activeCheck = null;
   return check.manual;
 }
 
-function checkForUpdates(manual = false) {
+function reportCheckError(check, error) {
+  if (check.statusReported || !isCurrentUpdaterLifecycle(check.lifecycle)) return;
+  check.statusReported = true;
+  sendStatus({ status: 'error', error: error.message, manual: check.manual });
+}
+
+function reportInstallError(error) {
+  if (!releaseInstallRequest()) return false;
+  onInstallPreparationFailed();
+  isDownloading = false;
+  sendStatus({ status: 'error', error: error.message, manual: true });
+  return true;
+}
+
+function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
+  if (!isCurrentUpdaterLifecycle(lifecycle)) return Promise.resolve(null);
   const requestedManual = manual === true;
+  if (activeCheck && activeCheck.lifecycle !== lifecycle) activeCheck = null;
   if (activeCheck) {
     if (activeCheck.promiseSettled) {
       activeCheck = null;
-      return checkForUpdates(requestedManual);
+      return checkForUpdates(requestedManual, lifecycle);
     }
     if (activeCheck.statusReported) {
-      return activeCheck.promise.then(() => checkForUpdates(requestedManual));
+      return activeCheck.promise.then(() => {
+        if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
+        return checkForUpdates(requestedManual, lifecycle);
+      });
     }
     if (requestedManual && !activeCheck.manual) {
       activeCheck.manual = true;
@@ -132,9 +180,12 @@ function checkForUpdates(manual = false) {
 
   const check = {
     manual: requestedManual,
+    lifecycle,
     checkingReported: false,
     statusReported: false,
     promiseSettled: false,
+    promiseRejected: false,
+    emittedError: null,
     promise: null
   };
   activeCheck = check;
@@ -143,17 +194,23 @@ function checkForUpdates(manual = false) {
     upstreamCheck = autoUpdater.checkForUpdates();
   } catch (err) {
     activeCheck = null;
-    sendStatus({ status: 'error', error: err.message, manual: check.manual });
+    if (isCurrentUpdaterLifecycle(lifecycle)) {
+      sendStatus({ status: 'error', error: err.message, manual: check.manual });
+    }
     return Promise.resolve(null);
   }
   check.promise = Promise.resolve(upstreamCheck).catch((err) => {
-    if (!check.statusReported) {
-      check.statusReported = true;
-      sendStatus({ status: 'error', error: err.message, manual: check.manual });
-    }
+    check.promiseRejected = true;
+    check.emittedError = null;
+    reportCheckError(check, err);
     return null;
   }).finally(() => {
     check.promiseSettled = true;
+    if (check.emittedError && !check.promiseRejected && isCurrentUpdaterLifecycle(lifecycle)) {
+      const emittedError = check.emittedError;
+      check.emittedError = null;
+      if (!reportInstallError(emittedError)) reportCheckError(check, emittedError);
+    }
     if (activeCheck === check && check.statusReported) activeCheck = null;
   });
   return check.promise;
@@ -221,6 +278,11 @@ async function promptForUpdate(info, options = {}) {
  *   onInstallPreparationFailed?: function}} options - IPC sender validation and quit preflight
  */
 function initAutoUpdater(win, options = {}) {
+  if (updaterRunning || startupCheckTimer !== null || checkInterval !== null) {
+    stopAutoUpdater();
+  }
+  const lifecycle = ++updaterLifecycle;
+  updaterRunning = true;
   mainWindow = win;
   validateIpcSender = typeof options.validateSender === 'function'
     ? options.validateSender
@@ -253,14 +315,22 @@ function initAutoUpdater(win, options = {}) {
 
   // --- Events ---
 
-  autoUpdater.on('checking-for-update', () => {
-    if (activeCheck) activeCheck.checkingReported = true;
-    sendStatus({ status: 'checking', manual: activeCheck?.manual === true });
+  removeUpdaterEventHandlers();
+  removeUpdaterIpcHandlers();
+
+  registerUpdaterEvent('checking-for-update', () => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    if (activeCheck?.lifecycle === lifecycle) activeCheck.checkingReported = true;
+    sendStatus({
+      status: 'checking',
+      manual: activeCheck?.lifecycle === lifecycle && activeCheck.manual === true
+    });
   });
 
-  autoUpdater.on('update-available', (info) => {
+  registerUpdaterEvent('update-available', (info) => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
     const version = info.version;
-    const wasManual = completeCheckStatus();
+    const wasManual = completeCheckStatus(lifecycle);
 
     if (process.platform === 'linux') {
       // Linux: no auto-install, send download URL for manual update
@@ -273,45 +343,60 @@ function initAutoUpdater(win, options = {}) {
     }
   });
 
-  autoUpdater.on('update-not-available', () => {
-    const wasManual = completeCheckStatus();
+  registerUpdaterEvent('update-not-available', () => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    const wasManual = completeCheckStatus(lifecycle);
     sendStatus({ status: 'up-to-date', manual: wasManual });
   });
 
-  autoUpdater.on('download-progress', (progress) => {
+  registerUpdaterEvent('download-progress', (progress) => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
     sendStatus({
       status: 'downloading',
       percent: Math.round(progress.percent)
     });
   });
 
-  autoUpdater.on('update-downloaded', (info) => {
+  registerUpdaterEvent('update-downloaded', (info) => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
     isDownloading = false;
     sendStatus({ status: 'update-downloaded', version: info.version });
   });
 
-  autoUpdater.on('error', (err) => {
-    const installFailed = releaseInstallRequest();
-    if (installFailed) onInstallPreparationFailed();
-    const wasManual = installFailed ? true : completeCheckStatus();
+  registerUpdaterEvent('error', (err) => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    const check = activeCheck?.lifecycle === lifecycle ? activeCheck : null;
+    if (check && !check.promiseSettled && !check.statusReported) {
+      check.emittedError = err;
+      return;
+    }
+    if (installRequestInFlight && reportInstallError(err)) return;
+    if (check) {
+      reportCheckError(check, err);
+      if (check.promiseSettled && activeCheck === check) activeCheck = null;
+      return;
+    }
     isDownloading = false;
-    sendStatus({ status: 'error', error: err.message, manual: wasManual });
+    sendStatus({ status: 'error', error: err.message, manual: false });
   });
 
   // --- IPC handlers ---
 
   ipcMain.handle('updater-check-now', (event) => {
     if (!validateIpcSender(event)) return null;
-    return checkForUpdates(true);
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
+    return checkForUpdates(true, lifecycle);
   });
 
   ipcMain.handle('updater-get-status', (event) => {
     if (!validateIpcSender(event)) return null;
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
     return { ...currentStatus };
   });
 
   ipcMain.handle('updater-install', async (event) => {
     if (!validateIpcSender(event)) return null;
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
     if (installRequestInFlight) return { started: false, inProgress: true };
 
     installRequestInFlight = true;
@@ -343,13 +428,14 @@ function initAutoUpdater(win, options = {}) {
 
   // Check on launch (with a short delay to let the window settle)
   startupCheckTimer = setTimeout(() => {
+    if (!isCurrentUpdaterLifecycle(lifecycle)) return;
     startupCheckTimer = null;
-    checkForUpdates(false);
+    checkForUpdates(false, lifecycle);
   }, 10000);
 
   // Check every 6 hours
   checkInterval = setInterval(() => {
-    checkForUpdates(false);
+    if (isCurrentUpdaterLifecycle(lifecycle)) checkForUpdates(false, lifecycle);
   }, SIX_HOURS_MS);
 }
 
@@ -357,6 +443,8 @@ function initAutoUpdater(win, options = {}) {
  * Stop periodic update checks and clean up.
  */
 function stopAutoUpdater() {
+  updaterRunning = false;
+  updaterLifecycle++;
   if (startupCheckTimer !== null) {
     clearTimeout(startupCheckTimer);
     startupCheckTimer = null;
@@ -372,6 +460,8 @@ function stopAutoUpdater() {
   releaseInstallRequest();
   activeCheck = null;
   configuredFeedUrl = null;
+  removeUpdaterEventHandlers();
+  removeUpdaterIpcHandlers();
 }
 
 module.exports = { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall };
