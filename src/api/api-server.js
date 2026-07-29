@@ -164,7 +164,7 @@ export class ApiServer {
     this._stopping = false;
     this.trafficLog = []; // In-memory traffic log
     this.capturePaused = false;
-    this._captureSuppressedTrafficIdentities = new Map();
+    this.captureStateRevision = 0;
     this.maxTrafficLog = 10000;
     this._pendingTrafficIds = new Set();
     this._pendingTrafficLifecycles = new Map();
@@ -1309,7 +1309,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.get('/api/traffic/capture', (req, res) => {
-      res.json({ paused: this.capturePaused });
+      res.json({ paused: this.capturePaused, revision: this.captureStateRevision });
     });
 
     router.put('/api/traffic/capture', (req, res) => {
@@ -1317,7 +1317,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         return res.status(400).json({ error: 'paused must be a boolean' });
       }
       this._setCapturePaused(req.body.paused);
-      res.json({ success: true, paused: this.capturePaused });
+      res.json({
+        success: true,
+        paused: this.capturePaused,
+        revision: this.captureStateRevision
+      });
     });
 
     // Clear traffic
@@ -3245,31 +3249,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const next = paused === true;
     if (this.capturePaused === next) return false;
     this.capturePaused = next;
-    this._broadcast({ type: 'capture-state', paused: next });
+    this.captureStateRevision += 1;
+    this._broadcast({
+      type: 'capture-state',
+      paused: next,
+      revision: this.captureStateRevision
+    });
     return true;
   }
 
-  _pruneCaptureSuppressedTrafficIdentities() {
-    const now = this._clearedPendingTrafficNow();
-    for (const [identity, expiresAt] of this._captureSuppressedTrafficIdentities) {
-      if (expiresAt <= now) this._captureSuppressedTrafficIdentities.delete(identity);
-    }
-    while (this._captureSuppressedTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
-      this._captureSuppressedTrafficIdentities.delete(
-        this._captureSuppressedTrafficIdentities.keys().next().value
-      );
-    }
-  }
-
   _shouldSuppressPausedTrafficEvent(data) {
-    this._pruneCaptureSuppressedTrafficIdentities();
-    const lifecycleComplete = data._pending !== true &&
-      data._trafficLifecycleComplete !== false;
-    const identity = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
-    if (this._captureSuppressedTrafficIdentities.has(identity)) {
-      if (lifecycleComplete) this._captureSuppressedTrafficIdentities.delete(identity);
-      return true;
-    }
     if (!this.capturePaused || data.source === 'Send') return false;
 
     if (data._update === true) {
@@ -3278,13 +3267,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         (request.trafficLifecycleId ?? null) === (data.trafficLifecycleId ?? null)
       );
       if (retainedPending) return false;
-    }
-    if (!lifecycleComplete) {
-      this._captureSuppressedTrafficIdentities.set(
-        identity,
-        this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs
-      );
-      this._pruneCaptureSuppressedTrafficIdentities();
     }
     return true;
   }
@@ -3592,6 +3574,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           trafficCount: this.trafficLog.length,
           trafficLimit: this.maxTrafficLog,
           capturePaused: this.capturePaused,
+          captureStateRevision: this.captureStateRevision,
           proxyPort: this.proxy.port,
           apiPort: this.port
         }));

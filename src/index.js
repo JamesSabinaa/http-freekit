@@ -131,7 +131,7 @@ async function initializeApplication(apiPort) {
     bindHost: proxyBindHost,
     ...proxyPortRange,
     onRequest: (data) => {
-      api.onTrafficEvent(data);
+      return api.onTrafficEvent(data);
     }
   });
 

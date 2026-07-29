@@ -6,6 +6,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { ApiServer } from '../src/api/api-server.js';
+import { ProxyServer } from '../src/proxy/proxy-server.js';
 
 function createApi() {
   return new ApiServer({
@@ -73,19 +74,8 @@ test('paused capture drops whole new proxy lifecycles but completes rows retaine
     id: 'during-pause',
     trafficLifecycleId: 'paused-life',
     source: 'proxy',
-    _pending: true,
-    _trafficLifecycleComplete: false
-  }), false);
-  api._setCapturePaused(false);
-  assert.equal(api.onTrafficEvent({
-    id: 'during-pause',
-    trafficLifecycleId: 'paused-life',
-    source: 'proxy',
-    _update: true,
     statusCode: 503
-  }), false, 'resuming must not surface a completion whose pending row was paused');
-
-  api._setCapturePaused(true);
+  }), false);
   api.onTrafficEvent({
     id: 'before-pause',
     trafficLifecycleId: 'before-life',
@@ -104,7 +94,6 @@ test('paused capture drops whole new proxy lifecycles but completes rows retaine
     ['before-pause', 204],
     ['send-while-paused', 200]
   ]);
-  assert.equal(api._captureSuppressedTrafficIdentities.size, 0);
   assert.deepEqual(rotated, ['during-pause', 'before-pause']);
   assert.deepEqual(
     broadcasts.filter(message => message.type === 'request').map(message => message.data.id),
@@ -114,6 +103,79 @@ test('paused capture drops whole new proxy lifecycles but completes rows retaine
     broadcasts.filter(message => message.type === 'request-update').map(message => message.data.id),
     ['before-pause']
   );
+});
+
+test('proxy decisions suppress long paused lifecycles and their WebSocket frames through Resume', async () => {
+  const proxy = new ProxyServer(null);
+  const api = new ApiServer(proxy, null, null);
+  proxy.onRequest = data => api.onTrafficEvent(data);
+  api.maxClearedPendingTrafficIds = 1;
+  api.clearedPendingTrafficTtlMs = 1;
+  api._setCapturePaused(true);
+
+  const pending = (id, protocol = 'http') => ({
+    id,
+    protocol,
+    method: protocol === 'ws' ? 'WS' : 'GET',
+    url: `${protocol}://capture.test/${id}`,
+    host: 'capture.test',
+    path: `/${id}`,
+    requestHeaders: {},
+    requestBody: '',
+    requestBodySize: 0,
+    timestamp: 1_000,
+    source: 'proxy',
+    tls: null,
+    remote: null
+  });
+  const first = pending('paused-first');
+  const second = pending('paused-second');
+  const socket = pending('paused-socket', 'ws');
+
+  assert.equal(proxy._emitPendingRequest(first, 'first-life'), false);
+  assert.equal(proxy._emitPendingRequest(second, 'second-life'), false);
+  assert.equal(proxy._emitPendingRequest(socket, 'socket-life'), false);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 3);
+
+  // Neither an unrelated API retention bound nor elapsed wall time may turn a
+  // rejected pending lifecycle into a later captured completion.
+  api._clearedPendingTrafficNow = () => 10_000;
+  api._setCapturePaused(false);
+  const complete = request => ({
+    ...request,
+    statusCode: 200,
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 9_000
+  });
+  assert.equal(proxy._emitRequestUpdate(complete(first), 'first-life'), false);
+  assert.equal(proxy._emitRequestUpdate(complete(second), 'second-life'), false);
+
+  const frame = {
+    fin: true,
+    rsv1: false,
+    rsv2: false,
+    rsv3: false,
+    compressed: false,
+    opcode: 1,
+    masked: false,
+    payload: Buffer.from('hidden'),
+    timestamp: 10_001
+  };
+  assert.equal(await proxy._emitWsFrame(
+    frame,
+    'server',
+    socket.id,
+    1,
+    null,
+    socket.timestamp,
+    'socket-life'
+  ), false);
+  assert.equal(proxy._emitRequestUpdate(complete(socket), 'socket-life'), false);
+
+  assert.deepEqual(api.trafficLog, []);
+  assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 });
 
 test('capture state API validates, applies, and broadcasts one shared state', async t => {
@@ -140,10 +202,13 @@ test('capture state API validates, applies, and broadcasts one shared state', as
   });
   const current = await requestJson(port, '/api/traffic/capture');
 
-  assert.deepEqual(paused, { statusCode: 200, body: { success: true, paused: true } });
+  assert.deepEqual(paused, {
+    statusCode: 200,
+    body: { success: true, paused: true, revision: 1 }
+  });
   assert.deepEqual(duplicate, paused);
-  assert.deepEqual(current, { statusCode: 200, body: { paused: true } });
-  assert.deepEqual(broadcasts, [{ type: 'capture-state', paused: true }]);
+  assert.deepEqual(current, { statusCode: 200, body: { paused: true, revision: 1 } });
+  assert.deepEqual(broadcasts, [{ type: 'capture-state', paused: true, revision: 1 }]);
 });
 
 test('renderer requests authoritative pause changes and renders server broadcasts', async () => {
@@ -163,36 +228,48 @@ test('renderer requests authoritative pause changes and renders server broadcast
   };
   const requests = [];
   let renders = 0;
+  let resolveFetch;
   const context = vm.createContext({
     API_BASE: '',
     console,
     document: { getElementById: id => id === 'pauseBtn' ? button : null },
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, json: async () => ({ success: true, paused: true }) };
+      return await new Promise(resolve => {
+        resolveFetch = () => resolve({
+          ok: true,
+          json: async () => ({ success: true, paused: true, revision: 1 })
+        });
+      });
     },
     renderTraffic: () => { renders += 1; },
     toast: () => {}
   });
   vm.runInContext(`
     let isPaused = false;
+    let captureStateRevision = -1;
     let pauseMutationPending = false;
     ${pauseSource}
     globalThis.applyPauseForTest = applyCapturePausedState;
     globalThis.togglePauseForTest = togglePause;
   `, context);
 
-  await context.togglePauseForTest();
+  const toggle = context.togglePauseForTest();
 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/api/traffic/capture');
   assert.equal(requests[0].options.method, 'PUT');
   assert.deepEqual(JSON.parse(requests[0].options.body), { paused: true });
-  assert.equal(button.title, 'Resume capture');
-  assert.equal(button.attributes.get('aria-pressed'), 'true');
+  context.applyPauseForTest(true, 1);
+  context.applyPauseForTest(false, 2);
+  resolveFetch();
+  await toggle;
+
+  assert.equal(button.title, 'Pause capture');
+  assert.equal(button.attributes.get('aria-pressed'), 'false');
   assert.equal(button.attributes.get('aria-disabled'), 'false');
-  assert.equal(renders, 1);
-  assert.match(websocketSource, /case 'init':[\s\S]*applyCapturePausedState\(msg\.capturePaused === true\)/);
-  assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true\)/);
+  assert.equal(renders, 2);
+  assert.match(websocketSource, /case 'init':[\s\S]*applyCapturePausedState\(msg\.capturePaused === true, msg\.captureStateRevision\)/);
+  assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.revision\)/);
   assert.doesNotMatch(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
 });

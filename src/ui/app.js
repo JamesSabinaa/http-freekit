@@ -5,6 +5,7 @@
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
     let isPaused = false;
+    let captureStateRevision = -1;
     let pauseMutationPending = false;
     let sortField = null;
     let sortDirection = 'desc';
@@ -647,7 +648,7 @@
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
           config.apiPort = msg.apiPort;
-          applyCapturePausedState(msg.capturePaused === true);
+          applyCapturePausedState(msg.capturePaused === true, msg.captureStateRevision);
           ws.send(JSON.stringify({
             type: 'get-traffic',
             limit: msg.trafficLimit || msg.trafficCount || 100
@@ -715,7 +716,7 @@
           handleInterceptorStatusEvent(msg.data);
           break;
         case 'capture-state':
-          applyCapturePausedState(msg.paused === true);
+          applyCapturePausedState(msg.paused === true, msg.revision);
           break;
         case 'traffic-cleared':
           applyTrafficClearedMessage(msg);
@@ -791,7 +792,11 @@
       }
     }
 
-    function applyCapturePausedState(paused) {
+    function applyCapturePausedState(paused, revision) {
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision <= captureStateRevision) {
+        return false;
+      }
+      captureStateRevision = revision;
       isPaused = paused === true;
       const btn = document.getElementById('pauseBtn');
       if (!btn) return;
@@ -808,6 +813,7 @@
       btn.setAttribute('aria-label', isPaused ? 'Resume capture' : 'Pause capture');
       // Re-render to update empty state if needed
       renderTraffic();
+      return true;
     }
 
     // ============ TRAFFIC ============
@@ -11823,10 +11829,11 @@
             body: JSON.stringify({ paused: !isPaused })
           });
           const result = await response.json();
-          if (!response.ok || typeof result?.paused !== 'boolean') {
+          if (!response.ok || typeof result?.paused !== 'boolean' ||
+              !Number.isSafeInteger(result?.revision) || result.revision < 0) {
             throw new Error(result?.error || 'Server returned an invalid capture state');
           }
-          applyCapturePausedState(result.paused);
+          applyCapturePausedState(result.paused, result.revision);
         } catch (error) {
           toast('Could not change capture state: ' + error.message, 'error');
         } finally {

@@ -9155,8 +9155,7 @@ export class ProxyServer {
       configurable: true
     });
     try {
-      this.onRequest(data);
-      return true;
+      return this.onRequest(data) !== false;
     } catch (err) {
       console.error('[Proxy] Error in request handler:', err.message);
       return false;
@@ -9248,15 +9247,16 @@ export class ProxyServer {
     if (hasPendingDecision && lifecycleComplete) {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
     }
-    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return;
+    if (hasPendingDecision ? !pendingWasEmitted : this._shouldSuppressTrafficLog(data)) return false;
     Object.defineProperty(data, '_trafficLifecycleComplete', {
       value: lifecycleComplete,
       configurable: true
     });
     try {
-      this.onRequest(data);
+      return this.onRequest(data) !== false;
     } catch (err) {
       console.error('[Proxy] Error in request update handler:', err.message);
+      return false;
     }
   }
 
