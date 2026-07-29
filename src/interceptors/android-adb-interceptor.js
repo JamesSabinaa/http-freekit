@@ -20,10 +20,12 @@ const ANDROID_LEGACY_RECOVERY_VERSION = 1;
 const ANDROID_REVERSE_RECOVERY_VERSION = 2;
 const ANDROID_UNCERTAIN_RECOVERY_VERSION = 3;
 const ANDROID_COMPANION_RECOVERY_VERSION = 4;
-const ANDROID_RECOVERY_VERSION = 5;
+const ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION = 5;
+const ANDROID_RECOVERY_VERSION = 6;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
 const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
+const ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED = 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED';
 
 function getActivityLaunchError(output) {
   const statuses = String(output || '')
@@ -132,12 +134,15 @@ export class AndroidAdbInterceptor {
     const allowedFields = new Set(reverseOnly || appOnly
       ? [
           'serial', 'mode', 'proxyPort', 'previousReverseMapping', 'model', 'deviceName',
-          ...(appOnly && version >= ANDROID_RECOVERY_VERSION ? ['vpnStatusConfirmed'] : [])
+          ...(appOnly && version >= ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION
+            ? ['vpnStatusConfirmed']
+            : [])
         ]
       : [
           'serial', 'mode', 'previousProxy', 'hostIp', 'proxyPort',
           'remoteCertPath', 'model', 'deviceName',
-          ...(version >= ANDROID_REVERSE_RECOVERY_VERSION ? ['previousReverseMapping'] : [])
+          ...(version >= ANDROID_REVERSE_RECOVERY_VERSION ? ['previousReverseMapping'] : []),
+          ...(version >= ANDROID_RECOVERY_VERSION ? ['manualCaRemovalRequired'] : [])
         ]);
     if (Object.keys(entry).some(field => !allowedFields.has(field))) return null;
     if (!this._isSafeJournalString(entry.serial, 255) ||
@@ -152,9 +157,9 @@ export class AndroidAdbInterceptor {
         !hasReverseCleanup) return null;
     if (hasReverseCleanup && entry.previousReverseMapping !== null &&
         !this._isSafeReverseEndpoint(entry.previousReverseMapping)) return null;
-    if (appOnly && version >= ANDROID_RECOVERY_VERSION &&
+    if (appOnly && version >= ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION &&
         (!hasVpnConfirmation || typeof entry.vpnStatusConfirmed !== 'boolean')) return null;
-    if (entry.mode === 'http-toolkit-app' && version >= ANDROID_RECOVERY_VERSION &&
+    if (entry.mode === 'http-toolkit-app' && version >= ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION &&
         entry.vpnStatusConfirmed !== true) return null;
     if (reverseOnly || appOnly) {
       return {
@@ -170,6 +175,12 @@ export class AndroidAdbInterceptor {
     if (!this._isSafeJournalString(entry.previousProxy)) return null;
     if (ipv4ToInteger(entry.hostIp) === null) return null;
     if (entry.remoteCertPath !== ANDROID_CA_STAGING_PATH) return null;
+    const manualCaRemovalRequired = version < ANDROID_RECOVERY_VERSION
+      // Legacy uncertain/cleanup modes can be descendants of a successful
+      // global-proxy session whose user followed the old CA instructions.
+      ? true
+      : entry.manualCaRemovalRequired;
+    if (typeof manualCaRemovalRequired !== 'boolean') return null;
     return {
       serial: entry.serial,
       mode: entry.mode,
@@ -177,6 +188,7 @@ export class AndroidAdbInterceptor {
       hostIp: entry.hostIp,
       proxyPort: entry.proxyPort,
       remoteCertPath: entry.remoteCertPath,
+      manualCaRemovalRequired,
       ...(entry.model !== undefined ? { model: entry.model } : {}),
       ...(entry.deviceName !== undefined ? { deviceName: entry.deviceName } : {}),
       ...(hasReverseCleanup ? { previousReverseMapping: entry.previousReverseMapping } : {})
@@ -197,6 +209,7 @@ export class AndroidAdbInterceptor {
             ANDROID_REVERSE_RECOVERY_VERSION,
             ANDROID_UNCERTAIN_RECOVERY_VERSION,
             ANDROID_COMPANION_RECOVERY_VERSION,
+            ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION,
             ANDROID_RECOVERY_VERSION
           ].includes(parsed.version) ||
           !Array.isArray(parsed.devices) ||
@@ -224,7 +237,7 @@ export class AndroidAdbInterceptor {
           ...((entry.mode === 'app-uncertain' || entry.mode === 'http-toolkit-app')
             ? {
                 vpnStatusConfirmed: entry.vpnStatusConfirmed === true ||
-                  (parsed.version < ANDROID_RECOVERY_VERSION &&
+                  (parsed.version < ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION &&
                     entry.mode === 'http-toolkit-app')
               }
             : {}),
@@ -314,6 +327,7 @@ export class AndroidAdbInterceptor {
       hostIp: activeInfo.hostIp,
       proxyPort: activeInfo.proxyPort,
       remoteCertPath: ANDROID_CA_STAGING_PATH,
+      manualCaRemovalRequired: activeInfo.manualCaRemovalRequired === true,
       ...identity,
       ...(Object.prototype.hasOwnProperty.call(activeInfo, 'previousReverseMapping')
         ? { previousReverseMapping: activeInfo.previousReverseMapping }
@@ -1169,38 +1183,13 @@ export class AndroidAdbInterceptor {
   }
 
   /**
-   * Push the CA certificate to the device's user certificate store.
-   * Returns the remote cert path on the device.
+   * The unprivileged ADB fallback cannot revoke a CA installed by the user.
+   * Keep this compatibility seam for older tests/custom integrations, but do
+   * not stage a certificate that Stop cannot remove from Android's trust store.
    */
   async _pushCaCert(deviceId) {
-    if (!this.ca) {
-      console.warn('[Interceptor] No CA available for ADB interceptor');
-      return null;
-    }
-
-    const certInfo = this.ca.getCertInfo();
-    const certPath = certInfo.certificatePath;
-
-    if (!certPath || !fs.existsSync(certPath)) {
-      console.warn('[Interceptor] CA certificate file not found');
-      return null;
-    }
-
-    // Android needs DER format cert for user certificate store
-    // First push the PEM cert to the device
-    const remotePath = ANDROID_CA_STAGING_PATH;
-
-    try {
-      await this._adb(deviceId, ['push', certPath, remotePath], {
-        stdio: 'ignore',
-        timeout: 10000
-      });
-      console.log(`[Interceptor] CA cert pushed to ${deviceId}:${remotePath}`);
-      return remotePath;
-    } catch (err) {
-      console.error(`[Interceptor] Failed to push CA cert to ${deviceId}:`, err.message);
-      return null;
-    }
+    console.log(`[Interceptor] Android global proxy fallback on ${deviceId} is HTTP-only; no CA was staged`);
+    return null;
   }
 
   /**
@@ -1287,6 +1276,47 @@ export class AndroidAdbInterceptor {
       console.error(`[Interceptor] Failed to remove CA cert from ${deviceId}:`, err.message);
       return false;
     }
+  }
+
+  async _openUserCredentialSettings(deviceId) {
+    const actions = [
+      'com.android.settings.TRUSTED_CREDENTIALS_USER',
+      'android.settings.SECURITY_SETTINGS'
+    ];
+    for (const action of actions) {
+      try {
+        const output = await this._adb(deviceId, [
+          'shell', 'am', 'start', '-W', '-a', action
+        ], { timeout: 10000 });
+        const launchError = getActivityLaunchError(output);
+        if (launchError) throw new Error(launchError);
+        return true;
+      } catch (err) {
+        console.warn(`[Interceptor] Could not open ${action} on ${deviceId}:`, err.message);
+      }
+    }
+    return false;
+  }
+
+  async _requireLegacyCaRemovalConfirmation(deviceIds, options) {
+    const pendingDeviceIds = deviceIds.filter(serial =>
+      this.activatedDevices.get(serial)?.manualCaRemovalRequired === true
+    );
+    if (pendingDeviceIds.length === 0 || options?.confirmCaRemoved === true) return;
+
+    const settingsOpened = [];
+    for (const serial of pendingDeviceIds) {
+      if (await this._openUserCredentialSettings(serial)) settingsOpened.push(serial);
+    }
+
+    const error = new Error(
+      `An older HTTP FreeKit session may have left its user CA trusted on ${pendingDeviceIds.join(', ')}. ` +
+      'Uninstall the HTTP FreeKit CA in Android Trusted credentials, then confirm removal in HTTP FreeKit to finish Stop.'
+    );
+    error.code = ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED;
+    error.deviceIds = pendingDeviceIds;
+    error.settingsOpened = settingsOpened;
+    throw error;
   }
 
   /**
@@ -1757,9 +1787,10 @@ export class AndroidAdbInterceptor {
       }
       previousProxy = currentProxy.value;
 
-      // Persist cleanup ownership before the first durable device mutation. The
-      // staged path is safe to remove with `rm -f` even if the following push
-      // never creates it.
+      // Persist cleanup ownership before the first durable device mutation.
+      // Version 6 records that this HTTP-only fallback never offered a CA for
+      // manual installation. The legacy staging path remains in the journal so
+      // older recovery records can still clean up their temporary file.
       const pendingGlobalActivation = {
         model: device.model,
         deviceName: device.deviceName,
@@ -1771,13 +1802,15 @@ export class AndroidAdbInterceptor {
         tunnelActive,
         appActivationError,
         previousProxy,
+        manualCaRemovalRequired: false,
         ...(tunnelActive ? { previousReverseMapping } : {})
       };
       this._rememberGlobalProxyOwnership(deviceId, pendingGlobalActivation);
       this.activatedDevices.set(deviceId, pendingGlobalActivation);
       this.active = true;
 
-      // Push CA certificate for the global proxy fallback.
+      // The global proxy fallback is deliberately HTTP-only. Unprivileged ADB
+      // cannot remove a CA after the user installs it in Android's trust store.
       remoteCertPath = await this._pushCaCert(deviceId);
 
       // Set proxy
@@ -1847,6 +1880,7 @@ export class AndroidAdbInterceptor {
       tunnelActive,
       appActivationError,
       previousProxy,
+      ...(mode === 'global-proxy' ? { manualCaRemovalRequired: false } : {}),
       ...(mode === 'http-toolkit-app' ? { vpnStatusConfirmed: false } : {}),
       ...(tunnelActive ? { previousReverseMapping } : {})
     };
@@ -1876,9 +1910,7 @@ export class AndroidAdbInterceptor {
         certPushed: !!remoteCertPath,
         certInstallNote: mode === 'http-toolkit-app'
           ? 'HTTP Toolkit Android app launched. Accept the VPN/certificate prompts on the device if shown.'
-          : remoteCertPath
-          ? 'CA certificate pushed to device. Install it via Settings > Security > Install from storage > /data/local/tmp/http-freekit-ca.pem'
-          : 'No CA certificate available. HTTPS interception will show certificate warnings.',
+          : 'Global proxy fallback is HTTP-only. HTTPS interception requires the HTTP Toolkit Android VPN app; HTTP FreeKit did not install a persistent user CA.',
         devices,
         activatedDevices: Array.from(this.activatedDevices.entries()).map(([serial, info]) => ({
           serial,
@@ -1896,6 +1928,7 @@ export class AndroidAdbInterceptor {
       // Deactivate a specific device
       const activeInfo = this.activatedDevices.get(deviceId);
       if (!activeInfo) return;
+      await this._requireLegacyCaRemovalConfirmation([deviceId], options);
       if (!await this._cleanupActivatedDevice(deviceId, activeInfo)) {
         this.active = this.activatedDevices.size > 0;
         throw new Error(`Failed to clean up Android device ${deviceId}; reconnect it and retry Stop`);
@@ -1905,6 +1938,10 @@ export class AndroidAdbInterceptor {
       console.log(`[Interceptor] Android ADB interceptor deactivated for ${deviceId}`);
     } else {
       // Deactivate all devices
+      await this._requireLegacyCaRemovalConfirmation(
+        Array.from(this.activatedDevices.keys()),
+        options
+      );
       const failures = [];
       for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
         try {

@@ -80,7 +80,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(original.reverseTunnels.has(TUNNEL_KEY), true);
   assert.deepEqual(readJournal(original), {
-    version: 5,
+    version: 6,
     devices: [{
       serial: DEVICE_ID,
       mode: 'app-uncertain',

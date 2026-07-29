@@ -141,6 +141,7 @@ function normalizeImportedBreakpointRule(rule) {
 function interceptorOperationErrorStatus(error, fallbackStatus) {
   if (error?.code === 'INTERCEPTOR_MANAGER_CLOSING') return 503;
   if (error?.code === 'INTERCEPTOR_OPERATION_IN_PROGRESS') return 409;
+  if (error?.code === 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED') return 409;
   return fallbackStatus;
 }
 
@@ -1403,7 +1404,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         await this.interceptors.deactivate(req.params.id, req.body || {});
         res.json({ success: true });
       } catch (err) {
-        res.status(interceptorOperationErrorStatus(err, 500)).json({ error: err.message });
+        res.status(interceptorOperationErrorStatus(err, 500)).json({
+          error: err.message,
+          ...(err?.code === 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED'
+            ? {
+                code: err.code,
+                deviceIds: err.deviceIds,
+                settingsOpened: err.settingsOpened
+              }
+            : {})
+        });
       }
     });
 

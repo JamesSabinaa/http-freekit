@@ -4353,7 +4353,7 @@
       'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
       'docker': ['Intercept traffic from Docker containers.', `Set proxy environment variables when running containers. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy routing plus system trust or a FreeKit-CA-only renderer trust flag. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
-      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Pushes a CA certificate and configures the device proxy settings.'],
+      'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Uses the companion VPN app for HTTPS, with an HTTP-only global proxy fallback.'],
       'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
     };
 
@@ -5109,7 +5109,7 @@
         ${qrHtml}
         <div class="config-section">
           <h3>Connected Devices</h3>
-          <p class="android-setup-note">Uses the HTTP Toolkit Android VPN app when installed, then falls back to Android's global proxy setting.</p>
+          <p class="android-setup-note">Uses the HTTP Toolkit Android VPN app for HTTPS when installed, then falls back to an HTTP-only global proxy without installing a persistent CA.</p>
           <div class="android-device-list">
             ${devices.map((d, index) => {
               const activation = activationBySerial.get(d.serial);
@@ -5279,6 +5279,11 @@
           if (data.metadata?.mode === 'app-uncertain') {
             toast(
               `Android app launched for ${data.metadata?.model || deviceId}; complete the VPN prompts on the device`,
+              'warning'
+            );
+          } else if (data.metadata?.mode === 'global-proxy') {
+            toast(
+              `Android device ${data.metadata?.model || deviceId} activated for HTTP; install the companion VPN app for HTTPS`,
               'warning'
             );
           } else {
@@ -5572,8 +5577,38 @@
       try {
         interceptorsInProgress.add(id);
         filterInterceptors();
-        const res = await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, { method: 'POST' });
-        const data = await res.json().catch(() => ({}));
+        const requestDeactivation = async body => {
+          const response = await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, {
+            method: 'POST',
+            ...(body
+              ? {
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body)
+                }
+              : {})
+          });
+          return {
+            response,
+            data: await response.json().catch(() => ({}))
+          };
+        };
+        let { response: res, data } = await requestDeactivation();
+        if (data.code === 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED') {
+          const deviceList = Array.isArray(data.deviceIds) ? data.deviceIds.join(', ') : 'the Android device';
+          const settingsOpened = Array.isArray(data.settingsOpened) && data.settingsOpened.length > 0;
+          const confirmed = window.confirm(
+            `An older HTTP FreeKit session may have installed its CA on ${deviceList}.\n\n` +
+            `${settingsOpened
+              ? 'Android Trusted credentials has been opened.'
+              : 'Open Android Settings > Security > Trusted credentials > User.'} ` +
+            'Uninstall “HTTP FreeKit CA”, then click OK. Stop will remain pending if you click Cancel.'
+          );
+          if (!confirmed) {
+            toast('Android Stop is pending until the legacy CA is removed', 'warning');
+            return;
+          }
+          ({ response: res, data } = await requestDeactivation({ confirmCaRemoved: true }));
+        }
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
         if (!operation || isCurrentInterceptorOperation(operation, false)) {
           toast(`Stopped ${name}`, 'success');

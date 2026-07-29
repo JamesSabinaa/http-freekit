@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 31 of the 361 documented bugs are not fully fixed.**
+**No: 30 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 330 |
+| Fixed | 331 |
 | Partially fixed | 9 |
-| Open | 22 |
+| Open | 21 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1418,7 +1418,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-123 — Medium — Android Stop leaves the user-installed CA trusted
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: new global-proxy fallback sessions are explicitly HTTP-only and no longer stage or request installation of a persistent user CA. Recovery journal version 6 distinguishes these safe sessions from version 1–5 global-proxy sessions; Stop opens Android Trusted credentials for a legacy session, returns a structured confirmation requirement, and retains durable ownership until the user confirms that the old HTTP FreeKit CA was removed. The renderer completes that two-step confirmation flow, while HTTPS interception remains available through the companion VPN app.
+- Regression coverage: `test/bug-123-android-ca-lifecycle.test.js` verifies that production fallback activation never issues an ADB push, persists the no-manual-CA marker, migrates legacy recovery ownership conservatively, performs no cleanup before confirmation, and wires the API/renderer handshake.
 
 - Evidence: fallback activation instructs the user to install `/data/local/tmp/http-freekit-ca.pem` into Android's credential store at `src/interceptors/android-adb-interceptor.js:483-487`. `_removeCaCert()` at `:342-351` deletes only the staging file, and Stop supplies no credential-removal step.
 - Impact: a user who follows the setup instructions retains the FreeKit root CA after the interceptor is reported stopped.

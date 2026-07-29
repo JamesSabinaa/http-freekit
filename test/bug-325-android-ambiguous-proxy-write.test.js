@@ -217,6 +217,7 @@ test('ambiguous readback after confirmed companion cleanup retains only proxy ow
     hostIp: HOST_IP,
     proxyPort: PROXY_PORT,
     remoteCertPath: STAGED_CA_PATH,
+    manualCaRemovalRequired: false,
     model: 'Test Device',
     deviceName: 'test-device'
   });

@@ -370,6 +370,7 @@ test('ambiguous proxy commit replaces old ownership with retryable new ownership
     hostIp: newHost,
     proxyPort: 9090,
     remoteCertPath: STAGED_CA_PATH,
+    manualCaRemovalRequired: false,
     model: 'Test Device',
     deviceName: 'test-device'
   }]);

@@ -186,7 +186,7 @@ test('confirmed companion ownership survives restart and remains stoppable', asy
   assert.equal(await original.isActive(), true);
   assert.equal(original.activatedDevices.get(DEVICE_ID).mode, 'http-toolkit-app');
   assert.deepEqual(JSON.parse(fs.readFileSync(original.recoveryFile, 'utf8')), {
-    version: 5,
+    version: 6,
     devices: [{
       serial: DEVICE_ID,
       mode: 'http-toolkit-app',
@@ -248,7 +248,7 @@ test('confirmed companions survive uncertainty and restart before a stopped VPN 
   assert.equal(uncertain.activatedDevices.get(DEVICE_ID).mode, 'app-uncertain');
   assert.equal(uncertain.activatedDevices.get(tunnelDeviceId).mode, 'app-uncertain');
   assert.deepEqual(JSON.parse(fs.readFileSync(uncertain.recoveryFile, 'utf8')), {
-    version: 5,
+    version: 6,
     devices: [
       {
         serial: DEVICE_ID,

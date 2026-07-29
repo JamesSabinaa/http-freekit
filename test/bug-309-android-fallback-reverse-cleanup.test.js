@@ -134,7 +134,7 @@ test('confirmed companion cleanup removes reverse ownership before fallback and 
     false
   );
   assert.deepEqual(readJournal(interceptor), {
-    version: 5,
+    version: 6,
     devices: [{
       serial: DEVICE_ID,
       mode: 'global-proxy',
@@ -142,6 +142,7 @@ test('confirmed companion cleanup removes reverse ownership before fallback and 
       hostIp: '192.0.2.10',
       proxyPort: PROXY_PORT,
       remoteCertPath: STAGED_CA_PATH,
+      manualCaRemovalRequired: false,
       model: 'Test Device',
       deviceName: 'test-device'
     }]
@@ -436,7 +437,7 @@ test('legacy v1 proxy journals remain valid and do not invent reverse ownership'
   interceptor._removeCaCert = async () => true;
   interceptor._removeReverseTunnel = async () => assert.fail('v1 must not invent reverse ownership');
 
-  await interceptor.deactivate({ deviceId: DEVICE_ID });
+  await interceptor.deactivate({ deviceId: DEVICE_ID, confirmCaRemoved: true });
 
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(recoveryFile), false);

@@ -62,8 +62,11 @@ test('a restarted manager adopts global-proxy cleanup ownership and can Stop it'
   });
   assert.equal(activation.success, true);
   assert.deepEqual(readJournal(original), {
-    version: 5,
-    devices: [validJournalEntry({ deviceName: 'device-1-device' })]
+    version: 6,
+    devices: [validJournalEntry({
+      deviceName: 'device-1-device',
+      manualCaRemovalRequired: false
+    })]
   });
 
   // Simulate a hard restart: construct a new manager without cleaning the old instance.
@@ -276,7 +279,7 @@ test('HTTP Toolkit app activation remains pending and durable until VPN confirma
   assert.equal(interceptor.activatedDevices.get('device-1').mode, 'app-uncertain');
   assert.equal(fs.existsSync(interceptor.recoveryFile), true);
   assert.deepEqual(JSON.parse(fs.readFileSync(interceptor.recoveryFile, 'utf8')), {
-    version: 5,
+    version: 6,
     devices: [{
       serial: 'device-1',
       mode: 'app-uncertain',
