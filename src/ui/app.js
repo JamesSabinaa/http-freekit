@@ -362,10 +362,14 @@
     const pendingTrafficClearChunks = new Map();
     let latestTrafficClearRevision = 0;
 
-    function applyTrafficCleared(clearId, retainedTraffic, revision) {
+    function applyTrafficCleared(clearId, retainedTraffic, revision, pinRevision) {
       const selectedBeforeClear = getSelectedTrafficRequest();
       const validRevision = Number.isSafeInteger(revision) && revision > 0 ? revision : null;
+      const validPinRevision = Number.isSafeInteger(pinRevision) && pinRevision >= 0
+        ? pinRevision
+        : null;
       if ((revision !== undefined && validRevision === null) ||
+          (pinRevision !== undefined && validPinRevision === null) ||
           (validRevision === null && latestTrafficClearRevision > 0) ||
           (validRevision !== null && validRevision < latestTrafficClearRevision)) {
         return false;
@@ -421,7 +425,12 @@
           const identityKey = trafficRequestIdentityKey(retainedRequest);
           const currentRequest = currentByIdentity.get(identityKey);
           if (retainedRequest?.pinned === true) {
-            return [mergeServerTrafficRequest(currentRequest, retainedRequest)];
+            const appliedPinRevision = appliedTrafficPinRevisions.get(identityKey);
+            const pinChangedAfterClear = currentRequest && validPinRevision !== null &&
+              Number.isSafeInteger(appliedPinRevision) && appliedPinRevision > validPinRevision;
+            return [pinChangedAfterClear
+              ? mergeDeferredTrafficRequest(currentRequest, retainedRequest)
+              : mergeServerTrafficRequest(currentRequest, retainedRequest)];
           }
           // Compatibility with older servers that returned identities only.
           return currentRequest ? [{ ...currentRequest, pinned: true }] : [];
@@ -468,8 +477,14 @@
       if (typeof clearId !== 'string' || !clearId || !Array.isArray(message.retainedTraffic)) {
         return false;
       }
+      const compactDeferred = message.d === 1 || message.deferred === true;
+      const rawPinRevision = message.d === 1 ? message.p : message.pinRevision;
+      const pinRevision = Number.isSafeInteger(rawPinRevision) && rawPinRevision >= 0
+        ? rawPinRevision
+        : null;
+      if (rawPinRevision !== undefined && pinRevision === null) return false;
       let retainedTraffic = message.retainedTraffic;
-      if (message.deferred === true) {
+      if (compactDeferred) {
         retainedTraffic = retainedTraffic.map(request => {
           if (!request || typeof request.id !== 'string' || !request.id ||
               (request.l !== undefined &&
@@ -491,7 +506,12 @@
         return false;
       }
       if (message.chunkCount === undefined && message.chunkIndex === undefined) {
-        return applyTrafficCleared(clearId, retainedTraffic, revision ?? undefined);
+        return applyTrafficCleared(
+          clearId,
+          retainedTraffic,
+          revision ?? undefined,
+          pinRevision ?? undefined
+        );
       }
       if (!Number.isSafeInteger(message.chunkCount) || message.chunkCount < 1 ||
           message.chunkCount > 10_000 ||
@@ -501,12 +521,16 @@
       }
 
       let pending = pendingTrafficClearChunks.get(clearId);
-      if (!pending || pending.chunkCount !== message.chunkCount || pending.revision !== revision) {
+      if (!pending || pending.chunkCount !== message.chunkCount ||
+          pending.revision !== revision || pending.pinRevision !== pinRevision ||
+          pending.compactDeferred !== compactDeferred) {
         pending = {
           chunkCount: message.chunkCount,
           chunks: new Array(message.chunkCount),
           received: 0,
-          revision
+          revision,
+          pinRevision,
+          compactDeferred
         };
         pendingTrafficClearChunks.set(clearId, pending);
         if (pendingTrafficClearChunks.size > 8) {
@@ -520,7 +544,12 @@
       if (pending.received !== pending.chunkCount) return false;
 
       pendingTrafficClearChunks.delete(clearId);
-      return applyTrafficCleared(clearId, pending.chunks.flat(), revision ?? undefined);
+      return applyTrafficCleared(
+        clearId,
+        pending.chunks.flat(),
+        revision ?? undefined,
+        pinRevision ?? undefined
+      );
     }
 
     function applyTrafficPinned(requestId, trafficLifecycleId, pinned, revision) {
@@ -10615,7 +10644,12 @@
             !Array.isArray(data.retainedTraffic)) {
           throw new Error(data.error || `Clear Traffic returned HTTP ${response.status}`);
         }
-        applyTrafficCleared(data.clearId, data.retainedTraffic, data.revision);
+        applyTrafficCleared(
+          data.clearId,
+          data.retainedTraffic,
+          data.revision,
+          data.pinRevision
+        );
         toast('Traffic cleared', 'success');
       } catch (err) {
         toast('Failed to clear traffic: ' + err.message, 'error');

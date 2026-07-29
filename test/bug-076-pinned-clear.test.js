@@ -111,6 +111,7 @@ test('pin and Clear retain one authoritative lifecycle across API consumers and 
       type: 'traffic-cleared',
       clearId: cleared.body.clearId,
       revision: 1,
+      pinRevision: 1,
       retainedTraffic: [retainedRequest]
     }
   ]);
@@ -373,11 +374,12 @@ test('tight Clear messages keep duplicate IDs exact with compact deferred lifecy
   const messages = api._buildTrafficClearedMessages(
     '00000000-0000-4000-8000-000000000000',
     retainedTraffic,
-    1
+    1,
+    0
   );
 
   assert.ok(messages.length > 0);
-  assert.ok(messages.every(message => message.deferred === true));
+  assert.ok(messages.every(message => message.d === 1 && message.p === 0));
   assert.ok(messages.every(message => api._messageFitsWsBuffer(message)));
   assert.deepEqual(messages.flatMap(message => message.retainedTraffic), [
     { id: 'shared', l: retainedTraffic[0].trafficLifecycleId },
@@ -910,9 +912,10 @@ test('compact deferred Clear rows preserve duplicate lifecycle identities', () =
       type: 'traffic-cleared',
       clearId: 'compact-clear',
       revision: 1,
+      p: 0,
       chunkIndex: 0,
       chunkCount: 2,
-      deferred: true,
+      d: 1,
       retainedTraffic: [{
         id: 'shared',
         l: '00000000-0000-4000-8000-000000000001'
@@ -922,9 +925,10 @@ test('compact deferred Clear rows preserve duplicate lifecycle identities', () =
       type: 'traffic-cleared',
       clearId: 'compact-clear',
       revision: 1,
+      p: 0,
       chunkIndex: 1,
       chunkCount: 2,
-      deferred: true,
+      d: 1,
       retainedTraffic: [{
         id: 'shared',
         l: '00000000-0000-4000-8000-000000000002'
@@ -944,6 +948,45 @@ test('compact deferred Clear rows preserve duplicate lifecycle identities', () =
     {
       id: 'shared',
       trafficLifecycleId: '00000000-0000-4000-8000-000000000002',
+      pinned: true,
+      _deferredTrafficDetail: true
+    }
+  ]);
+});
+
+test('a pin mutation newer than a compact Clear survives chunk assembly', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  const firstLifecycle = '00000000-0000-4000-8000-000000000001';
+  const secondLifecycle = '00000000-0000-4000-8000-000000000002';
+  renderer.context.setRequests([
+    { id: 'shared', trafficLifecycleId: firstLifecycle, pinned: true },
+    { id: 'shared', trafficLifecycleId: secondLifecycle, pinned: true }
+  ]);
+  const firstChunk = {
+    type: 'traffic-cleared',
+    clearId: 'compact-race',
+    revision: 1,
+    p: 8,
+    chunkIndex: 0,
+    chunkCount: 2,
+    d: 1,
+    retainedTraffic: [{ id: 'shared', l: firstLifecycle }]
+  };
+  const secondChunk = {
+    ...firstChunk,
+    chunkIndex: 1,
+    retainedTraffic: [{ id: 'shared', l: secondLifecycle }]
+  };
+
+  assert.equal(renderer.context.applyTrafficClearedMessage(firstChunk), false);
+  assert.equal(renderer.context.applyTrafficPinned('shared', firstLifecycle, false, 9), true);
+  assert.equal(renderer.context.applyTrafficClearedMessage(secondChunk), true);
+  assert.equal(renderer.context.applyTrafficPinned('shared', firstLifecycle, false, 9), false);
+  assert.deepEqual(renderer.snapshot().requests, [
+    { id: 'shared', trafficLifecycleId: firstLifecycle, _deferredTrafficDetail: true },
+    {
+      id: 'shared',
+      trafficLifecycleId: secondLifecycle,
       pinned: true,
       _deferredTrafficDetail: true
     }

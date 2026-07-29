@@ -2593,6 +2593,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       '00000000-0000-4000-8000-000000000000',
       [deferredIdentity],
       Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER
     ));
   }
@@ -2616,6 +2618,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return this._messageFitsWsBuffer(this._trafficClearBroadcastMessage(
       '00000000-0000-4000-8000-000000000000',
       [deferredIdentity],
+      Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER
@@ -2672,30 +2675,47 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._broadcastSequence(this._buildImportedTrafficMessages(requests, count));
   }
 
-  _trafficClearBroadcastMessage(clearId, retainedTraffic, chunkIndex, chunkCount, revision) {
+  _trafficClearBroadcastMessage(
+    clearId,
+    retainedTraffic,
+    chunkIndex,
+    chunkCount,
+    revision,
+    pinRevision
+  ) {
     return {
       type: 'traffic-cleared',
       clearId,
       retainedTraffic,
       ...(Number.isSafeInteger(revision) && revision > 0 ? { revision } : {}),
+      ...(Number.isSafeInteger(pinRevision) && pinRevision >= 0 ? { pinRevision } : {}),
       ...(chunkCount > 1 ? { chunkIndex, chunkCount } : {})
     };
   }
 
-  _compactTrafficClearBroadcastMessage(clearId, retainedTraffic, chunkIndex, chunkCount, revision) {
+  _compactTrafficClearBroadcastMessage(
+    clearId,
+    retainedTraffic,
+    chunkIndex,
+    chunkCount,
+    revision,
+    pinRevision
+  ) {
+    const message = this._trafficClearBroadcastMessage(
+      clearId,
+      retainedTraffic,
+      chunkIndex,
+      chunkCount,
+      revision
+    );
     return {
-      ...this._trafficClearBroadcastMessage(
-        clearId,
-        retainedTraffic,
-        chunkIndex,
-        chunkCount,
-        revision
-      ),
-      deferred: true
+      ...message,
+      d: 1,
+      ...(Number.isSafeInteger(pinRevision) && pinRevision >= 0 ? { p: pinRevision } : {})
     };
   }
 
-  _buildCompactTrafficClearedMessages(clearId, retainedTraffic, revision) {
+  _buildCompactTrafficClearedMessages(clearId, retainedTraffic, revision, pinRevision) {
     const identities = new Set();
     const compactTraffic = [];
     for (const request of retainedTraffic) {
@@ -2724,7 +2744,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         candidate,
         placeholderChunkIndex,
         placeholderChunkCount,
-        revision
+        revision,
+        pinRevision
       )
     );
 
@@ -2749,19 +2770,21 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         requestsBatch,
         chunkIndex,
         batches.length,
-        revision
+        revision,
+        pinRevision
       )
     );
     return messages.every(message => this._messageFitsWsBuffer(message)) ? messages : [];
   }
 
-  _buildTrafficClearedMessages(clearId, retainedTraffic, revision) {
+  _buildTrafficClearedMessages(clearId, retainedTraffic, revision, pinRevision) {
     const completeMessage = this._trafficClearBroadcastMessage(
       clearId,
       retainedTraffic,
       0,
       1,
-      revision
+      revision,
+      pinRevision
     );
     if (this._messageFitsWsBuffer(completeMessage)) return [completeMessage];
 
@@ -2778,7 +2801,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         candidate,
         placeholderChunk,
         placeholderChunk,
-        revision
+        revision,
+        pinRevision
       )
     );
 
@@ -2804,7 +2828,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const itemFits = fitsBatch([item]);
       const deferredIdentityFits = fitsBatch([deferredIdentity]);
       if (!itemFits && !deferredIdentityFits && retainedIdCounts.get(request.id) > 1) {
-        return this._buildCompactTrafficClearedMessages(clearId, retainedTraffic, revision);
+        return this._buildCompactTrafficClearedMessages(
+          clearId,
+          retainedTraffic,
+          revision,
+          pinRevision
+        );
       }
       const fallback = itemFits
         ? item
@@ -2827,13 +2856,19 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       requestsBatch,
       chunkIndex,
       batches.length,
-      revision
+      revision,
+      pinRevision
     ));
     return messages.every(message => this._messageFitsWsBuffer(message)) ? messages : [];
   }
 
-  _broadcastTrafficCleared(clearId, retainedTraffic, revision) {
-    const messages = this._buildTrafficClearedMessages(clearId, retainedTraffic, revision);
+  _broadcastTrafficCleared(clearId, retainedTraffic, revision, pinRevision) {
+    const messages = this._buildTrafficClearedMessages(
+      clearId,
+      retainedTraffic,
+      revision,
+      pinRevision
+    );
     if (messages.length === 0) {
       console.warn('[API] Traffic Clear broadcast skipped: WebSocket ceiling is too small');
       return;
@@ -3433,6 +3468,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   _clearTraffic() {
     const clearId = crypto.randomUUID();
     const revision = ++this._trafficClearRevision;
+    const pinRevision = this._trafficPinRevision;
     const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
     const retainedRequests = this.trafficLog.filter(request =>
       request?.pinned === true && request.protocol !== 'ws-frame'
@@ -3471,8 +3507,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
     this._deletedTrafficIdentities.clear();
     this.trafficLog = retainedRequests;
-    const result = { clearId, revision, retainedTraffic };
-    this._broadcastTrafficCleared(clearId, retainedTraffic, revision);
+    const result = { clearId, revision, pinRevision, retainedTraffic };
+    this._broadcastTrafficCleared(clearId, retainedTraffic, revision, pinRevision);
     return result;
   }
 

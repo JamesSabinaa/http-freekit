@@ -65,6 +65,7 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
   assert.equal(response.body.success, true);
   assert.match(response.body.clearId, /^[0-9a-f-]{36}$/i);
   assert.equal(response.body.revision, 1);
+  assert.equal(response.body.pinRevision, 0);
   assert.deepEqual(response.body.retainedTraffic, []);
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._pendingTrafficIds.size, 0);
@@ -73,6 +74,7 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
     type: 'traffic-cleared',
     clearId: response.body.clearId,
     revision: 1,
+    pinRevision: 0,
     retainedTraffic: []
   }]);
 });
