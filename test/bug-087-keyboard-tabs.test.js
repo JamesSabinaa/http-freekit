@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 const appSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
+const stylesSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'styles.css'), 'utf8');
 
 function sourceBetween(startMarker, endMarker) {
   const start = appSource.indexOf(startMarker);
@@ -58,6 +59,8 @@ class FakeElement {
     this.children = [];
     this.parentNode = null;
     this._textContent = '';
+    this.listeners = new Map();
+    this.focuses = 0;
   }
 
   set textContent(value) {
@@ -71,7 +74,17 @@ class FakeElement {
 
   getAttribute(name) { return this.attributes.get(name); }
 
-  addEventListener() {}
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatch(type, event) {
+    for (const listener of this.listeners.get(type) || []) listener(event);
+  }
+
+  focus() { this.focuses++; }
 
   appendChild(child) {
     child.parentNode = this;
@@ -139,22 +152,29 @@ test('generated Send tabs expose sibling tab and close controls with roving sema
   assert.match(renderSource, /tabEl\.setAttribute\('aria-controls', 'sendTabPanel'\)/);
   assert.match(renderSource, /tabEl\.addEventListener\('keydown', handleSendTabKeydown\)/);
   assert.match(renderSource, /closeEl\.tabIndex = isActive \? 0 : -1/);
+  assert.match(renderSource, /Close request tab/);
+  assert.match(renderSource, /closeSendTab\(tab\.id, event\.detail === 0\)/);
   assert.match(renderSource, /document\.createElement\('button'\)/);
   assert.match(renderSource, /panel\.setAttribute\('aria-labelledby', activeTabDomId\)/);
   assert.match(htmlSource, /id="sendTabPanel" role="tabpanel"/);
 
   const bar = new FakeElement('div');
   const panel = new FakeElement('div');
+  const closeCalls = [];
   const context = {
+    URL,
     activeSendTab: 'tab-1',
     addSendTab() {},
-    closeSendTab() {},
+    closeSendTab(...args) { closeCalls.push(args); },
     document: {
       createElement: tagName => new FakeElement(tagName),
       getElementById: id => id === 'sendTabBar' ? bar : panel
     },
     handleSendTabKeydown() {},
-    sendTabs: [{ id: 'tab-1', method: 'GET', url: '' }],
+    sendTabs: [
+      { id: 'tab-1', method: 'GET', url: '' },
+      { id: 'tab-2', method: 'POST', url: 'https://example.test/path' }
+    ],
     switchSendTab() {}
   };
   vm.createContext(context);
@@ -167,6 +187,47 @@ test('generated Send tabs expose sibling tab and close controls with roving sema
   assert.equal(tabControl.getAttribute('role'), 'tab');
   assert.equal(closeControl.tagName, 'BUTTON');
   assert.equal(closeControl.className, 'send-tab-close');
+  assert.equal(closeControl.getAttribute('aria-label'), 'Close request tab 1: New request');
+  assert.equal(bar.children[1].children[1].getAttribute('aria-label'), 'Close request tab 2: POST example.test');
   assert.equal(closeControl.parentNode, tabItem);
   assert.equal(tabControl.children.includes(closeControl), false);
+
+  closeControl.dispatch('click', { detail: 0, stopPropagation() {} });
+  bar.children[1].children[1].dispatch('click', { detail: 1, stopPropagation() {} });
+  assert.deepEqual(closeCalls, [['tab-1', true], ['tab-2', false]]);
+
+  assert.match(stylesSource, /\.send-tab-item\s*{[\s\S]*?gap:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?overflow:\s*visible;/);
+  assert.match(stylesSource, /\.send-tab\s*{[\s\S]*?padding:\s*0 6px 0 12px;/);
+  assert.match(stylesSource, /\.send-tab:focus-visible,[\s\S]*?\.send-tab-close:focus-visible\s*{[\s\S]*?outline-offset:\s*-2px;/);
+});
+
+test('keyboard tab closure focuses the newly active Send tab', () => {
+  const closeSource = sourceBetween('function closeSendTab(', 'function initializeSendTabs(');
+  const focusTarget = { focuses: 0, focus() { this.focuses++; } };
+  const context = {
+    createEmptySendTab: () => ({ id: 'replacement' }),
+    document: {
+      querySelector(selector) {
+        assert.equal(selector, '#sendTabBar [role="tab"][aria-selected="true"]');
+        return focusTarget;
+      }
+    },
+    loadSendTabState() {},
+    persistSendTabs() {},
+    renderSendTabs() {},
+    safeLocalStorageSet() {},
+    saveSendTabState() {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let sendTabs = [{ id: 'tab-1' }, { id: 'tab-2' }];
+    let activeSendTab = 'tab-1';
+    ${closeSource}
+    globalThis.closeTab = closeSendTab;
+    globalThis.activeTab = () => activeSendTab;
+  `, context);
+
+  context.closeTab('tab-1', true);
+  assert.equal(context.activeTab(), 'tab-2');
+  assert.equal(focusTarget.focuses, 1);
 });

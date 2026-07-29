@@ -3917,20 +3917,23 @@
     .send-tab-item {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 0;
       height: 100%;
       max-width: 200px;
-      padding: 0 8px 0 12px;
+      padding: 0;
       border-bottom: 2px solid transparent;
       box-sizing: border-box;
       flex: 0 0 auto;
-      overflow: hidden;
+      overflow: visible;
     }
     .send-tab {
       display: flex;
       align-items: center;
+      box-sizing: border-box;
+      flex: 1 1 auto;
       height: 100%;
       min-width: 0;
+      padding: 0 6px 0 12px;
       font-size: 12px;
       font-family: var(--font-mono);
       color: var(--text-lowlight);
@@ -3960,13 +3963,17 @@
       height: 18px;
       justify-content: center;
       line-height: 1;
-      margin-right: -4px;
-      padding: 0;
-      width: 18px;
+      margin: 0;
+      padding: 0 4px;
+      width: 26px;
     }
     .send-tab-close:hover {
       background: var(--bg-lowlight);
       color: var(--pop-color);
+    }
+    .send-tab:focus-visible,
+    .send-tab-close:focus-visible {
+      outline-offset: -2px;
     }
     .send-tab-add {
       padding: 0 12px;

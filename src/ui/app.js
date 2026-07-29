@@ -9356,15 +9356,16 @@
         tabEl.appendChild(labelEl);
 
         const closeEl = document.createElement('button');
+        const closeLabel = 'Close request tab ' + (index + 1) + ': ' + label;
         closeEl.type = 'button';
         closeEl.className = 'send-tab-close';
-        closeEl.title = 'Close tab';
-        closeEl.setAttribute('aria-label', 'Close tab');
+        closeEl.title = closeLabel;
+        closeEl.setAttribute('aria-label', closeLabel);
         closeEl.tabIndex = isActive ? 0 : -1;
         closeEl.textContent = '×';
         closeEl.addEventListener('click', (event) => {
           event.stopPropagation();
-          closeSendTab(tab.id);
+          closeSendTab(tab.id, event.detail === 0);
         });
         tabItemEl.appendChild(tabEl);
         tabItemEl.appendChild(closeEl);
@@ -10039,7 +10040,7 @@
       renderSendTabs();
     }
 
-    function closeSendTab(tabId) {
+    function closeSendTab(tabId, restoreTabFocus = false) {
       saveSendTabState();
       const idx = sendTabs.findIndex(t => t.id === tabId);
       if (idx === -1) return;
@@ -10050,6 +10051,9 @@
         safeLocalStorageSet('http-freekit-send-active', activeSendTab);
         loadSendTabState(newTab);
         renderSendTabs();
+        if (restoreTabFocus) {
+          document.querySelector?.('#sendTabBar [role="tab"][aria-selected="true"]')?.focus();
+        }
         persistSendTabs([newTab], [tabId]);
         return;
       }
@@ -10060,6 +10064,9 @@
         loadSendTabState(sendTabs.find(t => t.id === activeSendTab));
       }
       renderSendTabs();
+      if (restoreTabFocus) {
+        document.querySelector?.('#sendTabBar [role="tab"][aria-selected="true"]')?.focus();
+      }
       persistSendTabs([], [tabId]);
     }
 
@@ -12904,7 +12911,7 @@
       if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
         e.preventDefault();
         if (document.getElementById('panel-send')?.classList.contains('active') && sendTabs.length > 1) {
-          closeSendTab(activeSendTab);
+          closeSendTab(activeSendTab, true);
         }
         return;
       }
