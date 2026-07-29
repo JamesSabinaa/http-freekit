@@ -15,6 +15,7 @@ const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
 const { waitForServer } = require('./server-readiness.cjs');
 const { shutdownServerProcess } = require('./server-shutdown.cjs');
+const { runQuitCleanup } = require('./quit-cleanup.cjs');
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -25,6 +26,7 @@ let isShuttingDown = false;
 let serverReady = false;
 let quitCleanupComplete = false;
 let quitCleanupPromise = null;
+let relaunchRequested = false;
 let deepLinkProcessing = Promise.resolve();
 const pendingDeepLinks = [];
 const authToken = crypto.randomBytes(32).toString('hex');
@@ -440,7 +442,7 @@ ipcMain.handle('open-context-menu', (event, items) => {
 
 ipcMain.handle('restart-app', (event) => {
   if (!validateSender(event)) return;
-  app.relaunch();
+  relaunchRequested = true;
   app.quit();
 });
 
@@ -463,20 +465,31 @@ if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   event.preventDefault();
   if (quitCleanupPromise) return;
 
-  isShuttingDown = true;
-  quitCleanupPromise = Promise.resolve()
-    .then(() => {
-      stopAutoUpdater();
-      destroyTray();
-      return shutdownServer();
-    })
-    .catch(err => {
-      console.error('[Electron] Shutdown cleanup failed:', err.message);
-    })
-    .finally(() => {
+  const windowForQuit = mainWindow;
+  quitCleanupPromise = runQuitCleanup({
+    mainWindow: windowForQuit,
+    onPrepared: () => { isShuttingDown = true; },
+    relaunch: relaunchRequested ? () => app.relaunch() : null,
+    stopAutoUpdater,
+    destroyTray,
+    shutdownServer
+  }).then(shouldQuit => {
+    quitCleanupPromise = null;
+    if (shouldQuit) {
       quitCleanupComplete = true;
       app.quit();
-    });
+      return;
+    }
+    isShuttingDown = false;
+    relaunchRequested = false;
+    showMainWindow();
+  }).catch(err => {
+    quitCleanupPromise = null;
+    isShuttingDown = false;
+    relaunchRequested = false;
+    console.error('[Electron] Quit preparation failed:', err.message);
+    showMainWindow();
+  });
 });
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {

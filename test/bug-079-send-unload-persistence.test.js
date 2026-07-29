@@ -329,4 +329,8 @@ test('Send persistence registers a synchronous unload handler', () => {
     source,
     /window\.addEventListener\('beforeunload', persistActiveSendTabBeforeUnload\)/
   );
+  assert.match(
+    source,
+    /window\.prepareSendTabPersistenceForQuit = persistActiveSendTabBeforeUnload/
+  );
 });

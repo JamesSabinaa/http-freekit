@@ -12937,6 +12937,7 @@
     restoreSendTabs();
     initializeSendTabs();
     window.addEventListener('storage', handleSendTabStorageEvent);
+    window.prepareSendTabPersistenceForQuit = persistActiveSendTabBeforeUnload;
     window.addEventListener('beforeunload', persistActiveSendTabBeforeUnload);
 
     // Apply hash-based routing on initial page load
