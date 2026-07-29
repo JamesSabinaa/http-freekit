@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 3 of the 361 documented bugs are not fully fixed.**
+**No: 2 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 358 |
+| Fixed | 359 |
 | Partially fixed | 0 |
-| Open | 3 |
+| Open | 2 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -3088,7 +3088,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-065 — Medium — The OpenAPI picker offers YAML files that it always rejects
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: OpenAPI uploads now parse `.yaml` and `.yml` selections with the packaged `js-yaml` browser build using its JSON-compatible schema, while `.json` selections retain strict JSON parsing. The parser rejects non-mapping document roots before prompting or uploading, and parser/load failures follow the existing error path without mutating the configured spec list.
 
 - Evidence: `src/ui/app.js:8180-8191` sets the picker to `.json,.yaml,.yml`, then uses only `JSON.parse()` and immediately rejects any parse failure with “Please use JSON format”.
 - Impact: valid YAML OpenAPI/Swagger documents exposed as supported choices cannot be loaded.

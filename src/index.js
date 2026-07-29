@@ -181,6 +181,10 @@ async function initializeApplication(apiPort) {
   const PAKO_DIR = path.join(__dirname, '..', 'node_modules', 'pako', 'dist', 'browser');
   api.app.use('/vendor/pako', express.static(PAKO_DIR));
 
+  // Serve js-yaml's browser bundle for OpenAPI/Swagger YAML imports
+  const JS_YAML_DIR = path.join(__dirname, '..', 'node_modules', 'js-yaml', 'dist', 'browser');
+  api.app.use('/vendor/js-yaml', express.static(JS_YAML_DIR));
+
   // 5. Start servers
   await proxy.start();
   await api.start();

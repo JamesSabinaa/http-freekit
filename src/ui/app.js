@@ -11767,6 +11767,24 @@
       return data;
     }
 
+    function parseApiSpecDocument(text, fileName) {
+      const normalizedName = String(fileName || '').trim().toLowerCase();
+      const isYaml = normalizedName.endsWith('.yaml') || normalizedName.endsWith('.yml');
+      let spec;
+      if (isYaml) {
+        if (typeof globalThis.jsyaml?.load !== 'function') {
+          throw new Error('YAML parser is unavailable');
+        }
+        spec = globalThis.jsyaml.load(text, { schema: globalThis.jsyaml.JSON_SCHEMA });
+      } else {
+        spec = JSON.parse(text);
+      }
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+        throw new Error('OpenAPI document must contain a mapping at its root');
+      }
+      return spec;
+    }
+
     function uploadApiSpec() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -11776,11 +11794,7 @@
         if (!file) return;
         try {
           const text = await file.text();
-          let spec;
-          try { spec = JSON.parse(text); } catch {
-            toast('Please use JSON format for OpenAPI specs', 'error');
-            return;
-          }
+          const spec = parseApiSpecDocument(text, file.name);
 
           const title = spec.info?.title || file.name;
           const baseUrl = prompt('Base URL for this API (e.g. https://api.example.com):',
