@@ -233,7 +233,7 @@ test('isolated browser preserves startup ownership when descendant inspection is
   interceptor._clearLifecycleState();
 });
 
-test('manager publishes inspection-unknown startup ownership after activation rejects', async () => {
+test('manager publishes inspection-unknown startup ownership and its final cleanup', async () => {
   const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
   const child = fakeChild(7381);
   interceptor._findBrowserPath = () => '/test/chrome-launcher';
@@ -274,7 +274,26 @@ test('manager publishes inspection-unknown startup ownership after activation re
   }]);
   assert.equal(interceptor.active, true);
   assert.equal(interceptor.cleanupPending, true);
-  interceptor._clearLifecycleState();
+
+  interceptor._refreshTrackedProcessIds = async () => new Set();
+  interceptor._terminateProcessTree = async targetIds => {
+    assert.equal(targetIds.size, 0);
+    return new Set();
+  };
+  interceptor._cleanup = profileDir => {
+    assert.equal(profileDir, '/test/profile');
+    return { removed: true };
+  };
+
+  await manager.deactivate('chrome');
+
+  assert.deepEqual(events.map(event => [event.active, event.reason]), [
+    [true, 'cleanup-failed'],
+    [false, 'inactive']
+  ]);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.cleanupPending, false);
+  assert.equal(interceptor.profileDir, null);
 });
 
 test('UI refreshes interceptor state after an activation error', () => {

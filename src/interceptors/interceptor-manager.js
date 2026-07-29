@@ -85,6 +85,13 @@ export class InterceptorManager {
     return Boolean(interceptor.active);
   }
 
+  async _getNeedsDeactivationState(interceptor, active) {
+    if (typeof interceptor.needsDeactivation === 'function') {
+      return Boolean(await interceptor.needsDeactivation());
+    }
+    return active;
+  }
+
   _publishFailureEvents(events, activeBeforeOperation) {
     for (const event of events) {
       const reportsFailureState = event?.reason === 'cleanup-failed'
@@ -101,6 +108,7 @@ export class InterceptorManager {
 
   async _runStateTransition(interceptor, operation) {
     const wasActive = await this._getActiveState(interceptor);
+    const neededDeactivation = await this._getNeedsDeactivationState(interceptor, wasActive);
     const statusOperation = { events: [] };
     this.statusOperations ||= new Map();
     this.statusOperations.set(interceptor.id, statusOperation);
@@ -120,7 +128,8 @@ export class InterceptorManager {
       }
 
       const active = await this._getActiveState(interceptor);
-      if (active === wasActive) return result;
+      const needsDeactivation = await this._getNeedsDeactivationState(interceptor, active);
+      if (active === wasActive && needsDeactivation === neededDeactivation) return result;
 
       const emittedTransition = statusOperation.events
         .filter(event => Boolean(event?.active) === active)
