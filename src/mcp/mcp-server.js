@@ -1232,7 +1232,13 @@ export class McpServerBridge {
   }
 
   stop(options = {}) {
-    if (this._stopPromise) return this._stopPromise;
+    if (this._stopPromise) {
+      if (!options.bestEffort) return this._stopPromise;
+      // Shutdown may overlap a strict runtime toggle. If that strict cleanup
+      // fails, wait for it to retain the failed resources and then retry them
+      // with shutdown semantics instead of leaking its rejection to callers.
+      return this._stopPromise.catch(() => this.stop({ bestEffort: true }));
+    }
     let resolveStop;
     let rejectStop;
     const stopPromise = new Promise((resolve, reject) => {

@@ -261,6 +261,41 @@ test('failed MCP transport cleanup is reported and retained for a successful ret
   assert.equal(bridge.getStatus().pendingCleanupCount, 0);
 });
 
+test('best-effort shutdown retries cleanup after an overlapping strict stop fails', async () => {
+  const bridge = new McpServerBridge({
+    apiServer: { trafficLog: [], _broadcast() {} },
+    proxyServer: { getStats: () => ({}), mockRules: [], breakpointRules: [] },
+    interceptorManager: { getAll: async () => [] }
+  });
+  const ownedServer = bridge.server;
+  let closeCalls = 0;
+  let releaseFirstClose;
+  let markFirstCloseStarted;
+  const firstCloseStarted = new Promise(resolve => { markFirstCloseStarted = resolve; });
+  const firstCloseBlocked = new Promise(resolve => { releaseFirstClose = resolve; });
+  ownedServer.close = async () => {
+    closeCalls++;
+    if (closeCalls !== 1) return;
+    markFirstCloseStarted();
+    await firstCloseBlocked;
+    throw new Error('strict cleanup failed');
+  };
+
+  const strictStop = bridge.stop();
+  const strictRejection = assert.rejects(strictStop, /fully stop/);
+  await firstCloseStarted;
+  const shutdownStop = bridge.stop({ bestEffort: true });
+  assert.notEqual(shutdownStop, strictStop);
+  releaseFirstClose();
+
+  await strictRejection;
+  await shutdownStop;
+  assert.equal(closeCalls, 2);
+  assert.equal(bridge.getStatus().enabled, false);
+  assert.equal(bridge.getStatus().degraded, false);
+  assert.equal(bridge.getStatus().pendingCleanupCount, 0);
+});
+
 test('MCP toggle rejects non-booleans without changing runtime or settings', async (t) => {
   const bridge = createBridge(true);
   const writes = [];
