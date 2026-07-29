@@ -15,10 +15,27 @@ function macBrowser(browserType = 'chrome', name = 'Chrome') {
   return interceptor;
 }
 
+function managedProfileCommand(interceptor) {
+  if (interceptor.browserType === 'firefox') {
+    return `firefox -profile ${interceptor.profileDir}`;
+  }
+  const executable = {
+    chrome: 'Google Chrome',
+    edge: 'Microsoft Edge',
+    brave: 'Brave Browser'
+  }[interceptor.browserType];
+  return `"${executable}" --user-data-dir=${interceptor.profileDir}`;
+}
+
 test('macOS Focus activates only a freshly revalidated managed-profile process', async () => {
   const interceptor = macBrowser();
   interceptor._getProcessSnapshot = async () => [
-    { pid: 8201, ppid: 1, startedAt: 1785300000123, command: 'chrome managed' },
+    {
+      pid: 8201,
+      ppid: 1,
+      startedAt: 1785300000123,
+      command: managedProfileCommand(interceptor)
+    },
     { pid: 8202, ppid: 8201, startedAt: 1785300001123, command: 'chrome helper' },
     { pid: 8203, ppid: 8202, startedAt: 1785300002123, command: 'chrome helper child' }
   ];
@@ -53,6 +70,8 @@ test('macOS Focus fails closed when managed-profile process inspection is unavai
     interceptor.focus(),
     /Could not safely identify the managed Chrome process to focus/
   );
+  assert.equal(interceptor.lastProcessInspectionFailed, true);
+  assert.equal(interceptor.lifecycleInspectionErrorLogged, true);
 });
 
 test('macOS Focus rejects an empty managed-profile process set', async () => {
@@ -78,7 +97,12 @@ test('macOS Focus pins each supported isolated browser to its exact bundle ident
     const interceptor = macBrowser(browserType, browserType);
     interceptor.process.pid = 8301;
     interceptor._getProcessSnapshot = async () => [
-      { pid: 8301, ppid: 1, startedAt: 1785300010000, command: browserType }
+      {
+        pid: 8301,
+        ppid: 1,
+        startedAt: 1785300010000,
+        command: managedProfileCommand(interceptor)
+      }
     ];
     let script;
     interceptor._execFile = async (_command, args) => { script = args[3]; };
@@ -92,7 +116,12 @@ test('macOS Focus pins each supported isolated browser to its exact bundle ident
 test('macOS Focus omits managed PIDs without a verifiable process generation', async () => {
   const interceptor = macBrowser();
   interceptor._getProcessSnapshot = async () => [
-    { pid: 8201, ppid: 1, startedAt: null, command: 'chrome managed' }
+    {
+      pid: 8201,
+      ppid: 1,
+      startedAt: null,
+      command: managedProfileCommand(interceptor)
+    }
   ];
   interceptor._execFile = async () => assert.fail('an unversioned PID must never reach AppKit');
 
@@ -106,7 +135,12 @@ test('macOS AppKit handoff rejects a recycled same-bundle PID by launch time', a
   const interceptor = macBrowser();
   const startedAt = 1785300020123;
   interceptor._getProcessSnapshot = async () => [
-    { pid: 8201, ppid: 1, startedAt, command: 'chrome managed' }
+    {
+      pid: 8201,
+      ppid: 1,
+      startedAt,
+      command: managedProfileCommand(interceptor)
+    }
   ];
   let script;
   interceptor._execFile = async (_command, args) => { script = args[3]; };
@@ -144,4 +178,42 @@ test('macOS AppKit handoff rejects a recycled same-bundle PID by launch time', a
   const recycledGeneration = runHandoff(startedAt + 5000);
   assert.throws(recycledGeneration.execute, /No matching managed browser application/);
   assert.equal(recycledGeneration.getActivations(), 0);
+});
+
+test('macOS Focus rejects a live launcher PID recycled by a default-profile browser', async () => {
+  const interceptor = macBrowser();
+  interceptor._getProcessSnapshot = async () => [
+    {
+      pid: 8201,
+      ppid: 1,
+      startedAt: 1785300030000,
+      command: 'chrome --profile-directory=Default'
+    },
+    { pid: 8202, ppid: 8201, startedAt: 1785300030100, command: 'chrome helper' }
+  ];
+  interceptor._execFile = async () => assert.fail('a recycled launcher tree must not reach AppKit');
+
+  await assert.rejects(
+    interceptor.focus(),
+    /Could not find the managed Chrome application process to focus/
+  );
+  assert.deepEqual([...interceptor.trackedProcessIds], []);
+});
+
+test('successful macOS Focus resets prior inspection failure bookkeeping', async () => {
+  const interceptor = macBrowser();
+  interceptor.lastProcessInspectionFailed = true;
+  interceptor.lifecycleInspectionErrorLogged = true;
+  interceptor._getProcessSnapshot = async () => [{
+    pid: 8201,
+    ppid: 1,
+    startedAt: 1785300040000,
+    command: managedProfileCommand(interceptor)
+  }];
+  interceptor._execFile = async () => {};
+
+  await interceptor.focus();
+
+  assert.equal(interceptor.lastProcessInspectionFailed, false);
+  assert.equal(interceptor.lifecycleInspectionErrorLogged, false);
 });

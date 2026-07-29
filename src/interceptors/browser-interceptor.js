@@ -774,16 +774,25 @@ exit 1
       try {
         processSnapshot = await this._getProcessSnapshot();
         if (!Array.isArray(processSnapshot)) throw new Error('process snapshot is not an array');
-      } catch {
+      } catch (err) {
+        if (this._isLifecycleCurrent(lifecycle)) {
+          this.lastProcessInspectionAt = Date.now();
+          this.lastProcessInspectionFailed = true;
+          if (!this.lifecycleInspectionErrorLogged) {
+            console.warn(`[Interceptor] Could not inspect ${this.name} process tree: ${err.message}`);
+            this.lifecycleInspectionErrorLogged = true;
+          }
+        }
         throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
       }
-      const rootPids = this._isSpawnedProcessRunning(lifecycle.process)
-        ? [lifecycle.process.pid]
-        : [];
+      // Do not seed this security-sensitive handoff from the launcher PID.
+      // ChildProcess liveness is PID-only, so a recycled default-profile PID
+      // could otherwise be mistaken for the managed browser. Exact profile
+      // arguments in this snapshot establish roots; descendants follow them.
       const relatedIds = collectRelatedProcessIds(
         processSnapshot,
         lifecycle.profileDir,
-        rootPids,
+        [],
         platform
       );
       if (!this._isLifecycleCurrent(lifecycle)) {
@@ -792,6 +801,7 @@ exit 1
       this.trackedProcessIds = relatedIds;
       this.lastProcessInspectionAt = Date.now();
       this.lastProcessInspectionFailed = false;
+      this.lifecycleInspectionErrorLogged = false;
       const candidateProcesses = processSnapshot.flatMap(processInfo => {
         const pid = processInfo?.pid;
         const startedAt = typeof processInfo?.startedAt === 'number'
