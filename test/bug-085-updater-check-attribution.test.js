@@ -19,7 +19,8 @@ function loadUpdater(checks, {
   prepareOperation = null,
   prepareOperations = [],
   dialogOperations = [],
-  downloadOperations = []
+  downloadOperations = [],
+  downloadError = null
 } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
@@ -40,6 +41,7 @@ function loadUpdater(checks, {
   const pendingDownloads = [...downloadOperations];
   autoUpdater.downloadUpdate = () => {
     downloadCalls++;
+    if (downloadError) throw downloadError;
     return pendingDownloads.shift()?.promise || Promise.resolve();
   };
   autoUpdater.setFeedURL = () => {};
@@ -346,6 +348,38 @@ test('install waits for both the active download event and its upstream promise'
   download.resolve(null);
   const result = await install;
   assert.equal(result.started, true);
+  assert.equal(updater.prepareCalls, 1);
+  assert.equal(updater.quitCalls, 1);
+});
+
+test('a synchronous download setup error releases later checks and installs', async () => {
+  const firstCheck = deferred();
+  const secondCheck = deferred();
+  const dialog = deferred();
+  const downloadError = new Error('download setup failed');
+  const updater = loadUpdater([firstCheck, secondCheck], {
+    dialogOperations: [dialog],
+    downloadError
+  });
+
+  updater.runStartupCheck();
+  updater.autoUpdater.emit('update-available', { version: '5.1.0' });
+  dialog.resolve({ response: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.downloadCalls, 1);
+  assert.equal(updater.statuses.at(-1).status, 'error');
+  assert.equal(updater.statuses.at(-1).error, downloadError.message);
+
+  firstCheck.resolve(null);
+  await new Promise(resolve => setImmediate(resolve));
+  const manual = updater.checkNow();
+  assert.equal(updater.checkCalls, 2);
+  updater.autoUpdater.emit('update-not-available');
+  secondCheck.resolve(null);
+  await manual;
+
+  const install = await updater.install();
+  assert.equal(install.started, true);
   assert.equal(updater.prepareCalls, 1);
   assert.equal(updater.quitCalls, 1);
 });

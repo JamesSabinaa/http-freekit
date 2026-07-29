@@ -379,8 +379,8 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
     };
     activeDownload = download;
     sendStatus({ status: 'download-started', version, manual }, lifecycle);
-    download.upstreamPromise = trackUpstreamOperation(autoUpdater.downloadUpdate());
     try {
+      download.upstreamPromise = trackUpstreamOperation(autoUpdater.downloadUpdate());
       await download.upstreamPromise;
     } finally {
       download.upstreamSettled = true;
