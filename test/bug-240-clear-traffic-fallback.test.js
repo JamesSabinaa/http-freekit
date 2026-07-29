@@ -64,6 +64,7 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.success, true);
   assert.match(response.body.clearId, /^[0-9a-f-]{36}$/i);
+  assert.equal(response.body.revision, 1);
   assert.deepEqual(response.body.retainedTraffic, []);
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._pendingTrafficIds.size, 0);
@@ -71,6 +72,7 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
   assert.deepEqual(broadcasts, [{
     type: 'traffic-cleared',
     clearId: response.body.clearId,
+    revision: 1,
     retainedTraffic: []
   }]);
 });
@@ -94,7 +96,7 @@ assert.notEqual(messageStart, -1);
 assert.notEqual(messageEnd, -1);
 assert.match(
   rendererSource.slice(messageStart, messageEnd),
-  /case 'traffic-cleared':\s*applyTrafficCleared\(msg\.clearId, msg\.retainedTraffic\)/
+  /case 'traffic-cleared':\s*applyTrafficClearedMessage\(msg\)/
 );
 
 function rendererResponse(body, { ok = true, status = ok ? 200 : 500 } = {}) {
@@ -153,6 +155,7 @@ function createRenderer(fetch) {
       ]);
     }
     function showDetail() {}
+    function hydrateDeferredTrafficRequest() {}
     ${rendererSource.slice(mergeStart, mergeEnd)}
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}

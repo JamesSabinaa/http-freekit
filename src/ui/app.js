@@ -347,10 +347,31 @@
 
     const appliedTrafficClearIds = new Set();
     const appliedTrafficPinRevisions = new Map();
+    const pendingTrafficClearChunks = new Map();
+    let latestTrafficClearRevision = 0;
 
-    function applyTrafficCleared(clearId, retainedTraffic) {
-      if (clearId && appliedTrafficClearIds.has(clearId)) return false;
-      if (clearId) {
+    function applyTrafficCleared(clearId, retainedTraffic, revision) {
+      const validRevision = Number.isSafeInteger(revision) && revision > 0 ? revision : null;
+      if ((revision !== undefined && validRevision === null) ||
+          (validRevision === null && latestTrafficClearRevision > 0) ||
+          (validRevision !== null && validRevision < latestTrafficClearRevision)) {
+        return false;
+      }
+      if (validRevision !== null && validRevision > latestTrafficClearRevision) {
+        latestTrafficClearRevision = validRevision;
+        for (const [pendingClearId, pending] of pendingTrafficClearChunks) {
+          if (pending.revision !== null && pending.revision < validRevision) {
+            pendingTrafficClearChunks.delete(pendingClearId);
+          }
+        }
+      }
+      const alreadyApplied = clearId && appliedTrafficClearIds.has(clearId);
+      const upgradesDeferredSnapshot = alreadyApplied && Array.isArray(retainedTraffic) &&
+        requests.some(request => request?._deferredTrafficDetail === true) &&
+        retainedTraffic.some(request => request?._deferredTrafficDetail !== true);
+      if (alreadyApplied && !upgradesDeferredSnapshot) return false;
+      if (clearId && !alreadyApplied) {
+        pendingTrafficClearChunks.delete(clearId);
         appliedTrafficClearIds.add(clearId);
         if (appliedTrafficClearIds.size > 32) {
           appliedTrafficClearIds.delete(appliedTrafficClearIds.values().next().value);
@@ -385,8 +406,56 @@
       applyFilter();
       const selectedRequest = getSelectedTrafficRequest();
       if (selectedRequestId !== null && !selectedRequest) closeDetail();
-      else if (selectedRequest) showDetail(selectedRequest);
+      else if (selectedRequest?._deferredTrafficDetail === true) {
+        void hydrateDeferredTrafficRequest(selectedRequest);
+      } else if (selectedRequest) showDetail(selectedRequest);
       return true;
+    }
+
+    function applyTrafficClearedMessage(message) {
+      const clearId = message?.clearId;
+      const revision = Number.isSafeInteger(message?.revision) && message.revision > 0
+        ? message.revision
+        : null;
+      if (typeof clearId !== 'string' || !clearId || !Array.isArray(message.retainedTraffic)) {
+        return false;
+      }
+      if ((message.revision !== undefined && revision === null) ||
+          (revision === null && latestTrafficClearRevision > 0) ||
+          (revision !== null && revision < latestTrafficClearRevision)) {
+        return false;
+      }
+      if (message.chunkCount === undefined && message.chunkIndex === undefined) {
+        return applyTrafficCleared(clearId, message.retainedTraffic, revision ?? undefined);
+      }
+      if (!Number.isSafeInteger(message.chunkCount) || message.chunkCount < 1 ||
+          message.chunkCount > 10_000 ||
+          !Number.isSafeInteger(message.chunkIndex) || message.chunkIndex < 0 ||
+          message.chunkIndex >= message.chunkCount || appliedTrafficClearIds.has(clearId)) {
+        return false;
+      }
+
+      let pending = pendingTrafficClearChunks.get(clearId);
+      if (!pending || pending.chunkCount !== message.chunkCount || pending.revision !== revision) {
+        pending = {
+          chunkCount: message.chunkCount,
+          chunks: new Array(message.chunkCount),
+          received: 0,
+          revision
+        };
+        pendingTrafficClearChunks.set(clearId, pending);
+        if (pendingTrafficClearChunks.size > 8) {
+          pendingTrafficClearChunks.delete(pendingTrafficClearChunks.keys().next().value);
+        }
+      }
+      if (pending.chunks[message.chunkIndex] === undefined) {
+        pending.chunks[message.chunkIndex] = message.retainedTraffic;
+        pending.received++;
+      }
+      if (pending.received !== pending.chunkCount) return false;
+
+      pendingTrafficClearChunks.delete(clearId);
+      return applyTrafficCleared(clearId, pending.chunks.flat(), revision ?? undefined);
     }
 
     function applyTrafficPinned(requestId, trafficLifecycleId, pinned, revision) {
@@ -550,7 +619,7 @@
           handleInterceptorStatusEvent(msg.data);
           break;
         case 'traffic-cleared':
-          applyTrafficCleared(msg.clearId, msg.retainedTraffic);
+          applyTrafficClearedMessage(msg);
           break;
         case 'traffic-pinned':
           applyTrafficPinned(
@@ -1220,14 +1289,19 @@
 
     async function hydrateDeferredTrafficRequest(req) {
       try {
-        const response = await fetch(API_BASE + '/api/traffic/' + encodeURIComponent(req.id));
+        const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
+        const lifecycleQuery = lifecycleId === null
+          ? ''
+          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+        const response = await fetch(
+          API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + lifecycleQuery
+        );
         if (!response.ok) throw new Error('Could not load imported request details');
         const hydrated = await response.json();
         const requestIndex = requests.indexOf(req);
-        if (requestIndex !== -1) {
-          hydrated._index = req._index;
-          requests[requestIndex] = hydrated;
-        }
+        if (requestIndex === -1) return;
+        hydrated._index = req._index;
+        requests[requestIndex] = hydrated;
         applyFilter();
         if (isSelectedTrafficRequest(hydrated)) showDetail(hydrated);
       } catch (error) {
@@ -10189,7 +10263,7 @@
             !Array.isArray(data.retainedTraffic)) {
           throw new Error(data.error || `Clear Traffic returned HTTP ${response.status}`);
         }
-        applyTrafficCleared(data.clearId, data.retainedTraffic);
+        applyTrafficCleared(data.clearId, data.retainedTraffic, data.revision);
         toast('Traffic cleared', 'success');
       } catch (err) {
         toast('Failed to clear traffic: ' + err.message, 'error');

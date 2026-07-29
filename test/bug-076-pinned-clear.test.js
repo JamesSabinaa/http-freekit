@@ -7,12 +7,12 @@ import vm from 'node:vm';
 
 import { ApiServer } from '../src/api/api-server.js';
 
-function createApi() {
+function createApi(options = {}) {
   return new ApiServer({
     onBreakpoint: null,
     onUpstreamProxyRetry: null,
     matchApiSpec: () => null
-  }, null, null);
+  }, null, null, options);
 }
 
 function listen(server) {
@@ -82,6 +82,7 @@ test('pin and Clear retain one authoritative lifecycle across API consumers and 
   const cleared = await requestJson(port, '/api/traffic/clear', { method: 'POST' });
   assert.equal(cleared.statusCode, 200);
   assert.equal(cleared.body.success, true);
+  assert.equal(cleared.body.revision, 1);
   const retainedRequest = {
     id: 'shared',
     trafficLifecycleId: 'old',
@@ -109,6 +110,7 @@ test('pin and Clear retain one authoritative lifecycle across API consumers and 
     {
       type: 'traffic-cleared',
       clearId: cleared.body.clearId,
+      revision: 1,
       retainedTraffic: [retainedRequest]
     }
   ]);
@@ -132,6 +134,11 @@ test('pin mutations reject ambiguous identities and invalid state without changi
   });
   assert.equal(ambiguous.statusCode, 409);
   assert.match(ambiguous.body.error, /provide trafficLifecycleId/);
+  const ambiguousDetail = await requestJson(port, '/api/traffic/shared');
+  assert.equal(ambiguousDetail.statusCode, 409);
+  const exactDetail = await requestJson(port, '/api/traffic/shared?trafficLifecycleId=first');
+  assert.equal(exactDetail.statusCode, 200);
+  assert.equal(exactDetail.body.trafficLifecycleId, 'first');
 
   const invalid = await requestJson(
     port,
@@ -144,6 +151,76 @@ test('pin mutations reject ambiguous identities and invalid state without changi
     { id: 'shared', trafficLifecycleId: 'second' }
   ]);
   assert.deepEqual(broadcasts, []);
+});
+
+test('Clear chunks retained snapshots without exceeding the WebSocket ceiling', async () => {
+  const api = createApi();
+  const retainedTraffic = [
+    {
+      id: 'one',
+      trafficLifecycleId: 'one-life',
+      protocol: 'http',
+      responseBody: 'a'.repeat(700),
+      pinned: true
+    },
+    {
+      id: 'two',
+      trafficLifecycleId: 'two-life',
+      protocol: 'http',
+      responseBody: 'b'.repeat(700),
+      pinned: true
+    }
+  ];
+  const placeholderChunk = Number.MAX_SAFE_INTEGER;
+  const sampleClearId = '00000000-0000-4000-8000-000000000000';
+  api.maxWsBufferedBytes = Math.max(...retainedTraffic.map(request =>
+    Buffer.byteLength(JSON.stringify(api._trafficClearBroadcastMessage(
+      sampleClearId,
+      [request],
+      placeholderChunk,
+      placeholderChunk,
+      placeholderChunk
+    )))
+  )) + 8;
+  assert.equal(api._messageFitsWsBuffer(api._trafficClearBroadcastMessage(
+    sampleClearId,
+    retainedTraffic,
+    0,
+    1
+  )), false);
+
+  const client = {
+    readyState: 1,
+    bufferedAmount: 0,
+    sent: [],
+    terminateCalls: 0,
+    send(payload, callback) {
+      this.sent.push(payload);
+      callback();
+    },
+    terminate() { this.terminateCalls++; }
+  };
+  api.clients.add(client);
+  api.trafficLog = retainedTraffic;
+  const result = api._clearTraffic();
+  for (let attempt = 0; attempt < 10 && client.sent.length < 2; attempt++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  assert.deepEqual(result.retainedTraffic, retainedTraffic);
+  assert.equal(client.terminateCalls, 0);
+  assert.equal(api.clients.has(client), true);
+  assert.ok(client.sent.length > 1);
+  assert.ok(client.sent.every(payload => Buffer.byteLength(payload) <= api.maxWsBufferedBytes));
+  const messages = client.sent.map(payload => JSON.parse(payload));
+  assert.ok(messages.every((message, index) =>
+    message.type === 'traffic-cleared' &&
+    message.clearId === result.clearId &&
+    message.revision === result.revision &&
+    message.chunkIndex === index &&
+    message.chunkCount === messages.length
+  ));
+  assert.deepEqual(messages.flatMap(message => message.retainedTraffic), retainedTraffic);
 });
 
 test('WebSocket frames cannot become independently pinned or import invalid pin state', async t => {
@@ -280,6 +357,54 @@ test('a pinned WebSocket keeps post-Clear frames without growing generation hist
   assert.equal(api.trafficLog[1].requestBody, 'hello');
 });
 
+test('a deleted retained lifecycle expires after its old-generation completion', async t => {
+  let now = 0;
+  const api = createApi({
+    clearedPendingTrafficTtlMs: 5,
+    clearedPendingTrafficNow: () => now
+  });
+  const lifecycleToken = Symbol('socket');
+  const socket = {
+    id: 'socket',
+    trafficLifecycleId: 'socket-life',
+    _trafficLifecycleToken: lifecycleToken,
+    _pending: true,
+    protocol: 'wss'
+  };
+  api._broadcast = () => {};
+  api.onTrafficEvent(socket);
+  const originalGeneration = socket._trafficClearGeneration;
+  api.trafficLog[0].pinned = true;
+  api._clearTraffic();
+
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+  const deleted = await requestJson(
+    port,
+    '/api/traffic/socket?trafficLifecycleId=socket-life',
+    { method: 'DELETE' }
+  );
+  assert.equal(deleted.statusCode, 200);
+  const identityKey = api._trafficIdentityKey('socket', 'socket-life');
+  assert.equal(api._deletedTrafficIdentities.get(identityKey), Infinity);
+
+  api.onTrafficEvent({
+    id: 'socket',
+    trafficLifecycleId: 'socket-life',
+    _trafficLifecycleToken: lifecycleToken,
+    _trafficClearGeneration: originalGeneration,
+    _update: true,
+    protocol: 'wss',
+    statusCode: 101
+  });
+
+  assert.equal(api._deletedTrafficIdentities.get(identityKey), 5);
+  now = 6;
+  api._pruneDeletedTrafficIdentities();
+  assert.equal(api._deletedTrafficIdentities.has(identityKey), false);
+});
+
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const identityStart = rendererSource.indexOf('function normalizeTrafficLifecycleId(');
 const identityEnd = rendererSource.indexOf('function isSelectedTrafficRequest(', identityStart);
@@ -313,6 +438,7 @@ function createRenderer(fetch) {
   const fetchCalls = [];
   let renders = 0;
   const shownDetails = [];
+  const hydratedDetails = [];
   const pinIcons = [];
   const context = {
     API_BASE: '',
@@ -324,6 +450,7 @@ function createRenderer(fetch) {
     toast: (message, type) => toasts.push({ message, type }),
     renderTraffic: () => { renders++; },
     showDetail: request => shownDetails.push(structuredClone(request)),
+    hydrateDeferredTrafficRequest: request => hydratedDetails.push(structuredClone(request)),
     updatePinIcon: pinned => pinIcons.push(pinned),
     applyFilter: () => {},
     closeDetail: () => {},
@@ -380,6 +507,7 @@ function createRenderer(fetch) {
     toasts,
     pinIcons,
     shownDetails,
+    hydratedDetails,
     get renders() { return renders; },
     snapshot() {
       return JSON.parse(JSON.stringify(context.snapshot()));
@@ -468,6 +596,101 @@ test('renderer replaces stale rows and restores missed retained rows from Clear'
     trafficLifecycleId: 'old',
     method: 'GET',
     statusCode: 200,
+    pinned: true
+  }]);
+});
+
+test('renderer applies chunked Clear snapshots only after the final chunk', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  const before = renderer.snapshot().requests;
+  const firstApplied = renderer.context.applyTrafficClearedMessage({
+    type: 'traffic-cleared',
+    clearId: 'chunked-clear',
+    chunkIndex: 0,
+    chunkCount: 2,
+    retainedTraffic: [{
+      id: 'shared',
+      trafficLifecycleId: 'old',
+      method: 'GET',
+      statusCode: 200,
+      pinned: true
+    }]
+  });
+  assert.equal(firstApplied, false);
+  assert.deepEqual(renderer.snapshot().requests, before);
+
+  const finalApplied = renderer.context.applyTrafficClearedMessage({
+    type: 'traffic-cleared',
+    clearId: 'chunked-clear',
+    chunkIndex: 1,
+    chunkCount: 2,
+    retainedTraffic: [{
+      id: 'missed',
+      trafficLifecycleId: 'missed-life',
+      method: 'POST',
+      statusCode: 201,
+      pinned: true
+    }]
+  });
+  assert.equal(finalApplied, true);
+  assert.deepEqual(renderer.snapshot().requests.map(request => request.id), ['shared', 'missed']);
+});
+
+test('a newer Clear response supersedes incomplete older chunks', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.applyTrafficClearedMessage({
+    type: 'traffic-cleared',
+    clearId: 'older-clear',
+    revision: 1,
+    chunkIndex: 0,
+    chunkCount: 2,
+    retainedTraffic: [{ id: 'older-one', pinned: true }]
+  });
+
+  const newerApplied = renderer.context.applyTrafficCleared(
+    'newer-clear',
+    [{ id: 'newer', pinned: true }],
+    2
+  );
+  const olderCompleted = renderer.context.applyTrafficClearedMessage({
+    type: 'traffic-cleared',
+    clearId: 'older-clear',
+    revision: 1,
+    chunkIndex: 1,
+    chunkCount: 2,
+    retainedTraffic: [{ id: 'older-two', pinned: true }]
+  });
+
+  assert.equal(newerApplied, true);
+  assert.equal(olderCompleted, false);
+  assert.deepEqual(renderer.snapshot().requests.map(request => request.id), ['newer']);
+});
+
+test('REST Clear completion upgrades a deferred WebSocket snapshot', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.applyTrafficCleared('large-clear', [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    pinned: true,
+    _deferredTrafficDetail: true
+  }]);
+  assert.equal(renderer.hydratedDetails.length, 1);
+
+  const upgraded = renderer.context.applyTrafficCleared('large-clear', [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body',
+    pinned: true
+  }]);
+
+  assert.equal(upgraded, true);
+  assert.deepEqual(renderer.snapshot().requests, [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body',
     pinned: true
   }]);
 });

@@ -338,7 +338,8 @@ test('large imports stay within the WebSocket ceiling and retain lazy detail acc
   const incoming = Array.from({ length: 8 }, (_, index) => ({
     ...importedTraffic(index === 0 ? 'i'.repeat(2048) : `large-${index}`, `/large/${index}`),
     requestBody: `request-${index}-` + 'r'.repeat(3000),
-    responseBody: `response-${index}-` + 's'.repeat(3000)
+    responseBody: `response-${index}-` + 's'.repeat(3000),
+    ...(index === 1 ? { pinned: true } : {})
   }));
 
   const messagesPromise = importedMessages(socket);
@@ -355,6 +356,7 @@ test('large imports stay within the WebSocket ceiling and retain lazy detail acc
   assert.equal(rows.length, incoming.length);
   assert.ok(rows.every(row => row._deferredTrafficDetail === true));
   assert.notEqual(rows[0].id, incoming[0].id);
+  assert.equal(rows[1].pinned, true);
 
   const detail = await requestJson(apiPort, 'GET', `/api/traffic/${rows[0].id}`);
   assert.equal(detail.statusCode, 200);

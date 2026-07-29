@@ -170,6 +170,7 @@ export class ApiServer {
     this._deletedTrafficIdentities = new Map();
     this._retainedTrafficGenerations = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
+    this._trafficClearRevision = 0;
     this._trafficPinRevision = 0;
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
       options.maxClearedPendingTrafficIds > 0
@@ -1268,9 +1269,24 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Single request detail (after specific routes to avoid matching "export.har" as :id)
     router.get('/api/traffic/:id', (req, res) => {
-      const request = this.trafficLog.find(r => r.id === req.params.id);
-      if (!request) return res.status(404).json({ error: 'Request not found' });
-      res.json(request);
+      const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
+      if (lifecycleProvided &&
+          (typeof req.query.trafficLifecycleId !== 'string' || !req.query.trafficLifecycleId)) {
+        return res.status(400).json({ error: 'trafficLifecycleId must be a non-empty string' });
+      }
+      const candidates = this.trafficLog.filter(request =>
+        request.id === req.params.id &&
+        (!lifecycleProvided || request.trafficLifecycleId === req.query.trafficLifecycleId)
+      );
+      if (candidates.length === 0) return res.status(404).json({ error: 'Request not found' });
+      if (candidates.length > 1) {
+        return res.status(409).json({
+          error: lifecycleProvided
+            ? 'Multiple requests have this traffic identity'
+            : 'Multiple request lifecycles have this ID; provide trafficLifecycleId'
+        });
+      }
+      res.json(candidates[0]);
     });
 
     router.put('/api/traffic/:id/pin', (req, res) => {
@@ -2497,7 +2513,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return assignedIncoming;
   }
 
-  _summarizeImportedTrafficForBroadcast(request) {
+  _summarizeTrafficForBroadcast(request) {
     const truncate = (value, length) => value === undefined || value === null
       ? value
       : String(value).slice(0, length);
@@ -2521,6 +2537,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       opcodeName: truncate(request.opcodeName, 32),
       requestBodySize: request.requestBodySize,
       responseBodySize: request.responseBodySize,
+      ...(request.pinned === true ? { pinned: true } : {}),
       _deferredTrafficDetail: true
     };
   }
@@ -2539,9 +2556,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _importedTrafficIdFitsBroadcast(id) {
+    const deferredIdentity = { id, pinned: true, _deferredTrafficDetail: true };
     return this._messageFitsWsBuffer(this._importBroadcastMessage(
       Number.MAX_SAFE_INTEGER,
-      [{ id, _deferredTrafficDetail: true }],
+      [deferredIdentity],
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER
+    )) && this._messageFitsWsBuffer(this._trafficClearBroadcastMessage(
+      '00000000-0000-4000-8000-000000000000',
+      [deferredIdentity],
       Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER
     ));
@@ -2570,10 +2593,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
       const item = fitsBatch([request])
         ? request
-        : this._summarizeImportedTrafficForBroadcast(request);
+        : this._summarizeTrafficForBroadcast(request);
       if (!fitsBatch([item])) {
         // Extremely small custom ceilings still receive the stable identity.
-        batch = [{ id: request.id, _deferredTrafficDetail: true }];
+        batch = [{
+          id: request.id,
+          ...(request.pinned === true ? { pinned: true } : {}),
+          _deferredTrafficDetail: true
+        }];
       } else {
         batch = [item];
       }
@@ -2591,6 +2618,77 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _broadcastImportedTraffic(requests, count) {
     this._broadcastSequence(this._buildImportedTrafficMessages(requests, count));
+  }
+
+  _trafficClearBroadcastMessage(clearId, retainedTraffic, chunkIndex, chunkCount, revision) {
+    return {
+      type: 'traffic-cleared',
+      clearId,
+      retainedTraffic,
+      ...(Number.isSafeInteger(revision) && revision > 0 ? { revision } : {}),
+      ...(chunkCount > 1 ? { chunkIndex, chunkCount } : {})
+    };
+  }
+
+  _buildTrafficClearedMessages(clearId, retainedTraffic, revision) {
+    const completeMessage = this._trafficClearBroadcastMessage(
+      clearId,
+      retainedTraffic,
+      0,
+      1,
+      revision
+    );
+    if (this._messageFitsWsBuffer(completeMessage)) return [completeMessage];
+
+    const batches = [];
+    let batch = [];
+    const placeholderChunk = Number.MAX_SAFE_INTEGER;
+    const fitsBatch = candidate => this._messageFitsWsBuffer(
+      this._trafficClearBroadcastMessage(
+        clearId,
+        candidate,
+        placeholderChunk,
+        placeholderChunk,
+        revision
+      )
+    );
+
+    for (const request of retainedTraffic) {
+      if (fitsBatch([...batch, request])) {
+        batch.push(request);
+        continue;
+      }
+      if (batch.length > 0) {
+        batches.push(batch);
+        batch = [];
+      }
+
+      const item = fitsBatch([request])
+        ? request
+        : this._summarizeTrafficForBroadcast(request);
+      batch = [fitsBatch([item]) ? item : {
+        id: request.id,
+        trafficLifecycleId: request.trafficLifecycleId ?? null,
+        pinned: true,
+        _deferredTrafficDetail: true
+      }];
+    }
+    if (batch.length > 0) batches.push(batch);
+    if (batches.length === 0) batches.push([]);
+
+    return batches.map((requestsBatch, chunkIndex) => this._trafficClearBroadcastMessage(
+      clearId,
+      requestsBatch,
+      chunkIndex,
+      batches.length,
+      revision
+    ));
+  }
+
+  _broadcastTrafficCleared(clearId, retainedTraffic, revision) {
+    const messages = this._buildTrafficClearedMessages(clearId, retainedTraffic, revision);
+    if (messages.length === 1) this._broadcast(messages[0]);
+    else this._broadcastSequence(messages);
   }
 
   _removeRuleById(ruleId, rules = this.proxy.mockRules) {
@@ -2867,6 +2965,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         trafficClearGeneration !== this._trafficClearGeneration &&
         !retainedAcrossClear) {
       this._activeTrafficIdentities.delete(trafficIdentityKey);
+      if (trafficLifecycleComplete && this._deletedTrafficIdentities.has(trafficIdentityKey)) {
+        this._deletedTrafficIdentities.set(
+          trafficIdentityKey,
+          this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs
+        );
+        this._pruneDeletedTrafficIdentities();
+      }
       if (data._update || trafficLifecycleToken !== undefined) {
         this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
         this._clearedPendingTrafficIds.delete(data.id);
@@ -3176,6 +3281,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _clearTraffic() {
     const clearId = crypto.randomUUID();
+    const revision = ++this._trafficClearRevision;
     const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
     const retainedRequests = this.trafficLog.filter(request =>
       request?.pinned === true && request.protocol !== 'ws-frame'
@@ -3214,8 +3320,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
     this._deletedTrafficIdentities.clear();
     this.trafficLog = retainedRequests;
-    const result = { clearId, retainedTraffic };
-    this._broadcast({ type: 'traffic-cleared', ...result });
+    const result = { clearId, revision, retainedTraffic };
+    this._broadcastTrafficCleared(clearId, retainedTraffic, revision);
     return result;
   }
 
