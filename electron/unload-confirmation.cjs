@@ -13,22 +13,16 @@ const UNSAVED_CHANGES_DIALOG = Object.freeze({
 
 function installUnloadConfirmation(mainWindow, {
   dialog,
-  shouldAllowPreparedUnload = () => false,
   logger = console
 } = {}) {
   const webContents = mainWindow?.webContents;
   if (!webContents?.on || typeof dialog?.showMessageBoxSync !== 'function') return false;
 
   webContents.on('will-prevent-unload', (event) => {
-    if (shouldAllowPreparedUnload()) {
-      // Electron reverses the usual meaning here: preventing this event tells
-      // Chromium to ignore the renderer's beforeunload cancellation and leave.
-      event.preventDefault();
-      return;
-    }
-
     try {
       const response = dialog.showMessageBoxSync(mainWindow, UNSAVED_CHANGES_DIALOG);
+      // Electron reverses the usual meaning here: preventing this event tells
+      // Chromium to ignore the renderer's beforeunload cancellation and leave.
       if (response === 0) event.preventDefault();
     } catch (error) {
       // Fail closed. Without preventDefault(), Electron keeps the current page.

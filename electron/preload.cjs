@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('electronApi', {
 
   /**
    * Quit and install a downloaded update.
-   * @returns {Promise<void>}
+   * @returns {Promise<{started: boolean, inProgress: boolean}|null>}
    */
   installUpdate: () => safeInvoke('updater-install'),
 

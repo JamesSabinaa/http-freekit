@@ -74,6 +74,7 @@ function createGuardHarness({
     let mockEditingRule = globalThis.__editingRule;
     let mockEditDraft = globalThis.__editDraft;
     let mockEditDirty = false;
+    let mockWorkRevision = 0;
     let mockRenamingRuleId = globalThis.__renamingRuleId;
     ${guardSource}
     globalThis.guardApi = {
@@ -145,25 +146,36 @@ test('focused editor input is dirty before its change handler updates the draft 
     editingRule: 'saved',
     editDraft: clone(baseRule)
   });
-  const editor = { id: 'mockEditor_saved' };
+  const control = { type: 'text', value: 'edited', defaultValue: 'original' };
+  const editor = {
+    id: 'mockEditor_saved',
+    querySelectorAll: () => [control]
+  };
+  control.closest = () => editor;
 
-  renderer.api.markDirty({ type: 'input', target: { closest: () => editor } });
+  renderer.api.markDirty({ type: 'input', target: control });
 
   assert.equal(renderer.api.hasOpenChanges(), true);
   assert.equal(renderer.api.hasUnsavedWork(), true);
 });
 
-test('committing a reverted input clears the transient dirty marker', () => {
+test('returning focused input to its rendered value clears the transient dirty marker', () => {
   const renderer = createGuardHarness({
     editingRule: 'saved',
     editDraft: clone(baseRule)
   });
-  const editor = { id: 'mockEditor_saved' };
+  const control = { type: 'text', value: 'edited', defaultValue: 'original' };
+  const editor = {
+    id: 'mockEditor_saved',
+    querySelectorAll: () => [control]
+  };
+  control.closest = () => editor;
 
-  renderer.api.markDirty({ type: 'input', target: { closest: () => editor } });
+  renderer.api.markDirty({ type: 'input', target: control });
   assert.equal(renderer.api.hasOpenChanges(), true);
+  control.value = 'original';
   renderer.api.setEditDraft(clone(baseRule));
-  renderer.api.markDirty({ type: 'change', target: { closest: () => editor } });
+  renderer.api.markDirty({ type: 'input', target: control });
 
   assert.equal(renderer.api.hasOpenChanges(), false);
   assert.equal(renderer.api.hasUnsavedWork(), false);

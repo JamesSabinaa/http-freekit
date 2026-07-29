@@ -55,6 +55,8 @@ function createRenderer(fetch, { rejectMalformedRules = false } = {}) {
     const mockNewDraftIds = new Set(['__draft_new']);
     let mockEditingRule = 'saved';
     let mockEditDraft = { id: 'saved', title: 'Live editor', action: { body: 'live body' } };
+    let mockEditDirty = false;
+    let mockWorkRevision = 0;
     let mockRenamingRuleId = 'saved';
     let mockRulesLoadGeneration = 3;
     let mockRevertInProgress = false;
@@ -69,6 +71,15 @@ function createRenderer(fetch, { rejectMalformedRules = false } = {}) {
     ${rendererSource.slice(responseStart, responseEnd)}
     ${rendererSource.slice(unsavedStart, unsavedEnd)}
     ${rendererSource.slice(revertStart, revertEnd)}
+    globalThis.markFocusedEditDirty = function(value) {
+      const control = { type: 'text', value, defaultValue: 'live body' };
+      const editor = {
+        id: 'mockEditor_saved',
+        querySelectorAll: () => [control]
+      };
+      control.closest = () => editor;
+      markOpenMockEditDirty({ type: 'input', target: control });
+    };
   `, context);
 
   const state = () => JSON.parse(JSON.stringify(vm.runInContext(`({
@@ -214,6 +225,23 @@ test('a Revert response cannot discard editor changes made while it was loading'
   assert.equal(state.renderCalls, 0);
   assert.equal(renderer.elements.mockRevertBtn.style.display, '');
   assert.equal(renderer.elements.mockRevertBtn.disabled, false);
+  assert.deepEqual(renderer.toasts, [{
+    message: 'Error reverting rules: Mock rules changed while Revert was loading',
+    type: 'error'
+  }]);
+});
+
+test('a Revert response cannot discard focused input before its model handler commits', async () => {
+  const pending = deferred();
+  const renderer = createRenderer(() => pending.promise);
+  const originalState = renderer.state();
+
+  const reverting = renderer.context.revertMockRules();
+  renderer.context.markFocusedEditDirty('newer focused body');
+  pending.resolve(rendererResponse({ rules: [{ id: 'saved', title: 'Server rule' }] }));
+  await reverting;
+
+  assert.deepEqual(renderer.state(), originalState);
   assert.deepEqual(renderer.toasts, [{
     message: 'Error reverting rules: Mock rules changed while Revert was loading',
     type: 'error'

@@ -16,6 +16,10 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 const toastSource = sourceBetween('function toast(message', 'function setupSplitPaneResizer(');
+const installActionStateSource = sourceBetween(
+  'let installUpdateRequestPending = false;',
+  'function handleUpdaterStatus('
+);
 const readyToastSource = sourceBetween('function showUpdateReadyToast(', 'function showLinuxUpdateToast(');
 const linuxToastSource = sourceBetween('function showLinuxUpdateToast(', 'function escapeHtml(');
 const escapeHtmlSource = sourceBetween('function escapeHtml(', '// Expose manual check for Settings page');
@@ -193,7 +197,14 @@ function createHarness() {
   const installCalls = [];
   const context = {
     document,
-    window: { electronApi: { installUpdate: () => installCalls.push('install') } },
+    window: {
+      electronApi: {
+        installUpdate: () => {
+          installCalls.push('install');
+          return Promise.resolve({ started: true, inProgress: true });
+        }
+      }
+    },
     setTimeout: (callback, delay) => {
       timers.push({ callback, delay });
       return timers.length;
@@ -202,6 +213,7 @@ function createHarness() {
   vm.createContext(context);
   vm.runInContext(`
     ${toastSource}
+    ${installActionStateSource}
     ${readyToastSource}
     ${linuxToastSource}
     ${escapeHtmlSource}

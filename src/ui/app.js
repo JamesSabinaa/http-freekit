@@ -6039,6 +6039,7 @@
     let mockEditingRule = null;
     let mockEditDraft = null;
     let mockEditDirty = false;
+    let mockWorkRevision = 0;
     let mockDragId = null;
     let mockReorderGeneration = 0;
     let mockReorderQueue = Promise.resolve();
@@ -7923,14 +7924,33 @@
       return hasUnsavedMockChanges() || hasOpenMockEditChanges() || hasOpenMockRenameChanges();
     }
 
+    function mockEditorControlDiffersFromDefault(control) {
+      const type = String(control?.type || '').toLowerCase();
+      if (type === 'checkbox' || type === 'radio') {
+        return control.checked !== control.defaultChecked;
+      }
+      if (String(control?.tagName || '').toLowerCase() === 'select') {
+        return Array.from(control.options || [])
+          .some(option => option.selected !== option.defaultSelected);
+      }
+      if (typeof control?.value === 'string' && typeof control?.defaultValue === 'string') {
+        return control.value !== control.defaultValue;
+      }
+      // Unknown editable controls fail closed so navigation cannot lose input.
+      return true;
+    }
+
     function markOpenMockEditDirty(event) {
       const editor = event?.target?.closest?.('.mock-rule-editor');
       if (mockEditDraft && editor?.id?.startsWith('mockEditor_')) {
-        // Inline change handlers have updated mockEditDraft by the time the
-        // delegated change event bubbles. Structural comparison can then clear
-        // a warning when the user reverted to the baseline. Input events still
-        // fail closed while a focused control has not committed its value.
-        mockEditDirty = event.type !== 'change';
+        const controls = editor.querySelectorAll?.('input, select, textarea');
+        mockEditDirty = controls
+          ? Array.from(controls).some(mockEditorControlDiffersFromDefault)
+          : mockEditorControlDiffersFromDefault(event.target);
+        mockWorkRevision++;
+      }
+      if (mockRenamingRuleId && event?.target?.id === 'mock-rename-input') {
+        mockWorkRevision++;
       }
     }
 
@@ -8135,7 +8155,8 @@
         newDraftIds: Array.from(mockNewDraftIds),
         editingRule: mockEditingRule,
         editDraft: mockEditDraft,
-        renamingRuleId: mockRenamingRuleId
+        renamingRuleId: mockRenamingRuleId,
+        workRevision: mockWorkRevision
       });
     }
 
@@ -13489,6 +13510,15 @@
 
       let updateVersion = null;
       let lastUpdaterStatusKey = null;
+      let installUpdateRequestPending = false;
+
+      function setInstallUpdateActionPending(pending, label) {
+        installUpdateRequestPending = pending;
+        const button = document.getElementById('installUpdateBtn');
+        if (!button) return;
+        button.setAttribute('aria-disabled', pending ? 'true' : 'false');
+        button.textContent = label || 'Restart to install';
+      }
 
       function handleUpdaterStatus(data) {
         if (!data || typeof data.status !== 'string') return;
@@ -13523,6 +13553,7 @@
             if (data.manual) toast('Update postponed', 'success');
             break;
           case 'error':
+            setInstallUpdateActionPending(false);
             if (data.manual) toast('Update check failed: ' + (data.error || 'unknown error'), 'error');
             break;
         }
@@ -13544,9 +13575,23 @@
         container.appendChild(t);
         var btn = t.querySelector('#installUpdateBtn');
         if (btn) {
-          btn.addEventListener('click', function(e) {
+          btn.addEventListener('click', async function(e) {
             e.preventDefault();
-            window.electronApi.installUpdate();
+            if (installUpdateRequestPending) return;
+            setInstallUpdateActionPending(true, 'Preparing restart…');
+            try {
+              const result = await window.electronApi.installUpdate();
+              if (result?.started) {
+                setInstallUpdateActionPending(true, 'Restarting…');
+              } else if (result?.inProgress) {
+                setInstallUpdateActionPending(true, 'Restart pending…');
+              } else {
+                setInstallUpdateActionPending(false);
+              }
+            } catch (error) {
+              setInstallUpdateActionPending(false);
+              toast('Could not restart for update: ' + error.message, 'error');
+            }
           });
         }
         // Don't auto-dismiss — let user decide when to restart

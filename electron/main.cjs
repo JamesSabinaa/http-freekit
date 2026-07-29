@@ -1,4 +1,12 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const {
+  app,
+  autoUpdater: nativeAutoUpdater,
+  BrowserWindow,
+  Menu,
+  dialog,
+  ipcMain,
+  shell
+} = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -23,6 +31,7 @@ let mainWindowReadyToShow = false;
 let showMainWindowWhenReady = false;
 let serverProcess = null;
 let updateInstallPrepared = false;
+let updateInstallQuitStarted = false;
 let apiPort = null;
 let isShuttingDown = false;
 let serverReady = false;
@@ -334,10 +343,7 @@ function createWindow({ showOnReady = true } = {}) {
 
   windowState.manage(mainWindow);
 
-  installUnloadConfirmation(mainWindow, {
-    dialog,
-    shouldAllowPreparedUnload: () => updateInstallPrepared
-  });
+  installUnloadConfirmation(mainWindow, { dialog });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAllowedRendererUrl(url, apiPort)) return;
@@ -467,6 +473,13 @@ if (hasSingleInstanceLock) app.on('open-url', (event, url) => {
   handleDeepLink(url);
 });
 
+if (hasSingleInstanceLock) nativeAutoUpdater.on('before-quit-for-update', () => {
+  // electron-updater can wait for Squirrel.Mac after the renderer accepts the
+  // preflight. Only skip duplicate preparation once the native updater has
+  // actually started its quit sequence, never during that waiting period.
+  updateInstallQuitStarted = updateInstallPrepared;
+});
+
 if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   if (quitCleanupComplete) return;
   event.preventDefault();
@@ -475,7 +488,7 @@ if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   const windowForQuit = mainWindow;
   quitCleanupPromise = runQuitCleanup({
     mainWindow: windowForQuit,
-    prepare: updateInstallPrepared ? async () => true : undefined,
+    prepare: updateInstallQuitStarted ? async () => true : undefined,
     onPrepared: () => { isShuttingDown = true; },
     relaunch: relaunchRequested ? () => app.relaunch() : null,
     stopAutoUpdater,
@@ -524,10 +537,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     initAutoUpdater(mainWindow, {
       validateSender,
       prepareForInstall: async () => {
+        updateInstallQuitStarted = false;
         updateInstallPrepared = await prepareRendererForQuit(mainWindow);
         return updateInstallPrepared;
       },
-      onInstallPreparationFailed: () => { updateInstallPrepared = false; }
+      onInstallPreparationFailed: () => {
+        updateInstallPrepared = false;
+        updateInstallQuitStarted = false;
+      }
     });
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);

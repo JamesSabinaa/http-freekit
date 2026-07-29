@@ -28,6 +28,7 @@ let currentStatus = { status: 'idle' };
 let configuredFeedUrl = null;
 let prepareForInstall = async () => true;
 let onInstallPreparationFailed = () => {};
+let installRequestInFlight = false;
 
 function getWebUrl(value) {
   if (typeof value !== 'string') return null;
@@ -224,6 +225,7 @@ function initAutoUpdater(win, options = {}) {
   });
 
   autoUpdater.on('error', (err) => {
+    installRequestInFlight = false;
     onInstallPreparationFailed();
     const wasManual = currentCheckIsManual;
     currentCheckIsManual = false;
@@ -245,17 +247,25 @@ function initAutoUpdater(win, options = {}) {
 
   ipcMain.handle('updater-install', async (event) => {
     if (!validateIpcSender(event)) return null;
+    if (installRequestInFlight) return { started: false, inProgress: true };
+
+    installRequestInFlight = true;
     try {
-      if (!await prepareForInstall()) return null;
+      if (!await prepareForInstall()) {
+        installRequestInFlight = false;
+        return { started: false, inProgress: false };
+      }
       // The renderer has explicitly accepted losing mock drafts and has safely
       // persisted Send state, so every platform can now follow its updater-
       // specific window-close sequence.
       autoUpdater.quitAndInstall(false, true);
+      return { started: true, inProgress: true };
     } catch (err) {
+      installRequestInFlight = false;
       onInstallPreparationFailed();
       sendStatus({ status: 'error', error: err.message, manual: true });
+      return { started: false, inProgress: false };
     }
-    return null;
   });
 
   // --- Schedule checks ---
@@ -288,6 +298,7 @@ function stopAutoUpdater() {
   validateIpcSender = () => false;
   prepareForInstall = async () => true;
   onInstallPreparationFailed = () => {};
+  installRequestInFlight = false;
   configuredFeedUrl = null;
 }
 
