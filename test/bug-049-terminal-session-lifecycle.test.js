@@ -179,7 +179,7 @@ test('Windows Terminal rejects a reported PID that was reused before identity in
   assert.equal(interceptor.active, false);
 });
 
-test('an unacknowledged Windows Terminal child fails closed before cmd fallback', async () => {
+test('an unacknowledged Windows Terminal child fails closed without an unverifiable fallback', async () => {
   const interceptor = new FreshTerminalInterceptor();
   interceptor._platform = () => 'win32';
   let closeDelayCalls = 0;
@@ -195,33 +195,26 @@ test('an unacknowledged Windows Terminal child fails closed before cmd fallback'
     throw new Error('identity report unreadable');
   };
   const wtLauncher = fakeLauncher(7673);
-  const cmdLauncher = fakeLauncher(7675);
   const launches = [];
   interceptor._spawnDetached = async (command, args) => {
     launches.push({ command, args });
     if (command === 'wt.exe') return wtLauncher;
-    if (command === 'powershell.exe') throw new Error('PowerShell unavailable');
-    return cmdLauncher;
+    throw new Error(`${command} unavailable`);
   };
 
-  const result = await interceptor.activate(8080);
+  await assert.rejects(interceptor.activate(8080), /No supported terminal found/);
 
-  assert.equal(result.pid, cmdLauncher.pid);
   assert.equal(wtLauncher.killed, true);
   assert.ok(closeDelayCalls >= 1);
+  assert.deepEqual(launches.map(({ command }) => command), ['wt.exe', 'powershell.exe']);
   assert.match(launches[0].args[5], /ConvertTo-Json -Compress/);
   assert.match(launches[0].args[5], /FileMode\]::CreateNew/);
   assert.match(launches[0].args[5], /ReadAllText\(.+unacknowledged-test-nonce/);
   assert.match(launches[0].args[5], /exit 1/);
   assert.doesNotMatch(launches[0].args[5], /Get-CimInstance/);
-
-  interceptor._stopStatusMonitor();
-  cmdLauncher.exitCode = 0;
-  cmdLauncher.emit('exit', 0);
-  await new Promise(resolve => setImmediate(resolve));
 });
 
-test('durable Windows activation never attempts an unverifiable cmd fallback', async () => {
+test('Windows activation never attempts an unverifiable cmd fallback', async () => {
   const interceptor = new FreshTerminalInterceptor({
     platform: 'win32',
     recoveryFile: 'unused-fresh-terminal-journal.json'

@@ -1039,7 +1039,7 @@ export class FreshTerminalInterceptor {
     let sessionIdentity = null;
 
     if (platform === 'win32') {
-      // Open Windows Terminal, PowerShell, or cmd. Windows Terminal's launcher
+      // Open Windows Terminal or PowerShell. Windows Terminal's launcher
       // is short-lived, so its child PowerShell reports the durable shell PID.
       const terminals = [
         {
@@ -1066,16 +1066,10 @@ export class FreshTerminalInterceptor {
               ? this._buildWindowsPowerShellCommand(proxyUrl, handshake)
               : `Write-Host "HTTP FreeKit proxy active on ${proxyUrl}" -ForegroundColor Green`
           ]
-        },
-        {
-          cmd: 'cmd.exe',
-          reportsPid: false,
-          buildArgs: () => ['/K', `echo HTTP FreeKit proxy active on ${proxyUrl}`]
         }
       ];
 
       for (const terminal of terminals) {
-        if (this.recoveryFile && !terminal.reportsPid) continue;
         let candidateProc;
         let launcherSpawned = false;
         const handshake = terminal.reportsPid ? this._createWindowsHandshake() : null;

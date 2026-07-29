@@ -183,12 +183,11 @@ test('Linux Fresh Terminal keeps watching a launcher until its shell PID is read
 test('Fresh Terminal does not report success when every launcher fails at startup', async () => {
   const { interceptor, commands } = windowsInterceptor([
     fakeLauncher(4201, 1),
-    fakeLauncher(4202, 2),
-    fakeLauncher(4203, 3)
+    fakeLauncher(4202, 2)
   ]);
 
   await assert.rejects(() => interceptor.activate(8080), /No supported terminal found/);
-  assert.deepEqual(commands, ['wt.exe', 'powershell.exe', 'cmd.exe']);
+  assert.deepEqual(commands, ['wt.exe', 'powershell.exe']);
   assert.equal(interceptor.active, false);
   assert.deepEqual(interceptor.processes, []);
 });
