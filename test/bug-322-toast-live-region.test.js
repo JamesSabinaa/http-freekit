@@ -219,6 +219,8 @@ function createHarness() {
     ${toastSource}
     let updateVersion = null;
     let lastUpdaterStatusKey = null;
+    let lastUpdaterEventId = 0;
+    let lastDownloadedUpdateEventId = 0;
     ${installActionStateSource}
     ${updaterStatusSource}
     ${readyToastSource}

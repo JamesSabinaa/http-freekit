@@ -13752,6 +13752,8 @@
 
       let updateVersion = null;
       let lastUpdaterStatusKey = null;
+      let lastUpdaterEventId = 0;
+      let lastDownloadedUpdateEventId = 0;
       let installUpdateRequestPending = false;
 
       function setInstallUpdateActionPending(pending, label) {
@@ -13764,8 +13766,22 @@
 
       function handleUpdaterStatus(data) {
         if (!data || typeof data.status !== 'string') return;
-        const statusKey = JSON.stringify(data);
-        if (statusKey === lastUpdaterStatusKey) return;
+        const eventId = Number.isSafeInteger(data.eventId) && data.eventId > 0
+          ? data.eventId
+          : null;
+        if (eventId !== null) {
+          if (data.status === 'update-downloaded') {
+            if (eventId <= lastDownloadedUpdateEventId) return;
+            lastDownloadedUpdateEventId = eventId;
+            lastUpdaterEventId = Math.max(lastUpdaterEventId, eventId);
+          } else {
+            if (eventId <= lastUpdaterEventId) return;
+            lastUpdaterEventId = eventId;
+          }
+        }
+        const { downloadedUpdate: _downloadedUpdate, ...statusData } = data;
+        const statusKey = JSON.stringify(statusData);
+        if (eventId === null && statusKey === lastUpdaterStatusKey) return;
         lastUpdaterStatusKey = statusKey;
         switch (data.status) {
           case 'checking':

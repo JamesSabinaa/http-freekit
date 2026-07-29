@@ -69,6 +69,54 @@ async function settleUpdaterTasks() {
   await Promise.resolve();
 }
 
+function loadRendererUpdaterUI() {
+  const start = renderer.indexOf('(function initAutoUpdaterUI()');
+  const end = renderer.indexOf('// cURL paste detection', start);
+  const ui = renderer.slice(start, end);
+  const notifications = [];
+  const renderedToasts = [];
+  let liveStatusHandler;
+  let resolveSnapshot;
+  const snapshot = new Promise(resolve => { resolveSnapshot = resolve; });
+  const context = vm.createContext({
+    console,
+    document: {
+      getElementById(id) {
+        if (id === 'toastContainer') {
+          return { appendChild: element => renderedToasts.push(element.innerHTML) };
+        }
+        return null;
+      },
+      createElement() {
+        return {
+          classList: { add() {} },
+          addEventListener() {},
+          querySelector() { return null; },
+          remove() {},
+          set textContent(value) { this.innerHTML = String(value); }
+        };
+      }
+    },
+    setTimeout,
+    toast: message => notifications.push(message),
+    window: {
+      electronApi: {
+        onUpdaterStatus: handler => { liveStatusHandler = handler; },
+        getUpdaterStatus: () => snapshot
+      }
+    }
+  });
+
+  vm.runInContext(ui, context);
+  return {
+    liveStatus: data => liveStatusHandler(data),
+    notifications,
+    renderedToasts,
+    resolveSnapshot,
+    snapshot
+  };
+}
+
 test('main process stores downloaded readiness separately from transient status', async () => {
   assert.match(updater, /let statusEventId = 0/);
   assert.match(updater, /data = \{ \.\.\.data, eventId: \+\+statusEventId \}/);
@@ -122,7 +170,41 @@ test('renderer subscribes before replaying current updater state', () => {
   assert.notEqual(subscribeIndex, -1);
   assert.ok(queryIndex > subscribeIndex);
   assert.match(ui, /if \(document\.getElementById\('installUpdateBtn'\)\) return/);
-  assert.match(ui, /if \(statusKey === lastUpdaterStatusKey\) return/);
+  assert.match(ui, /if \(eventId <= lastUpdaterEventId\) return/);
+  assert.match(ui, /if \(eventId <= lastDownloadedUpdateEventId\) return/);
   assert.match(ui, /status\?\.downloadedUpdate[\s\S]*handleUpdaterStatus\(status\.downloadedUpdate\)/);
   assert.match(ui, /case 'update-downloaded':[\s\S]*updateVersion = data\.version/);
+});
+
+test('renderer ignores duplicate and stale transient snapshot events while replaying readiness', async () => {
+  const staleReplay = loadRendererUpdaterUI();
+  staleReplay.liveStatus({ status: 'up-to-date', manual: true, eventId: 5 });
+  staleReplay.resolveSnapshot({
+    status: 'error',
+    error: 'stale failure',
+    manual: true,
+    eventId: 4,
+    downloadedUpdate: { status: 'update-downloaded', version: '2.0.0', eventId: 3 }
+  });
+  await staleReplay.snapshot;
+  await Promise.resolve();
+
+  assert.deepEqual(staleReplay.notifications, ['HTTP FreeKit is up to date']);
+  assert.equal(staleReplay.renderedToasts.length, 1);
+  assert.match(staleReplay.renderedToasts[0], /Update v2\.0\.0 ready/);
+
+  const duplicateReplay = loadRendererUpdaterUI();
+  duplicateReplay.liveStatus({ status: 'error', error: 'new failure', manual: true, eventId: 6 });
+  duplicateReplay.resolveSnapshot({
+    status: 'error',
+    error: 'new failure',
+    manual: true,
+    eventId: 6,
+    downloadedUpdate: { status: 'update-downloaded', version: '2.0.0', eventId: 3 }
+  });
+  await duplicateReplay.snapshot;
+  await Promise.resolve();
+
+  assert.deepEqual(duplicateReplay.notifications, ['Update check failed: new failure']);
+  assert.equal(duplicateReplay.renderedToasts.length, 1);
 });
