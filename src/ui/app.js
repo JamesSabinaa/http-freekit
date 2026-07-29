@@ -493,7 +493,9 @@
           break;
         case 'traffic-imported':
           addRequests(msg.requests);
-          toast(`Imported ${msg.count} requests`, 'success');
+          if (msg.chunkCount === undefined || msg.chunkIndex === msg.chunkCount - 1) {
+            toast(`Imported ${msg.count} requests`, 'success');
+          }
           break;
         case 'breakpoint-hit':
           updateBreakpointBanner();
@@ -1123,7 +1125,29 @@
       vsForceRender = true;
       renderVirtualRows();
 
+      if (req._deferredTrafficDetail === true) {
+        void hydrateDeferredTrafficRequest(req);
+        return;
+      }
+
       showDetail(req);
+    }
+
+    async function hydrateDeferredTrafficRequest(req) {
+      try {
+        const response = await fetch(API_BASE + '/api/traffic/' + encodeURIComponent(req.id));
+        if (!response.ok) throw new Error('Could not load imported request details');
+        const hydrated = await response.json();
+        const requestIndex = requests.indexOf(req);
+        if (requestIndex !== -1) {
+          hydrated._index = req._index;
+          requests[requestIndex] = hydrated;
+        }
+        applyFilter();
+        if (isSelectedTrafficRequest(hydrated)) showDetail(hydrated);
+      } catch (error) {
+        toast(error.message || 'Could not load imported request details', 'error');
+      }
     }
 
     function selectBreakpointRequest(requestId, trafficLifecycleId, attempts = 0) {

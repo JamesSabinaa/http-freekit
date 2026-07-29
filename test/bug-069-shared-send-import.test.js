@@ -85,6 +85,38 @@ function nextMessage(socket, predicate) {
   });
 }
 
+function importedMessages(socket) {
+  return new Promise((resolve, reject) => {
+    const messages = [];
+    const onMessage = raw => {
+      let message;
+      try {
+        message = JSON.parse(raw.toString());
+      } catch (error) {
+        cleanup();
+        reject(error);
+        return;
+      }
+      if (message.type !== 'traffic-imported') return;
+      messages.push({ message, bytes: Buffer.byteLength(raw) });
+      if (message.chunkCount === undefined || message.chunkIndex === message.chunkCount - 1) {
+        cleanup();
+        resolve(messages);
+      }
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('WebSocket closed before the import completed'));
+    };
+    const cleanup = () => {
+      socket.off('message', onMessage);
+      socket.off('close', onClose);
+    };
+    socket.on('message', onMessage);
+    socket.once('close', onClose);
+  });
+}
+
 function importedTraffic(id, requestPath) {
   return {
     id,
@@ -189,6 +221,62 @@ test('Send traverses the running proxy and creates authoritative shared traffic'
   assert.equal(har.log.entries[0].response.status, 218);
 });
 
+test('proxy-generated Send responses create and finish authoritative traffic', async t => {
+  let api;
+  const proxy = new ProxyServer({
+    getCertInfo: () => ({ certificateContent: 'TEST CERTIFICATE' })
+  }, {
+    port: 0,
+    maxBufferedBodyBytes: 4,
+    onRequest: data => api.onTrafficEvent(data)
+  });
+  proxy.addMockRule({
+    enabled: true,
+    matchers: [{ type: 'url-contains', value: '/oversized' }],
+    action: { type: 'fixed-response', status: 200, headers: {}, body: 'not reached' }
+  });
+  api = new ApiServer(proxy, null, null, { port: 0 });
+  api.port = 0;
+  await proxy.start();
+  await api.start();
+  t.after(async () => {
+    await api.stop();
+    await proxy.stop();
+  });
+
+  const apiPort = api.httpServer.address().port;
+  const configResponse = await requestJson(apiPort, 'POST', '/api/send', {
+    url: 'http://android.httptoolkit.tech/config',
+    method: 'GET',
+    headers: {},
+    body: ''
+  });
+  assert.equal(configResponse.statusCode, 200);
+  assert.equal(configResponse.body.statusCode, 200);
+  const configTraffic = api.trafficLog.find(row => row.id === configResponse.body.trafficId);
+  assert.ok(configTraffic);
+  assert.equal(configTraffic.source, 'Send');
+  assert.equal(configTraffic.routeSource, 'proxy');
+  assert.equal(configTraffic.responseBody, JSON.stringify({ certificate: 'TEST CERTIFICATE' }));
+  assert.equal(proxy._internalSendRequestIds.size, 0);
+
+  const oversizedResponse = await requestJson(apiPort, 'POST', '/api/send', {
+    url: 'http://unreachable.invalid/oversized',
+    method: 'POST',
+    headers: { 'content-type': 'text/plain' },
+    body: '12345'
+  });
+  assert.equal(oversizedResponse.statusCode, 200);
+  assert.equal(oversizedResponse.body.statusCode, 413);
+  const oversizedTraffic = api.trafficLog.find(row => row.id === oversizedResponse.body.trafficId);
+  assert.ok(oversizedTraffic);
+  assert.equal(oversizedTraffic.source, 'Send');
+  assert.equal(oversizedTraffic.statusCode, 413);
+  assert.equal(oversizedTraffic.requestBodySize, 5);
+  assert.equal(oversizedTraffic.requestBodyTruncated, true);
+  assert.equal(proxy._internalSendRequestIds.size, 0);
+});
+
 test('server-assigned imported traffic is broadcast to every connected tab', async t => {
   const proxy = {
     port: 8080,
@@ -227,6 +315,49 @@ test('server-assigned imported traffic is broadcast to every connected tab', asy
   assert.notEqual(first.requests[0].id, 'collision');
   assert.equal(first.requests[0].path, '/imported');
   assert.deepEqual(first.requests, api.trafficLog.slice(-1));
+});
+
+test('large imports stay within the WebSocket ceiling and retain lazy detail access', async t => {
+  const maxWsBufferedBytes = 1024;
+  const proxy = {
+    port: 8080,
+    mockRules: [],
+    onBreakpoint: null,
+    onUpstreamProxyRetry: null,
+    matchApiSpec: () => null
+  };
+  const api = new ApiServer(proxy, null, null, { port: 0, maxWsBufferedBytes });
+  api.port = 0;
+  await api.start();
+  t.after(() => api.stop());
+
+  const apiPort = api.httpServer.address().port;
+  const socket = await openWebSocket(`ws://127.0.0.1:${apiPort}/ws`);
+  t.after(() => socket.close());
+  const incoming = Array.from({ length: 8 }, (_, index) => ({
+    ...importedTraffic(`large-${index}`, `/large/${index}`),
+    requestBody: `request-${index}-` + 'r'.repeat(3000),
+    responseBody: `response-${index}-` + 's'.repeat(3000)
+  }));
+
+  const messagesPromise = importedMessages(socket);
+  const response = await requestJson(apiPort, 'POST', '/api/traffic/import', { requests: incoming });
+  const messages = await messagesPromise;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.imported, incoming.length);
+  assert.ok(messages.length > 1);
+  assert.ok(messages.every(({ bytes }) => bytes <= maxWsBufferedBytes));
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  assert.equal(api.clients.size, 1);
+  const rows = messages.flatMap(({ message }) => message.requests);
+  assert.equal(rows.length, incoming.length);
+  assert.ok(rows.every(row => row._deferredTrafficDetail === true));
+
+  const detail = await requestJson(apiPort, 'GET', `/api/traffic/${rows[0].id}`);
+  assert.equal(detail.statusCode, 200);
+  assert.equal(detail.body.requestBody, incoming[0].requestBody);
+  assert.equal(detail.body.responseBody, incoming[0].responseBody);
 });
 
 test('Send honors the configured upstream proxy without exposing its correlation header', async t => {
@@ -289,11 +420,17 @@ test('renderer uses server-owned import and Send traffic identities', () => {
   const importSource = source.slice(importStart, importEnd);
   const sendSource = source.slice(sendStart, sendEnd);
   const websocketSource = source.slice(websocketStart, websocketEnd);
+  const selectStart = source.indexOf('function selectRequest(');
+  const selectEnd = source.indexOf('// ============ DETAIL PANEL ============', selectStart);
+  const selectSource = source.slice(selectStart, selectEnd);
 
   assert.match(importSource, /API_BASE \+ '\/api\/traffic\/import'/);
   assert.doesNotMatch(importSource, /imported\.forEach\([^)]*addRequest/);
   assert.match(websocketSource, /case 'traffic-imported':[\s\S]*addRequests\(msg\.requests\)/);
+  assert.match(websocketSource, /msg\.chunkIndex === msg\.chunkCount - 1/);
   assert.match(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
+  assert.match(selectSource, /req\._deferredTrafficDetail === true/);
+  assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\(req\.id\)/);
   assert.doesNotMatch(sendSource, /addRequest\(/);
   assert.match(sendSource, /id: data\.trafficId/);
   assert.match(sendSource, /selectRequest\(data\.trafficId/);

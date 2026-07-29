@@ -3827,20 +3827,33 @@ export class ProxyServer {
       targetUrl = new URL(clientReq.url);
     } catch {
       // Relative URL — this might be the UI or management request
-      clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
-      clientRes.end('Bad Request: Invalid URL');
+      this._serveEarlyHttpResponse({
+        clientReq, clientRes, internalSend, requestId, trafficLifecycleId, startTime,
+        statusCode: 400,
+        responseHeaders: { 'Content-Type': 'text/plain' },
+        responseBody: 'Bad Request: Invalid URL'
+      });
       return;
     }
 
     try {
       this._assertSupportedOutboundUrl(targetUrl, 'request URL');
     } catch (err) {
-      clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
-      clientRes.end(`Bad Request: ${err.message}`);
+      this._serveEarlyHttpResponse({
+        clientReq, clientRes, targetUrl, internalSend, requestId, trafficLifecycleId, startTime,
+        statusCode: 400,
+        responseHeaders: { 'Content-Type': 'text/plain' },
+        responseBody: `Bad Request: ${err.message}`
+      });
       return;
     }
 
-    if (this._serveHttpToolkitAndroidConfig(clientReq, clientRes, targetUrl)) {
+    const androidConfigResponse = this._getHttpToolkitAndroidConfigResponse(clientReq, targetUrl);
+    if (androidConfigResponse) {
+      this._serveEarlyHttpResponse({
+        clientReq, clientRes, targetUrl, internalSend, requestId, trafficLifecycleId, startTime,
+        ...androidConfigResponse
+      });
       return;
     }
 
@@ -3887,8 +3900,26 @@ export class ProxyServer {
     clientReq.on('end', async () => {
       if (!requestBodyCompletion.complete()) return;
       if (requestBody.exceeded) {
-        clientRes.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
-        clientRes.end('Request body too large');
+        const capturedRequestBody = this._streamedCaptureBody(
+          requestBody,
+          requestBodySize,
+          'Request',
+          clientReq.headers
+        );
+        this._serveEarlyHttpResponse({
+          clientReq, clientRes, targetUrl, internalSend, requestId, trafficLifecycleId, startTime,
+          requestBody: capturedRequestBody,
+          requestBodySize,
+          requestCaptureFields: this._incompleteBodyCaptureFields(
+            'request',
+            capturedRequestBody,
+            clientReq.headers,
+            requestBody.length
+          ),
+          statusCode: 413,
+          responseHeaders: { 'Content-Type': 'text/plain', Connection: 'close' },
+          responseBody: 'Request body too large'
+        });
         return;
       }
       let body = this._concatBody(requestBody);
@@ -4005,8 +4036,14 @@ export class ProxyServer {
       try {
         this._assertSupportedOutboundUrl(targetUrl, 'request URL');
       } catch (err) {
-        clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
-        clientRes.end(`Bad Request: ${err.message}`);
+        this._serveEarlyHttpResponse({
+          clientReq, clientRes, targetUrl, internalSend, requestId, trafficLifecycleId, startTime,
+          requestBody: body,
+          requestBodySize: body.length,
+          statusCode: 400,
+          responseHeaders: { 'Content-Type': 'text/plain' },
+          responseBody: `Bad Request: ${err.message}`
+        });
         return;
       }
       if (downstream.aborted) return;
@@ -4276,7 +4313,55 @@ export class ProxyServer {
     });
   }
 
-  _serveHttpToolkitAndroidConfig(clientReq, clientRes, targetUrl) {
+  _serveEarlyHttpResponse({
+    clientReq,
+    clientRes,
+    targetUrl = null,
+    internalSend,
+    requestId,
+    trafficLifecycleId,
+    startTime,
+    requestBody = Buffer.alloc(0),
+    requestBodySize = Buffer.byteLength(requestBody),
+    requestCaptureFields = {},
+    statusCode,
+    statusMessage = http.STATUS_CODES[statusCode] || '',
+    responseHeaders,
+    responseBody = ''
+  }) {
+    const responseBuffer = Buffer.isBuffer(responseBody)
+      ? responseBody
+      : Buffer.from(String(responseBody));
+    clientRes.writeHead(statusCode, responseHeaders);
+    if (internalSend) {
+      const requestUrl = targetUrl?.href || String(clientReq.url || '');
+      this._emitRequest({
+        id: requestId,
+        protocol: targetUrl?.protocol === 'https:' ? 'https' : 'http',
+        method: clientReq.method,
+        url: requestUrl,
+        host: targetUrl?.hostname || '',
+        path: targetUrl ? targetUrl.pathname + targetUrl.search : requestUrl,
+        requestHeaders: clientReq.headers,
+        requestBody: Buffer.isBuffer(requestBody) ? this._safeBodyString(requestBody) : requestBody,
+        requestBodySize,
+        ...requestCaptureFields,
+        statusCode,
+        statusMessage,
+        responseHeaders,
+        responseBody: this._safeBodyString(responseBuffer),
+        responseBodySize: responseBuffer.length,
+        duration: Date.now() - startTime,
+        timestamp: startTime,
+        source: 'proxy',
+        tls: null,
+        remote: null
+      }, trafficLifecycleId);
+    }
+    clientRes.end(responseBuffer);
+  }
+
+  _getHttpToolkitAndroidConfigResponse(clientReq, targetUrl) {
     if (clientReq.method !== 'GET') return false;
 
     const host = targetUrl.hostname.toLowerCase();
@@ -4287,21 +4372,25 @@ export class ProxyServer {
 
     if (host === 'android.httptoolkit.tech' && path === '/config') {
       const body = JSON.stringify({ certificate });
-      clientRes.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      });
-      clientRes.end(body);
-      return true;
+      return {
+        statusCode: 200,
+        responseHeaders: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        },
+        responseBody: body
+      };
     }
 
     if (host === 'amiusing.httptoolkit.tech' && path === '/certificate') {
-      clientRes.writeHead(200, {
-        'Content-Type': 'application/x-pem-file',
-        'Content-Length': Buffer.byteLength(certificate)
-      });
-      clientRes.end(certificate);
-      return true;
+      return {
+        statusCode: 200,
+        responseHeaders: {
+          'Content-Type': 'application/x-pem-file',
+          'Content-Length': Buffer.byteLength(certificate)
+        },
+        responseBody: certificate
+      };
     }
 
     return false;

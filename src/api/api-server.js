@@ -154,6 +154,7 @@ export class ApiServer {
     this.httpServer = null;
     this.wss = null;
     this.clients = new Set();
+    this._clientBroadcastQueues = new WeakMap();
     this._httpSockets = new Set();
     this._startPromise = null;
     this._cancelStart = null;
@@ -1273,11 +1274,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           return res.status(400).json({ error: `Invalid import format: ${validationError}` });
         }
         const retainedRequests = this._appendImportedTraffic(requests);
-        this._broadcast({
-          type: 'traffic-imported',
-          count: requests.length,
-          requests: retainedRequests
-        });
+        this._broadcastImportedTraffic(retainedRequests, requests.length);
         res.json({ success: true, imported: requests.length });
       } catch (err) {
         res.status(400).json({ error: err.message });
@@ -1375,11 +1372,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           return res.status(400).json({ error: `Invalid HAR format: ${validationError}` });
         }
         const retainedRequests = this._appendImportedTraffic(imported);
-        this._broadcast({
-          type: 'traffic-imported',
-          count: imported.length,
-          requests: retainedRequests
-        });
+        this._broadcastImportedTraffic(retainedRequests, imported.length);
         res.json({ success: true, imported: imported.length });
       } catch (err) {
         res.status(400).json({ error: 'Failed to parse HAR: ' + err.message });
@@ -2391,6 +2384,93 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return assignedIncoming;
   }
 
+  _summarizeImportedTrafficForBroadcast(request) {
+    const truncate = (value, length) => value === undefined || value === null
+      ? value
+      : String(value).slice(0, length);
+    return {
+      id: request.id,
+      trafficLifecycleId: request.trafficLifecycleId,
+      protocol: truncate(request.protocol, 32),
+      method: truncate(request.method, 32),
+      url: truncate(request.url, 256),
+      host: truncate(request.host, 128),
+      path: truncate(request.path, 256),
+      statusCode: request.statusCode,
+      statusMessage: truncate(request.statusMessage, 128),
+      duration: request.duration,
+      timestamp: request.timestamp,
+      source: truncate(request.source, 32),
+      parentId: request.parentId,
+      parentTrafficLifecycleId: request.parentTrafficLifecycleId,
+      direction: truncate(request.direction, 32),
+      opcode: request.opcode,
+      opcodeName: truncate(request.opcodeName, 32),
+      requestBodySize: request.requestBodySize,
+      responseBodySize: request.responseBodySize,
+      _deferredTrafficDetail: true
+    };
+  }
+
+  _importBroadcastMessage(count, requests, chunkIndex, chunkCount) {
+    return {
+      type: 'traffic-imported',
+      count,
+      requests,
+      ...(chunkCount > 1 ? { chunkIndex, chunkCount } : {})
+    };
+  }
+
+  _messageFitsWsBuffer(message) {
+    return Buffer.byteLength(JSON.stringify(message)) <= this.maxWsBufferedBytes;
+  }
+
+  _buildImportedTrafficMessages(requests, count) {
+    const completeMessage = this._importBroadcastMessage(count, requests, 0, 1);
+    if (this._messageFitsWsBuffer(completeMessage)) return [completeMessage];
+
+    const batches = [];
+    let batch = [];
+    const placeholderChunk = Number.MAX_SAFE_INTEGER;
+    const fitsBatch = candidate => this._messageFitsWsBuffer(
+      this._importBroadcastMessage(count, candidate, placeholderChunk, placeholderChunk)
+    );
+
+    for (const request of requests) {
+      if (fitsBatch([...batch, request])) {
+        batch.push(request);
+        continue;
+      }
+      if (batch.length > 0) {
+        batches.push(batch);
+        batch = [];
+      }
+
+      const item = fitsBatch([request])
+        ? request
+        : this._summarizeImportedTrafficForBroadcast(request);
+      if (!fitsBatch([item])) {
+        // Extremely small custom ceilings still receive the stable identity.
+        batch = [{ id: request.id, _deferredTrafficDetail: true }];
+      } else {
+        batch = [item];
+      }
+    }
+    if (batch.length > 0) batches.push(batch);
+    if (batches.length === 0) batches.push([]);
+
+    return batches.map((requestsBatch, chunkIndex) => this._importBroadcastMessage(
+      count,
+      requestsBatch,
+      chunkIndex,
+      batches.length
+    ));
+  }
+
+  _broadcastImportedTraffic(requests, count) {
+    this._broadcastSequence(this._buildImportedTrafficMessages(requests, count));
+  }
+
   _removeRuleById(ruleId, rules = this.proxy.mockRules) {
     for (let i = 0; i < rules.length; i++) {
       if (rules[i].id === ruleId) return rules.splice(i, 1)[0];
@@ -2704,31 +2784,59 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _broadcast(message) {
-    const json = JSON.stringify(message);
-    const messageBytes = Buffer.byteLength(json);
+    this._broadcastSequence([message]);
+  }
+
+  _broadcastSequence(messages) {
+    const payloads = messages.map(message => JSON.stringify(message));
     for (const client of this.clients) {
-      try {
-        if (client.readyState !== 1) { // OPEN
-          this._evictWebSocketClient(client);
-          continue;
-        }
-        const bufferedBytes = Number(client.bufferedAmount);
-        if (!Number.isFinite(bufferedBytes) || bufferedBytes < 0 ||
-            bufferedBytes + messageBytes > this.maxWsBufferedBytes) {
-          this._evictWebSocketClient(client);
-          continue;
-        }
-        client.send(json, err => {
-          if (err) this._evictWebSocketClient(client);
-        });
-      } catch {
-        this._evictWebSocketClient(client);
+      let queue = this._clientBroadcastQueues.get(client);
+      if (!queue) {
+        queue = { payloads: [], sending: false };
+        this._clientBroadcastQueues.set(client, queue);
       }
+      queue.payloads.push(...payloads);
+      this._drainClientBroadcastQueue(client, queue);
+    }
+  }
+
+  _drainClientBroadcastQueue(client, queue) {
+    if (queue.sending) return;
+    const json = queue.payloads.shift();
+    if (json === undefined) return;
+    queue.sending = true;
+    try {
+      if (client.readyState !== 1) { // OPEN
+        this._evictWebSocketClient(client);
+        return;
+      }
+      const bufferedBytes = Number(client.bufferedAmount);
+      const messageBytes = Buffer.byteLength(json);
+      if (!Number.isFinite(bufferedBytes) || bufferedBytes < 0 ||
+          bufferedBytes + messageBytes > this.maxWsBufferedBytes) {
+        this._evictWebSocketClient(client);
+        return;
+      }
+      client.send(json, err => {
+        if (err) {
+          this._evictWebSocketClient(client);
+          return;
+        }
+        queue.sending = false;
+        queueMicrotask(() => this._drainClientBroadcastQueue(client, queue));
+      });
+    } catch {
+      this._evictWebSocketClient(client);
     }
   }
 
   _evictWebSocketClient(client) {
     if (!this.clients.delete(client)) return;
+    const queue = this._clientBroadcastQueues.get(client);
+    if (queue) {
+      queue.payloads.length = 0;
+      queue.sending = false;
+    }
     try {
       client.terminate?.();
     } catch {}
