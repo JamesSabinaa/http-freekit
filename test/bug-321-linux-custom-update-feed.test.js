@@ -147,6 +147,7 @@ test('custom GitHub web and API feeds resolve to their own repository releases',
   for (const { feed, expected } of cases) {
     await t.test(feed, async () => {
       const harness = loadUpdater({ updateUrl: feed });
+      await harness.ipcHandlers.get('updater-check-now')({});
       harness.autoUpdater.emit('update-available', {
         version: '2.2.0',
         releaseNotes: 'Bug fixes'
@@ -166,6 +167,7 @@ test('a safe release-notes URL takes precedence and unsafe notes fall back to th
   const releaseNotesUrl = 'https://downloads.example.test/releases/3.0.0';
   const harness = loadUpdater({ updateUrl: feedUrl });
 
+  await harness.ipcHandlers.get('updater-check-now')({});
   harness.autoUpdater.emit('update-available', {
     version: '3.0.0',
     releaseNotes: ` ${releaseNotesUrl} `
@@ -176,6 +178,7 @@ test('a safe release-notes URL takes precedence and unsafe notes fall back to th
   harness.stop();
 
   const unsafeHarness = loadUpdater({ updateUrl: feedUrl });
+  await unsafeHarness.ipcHandlers.get('updater-check-now')({});
   unsafeHarness.autoUpdater.emit('update-available', {
     version: '3.0.1',
     releaseNotes: 'javascript:alert(1)'
@@ -190,6 +193,7 @@ test('malformed and non-web custom sources are ignored without exposing getter t
   for (const updateUrl of ['not a URL', 'file:///tmp/latest.yml', 'javascript:alert(1)']) {
     await t.test(updateUrl, async () => {
       const harness = loadUpdater({ updateUrl });
+      await harness.ipcHandlers.get('updater-check-now')({});
       harness.autoUpdater.emit('update-available', {
         version: '4.0.0',
         releaseNotes: 'No web link here'
@@ -209,6 +213,7 @@ test('malformed and non-web custom sources are ignored without exposing getter t
 
 test('the project release page remains the default when no custom source exists', async () => {
   const harness = loadUpdater();
+  await harness.ipcHandlers.get('updater-check-now')({});
   harness.autoUpdater.emit('update-available', {
     version: '5.0.0',
     releaseNotes: null

@@ -15,7 +15,11 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
-function loadUpdater(checks, { prepareOperation = null } = {}) {
+function loadUpdater(checks, {
+  prepareOperation = null,
+  prepareOperations = [],
+  dialogOperations = []
+} = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
   const module = { exports: {} };
@@ -26,16 +30,30 @@ function loadUpdater(checks, { prepareOperation = null } = {}) {
     if (!check) throw new Error('unexpected update check');
     return check.promise;
   };
-  autoUpdater.downloadUpdate = () => Promise.resolve();
+  let downloadCalls = 0;
+  let quitCalls = 0;
+  let prepareCalls = 0;
+  let dialogCalls = 0;
+  const pendingPreparations = [...prepareOperations];
+  const pendingDialogs = [...dialogOperations];
+  autoUpdater.downloadUpdate = () => {
+    downloadCalls++;
+    return Promise.resolve();
+  };
   autoUpdater.setFeedURL = () => {};
-  autoUpdater.quitAndInstall = () => {};
+  autoUpdater.quitAndInstall = () => { quitCalls++; };
   const ipcHandlers = new Map();
   let preparationFailureCalls = 0;
   let startupCheck = null;
   let intervalCheck = null;
   const electron = {
     app: { getVersion: () => '1.0.0', isPackaged: true },
-    dialog: { showMessageBox: () => Promise.resolve({ response: 1 }) },
+    dialog: {
+      showMessageBox: () => {
+        dialogCalls++;
+        return pendingDialogs.shift()?.promise || Promise.resolve({ response: 1 });
+      }
+    },
     ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
     shell: { openExternal: () => Promise.resolve() }
   };
@@ -69,7 +87,12 @@ function loadUpdater(checks, { prepareOperation = null } = {}) {
   };
   const initOptions = {
     validateSender: () => true,
-    prepareForInstall: () => prepareOperation ? prepareOperation() : Promise.resolve(true),
+    prepareForInstall: () => {
+      prepareCalls++;
+      const pendingPreparation = pendingPreparations.shift();
+      if (pendingPreparation) return pendingPreparation.promise;
+      return prepareOperation ? prepareOperation() : Promise.resolve(true);
+    },
     onInstallPreparationFailed: () => { preparationFailureCalls++; }
   };
   module.exports.initAutoUpdater(mainWindow, initOptions);
@@ -82,7 +105,12 @@ function loadUpdater(checks, { prepareOperation = null } = {}) {
     runStartupCheck: () => startupCheck(),
     statuses,
     stop: module.exports.stopAutoUpdater,
+    cancelInstall: module.exports.cancelUpdateInstall,
+    get dialogCalls() { return dialogCalls; },
+    get downloadCalls() { return downloadCalls; },
+    get prepareCalls() { return prepareCalls; },
     get preparationFailureCalls() { return preparationFailureCalls; },
+    get quitCalls() { return quitCalls; },
     get checkCalls() { return checkCalls; }
   };
 }
@@ -178,29 +206,97 @@ test('separate later automatic checks do not inherit manual attribution', async 
   assert.equal(updater.statuses.at(-1).manual, false);
 });
 
-test('a check error does not cancel or duplicate an overlapping install request', async () => {
+test('check and installer errors retain separate serialized owners', async () => {
   const check = deferred();
-  const preparation = deferred();
-  const updater = loadUpdater([check], {
-    prepareOperation: () => preparation.promise
-  });
+  const updater = loadUpdater([check]);
 
-  const install = updater.install();
   updater.runStartupCheck();
-  const error = new Error('automatic check failed');
-  updater.autoUpdater.emit('error', error);
-  check.reject(error);
-  await new Promise(resolve => setImmediate(resolve));
+  const install = updater.install();
+  assert.equal(updater.prepareCalls, 0, 'install waits for the active updater check');
+
+  const checkError = new Error('automatic check failed');
+  updater.autoUpdater.emit('error', checkError);
+  check.reject(checkError);
+  const installResult = await install;
+  assert.equal(installResult.started, true);
+  assert.equal(updater.prepareCalls, 1);
+  assert.equal(updater.quitCalls, 1);
+
+  updater.autoUpdater.emit('error', new Error('installer launch failed'));
 
   const errors = updater.statuses.filter(status => status.status === 'error');
-  assert.equal(errors.length, 1);
+  assert.equal(errors.length, 2);
   assert.equal(errors[0].manual, false);
-  assert.equal(updater.preparationFailureCalls, 0);
+  assert.match(errors[0].error, /automatic check failed/);
+  assert.equal(errors[1].manual, true);
+  assert.match(errors[1].error, /installer launch failed/);
+  assert.equal(updater.preparationFailureCalls, 1);
+  assert.equal(updater.cancelInstall(), false);
+});
 
-  preparation.resolve(false);
-  const installResult = await install;
-  assert.equal(installResult.started, false);
-  assert.equal(installResult.inProgress, false);
+test('late install preflight settlement cannot release a new lifecycle request', async t => {
+  for (const lateResult of ['resolve', 'reject']) {
+    await t.test(lateResult, async () => {
+      const oldPreparation = deferred();
+      const newPreparation = deferred();
+      const updater = loadUpdater([], {
+        prepareOperations: [oldPreparation, newPreparation]
+      });
+
+      const oldInstall = updater.install();
+      assert.equal(updater.prepareCalls, 1);
+      updater.reinitialize();
+      const newInstall = updater.install();
+      assert.equal(updater.prepareCalls, 2);
+
+      if (lateResult === 'resolve') oldPreparation.resolve(false);
+      else oldPreparation.reject(new Error('late old preflight failure'));
+      const oldResult = await oldInstall;
+      assert.equal(oldResult.started, false);
+      assert.equal(updater.preparationFailureCalls, 0);
+      assert.equal(updater.statuses.some(status => status.error === 'late old preflight failure'), false);
+
+      newPreparation.resolve(true);
+      const newResult = await newInstall;
+      assert.equal(newResult.started, true);
+      assert.equal(updater.quitCalls, 1);
+    });
+  }
+});
+
+test('stop and re-init replace a pending update prompt without stale side effects', async () => {
+  const oldCheck = deferred();
+  const newCheck = deferred();
+  const oldDialog = deferred();
+  const newDialog = deferred();
+  const updater = loadUpdater([oldCheck, newCheck], {
+    dialogOperations: [oldDialog, newDialog]
+  });
+
+  updater.runStartupCheck();
+  updater.autoUpdater.emit('update-available', { version: '2.0.0' });
+  assert.equal(updater.dialogCalls, 1);
+  oldCheck.resolve(null);
+  await oldCheck.promise;
+
+  updater.reinitialize();
+  const newManualCheck = updater.checkNow();
+  updater.autoUpdater.emit('update-available', { version: '3.0.0' });
+  assert.equal(updater.dialogCalls, 2);
+  newCheck.resolve(null);
+
+  oldDialog.resolve({ response: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updater.downloadCalls, 0);
+  assert.equal(updater.statuses.some(status => status.version === '2.0.0' && status.status === 'download-started'), false);
+
+  newDialog.resolve({ response: 1 });
+  await newManualCheck;
+  await new Promise(resolve => setImmediate(resolve));
+  const dismissals = updater.statuses.filter(status => status.status === 'update-dismissed');
+  assert.equal(dismissals.length, 1);
+  assert.equal(dismissals[0].version, '3.0.0');
+  assert.equal(dismissals[0].manual, true);
 });
 
 test('stop cancels a check queued in the result-settlement gap', async () => {

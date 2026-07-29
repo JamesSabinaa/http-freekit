@@ -188,11 +188,13 @@ test('Linux updater awaits a successful external open and resets its prompt stat
   });
 
   const unhandled = await withUnhandledCapture(async () => {
+    await harness.ipcHandlers.get('updater-check-now')({});
     harness.autoUpdater.emit('update-available', {
       version: '2.0.0',
       releaseNotes: 'https://downloads.example/2.0.0'
     });
     await settlePromises();
+    await harness.ipcHandlers.get('updater-check-now')({});
     harness.autoUpdater.emit('update-available', {
       version: '2.0.1',
       releaseNotes: 'https://downloads.example/2.0.1'
@@ -220,11 +222,13 @@ test('Linux updater reports external-open rejection and resets its prompt state'
   });
 
   const unhandled = await withUnhandledCapture(async () => {
+    await harness.ipcHandlers.get('updater-check-now')({});
     harness.autoUpdater.emit('update-available', {
       version: '3.0.0',
       releaseNotes: 'https://downloads.example/3.0.0'
     });
     await settlePromises();
+    await harness.ipcHandlers.get('updater-check-now')({});
     harness.autoUpdater.emit('update-available', {
       version: '3.0.1',
       releaseNotes: 'https://downloads.example/3.0.1'
@@ -237,13 +241,13 @@ test('Linux updater reports external-open rejection and resets its prompt state'
   assert.deepEqual(plain(statuses.find(status => status.status === 'error')), {
     status: 'error',
     error: 'download page blocked',
-    manual: false,
+    manual: true,
     eventId: 2
   });
   assert.deepEqual(plain(statuses.at(-1)), {
     status: 'update-dismissed',
     version: '3.0.1',
-    manual: false,
+    manual: true,
     eventId: 4
   });
   assert.deepEqual(unhandled, []);

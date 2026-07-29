@@ -20,17 +20,14 @@ let mainWindow = null;
 let startupCheckTimer = null;
 let checkInterval = null;
 let activeCheck = null;
-let isDownloading = false;
-let updatePromptOpen = false;
-let lastPromptedVersion = null;
+let activeDownload = null;
+let activeUpdatePrompt = null;
+let lastPromptedUpdate = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
 let statusEventId = 0;
 let configuredFeedUrl = null;
-let prepareForInstall = async () => true;
-let onInstallPreparationFailed = () => {};
-let installRequestInFlight = false;
-let installRequestGeneration = 0;
+let activeInstallRequest = null;
 let updaterLifecycle = 0;
 let updaterRunning = false;
 let registeredUpdaterEvents = [];
@@ -61,21 +58,26 @@ function removeUpdaterIpcHandlers() {
   for (const channel of UPDATER_IPC_CHANNELS) ipcMain.removeHandler(channel);
 }
 
-function releaseInstallRequest() {
-  const wasInFlight = installRequestInFlight;
-  installRequestInFlight = false;
-  if (wasInFlight) installRequestGeneration++;
-  return wasInFlight;
+function ownsInstallRequest(request) {
+  return activeInstallRequest === request && isCurrentUpdaterLifecycle(request.lifecycle);
+}
+
+function releaseInstallRequest(request = activeInstallRequest) {
+  if (!request || activeInstallRequest !== request) return false;
+  activeInstallRequest = null;
+  return true;
 }
 
 function cancelUpdateInstall() {
-  if (!releaseInstallRequest()) return false;
-  onInstallPreparationFailed();
+  const request = activeInstallRequest;
+  if (!request || !releaseInstallRequest(request)) return false;
+  if (!isCurrentUpdaterLifecycle(request.lifecycle)) return false;
+  request.onPreparationFailed();
   sendStatus({
     status: 'install-canceled',
     version: currentStatus.version,
     manual: true
-  });
+  }, request.lifecycle);
   return true;
 }
 
@@ -124,12 +126,14 @@ function getLinuxDownloadUrl(info = {}) {
 /**
  * Send an updater status event to the renderer.
  */
-function sendStatus(data) {
+function sendStatus(data, lifecycle = null) {
+  if (lifecycle !== null && !isCurrentUpdaterLifecycle(lifecycle)) return false;
   data = { ...data, eventId: ++statusEventId };
   currentStatus = { ...data };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('updater-status', data);
   }
+  return true;
 }
 
 function completeCheckStatus(lifecycle = updaterLifecycle) {
@@ -143,14 +147,20 @@ function completeCheckStatus(lifecycle = updaterLifecycle) {
 function reportCheckError(check, error) {
   if (check.statusReported || !isCurrentUpdaterLifecycle(check.lifecycle)) return;
   check.statusReported = true;
-  sendStatus({ status: 'error', error: error.message, manual: check.manual });
+  sendStatus({ status: 'error', error: error.message, manual: check.manual }, check.lifecycle);
 }
 
-function reportInstallError(error) {
-  if (!releaseInstallRequest()) return false;
-  onInstallPreparationFailed();
-  isDownloading = false;
-  sendStatus({ status: 'error', error: error.message, manual: true });
+function reportInstallError(request, error) {
+  if (!ownsInstallRequest(request) || !releaseInstallRequest(request)) return false;
+  request.onPreparationFailed();
+  sendStatus({ status: 'error', error: error.message, manual: true }, request.lifecycle);
+  return true;
+}
+
+function reportDownloadError(download, error) {
+  if (activeDownload !== download || !isCurrentUpdaterLifecycle(download.lifecycle)) return false;
+  activeDownload = null;
+  sendStatus({ status: 'error', error: error.message, manual: download.manual }, download.lifecycle);
   return true;
 }
 
@@ -178,14 +188,21 @@ function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
     return activeCheck.promise;
   }
 
+  // electron-updater exposes one shared error event without operation metadata.
+  // Keep its check/download/install operations disjoint so every error has one
+  // unambiguous owner.
+  if (activeInstallRequest?.lifecycle === lifecycle
+      || activeUpdatePrompt?.lifecycle === lifecycle
+      || activeDownload?.lifecycle === lifecycle) {
+    return Promise.resolve(null);
+  }
+
   const check = {
     manual: requestedManual,
     lifecycle,
     checkingReported: false,
     statusReported: false,
     promiseSettled: false,
-    promiseRejected: false,
-    emittedError: null,
     promise: null
   };
   activeCheck = check;
@@ -200,36 +217,35 @@ function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
     return Promise.resolve(null);
   }
   check.promise = Promise.resolve(upstreamCheck).catch((err) => {
-    check.promiseRejected = true;
-    check.emittedError = null;
     reportCheckError(check, err);
     return null;
   }).finally(() => {
     check.promiseSettled = true;
-    if (check.emittedError && !check.promiseRejected && isCurrentUpdaterLifecycle(lifecycle)) {
-      const emittedError = check.emittedError;
-      check.emittedError = null;
-      if (!reportInstallError(emittedError)) reportCheckError(check, emittedError);
-    }
     if (activeCheck === check && check.statusReported) activeCheck = null;
   });
   return check.promise;
 }
 
-async function promptForUpdate(info, options = {}) {
+async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle) {
+  if (!isCurrentUpdaterLifecycle(lifecycle)) return;
   const version = info.version;
   const manual = Boolean(options.manual);
 
-  if (isDownloading || updatePromptOpen) return;
-  if (!manual && lastPromptedVersion === version) return;
+  if (activeDownload?.lifecycle === lifecycle || activeUpdatePrompt?.lifecycle === lifecycle) return;
+  if (!manual
+      && lastPromptedUpdate?.lifecycle === lifecycle
+      && lastPromptedUpdate.version === version) return;
 
-  lastPromptedVersion = version;
-  updatePromptOpen = true;
+  const prompt = { lifecycle, version };
+  const promptWindow = mainWindow;
+  let download = null;
+  lastPromptedUpdate = { lifecycle, version };
+  activeUpdatePrompt = prompt;
 
   try {
     if (process.platform === 'linux') {
       const url = options.url || getLinuxDownloadUrl(info);
-      const result = await dialog.showMessageBox(mainWindow, {
+      const result = await dialog.showMessageBox(promptWindow, {
         type: 'info',
         title: 'Update Available',
         message: `HTTP FreeKit ${version} is available`,
@@ -238,15 +254,16 @@ async function promptForUpdate(info, options = {}) {
         defaultId: 0,
         cancelId: 1
       });
+      if (!isCurrentUpdaterLifecycle(lifecycle) || activeUpdatePrompt !== prompt) return;
       if (result.response === 0) {
         await shell.openExternal(url);
       } else {
-        sendStatus({ status: 'update-dismissed', version, manual });
+        sendStatus({ status: 'update-dismissed', version, manual }, lifecycle);
       }
       return;
     }
 
-    const result = await dialog.showMessageBox(mainWindow, {
+    const result = await dialog.showMessageBox(promptWindow, {
       type: 'info',
       title: 'Update Available',
       message: `HTTP FreeKit ${version} is available`,
@@ -255,19 +272,25 @@ async function promptForUpdate(info, options = {}) {
       defaultId: 0,
       cancelId: 1
     });
+    if (!isCurrentUpdaterLifecycle(lifecycle) || activeUpdatePrompt !== prompt) return;
 
     if (result.response !== 0) {
-      sendStatus({ status: 'update-dismissed', version, manual });
+      sendStatus({ status: 'update-dismissed', version, manual }, lifecycle);
       return;
     }
 
-    isDownloading = true;
-    sendStatus({ status: 'download-started', version, manual });
+    download = { lifecycle, version, manual };
+    activeDownload = download;
+    sendStatus({ status: 'download-started', version, manual }, lifecycle);
     await autoUpdater.downloadUpdate();
   } catch (err) {
-    sendStatus({ status: 'error', error: err.message, manual });
+    if (download) {
+      reportDownloadError(download, err);
+    } else if (isCurrentUpdaterLifecycle(lifecycle) && activeUpdatePrompt === prompt) {
+      sendStatus({ status: 'error', error: err.message, manual }, lifecycle);
+    }
   } finally {
-    updatePromptOpen = false;
+    if (activeUpdatePrompt === prompt) activeUpdatePrompt = null;
   }
 }
 
@@ -287,10 +310,10 @@ function initAutoUpdater(win, options = {}) {
   validateIpcSender = typeof options.validateSender === 'function'
     ? options.validateSender
     : () => false;
-  prepareForInstall = typeof options.prepareForInstall === 'function'
+  const lifecyclePrepareForInstall = typeof options.prepareForInstall === 'function'
     ? options.prepareForInstall
     : async () => true;
-  onInstallPreparationFailed = typeof options.onInstallPreparationFailed === 'function'
+  const lifecycleOnInstallPreparationFailed = typeof options.onInstallPreparationFailed === 'function'
     ? options.onInstallPreparationFailed
     : () => {};
 
@@ -320,64 +343,72 @@ function initAutoUpdater(win, options = {}) {
 
   registerUpdaterEvent('checking-for-update', () => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
-    if (activeCheck?.lifecycle === lifecycle) activeCheck.checkingReported = true;
+    const check = activeCheck?.lifecycle === lifecycle ? activeCheck : null;
+    if (!check) return;
+    check.checkingReported = true;
     sendStatus({
       status: 'checking',
-      manual: activeCheck?.lifecycle === lifecycle && activeCheck.manual === true
-    });
+      manual: check.manual === true
+    }, lifecycle);
   });
 
   registerUpdaterEvent('update-available', (info) => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    if (activeCheck?.lifecycle !== lifecycle) return;
     const version = info.version;
     const wasManual = completeCheckStatus(lifecycle);
 
     if (process.platform === 'linux') {
       // Linux: no auto-install, send download URL for manual update
       const downloadUrl = getLinuxDownloadUrl(info);
-      sendStatus({ status: 'update-available-linux', version, url: downloadUrl, manual: wasManual });
-      promptForUpdate(info, { manual: wasManual, url: downloadUrl });
+      sendStatus({ status: 'update-available-linux', version, url: downloadUrl, manual: wasManual }, lifecycle);
+      promptForUpdate(info, { manual: wasManual, url: downloadUrl }, lifecycle);
     } else {
-      sendStatus({ status: 'update-available', version, manual: wasManual });
-      promptForUpdate(info, { manual: wasManual });
+      sendStatus({ status: 'update-available', version, manual: wasManual }, lifecycle);
+      promptForUpdate(info, { manual: wasManual }, lifecycle);
     }
   });
 
   registerUpdaterEvent('update-not-available', () => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    if (activeCheck?.lifecycle !== lifecycle) return;
     const wasManual = completeCheckStatus(lifecycle);
-    sendStatus({ status: 'up-to-date', manual: wasManual });
+    sendStatus({ status: 'up-to-date', manual: wasManual }, lifecycle);
   });
 
   registerUpdaterEvent('download-progress', (progress) => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
+    if (activeDownload?.lifecycle !== lifecycle) return;
     sendStatus({
       status: 'downloading',
       percent: Math.round(progress.percent)
-    });
+    }, lifecycle);
   });
 
   registerUpdaterEvent('update-downloaded', (info) => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
-    isDownloading = false;
-    sendStatus({ status: 'update-downloaded', version: info.version });
+    if (activeDownload?.lifecycle !== lifecycle) return;
+    activeDownload = null;
+    sendStatus({ status: 'update-downloaded', version: info.version }, lifecycle);
   });
 
   registerUpdaterEvent('error', (err) => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
     const check = activeCheck?.lifecycle === lifecycle ? activeCheck : null;
-    if (check && !check.promiseSettled && !check.statusReported) {
-      check.emittedError = err;
-      return;
-    }
-    if (installRequestInFlight && reportInstallError(err)) return;
-    if (check) {
+    if (check && !check.statusReported) {
       reportCheckError(check, err);
       if (check.promiseSettled && activeCheck === check) activeCheck = null;
       return;
     }
-    isDownloading = false;
-    sendStatus({ status: 'error', error: err.message, manual: false });
+    const installRequest = activeInstallRequest?.lifecycle === lifecycle
+      ? activeInstallRequest
+      : null;
+    if (installRequest && ['handoff', 'started'].includes(installRequest.phase)) {
+      reportInstallError(installRequest, err);
+      return;
+    }
+    const download = activeDownload?.lifecycle === lifecycle ? activeDownload : null;
+    if (download) reportDownloadError(download, err);
   });
 
   // --- IPC handlers ---
@@ -397,29 +428,37 @@ function initAutoUpdater(win, options = {}) {
   ipcMain.handle('updater-install', async (event) => {
     if (!validateIpcSender(event)) return null;
     if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
-    if (installRequestInFlight) return { started: false, inProgress: true };
+    if (activeInstallRequest) return { started: false, inProgress: true };
 
-    installRequestInFlight = true;
-    const requestGeneration = ++installRequestGeneration;
+    const request = {
+      lifecycle,
+      phase: 'waiting-for-check',
+      prepareForInstall: lifecyclePrepareForInstall,
+      onPreparationFailed: lifecycleOnInstallPreparationFailed
+    };
+    activeInstallRequest = request;
     try {
-      if (!await prepareForInstall()) {
-        releaseInstallRequest();
+      const check = activeCheck?.lifecycle === lifecycle ? activeCheck : null;
+      if (check && !check.promiseSettled) await check.promise;
+      if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
+      if (activeCheck === check && check?.promiseSettled) activeCheck = null;
+
+      request.phase = 'preparing';
+      if (!await request.prepareForInstall()) {
+        releaseInstallRequest(request);
         return { started: false, inProgress: false };
       }
-      if (!installRequestInFlight || requestGeneration !== installRequestGeneration) {
-        return { started: false, inProgress: false };
-      }
+      if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
       // The renderer has explicitly accepted losing mock drafts and has safely
       // persisted Send state, so every platform can now follow its updater-
       // specific window-close sequence.
+      request.phase = 'handoff';
       autoUpdater.quitAndInstall(false, true);
-      if (!installRequestInFlight || requestGeneration !== installRequestGeneration) {
-        return { started: false, inProgress: false };
-      }
+      if (!ownsInstallRequest(request)) return { started: false, inProgress: false };
+      request.phase = 'started';
       return { started: true, inProgress: true };
     } catch (err) {
-      if (releaseInstallRequest()) onInstallPreparationFailed();
-      sendStatus({ status: 'error', error: err.message, manual: true });
+      reportInstallError(request, err);
       return { started: false, inProgress: false };
     }
   });
@@ -455,10 +494,11 @@ function stopAutoUpdater() {
   }
   mainWindow = null;
   validateIpcSender = () => false;
-  prepareForInstall = async () => true;
-  onInstallPreparationFailed = () => {};
   releaseInstallRequest();
   activeCheck = null;
+  activeDownload = null;
+  activeUpdatePrompt = null;
+  lastPromptedUpdate = null;
   configuredFeedUrl = null;
   removeUpdaterEventHandlers();
   removeUpdaterIpcHandlers();
