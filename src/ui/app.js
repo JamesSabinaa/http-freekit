@@ -299,6 +299,18 @@
       return restoredRequest;
     }
 
+    function mergeDeferredTrafficRequest(currentRequest, serverRequest) {
+      const hydratedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
+      // Clear snapshots and detail requests can resolve after a newer pin event.
+      // The deferred row is the renderer's current authority for that mutation.
+      if (currentRequest?.pinned === true) hydratedRequest.pinned = true;
+      else delete hydratedRequest.pinned;
+      if (Object.hasOwn(currentRequest || {}, '_index')) {
+        hydratedRequest._index = currentRequest._index;
+      }
+      return hydratedRequest;
+    }
+
     function mergeTrafficDumpPins(currentRequests, serverRequests) {
       const existingRequests = Array.isArray(currentRequests) ? currentRequests : [];
       const currentById = new Map(
@@ -351,6 +363,7 @@
     let latestTrafficClearRevision = 0;
 
     function applyTrafficCleared(clearId, retainedTraffic, revision) {
+      const selectedBeforeClear = getSelectedTrafficRequest();
       const validRevision = Number.isSafeInteger(revision) && revision > 0 ? revision : null;
       if ((revision !== undefined && validRevision === null) ||
           (validRevision === null && latestTrafficClearRevision > 0) ||
@@ -379,7 +392,28 @@
       }
 
       let retainedIdentityKeys;
-      if (Array.isArray(retainedTraffic)) {
+      if (upgradesDeferredSnapshot) {
+        const retainedByIdentity = new Map(
+          retainedTraffic.map(request => [trafficRequestIdentityKey(request), request])
+        );
+        const retainedById = new Map();
+        for (const request of retainedTraffic) {
+          if (!retainedById.has(request?.id)) retainedById.set(request?.id, []);
+          retainedById.get(request?.id).push(request);
+        }
+        requests = requests.map(currentRequest => {
+          if (currentRequest?._deferredTrafficDetail !== true) return currentRequest;
+          let retainedRequest = retainedByIdentity.get(trafficRequestIdentityKey(currentRequest));
+          if (!retainedRequest && currentRequest.trafficLifecycleId == null) {
+            const sameId = retainedById.get(currentRequest.id) || [];
+            if (sameId.length === 1) retainedRequest = sameId[0];
+          }
+          return retainedRequest && retainedRequest._deferredTrafficDetail !== true
+            ? mergeDeferredTrafficRequest(currentRequest, retainedRequest)
+            : currentRequest;
+        });
+        retainedIdentityKeys = new Set(requests.map(trafficRequestIdentityKey));
+      } else if (Array.isArray(retainedTraffic)) {
         const currentByIdentity = new Map(
           requests.map(request => [trafficRequestIdentityKey(request), request])
         );
@@ -404,7 +438,21 @@
       vsRenderStart = -1;
       vsRenderEnd = -1;
       applyFilter();
-      const selectedRequest = getSelectedTrafficRequest();
+      let selectedRequest = getSelectedTrafficRequest();
+      if (!selectedRequest && selectedRequestId !== null) {
+        const sameIdRequests = requests.filter(request => request?.id === selectedRequestId);
+        const canRebindDeferredIdentity = sameIdRequests.length === 1 && (
+          (sameIdRequests[0]?._deferredTrafficDetail === true &&
+            normalizeTrafficLifecycleId(sameIdRequests[0].trafficLifecycleId) === null) ||
+          selectedBeforeClear?._deferredTrafficDetail === true
+        );
+        if (canRebindDeferredIdentity) {
+          selectedRequest = sameIdRequests[0];
+          selectedRequestLifecycleId = normalizeTrafficLifecycleId(
+            selectedRequest.trafficLifecycleId
+          );
+        }
+      }
       if (selectedRequestId !== null && !selectedRequest) closeDetail();
       else if (selectedRequest?._deferredTrafficDetail === true) {
         void hydrateDeferredTrafficRequest(selectedRequest);
@@ -1300,10 +1348,17 @@
         const hydrated = await response.json();
         const requestIndex = requests.indexOf(req);
         if (requestIndex === -1) return;
-        hydrated._index = req._index;
-        requests[requestIndex] = hydrated;
+        const wasSelected = isSelectedTrafficRequest(req);
+        const mergedRequest = mergeDeferredTrafficRequest(req, hydrated);
+        requests[requestIndex] = mergedRequest;
+        if (wasSelected) {
+          selectedRequestId = mergedRequest.id;
+          selectedRequestLifecycleId = normalizeTrafficLifecycleId(
+            mergedRequest.trafficLifecycleId
+          );
+        }
         applyFilter();
-        if (isSelectedTrafficRequest(hydrated)) showDetail(hydrated);
+        if (wasSelected) showDetail(mergedRequest);
       } catch (error) {
         toast(error.message || 'Could not load imported request details', 'error');
         if (isSelectedTrafficRequest(req)) closeDetail();

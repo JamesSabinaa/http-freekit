@@ -223,6 +223,95 @@ test('Clear chunks retained snapshots without exceeding the WebSocket ceiling', 
   assert.deepEqual(messages.flatMap(message => message.retainedTraffic), retainedTraffic);
 });
 
+test('Clear replaces an unbounded lifecycle fallback with a verified bounded identity', () => {
+  const api = createApi({ maxWsBufferedBytes: 1024 });
+  const messages = api._buildTrafficClearedMessages('bounded-clear', [{
+    id: 'bounded-id',
+    trafficLifecycleId: 'life'.repeat(1000),
+    responseBody: 'body'.repeat(1000),
+    pinned: true
+  }], 1);
+
+  assert.ok(messages.length > 0);
+  assert.ok(messages.every(message => api._messageFitsWsBuffer(message)));
+  assert.deepEqual(messages.flatMap(message => message.retainedTraffic), [{
+    id: 'bounded-id',
+    pinned: true,
+    _deferredTrafficDetail: true
+  }]);
+});
+
+test('import remaps oversized lifecycle IDs and keeps Clear clients and exact hydration usable', async t => {
+  const api = createApi({ maxWsBufferedBytes: 1024 });
+  const client = {
+    readyState: 1,
+    bufferedAmount: 0,
+    sent: [],
+    terminateCalls: 0,
+    send(payload, callback) {
+      this.sent.push(payload);
+      callback();
+    },
+    terminate() { this.terminateCalls++; }
+  };
+  api.clients.add(client);
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+  const originalLifecycleId = 'oversized-lifecycle-'.repeat(150);
+  const timestamp = new Date().toISOString();
+
+  const imported = await requestJson(port, '/api/traffic/import', {
+    method: 'POST',
+    body: {
+      requests: [
+        {
+          id: 'socket',
+          trafficLifecycleId: originalLifecycleId,
+          protocol: 'ws',
+          timestamp,
+          pinned: true
+        },
+        {
+          id: 'frame',
+          trafficLifecycleId: originalLifecycleId,
+          protocol: 'ws-frame',
+          parentId: 'socket',
+          parentTrafficLifecycleId: originalLifecycleId,
+          timestamp
+        }
+      ]
+    }
+  });
+  assert.equal(imported.statusCode, 200);
+  const parent = api.trafficLog.find(request => request.id === 'socket');
+  const frame = api.trafficLog.find(request => request.id === 'frame');
+  assert.notEqual(parent.trafficLifecycleId, originalLifecycleId);
+  assert.ok(encodeURIComponent(parent.trafficLifecycleId).length <= 4096);
+  assert.equal(frame.parentTrafficLifecycleId, parent.trafficLifecycleId);
+  assert.notEqual(frame.trafficLifecycleId, originalLifecycleId);
+
+  const result = api._clearTraffic();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const hasClear = client.sent.some(payload => JSON.parse(payload).type === 'traffic-cleared');
+    if (hasClear) break;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  assert.equal(client.terminateCalls, 0);
+  assert.ok(client.sent.every(payload => Buffer.byteLength(payload) <= api.maxWsBufferedBytes));
+  const clearMessages = client.sent.map(payload => JSON.parse(payload))
+    .filter(message => message.type === 'traffic-cleared');
+  assert.ok(clearMessages.length > 0);
+  assert.equal(result.retainedTraffic[0].trafficLifecycleId, parent.trafficLifecycleId);
+  const exactDetail = await requestJson(
+    port,
+    '/api/traffic/socket?trafficLifecycleId=' + encodeURIComponent(parent.trafficLifecycleId)
+  );
+  assert.equal(exactDetail.statusCode, 200);
+  assert.equal(exactDetail.body.trafficLifecycleId, parent.trafficLifecycleId);
+});
+
 test('WebSocket frames cannot become independently pinned or import invalid pin state', async t => {
   const api = createApi();
   api.trafficLog = [{
@@ -414,6 +503,8 @@ const stateStart = rendererSource.indexOf('const appliedTrafficClearIds = new Se
 const stateEnd = rendererSource.indexOf('function connectWebSocket()', stateStart);
 const actionStart = rendererSource.indexOf('const trafficPinInFlight = new Set();');
 const actionEnd = rendererSource.indexOf('function updatePinIcon(', actionStart);
+const hydrationStart = rendererSource.indexOf('async function hydrateDeferredTrafficRequest(');
+const hydrationEnd = rendererSource.indexOf('function selectBreakpointRequest(', hydrationStart);
 assert.notEqual(identityStart, -1);
 assert.notEqual(identityEnd, -1);
 assert.notEqual(mergeStart, -1);
@@ -422,6 +513,8 @@ assert.notEqual(stateStart, -1);
 assert.notEqual(stateEnd, -1);
 assert.notEqual(actionStart, -1);
 assert.notEqual(actionEnd, -1);
+assert.notEqual(hydrationStart, -1);
+assert.notEqual(hydrationEnd, -1);
 
 function deferred() {
   let resolve;
@@ -500,6 +593,10 @@ function createRenderer(fetch) {
       inFlight: trafficPinInFlight.size
     });
     globalThis.setRequests = value => { requests = value; };
+    globalThis.setSelection = (requestId, lifecycleId) => {
+      selectedRequestId = requestId;
+      selectedRequestLifecycleId = lifecycleId;
+    };
   `, context);
   return {
     context,
@@ -508,6 +605,9 @@ function createRenderer(fetch) {
     pinIcons,
     shownDetails,
     hydratedDetails,
+    installDeferredHydration() {
+      vm.runInContext(rendererSource.slice(hydrationStart, hydrationEnd), context);
+    },
     get renders() { return renders; },
     snapshot() {
       return JSON.parse(JSON.stringify(context.snapshot()));
@@ -692,6 +792,107 @@ test('REST Clear completion upgrades a deferred WebSocket snapshot', () => {
     method: 'GET',
     responseBody: 'complete body',
     pinned: true
+  }]);
+});
+
+test('identity-only deferred Clear rows keep selection through full REST upgrade', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.setRequests([{
+    id: 'oversized',
+    trafficLifecycleId: 'original-life',
+    pinned: true
+  }]);
+  renderer.context.setSelection('oversized', 'original-life');
+
+  renderer.context.applyTrafficCleared('identity-clear', [{
+    id: 'oversized',
+    pinned: true,
+    _deferredTrafficDetail: true
+  }]);
+  assert.equal(renderer.snapshot().selectedRequestLifecycleId, null);
+  assert.equal(renderer.hydratedDetails.length, 1);
+
+  renderer.context.applyTrafficCleared('identity-clear', [{
+    id: 'oversized',
+    trafficLifecycleId: 'remapped-life',
+    method: 'GET',
+    responseBody: 'complete',
+    pinned: true
+  }]);
+
+  assert.equal(renderer.snapshot().selectedRequestLifecycleId, 'remapped-life');
+  assert.deepEqual(renderer.shownDetails.at(-1), {
+    id: 'oversized',
+    trafficLifecycleId: 'remapped-life',
+    method: 'GET',
+    responseBody: 'complete',
+    pinned: true
+  });
+});
+
+test('deferred Clear upgrades preserve a later unpin mutation', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.applyTrafficCleared('large-clear', [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    pinned: true,
+    _deferredTrafficDetail: true
+  }]);
+  renderer.context.applyTrafficPinned('shared', 'old', false, 9);
+
+  const upgraded = renderer.context.applyTrafficCleared('large-clear', [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body',
+    pinned: true
+  }]);
+
+  assert.equal(upgraded, true);
+  assert.deepEqual(renderer.snapshot().requests, [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body'
+  }]);
+});
+
+test('exact deferred hydration preserves pin mutations received while loading', async () => {
+  const pending = deferred();
+  const renderer = createRenderer(() => pending.promise);
+  renderer.installDeferredHydration();
+  const deferredRequest = {
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    pinned: true,
+    _deferredTrafficDetail: true
+  };
+  renderer.context.setRequests([deferredRequest]);
+
+  const hydration = renderer.context.hydrateDeferredTrafficRequest(deferredRequest);
+  renderer.context.applyTrafficPinned('shared', 'old', false, 10);
+  pending.resolve(rendererResponse({
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body',
+    pinned: true
+  }));
+  await hydration;
+
+  assert.deepEqual(renderer.snapshot().requests, [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body'
+  }]);
+  assert.deepEqual(renderer.shownDetails, [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    responseBody: 'complete body'
   }]);
 });
 

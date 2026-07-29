@@ -2457,7 +2457,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       assignedIds.add(id);
       // Imported traffic is historical and cannot own a live resumable breakpoint.
       const { breakpointActive: _importedBreakpointActive, ...historicalRequest } = request;
-      const assignedRequest = { ...historicalRequest, id };
+      let trafficLifecycleId = request.trafficLifecycleId;
+      if (trafficLifecycleId &&
+          !this._importedTrafficLifecycleIdFitsBroadcast(id, trafficLifecycleId)) {
+        trafficLifecycleId = crypto.randomUUID();
+      }
+      const assignedRequest = {
+        ...historicalRequest,
+        id,
+        ...(trafficLifecycleId ? { trafficLifecycleId } : {})
+      };
       assignedIncoming.push(assignedRequest);
       if (request.protocol === 'ws' || request.protocol === 'wss') {
         // Legacy frames cannot disambiguate duplicate parent lifecycles, so
@@ -2465,13 +2474,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (!importedParentIds.has(request.id)) {
           importedParentIds.set(request.id, {
             id,
-            trafficLifecycleId: request.trafficLifecycleId || null
+            trafficLifecycleId: assignedRequest.trafficLifecycleId || null
           });
         }
         if (request.trafficLifecycleId) {
           const parentKey = JSON.stringify([request.id, request.trafficLifecycleId]);
           if (!importedParentLifecycleIds.has(parentKey)) {
-            importedParentLifecycleIds.set(parentKey, id);
+            importedParentLifecycleIds.set(parentKey, {
+              id,
+              trafficLifecycleId: assignedRequest.trafficLifecycleId || null
+            });
           }
         }
       }
@@ -2497,7 +2509,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         ? JSON.stringify([request.parentId, request.parentTrafficLifecycleId])
         : null;
       if (parentKey && importedParentLifecycleIds.has(parentKey)) {
-        request.parentId = importedParentLifecycleIds.get(parentKey);
+        const parent = importedParentLifecycleIds.get(parentKey);
+        request.parentId = parent.id;
+        if (parent.trafficLifecycleId) {
+          request.parentTrafficLifecycleId = parent.trafficLifecycleId;
+        } else {
+          delete request.parentTrafficLifecycleId;
+        }
       } else if (!parentKey && legacyParentIds.has(request.parentId)) {
         const parent = legacyParentIds.get(request.parentId);
         request.parentId = parent.id;
@@ -2565,6 +2583,31 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     )) && this._messageFitsWsBuffer(this._trafficClearBroadcastMessage(
       '00000000-0000-4000-8000-000000000000',
       [deferredIdentity],
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER
+    ));
+  }
+
+  _importedTrafficLifecycleIdFitsBroadcast(id, trafficLifecycleId) {
+    let encodedLifecycleId;
+    try {
+      encodedLifecycleId = encodeURIComponent(trafficLifecycleId);
+    } catch {
+      return false;
+    }
+    // Keep exact-detail query strings comfortably below Node's request-header
+    // ceiling, even when every input byte needs percent encoding.
+    if (Buffer.byteLength(encodedLifecycleId) > 4096) return false;
+    const deferredIdentity = {
+      id,
+      trafficLifecycleId,
+      pinned: true,
+      _deferredTrafficDetail: true
+    };
+    return this._messageFitsWsBuffer(this._trafficClearBroadcastMessage(
+      '00000000-0000-4000-8000-000000000000',
+      [deferredIdentity],
+      Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER
     ));
@@ -2666,27 +2709,44 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const item = fitsBatch([request])
         ? request
         : this._summarizeTrafficForBroadcast(request);
-      batch = [fitsBatch([item]) ? item : {
+      const deferredIdentity = {
         id: request.id,
         trafficLifecycleId: request.trafficLifecycleId ?? null,
         pinned: true,
         _deferredTrafficDetail: true
-      }];
+      };
+      const fallback = fitsBatch([item])
+        ? item
+        : (fitsBatch([deferredIdentity]) ? deferredIdentity : {
+            id: request.id,
+            pinned: true,
+            _deferredTrafficDetail: true
+          });
+      // If even the minimal stable identity cannot fit, no valid authoritative
+      // Clear payload exists for this configured ceiling. Do not enqueue an
+      // oversized message that would terminate every connected renderer.
+      if (!fitsBatch([fallback])) return [];
+      batch = [fallback];
     }
     if (batch.length > 0) batches.push(batch);
     if (batches.length === 0) batches.push([]);
 
-    return batches.map((requestsBatch, chunkIndex) => this._trafficClearBroadcastMessage(
+    const messages = batches.map((requestsBatch, chunkIndex) => this._trafficClearBroadcastMessage(
       clearId,
       requestsBatch,
       chunkIndex,
       batches.length,
       revision
     ));
+    return messages.every(message => this._messageFitsWsBuffer(message)) ? messages : [];
   }
 
   _broadcastTrafficCleared(clearId, retainedTraffic, revision) {
     const messages = this._buildTrafficClearedMessages(clearId, retainedTraffic, revision);
+    if (messages.length === 0) {
+      console.warn('[API] Traffic Clear broadcast skipped: WebSocket ceiling is too small');
+      return;
+    }
     if (messages.length === 1) this._broadcast(messages[0]);
     else this._broadcastSequence(messages);
   }
