@@ -2283,8 +2283,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 - Status: **Fixed**.
 
-- Resolution: The vertical sidebar and horizontal Send tablist now use roving tab stops synchronized with selection. Enter/Space, orientation-specific arrows, Home, and End activate and focus tabs with wrapping, while nested close buttons keep independent keyboard behavior. Generated Send tabs label their shared nested tabpanel, and New Tab is a native button.
-- Regression coverage: `test/bug-087-keyboard-tabs.test.js` verifies static sidebar tab stops, keyboard activation/wrapping/focus behavior for both orientations, nested-control isolation, generated Send tab ARIA/roving state, the labelled tabpanel, and the native add button.
+- Resolution: The vertical sidebar and horizontal Send tablist now use roving tab stops synchronized with selection. Enter/Space, orientation-specific arrows, Home, and End activate and focus tabs with wrapping. Each generated Send tab and its native close button are sibling controls, so the close button retains independent semantics instead of becoming a presentational descendant of `role="tab"`. Generated Send tabs label their shared nested tabpanel, and New Tab is a native button.
+- Regression coverage: `test/bug-087-keyboard-tabs.test.js` verifies static sidebar tab stops, keyboard activation/wrapping/focus behavior for both orientations, nested-control isolation, generated Send tab ARIA/roving state, sibling tab/close ownership, the labelled tabpanel, and the native add button.
 
 - Evidence: sidebar controls are clickable `<div role="tab">` nodes without `tabindex` at `src/ui/index.html:29-50`; generated Send tabs/add control repeat the pattern at `src/ui/app.js:6973-6977` and provide no Enter/Space handler.
 - Impact: keyboard-only users cannot reach or activate the application's primary tab navigation using normal focus controls.

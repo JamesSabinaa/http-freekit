@@ -9255,8 +9255,12 @@
         if (tab.url) {
           try { label = tab.method + ' ' + new URL(tab.url).hostname; } catch { label = tab.method + ' ' + tab.url.substring(0, 30); }
         }
+        const tabItemEl = document.createElement('div');
+        tabItemEl.className = 'send-tab-item' + (isActive ? ' active' : '');
+        tabItemEl.setAttribute('role', 'presentation');
+
         const tabEl = document.createElement('div');
-        tabEl.className = 'send-tab' + (isActive ? ' active' : '');
+        tabEl.className = 'send-tab';
         tabEl.id = 'send-request-tab-' + index;
         tabEl.setAttribute('role', 'tab');
         tabEl.setAttribute('aria-selected', String(isActive));
@@ -9283,8 +9287,9 @@
           event.stopPropagation();
           closeSendTab(tab.id);
         });
-        tabEl.appendChild(closeEl);
-        bar.appendChild(tabEl);
+        tabItemEl.appendChild(tabEl);
+        tabItemEl.appendChild(closeEl);
+        bar.appendChild(tabItemEl);
       });
 
       const panel = document.getElementById('sendTabPanel');

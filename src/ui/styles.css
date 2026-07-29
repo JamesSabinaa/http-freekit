@@ -3909,30 +3909,40 @@
       overflow-x: auto;
       flex-shrink: 0;
     }
-    .send-tab {
+    .send-tab-item {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 0 12px;
       height: 100%;
+      max-width: 200px;
+      padding: 0 8px 0 12px;
+      border-bottom: 2px solid transparent;
+      box-sizing: border-box;
+      flex: 0 0 auto;
+      overflow: hidden;
+    }
+    .send-tab {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      min-width: 0;
       font-size: 12px;
       font-family: var(--font-mono);
       color: var(--text-lowlight);
       cursor: pointer;
-      border-bottom: 2px solid transparent;
       white-space: nowrap;
-      max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .send-tab:hover { color: var(--text-main); }
-    .send-tab.active { color: var(--text-main); border-bottom-color: var(--pop-color); }
+    .send-tab-item:hover .send-tab { color: var(--text-main); }
+    .send-tab-item.active { border-bottom-color: var(--pop-color); }
+    .send-tab-item.active .send-tab { color: var(--text-main); }
     .send-tab > span {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .send-tab .send-tab-close {
+    .send-tab-item .send-tab-close {
       align-items: center;
       background: transparent;
       border: 0;

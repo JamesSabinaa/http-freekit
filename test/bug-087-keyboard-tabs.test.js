@@ -51,6 +51,35 @@ class FakeTablist {
   }
 }
 
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.attributes = new Map();
+    this.children = [];
+    this.parentNode = null;
+    this._textContent = '';
+  }
+
+  set textContent(value) {
+    this._textContent = value;
+    if (value === '') this.children = [];
+  }
+
+  get textContent() { return this._textContent; }
+
+  setAttribute(name, value) { this.attributes.set(name, value); }
+
+  getAttribute(name) { return this.attributes.get(name); }
+
+  addEventListener() {}
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+}
+
 function loadKeyboardHandlers() {
   const source = sourceBetween('function handleTablistKeydown(', 'function setActiveSidebarTab(');
   const context = {};
@@ -104,7 +133,7 @@ test('sidebar and Send tab keys wrap, activate, and retain focus', () => {
   assert.equal(ignored.defaultPrevented, false);
 });
 
-test('generated Send tabs use roving semantics and a native add button', () => {
+test('generated Send tabs expose sibling tab and close controls with roving semantics', () => {
   const renderSource = sourceBetween('function renderSendTabs(', 'function renderSendResponseStatus(');
   assert.match(renderSource, /tabEl\.tabIndex = isActive \? 0 : -1/);
   assert.match(renderSource, /tabEl\.setAttribute\('aria-controls', 'sendTabPanel'\)/);
@@ -113,4 +142,31 @@ test('generated Send tabs use roving semantics and a native add button', () => {
   assert.match(renderSource, /document\.createElement\('button'\)/);
   assert.match(renderSource, /panel\.setAttribute\('aria-labelledby', activeTabDomId\)/);
   assert.match(htmlSource, /id="sendTabPanel" role="tabpanel"/);
+
+  const bar = new FakeElement('div');
+  const panel = new FakeElement('div');
+  const context = {
+    activeSendTab: 'tab-1',
+    addSendTab() {},
+    closeSendTab() {},
+    document: {
+      createElement: tagName => new FakeElement(tagName),
+      getElementById: id => id === 'sendTabBar' ? bar : panel
+    },
+    handleSendTabKeydown() {},
+    sendTabs: [{ id: 'tab-1', method: 'GET', url: '' }],
+    switchSendTab() {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`${renderSource}; renderSendTabs();`, context);
+
+  const tabItem = bar.children[0];
+  const [tabControl, closeControl] = tabItem.children;
+  assert.equal(tabItem.className, 'send-tab-item active');
+  assert.equal(tabItem.getAttribute('role'), 'presentation');
+  assert.equal(tabControl.getAttribute('role'), 'tab');
+  assert.equal(closeControl.tagName, 'BUTTON');
+  assert.equal(closeControl.className, 'send-tab-close');
+  assert.equal(closeControl.parentNode, tabItem);
+  assert.equal(tabControl.children.includes(closeControl), false);
 });
