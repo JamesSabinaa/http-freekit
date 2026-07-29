@@ -157,10 +157,15 @@ test('persistence failure restores the exact pre-combine in-memory tree', async 
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const combineStart = rendererSource.indexOf('async function combineRulesAsGroup');
+const queueStart = rendererSource.indexOf('function _queueMockCollectionMutation');
+const queueEnd = rendererSource.indexOf('function mockDrop', queueStart);
+const combineStart = rendererSource.indexOf('function combineRulesAsGroup');
 const combineEnd = rendererSource.indexOf('function mockDragEnd', combineStart);
+assert.notEqual(queueStart, -1);
+assert.notEqual(queueEnd, -1);
 assert.notEqual(combineStart, -1);
 assert.notEqual(combineEnd, -1);
+const queueSource = rendererSource.slice(queueStart, queueEnd);
 const combineSource = rendererSource.slice(combineStart, combineEnd);
 
 function createRenderer(fetch) {
@@ -178,7 +183,13 @@ function createRenderer(fetch) {
     toast: (message, type) => toasts.push({ message, type })
   };
   vm.createContext(context);
-  vm.runInContext(`${combineSource}\nthis.combineRulesAsGroup = combineRulesAsGroup;`, context);
+  vm.runInContext(`
+    let mockReorderQueue = Promise.resolve();
+    let mockResetInProgress = false;
+    ${queueSource}
+    ${combineSource}
+    this.combineRulesAsGroup = combineRulesAsGroup;
+  `, context);
   return {
     context,
     appliedRules,
