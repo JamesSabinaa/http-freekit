@@ -9,7 +9,11 @@ import {
   getRelatedProcessIdsAsync,
   removeManagedBrowserProfile
 } from './browser-lifecycle.js';
-import { execFileAsync, waitForSpawnStability } from './command-runner.js';
+import {
+  execFileAsync,
+  PROCESS_STARTUP_EXIT_ERROR_CODE,
+  waitForSpawnStability
+} from './command-runner.js';
 
 export const BROWSER_BECAME_INACTIVE_ERROR_CODE = 'BROWSER_BECAME_INACTIVE';
 
@@ -180,18 +184,7 @@ export class BrowserInterceptor {
 
     let args;
     let launchedProcess;
-    try {
-      args = await this._getBrowserArgs(proxyPort, launchOptions, profileDir);
-      if (!this._ownsLifecycleProfile(generation, profileDir)) {
-        throw new Error(`${this.name} launch was superseded during preparation`);
-      }
-      console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
-      launchedProcess = this._spawn(browserPath, args, {
-        detached: false,
-        stdio: 'ignore'
-      });
-      await this._waitForSpawn(launchedProcess);
-    } catch (err) {
+    const rejectLaunch = err => {
       const cleanupResult = this._cleanup(profileDir);
       if (this._ownsLifecycleProfile(generation, profileDir)) {
         this._invalidateLifecycleCallbacks();
@@ -209,6 +202,54 @@ export class BrowserInterceptor {
         }
       }
       throw err;
+    };
+    try {
+      args = await this._getBrowserArgs(proxyPort, launchOptions, profileDir);
+      if (!this._ownsLifecycleProfile(generation, profileDir)) {
+        throw new Error(`${this.name} launch was superseded during preparation`);
+      }
+      console.log(`[Interceptor] Launching ${this.name} with proxy on port ${proxyPort}`);
+      launchedProcess = this._spawn(browserPath, args, {
+        detached: false,
+        stdio: 'ignore'
+      });
+      await this._waitForSpawn(launchedProcess);
+    } catch (err) {
+      if (err?.code === PROCESS_STARTUP_EXIT_ERROR_CODE
+          && launchedProcess
+          && this._ownsLifecycleProfile(generation, profileDir)) {
+        const startupLifecycle = this._captureLifecycle();
+        const relatedIds = await this._refreshTrackedProcessIds(true, startupLifecycle);
+        const profileDescendantsSurvived = this._isLifecycleCurrent(startupLifecycle)
+          && relatedIds?.size > 0;
+        // Chromium may use the spawned process only as a launcher. If its
+        // uniquely-owned profile proves that descendants survived, execution
+        // falls through and adopts them instead of deleting their live profile.
+        if (!profileDescendantsSurvived
+            && this._isLifecycleCurrent(startupLifecycle)
+            && relatedIds === null) {
+          this._invalidateLifecycleCallbacks();
+          // Conservatively report the lifecycle as active until Stop can
+          // prove that no profile process survives. This also prevents a
+          // replacement activation from deleting the retained profile.
+          this.active = true;
+          this.process = launchedProcess;
+          this.cleanupPending = true;
+          this._emitStatus('cleanup-failed', {
+            pid: launchedProcess.pid || null,
+            profileRemoved: false,
+            launchFailed: true,
+            processStateUnknown: true,
+            error: err.message
+          });
+          throw err;
+        }
+        if (!profileDescendantsSurvived) {
+          rejectLaunch(err);
+        }
+      } else {
+        rejectLaunch(err);
+      }
     }
 
     if (!this._ownsLifecycleProfile(generation, profileDir)) {
@@ -216,7 +257,11 @@ export class BrowserInterceptor {
       throw new Error(`${this.name} launch was superseded before it became active`);
     }
     this.process = launchedProcess;
-    if (Number.isInteger(launchedProcess.pid)) this.trackedProcessIds.add(launchedProcess.pid);
+    if (Number.isInteger(launchedProcess.pid)
+        && launchedProcess.exitCode === null
+        && launchedProcess.signalCode === null) {
+      this.trackedProcessIds.add(launchedProcess.pid);
+    }
 
     this.active = true;
     this._emitStatus('active');
@@ -236,9 +281,16 @@ export class BrowserInterceptor {
       this._markInactive('exited', { code }, lifecycle);
     });
 
-    launchedProcess.on('error', (err) => {
+    launchedProcess.on('error', async (err) => {
       if (!this._isLifecycleCurrent(lifecycle)) return;
       console.error(`[Interceptor] ${this.name} error:`, err.message);
+      if (!this.active) return;
+      const browserStillRunning = await this._isBrowserStillRunning(lifecycle);
+      if (!this._isLifecycleCurrent(lifecycle) || !this.active) return;
+      if (browserStillRunning) {
+        this._startStatusMonitor(lifecycle);
+        return;
+      }
       this._markInactive('error', { error: err.message }, lifecycle);
     });
 

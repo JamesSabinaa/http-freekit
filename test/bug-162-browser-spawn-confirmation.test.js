@@ -121,6 +121,10 @@ test('isolated browser activation rejects an early post-spawn exit and removes i
   interceptor._findBrowserPath = () => '/test/corrupt-chrome';
   interceptor._createManagedProfile = () => '/test/profile';
   interceptor._spawn = () => child;
+  interceptor._refreshTrackedProcessIds = async force => {
+    assert.equal(force, true);
+    return new Set();
+  };
   interceptor._cleanup = profileDir => {
     cleanedProfiles.push(profileDir);
     return { removed: true };
@@ -142,6 +146,87 @@ test('isolated browser activation rejects an early post-spawn exit and removes i
   assert.equal(child.listenerCount('spawn'), 0);
   assert.equal(child.listenerCount('exit'), 0);
   assert.equal(child.listenerCount('error'), 0);
+});
+
+test('isolated browser adopts profile descendants after its launcher exits during startup', async t => {
+  t.mock.method(console, 'error', () => {});
+  const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+  const child = fakeChild(7351);
+  const cleanedProfiles = [];
+  let inspections = 0;
+  interceptor._findBrowserPath = () => '/test/chrome-launcher';
+  interceptor._createManagedProfile = () => '/test/profile';
+  interceptor._spawn = () => child;
+  interceptor._cleanup = profileDir => {
+    cleanedProfiles.push(profileDir);
+    return { removed: true };
+  };
+  interceptor._refreshTrackedProcessIds = async (force, lifecycle) => {
+    inspections++;
+    assert.equal(force, true);
+    assert.equal(lifecycle.profileDir, '/test/profile');
+    const relatedIds = new Set([7352, 7353]);
+    interceptor.trackedProcessIds = relatedIds;
+    return new Set(relatedIds);
+  };
+  interceptor._isBrowserStillRunning = async () => true;
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const activation = interceptor.activate(8080);
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+
+  const result = await activation;
+
+  assert.equal(result.success, true);
+  assert.equal(result.pid, 7351);
+  assert.equal(inspections, 1);
+  assert.deepEqual(cleanedProfiles, []);
+  assert.equal(interceptor.active, true);
+  assert.equal(interceptor.process, child);
+  assert.equal(interceptor.profileDir, '/test/profile');
+  assert.deepEqual([...interceptor.trackedProcessIds], [7352, 7353]);
+  assert.equal(interceptor.cleanupPending, false);
+
+  child.emit('error', new Error('late launcher error'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(interceptor.active, true);
+  assert.deepEqual(cleanedProfiles, []);
+
+  interceptor._stopStatusMonitor();
+  interceptor._clearLifecycleState();
+});
+
+test('isolated browser preserves startup ownership when descendant inspection is unavailable', async () => {
+  const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+  const child = fakeChild(7371);
+  interceptor._findBrowserPath = () => '/test/chrome-launcher';
+  interceptor._createManagedProfile = () => '/test/profile';
+  interceptor._spawn = () => child;
+  interceptor._cleanup = () => assert.fail('an unverified startup profile must not be removed');
+  interceptor._refreshTrackedProcessIds = async () => null;
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const activation = interceptor.activate(8080);
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.exitCode = 9;
+  child.emit('exit', 9, null);
+
+  await assert.rejects(activation, /Chrome exited during startup \(exit code 9\)/);
+  assert.equal(interceptor.active, true);
+  assert.equal(interceptor.process, child);
+  assert.equal(interceptor.profileDir, '/test/profile');
+  assert.equal(interceptor.cleanupPending, true);
+  assert.equal(interceptor.needsDeactivation(), true);
+  assert.equal(child.listenerCount('spawn'), 0);
+  assert.equal(child.listenerCount('exit'), 0);
+  assert.equal(child.listenerCount('error'), 0);
+  interceptor._clearLifecycleState();
 });
 
 test('Global Chrome activation rejects an early post-spawn exit', async () => {

@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
 
+export const PROCESS_STARTUP_EXIT_ERROR_CODE = 'PROCESS_EXITED_DURING_STARTUP';
+
 export function execFileAsync(file, args = [], options = {}) {
   const { stdio: _stdio, onSpawn, ...execOptions } = options;
   return new Promise((resolve, reject) => {
@@ -39,7 +41,11 @@ export function waitForSpawnStability(child, options = {}) {
     };
     const startupExitError = (code, signal) => {
       const detail = signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`;
-      return new Error(`${label} exited during startup (${detail})`);
+      const error = new Error(`${label} exited during startup (${detail})`);
+      error.code = PROCESS_STARTUP_EXIT_ERROR_CODE;
+      error.exitCode = code ?? null;
+      error.signal = signal ?? null;
+      return error;
     };
     const onExit = (code, signal) => {
       if (!spawned) {
