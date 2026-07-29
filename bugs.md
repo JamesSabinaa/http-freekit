@@ -2115,7 +2115,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 ### BUG-062 — Low — README advertises an unsupported Node.js baseline
 
 - Status: **Fixed**.
-- Resolution: the README runtime requirement now matches the package engine floor of Node.js 22.12.0 instead of advertising unsupported Node.js 18 releases.
+- Resolution: the README runtime requirement now matches the package engine floor instead of advertising unsupported releases. The floor is now Node.js 22.23.1 so supported runtimes include the core environment-proxy, HTTP/2 lifecycle, and secure WebSocket behavior exercised by CI.
 - Regression coverage: `test/bug-062-readme-node-version.test.js` parses both declarations and requires their normalized minimum versions to remain identical.
 
 - Evidence: `package.json:38-39` declares `node >=22.12.0`, while `README.md:315` advertises “Runtime: Node.js 18+”.

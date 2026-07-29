@@ -21,11 +21,17 @@ function stubDirectConnect(t, socket) {
   });
 }
 
+function keepEventLoopAlive(t) {
+  const guard = setTimeout(() => {}, 1000);
+  t.after(() => clearTimeout(guard));
+}
+
 test('direct TCP establishment times out and cleans up a pending socket', async (t) => {
   const timeoutMs = 25;
   const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: timeoutMs });
   const socket = new PendingSocket();
   stubDirectConnect(t, socket);
+  keepEventLoopAlive(t);
 
   const startedAt = Date.now();
   await assert.rejects(

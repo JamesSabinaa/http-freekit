@@ -84,7 +84,7 @@ test('Send rejects an upstream response beyond its buffer ceiling', async (t) =>
   const origin = http.createServer((req, res) => res.end('123456789'));
   const originPort = await listen(origin);
   t.after(() => close(origin));
-  const api = new ApiServer(new ProxyServer(null), null, null, { sendMaxResponseBytes: 8 });
+  const api = new ApiServer(new ProxyServer(null, { port: 0 }), null, null, { sendMaxResponseBytes: 8 });
 
   await assert.rejects(
     api._sendRequest(`http://127.0.0.1:${originPort}/`, 'GET', {}, ''),
