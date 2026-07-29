@@ -12,6 +12,7 @@ import os from 'os';
 import { trafficToHar } from './har-converter.js';
 import { validateOpenApiSubmission } from './openapi-validation.js';
 import { validatePortRange } from '../proxy/port-range.js';
+import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
 
@@ -189,6 +190,7 @@ export class ApiServer {
     this._autoRotateInFlight = false;
     this._autoRotatePromise = null;
     this._lastAutoRotateAt = 0;
+    this._mcpEnabledMutationQueue = Promise.resolve();
     this.sendConnectTimeoutMs = options.sendConnectTimeoutMs ?? 10000;
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
@@ -374,6 +376,39 @@ export class ApiServer {
         reject(new Error('BottingTools did not return JSON output.'));
       });
     });
+  }
+
+  async _setMcpEnabled(enabled) {
+    if (!this.mcpBridge) throw new Error('MCP bridge not initialized');
+    const previousEnabled = this.mcpBridge.getStatus().enabled === true;
+
+    try {
+      await this.mcpBridge.setEnabled(enabled);
+      if (enabled) this.mcpBridge.startSse(this.app);
+      if ((this.mcpBridge.getStatus().enabled === true) !== enabled) {
+        throw new Error('MCP bridge did not apply the requested enabled state');
+      }
+      this._persistSettings({ [MCP_ENABLED_SETTING]: enabled });
+      return enabled;
+    } catch (error) {
+      try {
+        await this.mcpBridge.setEnabled(previousEnabled);
+        if (previousEnabled) this.mcpBridge.startSse(this.app);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `${error.message || 'MCP state change failed'}; rollback failed: ${rollbackError.message}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  }
+
+  _queueMcpEnabledMutation(enabled) {
+    const operation = this._mcpEnabledMutationQueue.then(() => this._setMcpEnabled(enabled));
+    this._mcpEnabledMutationQueue = operation.catch(() => {});
+    return operation;
   }
 
   async _runPythonJson(script, args = []) {
@@ -2382,12 +2417,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     router.post('/api/mcp/toggle', async (req, res) => {
       if (!this.mcpBridge) return res.status(500).json({ error: 'MCP bridge not initialized' });
-      const { enabled } = req.body;
-      await this.mcpBridge.setEnabled(!!enabled);
-      if (enabled) {
-        this.mcpBridge.startSse(this.app);
+      const { enabled } = req.body || {};
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
       }
-      res.json({ success: true, enabled: !!enabled });
+      try {
+        const appliedEnabled = await this._queueMcpEnabledMutation(enabled);
+        res.json({ success: true, enabled: appliedEnabled });
+      } catch (error) {
+        res.status(500).json({ error: error.message || 'Could not update MCP state' });
+      }
     });
 
     this.app.use(router);

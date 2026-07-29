@@ -1046,7 +1046,7 @@ export class McpServerBridge {
   }
 
   startSse(expressApp) {
-    if (!this.server || this.sseRoutesRegistered) return;
+    if (this.sseRoutesRegistered) return;
     this.sseRoutesRegistered = true;
 
     const authenticate = this._authenticateSseRequest.bind(this);

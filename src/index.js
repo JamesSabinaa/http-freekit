@@ -9,6 +9,7 @@ import { ProxyServer } from './proxy/proxy-server.js';
 import { ApiServer } from './api/api-server.js';
 import { InterceptorManager } from './interceptors/interceptor-manager.js';
 import { McpServerBridge } from './mcp/mcp-server.js';
+import { resolveMcpEnabled } from './mcp/enabled-state.js';
 import {
   createMcpLaunchConfig,
   removeMcpRuntimeDescriptor,
@@ -185,12 +186,13 @@ async function initializeApplication(apiPort) {
   }
 
   // 6. Initialize MCP Server (Model Context Protocol)
+  const mcpEnabled = resolveMcpEnabled(settings);
   const mcpBridge = new McpServerBridge({
     apiServer: api,
     proxyServer: proxy,
     interceptorManager: interceptors,
     options: {
-      enabled: true,
+      enabled: mcpEnabled,
       launchConfig: createMcpLaunchConfig({
         executablePath: process.env.HTTP_FREEKIT_MCP_EXECUTABLE || process.execPath,
         bridgeScript: path.join(__dirname, 'mcp', 'stdio-bridge.js'),
@@ -220,7 +222,7 @@ async function initializeApplication(apiPort) {
   const proxyStr = `http://127.0.0.1:${proxy.port}`;
   const uiStr = `http://127.0.0.1:${apiPort}`;
   const apiStr = `http://127.0.0.1:${apiPort}/api`;
-  const mcpStr = `http://127.0.0.1:${apiPort}/mcp/sse`;
+  const mcpStr = mcpEnabled ? `http://127.0.0.1:${apiPort}/mcp/sse` : 'Disabled';
   console.log(`  │  Proxy:  ${proxyStr.padEnd(26)}│`);
   console.log(`  │  UI:     ${uiStr.padEnd(26)}│`);
   console.log(`  │  API:    ${apiStr.padEnd(26)}│`);

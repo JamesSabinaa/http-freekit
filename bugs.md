@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 17 of the 361 documented bugs are not fully fixed.**
+**No: 16 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 344 |
+| Fixed | 345 |
 | Partially fixed | 6 |
-| Open | 11 |
+| Open | 10 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2237,7 +2237,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-082 — Medium — MCP enabled state always resets to enabled
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: MCP remains enabled by default, but an explicit disabled state is now persisted transactionally and restored during startup. Toggle requests are serialized, validate a real boolean, verify the applied bridge state, and roll the live bridge back if settings persistence fails. SSE routes remain registered while disabled so status is explicit and later re-enabling remains available.
+- Regression coverage: `test/bug-082-mcp-enabled-persistence.test.js` covers the default, disabled, and re-enabled startup values; real settings-file round trips; toggle serialization; malformed input; persistence rollback; startup wiring; and the disabled SSE response.
 
 - Evidence: the toggle routes at `src/ui/app.js:8137-8145` and `src/api/api-server.js:1144-1151` never write settings. Startup hard-codes `{ enabled: true }` at `src/index.js:128-136`.
 - Impact: users who disable the network MCP server find it enabled again after every restart.
