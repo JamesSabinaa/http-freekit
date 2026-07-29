@@ -28,8 +28,10 @@ import {
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
 import {
+  compileOpenApiPathPattern,
   getApiSpecBaseHost,
   isObjectRecord,
+  normalizeApiSpecMatchHost,
   validateOpenApiSubmission
 } from '../api/openapi-validation.js';
 
@@ -10093,14 +10095,15 @@ export class ProxyServer {
     if (typeof method !== 'string' || typeof path !== 'string' || typeof host !== 'string') return null;
     const normalizedMethod = method.toLowerCase();
     const testPath = path.split('?')[0];
-    const normalizedHost = host.toLowerCase();
+    const normalizedHost = normalizeApiSpecMatchHost(host);
+    if (normalizedHost === null) return null;
     const specs = Array.isArray(this.apiSpecs) ? this.apiSpecs : [];
 
     for (const spec of specs) {
       try {
         if (!isObjectRecord(spec)) continue;
         const baseHost = getApiSpecBaseHost(spec.baseUrl ?? '');
-        if (baseHost === null || (baseHost && !normalizedHost.includes(baseHost))) continue;
+        if (baseHost === null || (baseHost && normalizedHost !== baseHost)) continue;
 
         const paths = spec.spec?.paths;
         if (!isObjectRecord(paths)) continue;
@@ -10109,9 +10112,8 @@ export class ProxyServer {
           const operation = pathItem[normalizedMethod];
           if (!isObjectRecord(operation)) continue;
 
-          // Convert OpenAPI path pattern to regex: /users/{id} -> /users/[^/]+
-          let regex;
-          try { regex = new RegExp('^' + pathPattern.replace(/\{[^}]+\}/g, '[^/]+') + '$'); } catch { continue; }
+          const regex = compileOpenApiPathPattern(pathPattern);
+          if (!regex) continue;
           if (regex.test(testPath)) {
             const operationParameters = Array.isArray(operation.parameters)
               ? operation.parameters.filter(isObjectRecord)

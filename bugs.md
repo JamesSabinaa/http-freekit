@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 1 of the 361 documented bugs is not fully fixed.**
+**Yes: all 361 documented bugs are fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 360 |
+| Fixed | 361 |
 | Partially fixed | 0 |
-| Open | 1 |
+| Open | 0 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -3108,7 +3108,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-067 — Medium — OpenAPI host/path matching interprets literals as substrings and regex
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: OpenAPI enrichment now canonicalizes both configured and observed hosts and requires exact, case-insensitive hostname equality, so lookalike prefixes and suffixes cannot inherit a spec. Path templates are compiled by escaping every literal segment before replacing well-formed `{parameter}` placeholders with a single-segment matcher; punctuation such as `.`, `+`, parentheses, brackets, and unmatched braces is therefore matched literally while ordinary OpenAPI parameters continue to work.
 
 - Evidence: `src/proxy/proxy-server.js:4175-4189` accepts a host when `host.includes(configuredHost)` and builds a regex by replacing only `{parameters}`; it does not escape regex metacharacters in literal path text.
 - Impact: a spec for `api.example.com` can annotate `api.example.com.evil` traffic, and paths containing `.`, `+`, `(`, or similar characters match the wrong requests or fail to match their literal paths.

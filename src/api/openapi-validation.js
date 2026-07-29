@@ -19,7 +19,41 @@ export function getApiSpecBaseHost(baseUrl) {
     const parsed = new URL(candidate);
     if (!['http:', 'https:'].includes(parsed.protocol)) return null;
     if (!parsed.hostname || parsed.username || parsed.password) return null;
-    return parsed.host.toLowerCase();
+    return parsed.hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeApiSpecMatchHost(host) {
+  if (typeof host !== 'string') return null;
+  const trimmed = host.trim();
+  if (!trimmed || /[\u0000-\u001f\u007f\/?#@]/.test(trimmed)) return null;
+  try {
+    const parsed = new URL(`http://${trimmed}`);
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      return null;
+    }
+    return parsed.hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return null;
+  }
+}
+
+export function compileOpenApiPathPattern(pathPattern) {
+  if (typeof pathPattern !== 'string') return null;
+  const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parameterPattern = /\{[^{}\/]+\}/g;
+  let source = '^';
+  let cursor = 0;
+  for (const match of pathPattern.matchAll(parameterPattern)) {
+    source += escapeRegex(pathPattern.slice(cursor, match.index));
+    source += '[^/]+';
+    cursor = match.index + match[0].length;
+  }
+  source += escapeRegex(pathPattern.slice(cursor)) + '$';
+  try {
+    return new RegExp(source);
   } catch {
     return null;
   }
