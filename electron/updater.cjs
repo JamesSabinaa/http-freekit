@@ -26,6 +26,8 @@ let lastPromptedVersion = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
 let configuredFeedUrl = null;
+let prepareForInstall = async () => true;
+let onInstallPreparationFailed = () => {};
 
 function getWebUrl(value) {
   if (typeof value !== 'string') return null;
@@ -147,13 +149,20 @@ async function promptForUpdate(info, options = {}) {
 /**
  * Configure and start the auto-update system.
  * @param {Electron.BrowserWindow} win - The main application window
- * @param {{validateSender?: function}} options - IPC sender validation
+ * @param {{validateSender?: function, prepareForInstall?: function,
+ *   onInstallPreparationFailed?: function}} options - IPC sender validation and quit preflight
  */
 function initAutoUpdater(win, options = {}) {
   mainWindow = win;
   validateIpcSender = typeof options.validateSender === 'function'
     ? options.validateSender
     : () => false;
+  prepareForInstall = typeof options.prepareForInstall === 'function'
+    ? options.prepareForInstall
+    : async () => true;
+  onInstallPreparationFailed = typeof options.onInstallPreparationFailed === 'function'
+    ? options.onInstallPreparationFailed
+    : () => {};
 
   // Retain the validated source instead of reading it back through electron-
   // updater's deprecated getFeedURL() API when building Linux download links.
@@ -215,6 +224,7 @@ function initAutoUpdater(win, options = {}) {
   });
 
   autoUpdater.on('error', (err) => {
+    onInstallPreparationFailed();
     const wasManual = currentCheckIsManual;
     currentCheckIsManual = false;
     isDownloading = false;
@@ -233,10 +243,18 @@ function initAutoUpdater(win, options = {}) {
     return { ...currentStatus };
   });
 
-  ipcMain.handle('updater-install', (event) => {
+  ipcMain.handle('updater-install', async (event) => {
     if (!validateIpcSender(event)) return null;
-    // Quit and install the downloaded update
-    autoUpdater.quitAndInstall(false, true);
+    try {
+      if (!await prepareForInstall()) return null;
+      // The renderer has explicitly accepted losing mock drafts and has safely
+      // persisted Send state, so every platform can now follow its updater-
+      // specific window-close sequence.
+      autoUpdater.quitAndInstall(false, true);
+    } catch (err) {
+      onInstallPreparationFailed();
+      sendStatus({ status: 'error', error: err.message, manual: true });
+    }
     return null;
   });
 
@@ -268,6 +286,8 @@ function stopAutoUpdater() {
   }
   mainWindow = null;
   validateIpcSender = () => false;
+  prepareForInstall = async () => true;
+  onInstallPreparationFailed = () => {};
   configuredFeedUrl = null;
 }
 

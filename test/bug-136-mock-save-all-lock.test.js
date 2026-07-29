@@ -13,7 +13,10 @@ test('Save All rejects concurrent invocations and disables its button', () => {
   const buttonsEnd = source.indexOf('async function deleteMockRule', buttonsStart);
   const buttonsSource = source.slice(buttonsStart, buttonsEnd);
 
-  assert.match(saveAllSource, /mockSaveInProgress\) return/);
+  assert.match(
+    saveAllSource,
+    /if\s*\(\s*mockSaveInProgress(?:\s*\|\|[^)]*)?\)\s*return/
+  );
   assert.match(saveAllSource, /mockSaveInProgress = true/);
   assert.match(saveAllSource, /finally\s*{[\s\S]*mockSaveInProgress = false/);
   assert.match(buttonsSource, /saveAllBtn\.disabled = mockSaveInProgress/);

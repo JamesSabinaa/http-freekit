@@ -15,12 +15,14 @@ const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
 const { waitForServer } = require('./server-readiness.cjs');
 const { shutdownServerProcess } = require('./server-shutdown.cjs');
-const { runQuitCleanup } = require('./quit-cleanup.cjs');
+const { prepareRendererForQuit, runQuitCleanup } = require('./quit-cleanup.cjs');
+const { installUnloadConfirmation } = require('./unload-confirmation.cjs');
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
 let showMainWindowWhenReady = false;
 let serverProcess = null;
+let updateInstallPrepared = false;
 let apiPort = null;
 let isShuttingDown = false;
 let serverReady = false;
@@ -332,6 +334,11 @@ function createWindow({ showOnReady = true } = {}) {
 
   windowState.manage(mainWindow);
 
+  installUnloadConfirmation(mainWindow, {
+    dialog,
+    shouldAllowPreparedUnload: () => updateInstallPrepared
+  });
+
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAllowedRendererUrl(url, apiPort)) return;
     event.preventDefault();
@@ -468,6 +475,7 @@ if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   const windowForQuit = mainWindow;
   quitCleanupPromise = runQuitCleanup({
     mainWindow: windowForQuit,
+    prepare: updateInstallPrepared ? async () => true : undefined,
     onPrepared: () => { isShuttingDown = true; },
     relaunch: relaunchRequested ? () => app.relaunch() : null,
     stopAutoUpdater,
@@ -513,7 +521,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     createTray(mainWindow);
 
     // Set up auto-updater
-    initAutoUpdater(mainWindow, { validateSender });
+    initAutoUpdater(mainWindow, {
+      validateSender,
+      prepareForInstall: async () => {
+        updateInstallPrepared = await prepareRendererForQuit(mainWindow);
+        return updateInstallPrepared;
+      },
+      onInstallPreparationFailed: () => { updateInstallPrepared = false; }
+    });
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);
     app.quit();

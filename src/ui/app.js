@@ -7891,14 +7891,13 @@
 
     function hasOpenMockEditChanges() {
       if (!mockEditDraft) return false;
-      if (mockEditDirty) return true;
       if (!mockEditingRule || mockEditingRule === '__new__') return true;
-      if (mockDraftRules.has(mockEditingRule)) return false;
-      const original = _findMockRuleDeep(mockEditingRule);
+      const original = mockDraftRules.get(mockEditingRule) || _findMockRuleDeep(mockEditingRule);
       if (!original) return true;
       try {
-        return JSON.stringify(mockRuleDraftComparable(normalizeMockRule(original))) !==
+        const modelChanged = JSON.stringify(mockRuleDraftComparable(normalizeMockRule(original))) !==
           JSON.stringify(mockRuleDraftComparable(mockEditDraft));
+        return modelChanged || mockEditDirty;
       } catch {
         // If the editor cannot be compared safely, fail closed instead of
         // allowing navigation to discard it silently.
@@ -7911,14 +7910,27 @@
       return mockDraftRules.size > 0;
     }
 
+    function hasOpenMockRenameChanges() {
+      if (!mockRenamingRuleId) return false;
+      const rule = _findMockRuleDeep(mockRenamingRuleId);
+      const input = document.getElementById('mock-rename-input');
+      if (!rule || !input) return true;
+      const nextTitle = input.value.trim() || undefined;
+      return nextTitle !== (rule.title || undefined);
+    }
+
     function hasUnsavedMockWork() {
-      return hasUnsavedMockChanges() || hasOpenMockEditChanges();
+      return hasUnsavedMockChanges() || hasOpenMockEditChanges() || hasOpenMockRenameChanges();
     }
 
     function markOpenMockEditDirty(event) {
       const editor = event?.target?.closest?.('.mock-rule-editor');
       if (mockEditDraft && editor?.id?.startsWith('mockEditor_')) {
-        mockEditDirty = true;
+        // Inline change handlers have updated mockEditDraft by the time the
+        // delegated change event bubbles. Structural comparison can then clear
+        // a warning when the user reverted to the baseline. Input events still
+        // fail closed while a focused control has not committed its value.
+        mockEditDirty = event.type !== 'change';
       }
     }
 
@@ -8037,8 +8049,9 @@
 
     /** Send ALL draft rules to the server */
     async function saveAllMockRules() {
-      if (!hasUnsavedMockChanges() || mockSaveInProgress) return;
-      if (mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (hasOpenMockEditChanges() && !saveMockRule(mockEditingRule)) return;
+      if (!hasUnsavedMockChanges()) return;
       mockSaveInProgress = true;
       updateMockSaveButtons();
       try {
