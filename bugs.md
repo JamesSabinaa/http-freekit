@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 25 of the 361 documented bugs are not fully fixed.**
+**No: 24 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 336 |
+| Fixed | 337 |
 | Partially fixed | 6 |
-| Open | 19 |
+| Open | 18 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -2110,7 +2110,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-062 — Low — README advertises an unsupported Node.js baseline
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: the README runtime requirement now matches the package engine floor of Node.js 22.12.0 instead of advertising unsupported Node.js 18 releases.
+- Regression coverage: `test/bug-062-readme-node-version.test.js` parses both declarations and requires their normalized minimum versions to remain identical.
 
 - Evidence: `package.json:38-39` declares `node >=22.12.0`, while `README.md:315` advertises “Runtime: Node.js 18+”.
 - Impact: users following the README can install/run with a runtime the package explicitly rejects, leading to engine warnings or dependency/runtime failures.
