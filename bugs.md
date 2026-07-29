@@ -2365,7 +2365,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 - Status: **Fixed**.
 - Resolution: Send-tab state is loaded synchronously before Monaco startup. When the editor finishes loading, startup now reconciles only the current body language and raw/form presentation instead of reloading persisted tab values, preserving form and textarea edits made during the await as well as tab changes.
-- Regression coverage: `test/bug-141-send-editor-startup.test.js` holds Monaco initialization pending, edits the live request form, and verifies completion does not reload stored state while still refreshing the current editor presentation.
+- Regression coverage: `test/bug-141-send-editor-startup.test.js` holds Monaco initialization pending on one tab, switches to another tab, changes its live request body, format, and body type, then verifies completion preserves those edits while refreshing the editor value, language, and visibility.
 
 - Evidence: startup captures `initialTab`, awaits Monaco initialization, then unconditionally reloads the captured tab at `src/ui/app.js:7163-7171`. During the await, `switchSendTab()` or `addSendTab()` can change `activeSendTab` at `:7124-7138`, while body loading before the editor exists is ineffective at `:6613-6617`.
 - Impact: the active tab ID and visible form diverge; later save/send actions can write the first tab's request into the newly active tab.
