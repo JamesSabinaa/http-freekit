@@ -148,6 +148,11 @@ function createImportRenderer({ fileData, mockRules = [], breakpointRules = [], 
     breakpointRules: structuredClone(breakpointRules),
     mockDraftRules,
     mockNewDraftIds,
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
+    mockResetInProgress: false,
+    mockCollectionMutationCount: 0,
+    _queueMockCollectionMutation: mutation => mutation(),
     document: {
       createElement(tagName) {
         assert.equal(tagName, 'input');

@@ -221,6 +221,8 @@ function createSaveAllHarness({ stageResult = true } = {}) {
     let mockEditDraft = globalThis.__liveDraft;
     let mockSaveInProgress = false;
     let mockRevertInProgress = false;
+    let mockResetInProgress = false;
+    let mockCollectionMutationCount = 0;
     function hasOpenMockEditChanges() { return true; }
     function hasUnsavedMockChanges() { return mockDraftRules.size > 0; }
     function saveMockRule(ruleId) {

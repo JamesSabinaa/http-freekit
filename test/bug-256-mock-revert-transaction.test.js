@@ -61,6 +61,8 @@ function createRenderer(fetch, { rejectMalformedRules = false } = {}) {
     let mockRulesLoadGeneration = 3;
     let mockRevertInProgress = false;
     let mockSaveInProgress = false;
+    let mockResetInProgress = false;
+    let mockCollectionMutationCount = 0;
     let renderCalls = 0;
     function renderMockRules() {
       renderCalls++;

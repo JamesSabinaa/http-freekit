@@ -6043,6 +6043,7 @@
     let mockDragId = null;
     let mockReorderGeneration = 0;
     let mockReorderQueue = Promise.resolve();
+    let mockCollectionMutationCount = 0;
     let mockRenamingRuleId = null;
     let mockRulesLoadGeneration = 0;
     let mockRevertInProgress = false;
@@ -6090,6 +6091,7 @@
     async function clearAllMockRules() {
       if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) return;
       mockResetInProgress = true;
+      updateMockSaveButtons();
       try {
         // Reorders are serialized client-side. Let every operation already in
         // that queue settle before Reset becomes the final server mutation.
@@ -6122,10 +6124,12 @@
         toast('Error: ' + err.message, 'error');
       } finally {
         mockResetInProgress = false;
+        updateMockSaveButtons();
       }
     }
 
     function collapseAllMockRules() {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       mockExpandedRules.clear();
       mockEditingRule = null;
       mockEditDraft = null;
@@ -6133,7 +6137,7 @@
     }
 
     function mockDragStart(e, ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       mockDragId = ruleId;
       e.dataTransfer.effectAllowed = 'move';
       e.currentTarget.classList.add('mock-rule-dragging');
@@ -6173,7 +6177,7 @@
     }
 
     function mockGroupDrop(e, groupId) {
-      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) {
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress || mockCollectionMutationCount > 0) {
         mockDragId = null;
         return;
       }
@@ -6295,10 +6299,19 @@
     }
 
     function _queueMockCollectionMutation(mutation) {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress) {
+        return Promise.resolve(false);
+      }
+      mockCollectionMutationCount++;
+      updateMockSaveButtons();
       const request = mockReorderQueue.then(mutation);
       // Keep later collection mutations ordered even after a rejected request.
-      mockReorderQueue = request.catch(() => {});
-      return request;
+      const trackedRequest = request.finally(() => {
+        mockCollectionMutationCount--;
+        updateMockSaveButtons();
+      });
+      mockReorderQueue = trackedRequest.catch(() => {});
+      return trackedRequest;
     }
 
     function mockDrop(e, targetId) {
@@ -6372,7 +6385,7 @@
     }
 
     function startInlineRename(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (mockRenamingRuleId === ruleId) return;
       mockRenamingRuleId = ruleId;
       renderMockRules();
@@ -6386,7 +6399,7 @@
     }
 
     function confirmInlineRename(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (mockRenamingRuleId !== ruleId) return;
       const input = document.getElementById('mock-rename-input');
       if (!input) { mockRenamingRuleId = null; return; }
@@ -6622,7 +6635,8 @@
       const disabledClass = rule.enabled === false ? ' mock-rule-disabled' : '';
       const editingClass = isEditing ? ' mock-rule-editing' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
-      const serverMutationDisabled = mockSaveInProgress || mockRevertInProgress;
+      const serverMutationDisabled = mockSaveInProgress || mockRevertInProgress ||
+        mockResetInProgress || mockCollectionMutationCount > 0;
       const serverMutationDisabledAttr = serverMutationDisabled ? ' disabled' : '';
 
       let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
@@ -7477,7 +7491,7 @@
     }
 
     function addNewMockRule() {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (!preserveOpenMockEdit('__new__')) return;
       mockEditingRule = '__new__';
       mockEditDraft = {
@@ -7505,7 +7519,7 @@
     }
 
     function editMockRule(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (!preserveOpenMockEdit(ruleId)) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
@@ -7518,7 +7532,7 @@
     }
 
     function cancelMockEdit() {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       mockEditingRule = null;
       mockEditDraft = null;
       mockEditDirty = false;
@@ -7526,7 +7540,7 @@
     }
 
     function toggleMockRuleExpand(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (mockExpandedRules.has(ruleId)) {
         // Collapse
         mockExpandedRules.delete(ruleId);
@@ -7545,7 +7559,7 @@
     }
 
     function toggleMockRuleEnabled(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       rule.enabled = rule.enabled === false ? true : false;
@@ -7990,7 +8004,7 @@
     }
 
     function saveMockRule(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return false;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return false;
       if (!mockEditDraft) return false;
 
       if (!Array.isArray(mockEditDraft.matchers) || mockEditDraft.matchers.length === 0
@@ -8080,7 +8094,7 @@
 
     /** Send ALL draft rules to the server */
     async function saveAllMockRules() {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       if (hasOpenMockEditChanges() && !saveMockRule(mockEditingRule)) return;
       if (!hasUnsavedMockChanges()) return;
       mockSaveInProgress = true;
@@ -8128,7 +8142,7 @@
 
     /** Send a single draft rule to the server */
     async function saveOneMockRule(draftId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const draft = mockDraftRules.get(draftId);
       if (!draft) return;
       mockSaveInProgress = true;
@@ -8201,7 +8215,8 @@
 
     /** Revert all unsaved draft changes after loading authoritative server state. */
     async function revertMockRules() {
-      if (!hasUnsavedMockChanges() || mockRevertInProgress || mockSaveInProgress) return;
+      if (!hasUnsavedMockChanges() || mockRevertInProgress || mockSaveInProgress ||
+          mockResetInProgress || mockCollectionMutationCount > 0) return;
 
       const startingState = _mockRevertStateToken();
       const operation = ++mockRulesLoadGeneration;
@@ -8250,11 +8265,16 @@
       const unsavedBadge = document.getElementById('mockUnsavedBadge');
       const rulesList = document.getElementById('mockRulesList');
       const hasDrafts = hasUnsavedMockChanges();
-      const serverMutationLocked = mockSaveInProgress || mockRevertInProgress;
+      const serverMutationLocked = mockSaveInProgress || mockRevertInProgress ||
+        mockResetInProgress || mockCollectionMutationCount > 0;
       if (saveAllBtn) saveAllBtn.style.display = hasDrafts ? '' : 'none';
       if (saveAllBtn) saveAllBtn.disabled = serverMutationLocked;
       if (revertBtn) revertBtn.style.display = hasDrafts ? '' : 'none';
       if (revertBtn) revertBtn.disabled = serverMutationLocked;
+      for (const id of ['mockCreateGroupBtn', 'mockCollapseAllBtn', 'mockImportBtn', 'mockResetBtn']) {
+        const control = document.getElementById(id);
+        if (control) control.disabled = serverMutationLocked;
+      }
       if (rulesList) {
         rulesList.classList?.toggle('mock-server-save-locked', serverMutationLocked);
         rulesList.setAttribute?.('aria-busy', String(serverMutationLocked));
@@ -8278,22 +8298,25 @@
     }
 
     async function deleteMockRule(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
-      try {
-        if (mockNewDraftIds.has(ruleId)) {
-          // Unsaved draft — remove locally only (it's not on the server yet)
-          mockDraftRules.delete(ruleId);
-          mockExpandedRules.delete(ruleId);
-          mockNewDraftIds.delete(ruleId);
-          if (mockEditingRule === ruleId) {
-            mockEditingRule = null;
-            mockEditDraft = null;
-          }
-          mockRules = mockRules.filter(r => r.id !== ruleId);
-          toast('Draft rule deleted', 'success');
-          updateMockSaveButtons();
-          renderMockRules();
-        } else {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+      if (mockNewDraftIds.has(ruleId)) {
+        // Unsaved draft — remove locally only (it's not on the server yet)
+        mockDraftRules.delete(ruleId);
+        mockExpandedRules.delete(ruleId);
+        mockNewDraftIds.delete(ruleId);
+        if (mockEditingRule === ruleId) {
+          mockEditingRule = null;
+          mockEditDraft = null;
+        }
+        mockRules = mockRules.filter(r => r.id !== ruleId);
+        toast('Draft rule deleted', 'success');
+        updateMockSaveButtons();
+        renderMockRules();
+        return;
+      }
+
+      return _queueMockCollectionMutation(async () => {
+        try {
           // Saved rule — delete from server AND reload to get fresh state
           const response = await fetch(`${API_BASE}/api/mock-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
           const data = await response.json().catch(() => ({}));
@@ -8310,14 +8333,14 @@
           toast('Rule deleted', 'success');
           updateMockSaveButtons();
           await loadMockRules();
+        } catch (err) {
+          toast('Error: ' + err.message, 'error');
         }
-      } catch (err) {
-        toast('Error: ' + err.message, 'error');
-      }
+      });
     }
 
     function cloneMockRule(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       const clone = JSON.parse(JSON.stringify(rule));
@@ -8335,12 +8358,13 @@
 
     // ============ MOCK RULE GROUPS ============
     function toggleMockGroup(groupId) {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (group) { group.collapsed = !group.collapsed; renderMockRules(); }
     }
 
     function toggleMockGroupEnabled(groupId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       group.enabled = group.enabled === false ? true : false;
@@ -8354,7 +8378,7 @@
     }
 
     function renameMockGroup(groupId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       const name = prompt('Group name:', group.title || '');
@@ -8370,34 +8394,38 @@
     }
 
     async function deleteMockGroup(groupId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const group = mockRules.find(r => r.id === groupId && r.type === 'group');
       if (!group) return;
       const itemCount = (group.items || []).length;
       if (itemCount > 0 && !confirm('Delete group "' + (group.title || 'Untitled Group') + '" and its ' + itemCount + ' rule(s)?')) return;
-      try {
-        await fetch(API_BASE + '/api/mock-rules/' + encodeURIComponent(groupId), { method: 'DELETE' });
-        toast('Group deleted', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      return _queueMockCollectionMutation(async () => {
+        try {
+          await fetch(API_BASE + '/api/mock-rules/' + encodeURIComponent(groupId), { method: 'DELETE' });
+          toast('Group deleted', 'success');
+          await loadMockRules();
+        } catch (err) { toast('Error: ' + err.message, 'error'); }
+      });
     }
 
     async function createMockGroup() {
-      if (mockSaveInProgress || mockRevertInProgress) return;
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       const name = prompt('Group name:', 'New Group');
       if (name === null) return;
-      try {
-        await fetch(API_BASE + '/api/mock-rules/group', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ title: name || 'New Group' })
-        });
-        toast('Group created', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      return _queueMockCollectionMutation(async () => {
+        try {
+          await fetch(API_BASE + '/api/mock-rules/group', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ title: name || 'New Group' })
+          });
+          toast('Group created', 'success');
+          await loadMockRules();
+        } catch (err) { toast('Error: ' + err.message, 'error'); }
+      });
     }
 
     function moveRuleToGroup(ruleId, groupId) {
-      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress) return;
+      if (mockResetInProgress || mockSaveInProgress || mockRevertInProgress || mockCollectionMutationCount > 0) return;
       return _queueMockCollectionMutation(async () => {
         try {
           const res = await fetch(API_BASE + '/api/mock-rules/move-to-group', {
@@ -8413,17 +8441,19 @@
     }
 
     async function ungroupRule(ruleId) {
-      if (mockSaveInProgress || mockRevertInProgress) return;
-      try {
-        const res = await fetch(API_BASE + '/api/mock-rules/ungroup', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ ruleId })
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        toast('Rule moved to top level', 'success');
-        loadMockRules();
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+      return _queueMockCollectionMutation(async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/mock-rules/ungroup', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ ruleId })
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          toast('Rule moved to top level', 'success');
+          await loadMockRules();
+        } catch (err) { toast('Error: ' + err.message, 'error'); }
+      });
     }
 
     // ============ RULE IMPORT / EXPORT ============
@@ -8447,6 +8477,72 @@
     }
 
     function importMockRules() {
+      if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+
+      const applyImportedMockRules = async (data) => {
+        if (data?.version === 2) {
+          if (!Array.isArray(data.mockRules) || !Array.isArray(data.breakpointRules)) {
+            throw new Error('Invalid version 2 rule backup');
+          }
+          const existingRuleCount = mockRules.length + breakpointRules.length;
+          const importedRuleCount = data.mockRules.length + data.breakpointRules.length;
+          const shouldReplace = existingRuleCount > 0 &&
+            confirm('Replace existing rules? Click OK to replace, Cancel to append.');
+          const response = await fetch(API_BASE + '/api/rules', {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              mockRules: data.mockRules,
+              breakpointRules: data.breakpointRules,
+              ...(existingRuleCount > 0 && !shouldReplace ? { mode: 'append' } : {})
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || 'Server rejected imported rules');
+          }
+          if (result?.success !== true || !Array.isArray(result.mockRules) ||
+              !Array.isArray(result.breakpointRules)) {
+            throw new Error('Server returned invalid imported rule collections');
+          }
+          if (shouldReplace || existingRuleCount === 0) {
+            mockDraftRules.clear();
+            mockNewDraftIds.clear();
+          }
+          toast((shouldReplace ? 'Replaced with ' : 'Imported ') + importedRuleCount + ' rules', 'success');
+          await loadMockRules();
+          await loadBreakpointRules();
+          return;
+        }
+
+        const rules = data.rules || data;
+        if (!Array.isArray(rules)) throw new Error('Invalid format');
+
+        const shouldReplace = mockRules.length > 0 && confirm('Replace existing rules? Click OK to replace, Cancel to append.');
+        const appendToExistingTree = mockRules.length > 0 && !shouldReplace;
+        const response = await fetch(API_BASE + '/api/mock-rules', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            rules,
+            ...(appendToExistingTree ? { mode: 'append' } : {})
+          })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.error || 'Server rejected imported rules');
+        }
+        if (result?.success !== true || !Array.isArray(result.rules)) {
+          throw new Error('Server returned an invalid imported rule tree');
+        }
+        if (!appendToExistingTree) {
+          mockDraftRules.clear();
+          mockNewDraftIds.clear();
+        }
+        toast((shouldReplace ? 'Replaced with ' : 'Imported ') + rules.length + ' rules', 'success');
+        await loadMockRules();
+      };
+
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = '.htkrules,.json';
@@ -8456,67 +8552,8 @@
         try {
           const text = await file.text();
           const data = JSON.parse(text);
-          if (data?.version === 2) {
-            if (!Array.isArray(data.mockRules) || !Array.isArray(data.breakpointRules)) {
-              throw new Error('Invalid version 2 rule backup');
-            }
-            const existingRuleCount = mockRules.length + breakpointRules.length;
-            const importedRuleCount = data.mockRules.length + data.breakpointRules.length;
-            const shouldReplace = existingRuleCount > 0 &&
-              confirm('Replace existing rules? Click OK to replace, Cancel to append.');
-            const response = await fetch(API_BASE + '/api/rules', {
-              method: 'PUT',
-              headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({
-                mockRules: data.mockRules,
-                breakpointRules: data.breakpointRules,
-                ...(existingRuleCount > 0 && !shouldReplace ? { mode: 'append' } : {})
-              })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(result.error || 'Server rejected imported rules');
-            }
-            if (result?.success !== true || !Array.isArray(result.mockRules) ||
-                !Array.isArray(result.breakpointRules)) {
-              throw new Error('Server returned invalid imported rule collections');
-            }
-            if (shouldReplace || existingRuleCount === 0) {
-              mockDraftRules.clear();
-              mockNewDraftIds.clear();
-            }
-            toast((shouldReplace ? 'Replaced with ' : 'Imported ') + importedRuleCount + ' rules', 'success');
-            loadMockRules();
-            loadBreakpointRules();
-            return;
-          }
-
-          const rules = data.rules || data;
-          if (!Array.isArray(rules)) throw new Error('Invalid format');
-
-          const shouldReplace = mockRules.length > 0 && confirm('Replace existing rules? Click OK to replace, Cancel to append.');
-          const appendToExistingTree = mockRules.length > 0 && !shouldReplace;
-          const response = await fetch(API_BASE + '/api/mock-rules', {
-            method: 'PUT',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              rules,
-              ...(appendToExistingTree ? { mode: 'append' } : {})
-            })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(result.error || 'Server rejected imported rules');
-          }
-          if (result?.success !== true || !Array.isArray(result.rules)) {
-            throw new Error('Server returned an invalid imported rule tree');
-          }
-          if (!appendToExistingTree) {
-            mockDraftRules.clear();
-            mockNewDraftIds.clear();
-          }
-          toast((shouldReplace ? 'Replaced with ' : 'Imported ') + rules.length + ' rules', 'success');
-          loadMockRules();
+          if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
+          await _queueMockCollectionMutation(() => applyImportedMockRules(data));
         } catch (err) {
           toast('Import failed: ' + err.message, 'error');
         }

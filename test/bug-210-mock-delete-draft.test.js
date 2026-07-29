@@ -7,9 +7,12 @@ import vm from 'node:vm';
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const functionStart = source.indexOf('async function deleteMockRule(ruleId)');
 const functionEnd = source.indexOf('function cloneMockRule', functionStart);
+const queueStart = source.indexOf('function _queueMockCollectionMutation(mutation)');
+const queueEnd = source.indexOf('function mockDrop', queueStart);
 assert.notEqual(functionStart, -1);
 assert.notEqual(functionEnd, -1);
 const deleteMockRuleSource = source.slice(functionStart, functionEnd);
+const queueMockCollectionMutationSource = source.slice(queueStart, queueEnd);
 
 function createHarness({
   ruleId = 'saved-rule',
@@ -34,6 +37,9 @@ function createHarness({
     const mockNewDraftIds = new Set(${newDraft ? `['${ruleId}']` : '[]'});
     let mockSaveInProgress = ${saveInProgress};
     let mockRevertInProgress = false;
+    let mockResetInProgress = false;
+    let mockCollectionMutationCount = 0;
+    let mockReorderQueue = Promise.resolve();
     let mockEditingRule = '${ruleId}';
     let mockEditDraft = { title: 'live editor state' };
     let mockRules = [{ id: '${ruleId}', title: 'unsaved draft' }];
@@ -41,6 +47,7 @@ function createHarness({
     function updateMockSaveButtons() { calls.update++; }
     function renderMockRules() { calls.render++; }
     async function loadMockRules() { calls.load++; }
+    ${queueMockCollectionMutationSource}
     ${deleteMockRuleSource}
     globalThis.harness = {
       deleteMockRule,
@@ -86,7 +93,7 @@ test('failed saved-rule deletion preserves its draft, editor, and expansion stat
   assertToasts(calls, [['Error: Rule store unavailable', 'error']]);
   assert.deepEqual(
     { fetch: calls.fetch, load: calls.load, render: calls.render, update: calls.update },
-    { fetch: 1, load: 0, render: 0, update: 0 }
+    { fetch: 1, load: 0, render: 0, update: 2 }
   );
 });
 
@@ -122,7 +129,7 @@ test('successful saved-rule deletion clears local state after server confirmatio
   assert.equal(state.editingRule, null);
   assert.equal(state.editDraft, null);
   assert.equal(calls.fetch, 1);
-  assert.equal(calls.update, 1);
+  assert.equal(calls.update, 3);
   assert.equal(calls.load, 1);
   assertToasts(calls, [['Rule deleted', 'success']]);
 });

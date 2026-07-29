@@ -172,6 +172,11 @@ function createImportRenderer({ existingRules, importedRules, replace = false, f
     mockRules: structuredClone(existingRules),
     mockDraftRules,
     mockNewDraftIds,
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
+    mockResetInProgress: false,
+    mockCollectionMutationCount: 0,
+    _queueMockCollectionMutation: mutation => mutation(),
     document: {
       createElement(tagName) {
         assert.equal(tagName, 'input');

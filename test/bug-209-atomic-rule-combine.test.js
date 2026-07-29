@@ -186,6 +186,9 @@ function createRenderer(fetch) {
   vm.runInContext(`
     let mockReorderQueue = Promise.resolve();
     let mockResetInProgress = false;
+    let mockSaveInProgress = false;
+    let mockRevertInProgress = false;
+    let mockCollectionMutationCount = 0;
     ${queueSource}
     ${combineSource}
     this.combineRulesAsGroup = combineRulesAsGroup;

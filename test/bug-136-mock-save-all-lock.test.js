@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const styles = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'styles.css'), 'utf8');
+const markup = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
 const saveFunctionsStart = source.indexOf('async function saveAllMockRules()');
 const saveFunctionsEnd = source.indexOf('function _mockRevertStateToken()', saveFunctionsStart);
 const saveFunctionsSource = source.slice(saveFunctionsStart, saveFunctionsEnd);
@@ -16,7 +17,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function createSaveHarness() {
+function createSaveHarness({ resetInProgress = false, collectionMutationCount = 0 } = {}) {
   const response = deferred();
   const calls = { fetch: 0, load: 0, updates: 0 };
   const context = {
@@ -38,6 +39,8 @@ function createSaveHarness() {
     let mockEditDraft = null;
     let mockSaveInProgress = false;
     let mockRevertInProgress = false;
+    let mockResetInProgress = ${resetInProgress};
+    let mockCollectionMutationCount = ${collectionMutationCount};
     function hasOpenMockEditChanges() { return false; }
     function hasUnsavedMockChanges() { return mockDraftRules.size > 0; }
     function saveMockRule() { return true; }
@@ -86,6 +89,8 @@ function createExistingDraftHarness() {
     const mockRules = [draft];
     let mockSaveInProgress = false;
     let mockRevertInProgress = false;
+    let mockResetInProgress = false;
+    let mockCollectionMutationCount = 0;
     function _findMockRuleDeep(ruleId) { return mockRules.find(rule => rule.id === ruleId); }
     function updateMockSaveButtons() {}
     function renderMockRules() {}
@@ -163,8 +168,53 @@ test('the mock workspace and direct mutations follow the shared save lock', () =
   const deleteGroupEnd = source.indexOf('async function createMockGroup()', deleteGroupStart);
   assert.match(
     source.slice(deleteGroupStart, deleteGroupEnd),
-    /if \(mockSaveInProgress \|\| mockRevertInProgress\) return/
+    /if \(mockSaveInProgress \|\| mockRevertInProgress \|\| mockResetInProgress \|\| mockCollectionMutationCount > 0\) return/
   );
+});
+
+test('Reset and queued collection mutations own the workspace before Save begins', async () => {
+  const resetFirst = createSaveHarness({ resetInProgress: true });
+  await Promise.all([
+    resetFirst.harness.saveAllMockRules(),
+    resetFirst.harness.saveOneMockRule('new-draft')
+  ]);
+  assert.equal(resetFirst.calls.fetch, 0);
+  assert.equal(resetFirst.harness.state().draftCount, 1);
+
+  const collectionFirst = createSaveHarness({ collectionMutationCount: 1 });
+  await Promise.all([
+    collectionFirst.harness.saveAllMockRules(),
+    collectionFirst.harness.saveOneMockRule('new-draft')
+  ]);
+  assert.equal(collectionFirst.calls.fetch, 0);
+  assert.equal(collectionFirst.harness.state().draftCount, 1);
+
+  const queueStart = source.indexOf('function _queueMockCollectionMutation(mutation)');
+  const queueEnd = source.indexOf('function mockDrop', queueStart);
+  const queueSource = source.slice(queueStart, queueEnd);
+  assert.match(queueSource, /mockCollectionMutationCount\+\+/);
+  assert.match(queueSource, /finally\(\(\) => \{[\s\S]*mockCollectionMutationCount--/);
+});
+
+test('save ownership protects Collapse All and Import toolbar actions', () => {
+  const collapseStart = source.indexOf('function collapseAllMockRules()');
+  const collapseEnd = source.indexOf('function mockDragStart', collapseStart);
+  const collapseSource = source.slice(collapseStart, collapseEnd);
+  assert.match(collapseSource, /mockSaveInProgress[\s\S]*mockCollectionMutationCount > 0\) return/);
+
+  const importStart = source.indexOf('function importMockRules()');
+  const importEnd = source.indexOf('// ============ TRANSFORM HEADER HELPERS', importStart);
+  const importSource = source.slice(importStart, importEnd);
+  assert.match(importSource, /mockSaveInProgress[\s\S]*mockCollectionMutationCount > 0\) return/);
+
+  for (const id of ['mockCreateGroupBtn', 'mockCollapseAllBtn', 'mockImportBtn', 'mockResetBtn']) {
+    assert.match(markup, new RegExp(`id="${id}"`));
+  }
+  const buttonsStart = source.indexOf('function updateMockSaveButtons()');
+  const buttonsEnd = source.indexOf('async function deleteMockRule', buttonsStart);
+  const buttonsSource = source.slice(buttonsStart, buttonsEnd);
+  assert.match(buttonsSource, /\['mockCreateGroupBtn', 'mockCollapseAllBtn', 'mockImportBtn', 'mockResetBtn'\]/);
+  assert.match(buttonsSource, /control\.disabled = serverMutationLocked/);
 });
 
 test('an owned save blocks a newer toggle instead of silently discarding it', async () => {

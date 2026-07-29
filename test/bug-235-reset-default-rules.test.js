@@ -84,6 +84,7 @@ function createRenderer(fetch) {
     let mockRenamingRuleId = 'old';
     let mockReorderGeneration = 0;
     let mockReorderQueue = Promise.resolve();
+    let mockCollectionMutationCount = 0;
     let mockRulesLoadGeneration = 0;
     let mockResetInProgress = false;
     let mockSaveInProgress = false;
@@ -175,7 +176,7 @@ test('Reset atomically replaces every rule with the shipped default and clears l
     mockEditDraft: null,
     mockRenamingRuleId: null,
     renders: 1,
-    buttonUpdates: 1,
+    buttonUpdates: 3,
     mockResetInProgress: false
   });
   assert.equal(renderer.storage.get('http-freekit-defaults-created'), 'true');
@@ -191,7 +192,9 @@ test('a failed Reset preserves every current rule, draft, and editor state', asy
 
   await renderer.context.clearAllMockRules();
 
-  assert.deepEqual(renderer.state(), before);
+  const after = renderer.state();
+  assert.deepEqual({ ...after, buttonUpdates: before.buttonUpdates }, before);
+  assert.equal(after.buttonUpdates, before.buttonUpdates + 2);
   assert.equal(renderer.storage.size, 0);
   assert.deepEqual(renderer.toasts, [{ message: 'Error: settings write failed', type: 'error' }]);
 });
