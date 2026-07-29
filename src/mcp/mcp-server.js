@@ -1267,7 +1267,9 @@ export class McpServerBridge {
     if (enabled) {
       if (!this.server) this._createServer();
       this.enabled = true;
-      if (this._stdioStartOptions && !this.stdioTransport) {
+      const retainedStdioOwner = this._pendingCleanupResources
+        .some(resource => resource.kind === 'stdio');
+      if (this._stdioStartOptions && !this.stdioTransport && !retainedStdioOwner) {
         await this.startStdio(this._stdioStartOptions);
       }
       return;
