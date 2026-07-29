@@ -56,6 +56,10 @@ export class BrowserInterceptor {
     return spawn(browserPath, args, options);
   }
 
+  _execFile(command, args, options) {
+    return execFileAsync(command, args, options);
+  }
+
   _waitForSpawn(launchedProcess) {
     return waitForSpawnStability(launchedProcess, {
       graceMs: this.startupConfirmationMs,
@@ -713,7 +717,8 @@ export class BrowserInterceptor {
       throw new Error(`${this.name} is not running`);
     }
 
-    if (process.platform === 'win32') {
+    const platform = this._platform();
+    if (platform === 'win32') {
       const escapedProfileDir = String(this.profileDir || '').replace(/'/g, "''");
       const script = `
 Add-Type @"
@@ -750,21 +755,52 @@ foreach ($pidValue in $candidatePids) {
 
 exit 1
 `;
-      await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      await this._execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
         stdio: 'ignore',
         timeout: 5000
       });
       return { success: true };
     }
 
-    if (this._platform() === 'darwin') {
-      const appNames = {
-        chrome: 'Google Chrome',
-        firefox: 'Firefox',
-        edge: 'Microsoft Edge',
-        brave: 'Brave Browser'
+    if (platform === 'darwin') {
+      const lifecycle = this._captureLifecycle();
+      const relatedIds = await this._refreshTrackedProcessIds(true, lifecycle);
+      if (!this._isLifecycleCurrent(lifecycle) || relatedIds === null) {
+        throw new Error(`Could not safely identify the managed ${this.name} process to focus`);
+      }
+      const candidatePids = [...relatedIds]
+        .filter(pid => Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff);
+      if (candidatePids.length === 0) {
+        throw new Error(`Could not find the managed ${this.name} application process to focus`);
+      }
+      const bundleIdentifiers = {
+        chrome: 'com.google.Chrome',
+        firefox: 'org.mozilla.firefox',
+        edge: 'com.microsoft.edgemac',
+        brave: 'com.brave.Browser'
       };
-      await execFileAsync('osascript', ['-e', `tell application "${appNames[this.browserType] || this.name}" to activate`], {
+      const expectedBundleIdentifier = bundleIdentifiers[this.browserType];
+      if (!expectedBundleIdentifier) {
+        throw new Error(`Focusing ${this.name} is not supported on macOS`);
+      }
+      const script = `
+ObjC.import('AppKit');
+const candidatePids = ${JSON.stringify(candidatePids)};
+const expectedBundleIdentifier = ${JSON.stringify(expectedBundleIdentifier)};
+let focused = false;
+for (const pid of candidatePids) {
+  const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+  if (!app) continue;
+  const bundleIdentifier = ObjC.unwrap(app.bundleIdentifier);
+  if (bundleIdentifier !== expectedBundleIdentifier) continue;
+  if (app.activateWithOptions($.NSApplicationActivateIgnoringOtherApps)) {
+    focused = true;
+    break;
+  }
+}
+if (!focused) throw new Error('No matching managed browser application could be activated');
+`;
+      await this._execFile('osascript', ['-l', 'JavaScript', '-e', script], {
         stdio: 'ignore',
         timeout: 5000
       });

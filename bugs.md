@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 27 of the 361 documented bugs are not fully fixed.**
+**No: 26 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 334 |
+| Fixed | 335 |
 | Partially fixed | 7 |
-| Open | 20 |
+| Open | 19 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1550,7 +1550,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-201 — Low/Medium — macOS browser Focus can raise the wrong profile
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: macOS Focus now forces a fresh managed-profile process-tree inspection and fails closed if ownership cannot be revalidated. It passes only those verified PIDs to AppKit through JavaScript for Automation, resolves each exact `NSRunningApplication`, requires the expected browser bundle identifier, and activates that specific application instance. The prior name-based AppleScript activation, which could select a normal-profile instance of the same browser, was removed.
+- Regression coverage: `test/bug-201-macos-browser-focus.test.js` covers forced process revalidation, exact PID and bundle matching for Chrome, Firefox, Edge, and Brave, AppKit activation, removal of generic application-name activation, and fail-closed behavior for unknown or empty process sets.
 
 - Evidence: `src/interceptors/browser-interceptor.js:479-490` only runs `tell application "<browser>" to activate`; it does not identify the managed profile directory, process, or window. Windows uses profile-specific selection at `:435-476`.
 - Impact: when normal and isolated windows coexist, Focus can raise the unproxied normal profile instead of FreeKit's browser.
