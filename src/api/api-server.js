@@ -2574,6 +2574,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _importedTrafficIdFitsBroadcast(id) {
+    let encodedId;
+    try {
+      encodedId = encodeURIComponent(id);
+    } catch {
+      return false;
+    }
+    // Detail, pin, and delete routes all carry this value in the request
+    // target. Leave room for a lifecycle query and ordinary HTTP headers.
+    if (Buffer.byteLength(encodedId) > 4096) return false;
     const deferredIdentity = { id, pinned: true, _deferredTrafficDetail: true };
     return this._messageFitsWsBuffer(this._importBroadcastMessage(
       Number.MAX_SAFE_INTEGER,
@@ -2673,6 +2682,79 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     };
   }
 
+  _compactTrafficClearBroadcastMessage(clearId, retainedTraffic, chunkIndex, chunkCount, revision) {
+    return {
+      ...this._trafficClearBroadcastMessage(
+        clearId,
+        retainedTraffic,
+        chunkIndex,
+        chunkCount,
+        revision
+      ),
+      deferred: true
+    };
+  }
+
+  _buildCompactTrafficClearedMessages(clearId, retainedTraffic, revision) {
+    const identities = new Set();
+    const compactTraffic = [];
+    for (const request of retainedTraffic) {
+      const identityKey = this._trafficIdentityKey(
+        request.id,
+        request.trafficLifecycleId ?? null
+      );
+      // A compact row must still identify exactly one retained lifecycle.
+      if (identities.has(identityKey)) return [];
+      identities.add(identityKey);
+      compactTraffic.push({
+        id: request.id,
+        ...(request.trafficLifecycleId == null ? {} : { l: request.trafficLifecycleId })
+      });
+    }
+
+    const batches = [];
+    let batch = [];
+    // At most one chunk per identity is needed, so these values have at least
+    // as many digits as every final chunk index/count.
+    const placeholderChunkIndex = Math.max(0, compactTraffic.length - 1);
+    const placeholderChunkCount = Math.max(1, compactTraffic.length);
+    const fitsBatch = candidate => this._messageFitsWsBuffer(
+      this._compactTrafficClearBroadcastMessage(
+        clearId,
+        candidate,
+        placeholderChunkIndex,
+        placeholderChunkCount,
+        revision
+      )
+    );
+
+    for (const request of compactTraffic) {
+      if (fitsBatch([...batch, request])) {
+        batch.push(request);
+        continue;
+      }
+      if (batch.length > 0) {
+        batches.push(batch);
+        batch = [];
+      }
+      if (!fitsBatch([request])) return [];
+      batch = [request];
+    }
+    if (batch.length > 0) batches.push(batch);
+    if (batches.length === 0) batches.push([]);
+
+    const messages = batches.map((requestsBatch, chunkIndex) =>
+      this._compactTrafficClearBroadcastMessage(
+        clearId,
+        requestsBatch,
+        chunkIndex,
+        batches.length,
+        revision
+      )
+    );
+    return messages.every(message => this._messageFitsWsBuffer(message)) ? messages : [];
+  }
+
   _buildTrafficClearedMessages(clearId, retainedTraffic, revision) {
     const completeMessage = this._trafficClearBroadcastMessage(
       clearId,
@@ -2683,6 +2765,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     );
     if (this._messageFitsWsBuffer(completeMessage)) return [completeMessage];
 
+    const retainedIdCounts = new Map();
+    for (const request of retainedTraffic) {
+      retainedIdCounts.set(request.id, (retainedIdCounts.get(request.id) || 0) + 1);
+    }
     const batches = [];
     let batch = [];
     const placeholderChunk = Number.MAX_SAFE_INTEGER;
@@ -2715,9 +2801,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         pinned: true,
         _deferredTrafficDetail: true
       };
-      const fallback = fitsBatch([item])
+      const itemFits = fitsBatch([item]);
+      const deferredIdentityFits = fitsBatch([deferredIdentity]);
+      if (!itemFits && !deferredIdentityFits && retainedIdCounts.get(request.id) > 1) {
+        return this._buildCompactTrafficClearedMessages(clearId, retainedTraffic, revision);
+      }
+      const fallback = itemFits
         ? item
-        : (fitsBatch([deferredIdentity]) ? deferredIdentity : {
+        : (deferredIdentityFits ? deferredIdentity : {
             id: request.id,
             pinned: true,
             _deferredTrafficDetail: true

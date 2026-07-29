@@ -312,6 +312,79 @@ test('import remaps oversized lifecycle IDs and keeps Clear clients and exact hy
   assert.equal(exactDetail.body.trafficLifecycleId, parent.trafficLifecycleId);
 });
 
+test('import remaps request IDs that cannot fit exact management routes', async t => {
+  const api = createApi();
+  api._broadcast = () => {};
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+  const originalId = 'oversized-request-id-'.repeat(1000);
+
+  const imported = await requestJson(port, '/api/traffic/import', {
+    method: 'POST',
+    body: {
+      requests: [{
+        id: originalId,
+        trafficLifecycleId: 'imported-life',
+        method: 'GET',
+        url: 'https://example.test/',
+        timestamp: new Date().toISOString()
+      }]
+    }
+  });
+  assert.equal(imported.statusCode, 200);
+  const assigned = api.trafficLog[0];
+  assert.notEqual(assigned.id, originalId);
+  assert.ok(Buffer.byteLength(encodeURIComponent(assigned.id)) <= 4096);
+
+  const detail = await requestJson(
+    port,
+    '/api/traffic/' + encodeURIComponent(assigned.id) +
+      '?trafficLifecycleId=' + encodeURIComponent(assigned.trafficLifecycleId)
+  );
+  assert.equal(detail.statusCode, 200);
+  assert.equal(detail.body.id, assigned.id);
+  const pinned = await requestJson(
+    port,
+    '/api/traffic/' + encodeURIComponent(assigned.id) +
+      '/pin?trafficLifecycleId=' + encodeURIComponent(assigned.trafficLifecycleId),
+    { method: 'PUT', body: { pinned: true } }
+  );
+  assert.equal(pinned.statusCode, 200);
+  assert.equal(pinned.body.pinned, true);
+});
+
+test('tight Clear messages keep duplicate IDs exact with compact deferred lifecycles', () => {
+  const api = createApi({ maxWsBufferedBytes: 216 });
+  const retainedTraffic = [
+    {
+      id: 'shared',
+      trafficLifecycleId: '00000000-0000-4000-8000-000000000001',
+      responseBody: 'a'.repeat(1000),
+      pinned: true
+    },
+    {
+      id: 'shared',
+      trafficLifecycleId: '00000000-0000-4000-8000-000000000002',
+      responseBody: 'b'.repeat(1000),
+      pinned: true
+    }
+  ];
+  const messages = api._buildTrafficClearedMessages(
+    '00000000-0000-4000-8000-000000000000',
+    retainedTraffic,
+    1
+  );
+
+  assert.ok(messages.length > 0);
+  assert.ok(messages.every(message => message.deferred === true));
+  assert.ok(messages.every(message => api._messageFitsWsBuffer(message)));
+  assert.deepEqual(messages.flatMap(message => message.retainedTraffic), [
+    { id: 'shared', l: retainedTraffic[0].trafficLifecycleId },
+    { id: 'shared', l: retainedTraffic[1].trafficLifecycleId }
+  ]);
+});
+
 test('WebSocket frames cannot become independently pinned or import invalid pin state', async t => {
   const api = createApi();
   api.trafficLog = [{
@@ -828,6 +901,53 @@ test('identity-only deferred Clear rows keep selection through full REST upgrade
     responseBody: 'complete',
     pinned: true
   });
+});
+
+test('compact deferred Clear rows preserve duplicate lifecycle identities', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  const messages = [
+    {
+      type: 'traffic-cleared',
+      clearId: 'compact-clear',
+      revision: 1,
+      chunkIndex: 0,
+      chunkCount: 2,
+      deferred: true,
+      retainedTraffic: [{
+        id: 'shared',
+        l: '00000000-0000-4000-8000-000000000001'
+      }]
+    },
+    {
+      type: 'traffic-cleared',
+      clearId: 'compact-clear',
+      revision: 1,
+      chunkIndex: 1,
+      chunkCount: 2,
+      deferred: true,
+      retainedTraffic: [{
+        id: 'shared',
+        l: '00000000-0000-4000-8000-000000000002'
+      }]
+    }
+  ];
+
+  assert.equal(renderer.context.applyTrafficClearedMessage(messages[0]), false);
+  assert.equal(renderer.context.applyTrafficClearedMessage(messages[1]), true);
+  assert.deepEqual(renderer.snapshot().requests, [
+    {
+      id: 'shared',
+      trafficLifecycleId: '00000000-0000-4000-8000-000000000001',
+      pinned: true,
+      _deferredTrafficDetail: true
+    },
+    {
+      id: 'shared',
+      trafficLifecycleId: '00000000-0000-4000-8000-000000000002',
+      pinned: true,
+      _deferredTrafficDetail: true
+    }
+  ]);
 });
 
 test('deferred Clear upgrades preserve a later unpin mutation', () => {

@@ -468,13 +468,30 @@
       if (typeof clearId !== 'string' || !clearId || !Array.isArray(message.retainedTraffic)) {
         return false;
       }
+      let retainedTraffic = message.retainedTraffic;
+      if (message.deferred === true) {
+        retainedTraffic = retainedTraffic.map(request => {
+          if (!request || typeof request.id !== 'string' || !request.id ||
+              (request.l !== undefined &&
+                (typeof request.l !== 'string' || !request.l))) {
+            return null;
+          }
+          return {
+            id: request.id,
+            ...(request.l === undefined ? {} : { trafficLifecycleId: request.l }),
+            pinned: true,
+            _deferredTrafficDetail: true
+          };
+        });
+        if (retainedTraffic.some(request => request === null)) return false;
+      }
       if ((message.revision !== undefined && revision === null) ||
           (revision === null && latestTrafficClearRevision > 0) ||
           (revision !== null && revision < latestTrafficClearRevision)) {
         return false;
       }
       if (message.chunkCount === undefined && message.chunkIndex === undefined) {
-        return applyTrafficCleared(clearId, message.retainedTraffic, revision ?? undefined);
+        return applyTrafficCleared(clearId, retainedTraffic, revision ?? undefined);
       }
       if (!Number.isSafeInteger(message.chunkCount) || message.chunkCount < 1 ||
           message.chunkCount > 10_000 ||
@@ -497,7 +514,7 @@
         }
       }
       if (pending.chunks[message.chunkIndex] === undefined) {
-        pending.chunks[message.chunkIndex] = message.retainedTraffic;
+        pending.chunks[message.chunkIndex] = retainedTraffic;
         pending.received++;
       }
       if (pending.received !== pending.chunkCount) return false;
