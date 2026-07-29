@@ -30,7 +30,7 @@ test('--data-urlencode encodes values before joining them', () => {
     "curl https://example.test --data-urlencode 'name=hello world!' --data-urlencode '=plain value' --data-urlencode 'emoji=✓' --data-urlencode 'whole/value'"
   );
 
-  assert.equal(result.body, 'name=hello%20world%21&plain%20value&emoji=%E2%9C%93&whole%2Fvalue');
+  assert.equal(result.body, 'name=hello+world%21&plain+value&emoji=%E2%9C%93&whole%2Fvalue');
 });
 
 test('quoted Windows backslashes and Unicode basic auth survive parsing', () => {
@@ -51,6 +51,13 @@ test('an explicitly empty data argument does not consume the following option', 
   assert.equal(result.body, '');
   assert.equal(result.hasData, true);
   assert.equal(result.headers['X-After'], 'retained');
+});
+
+test('repeated data separators match curl when parts are empty', () => {
+  assert.equal(context.parseCurlCommand("curl https://example.test -d '' -d 'x=1'").body, 'x=1');
+  assert.equal(context.parseCurlCommand("curl https://example.test -d 'x=1' -d ''").body, 'x=1&');
+  assert.equal(context.parseCurlCommand("curl https://example.test -d '' -d ''").body, '');
+  assert.equal(context.parseCurlCommand("curl https://example.test -d 'x=1' -d '' -d 'y=2'").body, 'x=1&&y=2');
 });
 
 test('explicit Content-Type matching is case-insensitive', () => {

@@ -8667,6 +8667,10 @@
     function encodeCurlComponent(value) {
       let encoded = '';
       for (const byte of new TextEncoder().encode(value)) {
+        if (byte === 0x20) {
+          encoded += '+';
+          continue;
+        }
         const isUnreserved =
           (byte >= 0x41 && byte <= 0x5a) ||
           (byte >= 0x61 && byte <= 0x7a) ||
@@ -8814,7 +8818,9 @@
       if (dataParts.length && !findCurlHeaderKey(result.headers, 'Content-Type')) {
         setCurlHeader(result.headers, 'Content-Type', 'application/x-www-form-urlencoded');
       }
-      result.body = dataParts.join('&');
+      result.body = dataParts.reduce((body, part) => {
+        return body.length > 0 ? body + '&' + part : body + part;
+      }, '');
       
       return result.url ? result : null;
     }
