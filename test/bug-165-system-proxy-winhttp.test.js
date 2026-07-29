@@ -273,6 +273,82 @@ test('malformed WinHTTP recovery blocks activation without overwriting its only 
   assert.equal(fs.readFileSync(interceptor.winHttpRecoveryFile, 'utf8'), '{malformed');
 });
 
+test('live strong owners block activation for both recovery journals until ownership is released', async t => {
+  const dataDir = makeDataDir(t);
+  const owner = { ...OWNER, executablePath: OWNER.executablePath.toLowerCase() };
+  const ownedWinInet = {
+    enabled: true,
+    server: '127.0.0.1:8080',
+    override: ''
+  };
+  const ownedWinHttp = {
+    scope: 'machine',
+    proxy: '127.0.0.1:8080',
+    proxyBypass: '',
+    autoConfigUrl: '',
+    autoDetect: false
+  };
+  const interceptor = new SystemProxyInterceptor({
+    dataDir,
+    ca: { systemTrustInstalled: true },
+    processIdentityLookup: () => owner
+  });
+  interceptor._isWindows = () => true;
+  const winInetJournal = JSON.stringify({
+    owner,
+    proxyServer: ownedWinInet.server,
+    previousSettings: PREVIOUS_WININET,
+    ownedSettings: ownedWinInet
+  });
+  const winHttpJournal = JSON.stringify({
+    owner,
+    previousSettings: PREVIOUS_WINHTTP,
+    ownedSettings: ownedWinHttp
+  });
+  fs.writeFileSync(interceptor.recoveryFile, winInetJournal);
+  fs.writeFileSync(interceptor.winHttpRecoveryFile, winHttpJournal);
+  interceptor._readCurrentSettings = async () => assert.fail('live ownership must skip WinINet inspection');
+  interceptor._readWinHttpSettings = async () => assert.fail('live ownership must skip WinHTTP inspection');
+
+  assert.equal(await interceptor.recoverStaleSettings(), false);
+  assert.match(interceptor.recoveryBlockedReason, /active FreeKit process/);
+  assert.match(interceptor.winHttpRecoveryBlockedReason, /active FreeKit process/);
+  assert.equal(await interceptor.needsDeactivation(), true);
+  await assert.rejects(interceptor.activate(8081), /unresolved recovery journal/);
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), winInetJournal);
+  assert.equal(fs.readFileSync(interceptor.winHttpRecoveryFile, 'utf8'), winHttpJournal);
+
+  fs.unlinkSync(interceptor.recoveryFile);
+  fs.unlinkSync(interceptor.winHttpRecoveryFile);
+  assert.equal(await interceptor.recoverStaleSettings(), false);
+  assert.equal(interceptor.recoveryBlockedReason, null);
+  assert.equal(interceptor.winHttpRecoveryBlockedReason, null);
+  assert.equal(await interceptor.needsDeactivation(), false);
+});
+
+test('exclusive journal publication never replaces a concurrently owned proxy baseline', async t => {
+  for (const occupiedStore of ['wininet', 'winhttp']) {
+    await t.test(occupiedStore, async t => {
+      const harness = configureInterceptor(t);
+      const { interceptor } = harness;
+      const occupiedFile = occupiedStore === 'wininet'
+        ? interceptor.recoveryFile
+        : interceptor.winHttpRecoveryFile;
+      const existingJournal = JSON.stringify({ owner: 'another-process', baseline: 'must-survive' });
+      fs.writeFileSync(occupiedFile, existingJournal);
+
+      await assert.rejects(interceptor.activate(8082), /Failed to set system proxy/);
+
+      assert.equal(fs.readFileSync(occupiedFile, 'utf8'), existingJournal);
+      assert.equal(fs.existsSync(interceptor.recoveryFile), occupiedStore === 'wininet');
+      assert.equal(fs.existsSync(interceptor.winHttpRecoveryFile), occupiedStore === 'winhttp');
+      assert.deepEqual(harness.getWinInet(), PREVIOUS_WININET);
+      assert.deepEqual(harness.getWinHttp(), PREVIOUS_WINHTTP);
+      assert.equal(harness.operations.length, 0);
+    });
+  }
+});
+
 test('WinHTTP netsh helpers parse localized prefixes and verify the applied machine settings', async () => {
   const interceptor = new SystemProxyInterceptor();
   const expected = {

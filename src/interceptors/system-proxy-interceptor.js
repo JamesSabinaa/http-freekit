@@ -359,19 +359,30 @@ if ($null -eq $target) {
     return false;
   }
 
-  _persistRecoveryState(recovery) {
-    if (!this.recoveryFile) {
-      throw new Error('System proxy recovery journal is not configured');
-    }
-    fs.mkdirSync(path.dirname(this.recoveryFile), { recursive: true });
-    const tempPath = `${this.recoveryFile}.${process.pid}.${Date.now()}.tmp`;
+  _writeRecoveryState(recoveryFile, recovery, { exclusive = false } = {}) {
+    fs.mkdirSync(path.dirname(recoveryFile), { recursive: true });
+    const tempPath = `${recoveryFile}.${process.pid}.${Date.now()}.tmp`;
     try {
       fs.writeFileSync(tempPath, JSON.stringify(recovery), { encoding: 'utf8', mode: 0o600 });
-      fs.renameSync(tempPath, this.recoveryFile);
+      if (exclusive) {
+        // Publishing a fully written hard link is atomic and, unlike rename on
+        // Windows, refuses to replace a journal belonging to another process.
+        fs.linkSync(tempPath, recoveryFile);
+        fs.unlinkSync(tempPath);
+      } else {
+        fs.renameSync(tempPath, recoveryFile);
+      }
     } catch (err) {
       try { fs.unlinkSync(tempPath); } catch {}
       throw err;
     }
+  }
+
+  _persistRecoveryState(recovery, options) {
+    if (!this.recoveryFile) {
+      throw new Error('System proxy recovery journal is not configured');
+    }
+    this._writeRecoveryState(this.recoveryFile, recovery, options);
   }
 
   _removeRecoveryState() {
@@ -383,19 +394,11 @@ if ($null -eq $target) {
     }
   }
 
-  _persistWinHttpRecoveryState(recovery) {
+  _persistWinHttpRecoveryState(recovery, options) {
     if (!this.winHttpRecoveryFile) {
       throw new Error('WinHTTP proxy recovery journal is not configured');
     }
-    fs.mkdirSync(path.dirname(this.winHttpRecoveryFile), { recursive: true });
-    const tempPath = `${this.winHttpRecoveryFile}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      fs.writeFileSync(tempPath, JSON.stringify(recovery), { encoding: 'utf8', mode: 0o600 });
-      fs.renameSync(tempPath, this.winHttpRecoveryFile);
-    } catch (err) {
-      try { fs.unlinkSync(tempPath); } catch {}
-      throw err;
-    }
+    this._writeRecoveryState(this.winHttpRecoveryFile, recovery, options);
   }
 
   _removeWinHttpRecoveryState() {
@@ -461,10 +464,16 @@ if ($null -eq $target) {
   }
 
   async _recoverStaleWinInetSettings() {
-    if (!this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
+    if (!this.recoveryFile || !fs.existsSync(this.recoveryFile)) {
+      if (!this.previousSettings && !this.pendingRecovery) this.recoveryBlockedReason = null;
+      return false;
+    }
     try {
       const recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
-      if (await this._recoveryOwnerIsActive(recovery)) return false;
+      if (await this._recoveryOwnerIsActive(recovery)) {
+        this.recoveryBlockedReason = `journal belongs to active FreeKit process ${recovery.owner.pid}`;
+        return false;
+      }
       if (!recovery.previousSettings || typeof recovery.previousSettings !== 'object') {
         throw new Error('Recovery file does not contain previous proxy settings');
       }
@@ -509,10 +518,18 @@ if ($null -eq $target) {
   }
 
   async _recoverStaleWinHttpSettings() {
-    if (!this.winHttpRecoveryFile || !fs.existsSync(this.winHttpRecoveryFile)) return false;
+    if (!this.winHttpRecoveryFile || !fs.existsSync(this.winHttpRecoveryFile)) {
+      if (!this.previousWinHttpSettings && !this.pendingWinHttpRecovery) {
+        this.winHttpRecoveryBlockedReason = null;
+      }
+      return false;
+    }
     try {
       const recovery = JSON.parse(fs.readFileSync(this.winHttpRecoveryFile, 'utf8'));
-      if (await this._recoveryOwnerIsActive(recovery)) return false;
+      if (await this._recoveryOwnerIsActive(recovery)) {
+        this.winHttpRecoveryBlockedReason = `journal belongs to active FreeKit process ${recovery.owner.pid}`;
+        return false;
+      }
       const previous = this._normalizeWinHttpSettings(recovery.previousSettings);
       const owned = this._normalizeWinHttpSettings(recovery.ownedSettings);
       const current = await this._readWinHttpSettings();
@@ -668,9 +685,9 @@ if ($null -eq $target) {
           previousSettings: this.previousWinHttpSettings,
           ownedSettings: ownedWinHttpSettings
         };
-        this._persistRecoveryState(this.pendingRecovery);
+        this._persistRecoveryState(this.pendingRecovery, { exclusive: true });
         winInetJournalPrepared = true;
-        this._persistWinHttpRecoveryState(this.pendingWinHttpRecovery);
+        this._persistWinHttpRecoveryState(this.pendingWinHttpRecovery, { exclusive: true });
         winHttpJournalPrepared = true;
         recoveryPrepared = true;
         await this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
