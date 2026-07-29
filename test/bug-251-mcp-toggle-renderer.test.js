@@ -135,6 +135,53 @@ test('successful MCP enable and disable keep the confirmed state and refresh sta
   }
 });
 
+test('degraded MCP status is visible with its cleanup failure reason', async () => {
+  const renderer = createRenderer(async () => rendererResponse({
+    enabled: true,
+    degraded: true,
+    degradedReason: 'stdio cleanup failed',
+    connectedClients: 1
+  }));
+
+  await renderer.context.loadMcpStatus();
+
+  assert.equal(renderer.elements.mcpStatus.textContent, 'Degraded');
+  assert.equal(renderer.elements.mcpStatus.style.color, '#d99a3e');
+  assert.equal(renderer.elements.mcpStatus.title, 'stdio cleanup failed');
+  assert.equal(renderer.elements.mcpEnabledToggle.checked, true);
+});
+
+test('a degraded toggle failure refreshes the authoritative status immediately', async () => {
+  let statusRequests = 0;
+  const renderer = createRenderer(async (_url, options = {}) => {
+    if (options.method === 'POST') {
+      return rendererResponse({
+        error: 'MCP cleanup failed',
+        degraded: true,
+        enabled: true,
+        degradedReason: 'stdio close failed'
+      }, { ok: false });
+    }
+    statusRequests++;
+    return rendererResponse(statusRequests === 1
+      ? { enabled: true }
+      : {
+          enabled: true,
+          degraded: true,
+          degradedReason: 'stdio close failed'
+        });
+  });
+
+  await renderer.context.loadMcpStatus();
+  await renderer.context.toggleMcp(false);
+
+  assert.equal(statusRequests, 2);
+  assert.equal(renderer.elements.mcpStatus.textContent, 'Degraded');
+  assert.equal(renderer.elements.mcpStatus.title, 'stdio close failed');
+  assert.equal(renderer.elements.mcpEnabledToggle.checked, true);
+  assert.deepEqual(renderer.toasts, [{ message: 'Error: MCP cleanup failed', type: 'error' }]);
+});
+
 test('an in-flight MCP toggle disables the checkbox and ignores a duplicate inversion', async () => {
   const pendingToggle = deferred();
   let statusRequests = 0;

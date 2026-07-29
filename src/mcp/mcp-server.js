@@ -501,6 +501,8 @@ export class McpServerBridge {
     this.stdioOutput = null;
     this.onStdioFatalError = null;
     this._stopPromise = null;
+    this._pendingCleanupResources = [];
+    this._cleanupFailureMessages = [];
     this.launchConfig = options.launchConfig || null;
 
     if (this.enabled) {
@@ -1149,26 +1151,87 @@ export class McpServerBridge {
     try { server.transport.onclose?.(); } catch {}
   }
 
-  async _performStop() {
-    const sessions = [...this.sseSessions.values()];
+  async _closeCleanupResource(resource) {
+    const errors = [];
+    if (resource.transport) {
+      try {
+        await resource.transport.close();
+        resource.transport = null;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (resource.server) {
+      try {
+        await resource.server.close();
+        resource.server = null;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `Could not close ${resource.label}: ${errors.map(error => error.message).join('; ')}`
+      );
+    }
+  }
+
+  async _performStop({ bestEffort = false } = {}) {
+    const resources = [...this._pendingCleanupResources];
+    this._pendingCleanupResources = [];
+    for (const [sessionId, session] of this.sseSessions) {
+      resources.push({
+        kind: 'sse',
+        label: `MCP SSE session ${sessionId}`,
+        transport: session.transport,
+        server: session.server
+      });
+    }
     this.sseSessions.clear();
     const server = this.server;
+    const stdioTransport = this.stdioTransport;
+    if (server || stdioTransport) {
+      resources.push({
+        kind: stdioTransport ? 'stdio' : 'server',
+        label: stdioTransport ? 'MCP stdio transport' : 'MCP server',
+        transport: stdioTransport,
+        server
+      });
+    }
     this.server = null;
     this.enabled = false;
     this.stdioTransport = null;
     this.stdioOutput = null;
     this.onStdioFatalError = null;
 
-    for (const { transport, server: sessionServer } of sessions) {
-      try { await transport.close(); } catch {}
-      try { await sessionServer.close(); } catch {}
+    const failures = [];
+    for (const resource of resources) {
+      try {
+        await this._closeCleanupResource(resource);
+      } catch (error) {
+        failures.push({ resource, error });
+      }
     }
-    if (server) {
-      try { await server.close(); } catch {}
+    this._pendingCleanupResources = failures.map(({ resource }) => resource);
+    this._cleanupFailureMessages = failures.map(({ error }) => error.message);
+
+    if (failures.length > 0) {
+      const errors = failures.map(({ error }) => error);
+      if (bestEffort) {
+        for (const error of errors) {
+          console.error('[MCP] Cleanup failed during shutdown:', error.message);
+        }
+        return;
+      }
+      // A strict runtime toggle did not fully disable MCP. Keep the logical
+      // state enabled and expose the retained resources until a retry succeeds.
+      this.enabled = true;
+      throw new AggregateError(errors, 'Could not fully stop the MCP server');
     }
   }
 
-  stop() {
+  stop(options = {}) {
     if (this._stopPromise) return this._stopPromise;
     let resolveStop;
     let rejectStop;
@@ -1177,7 +1240,7 @@ export class McpServerBridge {
       rejectStop = reject;
     });
     this._stopPromise = stopPromise;
-    void this._performStop().then(() => {
+    void this._performStop(options).then(() => {
       if (this._stopPromise === stopPromise) this._stopPromise = null;
       resolveStop();
     }, error => {
@@ -1189,21 +1252,28 @@ export class McpServerBridge {
 
   async setEnabled(enabled) {
     if (this._stopPromise) await this._stopPromise;
-    if (enabled && !this.server) {
-      this._createServer();
+    if (enabled) {
+      if (!this.server) this._createServer();
       this.enabled = true;
-    } else if (!enabled && this.server) {
-      this.enabled = false;
-      await this.stop();
+      return;
     }
+    await this.stop();
   }
 
   getStatus() {
+    const pendingSseSessions = this._pendingCleanupResources
+      .filter(resource => resource.kind === 'sse').length;
+    const pendingStdio = this._pendingCleanupResources
+      .some(resource => resource.kind === 'stdio');
+    const degraded = this._pendingCleanupResources.length > 0;
     return {
       enabled: this.enabled,
-      sseEndpoint: this.enabled ? `/mcp/sse` : null,
-      connectedClients: this.sseSessions.size,
-      stdioActive: !!this.stdioTransport,
+      sseEndpoint: this.enabled && this.server ? `/mcp/sse` : null,
+      connectedClients: this.sseSessions.size + pendingSseSessions,
+      stdioActive: !!this.stdioTransport || pendingStdio,
+      degraded,
+      degradedReason: degraded ? this._cleanupFailureMessages.join('; ') : null,
+      pendingCleanupCount: this._pendingCleanupResources.length,
       claudeDesktopConfig: this.launchConfig
     };
   }

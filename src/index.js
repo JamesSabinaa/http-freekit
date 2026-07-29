@@ -263,7 +263,7 @@ async function initializeApplication(apiPort) {
         interceptors.beginShutdown();
         console.log('\n[Shutdown] Stopping servers...');
         removeOwnMcpRuntimeDescriptor();
-        await mcpBridge.stop();
+        await mcpBridge.stop({ bestEffort: true });
         await interceptors.deactivateAll();
         await proxy.stop();
         await api.stop();

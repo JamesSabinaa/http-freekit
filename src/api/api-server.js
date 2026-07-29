@@ -191,6 +191,7 @@ export class ApiServer {
     this._autoRotatePromise = null;
     this._lastAutoRotateAt = 0;
     this._mcpEnabledMutationQueue = Promise.resolve();
+    this._mcpStateDegraded = null;
     this.sendConnectTimeoutMs = options.sendConnectTimeoutMs ?? 10000;
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
@@ -381,23 +382,73 @@ export class ApiServer {
   async _setMcpEnabled(enabled) {
     if (!this.mcpBridge) throw new Error('MCP bridge not initialized');
     const previousEnabled = this.mcpBridge.getStatus().enabled === true;
+    const persistedEnabled = this._mcpStateDegraded?.persistedEnabled ?? previousEnabled;
 
     try {
       await this.mcpBridge.setEnabled(enabled);
       if (enabled) this.mcpBridge.startSse(this.app);
-      if ((this.mcpBridge.getStatus().enabled === true) !== enabled) {
+      const appliedStatus = this.mcpBridge.getStatus();
+      if ((appliedStatus.enabled === true) !== enabled) {
         throw new Error('MCP bridge did not apply the requested enabled state');
       }
+      if (appliedStatus.degraded === true) {
+        throw new Error(
+          `MCP bridge remains degraded: ${appliedStatus.degradedReason || 'cleanup is incomplete'}`
+        );
+      }
       this._persistSettings({ [MCP_ENABLED_SETTING]: enabled });
+      this._mcpStateDegraded = null;
       return enabled;
     } catch (error) {
+      let rollbackError = null;
       try {
         await this.mcpBridge.setEnabled(previousEnabled);
         if (previousEnabled) this.mcpBridge.startSse(this.app);
-      } catch (rollbackError) {
+      } catch (caughtRollbackError) {
+        rollbackError = caughtRollbackError;
+      }
+
+      let rollbackStatus = null;
+      let rollbackStatusError = null;
+      try {
+        rollbackStatus = this.mcpBridge.getStatus();
+      } catch (caughtStatusError) {
+        rollbackStatusError = caughtStatusError;
+      }
+
+      const rollbackProblems = [];
+      if (rollbackError) rollbackProblems.push(rollbackError);
+      if (rollbackStatusError) {
+        rollbackProblems.push(rollbackStatusError);
+      } else if ((rollbackStatus.enabled === true) !== previousEnabled) {
+        rollbackProblems.push(new Error(
+          `MCP rollback left runtime enabled=${rollbackStatus.enabled === true}; ` +
+          `persisted state remains enabled=${persistedEnabled}`
+        ));
+      } else if (rollbackStatus.degraded === true) {
+        rollbackProblems.push(new Error(
+          `MCP rollback is degraded: ${rollbackStatus.degradedReason || 'cleanup is incomplete'}`
+        ));
+      }
+
+      const rollbackIsDegraded = rollbackStatusError ||
+        (rollbackStatus && (
+          (rollbackStatus.enabled === true) !== previousEnabled ||
+          rollbackStatus.degraded === true
+        ));
+      if (rollbackIsDegraded) {
+        this._mcpStateDegraded = {
+          persistedEnabled,
+          runtimeEnabled: rollbackStatus ? rollbackStatus.enabled === true : null,
+          reason: rollbackProblems.map(problem => problem.message).join('; ')
+        };
+      }
+
+      if (rollbackProblems.length > 0) {
         throw new AggregateError(
-          [error, rollbackError],
-          `${error.message || 'MCP state change failed'}; rollback failed: ${rollbackError.message}`,
+          [error, ...rollbackProblems],
+          `${error.message || 'MCP state change failed'}; ` +
+          `rollback failed: ${rollbackProblems.map(problem => problem.message).join('; ')}`,
           { cause: error }
         );
       }
@@ -409,6 +460,20 @@ export class ApiServer {
     const operation = this._mcpEnabledMutationQueue.then(() => this._setMcpEnabled(enabled));
     this._mcpEnabledMutationQueue = operation.catch(() => {});
     return operation;
+  }
+
+  _getMcpStatus() {
+    if (!this.mcpBridge) {
+      return { enabled: false, sseEndpoint: null, connectedClients: 0 };
+    }
+    const status = { ...this.mcpBridge.getStatus() };
+    if (!this._mcpStateDegraded) return status;
+
+    const reasons = [status.degradedReason, this._mcpStateDegraded.reason].filter(Boolean);
+    status.degraded = true;
+    status.degradedReason = reasons.join('; ');
+    status.persistedEnabled = this._mcpStateDegraded.persistedEnabled;
+    return status;
   }
 
   async _runPythonJson(script, args = []) {
@@ -2403,9 +2468,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // MCP Server status and control
     router.get('/api/mcp/status', (req, res) => {
-      if (!this.mcpBridge) return res.json({ enabled: false, sseEndpoint: null, connectedClients: 0 });
-      const status = this.mcpBridge.getStatus();
-      if (status.enabled) {
+      const status = this._getMcpStatus();
+      if (status.enabled && status.sseEndpoint) {
         const endpoint = new URL(`http://127.0.0.1:${this.port}/mcp/sse`);
         if (this.authToken) endpoint.searchParams.set('authToken', this.authToken);
         status.sseEndpoint = endpoint.toString();
@@ -2425,7 +2489,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         const appliedEnabled = await this._queueMcpEnabledMutation(enabled);
         res.json({ success: true, enabled: appliedEnabled });
       } catch (error) {
-        res.status(500).json({ error: error.message || 'Could not update MCP state' });
+        const status = this._getMcpStatus();
+        const body = { error: error.message || 'Could not update MCP state' };
+        if (status.degraded === true) {
+          body.degraded = true;
+          body.enabled = status.enabled === true;
+          body.degradedReason = status.degradedReason;
+          if (typeof status.persistedEnabled === 'boolean') {
+            body.persistedEnabled = status.persistedEnabled;
+          }
+        }
+        res.status(500).json(body);
       }
     });
 

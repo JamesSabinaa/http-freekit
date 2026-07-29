@@ -2239,8 +2239,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 - Status: **Fixed**.
 
-- Resolution: MCP remains enabled by default, but an explicit disabled state is now persisted transactionally and restored during startup. Toggle requests are serialized, validate a real boolean, verify the applied bridge state, and roll the live bridge back if settings persistence fails. SSE routes remain registered while disabled so status is explicit and later re-enabling remains available.
-- Regression coverage: `test/bug-082-mcp-enabled-persistence.test.js` covers the default, disabled, and re-enabled startup values; real settings-file round trips; toggle serialization; malformed input; persistence rollback; startup wiring; and the disabled SSE response.
+- Resolution: MCP remains enabled by default, but an explicit disabled state is now persisted transactionally and restored during startup. Toggle requests are serialized, validate a real boolean, verify the applied and rollback bridge states, and expose any runtime/persistence divergence as degraded. Failed transport cleanup remains owned for retry and prevents a disabled state from being persisted; process shutdown uses a separate best-effort cleanup path. SSE routes remain registered while disabled so status is explicit and later re-enabling remains available.
+- Regression coverage: `test/bug-082-mcp-enabled-persistence.test.js` covers the default, disabled, and re-enabled startup values; real settings-file round trips; toggle serialization; malformed input; verified persistence rollback; degraded-state reconciliation; retryable transport cleanup; startup wiring; and the disabled SSE response. `test/bug-251-mcp-toggle-renderer.test.js` covers the visible degraded state.
 
 - Evidence: the toggle routes at `src/ui/app.js:8137-8145` and `src/api/api-server.js:1144-1151` never write settings. Startup hard-codes `{ enabled: true }` at `src/index.js:128-136`.
 - Impact: users who disable the network MCP server find it enabled again after every restart.

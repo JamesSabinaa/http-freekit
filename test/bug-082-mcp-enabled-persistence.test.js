@@ -66,7 +66,7 @@ function createProxy() {
   };
 }
 
-function createBridge(initialEnabled, { beforeSet } = {}) {
+function createBridge(initialEnabled, { beforeSet, shouldApply = () => true } = {}) {
   let enabled = initialEnabled;
   const setCalls = [];
   let startSseCalls = 0;
@@ -74,7 +74,7 @@ function createBridge(initialEnabled, { beforeSet } = {}) {
     async setEnabled(nextEnabled) {
       setCalls.push(nextEnabled);
       await beforeSet?.(nextEnabled, setCalls.length);
-      enabled = nextEnabled;
+      if (shouldApply(nextEnabled, setCalls.length)) enabled = nextEnabled;
     },
     startSse() { startSseCalls++; },
     getStatus() {
@@ -156,6 +156,109 @@ test('a failed MCP settings write rolls the live bridge back before reporting fa
   assert.equal(bridge.getStatus().enabled, true);
   assert.deepEqual(bridge.setCalls, [false, true]);
   assert.equal(bridge.startSseCalls, 1);
+});
+
+test('a failed runtime rollback exposes divergence until a later toggle reconciles it', async (t) => {
+  const bridge = createBridge(true, {
+    beforeSet: async (_enabled, callNumber) => {
+      if (callNumber === 2) throw new Error('enable rollback failed');
+    }
+  });
+  let writeCalls = 0;
+  const writes = [];
+  const settings = {
+    setAll(values) {
+      writeCalls++;
+      if (writeCalls === 1) throw new Error('disk temporarily unavailable');
+      writes.push(structuredClone(values));
+    }
+  };
+  const { port } = await createApiHarness(t, { bridge, settings });
+
+  const failed = await requestJson(port, 'POST', '/api/mcp/toggle', { enabled: false });
+
+  assert.equal(failed.statusCode, 500);
+  assert.equal(failed.body.degraded, true);
+  assert.equal(failed.body.enabled, false);
+  assert.equal(failed.body.persistedEnabled, true);
+  assert.match(failed.body.degradedReason, /enabled=false.*enabled=true/);
+  assert.deepEqual(bridge.setCalls, [false, true]);
+
+  const degradedStatus = await requestJson(port, 'GET', '/api/mcp/status');
+  assert.equal(degradedStatus.body.degraded, true);
+  assert.equal(degradedStatus.body.enabled, false);
+  assert.equal(degradedStatus.body.persistedEnabled, true);
+
+  const reconciled = await requestJson(port, 'POST', '/api/mcp/toggle', { enabled: false });
+  assert.deepEqual(reconciled, {
+    statusCode: 200,
+    body: { success: true, enabled: false }
+  });
+  assert.deepEqual(writes, [{ [MCP_ENABLED_SETTING]: false }]);
+  const reconciledStatus = await requestJson(port, 'GET', '/api/mcp/status');
+  assert.notEqual(reconciledStatus.body.degraded, true);
+  assert.equal(Object.hasOwn(reconciledStatus.body, 'persistedEnabled'), false);
+});
+
+test('an ineffective MCP rollback is detected even when it resolves', async (t) => {
+  const bridge = createBridge(true, {
+    shouldApply: (_enabled, callNumber) => callNumber !== 2
+  });
+  const { port } = await createApiHarness(t, {
+    bridge,
+    settings: { setAll() { throw new Error('read-only settings'); } }
+  });
+
+  const response = await requestJson(port, 'POST', '/api/mcp/toggle', { enabled: false });
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.body.degraded, true);
+  assert.equal(response.body.enabled, false);
+  assert.equal(response.body.persistedEnabled, true);
+  assert.match(response.body.error, /rollback failed/i);
+});
+
+test('failed MCP transport cleanup is reported and retained for a successful retry', async () => {
+  const bridge = new McpServerBridge({
+    apiServer: { trafficLog: [], _broadcast() {} },
+    proxyServer: { getStats: () => ({}), mockRules: [], breakpointRules: [] },
+    interceptorManager: { getAll: async () => [] }
+  });
+  const ownedServer = bridge.server;
+  let serverCloseCalls = 0;
+  let transportCloseCalls = 0;
+  let closeShouldFail = true;
+  bridge.stdioTransport = {
+    async close() { transportCloseCalls++; }
+  };
+  ownedServer.close = async () => {
+    serverCloseCalls++;
+    if (closeShouldFail) throw new Error('stdio server close failed');
+  };
+
+  await assert.rejects(
+    bridge.setEnabled(false),
+    error => error instanceof AggregateError && /fully stop/.test(error.message)
+  );
+  assert.equal(bridge.server, null);
+  assert.deepEqual(bridge.getStatus(), {
+    enabled: true,
+    sseEndpoint: null,
+    connectedClients: 0,
+    stdioActive: true,
+    degraded: true,
+    degradedReason: 'Could not close MCP stdio transport: stdio server close failed',
+    pendingCleanupCount: 1,
+    claudeDesktopConfig: null
+  });
+
+  closeShouldFail = false;
+  await bridge.setEnabled(false);
+  assert.equal(serverCloseCalls, 2);
+  assert.equal(transportCloseCalls, 1);
+  assert.equal(bridge.getStatus().enabled, false);
+  assert.equal(bridge.getStatus().degraded, false);
+  assert.equal(bridge.getStatus().pendingCleanupCount, 0);
 });
 
 test('MCP toggle rejects non-booleans without changing runtime or settings', async (t) => {
@@ -247,4 +350,5 @@ test('application startup feeds the restored MCP setting into the bridge', () =>
   assert.match(source, /const mcpEnabled = resolveMcpEnabled\(settings\)/);
   assert.match(source, /options:\s*\{\s*enabled: mcpEnabled,/);
   assert.doesNotMatch(source, /options:\s*\{\s*enabled: true,/);
+  assert.match(source, /mcpBridge\.stop\(\{ bestEffort: true \}\)/);
 });

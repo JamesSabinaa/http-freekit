@@ -62,6 +62,6 @@ test('application wires the API shutdown route to the centralized cleanup path',
   assert.match(source, /api\.setShutdownHandler\(shutdown\)/);
   assert.match(
     source,
-    /await mcpBridge\.stop\(\);[\s\S]*?await interceptors\.deactivateAll\(\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\)/
+    /await mcpBridge\.stop\(\{ bestEffort: true \}\);[\s\S]*?await interceptors\.deactivateAll\(\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\)/
   );
 });

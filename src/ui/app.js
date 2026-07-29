@@ -11429,8 +11429,11 @@
         mcpAuthoritativeEnabled = data.enabled;
         const statusEl = document.getElementById('mcpStatus');
         if (statusEl) {
-          statusEl.textContent = data.enabled ? 'Running' : 'Stopped';
-          statusEl.style.color = data.enabled ? '#4caf7d' : 'var(--text-lowlight)';
+          statusEl.textContent = data.degraded ? 'Degraded' : (data.enabled ? 'Running' : 'Stopped');
+          statusEl.style.color = data.degraded
+            ? '#d99a3e'
+            : (data.enabled ? '#4caf7d' : 'var(--text-lowlight)');
+          statusEl.title = data.degraded ? (data.degradedReason || 'MCP cleanup is incomplete') : '';
         }
         const endpointEl = document.getElementById('mcpSseEndpoint');
         if (endpointEl) endpointEl.textContent = data.sseEndpoint || '--';
@@ -11470,6 +11473,7 @@
         toggleEl.disabled = true;
       }
 
+      let degradedFailureStatus = null;
       try {
         const response = await fetch(API_BASE + '/api/mcp/toggle', {
           method: 'POST',
@@ -11478,6 +11482,9 @@
         });
         const data = await response.json().catch(() => null);
         if (!response.ok || data?.success !== true || data.enabled !== requestedEnabled) {
+          if (data?.degraded === true && typeof data.enabled === 'boolean') {
+            degradedFailureStatus = data;
+          }
           throw new Error(data?.error || 'MCP toggle returned an invalid response');
         }
         mcpAuthoritativeEnabled = data.enabled;
@@ -11485,9 +11492,11 @@
         toast(requestedEnabled ? 'MCP server enabled' : 'MCP server disabled', 'success');
         await loadMcpStatus();
       } catch (err) {
-        mcpAuthoritativeEnabled = previousEnabled;
-        if (toggleEl) toggleEl.checked = previousEnabled;
+        const authoritativeEnabled = degradedFailureStatus?.enabled ?? previousEnabled;
+        mcpAuthoritativeEnabled = authoritativeEnabled;
+        if (toggleEl) toggleEl.checked = authoritativeEnabled;
         toast('Error: ' + err.message, 'error');
+        if (degradedFailureStatus) await loadMcpStatus();
       } finally {
         mcpToggleInFlight = null;
         if (toggleEl) toggleEl.disabled = false;
