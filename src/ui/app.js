@@ -5790,6 +5790,7 @@
     let mockRenamingRuleId = null;
     let mockRulesLoadGeneration = 0;
     let mockRevertInProgress = false;
+    let mockResetInProgress = false;
 
     async function loadBreakpointRules() {
       try {
@@ -5831,7 +5832,12 @@
     }
 
     async function clearAllMockRules() {
+      if (mockResetInProgress) return;
+      mockResetInProgress = true;
       try {
+        // Reorders are serialized client-side. Let every operation already in
+        // that queue settle before Reset becomes the final server mutation.
+        await mockReorderQueue;
         const response = await fetch(API_BASE + '/api/mock-rules', {
           method: 'PUT',
           headers: {'Content-Type':'application/json'},
@@ -5841,6 +5847,10 @@
         if (data?.success !== true || !Array.isArray(data.rules) || data.rules.length !== 1) {
           throw new Error('Resetting mock rules returned an invalid response');
         }
+        // A GET started before (or during) Reset must not overwrite this newer
+        // authoritative collection after its delayed response arrives.
+        mockRulesLoadGeneration++;
+        mockReorderGeneration++;
         mockDraftRules.clear();
         mockNewDraftIds.clear();
         mockExpandedRules.clear();
@@ -5854,6 +5864,8 @@
         toast('Rules reset to default', 'success');
       } catch (err) {
         toast('Error: ' + err.message, 'error');
+      } finally {
+        mockResetInProgress = false;
       }
     }
 
@@ -6023,6 +6035,10 @@
 
     function mockDrop(e, targetId) {
       e.preventDefault();
+      if (mockResetInProgress) {
+        mockDragId = null;
+        return;
+      }
       if (!mockDragId || mockDragId === targetId) return;
 
       // Check if Shift is held — if so, combine into a group

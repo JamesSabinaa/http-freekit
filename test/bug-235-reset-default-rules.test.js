@@ -13,6 +13,11 @@ const resetEnd = source.indexOf('function collapseAllMockRules()', resetStart);
 assert.notEqual(resetStart, -1);
 assert.notEqual(resetEnd, -1);
 const resetSource = source.slice(resetStart, resetEnd);
+const loadStart = source.indexOf('async function loadMockRules()');
+const loadEnd = source.indexOf('async function ensureDefaultMockRules()', loadStart);
+assert.notEqual(loadStart, -1);
+assert.notEqual(loadEnd, -1);
+const loadSource = source.slice(loadStart, loadEnd);
 
 function response(body, { ok = true, status = ok ? 200 : 500 } = {}) {
   return { ok, status, json: async () => body };
@@ -67,17 +72,35 @@ function createRenderer(fetch) {
     let mockEditingRule = 'old';
     let mockEditDraft = { id: 'old', title: 'Live edit' };
     let mockRenamingRuleId = 'old';
+    let mockReorderGeneration = 0;
+    let mockReorderQueue = Promise.resolve();
+    let mockRulesLoadGeneration = 0;
+    let mockResetInProgress = false;
     let renders = 0;
     let buttonUpdates = 0;
     function _replaceMockRulesFromServer(rules) { mockRules = rules; }
     function updateMockSaveButtons() { buttonUpdates++; }
     function renderMockRules() { renders++; }
+    async function loadBreakpointRules() {}
     async function _readMockRulesResponse(res, action) {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || action + ' failed with HTTP ' + res.status);
       return data;
     }
     ${resetSource}
+    async function _fetchAuthoritativeMockRules(action) {
+      const response = await fetch(API_BASE + '/api/mock-rules');
+      const data = await _readMockRulesResponse(response, action);
+      if (!Array.isArray(data?.rules)) throw new Error(action + ' returned an invalid response');
+      return data.rules;
+    }
+    ${loadSource}
+    globalThis.queueMockReorder = promise => {
+      const operation = ++mockReorderGeneration;
+      mockReorderQueue = promise.then(rules => {
+        if (operation === mockReorderGeneration) mockRules = rules;
+      });
+    };
   `, context);
 
   return {
@@ -94,7 +117,8 @@ function createRenderer(fetch) {
       mockEditDraft,
       mockRenamingRuleId,
       renders,
-      buttonUpdates
+      buttonUpdates,
+      mockResetInProgress
     })`, context))
   };
 }
@@ -137,7 +161,8 @@ test('Reset atomically replaces every rule with the shipped default and clears l
     mockEditDraft: null,
     mockRenamingRuleId: null,
     renders: 1,
-    buttonUpdates: 1
+    buttonUpdates: 1,
+    mockResetInProgress: false
   });
   assert.equal(renderer.storage.get('http-freekit-defaults-created'), 'true');
   assert.deepEqual(renderer.toasts, [{ message: 'Rules reset to default', type: 'success' }]);
@@ -168,6 +193,52 @@ test('Reset remains available when the current rule list is empty', async () => 
 
   assert.equal(renderer.requests.length, 1);
   assert.equal(renderer.state().mockRules[0].id, 'default');
+});
+
+test('a delayed rule load cannot overwrite a successful Reset', async () => {
+  let resolveLoad;
+  const delayedLoad = new Promise(resolve => { resolveLoad = resolve; });
+  const renderer = createRenderer((url, options = {}) => {
+    if ((options.method || 'GET') === 'GET') return delayedLoad;
+    return response({
+      success: true,
+      rules: [{ id: 'default', title: 'Default', action: { type: 'passthrough' } }]
+    });
+  });
+
+  const loading = renderer.context.loadMockRules();
+  await Promise.resolve();
+  await renderer.context.clearAllMockRules();
+  resolveLoad(response({ rules: [{ id: 'stale', title: 'Stale rule' }] }));
+  await loading;
+
+  assert.deepEqual(renderer.state().mockRules, [
+    { id: 'default', title: 'Default', action: { type: 'passthrough' } }
+  ]);
+});
+
+test('Reset waits for queued reorders and remains the final collection mutation', async () => {
+  let resolveReorder;
+  const queuedReorder = new Promise(resolve => { resolveReorder = resolve; });
+  const renderer = createRenderer(async () => response({
+    success: true,
+    rules: [{ id: 'default', title: 'Default', action: { type: 'passthrough' } }]
+  }));
+  renderer.context.queueMockReorder(queuedReorder);
+
+  const resetting = renderer.context.clearAllMockRules();
+  await Promise.resolve();
+  assert.equal(renderer.requests.length, 0);
+  assert.equal(renderer.state().mockResetInProgress, true);
+
+  resolveReorder([{ id: 'old', title: 'Reordered old rule' }]);
+  await resetting;
+
+  assert.equal(renderer.requests.length, 1);
+  assert.deepEqual(renderer.state().mockRules, [
+    { id: 'default', title: 'Default', action: { type: 'passthrough' } }
+  ]);
+  assert.equal(renderer.state().mockResetInProgress, false);
 });
 
 test('server persistence failure rolls an atomic default replacement back', async t => {
