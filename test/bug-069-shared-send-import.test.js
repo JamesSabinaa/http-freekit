@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { WebSocket } from 'ws';
 
 import { ApiServer } from '../src/api/api-server.js';
@@ -335,7 +336,7 @@ test('large imports stay within the WebSocket ceiling and retain lazy detail acc
   const socket = await openWebSocket(`ws://127.0.0.1:${apiPort}/ws`);
   t.after(() => socket.close());
   const incoming = Array.from({ length: 8 }, (_, index) => ({
-    ...importedTraffic(`large-${index}`, `/large/${index}`),
+    ...importedTraffic(index === 0 ? 'i'.repeat(2048) : `large-${index}`, `/large/${index}`),
     requestBody: `request-${index}-` + 'r'.repeat(3000),
     responseBody: `response-${index}-` + 's'.repeat(3000)
   }));
@@ -353,6 +354,7 @@ test('large imports stay within the WebSocket ceiling and retain lazy detail acc
   const rows = messages.flatMap(({ message }) => message.requests);
   assert.equal(rows.length, incoming.length);
   assert.ok(rows.every(row => row._deferredTrafficDetail === true));
+  assert.notEqual(rows[0].id, incoming[0].id);
 
   const detail = await requestJson(apiPort, 'GET', `/api/traffic/${rows[0].id}`);
   assert.equal(detail.statusCode, 200);
@@ -431,7 +433,70 @@ test('renderer uses server-owned import and Send traffic identities', () => {
   assert.match(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
   assert.match(selectSource, /req\._deferredTrafficDetail === true/);
   assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\(req\.id\)/);
+  assert.match(selectSource, /panel\._request = null/);
+  assert.match(selectSource, /isSelectedTrafficRequest\(req\)\) closeDetail\(\)/);
   assert.doesNotMatch(sendSource, /addRequest\(/);
   assert.match(sendSource, /id: data\.trafficId/);
   assert.match(sendSource, /selectRequest\(data\.trafficId/);
+});
+
+test('deferred import selection clears stale details and closes after hydration failure', async () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+  const start = source.indexOf('function selectRequest(');
+  const end = source.indexOf('function selectBreakpointRequest(', start);
+  const selectionSource = source.slice(start, end);
+  const previous = { id: 'previous', trafficLifecycleId: null };
+  const deferred = {
+    id: 'deferred',
+    trafficLifecycleId: null,
+    _deferredTrafficDetail: true
+  };
+  const detailPanel = { _request: previous };
+  const detailEmptyState = { style: { display: 'none' } };
+  const detailActive = { style: { display: 'flex' } };
+  let closeCalls = 0;
+  let showCalls = 0;
+  const context = {
+    requests: [previous, deferred],
+    filteredRequests: [previous, deferred],
+    selectedRequestId: previous.id,
+    selectedRequestLifecycleId: null,
+    vsForceRender: false,
+    API_BASE: '',
+    window: { location: { hash: '#/view' } },
+    history: { replaceState() {} },
+    document: {
+      getElementById(id) {
+        return { detailPanel, detailEmptyState, detailActive }[id] || null;
+      }
+    },
+    findTrafficRequestByIdentity: (rows, id) => rows.find(row => row.id === id) || null,
+    isSelectedTrafficRequest: row => row.id === context.selectedRequestId,
+    normalizeTrafficLifecycleId: value => value ?? null,
+    buildTrafficViewHash: id => `#/view/${id}`,
+    scrollRowIntoView() {},
+    renderVirtualRows() {},
+    applyFilter() {},
+    showDetail() { showCalls++; },
+    toast() {},
+    closeDetail() {
+      closeCalls++;
+      context.selectedRequestId = null;
+      detailPanel._request = null;
+      detailEmptyState.style.display = 'flex';
+      detailActive.style.display = 'none';
+    },
+    fetch: async () => ({ ok: false })
+  };
+  vm.createContext(context);
+  vm.runInContext(`${selectionSource}; globalThis.selectDeferred = selectRequest;`, context);
+
+  context.selectDeferred(deferred.id, false);
+  assert.equal(detailPanel._request, null);
+  assert.equal(detailEmptyState.style.display, 'flex');
+  assert.equal(detailActive.style.display, 'none');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closeCalls, 1);
+  assert.equal(showCalls, 0);
+  assert.equal(context.selectedRequestId, null);
 });

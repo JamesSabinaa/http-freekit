@@ -1126,6 +1126,12 @@
       renderVirtualRows();
 
       if (req._deferredTrafficDetail === true) {
+        const panel = document.getElementById('detailPanel');
+        const emptyEl = document.getElementById('detailEmptyState');
+        const activeEl = document.getElementById('detailActive');
+        if (panel) panel._request = null;
+        if (emptyEl) emptyEl.style.display = 'flex';
+        if (activeEl) activeEl.style.display = 'none';
         void hydrateDeferredTrafficRequest(req);
         return;
       }
@@ -1147,6 +1153,7 @@
         if (isSelectedTrafficRequest(hydrated)) showDetail(hydrated);
       } catch (error) {
         toast(error.message || 'Could not load imported request details', 'error');
+        if (isSelectedTrafficRequest(req)) closeDetail();
       }
     }
 

@@ -2319,7 +2319,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const importedParentLifecycleIds = new Map();
     for (const request of retainedIncoming) {
       let id = request.id;
-      if (existingIds.has(id) || assignedIds.has(id)) {
+      if (!this._importedTrafficIdFitsBroadcast(id) || existingIds.has(id) || assignedIds.has(id)) {
         do {
           id = crypto.randomUUID();
         } while (reservedIds.has(id) || assignedIds.has(id));
@@ -2423,6 +2423,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _messageFitsWsBuffer(message) {
     return Buffer.byteLength(JSON.stringify(message)) <= this.maxWsBufferedBytes;
+  }
+
+  _importedTrafficIdFitsBroadcast(id) {
+    return this._messageFitsWsBuffer(this._importBroadcastMessage(
+      Number.MAX_SAFE_INTEGER,
+      [{ id, _deferredTrafficDetail: true }],
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER
+    ));
   }
 
   _buildImportedTrafficMessages(requests, count) {
