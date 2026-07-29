@@ -155,14 +155,16 @@ test('a fired startup timer clears its ownership before updater stop', () => {
   assert.deepEqual(harness.timers.clearIntervalCalls, [recurringTimer]);
 });
 
-test('the six-hour recurring interval continues checking until stopped', () => {
+test('the six-hour recurring interval continues checking until stopped', async () => {
   const harness = loadUpdater();
   harness.init();
   const recurringTimer = harness.timers.intervals[0];
 
   assert.equal(recurringTimer.delay, 6 * 60 * 60 * 1000);
   assert.equal(recurringTimer.tick(), true);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(recurringTimer.tick(), true);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(harness.updateChecks(), 2);
 
   harness.stopAutoUpdater();

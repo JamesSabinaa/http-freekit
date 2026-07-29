@@ -6,13 +6,13 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 14 of the 361 documented bugs are not fully fixed.**
+**No: 13 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 347 |
+| Fixed | 348 |
 | Partially fixed | 6 |
-| Open | 8 |
+| Open | 7 |
 | **Total** | **361** |
 
 This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-062, BUG-069, BUG-075, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, BUG-201, BUG-235, BUG-347, and BUG-364 to Fixed. It promoted BUG-115 to Partially fixed because later work resolved only part of that finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
@@ -2270,7 +2270,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-085 — Medium — Overlapping update checks lose manual/automatic attribution
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Update checks now use one owned in-flight state instead of a shared mutable boolean. Overlapping callers join the same upstream check, manual intent only promotes that state, a manual caller joining after the checking event receives feedback, and terminal attribution remains with the operation until its promise settles. Requests arriving after a terminal event wait for settlement and start a fresh check, preventing coalesced stale results from consuming a new request.
+- Regression coverage: `test/bug-085-updater-check-attribution.test.js` covers automatic-to-manual promotion, protection from automatic demotion, a single attributed rejection, a request in the result/settlement gap, and attribution reset for a later scheduled check.
 
 - Evidence: every check writes one global `currentCheckIsManual` at `electron/updater.cjs:33-40`; result handlers consume that shared flag at `:120-140,154-159`. Scheduled checks at `:174-182` can overlap, and installed `AppUpdater` coalesces concurrent calls to its existing promise.
 - Impact: a scheduled check can relabel an in-progress manual check as automatic, suppressing the result/error feedback the user requested.

@@ -19,7 +19,7 @@ const DEFAULT_LINUX_DOWNLOAD_URL = 'https://github.com/jamessabinaa/http-freekit
 let mainWindow = null;
 let startupCheckTimer = null;
 let checkInterval = null;
-let currentCheckIsManual = false;
+let activeCheck = null;
 let isDownloading = false;
 let updatePromptOpen = false;
 let lastPromptedVersion = null;
@@ -103,14 +103,60 @@ function sendStatus(data) {
   }
 }
 
+function completeCheckStatus() {
+  if (!activeCheck) return false;
+  const check = activeCheck;
+  check.statusReported = true;
+  if (check.promiseSettled) activeCheck = null;
+  return check.manual;
+}
+
 function checkForUpdates(manual = false) {
-  currentCheckIsManual = manual;
-  return autoUpdater.checkForUpdates().catch((err) => {
-    const wasManual = currentCheckIsManual;
-    currentCheckIsManual = false;
-    sendStatus({ status: 'error', error: err.message, manual: wasManual });
+  const requestedManual = manual === true;
+  if (activeCheck) {
+    if (activeCheck.promiseSettled) {
+      activeCheck = null;
+      return checkForUpdates(requestedManual);
+    }
+    if (activeCheck.statusReported) {
+      return activeCheck.promise.then(() => checkForUpdates(requestedManual));
+    }
+    if (requestedManual && !activeCheck.manual) {
+      activeCheck.manual = true;
+      if (activeCheck.checkingReported) {
+        sendStatus({ status: 'checking', manual: true });
+      }
+    }
+    return activeCheck.promise;
+  }
+
+  const check = {
+    manual: requestedManual,
+    checkingReported: false,
+    statusReported: false,
+    promiseSettled: false,
+    promise: null
+  };
+  activeCheck = check;
+  let upstreamCheck;
+  try {
+    upstreamCheck = autoUpdater.checkForUpdates();
+  } catch (err) {
+    activeCheck = null;
+    sendStatus({ status: 'error', error: err.message, manual: check.manual });
+    return Promise.resolve(null);
+  }
+  check.promise = Promise.resolve(upstreamCheck).catch((err) => {
+    if (!check.statusReported) {
+      check.statusReported = true;
+      sendStatus({ status: 'error', error: err.message, manual: check.manual });
+    }
     return null;
+  }).finally(() => {
+    check.promiseSettled = true;
+    if (activeCheck === check && check.statusReported) activeCheck = null;
   });
+  return check.promise;
 }
 
 async function promptForUpdate(info, options = {}) {
@@ -208,13 +254,13 @@ function initAutoUpdater(win, options = {}) {
   // --- Events ---
 
   autoUpdater.on('checking-for-update', () => {
-    sendStatus({ status: 'checking', manual: currentCheckIsManual });
+    if (activeCheck) activeCheck.checkingReported = true;
+    sendStatus({ status: 'checking', manual: activeCheck?.manual === true });
   });
 
   autoUpdater.on('update-available', (info) => {
     const version = info.version;
-    const wasManual = currentCheckIsManual;
-    currentCheckIsManual = false;
+    const wasManual = completeCheckStatus();
 
     if (process.platform === 'linux') {
       // Linux: no auto-install, send download URL for manual update
@@ -228,8 +274,7 @@ function initAutoUpdater(win, options = {}) {
   });
 
   autoUpdater.on('update-not-available', () => {
-    const wasManual = currentCheckIsManual;
-    currentCheckIsManual = false;
+    const wasManual = completeCheckStatus();
     sendStatus({ status: 'up-to-date', manual: wasManual });
   });
 
@@ -246,10 +291,9 @@ function initAutoUpdater(win, options = {}) {
   });
 
   autoUpdater.on('error', (err) => {
-    releaseInstallRequest();
-    onInstallPreparationFailed();
-    const wasManual = currentCheckIsManual;
-    currentCheckIsManual = false;
+    const installFailed = releaseInstallRequest();
+    if (installFailed) onInstallPreparationFailed();
+    const wasManual = installFailed ? true : completeCheckStatus();
     isDownloading = false;
     sendStatus({ status: 'error', error: err.message, manual: wasManual });
   });
@@ -326,6 +370,7 @@ function stopAutoUpdater() {
   prepareForInstall = async () => true;
   onInstallPreparationFailed = () => {};
   releaseInstallRequest();
+  activeCheck = null;
   configuredFeedUrl = null;
 }
 
