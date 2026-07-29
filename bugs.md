@@ -2218,7 +2218,7 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 - Status: **Fixed**.
 
 - Resolution: Multipart file rows now distinguish a live browser `File` from remembered metadata. After a tab is restored, the row explicitly marks the remembered file as unavailable, asks the user to choose it again, and uses warning styling; reselecting a file restores the normal selected-file state.
-- Regression coverage: `test/bug-080-restored-multipart-files.test.js` covers restored metadata, live selected files, empty file rows, and the rendered warning/picker state.
+- Regression coverage: `test/bug-080-restored-multipart-files.test.js` covers restored metadata, live selected files, empty file rows, safe filename rendering in text and attributes, and keyboard access to the rendered warning/picker state.
 
 - Evidence: persistence deliberately strips `File` objects but retains filenames at `src/ui/app.js:6980-6989,7025-7033`. Restore renders the old name at `:7039-7051,6763-6767`, while serialization requires `field.file` at `:6851-6857`.
 - Impact: the tab looks ready to send but fails with “Choose a file”.

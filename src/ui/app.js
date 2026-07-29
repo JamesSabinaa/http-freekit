@@ -8849,8 +8849,8 @@
           : null;
         const valueEditor = filePresentation
           ? `<span class="send-file-picker">
-              <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input type="file" hidden onchange="updateSendFormFile(${index}, this.files[0])"></label>
-              <span class="send-file-name${filePresentation.missing ? ' send-file-name-missing' : ''}" title="${esc(filePresentation.title)}" aria-live="polite">${esc(filePresentation.displayName)}</span>
+              <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input class="send-file-input" type="file" onchange="updateSendFormFile(${index}, this.files[0])"></label>
+              <span class="send-file-name${filePresentation.missing ? ' send-file-name-missing' : ''}" title="${escapeHtmlAttribute(filePresentation.title)}" aria-live="polite">${esc(filePresentation.displayName)}</span>
             </span>`
           : `<input type="text" value="${esc(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
 

@@ -5,17 +5,21 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const styles = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'styles.css'), 'utf8');
 const presentationStart = source.indexOf('function getSendMultipartFilePresentation');
 const presentationEnd = source.indexOf('function addSendFormField', presentationStart);
 assert.notEqual(presentationStart, -1);
 assert.notEqual(presentationEnd, -1);
 
-function escapeHtml(value) {
+function escapeText(value) {
   return String(value)
     .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+function escapeAttribute(value) {
+  return escapeText(value).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
 function createRenderer(fields) {
@@ -26,7 +30,8 @@ function createRenderer(fields) {
         return id === 'sendFormBodyRows' ? container : null;
       }
     },
-    esc: escapeHtml,
+    esc: escapeText,
+    escapeHtmlAttribute: escapeAttribute,
     getSendBodyType: () => 'multipart',
     getActiveSendFormFields: () => fields
   };
@@ -81,14 +86,23 @@ test('restored multipart rows render an explicit warning and reselection control
   const renderer = createRenderer([{
     key: 'upload',
     type: 'file',
-    fileName: '<payload>.bin',
+    fileName: '<payload>" onmouseover="alert(1).bin',
     enabled: true
   }]);
 
   renderer.render();
 
-  assert.match(renderer.container.innerHTML, />Choose file again<input type="file"/);
+  assert.match(renderer.container.innerHTML, />Choose file again<input class="send-file-input" type="file"/);
+  assert.doesNotMatch(renderer.container.innerHTML, /<input[^>]*\shidden(?:\s|>|=)/);
   assert.match(renderer.container.innerHTML, /send-file-name send-file-name-missing/);
-  assert.match(renderer.container.innerHTML, /Unavailable after reload: &lt;payload&gt;\.bin/);
-  assert.doesNotMatch(renderer.container.innerHTML, /Unavailable after reload: <payload>\.bin/);
+  assert.match(renderer.container.innerHTML, /title="The browser did not retain &quot;&lt;payload&gt;&quot; onmouseover=&quot;alert\(1\)\.bin&quot;\./);
+  assert.doesNotMatch(renderer.container.innerHTML, /title="[^"]*" onmouseover=/);
+  assert.match(renderer.container.innerHTML, />Unavailable after reload: &lt;payload&gt;" onmouseover="alert\(1\)\.bin</);
+  assert.doesNotMatch(renderer.container.innerHTML, />Unavailable after reload: <payload>/);
+});
+
+test('the file input remains keyboard focusable with a visible focus indicator', () => {
+  assert.match(styles, /\.send-file-input\s*\{[^}]*opacity:\s*0;/s);
+  assert.doesNotMatch(styles, /\.send-file-input\s*\{[^}]*(?:display:\s*none|visibility:\s*hidden)/s);
+  assert.match(styles, /\.send-file-picker-label:focus-within\s*\{[^}]*outline:/s);
 });
