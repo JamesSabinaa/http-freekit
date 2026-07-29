@@ -294,9 +294,8 @@
           currentRequest?.trafficLifecycleId !== undefined) {
         restoredRequest.trafficLifecycleId = currentRequest.trafficLifecycleId;
       }
-      delete restoredRequest.pinned;
       delete restoredRequest._rendererOnly;
-      if (currentRequest?.pinned) restoredRequest.pinned = true;
+      if (restoredRequest.pinned !== true) delete restoredRequest.pinned;
       return restoredRequest;
     }
 
@@ -347,8 +346,9 @@
     }
 
     const appliedTrafficClearIds = new Set();
+    const appliedTrafficPinRevisions = new Map();
 
-    function applyTrafficCleared(clearId) {
+    function applyTrafficCleared(clearId, retainedTraffic) {
       if (clearId && appliedTrafficClearIds.has(clearId)) return false;
       if (clearId) {
         appliedTrafficClearIds.add(clearId);
@@ -357,12 +357,42 @@
         }
       }
 
-      requests = requests.filter(request => request.pinned);
+      let retainedIdentityKeys;
+      if (Array.isArray(retainedTraffic)) {
+        retainedIdentityKeys = new Set(retainedTraffic.map(identity => trafficRequestIdentityKey({
+          id: identity?.id,
+          trafficLifecycleId: identity?.trafficLifecycleId
+        })));
+        requests = requests.filter(request => retainedIdentityKeys.has(trafficRequestIdentityKey(request)));
+        for (const request of requests) request.pinned = true;
+      } else {
+        requests = requests.filter(request => request.pinned);
+        retainedIdentityKeys = new Set(requests.map(trafficRequestIdentityKey));
+      }
+      for (const identityKey of appliedTrafficPinRevisions.keys()) {
+        if (!retainedIdentityKeys.has(identityKey)) appliedTrafficPinRevisions.delete(identityKey);
+      }
       requestCounter = requests.length;
       vsRenderStart = -1;
       vsRenderEnd = -1;
       applyFilter();
       if (selectedRequestId !== null && !getSelectedTrafficRequest()) closeDetail();
+      return true;
+    }
+
+    function applyTrafficPinned(requestId, trafficLifecycleId, pinned, revision) {
+      const identityKey = trafficRequestIdentityKey({ id: requestId, trafficLifecycleId });
+      if (Number.isSafeInteger(revision)) {
+        const appliedRevision = appliedTrafficPinRevisions.get(identityKey);
+        if (appliedRevision !== undefined && revision <= appliedRevision) return false;
+        appliedTrafficPinRevisions.set(identityKey, revision);
+      }
+      const request = findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId);
+      if (!request) return false;
+      if (pinned === true) request.pinned = true;
+      else delete request.pinned;
+      if (isSelectedTrafficRequest(request)) updatePinIcon(request.pinned === true);
+      renderTraffic();
       return true;
     }
 
@@ -511,7 +541,15 @@
           handleInterceptorStatusEvent(msg.data);
           break;
         case 'traffic-cleared':
-          applyTrafficCleared(msg.clearId);
+          applyTrafficCleared(msg.clearId, msg.retainedTraffic);
+          break;
+        case 'traffic-pinned':
+          applyTrafficPinned(
+            msg.requestId,
+            msg.trafficLifecycleId,
+            msg.pinned,
+            msg.revision
+          );
           break;
         case 'traffic-deleted':
           applyTrafficDeleted(
@@ -1284,14 +1322,46 @@
       return findTrafficRequestByIdentity(requests, requestId, resolvedLifecycleId);
     }
 
-    function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    const trafficPinInFlight = new Set();
+
+    async function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
-      if (req) {
-        req.pinned = !req.pinned;
-        if (isSelectedTrafficRequest(req)) updatePinIcon(req.pinned);
-        renderTraffic();
-        toast(req.pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
+      if (!req) return;
+      const identityKey = trafficRequestIdentityKey(req);
+      if (trafficPinInFlight.has(identityKey)) return;
+      const pinned = req.pinned !== true;
+      trafficPinInFlight.add(identityKey);
+      try {
+        const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
+        const query = lifecycleId === null
+          ? ''
+          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+        const response = await fetch(
+          API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + '/pin' + query,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pinned })
+          }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success !== true || data.requestId !== req.id ||
+            normalizeTrafficLifecycleId(data.trafficLifecycleId) !== lifecycleId ||
+            data.pinned !== pinned || !Number.isSafeInteger(data.revision)) {
+          throw new Error(data.error || `Pin exchange returned HTTP ${response.status}`);
+        }
+        applyTrafficPinned(
+          data.requestId,
+          data.trafficLifecycleId,
+          data.pinned,
+          data.revision
+        );
+        toast(pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
+      } catch (err) {
+        toast('Failed to update pin: ' + err.message, 'error');
+      } finally {
+        trafficPinInFlight.delete(identityKey);
       }
     }
 
@@ -10060,10 +10130,11 @@
       try {
         const response = await fetch(API_BASE + '/api/traffic/clear', { method: 'POST' });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.success !== true || typeof data.clearId !== 'string') {
+        if (!response.ok || data.success !== true || typeof data.clearId !== 'string' ||
+            !Array.isArray(data.retainedTraffic)) {
           throw new Error(data.error || `Clear Traffic returned HTTP ${response.status}`);
         }
-        applyTrafficCleared(data.clearId);
+        applyTrafficCleared(data.clearId, data.retainedTraffic);
         toast('Traffic cleared', 'success');
       } catch (err) {
         toast('Failed to clear traffic: ' + err.message, 'error');

@@ -256,7 +256,7 @@ function createHarness() {
 
   const editableHelper = extract('function isEditableKeyboardTarget', 'function isClearTrafficShortcut');
   const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
-  const trafficAction = extract('function trafficActionRequest', 'function togglePinRequest');
+  const trafficAction = extract('function trafficActionRequest', 'const trafficPinInFlight');
   const menuBlock = extract('let activeContextMenu = null;', '// --- Traffic row context menu ---');
   const trafficMenu = extract('function showTrafficContextMenu', 'function copyResponseHeadersForMock');
   const headerMenu = extract('window._detailHeaders = { request: {}, response: {} };', '// ============ HELPERS ============');

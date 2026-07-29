@@ -15,6 +15,7 @@ function extract(startMarker, endMarker) {
 }
 
 const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+const pinState = extract('function applyTrafficPinned', 'function applyTrafficDeleted');
 const deletionState = extract('function applyTrafficDeleted', 'function connectWebSocket');
 const targetActions = extract('function trafficActionRequest', 'function resendSelectedRequest');
 const contextMenu = extract('function showTrafficContextMenu', 'function createMockFromRequest');
@@ -60,11 +61,20 @@ function createHarness() {
     toast: (message, type) => state.toasts.push({ message, type }),
     fetch: async (url, options) => {
       state.fetches.push({ url, options });
+      const pinMatch = url.match(/^\/api\/traffic\/([^/?]+)\/pin(?:\?|$)/);
       const trafficMatch = url.match(/^\/api\/traffic\/([^?]+)/);
       return {
         ok: true,
         status: 200,
-        json: async () => trafficMatch
+        json: async () => pinMatch
+          ? {
+              success: true,
+              requestId: decodeURIComponent(pinMatch[1]),
+              trafficLifecycleId: null,
+              pinned: JSON.parse(options.body).pinned,
+              revision: 1
+            }
+          : trafficMatch
           ? {
               success: true,
               requestId: decodeURIComponent(trafficMatch[1]),
@@ -88,6 +98,7 @@ function createHarness() {
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
     let requestCounter = requests.length;
+    const appliedTrafficPinRevisions = new Map();
     const wsExpandedConnections = new Set();
     function isWebSocketConnection(request) {
       return request?.protocol === 'ws' || request?.protocol === 'wss';
@@ -96,6 +107,7 @@ function createHarness() {
       return JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId]);
     }
     ${identityHelpers}
+    ${pinState}
     ${deletionState}
     ${targetActions}
     ${contextMenu}
@@ -142,10 +154,10 @@ test('context-menu breakpoint creation keeps targeting row A after selection mov
   });
 });
 
-test('context-menu pin toggles row A without changing selected row B or its detail icon', () => {
+test('context-menu pin toggles row A without changing selected row B or its detail icon', async () => {
   const harness = createHarness();
 
-  actionAfterSelectionMoves(harness, 'Pin exchange');
+  await actionAfterSelectionMoves(harness, 'Pin exchange');
 
   assert.equal(harness.requests[0].pinned, true);
   assert.equal(harness.requests[1].pinned, false);
@@ -171,7 +183,7 @@ test('default selected-row pin and delete behavior remains intact', async () => 
   const pinHarness = createHarness();
   pinHarness.api.select('A');
   pinHarness.state.detailId = 'A';
-  pinHarness.api.pinDefault();
+  await pinHarness.api.pinDefault();
   assert.equal(pinHarness.requests[0].pinned, true);
   assert.equal(pinHarness.state.pinIcon.style.transform, 'none');
 

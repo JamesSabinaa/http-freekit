@@ -168,7 +168,9 @@ export class ApiServer {
     this._clearedPendingTrafficIds = new Map();
     this._activeTrafficIdentities = new Set();
     this._deletedTrafficIdentities = new Map();
+    this._retainedTrafficGenerations = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
+    this._trafficPinRevision = 0;
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
       options.maxClearedPendingTrafficIds > 0
       ? options.maxClearedPendingTrafficIds
@@ -1201,8 +1203,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Clear traffic
     router.post('/api/traffic/clear', (req, res) => {
-      const clearId = this._clearTraffic();
-      res.json({ success: true, clearId });
+      const result = this._clearTraffic();
+      res.json({ success: true, ...result });
     });
 
     // Export traffic (JSON)
@@ -1268,6 +1270,43 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json(request);
     });
 
+    router.put('/api/traffic/:id/pin', (req, res) => {
+      if (typeof req.body?.pinned !== 'boolean') {
+        return res.status(400).json({ error: 'pinned must be a boolean' });
+      }
+      const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
+      if (lifecycleProvided &&
+          (typeof req.query.trafficLifecycleId !== 'string' || !req.query.trafficLifecycleId)) {
+        return res.status(400).json({ error: 'trafficLifecycleId must be a non-empty string' });
+      }
+
+      const candidates = this.trafficLog.filter(request =>
+        request.id === req.params.id &&
+        (!lifecycleProvided || request.trafficLifecycleId === req.query.trafficLifecycleId)
+      );
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'Request not found' });
+      }
+      if (candidates.length > 1) {
+        return res.status(409).json({
+          error: lifecycleProvided
+            ? 'Multiple requests have this traffic identity'
+            : 'Multiple request lifecycles have this ID; provide trafficLifecycleId'
+        });
+      }
+
+      const request = candidates[0];
+      request.pinned = req.body.pinned;
+      const pin = {
+        requestId: request.id,
+        trafficLifecycleId: request.trafficLifecycleId ?? null,
+        pinned: request.pinned,
+        revision: ++this._trafficPinRevision
+      };
+      this._broadcast({ type: 'traffic-pinned', ...pin });
+      res.json({ success: true, ...pin });
+    });
+
     router.delete('/api/traffic/:id', (req, res) => {
       const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
       if (lifecycleProvided &&
@@ -1304,6 +1343,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this.trafficLog = this.trafficLog.filter(row => row !== request && !isMatchingFrame(row));
 
       const identityKey = this._trafficIdentityKey(request.id, trafficLifecycleId);
+      this._retainedTrafficGenerations.delete(identityKey);
       const expiresAt = this._activeTrafficIdentities.has(identityKey)
         ? Infinity
         : this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
@@ -2806,8 +2846,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     delete data._trafficLifecycleComplete;
     delete data._preservePendingTrafficLifecycle;
     const trafficIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
+    const retainedGenerations = this._retainedTrafficGenerations.get(trafficIdentityKey);
+    const retainedAcrossClear = retainedGenerations?.has(trafficClearGeneration) === true;
     if (trafficClearGeneration !== undefined &&
-        trafficClearGeneration !== this._trafficClearGeneration) {
+        trafficClearGeneration !== this._trafficClearGeneration &&
+        !retainedAcrossClear) {
       this._activeTrafficIdentities.delete(trafficIdentityKey);
       if (data._update || trafficLifecycleToken !== undefined) {
         this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
@@ -2816,8 +2859,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       return;
     }
-    if (trafficLifecycleComplete) this._activeTrafficIdentities.delete(trafficIdentityKey);
-    else this._activeTrafficIdentities.add(trafficIdentityKey);
+    if (trafficLifecycleComplete) {
+      this._activeTrafficIdentities.delete(trafficIdentityKey);
+      this._retainedTrafficGenerations.delete(trafficIdentityKey);
+    } else {
+      this._activeTrafficIdentities.add(trafficIdentityKey);
+    }
 
     const deletedIdentityKey = trafficIdentityKey;
     const deletedParentIdentityKey = data.protocol === 'ws-frame'
@@ -2856,7 +2903,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           r.trafficLifecycleId === data.trafficLifecycleId)
       );
       if (idx !== -1) {
-        if (mergeUpdate) data = { ...this.trafficLog[idx], ...data };
+        const existing = this.trafficLog[idx];
+        if (mergeUpdate) data = { ...existing, ...data };
+        else if (Object.hasOwn(existing, 'pinned') && !Object.hasOwn(data, 'pinned')) {
+          data.pinned = existing.pinned;
+        }
         this.trafficLog[idx] = data;
         this._broadcast({ type: 'request-update', data });
       } else {
@@ -2869,6 +2920,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       this._maybeAutoRotateProxyOnError(data);
     } else {
       // New request (pending or complete)
+      this._retainedTrafficGenerations.delete(trafficIdentityKey);
       this._clearedPendingTrafficIds.delete(data.id);
       if (data._pending) {
         this._addPendingTrafficLifecycle(data.id, trafficLifecycleToken);
@@ -3112,19 +3164,45 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   _clearTraffic() {
     const clearId = crypto.randomUUID();
     const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
+    const retainedRequests = this.trafficLog.filter(request => request?.pinned === true);
+    const retainedTraffic = retainedRequests.map(request => ({
+      id: request.id,
+      trafficLifecycleId: request.trafficLifecycleId ?? null
+    }));
+    const retainedIdentityKeys = new Set(retainedRequests.map(request =>
+      this._trafficIdentityKey(request.id, request.trafficLifecycleId ?? null)
+    ));
+    const retainedPendingIds = new Set(retainedRequests.map(request => request.id));
     for (const id of this._pendingTrafficIds) {
+      if (retainedPendingIds.has(id)) continue;
       this._clearedPendingTrafficIds.delete(id);
       this._clearedPendingTrafficIds.set(id, expiresAt);
     }
+    const retainedGenerations = new Map();
+    for (const identityKey of retainedIdentityKeys) {
+      const generations = new Set(this._retainedTrafficGenerations.get(identityKey) || []);
+      if (this._activeTrafficIdentities.has(identityKey)) {
+        generations.add(this._trafficClearGeneration);
+      }
+      if (generations.size > 0) retainedGenerations.set(identityKey, generations);
+    }
+    this._retainedTrafficGenerations = retainedGenerations;
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this._pruneClearedPendingTrafficIds();
-    this._pendingTrafficIds.clear();
-    this._pendingTrafficLifecycles.clear();
-    this._activeTrafficIdentities.clear();
+    for (const id of this._pendingTrafficIds) {
+      if (!retainedPendingIds.has(id)) this._pendingTrafficIds.delete(id);
+    }
+    for (const id of this._pendingTrafficLifecycles.keys()) {
+      if (!retainedPendingIds.has(id)) this._pendingTrafficLifecycles.delete(id);
+    }
+    for (const identityKey of this._activeTrafficIdentities) {
+      if (!retainedIdentityKeys.has(identityKey)) this._activeTrafficIdentities.delete(identityKey);
+    }
     this._deletedTrafficIdentities.clear();
-    this.trafficLog = [];
-    this._broadcast({ type: 'traffic-cleared', clearId });
-    return clearId;
+    this.trafficLog = retainedRequests;
+    const result = { clearId, retainedTraffic };
+    this._broadcast({ type: 'traffic-cleared', ...result });
+    return result;
   }
 
   _pruneClearedPendingTrafficIds(now = this._clearedPendingTrafficNow()) {

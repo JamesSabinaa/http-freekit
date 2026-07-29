@@ -80,7 +80,7 @@ function createUpdateHarness(currentRequests, selectedRequestId, selectedRequest
   };
 }
 
-test('traffic dump preserves pins by ID while replacing server-owned fields', () => {
+test('traffic dump applies authoritative server pins while replacing server-owned fields', () => {
   const harness = createRestoreHarness([
     { id: 'keep', method: 'GET', stale: 'remove-me', pinned: true },
     { id: 'unpinned', method: 'GET' },
@@ -94,8 +94,8 @@ test('traffic dump preserves pins by ID while replacing server-owned fields', ()
   ]);
 
   assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
-    { id: 'keep', method: 'POST', statusCode: 201, pinned: true },
-    { id: 'unpinned', method: 'PATCH' },
+    { id: 'keep', method: 'POST', statusCode: 201 },
+    { id: 'unpinned', method: 'PATCH', pinned: true },
     { id: 'new', method: 'GET' }
   ]);
   assert.equal(harness.context.requestCounter, 3);
@@ -103,7 +103,7 @@ test('traffic dump preserves pins by ID while replacing server-owned fields', ()
   assert.equal(harness.closeCalls, 0);
   assert.equal(harness.detailPanel._request, harness.context.requests[0]);
   assert.equal(harness.rendered[0], harness.context.requests[0]);
-  assert.deepEqual(harness.pinStates, [true]);
+  assert.deepEqual(harness.pinStates, [false]);
 });
 
 test('traffic dump removes missing pinned requests and closes their selection', () => {
@@ -122,7 +122,7 @@ test('traffic dump removes missing pinned requests and closes their selection', 
   assert.deepEqual(harness.rendered, []);
 });
 
-test('request updates preserve renderer pin membership and rebind selected details', () => {
+test('request updates apply authoritative pin membership and rebind selected details', () => {
   const harness = createUpdateHarness([
     { id: 'selected', method: 'GET', stale: 'remove-me', pinned: true },
     { id: 'unpinned', method: 'GET' }
@@ -138,8 +138,8 @@ test('request updates preserve renderer pin membership and rebind selected detai
   });
 
   assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
-    { id: 'selected', method: 'POST', statusCode: 201, pinned: true },
-    { id: 'unpinned', method: 'PATCH', statusCode: 204 }
+    { id: 'selected', method: 'POST', statusCode: 201 },
+    { id: 'unpinned', method: 'PATCH', statusCode: 204, pinned: true }
   ]);
   assert.equal(harness.filterCalls, 2);
   assert.equal(harness.detailPanel._request, harness.context.requests[0]);
@@ -184,7 +184,7 @@ test('request updates target the matching reused-ID lifecycle', () => {
   assert.equal(harness.filterCalls, 2);
 });
 
-test('traffic dump preserves duplicate-ID pins and selection by lifecycle', () => {
+test('traffic dump applies duplicate-ID pins by exact lifecycle', () => {
   const harness = createRestoreHarness([
     { id: 'reused', trafficLifecycleId: 'life-1', path: '/old-1', pinned: true },
     { id: 'reused', trafficLifecycleId: 'life-2', path: '/old-2' }
@@ -192,12 +192,12 @@ test('traffic dump preserves duplicate-ID pins and selection by lifecycle', () =
 
   harness.context.callRestoreTrafficDump([
     { id: 'reused', trafficLifecycleId: 'life-1', path: '/new-1' },
-    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2' }
+    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2', pinned: true }
   ]);
 
   assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
-    { id: 'reused', trafficLifecycleId: 'life-1', path: '/new-1', pinned: true },
-    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2' }
+    { id: 'reused', trafficLifecycleId: 'life-1', path: '/new-1' },
+    { id: 'reused', trafficLifecycleId: 'life-2', path: '/new-2', pinned: true }
   ]);
   assert.equal(harness.closeCalls, 0);
   assert.equal(harness.detailPanel._request, harness.context.requests[1]);
@@ -217,7 +217,7 @@ test('traffic dump retains pinned renderer-only records after authoritative serv
   ]);
 
   assert.deepEqual(JSON.parse(JSON.stringify(harness.context.requests)), [
-    { id: 'server-b', method: 'POST' },
+    { id: 'server-b', method: 'POST', pinned: true },
     { id: 'server-a', method: 'GET' },
     { id: 'send', source: 'Send', _rendererOnly: true, pinned: true },
     { id: 'import', source: 'import', _rendererOnly: true, pinned: true }

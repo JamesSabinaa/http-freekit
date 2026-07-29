@@ -2182,7 +2182,10 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-076 — Medium — Pinned rows become backend-less ghosts after Clear
 
-- Status: **Open**.
+- Status: **Fixed**.
+
+- Resolution: Pin and unpin actions now mutate the exact authoritative traffic lifecycle through the management API and broadcast a revisioned state change to every renderer. Clear retains only server-pinned rows, returns and broadcasts their exact identities, and preserves pinned pending lifecycles so their later completion updates the retained row. Traffic dumps and request updates now treat server pin state as authoritative, keeping the UI, detail/search APIs, MCP, exports, and reloads consistent.
+- Regression coverage: `test/bug-076-pinned-clear.test.js` covers exact reused-ID pinning, validation and ambiguity rejection, API/search/export persistence, unpin-and-clear behavior, repeated clears of pending requests, renderer confirmation/failure behavior, stale-event rejection, and broadcast/response idempotency.
 
 - Evidence: the `traffic-cleared` handler preserves locally pinned entries at `src/ui/app.js:167-175`, but the server replaces its entire log with `[]` at `src/api/api-server.js:1314-1316`. Pin state itself is changed only in the renderer at `app.js:770-777`.
 - Impact: the UI retains a row that detail API, MCP, search, stats, and HAR export no longer know about; it disappears on reload.

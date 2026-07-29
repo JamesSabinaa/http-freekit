@@ -64,10 +64,15 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.success, true);
   assert.match(response.body.clearId, /^[0-9a-f-]{36}$/i);
+  assert.deepEqual(response.body.retainedTraffic, []);
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._pendingTrafficIds.size, 0);
   assert.equal(api._clearedPendingTrafficIds.has('pending'), true);
-  assert.deepEqual(broadcasts, [{ type: 'traffic-cleared', clearId: response.body.clearId }]);
+  assert.deepEqual(broadcasts, [{
+    type: 'traffic-cleared',
+    clearId: response.body.clearId,
+    retainedTraffic: []
+  }]);
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
@@ -85,7 +90,7 @@ assert.notEqual(messageStart, -1);
 assert.notEqual(messageEnd, -1);
 assert.match(
   rendererSource.slice(messageStart, messageEnd),
-  /case 'traffic-cleared':\s*applyTrafficCleared\(msg\.clearId\)/
+  /case 'traffic-cleared':\s*applyTrafficCleared\(msg\.clearId, msg\.retainedTraffic\)/
 );
 
 function rendererResponse(body, { ok = true, status = ok ? 200 : 500 } = {}) {
@@ -137,6 +142,12 @@ function createRenderer(fetch) {
         (request.trafficLifecycleId || null) === selectedRequestLifecycleId
       ) || null;
     }
+    function trafficRequestIdentityKey(request) {
+      return JSON.stringify([
+        String(request?.id || ''),
+        request?.trafficLifecycleId || null
+      ]);
+    }
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}
   `, context);
@@ -164,7 +175,11 @@ test('disconnected renderer clears through REST and reports confirmed success', 
   const calls = [];
   const renderer = createRenderer(async (url, options) => {
     calls.push({ url, options });
-    return rendererResponse({ success: true, clearId: 'disconnected-clear' });
+    return rendererResponse({
+      success: true,
+      clearId: 'disconnected-clear',
+      retainedTraffic: [{ id: 'keep-me', trafficLifecycleId: null }]
+    });
   });
 
   await renderer.context.clearTraffic();
@@ -212,13 +227,25 @@ test('connected renderer applies a REST clear and its broadcast exactly once in 
     const clearing = renderer.context.clearTraffic();
 
     if (first === 'broadcast') {
-      renderer.context.applyTrafficCleared('connected-clear');
-      pendingResponse.resolve(rendererResponse({ success: true, clearId: 'connected-clear' }));
+      renderer.context.applyTrafficCleared('connected-clear', [
+        { id: 'keep-me', trafficLifecycleId: null }
+      ]);
+      pendingResponse.resolve(rendererResponse({
+        success: true,
+        clearId: 'connected-clear',
+        retainedTraffic: [{ id: 'keep-me', trafficLifecycleId: null }]
+      }));
       await clearing;
     } else {
-      pendingResponse.resolve(rendererResponse({ success: true, clearId: 'connected-clear' }));
+      pendingResponse.resolve(rendererResponse({
+        success: true,
+        clearId: 'connected-clear',
+        retainedTraffic: [{ id: 'keep-me', trafficLifecycleId: null }]
+      }));
       await clearing;
-      renderer.context.applyTrafficCleared('connected-clear');
+      renderer.context.applyTrafficCleared('connected-clear', [
+        { id: 'keep-me', trafficLifecycleId: null }
+      ]);
     }
 
     const state = renderer.snapshot();
