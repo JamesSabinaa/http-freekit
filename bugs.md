@@ -2206,8 +2206,8 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 - Status: **Fixed**.
 
-- Resolution: The renderer now captures the active Send editor synchronously during `beforeunload` and merges it with every locally queued tab upsert and deletion. Successful unload persistence invalidates older queued writers, preserving the final URL, headers, body, body mode, format, and form state across Reload, New Session, and normal application exit without discarding other windows' tabs.
-- Regression coverage: `test/bug-079-send-unload-persistence.test.js` covers unsent edits, preservation of remote tabs, delayed stale writers, queued deletion tombstones, and unload-handler registration.
+- Resolution: The renderer now journals every Send-tab upsert and deletion synchronously under a unique per-operation key, captures the active editor during `beforeunload`, and replays outstanding journals through the normal cross-window Web Lock. Journal resolution preserves concurrent tabs, makes deletion tombstones authoritative over stale upserts, and prevents delayed writers from replacing the newest unload snapshot. Header text fields update the captured model on every input, and a failed final journal write cancels navigation instead of silently losing edits.
+- Regression coverage: `test/bug-079-send-unload-persistence.test.js` covers unsent edits without an unlocked workspace write, delayed stale writers, canceled/repeated unloads, concurrent remote tabs, queued deletion tombstones, focused header edits, storage failure, replay, and unload-handler registration; `test/bug-211-send-tab-concurrency.test.js` keeps cross-window merge and tombstone behavior covered.
 
 - Evidence: URL/body edits update only current DOM/editor state (`src/ui/index.html:230-235`, `src/ui/app.js:6651,6780-6821`). `saveSendTabState()` persists only during selected tab operations, sending, or cURL paste (`app.js:7009-7036,7124-7160,7329,9553`); there is no unload save.
 - Impact: unsent edits in the active tab silently revert after Reload, New Session, or application exit.

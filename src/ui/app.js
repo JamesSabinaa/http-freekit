@@ -8942,8 +8942,8 @@
         container.innerHTML = sendHeadersList.map((h, i) =>
           `<div class="send-header-row" style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
             <input type="checkbox" ${h.enabled !== false ? 'checked' : ''} onchange="toggleSendHeaderEnabled(${i}, this.checked)" title="Enable/disable this header" style="cursor:pointer;">
-            <input type="text" value="${esc(h.key)}" onchange="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
-            <input type="text" value="${esc(h.value)}" onchange="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
+            <input type="text" value="${esc(h.key)}" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
+            <input type="text" value="${esc(h.value)}" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
             <button class="btn" onclick="removeSendHeader(${i})" style="padding:2px 6px;font-size:12px;color:#ce3939;flex-shrink:0;" title="Remove header">&times;</button>
           </div>`
         ).join('');
@@ -9091,10 +9091,11 @@
     const SEND_TABS_LEGACY_KEY = 'http-freekit-send-tabs';
     const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
     const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace';
+    const SEND_TAB_JOURNAL_PREFIX = 'http-freekit-send-journal-v1:';
     let sendTabPersistenceQueue = Promise.resolve();
-    let sendTabPersistenceEpoch = 0;
-    const pendingSendTabUpserts = new Map();
-    const pendingSendTabDeletions = new Set();
+    let sendTabJournalCounter = 0;
+    let sendTabJournalTimestamp = 0;
+    const pendingSendTabJournals = new Map();
 
     function normalizeSendHeaderRows(headers) {
       const rows = [];
@@ -9306,37 +9307,212 @@
         : Promise.resolve().then(callback);
     }
 
-    function persistSendTabs() {
-      const tabsToUpsert = arguments[0] ?? [];
-      const deletedTabIds = arguments[1] ?? [];
-      const upserts = (Array.isArray(tabsToUpsert) ? tabsToUpsert : [])
-        .map(serializeSendTab)
-        .filter(Boolean);
-      const deletions = Array.isArray(deletedTabIds) ? deletedTabIds.slice() : [];
-      for (const tab of upserts) {
-        if (!pendingSendTabDeletions.has(tab.id)) pendingSendTabUpserts.set(tab.id, tab);
+    function compareSendTabJournals(first, second) {
+      return first.journal.createdAt - second.journal.createdAt ||
+        first.journal.token.localeCompare(second.journal.token);
+    }
+
+    function createSendTabJournal(id, tab, deleted = false) {
+      if (parseSendTabId(id) === null) return null;
+      let entropy = '';
+      try {
+        entropy = globalThis.crypto?.randomUUID?.() || '';
+      } catch {}
+      if (typeof entropy !== 'string' || !/^[a-z0-9-]{1,80}$/i.test(entropy)) {
+        entropy = Math.random().toString(36).slice(2);
       }
-      for (const id of deletions) {
-        if (parseSendTabId(id) === null) continue;
-        pendingSendTabDeletions.add(id);
-        pendingSendTabUpserts.delete(id);
+      const token = `${entropy}-${(++sendTabJournalCounter).toString(36)}`;
+      const clock = globalThis.performance;
+      const highResolutionNow = Number.isFinite(clock?.timeOrigin) && typeof clock?.now === 'function'
+        ? clock.timeOrigin + clock.now()
+        : Date.now();
+      const createdAt = Math.max(highResolutionNow, sendTabJournalTimestamp + 0.001);
+      sendTabJournalTimestamp = createdAt;
+      if (deleted) return { version: 1, token, createdAt, id, deleted: true };
+      const serializedTab = serializeSendTab(tab);
+      if (!serializedTab || serializedTab.id !== id) return null;
+      return { version: 1, token, createdAt, id, deleted: false, tab: serializedTab };
+    }
+
+    function normalizeStoredSendTabJournal(candidate) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+          candidate.version !== 1 || parseSendTabId(candidate.id) === null ||
+          typeof candidate.token !== 'string' ||
+          !/^[a-z0-9-]{1,128}$/i.test(candidate.token) ||
+          !Number.isFinite(candidate.createdAt) || candidate.createdAt < 0 ||
+          typeof candidate.deleted !== 'boolean') {
+        return null;
       }
-      const persistenceEpoch = sendTabPersistenceEpoch;
+      if (candidate.deleted) {
+        return {
+          version: 1,
+          token: candidate.token,
+          createdAt: candidate.createdAt,
+          id: candidate.id,
+          deleted: true
+        };
+      }
+      const tab = serializeSendTab(candidate.tab);
+      if (!tab || tab.id !== candidate.id) return null;
+      return {
+        version: 1,
+        token: candidate.token,
+        createdAt: candidate.createdAt,
+        id: candidate.id,
+        deleted: false,
+        tab
+      };
+    }
+
+    function getSendTabJournalKey(journal) {
+      return SEND_TAB_JOURNAL_PREFIX + encodeURIComponent(journal.id) + ':' +
+        encodeURIComponent(journal.token);
+    }
+
+    function readStoredSendTabJournals() {
+      const storage = globalThis.window?.localStorage;
+      if (!storage) return [];
+      let keys;
+      try {
+        keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+          .filter(key => typeof key === 'string' && key.startsWith(SEND_TAB_JOURNAL_PREFIX));
+      } catch {
+        return [];
+      }
+
+      const entries = [];
+      for (const key of keys) {
+        const saved = safeLocalStorageGet(key);
+        if (!saved) continue;
+        let journal = null;
+        try {
+          journal = normalizeStoredSendTabJournal(JSON.parse(saved));
+        } catch {}
+        if (!journal || key !== getSendTabJournalKey(journal)) {
+          if (typeof safeLocalStorageRemove === 'function') safeLocalStorageRemove(key, false);
+          continue;
+        }
+        entries.push({ key, journal, stored: true });
+      }
+      return entries;
+    }
+
+    function stageSendTabJournal(journal) {
+      if (!journal) return null;
+      const entry = {
+        key: getSendTabJournalKey(journal),
+        journal,
+        stored: false
+      };
+      pendingSendTabJournals.set(journal.id, entry);
+      entry.stored = safeLocalStorageSet(entry.key, JSON.stringify(journal));
+      return entry;
+    }
+
+    function latestSendTabJournals(entries) {
+      const latest = new Map();
+      for (const entry of entries) {
+        const current = latest.get(entry.journal.id);
+        // Tab IDs are never reused. Once any renderer records a deletion,
+        // later writes from a stale renderer must not resurrect that identity.
+        const deletionWins = entry.journal.deleted && !current?.journal.deleted;
+        const sameOperationTypeIsNewer = current &&
+          entry.journal.deleted === current.journal.deleted &&
+          compareSendTabJournals(current, entry) < 0;
+        if (!current || deletionWins || sameOperationTypeIsNewer) {
+          latest.set(entry.journal.id, entry);
+        }
+      }
+      return latest;
+    }
+
+    function overlaySendTabJournals(workspace, entries) {
+      const latest = latestSendTabJournals(entries);
+      const upserts = [];
+      const deletions = [];
+      for (const entry of latest.values()) {
+        if (entry.journal.deleted) deletions.push(entry.journal.id);
+        else upserts.push(entry.journal.tab);
+      }
+      return mergeStoredSendWorkspace(workspace, upserts, deletions);
+    }
+
+    function removeCommittedSendTabJournals(entries) {
+      const ordered = entries.slice().sort(compareSendTabJournals);
+      for (const entry of ordered) {
+        // Remove oldest-first. If cleanup fails, retaining the newest entry keeps
+        // restore ordering authoritative instead of exposing an older survivor.
+        if (!safeLocalStorageRemove(entry.key, false)) return false;
+      }
+      return true;
+    }
+
+    function enqueueSendTabJournalPersistence(operationEntries) {
+      const operationIds = new Set(operationEntries.map(entry => entry.journal.id));
       const persist = () => withSendTabStorageLock(() => {
-        if (persistenceEpoch !== sendTabPersistenceEpoch) return readStoredSendWorkspace();
+        const storedEntries = readStoredSendTabJournals()
+          .filter(entry => operationIds.has(entry.journal.id));
+        const entriesById = new Map();
+        for (const entry of storedEntries) {
+          if (!entriesById.has(entry.journal.id)) entriesById.set(entry.journal.id, []);
+          entriesById.get(entry.journal.id).push(entry);
+        }
+        for (const operationEntry of operationEntries) {
+          if (operationEntry.stored || entriesById.has(operationEntry.journal.id)) continue;
+          entriesById.set(operationEntry.journal.id, [operationEntry]);
+        }
+
+        const effectiveEntries = latestSendTabJournals(
+          Array.from(entriesById.values()).flat()
+        );
+        const upserts = [];
+        const deletions = [];
+        for (const entry of effectiveEntries.values()) {
+          if (entry.journal.deleted) deletions.push(entry.journal.id);
+          else upserts.push(entry.journal.tab);
+        }
         const workspace = mergeStoredSendWorkspace(readStoredSendWorkspace(), upserts, deletions);
         const saved = safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace));
         if (saved) {
-          for (const tab of upserts) {
-            if (pendingSendTabUpserts.get(tab.id) === tab) pendingSendTabUpserts.delete(tab.id);
+          for (const id of operationIds) {
+            const storedForId = entriesById.get(id)?.filter(entry => entry.stored) || [];
+            if (storedForId.length > 0) removeCommittedSendTabJournals(storedForId);
+            const pendingEntry = pendingSendTabJournals.get(id);
+            const resolvedKeys = new Set([
+              ...storedForId.map(entry => entry.key),
+              ...operationEntries.filter(entry => entry.journal.id === id).map(entry => entry.key)
+            ]);
+            if (pendingEntry && resolvedKeys.has(pendingEntry.key)) {
+              pendingSendTabJournals.delete(id);
+            }
           }
-          for (const id of deletions) pendingSendTabDeletions.delete(id);
         }
         return workspace;
       });
       const pending = sendTabPersistenceQueue.then(persist, persist);
       sendTabPersistenceQueue = pending.catch(() => {});
       return pending;
+    }
+
+    function persistSendTabs() {
+      const tabsToUpsert = arguments[0] ?? [];
+      const deletedTabIds = arguments[1] ?? [];
+      const deletions = new Set((Array.isArray(deletedTabIds) ? deletedTabIds : [])
+        .filter(id => parseSendTabId(id) !== null));
+      const upserts = (Array.isArray(tabsToUpsert) ? tabsToUpsert : [])
+        .map(serializeSendTab)
+        .filter(tab => tab && !deletions.has(tab.id));
+      const operationEntries = [];
+      for (const tab of upserts) {
+        const entry = stageSendTabJournal(createSendTabJournal(tab.id, tab));
+        if (entry) operationEntries.push(entry);
+      }
+      for (const id of deletions) {
+        const entry = stageSendTabJournal(createSendTabJournal(id, null, true));
+        if (entry) operationEntries.push(entry);
+      }
+      if (operationEntries.length === 0) return Promise.resolve(readStoredSendWorkspace());
+      return enqueueSendTabJournalPersistence(operationEntries);
     }
 
     function preserveSendTabTransientState(storedTab, liveTab) {
@@ -9380,7 +9556,10 @@
     function handleSendTabStorageEvent(event) {
       if (event.key !== SEND_TABS_WORKSPACE_KEY || !event.newValue) return;
       try {
-        applyStoredSendWorkspace(JSON.parse(event.newValue));
+        applyStoredSendWorkspace(overlaySendTabJournals(
+          JSON.parse(event.newValue),
+          readStoredSendTabJournals()
+        ));
       } catch {}
     }
 
@@ -9405,37 +9584,48 @@
       return persistSendTabs([tab]);
     }
 
-    function persistActiveSendTabBeforeUnload() {
+    function persistActiveSendTabBeforeUnload(event) {
       const tab = serializeSendTab(captureActiveSendTabState());
-      if (tab && !pendingSendTabDeletions.has(tab.id)) {
-        pendingSendTabUpserts.set(tab.id, tab);
+      if (tab) {
+        stageSendTabJournal(createSendTabJournal(tab.id, tab));
       }
-      const workspace = mergeStoredSendWorkspace(
-        readStoredSendWorkspace(),
-        Array.from(pendingSendTabUpserts.values()),
-        Array.from(pendingSendTabDeletions)
-      );
-      // beforeunload cannot await the cross-window lock. This final synchronous
-      // merge includes every queued local change, then invalidates older queued
-      // writers so they cannot replace the just-captured editor contents.
-      if (safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace))) {
-        sendTabPersistenceEpoch++;
+
+      let saved = true;
+      for (const entry of pendingSendTabJournals.values()) {
+        if (!entry.stored) {
+          entry.stored = safeLocalStorageSet(entry.key, JSON.stringify(entry.journal));
+        }
+        if (!entry.stored) saved = false;
       }
+      if (!saved) {
+        event?.preventDefault?.();
+        if (event) event.returnValue = '';
+        return false;
+      }
+      return true;
     }
 
     function restoreSendTabs() {
       try {
-        const workspace = readStoredSendWorkspace();
+        const journalEntries = readStoredSendTabJournals();
+        const workspace = overlaySendTabJournals(readStoredSendWorkspace(), journalEntries);
+        let replacementTab = null;
         if (workspace.tabs.length > 0) {
           sendTabs = workspace.tabs;
+        } else if (journalEntries.length > 0) {
+          sendTabs = [];
+          replacementTab = createEmptySendTab();
+          sendTabs = [replacementTab];
+        }
+        if (workspace.tabs.length > 0 || journalEntries.length > 0) {
           sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, parseSendTabId(tab.id) || 0), 0);
           const savedActive = safeLocalStorageGet('http-freekit-send-active');
-          if (savedActive && sendTabs.find(t => t.id === savedActive)) {
-            activeSendTab = savedActive;
-          } else {
-            activeSendTab = sendTabs[0].id;
-          }
+          activeSendTab = savedActive && sendTabs.some(tab => tab.id === savedActive)
+            ? savedActive
+            : sendTabs[0].id;
         }
+        if (journalEntries.length > 0) enqueueSendTabJournalPersistence(journalEntries);
+        if (replacementTab) persistSendTabs([replacementTab]);
       } catch {}
     }
 

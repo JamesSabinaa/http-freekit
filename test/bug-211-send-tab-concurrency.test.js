@@ -43,8 +43,11 @@ function createLockManager() {
 function createStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
   return {
+    get length() { return values.size; },
+    key(index) { return Array.from(values.keys())[index] ?? null; },
     getItem(key) { return values.has(key) ? values.get(key) : null; },
     setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
     json(key) {
       const value = values.get(key);
       return value === undefined ? null : JSON.parse(value);
@@ -56,9 +59,14 @@ function createRenderer(storage, locks, uuid) {
   const context = {
     crypto: { randomUUID: () => typeof uuid === 'function' ? uuid() : uuid },
     navigator: { locks },
+    window: { localStorage: storage },
     safeLocalStorageGet: (key, fallback = null) => storage.getItem(key) ?? fallback,
     safeLocalStorageSet: (key, value) => {
       storage.setItem(key, value);
+      return true;
+    },
+    safeLocalStorageRemove: key => {
+      storage.removeItem(key);
       return true;
     },
     loadSendTabState() {},
