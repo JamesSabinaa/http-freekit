@@ -82,16 +82,15 @@ test('pin and Clear retain one authoritative lifecycle across API consumers and 
   const cleared = await requestJson(port, '/api/traffic/clear', { method: 'POST' });
   assert.equal(cleared.statusCode, 200);
   assert.equal(cleared.body.success, true);
-  assert.deepEqual(cleared.body.retainedTraffic, [
-    { id: 'shared', trafficLifecycleId: 'old' }
-  ]);
-  assert.deepEqual(api.trafficLog, [{
+  const retainedRequest = {
     id: 'shared',
     trafficLifecycleId: 'old',
     method: 'GET',
     host: 'pinned.test',
     pinned: true
-  }]);
+  };
+  assert.deepEqual(cleared.body.retainedTraffic, [retainedRequest]);
+  assert.deepEqual(api.trafficLog, [retainedRequest]);
 
   const detail = await requestJson(port, '/api/traffic/shared');
   assert.equal(detail.body.pinned, true);
@@ -110,7 +109,7 @@ test('pin and Clear retain one authoritative lifecycle across API consumers and 
     {
       type: 'traffic-cleared',
       clearId: cleared.body.clearId,
-      retainedTraffic: [{ id: 'shared', trafficLifecycleId: 'old' }]
+      retainedTraffic: [retainedRequest]
     }
   ]);
 });
@@ -145,6 +144,43 @@ test('pin mutations reject ambiguous identities and invalid state without changi
     { id: 'shared', trafficLifecycleId: 'second' }
   ]);
   assert.deepEqual(broadcasts, []);
+});
+
+test('WebSocket frames cannot become independently pinned or import invalid pin state', async t => {
+  const api = createApi();
+  api.trafficLog = [{
+    id: 'frame',
+    trafficLifecycleId: 'frame-life',
+    parentId: 'socket',
+    protocol: 'ws-frame'
+  }];
+  api._broadcast = () => {};
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+
+  const pin = await requestJson(port, '/api/traffic/frame/pin?trafficLifecycleId=frame-life', {
+    method: 'PUT',
+    body: { pinned: true }
+  });
+  assert.equal(pin.statusCode, 400);
+  assert.match(pin.body.error, /pin the parent connection/);
+  assert.equal(api.trafficLog[0].pinned, undefined);
+
+  const invalidBoolean = api._getTrafficImportValidationError([{
+    id: 'imported',
+    timestamp: Date.now(),
+    pinned: 'yes'
+  }]);
+  assert.equal(invalidBoolean, 'requests[0].pinned must be a boolean');
+  const pinnedFrame = api._getTrafficImportValidationError([{
+    id: 'imported-frame',
+    parentId: 'socket',
+    protocol: 'ws-frame',
+    timestamp: Date.now(),
+    pinned: true
+  }]);
+  assert.equal(pinnedFrame, 'requests[0].pinned cannot be true for WebSocket frames');
 });
 
 test('unpinning makes a previously retained exchange eligible for the next Clear', async t => {
@@ -205,15 +241,58 @@ test('a pinned pending lifecycle can complete after repeated Clear operations', 
   assert.equal(api._retainedTrafficGenerations.size, 0);
 });
 
+test('a pinned WebSocket keeps post-Clear frames without growing generation history', () => {
+  const api = createApi();
+  const lifecycleToken = Symbol('socket');
+  const socket = {
+    id: 'socket',
+    trafficLifecycleId: 'socket-life',
+    _trafficLifecycleToken: lifecycleToken,
+    _pending: true,
+    protocol: 'ws'
+  };
+  api._broadcast = () => {};
+  api.onTrafficEvent(socket);
+  const originalGeneration = socket._trafficClearGeneration;
+  api.trafficLog[0].pinned = true;
+
+  api._clearTraffic();
+  api._clearTraffic();
+  api._clearTraffic();
+
+  const retainedGenerations = api._retainedTrafficGenerations.get(
+    api._trafficIdentityKey('socket', 'socket-life')
+  );
+  assert.equal(retainedGenerations.size, 1);
+  assert.equal(retainedGenerations.has(originalGeneration), true);
+
+  api.onTrafficEvent({
+    id: 'frame',
+    trafficLifecycleId: 'frame-life',
+    parentId: 'socket',
+    parentTrafficLifecycleId: 'socket-life',
+    _trafficClearGeneration: originalGeneration,
+    protocol: 'ws-frame',
+    requestBody: 'hello'
+  });
+
+  assert.deepEqual(api.trafficLog.map(request => request.id), ['socket', 'frame']);
+  assert.equal(api.trafficLog[1].requestBody, 'hello');
+});
+
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const identityStart = rendererSource.indexOf('function normalizeTrafficLifecycleId(');
 const identityEnd = rendererSource.indexOf('function isSelectedTrafficRequest(', identityStart);
+const mergeStart = rendererSource.indexOf('function mergeServerTrafficRequest(');
+const mergeEnd = rendererSource.indexOf('function mergeTrafficDumpPins(', mergeStart);
 const stateStart = rendererSource.indexOf('const appliedTrafficClearIds = new Set();');
 const stateEnd = rendererSource.indexOf('function connectWebSocket()', stateStart);
 const actionStart = rendererSource.indexOf('const trafficPinInFlight = new Set();');
 const actionEnd = rendererSource.indexOf('function updatePinIcon(', actionStart);
 assert.notEqual(identityStart, -1);
 assert.notEqual(identityEnd, -1);
+assert.notEqual(mergeStart, -1);
+assert.notEqual(mergeEnd, -1);
 assert.notEqual(stateStart, -1);
 assert.notEqual(stateEnd, -1);
 assert.notEqual(actionStart, -1);
@@ -233,6 +312,7 @@ function createRenderer(fetch) {
   const toasts = [];
   const fetchCalls = [];
   let renders = 0;
+  const shownDetails = [];
   const pinIcons = [];
   const context = {
     API_BASE: '',
@@ -243,6 +323,7 @@ function createRenderer(fetch) {
     },
     toast: (message, type) => toasts.push({ message, type }),
     renderTraffic: () => { renders++; },
+    showDetail: request => shownDetails.push(structuredClone(request)),
     updatePinIcon: pinned => pinIcons.push(pinned),
     applyFilter: () => {},
     closeDetail: () => {},
@@ -262,6 +343,7 @@ function createRenderer(fetch) {
     let vsRenderStart = 0;
     let vsRenderEnd = 0;
     ${rendererSource.slice(identityStart, identityEnd)}
+    ${rendererSource.slice(mergeStart, mergeEnd)}
     function isSelectedTrafficRequest(request) {
       return selectedRequestId !== null && trafficRequestMatchesIdentity(
         request,
@@ -290,12 +372,14 @@ function createRenderer(fetch) {
       selectedRequestLifecycleId,
       inFlight: trafficPinInFlight.size
     });
+    globalThis.setRequests = value => { requests = value; };
   `, context);
   return {
     context,
     fetchCalls,
     toasts,
     pinIcons,
+    shownDetails,
     get renders() { return renders; },
     snapshot() {
       return JSON.parse(JSON.stringify(context.snapshot()));
@@ -337,6 +421,55 @@ test('renderer pins only after authoritative confirmation and applies broadcast/
   assert.deepEqual(renderer.snapshot().requests, [
     { id: 'shared', trafficLifecycleId: 'old', pinned: true }
   ]);
+});
+
+test('renderer replaces stale rows and restores missed retained rows from Clear', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.setRequests([
+    { id: 'shared', trafficLifecycleId: 'old', method: 'GET', _pending: true },
+    { id: 'removed', trafficLifecycleId: 'gone', method: 'DELETE' }
+  ]);
+
+  renderer.context.applyTrafficCleared('authoritative-clear', [
+    {
+      id: 'shared',
+      trafficLifecycleId: 'old',
+      method: 'GET',
+      statusCode: 200,
+      pinned: true
+    },
+    {
+      id: 'missed',
+      trafficLifecycleId: 'missed-life',
+      method: 'POST',
+      statusCode: 201,
+      pinned: true
+    }
+  ]);
+
+  assert.deepEqual(renderer.snapshot().requests, [
+    {
+      id: 'shared',
+      trafficLifecycleId: 'old',
+      method: 'GET',
+      statusCode: 200,
+      pinned: true
+    },
+    {
+      id: 'missed',
+      trafficLifecycleId: 'missed-life',
+      method: 'POST',
+      statusCode: 201,
+      pinned: true
+    }
+  ]);
+  assert.deepEqual(renderer.shownDetails, [{
+    id: 'shared',
+    trafficLifecycleId: 'old',
+    method: 'GET',
+    statusCode: 200,
+    pinned: true
+  }]);
 });
 
 test('renderer preserves pin state when the authoritative mutation fails', async () => {

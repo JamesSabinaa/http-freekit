@@ -359,12 +359,19 @@
 
       let retainedIdentityKeys;
       if (Array.isArray(retainedTraffic)) {
-        retainedIdentityKeys = new Set(retainedTraffic.map(identity => trafficRequestIdentityKey({
-          id: identity?.id,
-          trafficLifecycleId: identity?.trafficLifecycleId
-        })));
-        requests = requests.filter(request => retainedIdentityKeys.has(trafficRequestIdentityKey(request)));
-        for (const request of requests) request.pinned = true;
+        const currentByIdentity = new Map(
+          requests.map(request => [trafficRequestIdentityKey(request), request])
+        );
+        requests = retainedTraffic.flatMap(retainedRequest => {
+          const identityKey = trafficRequestIdentityKey(retainedRequest);
+          const currentRequest = currentByIdentity.get(identityKey);
+          if (retainedRequest?.pinned === true) {
+            return [mergeServerTrafficRequest(currentRequest, retainedRequest)];
+          }
+          // Compatibility with older servers that returned identities only.
+          return currentRequest ? [{ ...currentRequest, pinned: true }] : [];
+        });
+        retainedIdentityKeys = new Set(requests.map(trafficRequestIdentityKey));
       } else {
         requests = requests.filter(request => request.pinned);
         retainedIdentityKeys = new Set(requests.map(trafficRequestIdentityKey));
@@ -376,7 +383,9 @@
       vsRenderStart = -1;
       vsRenderEnd = -1;
       applyFilter();
-      if (selectedRequestId !== null && !getSelectedTrafficRequest()) closeDetail();
+      const selectedRequest = getSelectedTrafficRequest();
+      if (selectedRequestId !== null && !selectedRequest) closeDetail();
+      else if (selectedRequest) showDetail(selectedRequest);
       return true;
     }
 

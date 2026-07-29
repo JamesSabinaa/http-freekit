@@ -78,12 +78,16 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const stateStart = rendererSource.indexOf('const appliedTrafficClearIds = new Set();');
 const stateEnd = rendererSource.indexOf('function connectWebSocket()', stateStart);
+const mergeStart = rendererSource.indexOf('function mergeServerTrafficRequest(');
+const mergeEnd = rendererSource.indexOf('function mergeTrafficDumpPins(', mergeStart);
 const actionStart = rendererSource.indexOf('let trafficClearInFlight = false;');
 const actionEnd = rendererSource.indexOf('async function exportTraffic', actionStart);
 const messageStart = rendererSource.indexOf('function handleWsMessage(msg)');
 const messageEnd = rendererSource.indexOf('// ============ TRAFFIC ============', messageStart);
 assert.notEqual(stateStart, -1);
 assert.notEqual(stateEnd, -1);
+assert.notEqual(mergeStart, -1);
+assert.notEqual(mergeEnd, -1);
 assert.notEqual(actionStart, -1);
 assert.notEqual(actionEnd, -1);
 assert.notEqual(messageStart, -1);
@@ -148,6 +152,8 @@ function createRenderer(fetch) {
         request?.trafficLifecycleId || null
       ]);
     }
+    function showDetail() {}
+    ${rendererSource.slice(mergeStart, mergeEnd)}
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}
   `, context);

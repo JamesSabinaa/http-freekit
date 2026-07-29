@@ -655,7 +655,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     const capturedSizeFields = ['requestBodyCapturedSize', 'responseBodyCapturedSize'];
     const numberFields = ['statusCode', 'duration', ...bodySizeFields, ...capturedSizeFields];
     const booleanFields = [
-      'requestBodyTruncated', 'responseBodyTruncated', 'breakpointActive'
+      'requestBodyTruncated', 'responseBodyTruncated', 'breakpointActive', 'pinned'
     ];
 
     for (let index = 0; index < requests.length; index++) {
@@ -682,6 +682,9 @@ print(json.dumps({"providers": get_proxy_providers()}))
       if (request.protocol === 'ws-frame' &&
           (typeof request.parentId !== 'string' || request.parentId.length === 0)) {
         return `requests[${index}].parentId must be a non-empty string for WebSocket frames`;
+      }
+      if (request.protocol === 'ws-frame' && request.pinned === true) {
+        return `requests[${index}].pinned cannot be true for WebSocket frames`;
       }
       for (const field of numberFields) {
         if (request[field] !== undefined && request[field] !== null && !Number.isFinite(request[field])) {
@@ -1296,6 +1299,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
 
       const request = candidates[0];
+      if (req.body.pinned && request.protocol === 'ws-frame') {
+        return res.status(400).json({
+          error: 'WebSocket frames cannot be pinned; pin the parent connection instead'
+        });
+      }
       request.pinned = req.body.pinned;
       const pin = {
         requestId: request.id,
@@ -2846,8 +2854,15 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     delete data._trafficLifecycleComplete;
     delete data._preservePendingTrafficLifecycle;
     const trafficIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
+    const parentTrafficIdentityKey = data.protocol === 'ws-frame'
+      ? this._trafficIdentityKey(data.parentId, data.parentTrafficLifecycleId ?? null)
+      : null;
     const retainedGenerations = this._retainedTrafficGenerations.get(trafficIdentityKey);
-    const retainedAcrossClear = retainedGenerations?.has(trafficClearGeneration) === true;
+    const retainedParentGenerations = parentTrafficIdentityKey
+      ? this._retainedTrafficGenerations.get(parentTrafficIdentityKey)
+      : null;
+    const retainedAcrossClear = retainedGenerations?.has(trafficClearGeneration) === true ||
+      retainedParentGenerations?.has(trafficClearGeneration) === true;
     if (trafficClearGeneration !== undefined &&
         trafficClearGeneration !== this._trafficClearGeneration &&
         !retainedAcrossClear) {
@@ -2867,9 +2882,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
 
     const deletedIdentityKey = trafficIdentityKey;
-    const deletedParentIdentityKey = data.protocol === 'ws-frame'
-      ? this._trafficIdentityKey(data.parentId, data.parentTrafficLifecycleId ?? null)
-      : null;
+    const deletedParentIdentityKey = parentTrafficIdentityKey;
     const deletedOwnIdentity = this._deletedTrafficIdentities.has(deletedIdentityKey);
     if (deletedOwnIdentity ||
         (deletedParentIdentityKey && this._deletedTrafficIdentities.has(deletedParentIdentityKey))) {
@@ -3164,11 +3177,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   _clearTraffic() {
     const clearId = crypto.randomUUID();
     const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
-    const retainedRequests = this.trafficLog.filter(request => request?.pinned === true);
-    const retainedTraffic = retainedRequests.map(request => ({
-      id: request.id,
-      trafficLifecycleId: request.trafficLifecycleId ?? null
-    }));
+    const retainedRequests = this.trafficLog.filter(request =>
+      request?.pinned === true && request.protocol !== 'ws-frame'
+    );
+    const retainedTraffic = retainedRequests.map(request => ({ ...request }));
     const retainedIdentityKeys = new Set(retainedRequests.map(request =>
       this._trafficIdentityKey(request.id, request.trafficLifecycleId ?? null)
     ));
@@ -3180,11 +3192,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
     const retainedGenerations = new Map();
     for (const identityKey of retainedIdentityKeys) {
-      const generations = new Set(this._retainedTrafficGenerations.get(identityKey) || []);
       if (this._activeTrafficIdentities.has(identityKey)) {
-        generations.add(this._trafficClearGeneration);
+        const existingGeneration = this._retainedTrafficGenerations
+          .get(identityKey)?.values().next().value;
+        retainedGenerations.set(identityKey, new Set([
+          existingGeneration ?? this._trafficClearGeneration
+        ]));
       }
-      if (generations.size > 0) retainedGenerations.set(identityKey, generations);
     }
     this._retainedTrafficGenerations = retainedGenerations;
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
