@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 const INTERNET_SETTINGS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+const WINHTTP_RECOVERY_FILENAME = 'winhttp-proxy-recovery.json';
 
 export class SystemProxyInterceptor {
   constructor(options = {}) {
@@ -16,12 +17,21 @@ export class SystemProxyInterceptor {
     this.restoreNotificationPending = false;
     this.restoreBaselineSettings = null;
     this.recoveryBlockedReason = null;
+    this.previousWinHttpSettings = null;
+    this.activeWinHttpSettings = null;
+    this.pendingWinHttpRecovery = null;
+    this.winHttpRestorePending = false;
+    this.winHttpRecoveryBlockedReason = null;
     this.ca = options.ca || null;
     this._processIdentityLookup = options.processIdentityLookup
       || (pid => this._queryWindowsProcessIdentity(pid));
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'system-proxy-recovery.json')
       : options.recoveryFile || null;
+    this.winHttpRecoveryFile = options.dataDir
+      ? path.join(options.dataDir, WINHTTP_RECOVERY_FILENAME)
+      : options.winHttpRecoveryFile
+        || (options.recoveryFile ? `${options.recoveryFile}.winhttp` : null);
   }
 
   _isWindows() {
@@ -38,7 +48,10 @@ export class SystemProxyInterceptor {
 
   async needsDeactivation() {
     return this.active || Boolean(
-      this.recoveryBlockedReason || (this.previousSettings && this.pendingRecovery)
+      this.recoveryBlockedReason
+      || this.winHttpRecoveryBlockedReason
+      || (this.previousSettings && this.pendingRecovery)
+      || (this.previousWinHttpSettings && this.pendingWinHttpRecovery)
     );
   }
 
@@ -53,6 +66,102 @@ export class SystemProxyInterceptor {
 
   _execRegistry(args, options) {
     return this._execFile('reg', args, options);
+  }
+
+  _normalizeWinHttpSettings(settings) {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error('WinHTTP settings are missing or malformed');
+    }
+    if (settings.scope !== 'user' && settings.scope !== 'machine') {
+      throw new Error('WinHTTP settings contain an invalid scope');
+    }
+    for (const field of ['proxy', 'proxyBypass', 'autoConfigUrl']) {
+      if (typeof settings[field] !== 'string') {
+        throw new Error(`WinHTTP settings contain an invalid ${field} value`);
+      }
+    }
+    if (typeof settings.autoDetect !== 'boolean') {
+      throw new Error('WinHTTP settings contain an invalid autoDetect value');
+    }
+    return {
+      scope: settings.scope,
+      proxy: settings.proxy,
+      proxyBypass: settings.proxyBypass,
+      autoConfigUrl: settings.autoConfigUrl,
+      autoDetect: settings.autoDetect
+    };
+  }
+
+  _winHttpSettingsEqual(left, right) {
+    if (!left || !right) return false;
+    return ['scope', 'proxy', 'proxyBypass', 'autoConfigUrl', 'autoDetect']
+      .every(field => left[field] === right[field]);
+  }
+
+  async _readWinHttpSettings() {
+    const output = await this._execFile('netsh.exe', ['winhttp', 'show', 'advproxy'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true
+    });
+    const serialized = String(output);
+    const start = serialized.indexOf('{');
+    const end = serialized.lastIndexOf('}');
+    if (start === -1 || end < start) {
+      throw new Error('netsh did not return WinHTTP advanced proxy settings as JSON');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(serialized.slice(start, end + 1));
+    } catch (err) {
+      throw new Error(`netsh returned invalid WinHTTP proxy JSON: ${err.message}`);
+    }
+    for (const field of [
+      'ProxyIsEnabled',
+      'AutoConfigIsEnabled',
+      'AutoDetect',
+      'PerUserProxySettings'
+    ]) {
+      if (typeof parsed[field] !== 'boolean') {
+        throw new Error(`netsh WinHTTP output is missing boolean ${field}`);
+      }
+    }
+    if (parsed.ProxyIsEnabled && typeof parsed.Proxy !== 'string') {
+      throw new Error('netsh WinHTTP output is missing the enabled proxy value');
+    }
+    if (parsed.AutoConfigIsEnabled && typeof parsed.AutoconfigUrl !== 'string') {
+      throw new Error('netsh WinHTTP output is missing the enabled autoconfig URL');
+    }
+    return this._normalizeWinHttpSettings({
+      scope: parsed.PerUserProxySettings ? 'user' : 'machine',
+      proxy: parsed.ProxyIsEnabled ? parsed.Proxy : '',
+      proxyBypass: parsed.ProxyIsEnabled && typeof parsed.ProxyBypass === 'string'
+        ? parsed.ProxyBypass
+        : '',
+      autoConfigUrl: parsed.AutoConfigIsEnabled ? parsed.AutoconfigUrl : '',
+      autoDetect: parsed.AutoDetect
+    });
+  }
+
+  async _setWinHttpSettings(settings) {
+    const normalized = this._normalizeWinHttpSettings(settings);
+    const serialized = JSON.stringify({
+      Proxy: normalized.proxy,
+      ProxyBypass: normalized.proxyBypass,
+      AutoconfigUrl: normalized.autoConfigUrl,
+      AutoDetect: normalized.autoDetect
+    });
+    await this._execFile('netsh.exe', [
+      'winhttp',
+      'set',
+      'advproxy',
+      `setting-scope=${normalized.scope}`,
+      `settings=${serialized}`
+    ], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    const current = await this._readWinHttpSettings();
+    if (!this._winHttpSettingsEqual(current, normalized)) {
+      throw new Error('WinHTTP proxy settings did not match the requested configuration after netsh completed');
+    }
   }
 
   _execPowerShell(script, options = {}) {
@@ -274,6 +383,37 @@ if ($null -eq $target) {
     }
   }
 
+  _persistWinHttpRecoveryState(recovery) {
+    if (!this.winHttpRecoveryFile) {
+      throw new Error('WinHTTP proxy recovery journal is not configured');
+    }
+    fs.mkdirSync(path.dirname(this.winHttpRecoveryFile), { recursive: true });
+    const tempPath = `${this.winHttpRecoveryFile}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(recovery), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tempPath, this.winHttpRecoveryFile);
+    } catch (err) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw err;
+    }
+  }
+
+  _removeWinHttpRecoveryState() {
+    if (!this.winHttpRecoveryFile) return;
+    try {
+      fs.unlinkSync(this.winHttpRecoveryFile);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+
+  _winHttpSettingsCouldBelongToRecovery(current, recovery) {
+    const previous = this._normalizeWinHttpSettings(recovery?.previousSettings);
+    const owned = this._normalizeWinHttpSettings(recovery?.ownedSettings);
+    return this._winHttpSettingsEqual(current, previous)
+      || this._winHttpSettingsEqual(current, owned);
+  }
+
   _settingsCouldBelongToRecovery(current, recovery) {
     const previous = recovery.previousSettings;
     const owned = recovery.ownedSettings || {
@@ -320,8 +460,8 @@ if ($null -eq $target) {
     return fields.every(field => current[field] === previous[field]);
   }
 
-  async recoverStaleSettings() {
-    if (!this._isWindows() || !this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
+  async _recoverStaleWinInetSettings() {
+    if (!this.recoveryFile || !fs.existsSync(this.recoveryFile)) return false;
     try {
       const recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
       if (await this._recoveryOwnerIsActive(recovery)) return false;
@@ -368,6 +508,48 @@ if ($null -eq $target) {
     }
   }
 
+  async _recoverStaleWinHttpSettings() {
+    if (!this.winHttpRecoveryFile || !fs.existsSync(this.winHttpRecoveryFile)) return false;
+    try {
+      const recovery = JSON.parse(fs.readFileSync(this.winHttpRecoveryFile, 'utf8'));
+      if (await this._recoveryOwnerIsActive(recovery)) return false;
+      const previous = this._normalizeWinHttpSettings(recovery.previousSettings);
+      const owned = this._normalizeWinHttpSettings(recovery.ownedSettings);
+      const current = await this._readWinHttpSettings();
+      if (!this._winHttpSettingsCouldBelongToRecovery(current, { previousSettings: previous, ownedSettings: owned })) {
+        this._removeWinHttpRecoveryState();
+        this.winHttpRecoveryBlockedReason = null;
+        console.log('[Interceptor] Stale WinHTTP proxy was changed externally; preserving the newer settings');
+        return false;
+      }
+      this.winHttpRecoveryBlockedReason = null;
+      this.previousWinHttpSettings = previous;
+      this.activeWinHttpSettings = owned;
+      this.pendingWinHttpRecovery = {
+        ...recovery,
+        previousSettings: previous,
+        ownedSettings: owned
+      };
+      this.winHttpRestorePending = true;
+      await this._restorePreviousWinHttpSettings();
+      console.log('[Interceptor] Restored WinHTTP proxy settings left by an interrupted session');
+      return true;
+    } catch (err) {
+      if (!this.previousWinHttpSettings || !this.pendingWinHttpRecovery) {
+        this.winHttpRecoveryBlockedReason = err.message;
+      }
+      console.error('[Interceptor] Failed to recover stale WinHTTP proxy settings:', err.message);
+      return false;
+    }
+  }
+
+  async recoverStaleSettings() {
+    if (!this._isWindows()) return false;
+    const restoredWinInet = await this._recoverStaleWinInetSettings();
+    const restoredWinHttp = await this._recoverStaleWinHttpSettings();
+    return restoredWinInet || restoredWinHttp;
+  }
+
   async _restorePreviousSettings() {
     const previous = this.previousSettings;
     if (!previous) throw new Error('No saved system proxy settings are available to restore');
@@ -407,6 +589,19 @@ if ($null -eq $target) {
     this.recoveryBlockedReason = null;
   }
 
+  async _restorePreviousWinHttpSettings() {
+    const previous = this.previousWinHttpSettings;
+    if (!previous) throw new Error('No saved WinHTTP proxy settings are available to restore');
+    this.winHttpRestorePending = true;
+    await this._setWinHttpSettings(previous);
+    this._removeWinHttpRecoveryState();
+    this.previousWinHttpSettings = null;
+    this.activeWinHttpSettings = null;
+    this.pendingWinHttpRecovery = null;
+    this.winHttpRestorePending = false;
+    this.winHttpRecoveryBlockedReason = null;
+  }
+
   _settingsBelongToActiveSession(settings) {
     return Boolean(
       this.activeProxyServer
@@ -424,16 +619,22 @@ if ($null -eq $target) {
       if (this.recoveryBlockedReason) {
         throw new Error(`System Proxy cleanup is blocked by an unresolved recovery journal: ${this.recoveryBlockedReason}`);
       }
-      if (this.restorePending || this.restoreNotificationPending) {
+      if (this.winHttpRecoveryBlockedReason) {
+        throw new Error(`System Proxy cleanup is blocked by an unresolved WinHTTP recovery journal: ${this.winHttpRecoveryBlockedReason}`);
+      }
+      if (this.restorePending || this.restoreNotificationPending || this.winHttpRestorePending) {
         throw new Error('System Proxy cleanup is still pending; retry Stop before starting it again');
       }
       if (this.active) {
         throw new Error('System Proxy is already active; Stop it before starting it again');
       }
-      if (this.previousSettings || this.pendingRecovery) {
+      if (this.previousSettings || this.pendingRecovery
+          || this.previousWinHttpSettings || this.pendingWinHttpRecovery) {
         throw new Error('System Proxy cleanup is still pending; retry Stop before starting it again');
       }
-      let registryMutationStarted = false;
+      let recoveryPrepared = false;
+      let winInetJournalPrepared = false;
+      let winHttpJournalPrepared = false;
       try {
         if (await this._usesPerMachineProxyPolicy()) {
           throw new Error('System Proxy cannot change a machine-wide proxy policy; ask an administrator to enable per-user proxy settings');
@@ -442,8 +643,16 @@ if ($null -eq $target) {
         if (owner === null) {
           throw new Error('Current FreeKit process identity could not be found');
         }
-        if (!this.active && !this.previousSettings) this.previousSettings = await this._readCurrentSettings();
+        this.previousSettings = await this._readCurrentSettings();
+        this.previousWinHttpSettings = await this._readWinHttpSettings();
         const proxyServer = `127.0.0.1:${proxyPort}`;
+        const ownedWinHttpSettings = {
+          scope: 'machine',
+          proxy: proxyServer,
+          proxyBypass: '',
+          autoConfigUrl: '',
+          autoDetect: false
+        };
         this.pendingRecovery = {
           owner,
           proxyServer,
@@ -454,79 +663,154 @@ if ($null -eq $target) {
           },
           previousSettings: this.previousSettings
         };
+        this.pendingWinHttpRecovery = {
+          owner,
+          previousSettings: this.previousWinHttpSettings,
+          ownedSettings: ownedWinHttpSettings
+        };
         this._persistRecoveryState(this.pendingRecovery);
-        registryMutationStarted = true;
+        winInetJournalPrepared = true;
+        this._persistWinHttpRecoveryState(this.pendingWinHttpRecovery);
+        winHttpJournalPrepared = true;
+        recoveryPrepared = true;
         await this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         await this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
         await this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
         await this._notifyWinInet();
+        await this._setWinHttpSettings(ownedWinHttpSettings);
         this.activeProxyServer = proxyServer;
+        this.activeWinHttpSettings = ownedWinHttpSettings;
         this.active = true;
-        console.log(`[Interceptor] System proxy set to 127.0.0.1:${proxyPort}`);
+        console.log(`[Interceptor] WinINet and machine WinHTTP proxies set to 127.0.0.1:${proxyPort}`);
         return { success: true };
       } catch (err) {
-        if (registryMutationStarted && this.previousSettings) {
-          try { await this._restorePreviousSettings(); } catch {}
-        } else if (!this.active) {
+        const rollbackErrors = [];
+        if (recoveryPrepared) {
+          try { await this._restorePreviousSettings(); } catch (rollbackError) {
+            rollbackErrors.push(`WinINet: ${rollbackError.message}`);
+          }
+          try { await this._restorePreviousWinHttpSettings(); } catch (rollbackError) {
+            rollbackErrors.push(`WinHTTP: ${rollbackError.message}`);
+          }
+        } else {
+          if (winInetJournalPrepared) {
+            try { this._removeRecoveryState(); } catch (cleanupError) {
+              rollbackErrors.push(`WinINet journal: ${cleanupError.message}`);
+              this.recoveryBlockedReason = cleanupError.message;
+            }
+          }
+          if (winHttpJournalPrepared) {
+            try { this._removeWinHttpRecoveryState(); } catch (cleanupError) {
+              rollbackErrors.push(`WinHTTP journal: ${cleanupError.message}`);
+              this.winHttpRecoveryBlockedReason = cleanupError.message;
+            }
+          }
           this.previousSettings = null;
           this.pendingRecovery = null;
           this.restoreNotificationPending = false;
           this.restoreBaselineSettings = null;
+          this.previousWinHttpSettings = null;
+          this.activeWinHttpSettings = null;
+          this.pendingWinHttpRecovery = null;
+          this.winHttpRestorePending = false;
         }
         this.active = false;
-        throw new Error(`Failed to set system proxy: ${err.message}`);
+        const rollbackDetail = rollbackErrors.length > 0
+          ? `; automatic rollback was incomplete (${rollbackErrors.join('; ')})`
+          : '';
+        throw new Error(`Failed to set system proxy: ${err.message}${rollbackDetail}`);
       }
     }
     throw new Error('System proxy interception not supported on this platform');
   }
 
+  async _deactivateWinInetSettings() {
+    if (!this.previousSettings && !this.pendingRecovery) return;
+    const currentSettings = await this._readCurrentSettings();
+    let settingsAreOwned;
+    if (this.restoreNotificationPending) {
+      settingsAreOwned = this._settingsMatchCompletedRestore(currentSettings);
+    } else if (this.restorePending) {
+      settingsAreOwned = this.pendingRecovery && this._settingsCouldBelongToRestoreRetry(
+        currentSettings,
+        this.pendingRecovery,
+        this.restoreBaselineSettings
+      );
+    } else if (this.active) {
+      settingsAreOwned = this._settingsBelongToActiveSession(currentSettings);
+    } else {
+      settingsAreOwned = this.pendingRecovery
+        && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
+    }
+    if (!settingsAreOwned) {
+      this._removeRecoveryState();
+      this.previousSettings = null;
+      this.activeProxyServer = null;
+      this.pendingRecovery = null;
+      this.restorePending = false;
+      this.restoreNotificationPending = false;
+      this.restoreBaselineSettings = null;
+      this.recoveryBlockedReason = null;
+      console.log('[Interceptor] WinINet proxy was changed externally; preserving the newer settings');
+      return;
+    }
+    if (!this.restorePending) {
+      this.restoreBaselineSettings = { ...currentSettings };
+    }
+    this.restorePending = true;
+    await this._restorePreviousSettings();
+    console.log('[Interceptor] Previous WinINet proxy settings restored');
+  }
+
+  async _deactivateWinHttpSettings() {
+    if (!this.previousWinHttpSettings && !this.pendingWinHttpRecovery) return;
+    const currentSettings = await this._readWinHttpSettings();
+    const settingsAreOwned = this.pendingWinHttpRecovery
+      && this._winHttpSettingsCouldBelongToRecovery(currentSettings, this.pendingWinHttpRecovery);
+    if (!settingsAreOwned) {
+      this._removeWinHttpRecoveryState();
+      this.previousWinHttpSettings = null;
+      this.activeWinHttpSettings = null;
+      this.pendingWinHttpRecovery = null;
+      this.winHttpRestorePending = false;
+      this.winHttpRecoveryBlockedReason = null;
+      console.log('[Interceptor] WinHTTP proxy was changed externally; preserving the newer settings');
+      return;
+    }
+    this.winHttpRestorePending = true;
+    await this._restorePreviousWinHttpSettings();
+    console.log('[Interceptor] Previous WinHTTP proxy settings restored');
+  }
+
   async deactivate() {
     if (this._isWindows()) {
+      const hasState = this.active || this.previousSettings || this.pendingRecovery
+        || this.previousWinHttpSettings || this.pendingWinHttpRecovery
+        || this.recoveryBlockedReason || this.winHttpRecoveryBlockedReason;
+      if (!hasState) return;
+      const wasActive = this.active;
+      const errors = [];
       if (this.recoveryBlockedReason) {
-        throw new Error(`Cannot safely restore System Proxy from its unresolved recovery journal: ${this.recoveryBlockedReason}`);
+        errors.push(new Error(
+          `Cannot safely restore System Proxy from its unresolved recovery journal: ${this.recoveryBlockedReason}`
+        ));
+      } else {
+        try { await this._deactivateWinInetSettings(); } catch (err) { errors.push(err); }
       }
-      if (!this.active && !this.previousSettings) return;
-      try {
-        const currentSettings = await this._readCurrentSettings();
-        let settingsAreOwned;
-        if (this.restoreNotificationPending) {
-          settingsAreOwned = this._settingsMatchCompletedRestore(currentSettings);
-        } else if (this.restorePending) {
-          settingsAreOwned = this.pendingRecovery && this._settingsCouldBelongToRestoreRetry(
-            currentSettings,
-            this.pendingRecovery,
-            this.restoreBaselineSettings
-          );
-        } else if (this.active) {
-          settingsAreOwned = this._settingsBelongToActiveSession(currentSettings);
-        } else {
-          settingsAreOwned = this.pendingRecovery
-            && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);
-        }
-        if (!settingsAreOwned) {
-          this._removeRecoveryState();
-          this.previousSettings = null;
-          this.activeProxyServer = null;
-          this.pendingRecovery = null;
-          this.restorePending = false;
-          this.restoreNotificationPending = false;
-          this.restoreBaselineSettings = null;
-          this.recoveryBlockedReason = null;
-          this.active = false;
-          console.log('[Interceptor] System proxy was changed externally; preserving the newer settings');
-          return;
-        }
-        if (!this.restorePending) {
-          this.restoreBaselineSettings = { ...currentSettings };
-        }
-        this.restorePending = true;
-        await this._restorePreviousSettings();
-        this.active = false;
-        console.log('[Interceptor] Previous system proxy settings restored');
-      } catch (err) {
-        console.error('[Interceptor] Failed to disable system proxy:', err.message);
-        throw new Error(`Failed to restore system proxy settings: ${err.message}`);
+      if (this.winHttpRecoveryBlockedReason) {
+        errors.push(new Error(
+          `Cannot safely restore WinHTTP proxy from its unresolved recovery journal: ${this.winHttpRecoveryBlockedReason}`
+        ));
+      } else {
+        try { await this._deactivateWinHttpSettings(); } catch (err) { errors.push(err); }
       }
+      if (errors.length > 0) {
+        this.active = wasActive;
+        const detail = errors.map(err => err.message).join('; ');
+        console.error('[Interceptor] Failed to disable system proxy:', detail);
+        throw new Error(`Failed to restore system proxy settings: ${detail}`);
+      }
+      this.active = false;
     }
   }
 

@@ -20,6 +20,14 @@ function configureProcessIdentity(interceptor) {
   });
 }
 
+function configureWinHttp(interceptor) {
+  let settings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...settings });
+  interceptor._setWinHttpSettings = next => { settings = { ...next }; };
+}
+
 test('registry snapshots distinguish missing, empty, and populated ProxyOverride values', async () => {
   const interceptor = new SystemProxyInterceptor();
 
@@ -74,6 +82,7 @@ test('activation clears bypasses and normal Stop restores the exact populated va
     if (name === 'ProxyOverride') settings.override = value;
   };
   interceptor._notifyWinInet = () => {};
+  configureWinHttp(interceptor);
 
   await interceptor.activate(8080);
   assert.deepEqual(settings, {
@@ -167,6 +176,7 @@ test('activation failure rolls back a previously missing bypass value', async t 
     settings.override = null;
   };
   interceptor._notifyWinInet = () => {};
+  configureWinHttp(interceptor);
 
   await assert.rejects(interceptor.activate(8080), /override write failed/);
   assert.deepEqual(settings, { enabled: false, server: 'old.proxy:8080', override: null });

@@ -6,16 +6,16 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 28 of the 361 documented bugs are not fully fixed.**
+**No: 27 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 333 |
+| Fixed | 334 |
 | Partially fixed | 7 |
-| Open | 21 |
+| Open | 20 |
 | **Total** | **361** |
 
-This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
+This review promoted BUG-003, BUG-025, BUG-037, BUG-038, BUG-040, BUG-044, BUG-049, BUG-054, BUG-057, BUG-069, BUG-091, BUG-094, BUG-104, BUG-118, BUG-123, BUG-124, BUG-134, BUG-161, BUG-162, BUG-164, BUG-165, BUG-173, and BUG-364 to Fixed. It promoted BUG-115 and BUG-347 to Partially fixed because later work resolved only part of each finding. All other unresolved statuses were revalidated, and previously implicit open findings are now marked explicitly.
 
 ## Audit completion gate
 
@@ -1489,7 +1489,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-165 — Medium — System Proxy omits WinHTTP despite claiming all machine traffic
 
-- Status: **Open**.
+- Status: **Fixed**.
+- Resolution: System Proxy now snapshots and configures both the current-user WinINet proxy and the machine-scope WinHTTP advanced proxy. WinHTTP uses its own durable, strong-owner recovery journal, exact post-write verification, crash recovery, retryable restoration, and independent external-change detection, so Stop restores each store only while FreeKit still owns it and preserves newer settings in the other store. Activation fails and rolls both stores back if machine WinHTTP cannot be configured, rather than reporting incomplete interception. The UI now describes the two covered Windows proxy APIs and explicitly avoids claiming that applications with custom proxy settings are intercepted.
+- Regression coverage: `test/bug-165-system-proxy-winhttp.test.js` covers dual-store activation and exact restoration, machine scope, journal contents, independent external changes, failed-activation rollback, stale recovery, malformed-journal blocking, localized `netsh` output prefixes, command serialization, and post-write verification. Existing System Proxy suites use isolated WinHTTP fakes and continue covering WinINet recovery and retry behavior.
 
 - Evidence: `src/interceptors/system-proxy-interceptor.js:3,46-53,72-80` changes only current-user Internet Settings. The UI promises “Intercept all HTTP traffic on this machine” at `src/ui/app.js:3561`, but no WinHTTP proxy is configured.
 - Impact: Windows services and machine clients using WinHTTP continue bypassing FreeKit while the interceptor reports active.

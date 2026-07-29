@@ -11,6 +11,14 @@ const TEST_OWNER = {
   executablePath: 'C:\\Program Files\\HTTP FreeKit\\freekit.exe'
 };
 
+function configureWinHttp(interceptor) {
+  let settings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...settings });
+  interceptor._setWinHttpSettings = next => { settings = { ...next }; };
+}
+
 test('system proxy activation journals settings and normal stop removes the journal', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-system-proxy-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -28,6 +36,7 @@ test('system proxy activation journals settings and normal stop removes the jour
   });
   interceptor._setRegistryValue = () => {};
   interceptor._notifyWinInet = () => {};
+  configureWinHttp(interceptor);
 
   await interceptor.activate(8080);
 

@@ -5,6 +5,16 @@ import path from 'node:path';
 import test from 'node:test';
 import { SystemProxyInterceptor } from '../src/interceptors/system-proxy-interceptor.js';
 
+function configureWinHttp(interceptor) {
+  let settings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...settings });
+  interceptor._setWinHttpSettings = next => { settings = { ...next }; };
+  interceptor._persistWinHttpRecoveryState = () => {};
+  interceptor._removeWinHttpRecoveryState = () => {};
+}
+
 async function createDurableNotificationRetry(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-wininet-retry-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -64,6 +74,7 @@ test('system proxy activation and restoration notify WinINet clients', async () 
   interceptor._setRegistryValue = () => {};
   let notifications = 0;
   interceptor._notifyWinInet = () => { notifications += 1; };
+  configureWinHttp(interceptor);
 
   await interceptor.activate(8080);
   assert.equal(notifications, 1);
@@ -249,6 +260,7 @@ test('duplicate Start is rejected without replacing active System Proxy ownershi
   interceptor._persistRecoveryState = () => {};
   interceptor._setRegistryValue = () => {};
   interceptor._notifyWinInet = () => {};
+  configureWinHttp(interceptor);
 
   await interceptor.activate(8080);
   const originalRecovery = structuredClone(interceptor.pendingRecovery);

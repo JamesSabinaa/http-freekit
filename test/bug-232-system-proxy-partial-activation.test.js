@@ -33,6 +33,11 @@ function configureWindowsInterceptor(interceptor, settings, proxyServerFailures)
   });
   interceptor._readCurrentSettings = () => ({ ...settings });
   interceptor._notifyWinInet = () => {};
+  let winHttpSettings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...winHttpSettings });
+  interceptor._setWinHttpSettings = next => { winHttpSettings = { ...next }; };
   interceptor._setRegistryValue = (name, type, value) => {
     if (name === 'ProxyServer' && proxyServerFailures.remaining > 0) {
       proxyServerFailures.remaining--;
@@ -162,6 +167,11 @@ test('repeated cleanup accepts prefixes from the journaled partial activation ba
   });
   interceptor._readCurrentSettings = () => ({ ...settings });
   interceptor._notifyWinInet = () => {};
+  let winHttpSettings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...winHttpSettings });
+  interceptor._setWinHttpSettings = next => { winHttpSettings = { ...next }; };
   let serverWrites = 0;
   let overrideWrites = 0;
   interceptor._setRegistryValue = (name, type, value) => {

@@ -42,6 +42,11 @@ function configureRegistry(interceptor, initialSettings) {
     if (name === 'ProxyOverride') settings.override = null;
   };
   interceptor._notifyWinInet = () => operations.push(['notify']);
+  let winHttpSettings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...winHttpSettings });
+  interceptor._setWinHttpSettings = next => { winHttpSettings = { ...next }; };
   return { operations, settings };
 }
 

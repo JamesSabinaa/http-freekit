@@ -24,6 +24,14 @@ const OWNED_SETTINGS = {
   override: ''
 };
 
+function configureWinHttp(interceptor) {
+  let settings = {
+    scope: 'user', proxy: '', proxyBypass: '', autoConfigUrl: '', autoDetect: true
+  };
+  interceptor._readWinHttpSettings = () => ({ ...settings });
+  interceptor._setWinHttpSettings = next => { settings = { ...next }; };
+}
+
 function makeDataDir(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-305-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -93,6 +101,7 @@ test('activation journals normalized strong ownership before its first registry 
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ ...PREVIOUS_SETTINGS });
+  configureWinHttp(interceptor);
   let checkedJournalBeforeMutation = false;
   interceptor._setRegistryValue = () => {
     if (checkedJournalBeforeMutation) return;
@@ -237,6 +246,7 @@ test('activation refuses registry mutation when durable journal storage is unava
   interceptor._isWindows = () => true;
   interceptor._usesPerMachineProxyPolicy = () => false;
   interceptor._readCurrentSettings = () => ({ ...PREVIOUS_SETTINGS });
+  configureWinHttp(interceptor);
   let writes = 0;
   interceptor._setRegistryValue = () => { writes += 1; };
   interceptor._notifyWinInet = () => { writes += 1; };

@@ -4350,7 +4350,7 @@
       brave: ['Intercept a fresh independent Brave window.', 'Uses a separate temporary profile.'],
       'fresh-terminal': ['Intercept host commands and processes launched from a new terminal.', `Sets proxy and certificate environment variables; use the Docker interceptor for container traffic. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'existing-terminal': ['Configure future processes in an existing terminal window.', `Instructions only: unset the variables or close that shell to stop. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
-      'system-proxy': ['Intercept all HTTP traffic on this machine.', 'Routes all system traffic through the proxy.'],
+      'system-proxy': ['Intercept HTTP traffic from Windows apps using system proxy settings.', 'Configures current-user WinINet and machine WinHTTP; apps with custom proxy settings may bypass it. Administrator permission may be required.'],
       'docker': ['Intercept traffic from Docker containers.', `Set proxy environment variables when running containers. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy routing plus system trust or a FreeKit-CA-only renderer trust flag. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Uses the companion VPN app for HTTPS, with an HTTP-only global proxy fallback.'],
