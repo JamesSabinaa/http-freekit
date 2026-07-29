@@ -136,28 +136,24 @@ expanded: [${aliases}]
   assert.equal(harness.prompts.length, 0);
   assert.equal(harness.reloads, 0);
   assert.equal(harness.toasts.length, 1);
-  assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(20\)/);
+  assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(0\)/);
 });
 
-test('YAML at the alias limit cannot expand beyond the serialized graph budget', async () => {
+test('even a single YAML alias is rejected before it can expand', async () => {
   const harness = createHarness();
-  const repeated = (anchor) => Array.from({ length: 5 }, () => `*${anchor}`).join(', ');
-  await harness.select('amplified.yaml', `
+  await harness.select('aliased.yaml', `
 openapi: 3.1.0
 paths: {}
-base: &base "${'x'.repeat(20000)}"
-level1: &level1 [${repeated('base')}]
-level2: &level2 [${repeated('level1')}]
-level3: &level3 [${repeated('level2')}]
-expanded: [${repeated('level3')}]
+shared: &shared
+  type: string
+expanded: *shared
 `);
 
   assert.equal(harness.fetches.length, 0);
   assert.equal(harness.prompts.length, 0);
   assert.equal(harness.reloads, 0);
-  assert.deepEqual(harness.toasts, [
-    { message: 'Failed to load spec: API specification expands beyond 10 MiB after parsing', type: 'error' }
-  ]);
+  assert.equal(harness.toasts.length, 1);
+  assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(0\)/);
 });
 
 test('cyclic YAML aliases are rejected before the base URL prompt', async () => {
@@ -171,9 +167,22 @@ cycle: &cycle
 
   assert.equal(harness.fetches.length, 0);
   assert.equal(harness.prompts.length, 0);
-  assert.deepEqual(harness.toasts, [
-    { message: 'Failed to load spec: API specification contains cyclic YAML aliases', type: 'error' }
-  ]);
+  assert.equal(harness.toasts.length, 1);
+  assert.match(harness.toasts[0].message, /aliases exceeded maxAliases \(0\)/);
+});
+
+test('wide JSON arrays upload without a secondary graph traversal', async () => {
+  const harness = createHarness();
+  const zeros = Array.from({ length: 250000 }, () => 0);
+  await harness.select('wide.json', JSON.stringify({
+    openapi: '3.1.0',
+    paths: {},
+    values: zeros
+  }));
+
+  assert.equal(harness.fetches.length, 1);
+  assert.equal(harness.prompts.length, 1);
+  assert.equal(harness.toasts[0].type, 'success');
 });
 
 test('oversized API spec files are rejected before their contents are read', async () => {

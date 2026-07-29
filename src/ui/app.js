@@ -11768,60 +11768,7 @@
     }
 
     const MAX_API_SPEC_FILE_BYTES = 10 * 1024 * 1024;
-    const MAX_API_SPEC_YAML_ALIASES = 20;
-    const MAX_API_SPEC_JSON_CHARS = 10 * 1024 * 1024;
-
-    function assertApiSpecJsonBudget(root) {
-      let serializedChars = 0;
-      const activeContainers = new WeakSet();
-      const stack = [{ value: root, leaving: false }];
-      const addChars = count => {
-        serializedChars += count;
-        if (serializedChars > MAX_API_SPEC_JSON_CHARS) {
-          throw new Error('API specification expands beyond 10 MiB after parsing');
-        }
-      };
-
-      while (stack.length > 0) {
-        const entry = stack.pop();
-        const value = entry.value;
-        if (entry.leaving) {
-          activeContainers.delete(value);
-          continue;
-        }
-
-        if (value === null || typeof value !== 'object') {
-          const encoded = JSON.stringify(value);
-          if (encoded === undefined) {
-            throw new Error('API specification contains a value that cannot be serialized');
-          }
-          addChars(encoded.length);
-          continue;
-        }
-
-        if (activeContainers.has(value)) {
-          throw new Error('API specification contains cyclic YAML aliases');
-        }
-        activeContainers.add(value);
-        stack.push({ value, leaving: true });
-
-        if (Array.isArray(value)) {
-          addChars(2 + Math.max(0, value.length - 1));
-          for (let index = value.length - 1; index >= 0; index--) {
-            stack.push({ value: value[index], leaving: false });
-          }
-          continue;
-        }
-
-        const keys = Object.keys(value);
-        addChars(2 + Math.max(0, keys.length - 1));
-        for (let index = keys.length - 1; index >= 0; index--) {
-          const key = keys[index];
-          addChars(JSON.stringify(key).length + 1);
-          stack.push({ value: value[key], leaving: false });
-        }
-      }
-    }
+    const MAX_API_SPEC_YAML_ALIASES = 0;
 
     function parseApiSpecDocument(text, fileName) {
       const normalizedName = String(fileName || '').trim().toLowerCase();
@@ -11841,7 +11788,6 @@
       if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
         throw new Error('OpenAPI document must contain a mapping at its root');
       }
-      assertApiSpecJsonBudget(spec);
       return spec;
     }
 
