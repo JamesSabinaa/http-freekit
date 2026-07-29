@@ -166,7 +166,7 @@ export class ApiServer {
     this._pendingTrafficIds = new Set();
     this._pendingTrafficLifecycles = new Map();
     this._clearedPendingTrafficIds = new Map();
-    this._deletedPendingTrafficIdentities = new Map();
+    this._deletedTrafficIdentities = new Map();
     this._trafficClearGeneration = Symbol('traffic-clear-generation');
     this.maxClearedPendingTrafficIds = Number.isSafeInteger(options.maxClearedPendingTrafficIds) &&
       options.maxClearedPendingTrafficIds > 0
@@ -1302,13 +1302,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       );
       this.trafficLog = this.trafficLog.filter(row => row !== request && !isMatchingFrame(row));
 
-      if (this._pendingTrafficIds.has(request.id)) {
-        const identityKey = this._trafficIdentityKey(request.id, trafficLifecycleId);
-        const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
-        this._deletedPendingTrafficIdentities.delete(identityKey);
-        this._deletedPendingTrafficIdentities.set(identityKey, expiresAt);
-        this._pruneDeletedPendingTrafficIdentities();
-      }
+      const identityKey = this._trafficIdentityKey(request.id, trafficLifecycleId);
+      const expiresAt = this._clearedPendingTrafficNow() + this.clearedPendingTrafficTtlMs;
+      this._deletedTrafficIdentities.delete(identityKey);
+      this._deletedTrafficIdentities.set(identityKey, expiresAt);
+      this._pruneDeletedTrafficIdentities();
 
       const deletion = {
         requestId: request.id,
@@ -2782,7 +2780,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   onTrafficEvent(data) {
     this._pruneClearedPendingTrafficIds();
-    this._pruneDeletedPendingTrafficIdentities();
+    this._pruneDeletedTrafficIdentities();
     // Enrich with API spec match
     let apiMatch = null;
     try {
@@ -2812,8 +2810,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     }
 
     const deletedIdentityKey = this._trafficIdentityKey(data.id, data.trafficLifecycleId ?? null);
-    if ((data._update || trafficLifecycleToken !== undefined) &&
-        this._deletedPendingTrafficIdentities.has(deletedIdentityKey)) {
+    const deletedParentIdentityKey = data.protocol === 'ws-frame'
+      ? this._trafficIdentityKey(data.parentId, data.parentTrafficLifecycleId ?? null)
+      : null;
+    if (this._deletedTrafficIdentities.has(deletedIdentityKey) ||
+        (deletedParentIdentityKey && this._deletedTrafficIdentities.has(deletedParentIdentityKey))) {
       delete data._update;
       delete data._mergeUpdate;
       this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
@@ -3101,7 +3102,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this._pruneClearedPendingTrafficIds();
     this._pendingTrafficIds.clear();
     this._pendingTrafficLifecycles.clear();
-    this._deletedPendingTrafficIdentities.clear();
+    this._deletedTrafficIdentities.clear();
     this.trafficLog = [];
     this._broadcast({ type: 'traffic-cleared', clearId });
     return clearId;
@@ -3122,14 +3123,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return JSON.stringify([String(id), trafficLifecycleId ?? null]);
   }
 
-  _pruneDeletedPendingTrafficIdentities(now = this._clearedPendingTrafficNow()) {
-    for (const [identityKey, expiresAt] of this._deletedPendingTrafficIdentities) {
+  _pruneDeletedTrafficIdentities(now = this._clearedPendingTrafficNow()) {
+    for (const [identityKey, expiresAt] of this._deletedTrafficIdentities) {
       if (expiresAt > now) break;
-      this._deletedPendingTrafficIdentities.delete(identityKey);
+      this._deletedTrafficIdentities.delete(identityKey);
     }
-    while (this._deletedPendingTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
-      const oldestIdentity = this._deletedPendingTrafficIdentities.keys().next().value;
-      this._deletedPendingTrafficIdentities.delete(oldestIdentity);
+    while (this._deletedTrafficIdentities.size > this.maxClearedPendingTrafficIds) {
+      const oldestIdentity = this._deletedTrafficIdentities.keys().next().value;
+      this._deletedTrafficIdentities.delete(oldestIdentity);
     }
   }
 

@@ -166,8 +166,58 @@ test('a late completion cannot restore a deleted pending traffic lifecycle', asy
 
   assert.deepEqual(api.trafficLog, []);
   assert.equal(api._pendingTrafficIds.has('slow'), false);
-  assert.equal(api._deletedPendingTrafficIdentities.size, 1);
+  assert.equal(api._deletedTrafficIdentities.size, 1);
   assert.deepEqual(broadcasts.map(message => message.type), ['request', 'traffic-deleted']);
+});
+
+test('deleting an active WebSocket suppresses later frames and its final update', async t => {
+  const api = createApi();
+  const lifecycleToken = Symbol('active-websocket');
+  api._broadcast = () => {};
+  api.onTrafficEvent({
+    id: 'socket',
+    trafficLifecycleId: 'socket-lifecycle',
+    _trafficLifecycleToken: lifecycleToken,
+    _pending: true,
+    protocol: 'wss'
+  });
+  api.onTrafficEvent({
+    id: 'socket',
+    trafficLifecycleId: 'socket-lifecycle',
+    _trafficLifecycleToken: lifecycleToken,
+    _update: true,
+    protocol: 'wss',
+    statusCode: 101
+  });
+  assert.equal(api._pendingTrafficIds.has('socket'), false);
+
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+  const response = await requestJson(
+    port,
+    '/api/traffic/socket?trafficLifecycleId=socket-lifecycle',
+    'DELETE'
+  );
+  assert.equal(response.statusCode, 200);
+
+  api.onTrafficEvent({
+    id: 'frame-after-delete',
+    protocol: 'ws-frame',
+    parentId: 'socket',
+    parentTrafficLifecycleId: 'socket-lifecycle'
+  });
+  api.onTrafficEvent({
+    id: 'socket',
+    trafficLifecycleId: 'socket-lifecycle',
+    _update: true,
+    protocol: 'wss',
+    statusCode: 101,
+    duration: 5000
+  });
+
+  assert.deepEqual(api.trafficLog, []);
+  assert.equal(api._deletedTrafficIdentities.size, 1);
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
