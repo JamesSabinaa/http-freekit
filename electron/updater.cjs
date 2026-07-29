@@ -26,6 +26,7 @@ let lastPromptedUpdate = null;
 let pendingManualCheck = null;
 let validateIpcSender = () => false;
 let currentStatus = { status: 'idle' };
+let downloadedUpdateStatus = null;
 let statusEventId = 0;
 let configuredFeedUrl = null;
 let activeInstallRequest = null;
@@ -115,7 +116,7 @@ function cancelUpdateInstall() {
   request.onPreparationFailed();
   sendStatus({
     status: 'install-canceled',
-    version: currentStatus.version,
+    version: downloadedUpdateStatus?.version || currentStatus.version,
     manual: true
   }, request.lifecycle);
   return true;
@@ -170,10 +171,17 @@ function sendStatus(data, lifecycle = null) {
   if (lifecycle !== null && !isCurrentUpdaterLifecycle(lifecycle)) return false;
   data = { ...data, eventId: ++statusEventId };
   currentStatus = { ...data };
+  if (data.status === 'update-downloaded') downloadedUpdateStatus = { ...data };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('updater-status', data);
   }
   return true;
+}
+
+function getUpdaterStatusSnapshot() {
+  const status = { ...currentStatus };
+  if (downloadedUpdateStatus) status.downloadedUpdate = { ...downloadedUpdateStatus };
+  return status;
 }
 
 function completeCheckStatus(lifecycle = updaterLifecycle) {
@@ -532,7 +540,7 @@ function initAutoUpdater(win, options = {}) {
   ipcMain.handle('updater-get-status', (event) => {
     if (!validateIpcSender(event)) return null;
     if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
-    return { ...currentStatus };
+    return getUpdaterStatusSnapshot();
   });
 
   ipcMain.handle('updater-install', async (event) => {

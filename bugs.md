@@ -6,12 +6,12 @@ This file records reproducible defects found during a repository-wide audit. Fin
 
 Status review updated on 29 July 2026. This is a reconciliation of every documented Open and Partially fixed finding against the current implementation, regression tests, and later overlapping fixes; it is not a new clean-loop pass under the completion gate below.
 
-**No: 7 of the 361 documented bugs are not fully fixed.**
+**No: 6 of the 361 documented bugs are not fully fixed.**
 
 | Status | Count |
 | --- | ---: |
-| Fixed | 354 |
-| Partially fixed | 1 |
+| Fixed | 355 |
+| Partially fixed | 0 |
 | Open | 6 |
 | **Total** | **361** |
 
@@ -2383,8 +2383,9 @@ During Loop 4, HEAD advanced through ten concurrent bug-fix commits. The corresp
 
 ### BUG-143 — Medium — Reloading during an update download can lose the install control
 
-- Status: **Partially fixed**.
-- Resolution: The renderer can replay the latest updater event after reload, but `currentStatus` stores only one transient event. A later check, up-to-date result, or error overwrites `update-downloaded`, so another reload again cannot recreate Restart to install even though the package remains ready.
+- Status: **Fixed**.
+- Resolution: The main process now retains validated downloaded-update readiness separately from the latest transient updater event and includes both in status snapshots. Renderer reloads replay the transient state and, when needed, the retained downloaded state to recreate Restart to install. Later checks, up-to-date results, and errors no longer erase the ready version, which is also used when an install restart is canceled.
+- Regression coverage: `test/bug-143-updater-status-replay.test.js` drives the updater through a completed download followed by an up-to-date result and an error, verifying every later IPC snapshot still includes the downloaded version and that the renderer replays it.
 
 - Evidence: updater state is emitted only as transient IPC events at `electron/updater.cjs:142-152`. The renderer registers its listener at `src/ui/app.js:9454-9478` and creates Restart to install only upon `update-downloaded` at `:9492-9507`; preload/updater exposes no current-status query or replay.
 - Impact: if completion occurs while the renderer reloads, the event is dropped and that session never offers installation even though the package is ready.

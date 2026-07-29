@@ -96,7 +96,8 @@ contextBridge.exposeInMainWorld('electronApi', {
 
   /**
    * Returns the latest updater state so renderer reloads can replay it.
-   * @returns {Promise<{status: string, version?: string, url?: string, percent?: number, error?: string}|null>}
+   * @returns {Promise<{status: string, version?: string, url?: string, percent?: number,
+   *   error?: string, downloadedUpdate?: {status: string, version?: string, eventId?: number}}|null>}
    */
   getUpdaterStatus: () => safeInvoke('updater-get-status'),
 

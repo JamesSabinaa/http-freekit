@@ -13789,6 +13789,7 @@
             // Optionally show download progress (silent for now to avoid spam)
             break;
           case 'update-downloaded':
+            updateVersion = data.version;
             showUpdateReadyToast(data.version);
             break;
           case 'up-to-date':
@@ -13812,7 +13813,12 @@
       window.electronApi.onUpdaterStatus(handleUpdaterStatus);
       if (window.electronApi.getUpdaterStatus) {
         window.electronApi.getUpdaterStatus()
-          .then(handleUpdaterStatus)
+          .then(function(status) {
+            handleUpdaterStatus(status);
+            if (status?.downloadedUpdate && status.status !== 'update-downloaded') {
+              handleUpdaterStatus(status.downloadedUpdate);
+            }
+          })
           .catch(function(err) { console.error('[Updater]', err.message); });
       }
 
