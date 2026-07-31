@@ -17,9 +17,14 @@ import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
 import {
   DEFAULT_EXCLUSIONS,
-  filterDefaultExclusions,
   normalizeDefaultExclusions
 } from '../traffic/default-exclusions.js';
+import {
+  DEFAULT_TRAFFIC_LIST_ID,
+  createDefaultTrafficList,
+  filterTrafficLists,
+  normalizeTrafficLists
+} from '../traffic/traffic-lists.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
@@ -751,7 +756,14 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return req?.protocol === 'tunnel' || req?.method === 'CONNECT';
   }
 
-  _getDefaultExclusionsConfig() {
+  _getTrafficListsConfig() {
+    const savedLists = this.settings?.get('trafficLists');
+    if (savedLists !== undefined) {
+      try {
+        return { lists: normalizeTrafficLists(savedLists) };
+      } catch {}
+    }
+
     const enabled = this.settings?.get('defaultExclusionsEnabled', true) !== false;
     const savedPatterns = this.settings?.get('defaultExclusions', DEFAULT_EXCLUSIONS);
     let patterns;
@@ -760,13 +772,32 @@ print(json.dumps({"providers": get_proxy_providers()}))
     } catch {
       patterns = [...DEFAULT_EXCLUSIONS];
     }
-    return { enabled, patterns };
+    return { lists: [createDefaultTrafficList({ enabled, patterns })] };
+  }
+
+  _getDefaultExclusionsConfig() {
+    const list = this._getTrafficListsConfig().lists.find(
+      candidate => candidate.id === DEFAULT_TRAFFIC_LIST_ID
+    ) || createDefaultTrafficList();
+    return { enabled: list.enabled, patterns: [...list.patterns] };
+  }
+
+  _trafficListsPersistenceValues(lists) {
+    const defaultList = lists.find(list => list.id === DEFAULT_TRAFFIC_LIST_ID);
+    return {
+      trafficLists: lists.map(({ builtIn, ...list }) => ({ ...list, patterns: [...list.patterns] })),
+      defaultExclusionsEnabled: defaultList.enabled,
+      defaultExclusions: [...defaultList.patterns]
+    };
+  }
+
+  _getTrafficWithListsApplied() {
+    const { lists } = this._getTrafficListsConfig();
+    return filterTrafficLists(this.trafficLog, lists);
   }
 
   _getTrafficWithoutDefaultExclusions() {
-    const { enabled, patterns } = this._getDefaultExclusionsConfig();
-    if (!enabled || patterns.length === 0) return this.trafficLog;
-    return filterDefaultExclusions(this.trafficLog, patterns);
+    return this._getTrafficWithListsApplied();
   }
 
   _getHarExportTraffic() {
@@ -1319,14 +1350,38 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         return res.status(400).json({ error: error.message });
       }
       try {
-        this._persistSettings({
-          defaultExclusionsEnabled: req.body.enabled,
-          defaultExclusions: patterns
-        });
+        const lists = this._getTrafficListsConfig().lists.map(list =>
+          list.id === DEFAULT_TRAFFIC_LIST_ID
+            ? { ...list, enabled: req.body.enabled, mode: 'blacklist', patterns }
+            : list
+        );
+        this._persistSettings(this._trafficListsPersistenceValues(lists));
       } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to save Default Exclusions' });
       }
       res.json({ success: true, enabled: req.body.enabled, patterns });
+    });
+
+    router.get('/api/traffic-lists', (req, res) => {
+      res.json({
+        ...this._getTrafficListsConfig(),
+        defaultPatterns: [...DEFAULT_EXCLUSIONS]
+      });
+    });
+
+    router.put('/api/traffic-lists', (req, res) => {
+      let lists;
+      try {
+        lists = normalizeTrafficLists(req.body?.lists);
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+      try {
+        this._persistSettings(this._trafficListsPersistenceValues(lists));
+      } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to save traffic lists' });
+      }
+      res.json({ success: true, lists });
     });
 
     // Proxy stats

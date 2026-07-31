@@ -11,6 +11,11 @@ import {
   matchesDefaultExclusion,
   normalizeDefaultExclusions
 } from '../src/traffic/default-exclusions.js';
+import {
+  createDefaultTrafficList,
+  filterTrafficLists,
+  normalizeTrafficLists
+} from '../src/traffic/traffic-lists.js';
 
 function requestJson(port, method, requestPath, body) {
   return new Promise((resolve, reject) => {
@@ -96,21 +101,26 @@ test('exclusion patterns normalize URLs, comments, case, and duplicates', () => 
 test('renderer filtering applies the persisted hostname and path patterns', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
   const initialPatterns = source.match(
-    /let defaultExclusions = (\[[\s\S]*?\]);\s*let defaultExclusionDefaults/
+    /const initialDefaultExclusions = (\[[\s\S]*?\]);\s*let trafficLists/
   );
   assert.ok(initialPatterns);
   assert.deepEqual(
     Array.from(vm.runInNewContext(initialPatterns[1])),
     Array.from(DEFAULT_EXCLUSIONS)
   );
-  const start = source.indexOf('function defaultExclusionTarget(');
+  const start = source.indexOf('function trafficListTarget(');
   const end = source.indexOf('function applyFilter(', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const context = {
     URL,
-    defaultExclusionsEnabled: true,
-    defaultExclusions: ['android.clients.google.com/c2dm/register3']
+    trafficLists: [{
+      id: 'custom-blacklist',
+      name: 'Custom blacklist',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: ['android.clients.google.com/c2dm/register3']
+    }]
   };
   vm.createContext(context);
   vm.runInContext(`${source.slice(start, end)}\nthis.matches = isDefaultExcludedRequest;`, context);
@@ -120,10 +130,114 @@ test('renderer filtering applies the persisted hostname and path patterns', () =
   assert.equal(context.matches({
     url: 'https://android.clients.google.com/checkin'
   }), false);
-  context.defaultExclusionsEnabled = false;
+  context.trafficLists = [{
+    id: 'custom-whitelist',
+    name: 'Custom whitelist',
+    enabled: true,
+    mode: 'whitelist',
+    patterns: ['allowed.example']
+  }];
   assert.equal(context.matches({
     url: 'https://android.clients.google.com/c2dm/register3'
-  }), false);
+  }), true);
+  assert.equal(context.matches({ url: 'https://allowed.example/path' }), false);
+});
+
+test('renderer plus and minus controls insert and remove the intended rules', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+  const start = source.indexOf('function insertTrafficListPattern(');
+  const end = source.indexOf('function createTrafficListRuleRow(', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  let changeCalls = 0;
+  const context = {
+    trafficLists: [{ id: 'custom', patterns: ['first', 'last'] }],
+    renderTrafficListsEditor() {},
+    markTrafficListsChanged() { changeCalls++; },
+    focusTrafficListPattern() {}
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    `${source.slice(start, end)}\nthis.insertRule = insertTrafficListPattern; this.removeRule = removeTrafficListPattern;`,
+    context
+  );
+  context.insertRule('custom', 0);
+  assert.deepEqual(Array.from(context.trafficLists[0].patterns), ['first', '', 'last']);
+  context.removeRule('custom', 1);
+  assert.deepEqual(Array.from(context.trafficLists[0].patterns), ['first', 'last']);
+  assert.equal(changeCalls, 2);
+});
+
+test('traffic lists combine whitelists as a union and give blacklists precedence', () => {
+  const requests = [
+    { id: 'api', host: 'api.example.test', path: '/v1/users' },
+    { id: 'admin', host: 'admin.example.test', path: '/dashboard' },
+    { id: 'blocked', host: 'api.example.test', path: '/private/token' },
+    { id: 'other', host: 'other.example.test', path: '/' }
+  ];
+  const lists = normalizeTrafficLists([
+    { ...createDefaultTrafficList(), enabled: false },
+    {
+      id: 'allowed-services',
+      name: 'Allowed services',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['api.example.test']
+    },
+    {
+      id: 'allowed-admin',
+      name: 'Allowed admin',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['admin.example.test']
+    },
+    {
+      id: 'blocked-private',
+      name: 'Blocked private paths',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: ['api.example.test/private']
+    }
+  ]);
+  assert.deepEqual(
+    filterTrafficLists(requests, lists).map(request => request.id),
+    ['api', 'admin']
+  );
+});
+
+test('traffic lists keep WebSocket frames in step with their parent visibility', () => {
+  const lists = normalizeTrafficLists([
+    { ...createDefaultTrafficList(), enabled: false },
+    {
+      id: 'socket-whitelist',
+      name: 'Socket whitelist',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['allowed.example']
+    }
+  ]);
+  const requests = [
+    { id: 'allowed', trafficLifecycleId: 'a', protocol: 'wss', host: 'allowed.example' },
+    { id: 'allowed-frame', protocol: 'ws-frame', parentId: 'allowed', parentTrafficLifecycleId: 'a' },
+    { id: 'hidden', trafficLifecycleId: 'b', protocol: 'wss', host: 'hidden.example' },
+    { id: 'hidden-frame', protocol: 'ws-frame', parentId: 'hidden', parentTrafficLifecycleId: 'b' }
+  ];
+  assert.deepEqual(
+    filterTrafficLists(requests, lists).map(request => request.id),
+    ['allowed', 'allowed-frame']
+  );
+});
+
+test('traffic list validation requires the built-in list and valid unique metadata', () => {
+  assert.throws(() => normalizeTrafficLists([]), /Default Exclusions list is required/);
+  assert.throws(() => normalizeTrafficLists([
+    createDefaultTrafficList(),
+    { id: 'custom', name: 'Custom', enabled: true, mode: 'invalid', patterns: [] }
+  ]), /mode must be blacklist or whitelist/);
+  assert.throws(() => normalizeTrafficLists([
+    createDefaultTrafficList(),
+    { id: 'default-exclusions', name: 'Duplicate', enabled: true, mode: 'blacklist', patterns: [] }
+  ]), /id must be unique/);
 });
 
 test('Default Exclusions API is enabled by default, persists edits, and controls traffic queries', async t => {
@@ -169,6 +283,13 @@ test('Default Exclusions API is enabled by default, persists edits, and controls
     }
   });
   assert.deepEqual(values, {
+    trafficLists: [{
+      id: 'default-exclusions',
+      name: 'Default Exclusions',
+      enabled: false,
+      mode: 'blacklist',
+      patterns: ['example.test/private']
+    }],
     defaultExclusionsEnabled: false,
     defaultExclusions: ['example.test/private']
   });
@@ -176,6 +297,72 @@ test('Default Exclusions API is enabled by default, persists edits, and controls
   const unfiltered = await requestJson(port, 'GET', '/api/traffic?limit=100');
   assert.equal(unfiltered.body.total, 2);
   assert.deepEqual(unfiltered.body.requests.map(request => request.id), ['background', 'wanted']);
+});
+
+test('Traffic Lists API migrates legacy settings and persists custom whitelist lists', async t => {
+  const { api, port, values } = await createApi(t, {
+    defaultExclusionsEnabled: false,
+    defaultExclusions: ['legacy-background.test']
+  });
+  api.trafficLog.push(
+    { id: 'allowed', host: 'allowed.example', path: '/api' },
+    { id: 'blocked', host: 'blocked.example', path: '/' }
+  );
+
+  const migrated = await requestJson(port, 'GET', '/api/traffic-lists');
+  assert.equal(migrated.statusCode, 200);
+  assert.deepEqual(migrated.body.lists, [{
+    id: 'default-exclusions',
+    name: 'Default Exclusions',
+    enabled: false,
+    mode: 'blacklist',
+    patterns: ['legacy-background.test'],
+    builtIn: true
+  }]);
+
+  const lists = [
+    migrated.body.lists[0],
+    {
+      id: 'my-whitelist',
+      name: 'My Whitelist',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['allowed.example']
+    }
+  ];
+  const saved = await requestJson(port, 'PUT', '/api/traffic-lists', { lists });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.body.success, true);
+  assert.equal(saved.body.lists.length, 2);
+  assert.equal(values.trafficLists.length, 2);
+
+  const traffic = await requestJson(port, 'GET', '/api/traffic?limit=100');
+  assert.deepEqual(traffic.body.requests.map(request => request.id), ['allowed']);
+});
+
+test('Traffic Lists API rejects invalid collections and reports persistence failures', async t => {
+  const { api, port, values } = await createApi(t);
+  const missingDefault = await requestJson(port, 'PUT', '/api/traffic-lists', {
+    lists: [{
+      id: 'custom-only',
+      name: 'Custom only',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: []
+    }]
+  });
+  assert.equal(missingDefault.statusCode, 400);
+  assert.match(missingDefault.body.error, /Default Exclusions list is required/);
+
+  api.settings.setAll = () => { throw new Error('disk full'); };
+  const failedSave = await requestJson(port, 'PUT', '/api/traffic-lists', {
+    lists: [createDefaultTrafficList()]
+  });
+  assert.deepEqual(failedSave, {
+    statusCode: 500,
+    body: { error: 'disk full' }
+  });
+  assert.deepEqual(values, {});
 });
 
 test('Default Exclusions API rejects malformed edits without changing settings', async t => {

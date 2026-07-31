@@ -573,7 +573,9 @@ export class McpServerBridge {
   // ========== Tool Handlers ==========
 
   _getHttpRequestTraffic() {
-    const traffic = typeof this.apiServer._getTrafficWithoutDefaultExclusions === 'function'
+    const traffic = typeof this.apiServer._getTrafficWithListsApplied === 'function'
+      ? this.apiServer._getTrafficWithListsApplied()
+      : typeof this.apiServer._getTrafficWithoutDefaultExclusions === 'function'
       ? this.apiServer._getTrafficWithoutDefaultExclusions()
       : this.apiServer.trafficLog;
     return traffic.filter(record => record?.protocol !== 'ws-frame');

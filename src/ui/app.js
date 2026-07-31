@@ -13,8 +13,8 @@
     let config = {};
     let hideTunnelRequests = true;
     let filterSafeFonts = false;
-    let defaultExclusionsEnabled = true;
-    let defaultExclusions = [
+    const DEFAULT_TRAFFIC_LIST_ID = 'default-exclusions';
+    const initialDefaultExclusions = [
       'update.googleapis.com',
       'optimizationguide-pa.googleapis.com',
       'safebrowsing.googleapis.com',
@@ -60,7 +60,15 @@
       'google.co.uk/domainreliability/upload',
       'www.google.co.uk/domainreliability/upload'
     ];
-    let defaultExclusionDefaults = [...defaultExclusions];
+    let trafficLists = [{
+      id: DEFAULT_TRAFFIC_LIST_ID,
+      name: 'Default Exclusions',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: [...initialDefaultExclusions],
+      builtIn: true
+    }];
+    let trafficListDefaultPatterns = [...initialDefaultExclusions];
     let protobufSchemaFiles = [];
     let protobufRoot = null;
     let protobufSchemaError = '';
@@ -710,7 +718,7 @@
           // Load initial data
           loadConfig();
           loadUiSettings();
-          if (typeof loadDefaultExclusions === 'function') loadDefaultExclusions();
+          if (typeof loadTrafficLists === 'function') loadTrafficLists();
           loadProtobufSchemas();
           loadInterceptors();
           loadMockRules().then(loaded => {
@@ -929,7 +937,7 @@
       return ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase());
     }
 
-    function defaultExclusionTarget(req) {
+    function trafficListTarget(req) {
       let host = String(req?.host || '').trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
       let requestPath = String(req?.path || '');
       if ((!host || !requestPath) && req?.url) {
@@ -943,19 +951,53 @@
       return { host, path: requestPath.toLowerCase() };
     }
 
-    function getCompiledDefaultExclusions() {
-      if (getCompiledDefaultExclusions.patterns === defaultExclusions) {
-        return getCompiledDefaultExclusions.rules;
+    function normalizeTrafficListPatternForMatch(pattern) {
+      let value = String(pattern || '').trim().toLowerCase();
+      if (!value || value.startsWith('#')) return null;
+      if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) {
+        try {
+          const url = new URL(value);
+          value = url.hostname + url.pathname + url.search;
+        } catch {
+          return null;
+        }
       }
-      const rules = defaultExclusions.map(pattern => {
-        const slashIndex = pattern.indexOf('/');
-        const hostPattern = slashIndex === -1 ? pattern : pattern.slice(0, slashIndex);
-        const pathPrefix = slashIndex === -1 ? '' : pattern.slice(slashIndex);
-        return { hostPattern, pathPrefix };
+      const slashIndex = value.indexOf('/');
+      const hostPattern = (slashIndex === -1 ? value : value.slice(0, slashIndex))
+        .replace(/:\d+$/, '')
+        .replace(/\.$/, '');
+      if (!hostPattern) return null;
+      return {
+        hostPattern,
+        pathPrefix: slashIndex === -1 ? '' : value.slice(slashIndex)
+      };
+    }
+
+    function getCompiledTrafficLists() {
+      if (getCompiledTrafficLists.source === trafficLists) {
+        return getCompiledTrafficLists.lists;
+      }
+      const lists = trafficLists.map(list => ({
+        enabled: list.enabled,
+        mode: list.mode,
+        rules: list.patterns
+          .map(normalizeTrafficListPatternForMatch)
+          .filter(Boolean)
+      }));
+      getCompiledTrafficLists.source = trafficLists;
+      getCompiledTrafficLists.lists = lists;
+      return lists;
+    }
+
+    function invalidateCompiledTrafficLists() {
+      getCompiledTrafficLists.source = null;
+    }
+
+    function trafficListMatchesTarget(list, target) {
+      return list.rules.some(rule => {
+        const hostMatches = defaultExclusionHostMatches(target.host, rule.hostPattern);
+        return hostMatches && (!rule.pathPrefix || target.path.startsWith(rule.pathPrefix));
       });
-      getCompiledDefaultExclusions.patterns = defaultExclusions;
-      getCompiledDefaultExclusions.rules = rules;
-      return rules;
     }
 
     function defaultExclusionHostMatches(host, pattern) {
@@ -984,15 +1026,17 @@
 
     function isDefaultExcludedRequest(req) {
       // Some embedded renderer consumers load only the traffic helpers. In that
-      // mode the settings state is absent, so exclusions must remain opt-in.
-      if (typeof defaultExclusionsEnabled === 'undefined' || !defaultExclusionsEnabled ||
-          typeof defaultExclusions === 'undefined') return false;
-      const target = defaultExclusionTarget(req);
+      // mode the settings state is absent, so traffic lists must remain opt-in.
+      if (typeof trafficLists === 'undefined') return false;
+      const target = trafficListTarget(req);
       if (!target.host) return false;
-      return getCompiledDefaultExclusions().some(rule => {
-        const hostMatches = defaultExclusionHostMatches(target.host, rule.hostPattern);
-        return hostMatches && (!rule.pathPrefix || target.path.startsWith(rule.pathPrefix));
-      });
+      const enabledLists = getCompiledTrafficLists().filter(list => list.enabled);
+      if (enabledLists.some(list =>
+        list.mode === 'blacklist' && trafficListMatchesTarget(list, target)
+      )) return true;
+      const whitelists = enabledLists.filter(list => list.mode === 'whitelist');
+      return whitelists.length > 0 &&
+        !whitelists.some(list => trafficListMatchesTarget(list, target));
     }
 
     function applyFilter() {
@@ -10688,97 +10732,358 @@
       await saveUiSettingsChange({ filterSafeFonts }, previousSettings, saveGeneration);
     }
 
-    let defaultExclusionsSaveGeneration = 0;
+    let trafficListsSaveGeneration = 0;
+    let trafficListsDirty = false;
+    let trafficListsFilterTimer = null;
 
-    function synchronizeDefaultExclusions(data, updateDefaults = false) {
-      defaultExclusionsEnabled = data.enabled;
-      defaultExclusions = [...data.patterns];
-      if (updateDefaults && Array.isArray(data.defaults)) {
-        defaultExclusionDefaults = [...data.defaults];
-      }
-      const toggle = document.getElementById('defaultExclusionsEnabledToggle');
-      if (toggle) toggle.checked = defaultExclusionsEnabled;
-      const editor = document.getElementById('defaultExclusionsEditor');
-      if (editor) editor.value = defaultExclusions.join('\n');
-      applyFilter();
+    function cloneTrafficLists(lists) {
+      return lists.map(list => ({ ...list, patterns: [...list.patterns] }));
     }
 
-    async function parseDefaultExclusionsResponse(response, requireSaveConfirmation = false) {
+    function setTrafficListsDirty(dirty) {
+      trafficListsDirty = dirty;
+      document.querySelectorAll('[data-traffic-lists-save]').forEach(button => {
+        button.disabled = !dirty;
+      });
+      const status = document.getElementById('trafficListsSaveStatus');
+      if (status) {
+        status.textContent = dirty ? 'Unsaved changes' : 'All changes saved';
+        status.classList.toggle('is-dirty', dirty);
+      }
+    }
+
+    function refreshTrafficListsFilter(immediate = false) {
+      invalidateCompiledTrafficLists();
+      clearTimeout(trafficListsFilterTimer);
+      if (immediate) {
+        applyFilter();
+      } else {
+        trafficListsFilterTimer = setTimeout(applyFilter, 150);
+      }
+    }
+
+    function markTrafficListsChanged({ affectsFilter = true, immediate = false } = {}) {
+      setTrafficListsDirty(true);
+      if (affectsFilter) refreshTrafficListsFilter(immediate);
+    }
+
+    function isTrafficListResponseComplete(data) {
+      return Array.isArray(data?.lists) && data.lists.every(list =>
+        list && typeof list.id === 'string' && typeof list.name === 'string' &&
+        typeof list.enabled === 'boolean' &&
+        (list.mode === 'blacklist' || list.mode === 'whitelist') &&
+        Array.isArray(list.patterns) && list.patterns.every(pattern => typeof pattern === 'string')
+      );
+    }
+
+    async function parseTrafficListsResponse(response, requireSaveConfirmation = false) {
       let data;
       try {
         data = await response.json();
       } catch {
-        throw new Error('Default Exclusions response was not valid JSON');
+        throw new Error('Traffic lists response was not valid JSON');
       }
       if (!response.ok) {
-        throw new Error(data?.error || `Default Exclusions returned HTTP ${response.status}`);
+        throw new Error(data?.error || `Traffic lists returned HTTP ${response.status}`);
       }
       if (requireSaveConfirmation && data?.success !== true) {
-        throw new Error(data?.error || 'Default Exclusions save was not confirmed');
+        throw new Error(data?.error || 'Traffic lists save was not confirmed');
       }
-      if (typeof data?.enabled !== 'boolean' || !Array.isArray(data?.patterns) ||
-          data.patterns.some(pattern => typeof pattern !== 'string')) {
-        throw new Error('Default Exclusions response was incomplete');
+      if (!isTrafficListResponseComplete(data)) {
+        throw new Error('Traffic lists response was incomplete');
       }
       return data;
     }
 
-    async function loadDefaultExclusions() {
-      const loadGeneration = defaultExclusionsSaveGeneration;
-      synchronizeDefaultExclusions({
-        enabled: defaultExclusionsEnabled,
-        patterns: defaultExclusions
-      });
+    function synchronizeTrafficLists(data, updateDefaults = false) {
+      trafficLists = cloneTrafficLists(data.lists);
+      if (updateDefaults && Array.isArray(data.defaultPatterns)) {
+        trafficListDefaultPatterns = [...data.defaultPatterns];
+      }
+      invalidateCompiledTrafficLists();
+      renderTrafficListsEditor();
+      setTrafficListsDirty(false);
+      applyFilter();
+    }
+
+    async function loadTrafficLists() {
+      const loadGeneration = trafficListsSaveGeneration;
+      renderTrafficListsEditor();
       try {
-        const response = await fetch(API_BASE + '/api/default-exclusions');
-        const data = await parseDefaultExclusionsResponse(response);
-        if (loadGeneration === defaultExclusionsSaveGeneration) {
-          synchronizeDefaultExclusions(data, true);
+        const response = await fetch(API_BASE + '/api/traffic-lists');
+        const data = await parseTrafficListsResponse(response);
+        if (loadGeneration === trafficListsSaveGeneration && !trafficListsDirty) {
+          synchronizeTrafficLists(data, true);
         }
       } catch (error) {
         console.error('[Error]', error.message);
       }
     }
 
-    function readDefaultExclusionsEditor() {
-      return String(document.getElementById('defaultExclusionsEditor')?.value || '')
-        .split(/\r?\n/)
-        .map(pattern => pattern.trim())
-        .filter(pattern => pattern && !pattern.startsWith('#'));
+    function trafficListModeHelp(mode) {
+      return mode === 'whitelist'
+        ? 'Whitelist: only requests matching this or another enabled whitelist remain visible.'
+        : 'Blacklist: requests matching any entry in this list are hidden.';
     }
 
-    async function saveDefaultExclusions() {
-      const previous = {
-        enabled: defaultExclusionsEnabled,
-        patterns: [...defaultExclusions]
-      };
-      const enabled = document.getElementById('defaultExclusionsEnabledToggle')?.checked !== false;
-      const patterns = readDefaultExclusionsEditor();
-      const saveGeneration = ++defaultExclusionsSaveGeneration;
-      synchronizeDefaultExclusions({ enabled, patterns });
-      try {
-        const response = await fetch(API_BASE + '/api/default-exclusions', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled, patterns })
-        });
-        const data = await parseDefaultExclusionsResponse(response, true);
-        if (saveGeneration !== defaultExclusionsSaveGeneration) return;
-        synchronizeDefaultExclusions(data);
-        toast('Default Exclusions saved', 'success');
-      } catch (error) {
-        if (saveGeneration !== defaultExclusionsSaveGeneration) return;
-        synchronizeDefaultExclusions(previous);
-        toast('Error: ' + error.message, 'error');
+    function focusTrafficListPattern(listId, ruleIndex) {
+      const editor = document.getElementById('trafficListsEditor');
+      const card = [...(editor?.querySelectorAll('.traffic-list-editor-card') || [])]
+        .find(element => element.dataset.listId === listId);
+      const input = card?.querySelector(`input[data-rule-index="${ruleIndex}"]`);
+      input?.focus();
+      input?.select();
+    }
+
+    function insertTrafficListPattern(listId, afterIndex) {
+      const list = trafficLists.find(candidate => candidate.id === listId);
+      if (!list) return;
+      const insertIndex = Math.max(0, Math.min(list.patterns.length, afterIndex + 1));
+      list.patterns.splice(insertIndex, 0, '');
+      trafficLists = [...trafficLists];
+      renderTrafficListsEditor();
+      markTrafficListsChanged({ immediate: true });
+      focusTrafficListPattern(listId, insertIndex);
+    }
+
+    function removeTrafficListPattern(listId, ruleIndex) {
+      const list = trafficLists.find(candidate => candidate.id === listId);
+      if (!list || ruleIndex < 0 || ruleIndex >= list.patterns.length) return;
+      list.patterns.splice(ruleIndex, 1);
+      trafficLists = [...trafficLists];
+      renderTrafficListsEditor();
+      markTrafficListsChanged({ immediate: true });
+      if (list.patterns.length > 0) {
+        focusTrafficListPattern(listId, Math.min(ruleIndex, list.patterns.length - 1));
       }
     }
 
-    async function resetDefaultExclusions() {
-      const toggle = document.getElementById('defaultExclusionsEnabledToggle');
-      if (toggle) toggle.checked = true;
-      const editor = document.getElementById('defaultExclusionsEditor');
-      if (editor) editor.value = defaultExclusionDefaults.join('\n');
-      await saveDefaultExclusions();
+    function createTrafficListRuleRow(list, ruleIndex) {
+      const row = document.createElement('div');
+      row.className = 'traffic-list-rule-row';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'traffic-list-rule-input';
+      input.value = list.patterns[ruleIndex];
+      input.dataset.ruleIndex = String(ruleIndex);
+      input.spellcheck = false;
+      input.placeholder = 'example.com or *.example.com/api/';
+      input.setAttribute('aria-label', `${list.name} rule ${ruleIndex + 1}`);
+      input.addEventListener('input', () => {
+        list.patterns[ruleIndex] = input.value;
+        markTrafficListsChanged();
+      });
+
+      const addButton = document.createElement('button');
+      addButton.type = 'button';
+      addButton.className = 'traffic-list-rule-button';
+      addButton.textContent = '+';
+      addButton.title = 'Add a rule below';
+      addButton.setAttribute('aria-label', `Add a rule after ${ruleIndex + 1}`);
+      addButton.addEventListener('click', () => insertTrafficListPattern(list.id, ruleIndex));
+
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'traffic-list-rule-button is-remove';
+      removeButton.textContent = '−';
+      removeButton.title = 'Remove this rule';
+      removeButton.setAttribute('aria-label', `Remove rule ${ruleIndex + 1}`);
+      removeButton.addEventListener('click', () => removeTrafficListPattern(list.id, ruleIndex));
+
+      row.append(input, addButton, removeButton);
+      return row;
+    }
+
+    function renderTrafficListsEditor() {
+      const editor = document.getElementById('trafficListsEditor');
+      if (!editor) return;
+      editor.replaceChildren();
+
+      for (const list of trafficLists) {
+        const card = document.createElement('section');
+        card.className = 'traffic-list-editor-card';
+        card.dataset.listId = list.id;
+
+        const header = document.createElement('div');
+        header.className = 'traffic-list-editor-header';
+
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.className = 'traffic-list-enabled';
+        enabled.checked = list.enabled;
+        enabled.setAttribute('aria-label', `Enable ${list.name}`);
+        enabled.addEventListener('change', () => {
+          list.enabled = enabled.checked;
+          markTrafficListsChanged({ immediate: true });
+        });
+
+        const name = document.createElement('input');
+        name.type = 'text';
+        name.className = 'traffic-list-name-input';
+        name.value = list.name;
+        name.maxLength = 80;
+        name.setAttribute('aria-label', 'List name');
+        name.addEventListener('input', () => {
+          list.name = name.value;
+          markTrafficListsChanged({ affectsFilter: false });
+        });
+
+        const identity = document.createElement('div');
+        identity.className = 'traffic-list-identity';
+        identity.append(enabled, name);
+        if (list.builtIn || list.id === DEFAULT_TRAFFIC_LIST_ID) {
+          const badge = document.createElement('span');
+          badge.className = 'traffic-list-built-in-badge';
+          badge.textContent = 'Built in';
+          identity.append(badge);
+        }
+
+        const mode = document.createElement('select');
+        mode.className = 'traffic-list-mode-select';
+        mode.setAttribute('aria-label', `${list.name} list mode`);
+        for (const [value, label] of [
+          ['blacklist', 'Blacklist — hide matches'],
+          ['whitelist', 'Whitelist — show only matches']
+        ]) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = label;
+          option.selected = list.mode === value;
+          mode.append(option);
+        }
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'btn traffic-list-delete-button';
+        deleteButton.textContent = 'Delete list';
+        deleteButton.style.display = list.id === DEFAULT_TRAFFIC_LIST_ID ? 'none' : '';
+        deleteButton.addEventListener('click', () => removeTrafficList(list.id));
+
+        const actions = document.createElement('div');
+        actions.className = 'traffic-list-header-actions';
+        actions.append(mode, deleteButton);
+        header.append(identity, actions);
+
+        const modeHelp = document.createElement('p');
+        modeHelp.className = 'traffic-list-mode-help';
+        modeHelp.textContent = trafficListModeHelp(list.mode);
+        mode.addEventListener('change', () => {
+          list.mode = mode.value;
+          modeHelp.textContent = trafficListModeHelp(list.mode);
+          const empty = card.querySelector('.traffic-list-empty');
+          if (empty) {
+            empty.textContent = list.mode === 'whitelist'
+              ? 'This whitelist is empty, so it currently hides every request.'
+              : 'This blacklist has no rules.';
+          }
+          markTrafficListsChanged({ immediate: true });
+        });
+
+        const rules = document.createElement('div');
+        rules.className = 'traffic-list-rules';
+        if (list.patterns.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'traffic-list-empty';
+          empty.textContent = list.mode === 'whitelist'
+            ? 'This whitelist is empty, so it currently hides every request.'
+            : 'This blacklist has no rules.';
+          rules.append(empty);
+        } else {
+          list.patterns.forEach((_pattern, index) => {
+            rules.append(createTrafficListRuleRow(list, index));
+          });
+        }
+
+        const footer = document.createElement('div');
+        footer.className = 'traffic-list-editor-footer';
+        const addRule = document.createElement('button');
+        addRule.type = 'button';
+        addRule.className = 'btn';
+        addRule.textContent = '+ Add rule';
+        addRule.addEventListener('click', () => insertTrafficListPattern(list.id, list.patterns.length - 1));
+        footer.append(addRule);
+        if (list.id === DEFAULT_TRAFFIC_LIST_ID) {
+          const reset = document.createElement('button');
+          reset.type = 'button';
+          reset.className = 'btn';
+          reset.textContent = 'Reset defaults';
+          reset.addEventListener('click', resetDefaultTrafficList);
+          footer.append(reset);
+        }
+
+        card.append(header, modeHelp, rules, footer);
+        editor.append(card);
+      }
+      setTrafficListsDirty(trafficListsDirty);
+    }
+
+    function nextTrafficListId() {
+      if (window.crypto?.randomUUID) return 'list-' + window.crypto.randomUUID();
+      return 'list-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    }
+
+    function addTrafficList() {
+      const list = {
+        id: nextTrafficListId(),
+        name: 'New List',
+        enabled: true,
+        mode: 'blacklist',
+        patterns: [''],
+        builtIn: false
+      };
+      trafficLists = [...trafficLists, list];
+      renderTrafficListsEditor();
+      markTrafficListsChanged({ immediate: true });
+      const names = document.querySelectorAll('.traffic-list-name-input');
+      const name = names[names.length - 1];
+      name?.focus();
+      name?.select();
+    }
+
+    function removeTrafficList(listId) {
+      const list = trafficLists.find(candidate => candidate.id === listId);
+      if (!list || list.id === DEFAULT_TRAFFIC_LIST_ID) return;
+      if (!confirm(`Delete the list "${list.name}"?`)) return;
+      trafficLists = trafficLists.filter(candidate => candidate.id !== listId);
+      renderTrafficListsEditor();
+      markTrafficListsChanged({ immediate: true });
+    }
+
+    function resetDefaultTrafficList() {
+      trafficLists = trafficLists.map(list => list.id === DEFAULT_TRAFFIC_LIST_ID
+        ? {
+          ...list,
+          name: 'Default Exclusions',
+          enabled: true,
+          mode: 'blacklist',
+          patterns: [...trafficListDefaultPatterns]
+        }
+        : list
+      );
+      renderTrafficListsEditor();
+      markTrafficListsChanged({ immediate: true });
+    }
+
+    async function saveTrafficLists() {
+      const saveGeneration = ++trafficListsSaveGeneration;
+      clearTimeout(trafficListsFilterTimer);
+      refreshTrafficListsFilter(true);
+      try {
+        const response = await fetch(API_BASE + '/api/traffic-lists', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lists: trafficLists })
+        });
+        const data = await parseTrafficListsResponse(response, true);
+        if (saveGeneration !== trafficListsSaveGeneration) return;
+        synchronizeTrafficLists(data);
+        toast('Traffic lists saved', 'success');
+      } catch (error) {
+        if (saveGeneration !== trafficListsSaveGeneration) return;
+        setTrafficListsDirty(true);
+        toast('Error: ' + error.message, 'error');
+      }
     }
 
     // ============ ROW NAVIGATION ============

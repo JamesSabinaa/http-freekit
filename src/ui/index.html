@@ -381,22 +381,26 @@
             </p>
           </div>
           <div class="card settings-card" data-settings-section="lists" style="margin-bottom:20px;">
-            <div class="card-header">Default Exclusions</div>
-            <div class="settings-row">
-              <label class="settings-label" for="defaultExclusionsEnabledToggle">Enable Default Exclusions</label>
-              <span class="settings-value"><input type="checkbox" id="defaultExclusionsEnabledToggle" onchange="saveDefaultExclusions()" checked style="cursor:pointer;width:18px;height:18px;"></span>
+            <div class="traffic-lists-toolbar">
+              <div>
+                <div class="card-header" style="padding:0;border:0;">Traffic Lists</div>
+                <p class="traffic-lists-intro">Create named blacklists or whitelists to control which captured requests appear in the traffic view, searches, statistics, and exports.</p>
+              </div>
+              <div class="traffic-lists-toolbar-actions">
+                <button class="btn" type="button" onclick="addTrafficList()">+ Add list</button>
+                <button class="btn btn-primary" type="button" id="saveTrafficListsButton" data-traffic-lists-save onclick="saveTrafficLists()" disabled>Save lists</button>
+              </div>
             </div>
-            <p style="font-size:12px;color:var(--text-lowlight);margin:8px 0 12px;line-height:1.5;">
-              Hides routine browser background traffic from the traffic view, searches, and exports. Captured requests remain stored and reappear when this list is disabled.
-            </p>
-            <label class="settings-label" for="defaultExclusionsEditor" style="display:block;margin-bottom:7px;">Hostname or hostname/path prefix (one per line)</label>
-            <textarea id="defaultExclusionsEditor" aria-label="Default exclusion patterns" spellcheck="false" style="width:100%;min-height:300px;resize:vertical;box-sizing:border-box;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:9px 10px;font-family:var(--font-mono);font-size:12px;line-height:1.45;"></textarea>
-            <div style="display:flex;gap:8px;margin-top:10px;">
-              <button class="btn" type="button" onclick="saveDefaultExclusions()" style="font-size:11px;padding:4px 10px;">Save</button>
-              <button class="btn" type="button" onclick="resetDefaultExclusions()" style="font-size:11px;padding:4px 10px;">Reset to defaults</button>
+            <div class="traffic-lists-guidance">
+              Blacklists hide matching requests. When any whitelist is enabled, a request must match at least one enabled whitelist; matching blacklists still take precedence. Captured data is never deleted.
             </div>
-            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
-              Use <code>*</code> as a hostname wildcard. A path filters every request whose path starts with that value. Full URLs are also accepted.
+            <div id="trafficListsEditor" class="traffic-lists-editor" aria-live="polite"></div>
+            <div class="traffic-lists-save-row">
+              <span id="trafficListsSaveStatus" class="traffic-lists-save-status">All changes saved</span>
+              <button class="btn btn-primary" type="button" data-traffic-lists-save onclick="saveTrafficLists()" disabled>Save lists</button>
+            </div>
+            <p class="traffic-lists-pattern-help">
+              Rules accept hostnames, hostname/path prefixes, full URLs, and <code>*</code> hostname wildcards. Use the <strong>+</strong> and <strong>−</strong> controls beside any rule to insert or remove lines.
             </p>
           </div>
           <div class="card settings-card" data-settings-section="schemas" style="margin-bottom:20px;">

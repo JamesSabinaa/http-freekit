@@ -25,13 +25,17 @@ test('settings sidebar exposes the expected sections in order', () => {
   assert.deepEqual(sections, expectedSections);
 });
 
-test('existing settings cards are categorized and Lists contains Default Exclusions', () => {
+test('existing settings cards are categorized and Lists contains the traffic-list editor', () => {
   const cardSections = [...html.matchAll(/class="card settings-card[^"]*" data-settings-section="([^"]+)"/g)]
     .map(match => match[1]);
 
   assert.equal(cardSections.length, 16);
   assert.equal(cardSections.includes('lists'), true);
-  assert.match(html, /data-settings-section="lists"[\s\S]*?Default Exclusions/);
+  assert.match(html, /data-settings-section="lists"[\s\S]*?Traffic Lists/);
+  assert.match(html, /onclick="addTrafficList\(\)"/);
+  assert.doesNotMatch(html, /id="defaultExclusionsEditor"/);
+  assert.match(app, /function createTrafficListRuleRow\([\s\S]*?textContent = '\+';/);
+  assert.match(app, /removeButton\.textContent = '−';/);
   for (const section of expectedSections) {
     assert.equal(cardSections.includes(section), true, `No settings cards assigned to ${section}`);
   }
