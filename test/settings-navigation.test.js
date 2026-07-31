@@ -25,13 +25,14 @@ test('settings sidebar exposes the expected sections in order', () => {
   assert.deepEqual(sections, expectedSections);
 });
 
-test('existing settings cards are categorized and Lists remains empty', () => {
+test('existing settings cards are categorized and Lists contains Default Exclusions', () => {
   const cardSections = [...html.matchAll(/class="card settings-card[^"]*" data-settings-section="([^"]+)"/g)]
     .map(match => match[1]);
 
-  assert.equal(cardSections.length, 15);
-  assert.equal(cardSections.includes('lists'), false);
-  for (const section of expectedSections.filter(section => section !== 'lists')) {
+  assert.equal(cardSections.length, 16);
+  assert.equal(cardSections.includes('lists'), true);
+  assert.match(html, /data-settings-section="lists"[\s\S]*?Default Exclusions/);
+  for (const section of expectedSections) {
     assert.equal(cardSections.includes(section), true, `No settings cards assigned to ${section}`);
   }
 });

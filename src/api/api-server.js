@@ -15,6 +15,11 @@ import { validatePortRange } from '../proxy/port-range.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
+import {
+  DEFAULT_EXCLUSIONS,
+  filterDefaultExclusions,
+  normalizeDefaultExclusions
+} from '../traffic/default-exclusions.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
@@ -746,10 +751,28 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return req?.protocol === 'tunnel' || req?.method === 'CONNECT';
   }
 
+  _getDefaultExclusionsConfig() {
+    const enabled = this.settings?.get('defaultExclusionsEnabled', true) !== false;
+    const savedPatterns = this.settings?.get('defaultExclusions', DEFAULT_EXCLUSIONS);
+    let patterns;
+    try {
+      patterns = normalizeDefaultExclusions(savedPatterns);
+    } catch {
+      patterns = [...DEFAULT_EXCLUSIONS];
+    }
+    return { enabled, patterns };
+  }
+
+  _getTrafficWithoutDefaultExclusions() {
+    const { enabled, patterns } = this._getDefaultExclusionsConfig();
+    if (!enabled || patterns.length === 0) return this.trafficLog;
+    return filterDefaultExclusions(this.trafficLog, patterns);
+  }
+
   _getHarExportTraffic() {
     const hideTunnelRequests = this.settings?.get('hideTunnelRequests', true) !== false;
     const filterSafeFonts = this.settings?.get('filterSafeFonts', false) === true;
-    return this.trafficLog.filter(req => {
+    return this._getTrafficWithoutDefaultExclusions().filter(req => {
       if (req?.protocol === 'ws-frame') return false;
       if (hideTunnelRequests && this._isTunnelRequest(req)) return false;
       if (filterSafeFonts && ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase())) return false;
@@ -1277,12 +1300,41 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ success: true, hideTunnelRequests, filterSafeFonts });
     });
 
+    router.get('/api/default-exclusions', (req, res) => {
+      const config = this._getDefaultExclusionsConfig();
+      res.json({
+        ...config,
+        defaults: [...DEFAULT_EXCLUSIONS]
+      });
+    });
+
+    router.put('/api/default-exclusions', (req, res) => {
+      if (typeof req.body?.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      }
+      let patterns;
+      try {
+        patterns = normalizeDefaultExclusions(req.body?.patterns);
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+      try {
+        this._persistSettings({
+          defaultExclusionsEnabled: req.body.enabled,
+          defaultExclusions: patterns
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to save Default Exclusions' });
+      }
+      res.json({ success: true, enabled: req.body.enabled, patterns });
+    });
+
     // Proxy stats
     router.get('/api/stats', (req, res) => {
       res.json({
         proxy: this.proxy.getStats(),
         traffic: {
-          total: this.trafficLog.length,
+          total: this._getTrafficWithoutDefaultExclusions().length,
           clients: this.clients.size,
           capturePaused: this.capturePaused
         }
@@ -1304,10 +1356,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       const filter = req.query.filter || '';
 
-      let filtered = this.trafficLog;
+      const visibleTraffic = this._getTrafficWithoutDefaultExclusions();
+      let filtered = visibleTraffic;
       if (filter) {
         const lowerFilter = filter.toLowerCase();
-        filtered = this.trafficLog.filter(r =>
+        filtered = visibleTraffic.filter(r =>
           r.url?.toLowerCase().includes(lowerFilter) ||
           r.method?.toLowerCase().includes(lowerFilter) ||
           r.host?.toLowerCase().includes(lowerFilter) ||
@@ -1356,7 +1409,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         exported: new Date().toISOString(),
         tool: 'HTTP FreeKit',
         version: '1.0.0',
-        requests: this.trafficLog
+        requests: this._getTrafficWithoutDefaultExclusions()
       });
     });
 
@@ -1385,7 +1438,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.get('/api/traffic/search', (req, res) => {
       const { method, status, host, path: pathFilter, source } = req.query;
 
-      let results = this.trafficLog;
+      let results = this._getTrafficWithoutDefaultExclusions();
 
       if (method) results = results.filter(r => r.method?.toUpperCase() === method.toUpperCase());
       if (status) {

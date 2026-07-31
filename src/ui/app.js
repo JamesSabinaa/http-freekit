@@ -13,6 +13,54 @@
     let config = {};
     let hideTunnelRequests = true;
     let filterSafeFonts = false;
+    let defaultExclusionsEnabled = true;
+    let defaultExclusions = [
+      'update.googleapis.com',
+      'optimizationguide-pa.googleapis.com',
+      'safebrowsing.googleapis.com',
+      'safebrowsing.google.com',
+      'clients1.google.com',
+      'clients2.google.com',
+      'clients3.google.com',
+      'clients4.google.com',
+      'clients5.google.com',
+      'clients6.google.com',
+      'content-autofill.googleapis.com',
+      'google-ohttp-relay-safebrowsing.fastly-edge.com',
+      'redirector.gvt1.com',
+      '*.gvt1.com',
+      '*.gvt2.com',
+      '*update*.googleapis.com',
+      '*safebrowsing*.googleapis.com',
+      '*optimizationguide*.googleapis.com',
+      'bam.nr-data.net/jserrors',
+      'android.clients.google.com/c2dm/register3',
+      'android.clients.google.com/checkin',
+      'clients2.googleusercontent.com/crx/blobs',
+      'accounts.google.com/listaccounts',
+      'clientservices.googleapis.com/chrome-variations/seed',
+      'clientservices.googleapis.com/uma/v2',
+      'www.googleapis.com/chromewebstore/v1.1/items/verify',
+      'chromewebstore.googleapis.com/v2/items/-/storemetadata:batchget',
+      'www.gstatic.com/og/_/js',
+      'www.gstatic.com/images/branding/googlelogo',
+      'www.gstatic.com/images/branding/searchlogo/ico/favicon.ico',
+      'play.google.com/log',
+      'ogads-pa.clients6.google.com/$rpc/google.internal.onegoogle.asyncdata.v1.asyncdataservice/getasyncdata',
+      'www.google.com/async/folae',
+      'www.google.com/async/ddljson',
+      'www.google.com/async/newtab_ogb',
+      'www.google.com/xjs/_/js',
+      'www.google.com/complete/s',
+      'www.google.com/complete/search',
+      'www.google.com/gen_204',
+      'www.google.com/chrome/',
+      'google.com/domainreliability/upload',
+      'www.google.com/domainreliability/upload',
+      'google.co.uk/domainreliability/upload',
+      'www.google.co.uk/domainreliability/upload'
+    ];
+    let defaultExclusionDefaults = [...defaultExclusions];
     let protobufSchemaFiles = [];
     let protobufRoot = null;
     let protobufSchemaError = '';
@@ -662,6 +710,7 @@
           // Load initial data
           loadConfig();
           loadUiSettings();
+          if (typeof loadDefaultExclusions === 'function') loadDefaultExclusions();
           loadProtobufSchemas();
           loadInterceptors();
           loadMockRules().then(loaded => {
@@ -880,6 +929,72 @@
       return ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase());
     }
 
+    function defaultExclusionTarget(req) {
+      let host = String(req?.host || '').trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+      let requestPath = String(req?.path || '');
+      if ((!host || !requestPath) && req?.url) {
+        try {
+          const url = new URL(String(req.url));
+          if (!host) host = url.hostname.toLowerCase().replace(/\.$/, '');
+          if (!requestPath) requestPath = url.pathname + url.search;
+        } catch {}
+      }
+      if (requestPath && !requestPath.startsWith('/')) requestPath = '/' + requestPath;
+      return { host, path: requestPath.toLowerCase() };
+    }
+
+    function getCompiledDefaultExclusions() {
+      if (getCompiledDefaultExclusions.patterns === defaultExclusions) {
+        return getCompiledDefaultExclusions.rules;
+      }
+      const rules = defaultExclusions.map(pattern => {
+        const slashIndex = pattern.indexOf('/');
+        const hostPattern = slashIndex === -1 ? pattern : pattern.slice(0, slashIndex);
+        const pathPrefix = slashIndex === -1 ? '' : pattern.slice(slashIndex);
+        return { hostPattern, pathPrefix };
+      });
+      getCompiledDefaultExclusions.patterns = defaultExclusions;
+      getCompiledDefaultExclusions.rules = rules;
+      return rules;
+    }
+
+    function defaultExclusionHostMatches(host, pattern) {
+      if (!pattern.includes('*')) return host === pattern;
+      let hostIndex = 0;
+      let patternIndex = 0;
+      let starIndex = -1;
+      let retryHostIndex = 0;
+      while (hostIndex < host.length) {
+        if (patternIndex < pattern.length && pattern[patternIndex] === host[hostIndex]) {
+          hostIndex++;
+          patternIndex++;
+        } else if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
+          starIndex = patternIndex++;
+          retryHostIndex = hostIndex;
+        } else if (starIndex !== -1) {
+          patternIndex = starIndex + 1;
+          hostIndex = ++retryHostIndex;
+        } else {
+          return false;
+        }
+      }
+      while (patternIndex < pattern.length && pattern[patternIndex] === '*') patternIndex++;
+      return patternIndex === pattern.length;
+    }
+
+    function isDefaultExcludedRequest(req) {
+      // Some embedded renderer consumers load only the traffic helpers. In that
+      // mode the settings state is absent, so exclusions must remain opt-in.
+      if (typeof defaultExclusionsEnabled === 'undefined' || !defaultExclusionsEnabled ||
+          typeof defaultExclusions === 'undefined') return false;
+      const target = defaultExclusionTarget(req);
+      if (!target.host) return false;
+      return getCompiledDefaultExclusions().some(rule => {
+        const hostMatches = defaultExclusionHostMatches(target.host, rule.hostPattern);
+        return hostMatches && (!rule.pathPrefix || target.path.startsWith(rule.pathPrefix));
+      });
+    }
+
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
 
@@ -899,7 +1014,8 @@
         baseList = requests.filter(r =>
           r.protocol !== 'ws-frame' &&
           (!hideTunnelRequests || !isTunnelRequest(r)) &&
-          (!filterSafeFonts || !isSafeFontRequest(r))
+          (!filterSafeFonts || !isSafeFontRequest(r)) &&
+          !isDefaultExcludedRequest(r)
         );
       } else {
         const filters = parseFilters(raw);
@@ -907,6 +1023,7 @@
           r.protocol !== 'ws-frame' &&
           (!hideTunnelRequests || !isTunnelRequest(r)) &&
           (!filterSafeFonts || !isSafeFontRequest(r)) &&
+          !isDefaultExcludedRequest(r) &&
           matchesAllFilters(r, filters)
         );
       }
@@ -1316,7 +1433,8 @@
       const visibleTotal = requests.filter(r =>
         r.protocol !== 'ws-frame' &&
         (!hideTunnelRequests || !isTunnelRequest(r)) &&
-        (!filterSafeFonts || !isSafeFontRequest(r))
+        (!filterSafeFonts || !isSafeFontRequest(r)) &&
+        !isDefaultExcludedRequest(r)
       ).length;
       const filterSummary = [];
       if (query && filteredRequests.length !== visibleTotal) {
@@ -10568,6 +10686,99 @@
       if (toggle) toggle.checked = filterSafeFonts;
       applyFilter();
       await saveUiSettingsChange({ filterSafeFonts }, previousSettings, saveGeneration);
+    }
+
+    let defaultExclusionsSaveGeneration = 0;
+
+    function synchronizeDefaultExclusions(data, updateDefaults = false) {
+      defaultExclusionsEnabled = data.enabled;
+      defaultExclusions = [...data.patterns];
+      if (updateDefaults && Array.isArray(data.defaults)) {
+        defaultExclusionDefaults = [...data.defaults];
+      }
+      const toggle = document.getElementById('defaultExclusionsEnabledToggle');
+      if (toggle) toggle.checked = defaultExclusionsEnabled;
+      const editor = document.getElementById('defaultExclusionsEditor');
+      if (editor) editor.value = defaultExclusions.join('\n');
+      applyFilter();
+    }
+
+    async function parseDefaultExclusionsResponse(response, requireSaveConfirmation = false) {
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error('Default Exclusions response was not valid JSON');
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || `Default Exclusions returned HTTP ${response.status}`);
+      }
+      if (requireSaveConfirmation && data?.success !== true) {
+        throw new Error(data?.error || 'Default Exclusions save was not confirmed');
+      }
+      if (typeof data?.enabled !== 'boolean' || !Array.isArray(data?.patterns) ||
+          data.patterns.some(pattern => typeof pattern !== 'string')) {
+        throw new Error('Default Exclusions response was incomplete');
+      }
+      return data;
+    }
+
+    async function loadDefaultExclusions() {
+      const loadGeneration = defaultExclusionsSaveGeneration;
+      synchronizeDefaultExclusions({
+        enabled: defaultExclusionsEnabled,
+        patterns: defaultExclusions
+      });
+      try {
+        const response = await fetch(API_BASE + '/api/default-exclusions');
+        const data = await parseDefaultExclusionsResponse(response);
+        if (loadGeneration === defaultExclusionsSaveGeneration) {
+          synchronizeDefaultExclusions(data, true);
+        }
+      } catch (error) {
+        console.error('[Error]', error.message);
+      }
+    }
+
+    function readDefaultExclusionsEditor() {
+      return String(document.getElementById('defaultExclusionsEditor')?.value || '')
+        .split(/\r?\n/)
+        .map(pattern => pattern.trim())
+        .filter(pattern => pattern && !pattern.startsWith('#'));
+    }
+
+    async function saveDefaultExclusions() {
+      const previous = {
+        enabled: defaultExclusionsEnabled,
+        patterns: [...defaultExclusions]
+      };
+      const enabled = document.getElementById('defaultExclusionsEnabledToggle')?.checked !== false;
+      const patterns = readDefaultExclusionsEditor();
+      const saveGeneration = ++defaultExclusionsSaveGeneration;
+      synchronizeDefaultExclusions({ enabled, patterns });
+      try {
+        const response = await fetch(API_BASE + '/api/default-exclusions', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled, patterns })
+        });
+        const data = await parseDefaultExclusionsResponse(response, true);
+        if (saveGeneration !== defaultExclusionsSaveGeneration) return;
+        synchronizeDefaultExclusions(data);
+        toast('Default Exclusions saved', 'success');
+      } catch (error) {
+        if (saveGeneration !== defaultExclusionsSaveGeneration) return;
+        synchronizeDefaultExclusions(previous);
+        toast('Error: ' + error.message, 'error');
+      }
+    }
+
+    async function resetDefaultExclusions() {
+      const toggle = document.getElementById('defaultExclusionsEnabledToggle');
+      if (toggle) toggle.checked = true;
+      const editor = document.getElementById('defaultExclusionsEditor');
+      if (editor) editor.value = defaultExclusionDefaults.join('\n');
+      await saveDefaultExclusions();
     }
 
     // ============ ROW NAVIGATION ============

@@ -573,7 +573,10 @@ export class McpServerBridge {
   // ========== Tool Handlers ==========
 
   _getHttpRequestTraffic() {
-    return this.apiServer.trafficLog.filter(record => record?.protocol !== 'ws-frame');
+    const traffic = typeof this.apiServer._getTrafficWithoutDefaultExclusions === 'function'
+      ? this.apiServer._getTrafficWithoutDefaultExclusions()
+      : this.apiServer.trafficLog;
+    return traffic.filter(record => record?.protocol !== 'ws-frame');
   }
 
   _handleSearchTraffic({ query, method, status, host, limit }) {
@@ -866,7 +869,7 @@ export class McpServerBridge {
   }
 
   _handleSecurityScan() {
-    const log = this.apiServer.trafficLog;
+    const log = this._getHttpRequestTraffic();
     const issues = [];
 
     const tokenPatterns = /[?&](token|api_key|apikey|access_token|secret|password|auth|session_id|sessionid)=/i;

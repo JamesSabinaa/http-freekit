@@ -380,6 +380,25 @@
               Filters browser font requests to fonts.googleapis.com and fonts.gstatic.com from the traffic list and exports.
             </p>
           </div>
+          <div class="card settings-card" data-settings-section="lists" style="margin-bottom:20px;">
+            <div class="card-header">Default Exclusions</div>
+            <div class="settings-row">
+              <label class="settings-label" for="defaultExclusionsEnabledToggle">Enable Default Exclusions</label>
+              <span class="settings-value"><input type="checkbox" id="defaultExclusionsEnabledToggle" onchange="saveDefaultExclusions()" checked style="cursor:pointer;width:18px;height:18px;"></span>
+            </div>
+            <p style="font-size:12px;color:var(--text-lowlight);margin:8px 0 12px;line-height:1.5;">
+              Hides routine browser background traffic from the traffic view, searches, and exports. Captured requests remain stored and reappear when this list is disabled.
+            </p>
+            <label class="settings-label" for="defaultExclusionsEditor" style="display:block;margin-bottom:7px;">Hostname or hostname/path prefix (one per line)</label>
+            <textarea id="defaultExclusionsEditor" aria-label="Default exclusion patterns" spellcheck="false" style="width:100%;min-height:300px;resize:vertical;box-sizing:border-box;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:9px 10px;font-family:var(--font-mono);font-size:12px;line-height:1.45;"></textarea>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn" type="button" onclick="saveDefaultExclusions()" style="font-size:11px;padding:4px 10px;">Save</button>
+              <button class="btn" type="button" onclick="resetDefaultExclusions()" style="font-size:11px;padding:4px 10px;">Reset to defaults</button>
+            </div>
+            <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+              Use <code>*</code> as a hostname wildcard. A path filters every request whose path starts with that value. Full URLs are also accepted.
+            </p>
+          </div>
           <div class="card settings-card" data-settings-section="schemas" style="margin-bottom:20px;">
             <div class="card-header">Protobuf Schemas</div>
             <div class="settings-row">
