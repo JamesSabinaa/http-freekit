@@ -189,6 +189,9 @@ export class ApiServer {
       : () => performance.now();
     this.authToken = options.authToken || null;
     this.onShutdown = options.onShutdown || null;
+    this.bottingToolsWorkDir = path.resolve(
+      options.bottingToolsWorkDir || path.join(os.tmpdir(), 'http-freekit-bottingtools-proxies')
+    );
     this.autoRotateProxy = { enabled: false, provider: 'lemonprime' };
     this._autoRotateInFlight = false;
     this._autoRotatePromise = null;
@@ -350,11 +353,12 @@ export class ApiServer {
     });
   }
 
-  _execBottingToolsPythonJson(candidate, script, args = []) {
+  _execBottingToolsPythonJson(candidate, script, args = [], options = {}) {
     return new Promise((resolve, reject) => {
       execFile(candidate.command, [...candidate.args, '-c', script, ...args], {
         timeout: 30000,
-        windowsHide: true
+        windowsHide: true,
+        ...(options.cwd ? { cwd: options.cwd } : {})
       }, (error, stdout, stderr) => {
         if (error) {
           const message = (stderr || stdout || error.message).trim();
@@ -479,12 +483,12 @@ export class ApiServer {
     return status;
   }
 
-  async _runPythonJson(script, args = []) {
+  async _runPythonJson(script, args = [], options = {}) {
     const candidates = this._getBottingToolsPythonCandidates();
     const errors = [];
     for (const candidate of candidates) {
       try {
-        return await this._execBottingToolsPythonJson(candidate, script, args);
+        return await this._execBottingToolsPythonJson(candidate, script, args, options);
       } catch (error) {
         errors.push(`${this._formatCommand(candidate)}: ${error.message}`);
       }
@@ -493,6 +497,10 @@ export class ApiServer {
   }
 
   async _getBottingToolsProxy(provider = 'lemonprime', refill = true) {
+    const normalizedProvider = String(provider || 'lemonprime');
+    const queueKey = crypto.createHash('sha256').update(normalizedProvider).digest('hex');
+    const queueDir = path.join(this.bottingToolsWorkDir, queueKey);
+    await fs.mkdir(queueDir, { recursive: true });
     const script = `
 import json
 import sys
@@ -513,7 +521,11 @@ print(json.dumps({
     "raw": str(proxy),
 }))
 `;
-    return this._runPythonJson(script, [String(provider || 'lemonprime'), refill ? 'true' : 'false']);
+    return this._runPythonJson(
+      script,
+      [normalizedProvider, refill ? 'true' : 'false'],
+      { cwd: queueDir }
+    );
   }
 
   async _getBottingToolsProviders() {

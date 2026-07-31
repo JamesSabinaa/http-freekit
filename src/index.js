@@ -159,7 +159,8 @@ async function initializeApplication(apiPort) {
   // 5. Initialize API Server (with UI serving)
   const api = new ApiServer(proxy, ca, interceptors, {
     port: apiPort,
-    authToken: process.env.AUTH_TOKEN || null
+    authToken: process.env.AUTH_TOKEN || null,
+    bottingToolsWorkDir: path.join(DATA_DIR, 'bottingtools-proxy-queues')
   });
   api.settings = settings; // Give API server access to persist settings
   proxy.filterSafeFonts = settings.get('filterSafeFonts', false) === true;
