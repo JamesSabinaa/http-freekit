@@ -69,6 +69,8 @@
       builtIn: true
     }];
     let trafficListDefaultPatterns = [...initialDefaultExclusions];
+    let expandedTrafficListIds = new Set([DEFAULT_TRAFFIC_LIST_ID]);
+    let trafficListAccordionStateLoaded = false;
     let protobufSchemaFiles = [];
     let protobufRoot = null;
     let protobufSchemaError = '';
@@ -10797,6 +10799,14 @@
 
     function synchronizeTrafficLists(data, updateDefaults = false) {
       trafficLists = cloneTrafficLists(data.lists);
+      const validIds = new Set(trafficLists.map(list => list.id));
+      let accordionStateChanged = false;
+      for (const id of expandedTrafficListIds) {
+        if (validIds.has(id)) continue;
+        expandedTrafficListIds.delete(id);
+        accordionStateChanged = true;
+      }
+      if (accordionStateChanged) persistTrafficListAccordionState();
       if (updateDefaults && Array.isArray(data.defaultPatterns)) {
         trafficListDefaultPatterns = [...data.defaultPatterns];
       }
@@ -10808,6 +10818,7 @@
 
     async function loadTrafficLists() {
       const loadGeneration = trafficListsSaveGeneration;
+      loadTrafficListAccordionState();
       renderTrafficListsEditor();
       try {
         const response = await fetch(API_BASE + '/api/traffic-lists');
@@ -10818,6 +10829,35 @@
       } catch (error) {
         console.error('[Error]', error.message);
       }
+    }
+
+    function loadTrafficListAccordionState() {
+      if (trafficListAccordionStateLoaded) return;
+      trafficListAccordionStateLoaded = true;
+      const stored = safeLocalStorageGet('trafficListsExpandedIds');
+      if (stored === null) return;
+      try {
+        const ids = JSON.parse(stored);
+        if (!Array.isArray(ids) || ids.length > 50 ||
+            ids.some(id => typeof id !== 'string' || id.length > 128)) return;
+        expandedTrafficListIds = new Set(ids);
+      } catch {}
+    }
+
+    function persistTrafficListAccordionState() {
+      safeLocalStorageSet(
+        'trafficListsExpandedIds',
+        JSON.stringify([...expandedTrafficListIds]),
+        false
+      );
+    }
+
+    function toggleTrafficListAccordion(listId) {
+      loadTrafficListAccordionState();
+      if (expandedTrafficListIds.has(listId)) expandedTrafficListIds.delete(listId);
+      else expandedTrafficListIds.add(listId);
+      persistTrafficListAccordionState();
+      renderTrafficListsEditor();
     }
 
     function trafficListModeHelp(mode) {
@@ -10841,6 +10881,8 @@
       const insertIndex = Math.max(0, Math.min(list.patterns.length, afterIndex + 1));
       list.patterns.splice(insertIndex, 0, '');
       trafficLists = [...trafficLists];
+      expandedTrafficListIds.add(listId);
+      persistTrafficListAccordionState();
       renderTrafficListsEditor();
       markTrafficListsChanged({ immediate: true });
       focusTrafficListPattern(listId, insertIndex);
@@ -10898,15 +10940,33 @@
     function renderTrafficListsEditor() {
       const editor = document.getElementById('trafficListsEditor');
       if (!editor) return;
+      loadTrafficListAccordionState();
       editor.replaceChildren();
 
-      for (const list of trafficLists) {
+      for (const [listIndex, list] of trafficLists.entries()) {
+        const isExpanded = expandedTrafficListIds.has(list.id);
         const card = document.createElement('section');
-        card.className = 'traffic-list-editor-card';
+        card.className = 'traffic-list-editor-card' + (isExpanded ? '' : ' is-collapsed');
         card.dataset.listId = list.id;
 
         const header = document.createElement('div');
         header.className = 'traffic-list-editor-header';
+
+        const bodyId = `traffic-list-accordion-body-${listIndex}`;
+        const accordionToggle = document.createElement('button');
+        accordionToggle.type = 'button';
+        accordionToggle.className = 'traffic-list-accordion-toggle' +
+          (isExpanded ? ' is-expanded' : '');
+        accordionToggle.title = isExpanded ? 'Collapse list' : 'Expand list';
+        accordionToggle.setAttribute('aria-label',
+          `${isExpanded ? 'Collapse' : 'Expand'} ${list.name}`);
+        accordionToggle.setAttribute('aria-expanded', String(isExpanded));
+        accordionToggle.setAttribute('aria-controls', bodyId);
+        const caret = document.createElement('i');
+        caret.className = 'ph ph-caret-down';
+        caret.setAttribute('aria-hidden', 'true');
+        accordionToggle.append(caret);
+        accordionToggle.addEventListener('click', () => toggleTrafficListAccordion(list.id));
 
         const enabled = document.createElement('input');
         enabled.type = 'checkbox';
@@ -10931,13 +10991,17 @@
 
         const identity = document.createElement('div');
         identity.className = 'traffic-list-identity';
-        identity.append(enabled, name);
+        identity.append(accordionToggle, enabled, name);
         if (list.builtIn || list.id === DEFAULT_TRAFFIC_LIST_ID) {
           const badge = document.createElement('span');
           badge.className = 'traffic-list-built-in-badge';
           badge.textContent = 'Built in';
           identity.append(badge);
         }
+        const ruleCount = document.createElement('span');
+        ruleCount.className = 'traffic-list-rule-count';
+        ruleCount.textContent = `${list.patterns.length} ${list.patterns.length === 1 ? 'rule' : 'rules'}`;
+        identity.append(ruleCount);
 
         const mode = document.createElement('select');
         mode.className = 'traffic-list-mode-select';
@@ -10963,7 +11027,7 @@
         const actions = document.createElement('div');
         actions.className = 'traffic-list-header-actions';
         actions.append(mode, deleteButton);
-        header.append(identity, actions);
+        header.append(identity);
 
         const modeHelp = document.createElement('p');
         modeHelp.className = 'traffic-list-mode-help';
@@ -11012,7 +11076,13 @@
           footer.append(reset);
         }
 
-        card.append(header, modeHelp, rules, footer);
+        const accordionBody = document.createElement('div');
+        accordionBody.className = 'traffic-list-accordion-body';
+        accordionBody.id = bodyId;
+        accordionBody.hidden = !isExpanded;
+        accordionBody.append(actions, modeHelp, rules, footer);
+
+        card.append(header, accordionBody);
         editor.append(card);
       }
       setTrafficListsDirty(trafficListsDirty);
@@ -11033,6 +11103,8 @@
         builtIn: false
       };
       trafficLists = [...trafficLists, list];
+      expandedTrafficListIds.add(list.id);
+      persistTrafficListAccordionState();
       renderTrafficListsEditor();
       markTrafficListsChanged({ immediate: true });
       const names = document.querySelectorAll('.traffic-list-name-input');
@@ -11046,6 +11118,8 @@
       if (!list || list.id === DEFAULT_TRAFFIC_LIST_ID) return;
       if (!confirm(`Delete the list "${list.name}"?`)) return;
       trafficLists = trafficLists.filter(candidate => candidate.id !== listId);
+      expandedTrafficListIds.delete(listId);
+      persistTrafficListAccordionState();
       renderTrafficListsEditor();
       markTrafficListsChanged({ immediate: true });
     }

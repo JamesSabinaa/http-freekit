@@ -2472,7 +2472,7 @@
     .traffic-lists-editor {
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 10px;
     }
 
     .traffic-list-editor-card {
@@ -2480,6 +2480,11 @@
       border: 1px solid var(--text-input-border);
       border-radius: 6px;
       background: color-mix(in srgb, var(--bg-main) 74%, var(--bg-container));
+    }
+
+    .traffic-list-editor-card.is-collapsed {
+      padding-top: 10px;
+      padding-bottom: 10px;
     }
 
     .traffic-list-editor-header {
@@ -2495,6 +2500,36 @@
       min-width: 0;
       flex: 1;
       gap: 9px;
+    }
+
+    .traffic-list-accordion-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-lowlight);
+      cursor: pointer;
+    }
+
+    .traffic-list-accordion-toggle:hover,
+    .traffic-list-accordion-toggle:focus-visible {
+      border-color: var(--pop-color);
+      color: var(--pop-color);
+      outline: none;
+    }
+
+    .traffic-list-accordion-toggle i {
+      transition: transform 0.15s ease;
+    }
+
+    .traffic-list-accordion-toggle.is-expanded i {
+      transform: rotate(180deg);
     }
 
     .traffic-list-enabled {
@@ -2548,12 +2583,32 @@
       letter-spacing: 0.35px;
     }
 
+    .traffic-list-rule-count {
+      flex: 0 0 auto;
+      color: var(--text-watermark);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
     .traffic-list-delete-button {
       color: #ce3939;
     }
 
     .traffic-list-mode-help {
       margin: 9px 0;
+    }
+
+    .traffic-list-accordion-body {
+      margin-top: 9px;
+    }
+
+    .traffic-list-accordion-body .traffic-list-header-actions {
+      justify-content: flex-end;
+      margin-bottom: 6px;
+    }
+
+    .traffic-list-accordion-body[hidden] {
+      display: none;
     }
 
     .traffic-list-rules {

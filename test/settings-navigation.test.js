@@ -36,6 +36,10 @@ test('existing settings cards are categorized and Lists contains the traffic-lis
   assert.doesNotMatch(html, /id="defaultExclusionsEditor"/);
   assert.match(app, /function createTrafficListRuleRow\([\s\S]*?textContent = '\+';/);
   assert.match(app, /removeButton\.textContent = '−';/);
+  assert.match(app, /accordionToggle\.setAttribute\('aria-expanded', String\(isExpanded\)\)/);
+  assert.match(app, /accordionBody\.hidden = !isExpanded/);
+  assert.match(styles, /\.traffic-list-editor-card\.is-collapsed\s*\{/);
+  assert.match(styles, /\.traffic-list-accordion-body\[hidden\]\s*\{/);
   for (const section of expectedSections) {
     assert.equal(cardSections.includes(section), true, `No settings cards assigned to ${section}`);
   }

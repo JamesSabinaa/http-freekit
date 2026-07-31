@@ -152,9 +152,11 @@ test('renderer plus and minus controls insert and remove the intended rules', ()
   let changeCalls = 0;
   const context = {
     trafficLists: [{ id: 'custom', patterns: ['first', 'last'] }],
+    expandedTrafficListIds: new Set(),
     renderTrafficListsEditor() {},
     markTrafficListsChanged() { changeCalls++; },
-    focusTrafficListPattern() {}
+    focusTrafficListPattern() {},
+    persistTrafficListAccordionState() {}
   };
   vm.createContext(context);
   vm.runInContext(
@@ -166,6 +168,38 @@ test('renderer plus and minus controls insert and remove the intended rules', ()
   context.removeRule('custom', 1);
   assert.deepEqual(Array.from(context.trafficLists[0].patterns), ['first', 'last']);
   assert.equal(changeCalls, 2);
+});
+
+test('renderer accordions restore and persist expanded list IDs', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+  const start = source.indexOf('function loadTrafficListAccordionState(');
+  const end = source.indexOf('function trafficListModeHelp(', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const savedValues = [];
+  let renderCalls = 0;
+  const context = {
+    trafficListAccordionStateLoaded: false,
+    expandedTrafficListIds: new Set(['default-exclusions']),
+    safeLocalStorageGet: () => '["custom-list"]',
+    safeLocalStorageSet: (_key, value) => savedValues.push(value),
+    renderTrafficListsEditor: () => { renderCalls++; }
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    `${source.slice(start, end)}\n` +
+    'this.loadAccordion = loadTrafficListAccordionState; ' +
+    'this.toggleAccordion = toggleTrafficListAccordion;',
+    context
+  );
+  context.loadAccordion();
+  assert.deepEqual(Array.from(context.expandedTrafficListIds), ['custom-list']);
+  context.toggleAccordion('custom-list');
+  assert.deepEqual(Array.from(context.expandedTrafficListIds), []);
+  assert.equal(savedValues.at(-1), '[]');
+  context.toggleAccordion('default-exclusions');
+  assert.deepEqual(Array.from(context.expandedTrafficListIds), ['default-exclusions']);
+  assert.equal(renderCalls, 2);
 });
 
 test('traffic lists combine whitelists as a union and give blacklists precedence', () => {
