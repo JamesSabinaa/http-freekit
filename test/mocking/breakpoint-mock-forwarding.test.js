@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { ApiServer } from '../../src/api/api-server.js';
+import { ProxyServer } from '../../src/proxy/proxy-server.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+  });
+}
+
+function close(server) {
+  return new Promise(resolve => server.close(resolve));
+}
+
+function requestThroughProxy(proxyPort, originPort) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: proxyPort,
+      path: `http://127.0.0.1:${originPort}/real`,
+      headers: {
+        host: `127.0.0.1:${originPort}`,
+        authorization: 'Bearer remove-me',
+        'x-remove-me': 'yes'
+      }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({
+        statusCode: res.statusCode,
+        headers: res.headers,
+        body: Buffer.concat(chunks).toString('utf8')
+      }));
+    });
+    req.once('error', reject);
+    req.end();
+  });
+}
+
+async function runBreakpointAction(t, actionType, modifications = {}) {
+  let originHits = 0;
+  let originHeaders;
+  const events = [];
+  const origin = http.createServer((req, res) => {
+    originHits++;
+    originHeaders = req.headers;
+    res.writeHead(201, {
+      'content-type': 'text/plain',
+      'content-length': String(Buffer.byteLength('origin-body')),
+      'x-origin': 'yes'
+    });
+    res.end('origin-body');
+  });
+  const originPort = await listen(origin);
+  let proxy;
+  proxy = new ProxyServer(null, {
+    port: 0,
+    onBreakpoint: (event) => {
+      if (event.type !== 'breakpoint-hit') return;
+      const resumed = typeof modifications === 'function' ? modifications(event) : modifications;
+      setImmediate(() => proxy.resumeBreakpoint(event.requestId, resumed));
+    }
+  });
+  const resumeBreakpoint = proxy.onBreakpoint;
+  const api = new ApiServer(proxy, null, null);
+  proxy.onBreakpoint = resumeBreakpoint;
+  const broadcasts = [];
+  api._broadcast = message => broadcasts.push(message);
+  proxy.onRequest = event => {
+    events.push(structuredClone(event));
+    api.onTrafficEvent(event);
+  };
+  proxy.mockRules = [{ enabled: true, matchers: [], action: { type: actionType } }];
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin);
+  });
+
+  const response = await requestThroughProxy(proxy.server.address().port, originPort);
+  return { response, originHits, originHeaders, events, api, broadcasts };
+}
+
+test('request breakpoint mock actions resume into the real origin request', async (t) => {
+  const { response, originHits, originHeaders } = await runBreakpointAction(
+    t,
+    'breakpoint-request',
+    { headers: { 'x-kept': 'yes' } }
+  );
+
+  assert.equal(originHits, 1);
+  assert.equal(originHeaders.authorization, undefined);
+  assert.equal(originHeaders['x-remove-me'], undefined);
+  assert.equal(originHeaders['x-kept'], 'yes');
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.headers['x-origin'], 'yes');
+  assert.equal(response.body, 'origin-body');
+});
+
+test('response breakpoint mock actions pause the real response and apply edits', async (t) => {
+  const { response, originHits, events } = await runBreakpointAction(t, 'breakpoint-response', {
+    status: 202,
+    headers: { 'content-type': 'text/plain', 'content-length': '11', 'x-edited': 'yes' },
+    body: 'edited-response-body'
+  });
+
+  assert.equal(originHits, 1);
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.headers['x-edited'], 'yes');
+  assert.equal(response.body, 'edited-response-body');
+  assert.equal(response.headers['content-length'], String(Buffer.byteLength('edited-response-body')));
+  assert.ok(events.some(event =>
+    event.breakpointPhase === 'response' &&
+    event.upstreamStatusCode === 201 &&
+    event.responseBody === 'origin-body'
+  ));
+});
+
+test('combined breakpoint mock actions edit a real request and its real response', async (t) => {
+  const { response, originHits, originHeaders, events, api, broadcasts } = await runBreakpointAction(
+    t,
+    'breakpoint-request-response',
+    event => event.phase === 'response'
+      ? {
+          status: 202,
+          headers: { 'content-type': 'text/plain', 'x-combined': 'yes' },
+          body: 'combined response'
+        }
+      : { headers: { host: 'stale.example.test', 'x-request-edited': 'yes' } }
+  );
+
+  assert.equal(originHits, 1);
+  assert.equal(originHeaders['x-request-edited'], 'yes');
+  assert.notEqual(originHeaders.host, 'stale.example.test');
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.headers['x-combined'], 'yes');
+  assert.equal(response.body, 'combined response');
+  assert.ok(events.some(event => event.breakpointPhase === 'response'));
+  assert.equal(api.trafficLog.length, 1);
+  assert.equal(api.trafficLog[0].statusCode, 202);
+  assert.equal(events[0]._pending, true);
+  assert.equal(events.slice(1).every(event => event._update === true), true);
+  assert.equal(new Set(events.map(event => event.id)).size, 1);
+  assert.equal(broadcasts[0]?.type, 'request');
+  assert.equal(broadcasts.slice(1).every(event => event.type === 'request-update'), true);
+});
+
+test('renderer exposes response breakpoint status, headers, and body edits', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'src/ui/app.js'), 'utf8');
+  assert.match(source, /req\.breakpointPhase === 'response'/);
+  assert.match(source, /\['status', 'headers', 'body'\]/);
+  assert.match(source, /Response status:/);
+});
