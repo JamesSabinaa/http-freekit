@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
 import { validateOpenApiSubmission } from './openapi-validation.js';
+import { registerConfigurationRoutes } from './routes/configuration-routes.js';
 import { validatePortRange } from '../proxy/port-range.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
@@ -1286,103 +1287,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _setupRoutes() {
     const router = express.Router();
-
-    // Version
-    router.get('/api/version', (req, res) => {
-      res.json({ version: '1.0.0', name: 'HTTP FreeKit' });
-    });
-
-    // Config
-    router.get('/api/config', (req, res) => {
-      const certInfo = this.ca.getCertInfo();
-      const networkInterfaces = os.networkInterfaces();
-      res.json({
-        config: {
-          ...certInfo,
-          networkInterfaces,
-          proxyPort: this.proxy.port,
-          apiPort: this.port
-        }
-      });
-    });
-
-    router.get('/api/ui-settings', (req, res) => {
-      const filterSafeFonts = this.settings?.get('filterSafeFonts', false) === true;
-      this.proxy.filterSafeFonts = filterSafeFonts;
-      res.json({
-        hideTunnelRequests: this.settings?.get('hideTunnelRequests', true) !== false,
-        filterSafeFonts
-      });
-    });
-
-    router.post('/api/ui-settings', (req, res) => {
-      const hideTunnelRequests = Object.prototype.hasOwnProperty.call(req.body || {}, 'hideTunnelRequests')
-        ? req.body.hideTunnelRequests !== false
-        : this.settings?.get('hideTunnelRequests', true) !== false;
-      const filterSafeFonts = Object.prototype.hasOwnProperty.call(req.body || {}, 'filterSafeFonts')
-        ? req.body.filterSafeFonts === true
-        : this.settings?.get('filterSafeFonts', false) === true;
-      this._runPersistedMutation({
-        capture: () => this.proxy.filterSafeFonts,
-        apply: () => { this.proxy.filterSafeFonts = filterSafeFonts; },
-        persist: () => this._persistSettings({ hideTunnelRequests, filterSafeFonts }),
-        restore: previous => { this.proxy.filterSafeFonts = previous; }
-      });
-      res.json({ success: true, hideTunnelRequests, filterSafeFonts });
-    });
-
-    router.get('/api/default-exclusions', (req, res) => {
-      const config = this._getDefaultExclusionsConfig();
-      res.json({
-        ...config,
-        defaults: [...DEFAULT_EXCLUSIONS]
-      });
-    });
-
-    router.put('/api/default-exclusions', (req, res) => {
-      if (typeof req.body?.enabled !== 'boolean') {
-        return res.status(400).json({ error: 'enabled must be a boolean' });
-      }
-      let patterns;
-      try {
-        patterns = normalizeDefaultExclusions(req.body?.patterns);
-      } catch (error) {
-        return res.status(400).json({ error: error.message });
-      }
-      try {
-        const lists = this._getTrafficListsConfig().lists.map(list =>
-          list.id === DEFAULT_TRAFFIC_LIST_ID
-            ? { ...list, enabled: req.body.enabled, mode: 'blacklist', patterns }
-            : list
-        );
-        this._persistSettings(this._trafficListsPersistenceValues(lists));
-      } catch (error) {
-        return res.status(500).json({ error: error.message || 'Failed to save Default Exclusions' });
-      }
-      res.json({ success: true, enabled: req.body.enabled, patterns });
-    });
-
-    router.get('/api/traffic-lists', (req, res) => {
-      res.json({
-        ...this._getTrafficListsConfig(),
-        defaultPatterns: [...DEFAULT_EXCLUSIONS]
-      });
-    });
-
-    router.put('/api/traffic-lists', (req, res) => {
-      let lists;
-      try {
-        lists = normalizeTrafficLists(req.body?.lists);
-      } catch (error) {
-        return res.status(400).json({ error: error.message });
-      }
-      try {
-        this._persistSettings(this._trafficListsPersistenceValues(lists));
-      } catch (error) {
-        return res.status(500).json({ error: error.message || 'Failed to save traffic lists' });
-      }
-      res.json({ success: true, lists });
-    });
+    registerConfigurationRoutes(router, this);
 
     // Proxy stats
     router.get('/api/stats', (req, res) => {
