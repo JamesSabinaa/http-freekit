@@ -592,6 +592,20 @@
               <div id="customThemeSwatches" style="display:none;margin-top:10px;"></div>
             </div>
           </div>
+          <div class="card settings-card desktop-settings-card is-active" id="desktopWindowBehaviorCard" data-settings-section="general" style="margin-bottom:20px;" hidden>
+            <div class="card-header">Window</div>
+            <div class="settings-row">
+              <label class="settings-label" for="closeWindowBehaviorSelect">When I close the window</label>
+              <select id="closeWindowBehaviorSelect" onchange="saveCloseWindowBehavior(this.value)" disabled>
+                <option value="hide">Keep running in the system tray</option>
+                <option value="quit">Quit HTTP FreeKit</option>
+              </select>
+            </div>
+            <p class="settings-help-text">
+              Quitting stops the proxy and performs normal interceptor cleanup. Minimizing still hides the window in the system tray.
+            </p>
+            <div class="desktop-setting-status" id="closeWindowBehaviorStatus" role="status" aria-live="polite"></div>
+          </div>
           <div class="card settings-card" data-settings-section="schemas" style="margin-bottom:20px;">
             <div class="card-header">API Specifications</div>
             <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
@@ -671,6 +685,7 @@
   <script src="/vendor/protobufjs/protobuf.min.js"></script>
   <script src="/vendor/pako/pako.umd.min.js"></script>
   <script src="/desktop-version.js"></script>
+  <script src="/desktop-close-behavior.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

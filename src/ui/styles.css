@@ -2397,6 +2397,44 @@
       display: block;
     }
 
+    .desktop-settings-card[hidden] {
+      display: none !important;
+    }
+
+    .desktop-settings-card select {
+      min-width: 245px;
+      border: 1px solid var(--text-input-border);
+      border-radius: 4px;
+      background: var(--bg-input);
+      color: var(--text-main);
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .desktop-settings-card select:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+
+    .settings-help-text {
+      margin-top: 8px;
+      color: var(--text-lowlight);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .desktop-setting-status {
+      min-height: 16px;
+      margin-top: 8px;
+      color: var(--text-lowlight);
+      font-size: 11px;
+    }
+
+    .desktop-setting-status.is-error {
+      color: var(--error-color, #ce3939);
+    }
+
     .settings-section {
       background: var(--bg-main);
       border-radius: 4px;

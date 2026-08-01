@@ -23,6 +23,11 @@ const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
 const { waitForServer } = require('./server-readiness.cjs');
 const { shutdownServerProcess } = require('./server-shutdown.cjs');
+const {
+  CLOSE_WINDOW_BEHAVIORS,
+  DEFAULT_CLOSE_WINDOW_BEHAVIOR,
+  DesktopPreferences
+} = require('./desktop-preferences.cjs');
 const { prepareRendererForQuit, runQuitCleanup } = require('./quit-cleanup.cjs');
 const { installUnloadConfirmation } = require('./unload-confirmation.cjs');
 const { installWindowToTray, showTrayWindow } = require('./window-to-tray.cjs');
@@ -39,6 +44,7 @@ let serverReady = false;
 let quitCleanupComplete = false;
 let quitCleanupPromise = null;
 let relaunchRequested = false;
+let desktopPreferences = null;
 let deepLinkProcessing = Promise.resolve();
 const pendingDeepLinks = [];
 const authToken = crypto.randomBytes(32).toString('hex');
@@ -46,6 +52,10 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
   app.quit();
+}
+
+function getCloseWindowBehavior() {
+  return desktopPreferences?.getCloseWindowBehavior() || DEFAULT_CLOSE_WINDOW_BEHAVIOR;
 }
 
 /**
@@ -373,7 +383,9 @@ function createWindow({ showOnReady = true } = {}) {
   installWindowToTray(mainWindow, {
     // The first quit request is held by before-quit while renderer/server
     // cleanup runs. Only the final app.quit() may actually close the window.
-    shouldAllowClose: () => quitCleanupComplete || updateInstallPrepared
+    shouldAllowClose: () => quitCleanupComplete || updateInstallPrepared,
+    shouldQuitOnClose: () => getCloseWindowBehavior() === CLOSE_WINDOW_BEHAVIORS.QUIT,
+    onQuitRequested: () => app.quit()
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -490,6 +502,16 @@ ipcMain.handle('restart-app', (event) => {
   app.quit();
 });
 
+ipcMain.handle('get-close-window-behavior', (event) => {
+  if (!validateSender(event)) return null;
+  return getCloseWindowBehavior();
+});
+
+ipcMain.handle('set-close-window-behavior', (event, behavior) => {
+  if (!validateSender(event) || !desktopPreferences) return null;
+  return desktopPreferences.setCloseWindowBehavior(behavior);
+});
+
 if (hasSingleInstanceLock) app.on('second-instance', (_event, argv) => {
   const deepLink = findDeepLinkArg(argv);
   if (deepLink) {
@@ -546,6 +568,7 @@ if (hasSingleInstanceLock) app.on('before-quit', (event) => {
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   try {
+    desktopPreferences = new DesktopPreferences(app.getPath('userData'));
     registerProtocolHandler();
     await startServer();
 

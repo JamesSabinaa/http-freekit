@@ -13,6 +13,8 @@ const ALLOWED_INVOKE_CHANNELS = [
   'get-desktop-version',
   'get-server-auth-token',
   'get-device-info',
+  'get-close-window-behavior',
+  'set-close-window-behavior',
   'select-file-path',
   'select-save-file-path',
   'open-context-menu',
@@ -55,6 +57,19 @@ contextBridge.exposeInMainWorld('electronApi', {
    * @returns {Promise<{platform: string, arch: string, electronVersion: string, osVersion: string}>}
    */
   getDeviceInfo: () => safeInvoke('get-device-info'),
+
+  /**
+   * Returns whether the window close button hides to the tray or quits the app.
+   * @returns {Promise<'hide'|'quit'|null>}
+   */
+  getCloseWindowBehavior: () => safeInvoke('get-close-window-behavior'),
+
+  /**
+   * Sets whether the window close button hides to the tray or quits the app.
+   * @param {'hide'|'quit'} behavior
+   * @returns {Promise<'hide'|'quit'|null>}
+   */
+  setCloseWindowBehavior: (behavior) => safeInvoke('set-close-window-behavior', behavior),
 
   /**
    * Opens a native file-open dialog. Returns the selected file path or null.

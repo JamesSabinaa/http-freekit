@@ -91,12 +91,36 @@ test('prepared updater or cleanup-approved Quit can close while tray restoration
   assert.equal(window.focusCalls, 1);
 });
 
+test('the close button requests a full quit when configured while minimize still hides', () => {
+  const window = new FakeWindow();
+  let quitCalls = 0;
+  installWindowToTray(window, {
+    shouldQuitOnClose: () => true,
+    onQuitRequested: () => { quitCalls++; }
+  });
+
+  const minimize = cancellableEvent();
+  window.emit('minimize', minimize);
+  assert.equal(minimize.prevented, true);
+  assert.equal(window.hideCalls, 1);
+  assert.equal(quitCalls, 0);
+
+  window.visible = true;
+  const close = cancellableEvent();
+  window.emit('close', close);
+  assert.equal(close.prevented, true);
+  assert.equal(window.hideCalls, 1);
+  assert.equal(quitCalls, 1);
+});
+
 test('Electron main and tray wire hide/restore to the cleanup-aware lifecycle', () => {
   const main = fs.readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const tray = fs.readFileSync(new URL('../electron/tray.cjs', import.meta.url), 'utf8');
   const styles = fs.readFileSync(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
 
   assert.match(main, /installWindowToTray\(mainWindow,\s*\{[\s\S]*shouldAllowClose:\s*\(\) => quitCleanupComplete \|\| updateInstallPrepared/);
+  assert.match(main, /shouldQuitOnClose:\s*\(\) => getCloseWindowBehavior\(\) === CLOSE_WINDOW_BEHAVIORS\.QUIT/);
+  assert.match(main, /onQuitRequested:\s*\(\) => app\.quit\(\)/);
   assert.match(main, /function showMainWindow\(\)[\s\S]*showTrayWindow\(mainWindow\)/);
   assert.match(tray, /showTrayWindow\(mainWindow\)/);
   assert.match(main, /app\.on\('before-quit'[\s\S]*runQuitCleanup\(/);
