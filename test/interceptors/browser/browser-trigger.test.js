@@ -53,14 +53,14 @@ test('parses an encoded desktop open link', () => {
     'HTTP-FREEKIT://open?url=https%3A%2F%2Fexample.com');
 });
 
-test('rejects unsupported deep-link actions and non-web target protocols', () => {
+test('rejects unsupported deep-link actions and unsafe target protocols', () => {
   assert.throws(
     () => parseOpenDeepLink('http-freekit://unknown?url=https%3A%2F%2Fexample.com'),
     /Unknown HTTP FreeKit link action/
   );
   assert.throws(
     () => parseOpenDeepLink('http-freekit://open?url=javascript%3Aalert%281%29'),
-    /Only HTTP and HTTPS URLs/
+    /Only HTTP, HTTPS, and \.har file URLs/
   );
 });
 

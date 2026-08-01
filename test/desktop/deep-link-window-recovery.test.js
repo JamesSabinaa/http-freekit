@@ -23,12 +23,14 @@ const recoverySource = [
   section('function flushPendingDeepLinks', 'function shutdownServer')
 ].join('\n');
 
-function createHarness({ parse, open }) {
-  const calls = { errors: [], focus: 0, show: 0, opened: [] };
+function createHarness({ parse, open, importHar = async () => ({ success: true }), harTarget }) {
+  const calls = { errors: [], focus: 0, show: 0, opened: [], imported: [] };
   const context = {
     calls,
     parse,
     open,
+    importHar,
+    isHarTarget: harTarget || (url => new URL(url).pathname.toLowerCase().endsWith('.har')),
     console,
     showTrayWindow(window) {
       if (!window.isVisible()) window.show();
@@ -58,6 +60,10 @@ function createHarness({ parse, open }) {
     function requestOpenInProxiedChrome(url) {
       calls.opened.push(url);
       return open(url);
+    }
+    function requestImportHar(url) {
+      calls.imported.push(url);
+      return importHar(url);
     }
     ${recoverySource}
     globalThis.harness = {
@@ -150,6 +156,25 @@ test('successful startup deep link preserves the intended hidden-window behavior
   assert.equal(calls.focus, 0);
   assert.equal(calls.errors.length, 0);
   assert.deepEqual(calls.opened, ['https://example.test/success']);
+});
+
+test('a HAR deep link imports traffic and reveals the HTTP FreeKit window', async () => {
+  const target = 'https://example.test/capture.har?download=1';
+  const { harness, calls } = createHarness({
+    parse: () => target,
+    open: async () => ({ success: true })
+  });
+  harness.markReady(false);
+
+  harness.handleDeepLink('har-link', { revealWindowOnFailure: true });
+  await harness.processing();
+
+  assert.equal(harness.state().visible, true);
+  assert.equal(calls.show, 1);
+  assert.equal(calls.focus, 1);
+  assert.deepEqual(calls.imported, [target]);
+  assert.deepEqual(calls.opened, []);
+  assert.deepEqual(calls.errors, []);
 });
 
 test('later deep-link failures retain the existing non-revealing behavior', async () => {

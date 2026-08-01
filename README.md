@@ -209,7 +209,7 @@ The Electron desktop app provides:
 The desktop app registers an `http-freekit:` URL scheme that other local apps can use:
 
 ```text
-http-freekit://open?url=<percent-encoded-http-or-https-url>
+http-freekit://open?url=<percent-encoded-http-https-or-har-file-url>
 ```
 
 For example, from PowerShell:
@@ -221,7 +221,9 @@ Start-Process "http-freekit://open?url=$target"
 
 The trigger starts HTTP FreeKit if necessary. It opens the URL in a new tab in the active isolated,
 proxied Chrome profile, or launches proxied Chrome with that URL if Chrome is not active. Only
-`http://` and `https://` targets are accepted.
+`http://` and `https://` targets are accepted. If the URL path ends in `.har` (case-insensitive),
+HTTP FreeKit imports the HAR traffic and shows its main window instead. Local `.har` files can be
+imported by passing an encoded `file:` URL; other local file URLs are rejected.
 
 When running the standalone Node server instead of the desktop app, the equivalent trigger is:
 

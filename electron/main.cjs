@@ -18,6 +18,7 @@ const { buildAppMenu } = require('./menu.cjs');
 const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
+const { isHarTarget, loadHarTarget } = require('./har-deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
@@ -258,9 +259,71 @@ function requestOpenInProxiedChrome(url) {
   });
 }
 
+async function requestImportHar(targetUrl) {
+  const body = await loadHarTarget(targetUrl);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    const resolveOnce = value => settle(resolve, value);
+    const rejectOnce = err => settle(reject, err);
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: apiPort,
+      path: '/api/traffic/import-har',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': body.length
+      }
+    }, (res) => {
+      const chunks = [];
+      let responseEnded = false;
+      res.on('data', chunk => chunks.push(chunk));
+      res.once('aborted', () => {
+        rejectOnce(new Error('Server response was aborted before completion'));
+      });
+      res.once('error', rejectOnce);
+      res.once('close', () => {
+        if (!responseEnded) rejectOnce(new Error('Server response closed before completion'));
+      });
+      res.on('end', () => {
+        responseEnded = true;
+        if (!res.complete) {
+          rejectOnce(new Error('Server response ended before completion'));
+          return;
+        }
+        const responseText = Buffer.concat(chunks).toString('utf8');
+        let response = {};
+        try { response = responseText ? JSON.parse(responseText) : {}; } catch {}
+
+        if (res.statusCode >= 200 && res.statusCode < 300 && response.success === true) {
+          resolveOnce(response);
+        } else {
+          rejectOnce(new Error(response.error || `HAR import returned HTTP ${res.statusCode}`));
+        }
+      });
+    });
+
+    req.once('error', rejectOnce);
+    req.setTimeout(30000, () => req.destroy(new Error('Timed out importing HAR file')));
+    req.end(body);
+  });
+}
+
 function scheduleDeepLink(targetUrl, { revealWindowOnFailure = false } = {}) {
   deepLinkProcessing = deepLinkProcessing
-    .then(() => requestOpenInProxiedChrome(targetUrl))
+    .then(() => {
+      if (isHarTarget(targetUrl)) {
+        showMainWindow();
+        return requestImportHar(targetUrl);
+      }
+      return requestOpenInProxiedChrome(targetUrl);
+    })
     .catch(err => reportDeepLinkError(err, { revealWindow: revealWindowOnFailure }));
 }
 

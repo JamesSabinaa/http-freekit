@@ -66,6 +66,8 @@ test('a truncated deep-link response rejects once and lets the queued link proce
     Buffer,
     console,
     http,
+    isHarTarget: () => false,
+    showMainWindow: () => {},
     reportDeepLinkError: err => reportedErrors.push(err?.message || String(err))
   };
   vm.createContext(context);

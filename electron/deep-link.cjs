@@ -1,5 +1,6 @@
 const PROTOCOL_SCHEME = 'http-freekit';
 const MAX_DEEP_LINK_LENGTH = 20 * 1024;
+const { isHarTarget } = require('./har-deep-link.cjs');
 
 function parseOpenDeepLink(value) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -34,8 +35,10 @@ function parseOpenDeepLink(value) {
   } catch {
     throw new Error('The target URL is invalid');
   }
-  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-    throw new Error('Only HTTP and HTTPS URLs can be opened');
+  const webTarget = targetUrl.protocol === 'http:' || targetUrl.protocol === 'https:';
+  const localHarTarget = targetUrl.protocol === 'file:' && isHarTarget(targetUrl);
+  if (!webTarget && !localHarTarget) {
+    throw new Error('Only HTTP, HTTPS, and .har file URLs can be opened');
   }
 
   return targetUrl.href;
