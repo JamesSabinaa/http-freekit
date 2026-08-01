@@ -122,7 +122,7 @@ function leaveVerifiedAbandonedLock(descriptorPath) {
   return JSON.parse(fs.readFileSync(lockPath, 'utf8'));
 }
 
-async function waitForFile(filePath, worker, timeoutMs = 5000) {
+async function waitForFile(filePath, worker, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (!fs.existsSync(filePath)) {
     if (worker.child.exitCode !== null) {

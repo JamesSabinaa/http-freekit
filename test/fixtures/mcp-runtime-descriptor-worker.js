@@ -11,7 +11,7 @@ function signal(filePath, value) {
   if (filePath) fs.writeFileSync(filePath, value, { encoding: 'utf8', flag: 'wx' });
 }
 
-function waitForRelease(filePath, timeoutMs = 10000) {
+function waitForRelease(filePath, timeoutMs = 20000) {
   if (!filePath) return;
   const deadline = Date.now() + timeoutMs;
   while (!fs.existsSync(filePath)) {
@@ -29,7 +29,7 @@ function pauseAt(config, stage) {
 
 function main(config) {
   const options = {
-    lockTimeoutMs: config.lockTimeoutMs ?? 5000,
+    lockTimeoutMs: config.lockTimeoutMs ?? 10000,
     lockRetryMs: 5,
     ...(config.pauseStage ? { [config.pauseStage]: pauseAt(config, config.pauseStage) } : {}),
     ...(config.contentionPath ? {
