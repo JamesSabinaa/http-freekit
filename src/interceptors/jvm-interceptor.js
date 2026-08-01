@@ -4,6 +4,14 @@ import os from 'os';
 import path from 'path';
 import { inflateRawSync } from 'zlib';
 import { execFileAsync } from './command-runner.js';
+import {
+  inspectDarwinProcessIdentity,
+  inspectLinuxProcessIdentity,
+  normalizeExecutableIdentity,
+  parseLinuxProcessStart,
+  probeProcessPid,
+  sameProcessIdentity
+} from './process-identity.js';
 
 const AGENT_BYTECODE_POLICY = Object.freeze({
   classMajorVersion: 52,
@@ -48,13 +56,11 @@ export class JvmInterceptor {
   }
 
   _normalizeExecutableIdentity(executable) {
-    const value = String(executable || '').trim();
-    if (!this._isSafeJournalString(value)) {
-      throw new Error('Process executable identity is missing or invalid');
-    }
-    if (path.win32.isAbsolute(value)) return path.win32.normalize(value).toLowerCase();
-    if (path.posix.isAbsolute(value)) return path.posix.normalize(value);
-    throw new Error('Process executable identity is not absolute');
+    return normalizeExecutableIdentity(String(executable || ''), {
+      platform: 'auto',
+      maxLength: 2048,
+      requireAbsolute: true
+    });
   }
 
   _normalizeTargetIdentity(identity, expectedPid) {
@@ -78,49 +84,23 @@ export class JvmInterceptor {
   }
 
   _parseLinuxProcessStart(stat, pid) {
-    const commandEnd = stat.lastIndexOf(')');
-    if (!stat.startsWith(`${pid} (`) || commandEnd < 0) {
-      throw new Error('Linux process metadata is ambiguous');
-    }
-    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-    const startTime = fields[19];
-    if (!/^\d+$/.test(startTime || '')) {
-      throw new Error('Linux process start time is unavailable');
-    }
-    return startTime;
+    return parseLinuxProcessStart(stat, pid, {
+      unavailableMessage: 'Linux process start time is unavailable'
+    });
   }
 
   async _inspectLinuxTargetIdentity(pid) {
-    const procDirectory = `/proc/${pid}`;
-    const statBefore = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
-    const startTime = this._parseLinuxProcessStart(statBefore, pid);
-    const executable = await fs.promises.readlink(path.join(procDirectory, 'exe'));
-    const statAfter = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
-    if (this._parseLinuxProcessStart(statAfter, pid) !== startTime) {
-      throw new Error('Process identity changed during inspection');
-    }
-    return { pid, startTime, executable };
+    return inspectLinuxProcessIdentity(pid, {
+      parseStart: (stat, processId) => this._parseLinuxProcessStart(stat, processId)
+    });
   }
 
   async _inspectDarwinTargetIdentity(pid) {
-    const output = await execFileAsync(
-      '/bin/ps',
-      ['-ww', '-p', String(pid), '-o', 'pid=', '-o', 'lstart=', '-o', 'comm='],
-      {
-        encoding: 'utf8',
-        timeout: 1000,
-        maxBuffer: 16 * 1024,
-        windowsHide: true,
-        env: { ...process.env, LC_ALL: 'C' }
-      }
-    );
-    const lines = String(output).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    if (lines.length !== 1) throw new Error('macOS process metadata is ambiguous');
-    const match = lines[0].match(/^(\d+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
-    if (!match || Number(match[1]) !== pid) throw new Error('macOS process metadata is invalid');
-    const startedAt = Date.parse(match[2]);
-    if (!Number.isFinite(startedAt)) throw new Error('macOS process start time is unavailable');
-    return { pid, startTime: String(startedAt), executable: match[3] };
+    return inspectDarwinProcessIdentity(pid, {
+      execFile: execFileAsync,
+      timeoutMs: 1000,
+      environment: process.env
+    });
   }
 
   async _inspectWindowsTargetIdentity(pid) {
@@ -150,14 +130,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _probeTargetPid(pid) {
-    try {
-      process.kill(pid, 0);
-      return 'running';
-    } catch (err) {
-      if (err?.code === 'EPERM') return 'running';
-      if (err?.code === 'ESRCH') return 'absent';
-      return 'unknown';
-    }
+    return probeProcessPid(pid);
   }
 
   async _inspectTargetIdentity(pid) {
@@ -193,8 +166,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _sameTargetIdentity(left, right) {
-    return Boolean(left && right && left.pid === right.pid &&
-      left.startTime === right.startTime && left.executable === right.executable);
+    return sameProcessIdentity(left, right);
   }
 
   _normalizeJournalProcess(entry) {

@@ -89,6 +89,7 @@ http-freekit/
       terminal-interceptors.js # Fresh + Existing terminal
       docker-interceptor.js    # Docker container interception
       electron-interceptor.js  # Electron app interception
+      process-identity.js      # Shared PID/start-time identity inspection
       android-adb-interceptor.js # Android device/emulator via ADB
       jvm-interceptor.js       # Java/Kotlin/Scala process attachment
       system-proxy-interceptor.js # Windows system-wide proxy

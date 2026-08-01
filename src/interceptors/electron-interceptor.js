@@ -2,10 +2,14 @@ import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
+import {
+  inspectProcessIdentity,
+  normalizeProcessIdentity,
+  sameProcessIdentity
+} from './process-identity.js';
 
 const ELECTRON_OWNERSHIP_VERSION = 1;
 const MAX_OWNERSHIP_JOURNAL_BYTES = 16 * 1024;
-const MAX_EXECUTABLE_IDENTITY_LENGTH = 4096;
 
 export class ElectronInterceptor {
   constructor(options = {}) {
@@ -158,146 +162,25 @@ export class ElectronInterceptor {
     });
   }
 
-  _probeProcessPid(pid) {
-    try {
-      process.kill(pid, 0);
-      return 'running';
-    } catch (err) {
-      if (err?.code === 'EPERM') return 'running';
-      if (err?.code === 'ESRCH') return 'absent';
-      return 'unknown';
-    }
-  }
-
   _identityInspectionTimeoutMs() {
     return this._platform() === 'win32' ? 5000 : 1000;
   }
 
-  _normalizeExecutableIdentity(executable, platform = this._platform()) {
-    if (typeof executable !== 'string') {
-      throw new Error('Process executable identity is missing');
-    }
-    const value = executable.trim();
-    if (!value || value.length > MAX_EXECUTABLE_IDENTITY_LENGTH || /[\0\r\n]/.test(value)) {
-      throw new Error('Process executable identity is invalid');
-    }
-    const platformPath = platform === 'win32' ? path.win32 : path.posix;
-    const normalized = platformPath.normalize(value).normalize('NFC');
-    return platform === 'win32' ? normalized.toLowerCase() : normalized;
-  }
-
   _normalizeProcessIdentity(identity, expectedPid, platform = this._platform()) {
-    if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
-      throw new Error('Process identity is missing or malformed');
-    }
-    if (!Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
-        identity.pid > 0xffffffff || identity.pid !== expectedPid) {
-      throw new Error('Process identity PID is missing, invalid, or unexpected');
-    }
-    const startTime = String(identity.startTime || '');
-    if (!/^\d{1,32}$/.test(startTime)) {
-      throw new Error('Process start identity is missing or invalid');
-    }
-    return Object.freeze({
-      pid: identity.pid,
-      startTime,
-      executable: this._normalizeExecutableIdentity(identity.executable, platform),
-      platform
+    return normalizeProcessIdentity(identity, expectedPid, {
+      platform,
+      includePlatform: true
     });
   }
 
-  _parseLinuxProcessStart(stat, pid) {
-    const commandEnd = stat.lastIndexOf(')');
-    if (!stat.startsWith(`${pid} (`) || commandEnd < 0) {
-      throw new Error('Linux process metadata is ambiguous');
-    }
-    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-    const startTime = fields[19];
-    if (!/^\d+$/.test(startTime || '')) {
-      throw new Error('Linux process start identity is unavailable');
-    }
-    return startTime;
-  }
-
-  async _inspectLinuxProcessIdentity(pid) {
-    const procDirectory = `/proc/${pid}`;
-    const statBefore = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
-    const startTime = this._parseLinuxProcessStart(statBefore, pid);
-    const executable = await fs.promises.readlink(path.join(procDirectory, 'exe'));
-    const statAfter = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
-    if (this._parseLinuxProcessStart(statAfter, pid) !== startTime) {
-      throw new Error('Process identity changed during inspection');
-    }
-    return { pid, startTime, executable };
-  }
-
-  async _inspectDarwinProcessIdentity(pid) {
-    const { stdout } = await this._execFile(
-      '/bin/ps',
-      ['-ww', '-p', String(pid), '-o', 'pid=', '-o', 'lstart=', '-o', 'comm='],
-      {
-        timeout: this._identityInspectionTimeoutMs(),
-        maxBuffer: 16 * 1024,
-        windowsHide: true,
-        env: { ...this._environment(), LC_ALL: 'C' }
-      }
-    );
-    const lines = String(stdout).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    if (lines.length !== 1) throw new Error('macOS process metadata is ambiguous');
-    const match = lines[0].match(/^(\d+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
-    if (!match || Number(match[1]) !== pid) throw new Error('macOS process metadata is invalid');
-    const startTime = Date.parse(match[2]);
-    if (!Number.isFinite(startTime)) throw new Error('macOS process start identity is unavailable');
-    return { pid, startTime: String(startTime), executable: match[3] };
-  }
-
-  async _inspectWindowsProcessIdentity(pid) {
-    const script = [
-      `$target = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop | Select-Object -First 1`,
-      "if ($null -eq $target) { [Console]::Out.Write('null'); exit 0 }",
-      '$identity = [PSCustomObject]@{',
-      '  pid = [int]$target.ProcessId',
-      "  startTime = [string]([DateTime]$target.CreationDate).ToUniversalTime().Ticks",
-      '  executable = [string]$target.ExecutablePath',
-      '}',
-      '[Console]::Out.Write(($identity | ConvertTo-Json -Compress))'
-    ].join('\n');
-    const { stdout } = await this._execFile(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
-      {
-        encoding: 'utf8',
-        timeout: this._identityInspectionTimeoutMs(),
-        maxBuffer: 16 * 1024,
-        windowsHide: true
-      }
-    );
-    const serialized = String(stdout).trim();
-    if (!serialized) throw new Error('Windows process identity query returned no result');
-    const identity = JSON.parse(serialized);
-    if (identity === null) {
-      const error = new Error('Electron process is absent');
-      error.code = 'ESRCH';
-      throw error;
-    }
-    return identity;
-  }
-
   async _inspectProcessIdentity(pid) {
-    if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
-      return { state: 'unknown', error: new Error('Process ID is invalid') };
-    }
-    try {
-      let identity;
-      const platform = this._platform();
-      if (platform === 'win32') identity = await this._inspectWindowsProcessIdentity(pid);
-      else if (platform === 'darwin') identity = await this._inspectDarwinProcessIdentity(pid);
-      else identity = await this._inspectLinuxProcessIdentity(pid);
-      return { state: 'running', identity };
-    } catch (error) {
-      const state = this._probeProcessPid(pid);
-      return state === 'absent' ? { state } : { state: 'unknown', error };
-    }
+    return inspectProcessIdentity(pid, {
+      platform: this._platform(),
+      environment: this._environment(),
+      execFile: (...args) => this._execFile(...args),
+      timeoutMs: this._identityInspectionTimeoutMs(),
+      absentMessage: 'Electron process is absent'
+    });
   }
 
   async _observeProcessIdentity(pid) {
@@ -321,13 +204,7 @@ export class ElectronInterceptor {
   }
 
   _sameProcessIdentity(left, right) {
-    return Boolean(
-      left && right &&
-      left.pid === right.pid &&
-      left.startTime === right.startTime &&
-      left.executable === right.executable &&
-      left.platform === right.platform
-    );
+    return sameProcessIdentity(left, right, { includePlatform: true });
   }
 
   _classifyProcessObservation(expected, observation) {
