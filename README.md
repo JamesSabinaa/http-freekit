@@ -77,8 +77,11 @@ http-freekit/
       certificate-authority.js # CA certificate generation (node-forge)
       ws-frame-parser.js       # WebSocket frame parser (RFC 6455)
     api/
-      api-server.js            # REST API + WebSocket server
+      api-server.js            # API lifecycle, state, and WebSocket server
       har-converter.js         # HAR 1.2 export
+      routes/
+        configuration-routes.js # Configuration and traffic-list endpoints
+        traffic-routes.js      # Traffic query, mutation, and export endpoints
     interceptors/
       interceptor-manager.js   # Interceptor orchestrator
       browser-interceptor.js   # Chrome/Firefox/Edge/Brave (fresh profile)
