@@ -32,6 +32,7 @@ const DATA_DIR = process.env.ELECTRON
   ? path.join(process.env.APPDATA || process.env.HOME || __dirname, 'http-freekit', 'data')
   : path.join(__dirname, '..', 'data');
 const UI_DIR = path.join(__dirname, 'ui');
+const SHARED_TRAFFIC_DIR = path.join(__dirname, 'traffic');
 const MCP_STDIO_ENABLED = process.argv.includes('--mcp-stdio');
 const MCP_RUNTIME_DESCRIPTOR_PATH = process.env.HTTP_FREEKIT_MCP_DESCRIPTOR_PATH
   || path.join(DATA_DIR, 'mcp-runtime.json');
@@ -165,7 +166,8 @@ async function initializeApplication(apiPort) {
   api.settings = settings; // Give API server access to persist settings
   proxy.filterSafeFonts = settings.get('filterSafeFonts', false) === true;
 
-  // Serve UI static files (index.html, styles.css, app.js)
+  // Serve the browser entry point and the shared pure traffic-domain modules.
+  api.app.use('/shared/traffic', express.static(SHARED_TRAFFIC_DIR));
   api.app.use(express.static(UI_DIR));
 
   // Serve Phosphor Icons assets from node_modules

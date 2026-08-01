@@ -215,6 +215,6 @@ test('the server exposes the packaged YAML bundle before the application script'
   assert.match(indexSource, /api\.app\.use\('\/vendor\/js-yaml', express\.static\(JS_YAML_DIR\)\)/);
   const yamlScript = html.indexOf('/vendor/js-yaml/js-yaml.umd.min.js');
   const monacoLoader = html.indexOf('/vendor/monaco/vs/loader.js');
-  const appScript = html.indexOf('/app.js');
-  assert.ok(yamlScript >= 0 && yamlScript < monacoLoader && monacoLoader < appScript);
+  const bootstrapScript = html.indexOf('/bootstrap.js');
+  assert.ok(yamlScript >= 0 && yamlScript < monacoLoader && monacoLoader < bootstrapScript);
 });

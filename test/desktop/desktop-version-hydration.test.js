@@ -78,7 +78,7 @@ test('version surfaces expose stable hooks and load their focused hydrator', () 
   assert.match(markup, /id="desktopVersionValue">1\.0\.0<\/span>/);
   assert.match(
     markup,
-    /<script src="\/desktop-version\.js"><\/script>\s*<script src="\/desktop-close-behavior\.js"><\/script>\s*<script src="\/app\.js"><\/script>/
+    /<script src="\/desktop-version\.js"><\/script>\s*<script src="\/desktop-close-behavior\.js"><\/script>\s*<script type="module" src="\/bootstrap\.js"><\/script>/
   );
   assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML/);
   assert.match(source, /logo\.setAttribute\('title'/);

@@ -93,6 +93,7 @@ http-freekit/
     ui/
       index.html               # SPA entry point
       styles.css               # Full design system (dark/light/high-contrast)
+      bootstrap.js             # Shared-domain module bootstrap
       app.js                   # Frontend application logic
   build/                       # App icons (16x16 to 1024x1024)
   electron-builder.config.cjs  # Cross-platform packaging config

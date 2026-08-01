@@ -73,20 +73,49 @@ export function normalizeTrafficLists(lists, { requireDefault = true } = {}) {
   return normalized;
 }
 
-export function filterTrafficLists(requests, lists) {
+function matcherPatterns(patterns, ignoreInvalidPatterns) {
+  if (!ignoreInvalidPatterns) return normalizeDefaultExclusions(patterns);
+
+  const normalized = [];
+  const seen = new Set();
+  for (const pattern of Array.isArray(patterns) ? patterns : []) {
+    try {
+      for (const value of normalizeDefaultExclusions([pattern])) {
+        if (seen.has(value)) continue;
+        seen.add(value);
+        normalized.push(value);
+      }
+    } catch {
+      // Renderer drafts may be temporarily invalid while the user is typing.
+    }
+  }
+  return normalized;
+}
+
+export function createTrafficListVisibilityMatcher(
+  lists,
+  { ignoreInvalidPatterns = false } = {}
+) {
+  if (!Array.isArray(lists)) throw new TypeError('lists must be an array');
   const enabledLists = lists
     .filter(list => list.enabled)
     .map(list => ({
       mode: list.mode,
-      matches: createDefaultExclusionMatcher(list.patterns)
+      matches: createDefaultExclusionMatcher(
+        matcherPatterns(list.patterns, ignoreInvalidPatterns)
+      )
     }));
   const blacklists = enabledLists.filter(list => list.mode === 'blacklist');
   const whitelists = enabledLists.filter(list => list.mode === 'whitelist');
-  const isVisible = request => {
+  return request => {
     if (blacklists.some(list => list.matches(request))) return false;
     if (whitelists.length > 0 && !whitelists.some(list => list.matches(request))) return false;
     return true;
   };
+}
+
+export function filterTrafficLists(requests, lists) {
+  const isVisible = createTrafficListVisibilityMatcher(lists);
   const identity = (id, lifecycleId) => JSON.stringify([String(id || ''), lifecycleId ?? null]);
   const parentVisibility = new Map();
   for (const request of requests) {

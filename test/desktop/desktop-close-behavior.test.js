@@ -178,7 +178,7 @@ test('window behavior UI and IPC are wired without exposing unrestricted messagi
   assert.match(markup, /id="desktopWindowBehaviorCard"[\s\S]*id="closeWindowBehaviorSelect"/);
   assert.match(markup, /Keep running in the system tray/);
   assert.match(markup, /Quit HTTP FreeKit/);
-  assert.match(markup, /desktop-close-behavior\.js[\s\S]*app\.js/);
+  assert.match(markup, /desktop-close-behavior\.js[\s\S]*bootstrap\.js/);
   assert.match(preload, /'get-close-window-behavior'/);
   assert.match(preload, /'set-close-window-behavior'/);
   assert.match(preload, /getCloseWindowBehavior:\s*\(\) => safeInvoke\('get-close-window-behavior'\)/);

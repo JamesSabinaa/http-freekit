@@ -12,6 +12,7 @@ import {
   normalizeDefaultExclusions
 } from '../../src/traffic/default-exclusions.js';
 import {
+  createTrafficListVisibilityMatcher,
   createDefaultTrafficList,
   filterTrafficLists,
   normalizeTrafficLists
@@ -98,49 +99,35 @@ test('exclusion patterns normalize URLs, comments, case, and duplicates', () => 
   assert.throws(() => normalizeDefaultExclusions('example.com'), /must be an array/);
 });
 
-test('renderer filtering applies the persisted hostname and path patterns', () => {
-  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-  const initialPatterns = source.match(
-    /const initialDefaultExclusions = (\[[\s\S]*?\]);\s*let trafficLists/
-  );
-  assert.ok(initialPatterns);
-  assert.deepEqual(
-    Array.from(vm.runInNewContext(initialPatterns[1])),
-    Array.from(DEFAULT_EXCLUSIONS)
-  );
-  const start = source.indexOf('function trafficListTarget(');
-  const end = source.indexOf('function applyFilter(', start);
-  assert.notEqual(start, -1);
-  assert.notEqual(end, -1);
-  const context = {
-    URL,
-    trafficLists: [{
+test('shared renderer filtering applies draft hostname and path patterns', () => {
+  let isVisible = createTrafficListVisibilityMatcher([{
       id: 'custom-blacklist',
       name: 'Custom blacklist',
       enabled: true,
       mode: 'blacklist',
-      patterns: ['android.clients.google.com/c2dm/register3']
-    }]
-  };
-  vm.createContext(context);
-  vm.runInContext(`${source.slice(start, end)}\nthis.matches = isDefaultExcludedRequest;`, context);
-  assert.equal(context.matches({
+      patterns: [
+        'HTTPS://Android.Clients.Google.com/c2dm/register3',
+        'temporarily invalid host name'
+      ]
+    }], { ignoreInvalidPatterns: true });
+  assert.equal(isVisible({
     url: 'https://android.clients.google.com/c2dm/register3?app=chrome'
-  }), true);
-  assert.equal(context.matches({
-    url: 'https://android.clients.google.com/checkin'
   }), false);
-  context.trafficLists = [{
+  assert.equal(isVisible({
+    url: 'https://android.clients.google.com/checkin'
+  }), true);
+
+  isVisible = createTrafficListVisibilityMatcher([{
     id: 'custom-whitelist',
     name: 'Custom whitelist',
     enabled: true,
     mode: 'whitelist',
     patterns: ['allowed.example']
-  }];
-  assert.equal(context.matches({
+  }], { ignoreInvalidPatterns: true });
+  assert.equal(isVisible({
     url: 'https://android.clients.google.com/c2dm/register3'
-  }), true);
-  assert.equal(context.matches({ url: 'https://allowed.example/path' }), false);
+  }), false);
+  assert.equal(isVisible({ url: 'https://allowed.example/path' }), true);
 });
 
 test('renderer plus and minus controls insert and remove the intended rules', () => {

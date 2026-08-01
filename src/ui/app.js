@@ -13,62 +13,20 @@
     let config = {};
     let hideTunnelRequests = true;
     let filterSafeFonts = false;
-    const DEFAULT_TRAFFIC_LIST_ID = 'default-exclusions';
-    const initialDefaultExclusions = [
-      'update.googleapis.com',
-      'optimizationguide-pa.googleapis.com',
-      'safebrowsing.googleapis.com',
-      'safebrowsing.google.com',
-      'clients1.google.com',
-      'clients2.google.com',
-      'clients3.google.com',
-      'clients4.google.com',
-      'clients5.google.com',
-      'clients6.google.com',
-      'content-autofill.googleapis.com',
-      'google-ohttp-relay-safebrowsing.fastly-edge.com',
-      'redirector.gvt1.com',
-      '*.gvt1.com',
-      '*.gvt2.com',
-      '*update*.googleapis.com',
-      '*safebrowsing*.googleapis.com',
-      '*optimizationguide*.googleapis.com',
-      'bam.nr-data.net/jserrors',
-      'android.clients.google.com/c2dm/register3',
-      'android.clients.google.com/checkin',
-      'clients2.googleusercontent.com/crx/blobs',
-      'accounts.google.com/listaccounts',
-      'clientservices.googleapis.com/chrome-variations/seed',
-      'clientservices.googleapis.com/uma/v2',
-      'www.googleapis.com/chromewebstore/v1.1/items/verify',
-      'chromewebstore.googleapis.com/v2/items/-/storemetadata:batchget',
-      'www.gstatic.com/og/_/js',
-      'www.gstatic.com/images/branding/googlelogo',
-      'www.gstatic.com/images/branding/searchlogo/ico/favicon.ico',
-      'play.google.com/log',
-      'ogads-pa.clients6.google.com/$rpc/google.internal.onegoogle.asyncdata.v1.asyncdataservice/getasyncdata',
-      'www.google.com/async/folae',
-      'www.google.com/async/ddljson',
-      'www.google.com/async/newtab_ogb',
-      'www.google.com/xjs/_/js',
-      'www.google.com/complete/s',
-      'www.google.com/complete/search',
-      'www.google.com/gen_204',
-      'www.google.com/chrome/',
-      'google.com/domainreliability/upload',
-      'www.google.com/domainreliability/upload',
-      'google.co.uk/domainreliability/upload',
-      'www.google.co.uk/domainreliability/upload'
-    ];
+    const {
+      DEFAULT_EXCLUSIONS,
+      DEFAULT_TRAFFIC_LIST_ID,
+      createTrafficListVisibilityMatcher
+    } = window.FreeKitTrafficLists;
     let trafficLists = [{
       id: DEFAULT_TRAFFIC_LIST_ID,
       name: 'Default Exclusions',
       enabled: true,
       mode: 'blacklist',
-      patterns: [...initialDefaultExclusions],
+      patterns: [...DEFAULT_EXCLUSIONS],
       builtIn: true
     }];
-    let trafficListDefaultPatterns = [...initialDefaultExclusions];
+    let trafficListDefaultPatterns = [...DEFAULT_EXCLUSIONS];
     let expandedTrafficListIds = new Set([DEFAULT_TRAFFIC_LIST_ID]);
     let trafficListAccordionStateLoaded = false;
     let protobufSchemaFiles = [];
@@ -939,106 +897,28 @@
       return ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase());
     }
 
-    function trafficListTarget(req) {
-      let host = String(req?.host || '').trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
-      let requestPath = String(req?.path || '');
-      if ((!host || !requestPath) && req?.url) {
-        try {
-          const url = new URL(String(req.url));
-          if (!host) host = url.hostname.toLowerCase().replace(/\.$/, '');
-          if (!requestPath) requestPath = url.pathname + url.search;
-        } catch {}
+    function getTrafficListVisibilityMatcher() {
+      if (getTrafficListVisibilityMatcher.source === trafficLists) {
+        return getTrafficListVisibilityMatcher.matcher;
       }
-      if (requestPath && !requestPath.startsWith('/')) requestPath = '/' + requestPath;
-      return { host, path: requestPath.toLowerCase() };
-    }
-
-    function normalizeTrafficListPatternForMatch(pattern) {
-      let value = String(pattern || '').trim().toLowerCase();
-      if (!value || value.startsWith('#')) return null;
-      if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) {
-        try {
-          const url = new URL(value);
-          value = url.hostname + url.pathname + url.search;
-        } catch {
-          return null;
-        }
-      }
-      const slashIndex = value.indexOf('/');
-      const hostPattern = (slashIndex === -1 ? value : value.slice(0, slashIndex))
-        .replace(/:\d+$/, '')
-        .replace(/\.$/, '');
-      if (!hostPattern) return null;
-      return {
-        hostPattern,
-        pathPrefix: slashIndex === -1 ? '' : value.slice(slashIndex)
-      };
-    }
-
-    function getCompiledTrafficLists() {
-      if (getCompiledTrafficLists.source === trafficLists) {
-        return getCompiledTrafficLists.lists;
-      }
-      const lists = trafficLists.map(list => ({
-        enabled: list.enabled,
-        mode: list.mode,
-        rules: list.patterns
-          .map(normalizeTrafficListPatternForMatch)
-          .filter(Boolean)
-      }));
-      getCompiledTrafficLists.source = trafficLists;
-      getCompiledTrafficLists.lists = lists;
-      return lists;
+      const matcher = createTrafficListVisibilityMatcher(trafficLists, {
+        ignoreInvalidPatterns: true
+      });
+      getTrafficListVisibilityMatcher.source = trafficLists;
+      getTrafficListVisibilityMatcher.matcher = matcher;
+      return matcher;
     }
 
     function invalidateCompiledTrafficLists() {
-      getCompiledTrafficLists.source = null;
-    }
-
-    function trafficListMatchesTarget(list, target) {
-      return list.rules.some(rule => {
-        const hostMatches = defaultExclusionHostMatches(target.host, rule.hostPattern);
-        return hostMatches && (!rule.pathPrefix || target.path.startsWith(rule.pathPrefix));
-      });
-    }
-
-    function defaultExclusionHostMatches(host, pattern) {
-      if (!pattern.includes('*')) return host === pattern;
-      let hostIndex = 0;
-      let patternIndex = 0;
-      let starIndex = -1;
-      let retryHostIndex = 0;
-      while (hostIndex < host.length) {
-        if (patternIndex < pattern.length && pattern[patternIndex] === host[hostIndex]) {
-          hostIndex++;
-          patternIndex++;
-        } else if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
-          starIndex = patternIndex++;
-          retryHostIndex = hostIndex;
-        } else if (starIndex !== -1) {
-          patternIndex = starIndex + 1;
-          hostIndex = ++retryHostIndex;
-        } else {
-          return false;
-        }
-      }
-      while (patternIndex < pattern.length && pattern[patternIndex] === '*') patternIndex++;
-      return patternIndex === pattern.length;
+      getTrafficListVisibilityMatcher.source = null;
+      getTrafficListVisibilityMatcher.matcher = null;
     }
 
     function isDefaultExcludedRequest(req) {
       // Some embedded renderer consumers load only the traffic helpers. In that
       // mode the settings state is absent, so traffic lists must remain opt-in.
       if (typeof trafficLists === 'undefined') return false;
-      const target = trafficListTarget(req);
-      if (!target.host) return false;
-      const enabledLists = getCompiledTrafficLists().filter(list => list.enabled);
-      if (enabledLists.some(list =>
-        list.mode === 'blacklist' && trafficListMatchesTarget(list, target)
-      )) return true;
-      const whitelists = enabledLists.filter(list => list.mode === 'whitelist');
-      return whitelists.length > 0 &&
-        !whitelists.some(list => trafficListMatchesTarget(list, target));
+      return !getTrafficListVisibilityMatcher()(req);
     }
 
     function applyFilter() {
