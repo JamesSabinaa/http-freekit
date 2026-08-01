@@ -4,6 +4,8 @@ import http2 from 'node:http2';
 import test from 'node:test';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
+const TEST_IDLE_TIMEOUT_MS = 500;
+
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -66,13 +68,13 @@ test('an H2 stream with no response headers uses the configured idle timeout', a
     await close(origin);
   });
 
-  const proxy = new ProxyServer(null, { upstreamIdleTimeoutMs: 40 });
+  const proxy = new ProxyServer(null, { upstreamIdleTimeoutMs: TEST_IDLE_TIMEOUT_MS });
   const result = await outcomeWithin(request(proxy, session, port, '/hang'));
 
   assert.equal(result.timedOut, undefined);
   assert.equal(result.error?.code, 'ETIMEDOUT');
   assert.equal(result.error?.upstreamPhase, 'response');
-  assert.match(result.error?.message, /Upstream response timeout after 0\.04s/);
+  assert.match(result.error?.message, /Upstream response timeout after 0\.5s/);
   assert.equal(await hangingStreamClosed, http2.constants.NGHTTP2_CANCEL);
   assert.equal(session.destroyed, false);
 
@@ -160,7 +162,7 @@ test('an abort signal rejects and cancels an active H2 stream', async t => {
 });
 
 test('a successful H2 response preserves trailers and has no late timeout', async t => {
-  const proxy = new ProxyServer(null, { upstreamIdleTimeoutMs: 40 });
+  const proxy = new ProxyServer(null, { upstreamIdleTimeoutMs: TEST_IDLE_TIMEOUT_MS });
   const origin = http2.createServer();
   origin.on('stream', stream => {
     stream.on('error', () => {});
@@ -195,7 +197,7 @@ test('a successful H2 response preserves trailers and has no late timeout', asyn
   assert.equal(first.body.toString(), 'complete');
   assert.equal(first.trailers['x-response-trailer'], 'present');
 
-  await delay(100);
+  await delay(TEST_IDLE_TIMEOUT_MS + 100);
   assert.equal(cancellationCount, 0);
   assert.equal(session.destroyed, false);
 

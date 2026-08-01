@@ -178,9 +178,8 @@ function queryProcessStartedAt(pid) {
   try {
     if (process.platform === 'win32') {
       const script = [
-        `$target = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction Stop`,
-        'if ($null -eq $target) { exit 3 }',
-        '$target.CreationDate.ToUniversalTime().ToString("o")'
+        `$target = Get-Process -Id ${pid} -ErrorAction Stop`,
+        '$target.StartTime.ToUniversalTime().ToString("o")'
       ].join('; ');
       output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         encoding: 'utf8',
