@@ -2,23 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
+
+import { parseCurlCommand } from '../../src/ui/curl-parser.js';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const start = source.indexOf('function encodeCurlComponent');
-const end = source.indexOf('// ============ SEND REQUEST', start);
-assert.notEqual(start, -1);
-assert.notEqual(end, -1);
-
-const context = {
-  TextEncoder,
-  btoa: value => Buffer.from(value, 'binary').toString('base64')
-};
-vm.createContext(context);
-vm.runInContext(source.slice(start, end), context);
 
 test('repeated cURL data options are joined in command order', () => {
-  const result = context.parseCurlCommand("curl https://example.test -d 'a=1' --data-raw 'b=2' --data-binary 'c=3'");
+  const result = parseCurlCommand("curl https://example.test -d 'a=1' --data-raw 'b=2' --data-binary 'c=3'");
 
   assert.equal(result.method, 'POST');
   assert.equal(result.body, 'a=1&b=2&c=3');
@@ -26,7 +16,7 @@ test('repeated cURL data options are joined in command order', () => {
 });
 
 test('--data-urlencode encodes values before joining them', () => {
-  const result = context.parseCurlCommand(
+  const result = parseCurlCommand(
     "curl https://example.test --data-urlencode 'name=hello world!' --data-urlencode '=plain value' --data-urlencode 'emoji=✓' --data-urlencode 'whole/value'"
   );
 
@@ -34,7 +24,7 @@ test('--data-urlencode encodes values before joining them', () => {
 });
 
 test('quoted Windows backslashes and Unicode basic auth survive parsing', () => {
-  const result = context.parseCurlCommand(
+  const result = parseCurlCommand(
     String.raw`curl https://example.test -d 'C:\temp\file' --data-raw "D:\other\file" -u 'føø:päss'`
   );
 
@@ -43,7 +33,7 @@ test('quoted Windows backslashes and Unicode basic auth survive parsing', () => 
 });
 
 test('an explicitly empty data argument does not consume the following option', () => {
-  const result = context.parseCurlCommand(
+  const result = parseCurlCommand(
     "curl https://example.test -d '' -H 'X-After: retained'"
   );
 
@@ -54,14 +44,14 @@ test('an explicitly empty data argument does not consume the following option', 
 });
 
 test('repeated data separators match curl when parts are empty', () => {
-  assert.equal(context.parseCurlCommand("curl https://example.test -d '' -d 'x=1'").body, 'x=1');
-  assert.equal(context.parseCurlCommand("curl https://example.test -d 'x=1' -d ''").body, 'x=1&');
-  assert.equal(context.parseCurlCommand("curl https://example.test -d '' -d ''").body, '');
-  assert.equal(context.parseCurlCommand("curl https://example.test -d 'x=1' -d '' -d 'y=2'").body, 'x=1&&y=2');
+  assert.equal(parseCurlCommand("curl https://example.test -d '' -d 'x=1'").body, 'x=1');
+  assert.equal(parseCurlCommand("curl https://example.test -d 'x=1' -d ''").body, 'x=1&');
+  assert.equal(parseCurlCommand("curl https://example.test -d '' -d ''").body, '');
+  assert.equal(parseCurlCommand("curl https://example.test -d 'x=1' -d '' -d 'y=2'").body, 'x=1&&y=2');
 });
 
 test('explicit Content-Type matching is case-insensitive', () => {
-  const result = context.parseCurlCommand(
+  const result = parseCurlCommand(
     "curl https://example.test -H 'content-type: application/json' -d '{}'"
   );
 
@@ -77,10 +67,10 @@ test('file-backed data is rejected instead of being imported as literal text', (
     'curl https://example.test --data-binary @payload.bin',
     'curl https://example.test --data-urlencode name@payload.txt'
   ]) {
-    assert.match(context.parseCurlCommand(command).error, /File-backed/);
+    assert.match(parseCurlCommand(command).error, /File-backed/);
   }
 
-  const raw = context.parseCurlCommand('curl https://example.test --data-raw @literal');
+  const raw = parseCurlCommand('curl https://example.test --data-raw @literal');
   assert.equal(raw.body, '@literal');
   assert.equal(raw.error, undefined);
 });

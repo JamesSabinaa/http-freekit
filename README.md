@@ -99,6 +99,7 @@ http-freekit/
       styles.css               # Full design system (dark/light/high-contrast)
       bootstrap.js             # Shared-domain module bootstrap
       har-import.js            # HAR validation and traffic-record normalization
+      curl-parser.js           # Pasted cURL command parsing
       app.js                   # Frontend application logic
   build/                       # App icons (16x16 to 1024x1024)
   electron-builder.config.cjs  # Cross-platform packaging config

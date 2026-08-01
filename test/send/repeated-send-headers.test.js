@@ -6,20 +6,17 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { ApiServer } from '../../src/api/api-server.js';
+import { parseCurlCommand } from '../../src/ui/curl-parser.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const editorStart = rendererSource.indexOf('let sendHeadersList = []');
 const editorEnd = rendererSource.indexOf('// ============ SEND TAB MANAGEMENT', editorStart);
 const normalizeStart = rendererSource.indexOf('function normalizeSendHeaderRows(');
 const normalizeEnd = rendererSource.indexOf('function parseSendTabId(', normalizeStart);
-const curlStart = rendererSource.indexOf('function encodeCurlComponent(');
-const curlEnd = rendererSource.indexOf('// ============ SEND REQUEST', curlStart);
 assert.notEqual(editorStart, -1);
 assert.notEqual(editorEnd, -1);
 assert.notEqual(normalizeStart, -1);
 assert.notEqual(normalizeEnd, -1);
-assert.notEqual(curlStart, -1);
-assert.notEqual(curlEnd, -1);
 
 function serializeHeaderRows(rows) {
   const hidden = { value: '' };
@@ -59,13 +56,7 @@ function loadHeaderRows(headers) {
 }
 
 function parseCurl(command) {
-  const context = {
-    TextEncoder,
-    btoa: value => Buffer.from(value, 'binary').toString('base64')
-  };
-  vm.createContext(context);
-  vm.runInContext(rendererSource.slice(curlStart, curlEnd), context);
-  return JSON.parse(JSON.stringify(context.parseCurlCommand(command)));
+  return JSON.parse(JSON.stringify(parseCurlCommand(command)));
 }
 
 test('Send serializes repeated enabled header rows into ordered arrays', () => {

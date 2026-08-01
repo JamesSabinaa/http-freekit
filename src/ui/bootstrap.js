@@ -4,6 +4,7 @@ import {
   createTrafficListVisibilityMatcher
 } from '/shared/traffic/traffic-lists.js';
 import { normalizeHarEntries } from '/har-import.js';
+import { parseCurlCommand } from '/curl-parser.js';
 
 window.FreeKitTrafficLists = Object.freeze({
   DEFAULT_EXCLUSIONS,
@@ -13,6 +14,10 @@ window.FreeKitTrafficLists = Object.freeze({
 
 window.FreeKitHarImport = Object.freeze({
   normalizeHarEntries
+});
+
+window.FreeKitCurlParser = Object.freeze({
+  parseCurlCommand
 });
 
 const applicationScript = document.createElement('script');
