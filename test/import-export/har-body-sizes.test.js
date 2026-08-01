@@ -7,6 +7,7 @@ import vm from 'node:vm';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { trafficToHar } from '../../src/api/har-converter.js';
+import { normalizeHarEntries } from '../../src/ui/har-import.js';
 
 function sizeEntry(url, requestSize, responseWireSize, responseDecodedSize, headers = []) {
   return {
@@ -122,7 +123,7 @@ test('server HAR import and export preserve request, response wire, and decoded 
 
 test('visible renderer HAR import and export preserve the same size model', async () => {
   const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-  const start = rendererSource.indexOf('function normalizeHarBodySize(');
+  const start = rendererSource.indexOf('function importHar()');
   const end = rendererSource.indexOf('// ============ ACTIONS ============', start);
   assert.ok(start >= 0 && end > start);
 
@@ -133,7 +134,9 @@ test('visible renderer HAR import and export preserve the same size model', asyn
     API_BASE: '',
     URL,
     addRequest: request => added.push(request),
-    crypto: { randomUUID: () => `renderer-size-${++nextId}` },
+    normalizeHarEntries: document => normalizeHarEntries(document, {
+      createId: () => `renderer-size-${++nextId}`
+    }),
     fetch: async (_url, options) => {
       const requests = JSON.parse(options.body).requests;
       added.push(...requests);

@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
-import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { McpServerBridge } from '../../src/mcp/mcp-server.js';
+import { normalizeHarBodySize } from '../../src/ui/har-import.js';
 
 function postHar(port, body) {
   return new Promise((resolve, reject) => {
@@ -93,27 +91,14 @@ test('API HAR import preserves unknown body sizes and normalizes malformed sizes
 });
 
 test('renderer HAR mapping applies the same body-size normalization', () => {
-  const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-  const functionStart = rendererSource.indexOf('function normalizeHarBodySize(');
-  const functionEnd = rendererSource.indexOf('function importHar(', functionStart);
-  assert.notEqual(functionStart, -1);
-  assert.notEqual(functionEnd, -1);
-
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(`
-    ${rendererSource.slice(functionStart, functionEnd)}
-    results = [
-      normalizeHarBodySize(-1),
-      normalizeHarBodySize(NaN),
-      normalizeHarBodySize(Infinity),
-      normalizeHarBodySize('1024'),
-      normalizeHarBodySize(0),
-      normalizeHarBodySize(1024)
-    ];
-  `, context);
-
-  assert.deepEqual(Array.from(context.results), [-1, 0, 0, 0, 0, 1024]);
+  assert.deepEqual([
+    normalizeHarBodySize(-1),
+    normalizeHarBodySize(NaN),
+    normalizeHarBodySize(Infinity),
+    normalizeHarBodySize('1024'),
+    normalizeHarBodySize(0),
+    normalizeHarBodySize(1024)
+  ], [-1, 0, 0, 0, 0, 1024]);
 });
 
 test('MCP bandwidth stats ignore invalid legacy sizes without undercounting valid bytes', () => {

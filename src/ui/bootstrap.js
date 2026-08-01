@@ -3,11 +3,16 @@ import {
   DEFAULT_TRAFFIC_LIST_ID,
   createTrafficListVisibilityMatcher
 } from '/shared/traffic/traffic-lists.js';
+import { normalizeHarEntries } from '/har-import.js';
 
 window.FreeKitTrafficLists = Object.freeze({
   DEFAULT_EXCLUSIONS,
   DEFAULT_TRAFFIC_LIST_ID,
   createTrafficListVisibilityMatcher
+});
+
+window.FreeKitHarImport = Object.freeze({
+  normalizeHarEntries
 });
 
 const applicationScript = document.createElement('script');

@@ -5,6 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { trafficToHar } from '../../src/api/har-converter.js';
+import { normalizeHarEntries } from '../../src/ui/har-import.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
@@ -16,7 +17,7 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 const harImportSource = sourceBetween(
-  'function normalizeHarBodySize(',
+  'function importHar()',
   '// ============ ACTIONS ============'
 );
 const filterSource = sourceBetween(
@@ -57,6 +58,9 @@ function createRendererHarness() {
     URL,
     API_BASE: '',
     addRequest: request => added.push(request),
+    normalizeHarEntries: document => normalizeHarEntries(document, {
+      createId: () => `renderer-har-${++nextId}`
+    }),
     fetch: async (url, options) => {
       fetches.push({ url, options });
       const requests = JSON.parse(options.body).requests;
@@ -67,7 +71,6 @@ function createRendererHarness() {
         json: async () => ({ success: true, imported: requests.length })
       };
     },
-    crypto: { randomUUID: () => `renderer-har-${++nextId}` },
     document: {
       createElement: () => {
         const input = { click: () => {} };
