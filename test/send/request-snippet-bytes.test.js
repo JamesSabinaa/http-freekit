@@ -1,25 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
 import zlib from 'node:zlib';
 
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
-
-const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const start = source.indexOf('function getExportFormFields');
-const end = source.indexOf('function autoSizeExportEditor', start);
-const { generateExportSnippet } = vm.runInNewContext(
-  `(() => { ${source.slice(start, end)}; return { generateExportSnippet }; })()`,
-  {
-    URL,
-    URLSearchParams,
-    console,
-    findHeaderKey: (headers, name) => Object.keys(headers || {})
-      .find(key => key.toLowerCase() === name.toLowerCase())
-  }
-);
+import { generateExportSnippet } from '../../src/ui/request-export.js';
 
 const formats = [
   'curl',

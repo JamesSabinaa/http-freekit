@@ -100,6 +100,7 @@ http-freekit/
       bootstrap.js             # Shared-domain module bootstrap
       har-import.js            # HAR validation and traffic-record normalization
       curl-parser.js           # Pasted cURL command parsing
+      request-export.js        # Raw and multipart request snippet generation
       app.js                   # Frontend application logic
   build/                       # App icons (16x16 to 1024x1024)
   electron-builder.config.cjs  # Cross-platform packaging config

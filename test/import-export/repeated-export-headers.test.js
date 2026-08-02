@@ -1,23 +1,12 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import test from 'node:test';
-import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../../src/ui/app.js', import.meta.url), 'utf8');
-const start = source.indexOf('function getExportFormFields');
-const end = source.indexOf('function autoSizeExportEditor', start);
-const generators = vm.runInNewContext(
-  `(() => { ${source.slice(start, end)}; return { generateExportSnippet, getExportHeaders }; })()`,
-  {
-    URL,
-    URLSearchParams,
-    console,
-    findHeaderKey: (headers, name) => Object.keys(headers || {})
-      .find(key => key.toLowerCase() === name.toLowerCase())
-  }
-);
+import {
+  generateExportSnippet,
+  getExportHeaders
+} from '../../src/ui/request-export.js';
 
 const formats = [
   'curl',
@@ -77,7 +66,7 @@ function normalized(value) {
 }
 
 test('captured array headers flatten into filtered scalar pairs in source order', () => {
-  const headers = generators.getExportHeaders({
+  const headers = getExportHeaders({
     requestHeaders: {
       'A-First': 'before',
       'X-Repeat': repeatedValues,
@@ -108,7 +97,7 @@ for (const bodyType of ['raw', 'urlencoded', 'multipart']) {
 
     for (const format of formats) {
       await t.test(format, () => {
-        const snippet = generators.generateExportSnippet(requestFor(bodyType, repeatedHeaders), format);
+        const snippet = generateExportSnippet(requestFor(bodyType, repeatedHeaders), format);
 
         if (!exactFormats.has(format)) {
           assert.match(snippet, /EXACT REPLAY UNAVAILABLE/);
@@ -146,7 +135,7 @@ for (const bodyType of ['raw', 'urlencoded', 'multipart']) {
 
   test(`${bodyType} scalar headers retain every format's existing export path`, () => {
     for (const format of formats) {
-      const snippet = generators.generateExportSnippet(requestFor(bodyType, {
+      const snippet = generateExportSnippet(requestFor(bodyType, {
         'X-Scalar': "solo ' \\ value"
       }), format);
       assert.doesNotMatch(snippet, /EXACT REPLAY UNAVAILABLE/, format);
@@ -157,7 +146,7 @@ for (const bodyType of ['raw', 'urlencoded', 'multipart']) {
 
 test('excluded repeated headers do not cause refusals or leak into snippets', () => {
   for (const format of formats) {
-    const raw = generators.generateExportSnippet(requestFor('raw', {
+    const raw = generateExportSnippet(requestFor('raw', {
       Host: ['ignored-host-1', 'ignored-host-2'],
       'Proxy-Connection': ['ignored-proxy-1', 'ignored-proxy-2'],
       'X-Scalar': 'kept'
@@ -166,7 +155,7 @@ test('excluded repeated headers do not cause refusals or leak into snippets', ()
     assert.equal(raw.includes('ignored-host'), false, format);
     assert.equal(raw.includes('ignored-proxy'), false, format);
 
-    const multipart = generators.generateExportSnippet(requestFor('multipart', {
+    const multipart = generateExportSnippet(requestFor('multipart', {
       'Content-Type': [
         'multipart/form-data; boundary=stale-one',
         'multipart/form-data; boundary=stale-two'
@@ -192,14 +181,14 @@ test('Node flat header arrays retain non-contiguous case variants in scalar-pair
     'A-Between': 'middle',
     'x-test': 'second'
   };
-  const pairs = normalized(generators.getExportHeaders({ requestHeaders }));
+  const pairs = normalized(getExportHeaders({ requestHeaders }));
   assert.deepEqual(pairs, [
     ['X-Test', 'first'],
     ['A-Between', 'middle'],
     ['x-test', 'second']
   ]);
 
-  const snippet = generators.generateExportSnippet(requestFor('raw', requestHeaders), 'javascript-node');
+  const snippet = generateExportSnippet(requestFor('raw', requestHeaders), 'javascript-node');
   const markers = [
     `${JSON.stringify('X-Test')}, ${JSON.stringify('first')}`,
     `${JSON.stringify('A-Between')}, ${JSON.stringify('middle')}`,
@@ -244,7 +233,7 @@ test('a generated Node snippet sends repeated headers as separate ordered wire l
   const { port } = server.address();
   let resolveClientDone;
   const clientDone = new Promise(resolve => { resolveClientDone = resolve; });
-  const snippet = generators.generateExportSnippet({
+  const snippet = generateExportSnippet({
     method: 'GET',
     url: `http://127.0.0.1:${port}/raw-headers`,
     bodyType: 'raw',

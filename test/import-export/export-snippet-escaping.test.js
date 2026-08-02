@@ -5,16 +5,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
 
-const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const start = source.indexOf('function getExportFormFields');
-const end = source.indexOf('function autoSizeExportEditor', start);
-const generatorSource = source.slice(start, end);
-const { generateExportSnippet } = vm.runInNewContext(
-  `(() => { ${generatorSource}; return { generateExportSnippet }; })()`,
-  { URL, URLSearchParams, console }
-);
+import { generateExportSnippet } from '../../src/ui/request-export.js';
 
 const shellLiteral = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 const powerShellLiteral = value => `'${String(value).replace(/'/g, "''")}'`;

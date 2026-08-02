@@ -14,7 +14,7 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 const headerLookupSource = sourceBetween('function findHeaderValues(', 'function matchesFilter(');
-const detailSource = sourceBetween('function renderDetailCards(', 'function getExportFormFields(');
+const detailSource = sourceBetween('function renderDetailCards(', 'function autoSizeExportEditor(');
 const remoteEndpointSource = sourceBetween('function formatRemoteEndpoint(', 'function buildRowHtml(');
 const headerGridSource = sourceBetween('function renderHeadersGrid(', '// Keep old renderHeaders as alias');
 const bodyModeSource = sourceBetween('function isGrpcContentType(', 'const activeBodyEditors = {}');

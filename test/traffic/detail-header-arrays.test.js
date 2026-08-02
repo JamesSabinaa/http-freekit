@@ -19,7 +19,7 @@ const headerLookupSource = sourceBetween(
 );
 const detailSource = sourceBetween(
   'function renderDetailCards(',
-  'function getExportFormFields('
+  'function autoSizeExportEditor('
 );
 const headerGridSource = sourceBetween(
   'function renderHeadersGrid(',
