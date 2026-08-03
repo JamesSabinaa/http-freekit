@@ -46,13 +46,16 @@ function installWindowToTray(window, {
     }
     if (isUsableWindow(window)) window.hide();
   };
+  const handleFocus = () => focusWindowContents(window);
 
   window.on('minimize', hideInTray);
   window.on('close', handleClose);
+  window.on('focus', handleFocus);
 
   return () => {
     window.removeListener?.('minimize', hideInTray);
     window.removeListener?.('close', handleClose);
+    window.removeListener?.('focus', handleFocus);
   };
 }
 

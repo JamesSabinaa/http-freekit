@@ -117,6 +117,23 @@ test('tray restoration skips page focus after the renderer is destroyed', () => 
   assert.deepEqual(window.focusOrder, ['window']);
 });
 
+test('delayed native focus after tray restoration refocuses the renderer', () => {
+  const window = new FakeWindow();
+  const remove = installWindowToTray(window);
+
+  window.emit('focus');
+  assert.equal(window.webContentsFocusCalls, 1);
+
+  window.webContentsDestroyed = true;
+  window.emit('focus');
+  assert.equal(window.webContentsFocusCalls, 1);
+
+  window.webContentsDestroyed = false;
+  remove();
+  window.emit('focus');
+  assert.equal(window.webContentsFocusCalls, 1);
+});
+
 test('the close button requests a full quit when configured while minimize still hides', () => {
   const window = new FakeWindow();
   let quitCalls = 0;
