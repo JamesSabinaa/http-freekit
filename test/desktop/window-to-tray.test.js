@@ -17,6 +17,16 @@ class FakeWindow extends EventEmitter {
     this.showCalls = 0;
     this.restoreCalls = 0;
     this.focusCalls = 0;
+    this.webContentsFocusCalls = 0;
+    this.webContentsDestroyed = false;
+    this.focusOrder = [];
+    this.webContents = {
+      isDestroyed: () => this.webContentsDestroyed,
+      focus: () => {
+        this.webContentsFocusCalls += 1;
+        this.focusOrder.push('contents');
+      }
+    };
   }
 
   isDestroyed() { return this.destroyed; }
@@ -25,7 +35,10 @@ class FakeWindow extends EventEmitter {
   hide() { this.hideCalls += 1; this.visible = false; }
   show() { this.showCalls += 1; this.visible = true; }
   restore() { this.restoreCalls += 1; this.minimized = false; }
-  focus() { this.focusCalls += 1; }
+  focus() {
+    this.focusCalls += 1;
+    this.focusOrder.push('window');
+  }
 }
 
 function cancellableEvent() {
@@ -85,10 +98,23 @@ test('prepared updater or cleanup-approved Quit can close while tray restoration
   assert.equal(window.restoreCalls, 1);
   assert.equal(window.showCalls, 1);
   assert.equal(window.focusCalls, 1);
+  assert.equal(window.webContentsFocusCalls, 1);
+  assert.deepEqual(window.focusOrder, ['window', 'contents']);
 
   window.destroyed = true;
   assert.equal(showTrayWindow(window), false);
   assert.equal(window.focusCalls, 1);
+  assert.equal(window.webContentsFocusCalls, 1);
+});
+
+test('tray restoration skips page focus after the renderer is destroyed', () => {
+  const window = new FakeWindow();
+  window.webContentsDestroyed = true;
+
+  assert.equal(showTrayWindow(window), true);
+  assert.equal(window.focusCalls, 1);
+  assert.equal(window.webContentsFocusCalls, 0);
+  assert.deepEqual(window.focusOrder, ['window']);
 });
 
 test('the close button requests a full quit when configured while minimize still hides', () => {

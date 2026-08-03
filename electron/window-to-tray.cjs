@@ -4,6 +4,12 @@ function isUsableWindow(window) {
   return window && (typeof window.isDestroyed !== 'function' || !window.isDestroyed());
 }
 
+function focusWindowContents(window) {
+  const contents = window.webContents;
+  if (!contents || (typeof contents.isDestroyed === 'function' && contents.isDestroyed())) return;
+  contents.focus?.();
+}
+
 function showTrayWindow(window) {
   if (!isUsableWindow(window)) return false;
   if (typeof window.isMinimized === 'function' && window.isMinimized()) {
@@ -13,6 +19,7 @@ function showTrayWindow(window) {
     window.show();
   }
   window.focus();
+  focusWindowContents(window);
   return true;
 }
 
