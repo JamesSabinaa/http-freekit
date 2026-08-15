@@ -578,7 +578,7 @@ const stateStart = rendererSource.indexOf('const appliedTrafficClearIds = new Se
 const stateEnd = rendererSource.indexOf('function connectWebSocket()', stateStart);
 const actionStart = rendererSource.indexOf('const trafficPinInFlight = new Set();');
 const actionEnd = rendererSource.indexOf('function updatePinIcon(', actionStart);
-const hydrationStart = rendererSource.indexOf('async function hydrateDeferredTrafficRequest(');
+const hydrationStart = rendererSource.indexOf('const deferredTrafficHydrations = new Map();');
 const hydrationEnd = rendererSource.indexOf('function selectBreakpointRequest(', hydrationStart);
 assert.notEqual(identityStart, -1);
 assert.notEqual(identityEnd, -1);

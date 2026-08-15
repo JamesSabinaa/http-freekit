@@ -1477,21 +1477,55 @@
       showDetail(req);
     }
 
-    async function hydrateDeferredTrafficRequest(req) {
-      try {
-        const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
+    const deferredTrafficHydrations = new Map();
+
+    function resolveDeferredTrafficRequest(req) {
+      const requestId = req?.id;
+      const lifecycleId = normalizeTrafficLifecycleId(req?.trafficLifecycleId);
+      const identityKey = trafficRequestIdentityKey({
+        id: requestId,
+        trafficLifecycleId: lifecycleId
+      });
+      const currentRequest = findTrafficRequestByIdentity(requests, requestId, lifecycleId);
+      if (!currentRequest) {
+        return Promise.reject(new Error('The exchange is no longer available.'));
+      }
+      if (currentRequest._deferredTrafficDetail !== true) return Promise.resolve(currentRequest);
+
+      const existing = deferredTrafficHydrations.get(identityKey);
+      if (existing) return existing;
+
+      const hydration = (async () => {
         const lifecycleQuery = lifecycleId === null
           ? ''
           : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
         const response = await fetch(
-          API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + lifecycleQuery
+          API_BASE + '/api/traffic/' + encodeURIComponent(requestId) + lifecycleQuery
         );
-        if (!response.ok) throw new Error('Could not load imported request details');
+        if (!response.ok) {
+          throw new Error(`Could not load exact exchange details (HTTP ${response.status}).`);
+        }
         const hydrated = await response.json();
-        const requestIndex = requests.indexOf(req);
-        if (requestIndex === -1) return;
-        const wasSelected = isSelectedTrafficRequest(req);
-        const mergedRequest = mergeDeferredTrafficRequest(req, hydrated);
+        const hydratedLifecycleId = normalizeTrafficLifecycleId(hydrated?.trafficLifecycleId);
+        if (!hydrated || hydrated.id !== requestId ||
+            (lifecycleId !== null && hydratedLifecycleId !== lifecycleId)) {
+          throw new Error('The server returned details for a different exchange.');
+        }
+
+        const requestIndex = requests.findIndex(candidate =>
+          trafficRequestMatchesIdentity(candidate, requestId, lifecycleId)
+        );
+        if (requestIndex === -1) throw new Error('The exchange was removed while loading details.');
+        const latestRequest = requests[requestIndex];
+        if (latestRequest._deferredTrafficDetail !== true) return latestRequest;
+
+        const wasSelected = isSelectedTrafficRequest(latestRequest);
+        const mergedRequest = mergeDeferredTrafficRequest(latestRequest, hydrated);
+        if (mergedRequest.id !== requestId ||
+            (lifecycleId !== null &&
+              normalizeTrafficLifecycleId(mergedRequest.trafficLifecycleId) !== lifecycleId)) {
+          throw new Error('The hydrated exchange identity changed unexpectedly.');
+        }
         requests[requestIndex] = mergedRequest;
         if (wasSelected) {
           selectedRequestId = mergedRequest.id;
@@ -1501,9 +1535,24 @@
         }
         applyFilter();
         if (wasSelected) showDetail(mergedRequest);
+        return mergedRequest;
+      })();
+      deferredTrafficHydrations.set(identityKey, hydration);
+      void hydration.finally(() => {
+        if (deferredTrafficHydrations.get(identityKey) === hydration) {
+          deferredTrafficHydrations.delete(identityKey);
+        }
+      }).catch(() => {});
+      return hydration;
+    }
+
+    async function hydrateDeferredTrafficRequest(req) {
+      try {
+        return await resolveDeferredTrafficRequest(req);
       } catch (error) {
-        toast(error.message || 'Could not load imported request details', 'error');
+        toast(error.message || 'Could not load exact exchange details.', 'error');
         if (isSelectedTrafficRequest(req)) closeDetail();
+        return null;
       }
     }
 
@@ -1600,6 +1649,43 @@
         ? selectedRequestLifecycleId
         : trafficLifecycleId;
       return findTrafficRequestByIdentity(requests, requestId, resolvedLifecycleId);
+    }
+
+    function withResolvedTrafficAction(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      actionLabel,
+      action
+    ) {
+      let req = trafficActionRequest(requestId, trafficLifecycleId);
+      // Extremely compact deferred rows can omit the lifecycle. After exact
+      // hydration promotes that provisional row to its server lifecycle, allow
+      // the old action closure to rebind only when the ID is still unambiguous.
+      if (!req && normalizeTrafficLifecycleId(trafficLifecycleId) === null) {
+        const sameIdRequests = requests.filter(candidate => candidate?.id === requestId);
+        if (sameIdRequests.length === 1) req = sameIdRequests[0];
+      }
+      if (!req) {
+        toast(`Cannot ${actionLabel}: the exchange is no longer available.`, 'error');
+        return null;
+      }
+      if (req._deferredTrafficDetail !== true) return action(req);
+
+      return resolveDeferredTrafficRequest(req)
+        .then(resolved => {
+          const exactRequest = trafficActionRequest(
+            resolved.id,
+            normalizeTrafficLifecycleId(resolved.trafficLifecycleId)
+          );
+          if (!exactRequest || exactRequest._deferredTrafficDetail === true) {
+            throw new Error('Exact exchange details are unavailable.');
+          }
+          return action(exactRequest);
+        })
+        .catch(error => {
+          toast(`Cannot ${actionLabel}: ${error.message || 'exact exchange details are unavailable.'}`, 'error');
+          return null;
+        });
     }
 
     const trafficPinInFlight = new Set();
@@ -1722,7 +1808,16 @@
     function resendSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
-      if (!req) return;
+      if (req && req._deferredTrafficDetail !== true) return resendResolvedRequest(req);
+      return withResolvedTrafficAction(
+        requestId,
+        trafficLifecycleId,
+        'resend request',
+        resendResolvedRequest
+      );
+    }
+
+    function resendResolvedRequest(req) {
       const requestMethod = req.method === undefined ? 'GET' : req.method;
       if (typeof requestMethod !== 'string' || requestMethod.length === 0 ||
           /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(requestMethod)) {
@@ -1771,7 +1866,10 @@
       if (req.requestBody && capturedBodyEncoding === 'utf8') {
         const contentTypeKey = findHeaderKey(req.requestHeaders || {}, 'Content-Type');
         const ct = String(contentTypeKey ? req.requestHeaders[contentTypeKey] : '').toLowerCase();
-        if (ct.includes('application/x-www-form-urlencoded')) {
+        // A decoded capture is a byte-oriented semantic replay. Keep its exact
+        // decoded representation instead of normalizing percent escapes through
+        // the structured form editor before it reaches Send or snippet export.
+        if (ct.includes('application/x-www-form-urlencoded') && !semanticReplay) {
           bodyType = 'urlencoded';
           urlEncodedFields = Array.from(new URLSearchParams(req.requestBody), ([key, value]) => ({ key, value, enabled: true }));
         } else if (ct.includes('json')) bodyFormat = 'json';
@@ -12348,21 +12446,34 @@
       }
 
       const invoker = menuInvoker || e.currentTarget || e.target;
+      const actionLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
       showContextMenu(anchor.x, anchor.y, [
-        { label: 'Copy URL', action: () => navigator.clipboard.writeText(req.url).then(() => toast('URL copied', 'success')) },
-        { label: 'Copy as cURL', action: () => {
-          const snippet = generateExportSnippet(req, 'curl');
-          navigator.clipboard.writeText(snippet).then(() => toast('cURL command copied', 'success'));
-        }},
+        { label: 'Copy URL', action: () => withResolvedTrafficAction(
+          requestId,
+          actionLifecycleId,
+          'copy URL',
+          exactRequest => navigator.clipboard.writeText(exactRequest.url)
+            .then(() => toast('URL copied', 'success'))
+        ) },
+        { label: 'Copy as cURL', action: () => withResolvedTrafficAction(
+          requestId,
+          actionLifecycleId,
+          'copy as cURL',
+          exactRequest => {
+            const snippet = generateExportSnippet(exactRequest, 'curl');
+            return navigator.clipboard.writeText(snippet)
+              .then(() => toast('cURL command copied', 'success'));
+          }
+        ) },
         { separator: true },
-        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId, req.trafficLifecycleId) },
-        { label: 'Create mock rule', action: () => createMockFromRequest(requestId, req.trafficLifecycleId) },
-        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId, req.trafficLifecycleId) },
+        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId, actionLifecycleId) },
+        { label: 'Create mock rule', action: () => createMockFromRequest(requestId, actionLifecycleId) },
+        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId, actionLifecycleId) },
         { separator: true },
-        { label: 'Pin exchange', action: () => togglePinRequest(requestId, req.trafficLifecycleId) },
-        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId, req.trafficLifecycleId) },
+        { label: 'Pin exchange', action: () => togglePinRequest(requestId, actionLifecycleId) },
+        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId, actionLifecycleId) },
       ], { invoker, focusFirst: keyboardInvoked });
     }
 
@@ -12383,7 +12494,16 @@
 
     function createMockFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
       const req = trafficActionRequest(requestId, trafficLifecycleId);
-      if (!req) return;
+      if (req && req._deferredTrafficDetail !== true) return createMockFromResolvedRequest(req);
+      return withResolvedTrafficAction(
+        requestId,
+        trafficLifecycleId,
+        'create mock rule',
+        createMockFromResolvedRequest
+      );
+    }
+
+    function createMockFromResolvedRequest(req) {
       if (req.requestBodyTruncated === true || req.responseBodyTruncated === true) {
         toast('Cannot create a mock because this exchange contains an incomplete body capture.', 'error');
         return;
@@ -12728,7 +12848,16 @@
     function createBreakpointFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
-      if (!req) return;
+      if (req && req._deferredTrafficDetail !== true) return createBreakpointFromResolvedRequest(req);
+      return withResolvedTrafficAction(
+        requestId,
+        trafficLifecycleId,
+        'create breakpoint',
+        createBreakpointFromResolvedRequest
+      );
+    }
+
+    function createBreakpointFromResolvedRequest(req) {
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
       return _queueMockCollectionMutation(async () => {

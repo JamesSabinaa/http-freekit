@@ -91,7 +91,13 @@ async function prepareTab(tab, initialHeaders = {}) {
     findHeaderKey: (headers, name) => Object.keys(headers)
       .find(key => key.toLowerCase() === name.toLowerCase()) || null,
     formatToContentType: () => 'text/plain',
-    serializeUrlEncodedFields: () => '',
+    serializeUrlEncodedFields: () => {
+      const params = new URLSearchParams();
+      for (const field of tab.urlEncodedFields || []) {
+        if (field.enabled !== false && field.key) params.append(field.key, field.value || '');
+      }
+      return params.toString();
+    },
     serializeMultipartFields: async () => new Uint8Array(),
     bytesToBase64: () => '',
     getMultipartDisplayBody: () => '',
@@ -408,6 +414,12 @@ test('Resend sends decoded semantic bytes without stale encoding headers and pre
       method: 'POST',
       decodedBytes: Buffer.from([0x00, 0xff, 0x41]),
       contentType: 'application/octet-stream'
+    },
+    {
+      id: 'decoded-urlencoded',
+      method: 'POST',
+      decodedBytes: Buffer.from('sig=%2f&space=%20&tilde=~&literal=%41'),
+      contentType: 'application/x-www-form-urlencoded'
     }
   ];
 
@@ -445,6 +457,13 @@ test('Resend sends decoded semantic bytes without stale encoding headers and pre
     assert.equal(receivedRequest.headers['content-encoding'], undefined);
     assert.equal(receivedRequest.headers['content-length'], String(item.decodedBytes.length));
     assert.equal(receivedRequest.headers['x-retained'], item.id);
+    if (item.id === 'decoded-urlencoded') {
+      assert.equal(resent.tab.bodyType, 'raw');
+      assert.equal(resent.tab.body, item.decodedBytes.toString('utf8'));
+      const snippet = generateExportSnippet(currentExportRequest(resent.tab), 'curl');
+      assert.match(snippet, /sig=%2f&space=%20&tilde=~&literal=%41/);
+      assert.doesNotMatch(snippet, /sig=%2F&space=\+&tilde=%7E&literal=A/);
+    }
   }
 
   const rawFallbacks = [

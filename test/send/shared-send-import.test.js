@@ -435,7 +435,7 @@ test('renderer uses server-owned import and Send traffic identities', () => {
   assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.sessionId, msg\.revision\)/);
   assert.doesNotMatch(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
   assert.match(selectSource, /req\._deferredTrafficDetail === true/);
-  assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\(req\.id\)/);
+  assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\((?:req\.id|requestId)\)/);
   assert.match(selectSource, /panel\._request = null/);
   assert.match(selectSource, /isSelectedTrafficRequest\(req\)\) closeDetail\(\)/);
   assert.doesNotMatch(sendSource, /addRequest\(/);
