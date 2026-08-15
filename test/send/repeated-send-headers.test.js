@@ -43,7 +43,13 @@ function loadHeaderRows(headers) {
         return null;
       }
     },
-    esc: value => String(value)
+    esc: value => String(value),
+    escapeHtmlAttribute: value => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
   };
   vm.createContext(context);
   vm.runInContext(`
