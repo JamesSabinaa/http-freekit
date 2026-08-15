@@ -71,6 +71,15 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.match(invalidBreakpointState.body.error, /breakpointActive/);
   assert.deepEqual(api.trafficLog, []);
 
+  for (const field of ['requestHttpVersion', 'responseHttpVersion']) {
+    const invalidVersion = await postJson(port, {
+      requests: [{ id: `invalid-${field}`, timestamp: Date.now(), [field]: { unsafe: true } }]
+    });
+    assert.equal(invalidVersion.statusCode, 400);
+    assert.match(invalidVersion.body.error, new RegExp(`${field} must be a string`));
+  }
+  assert.deepEqual(api.trafficLog, []);
+
   for (const [record, error] of [
     [{ remote: '127.0.0.1:443' }, /remote must be an object/],
     [{ remote: { address: 127, port: 443 } }, /remote.address/],
@@ -158,9 +167,17 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.match(unknownHar.log.entries[0].response.content.comment, /original size unknown/);
 
   const valid = await postJson(port, {
-    requests: [{ id: 'valid', timestamp: Date.now(), requestBody: 'text' }]
+    requests: [{
+      id: 'valid',
+      timestamp: Date.now(),
+      requestBody: 'text',
+      requestHttpVersion: 'HTTP/1.0',
+      responseHttpVersion: 'HTTP/1.1'
+    }]
   });
   assert.equal(valid.statusCode, 200);
+  assert.equal(api.trafficLog.at(-1).requestHttpVersion, 'HTTP/1.0');
+  assert.equal(api.trafficLog.at(-1).responseHttpVersion, 'HTTP/1.1');
   const historicalBreakpoint = await postJson(port, {
     requests: [{
       id: 'historical-breakpoint',

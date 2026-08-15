@@ -108,6 +108,22 @@ test('a malformed entry rejects a multi-entry HAR without mutating traffic', asy
   assert.equal(broadcastCount, 0);
 });
 
+test('HAR import rejects non-string request and response HTTP versions atomically', async t => {
+  const { api, port } = await createApi(t);
+  for (const [side, value] of [
+    ['request', 0],
+    ['request', null],
+    ['response', { unsafe: true }]
+  ]) {
+    const response = await postBody(port, har([
+      harEntry({ [side]: { httpVersion: value } })
+    ]));
+    assert.equal(response.statusCode, 400, side);
+    assert.match(response.body.error, new RegExp(`${side}HttpVersion must be a string`), side);
+    assert.deepEqual(api.trafficLog, [], side);
+  }
+});
+
 test('HAR import rejects non-finite and out-of-range mapped numbers', async t => {
   const { api, port } = await createApi(t);
   const nonFiniteJson = JSON.stringify(har([harEntry({ time: 1 })]))

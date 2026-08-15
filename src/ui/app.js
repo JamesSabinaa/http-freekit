@@ -2456,16 +2456,18 @@
       const sourceIconHtml = Object.hasOwn(SOURCE_ICONS, sourceLabel)
         ? SOURCE_ICONS[sourceLabel]
         : SOURCE_ICONS.Other;
-      const httpVersion = req.protocol === 'h2'
-        ? 'HTTP/2'
-        : req.protocol === 'https' || req.protocol === 'wss'
-          ? 'HTTPS/1.1'
-          : 'HTTP/1.1';
+      const fallbackHttpVersion = req.protocol === 'h2' ? 'HTTP/2' : 'HTTP/1.1';
+      const requestHttpVersion = typeof effReq.requestHttpVersion === 'string' && effReq.requestHttpVersion
+        ? effReq.requestHttpVersion
+        : fallbackHttpVersion;
+      const responseHttpVersion = typeof req.responseHttpVersion === 'string' && req.responseHttpVersion
+        ? req.responseHttpVersion
+        : fallbackHttpVersion;
       html += `<div class="detail-card dir-right" id="card-request" aria-expanded="true" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="source-icon" title="${escapeHtmlAttribute(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
-            <span class="detail-pill pill-muted" style="font-size:11px;">${httpVersion}</span>
+            <span class="detail-pill pill-muted" style="font-size:11px;">${esc(requestHttpVersion)}</span>
             <span class="detail-pill" style="background:${effMethodColor};color:#fff;">${esc(effReq.method)} ${esc(effReq.host || '').replace(/\./g, '\u2008.\u2008')}</span>
             <span class="detail-card-heading">Request</span>
             <span class="collapse-chevron">&#9650;</span>
@@ -2530,6 +2532,7 @@
       html += `<div class="detail-card dir-left" id="card-response" aria-expanded="true" style="border-left-color:${statusColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+            <span class="detail-pill pill-muted" style="font-size:11px;">${esc(responseHttpVersion)}</span>
             <span class="detail-pill" style="background:${statusColor};color:#fff;">${responseStatus}</span>
             <span class="detail-card-heading">Response</span>
             <span class="collapse-chevron">&#9650;</span>

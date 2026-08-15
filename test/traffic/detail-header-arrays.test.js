@@ -152,6 +152,47 @@ function baseRequest(responseHeaders, overrides = {}) {
   };
 }
 
+function requestAndResponseCards(request) {
+  const html = renderDetail(request).html;
+  const requestStart = html.indexOf('id="card-request"');
+  const responseStart = html.indexOf('id="card-response"');
+  assert.ok(requestStart >= 0 && responseStart > requestStart);
+  return {
+    html,
+    requestCard: html.slice(requestStart, responseStart),
+    responseCard: html.slice(responseStart)
+  };
+}
+
+test('traffic details preserve distinct imported HTTP versions with safe live fallbacks', () => {
+  const imported = requestAndResponseCards(baseRequest({}, {
+    requestHttpVersion: 'HTTP/1.0',
+    responseHttpVersion: 'HTTP/1.1'
+  }));
+  assert.match(imported.requestCard, />HTTP\/1\.0<\/span>/);
+  assert.doesNotMatch(imported.requestCard, />HTTP\/1\.1<\/span>/);
+  assert.match(imported.responseCard, />HTTP\/1\.1<\/span>/);
+  assert.doesNotMatch(imported.responseCard, />HTTP\/1\.0<\/span>/);
+
+  const liveHttps = requestAndResponseCards(baseRequest({}));
+  assert.match(liveHttps.requestCard, />HTTP\/1\.1<\/span>/);
+  assert.match(liveHttps.responseCard, />HTTP\/1\.1<\/span>/);
+  assert.doesNotMatch(liveHttps.html, /HTTPS\/1\.1/);
+
+  const liveHttp2 = requestAndResponseCards(baseRequest({}, { protocol: 'h2' }));
+  assert.match(liveHttp2.requestCard, />HTTP\/2<\/span>/);
+  assert.match(liveHttp2.responseCard, />HTTP\/2<\/span>/);
+
+  const hostile = 'HTTP/1.0</span><img src=x onerror="audit">';
+  const hostileDetails = requestAndResponseCards(baseRequest({}, {
+    requestHttpVersion: hostile,
+    responseHttpVersion: hostile
+  }));
+  assert.doesNotMatch(hostileDetails.html, /<img src=x/);
+  assert.match(hostileDetails.requestCard, /HTTP\/1\.0&lt;\/span&gt;&lt;img src=x onerror=&quot;audit&quot;&gt;/);
+  assert.match(hostileDetails.responseCard, /HTTP\/1\.0&lt;\/span&gt;&lt;img src=x onerror=&quot;audit&quot;&gt;/);
+});
+
 test('traffic detail renders repeated mixed-case Content-Type and Cache-Control values', () => {
   const responseHeaders = {
     'cOnTeNt-TyPe': ['Application/JSON; charset=utf-8', 'application/problem+json'],
@@ -250,7 +291,8 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
         assert.match(failed, new RegExp(failure.error));
       }
       if (protocol === 'wss') {
-        assert.match(failed, />HTTPS\/1\.1</);
+        assert.match(failed, />HTTP\/1\.1</);
+        assert.doesNotMatch(failed, />HTTPS\/1\.1</);
         assert.match(failed, />WSS \(TLSv1\.3\)</);
         assert.match(failed, />AES-256</);
       } else {

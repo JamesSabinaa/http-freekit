@@ -26,7 +26,7 @@ function postJson(port, body, pathname = '/api/traffic/import-har') {
   });
 }
 
-test('HAR round trip preserves cookies, form parameters, MIME types, and protocol', async (t) => {
+test('HAR round trip preserves cookies, form parameters, MIME types, and distinct HTTP versions', async (t) => {
   const proxy = {
     port: 8081,
     mockRules: [],
@@ -53,7 +53,7 @@ test('HAR round trip preserves cookies, form parameters, MIME types, and protoco
         request: {
           method: 'POST',
           url: 'https://example.test/form',
-          httpVersion: 'HTTP/2',
+          httpVersion: 'HTTP/1.0',
           cookies: requestCookies,
           headers: [],
           postData: { mimeType: 'multipart/form-data', params }
@@ -61,7 +61,7 @@ test('HAR round trip preserves cookies, form parameters, MIME types, and protoco
         response: {
           status: 204,
           statusText: 'No Content',
-          httpVersion: 'HTTP/2',
+          httpVersion: 'HTTP/1.1',
           cookies: responseCookies,
           headers: [],
           content: { mimeType: 'application/custom', text: '' }
@@ -72,11 +72,13 @@ test('HAR round trip preserves cookies, form parameters, MIME types, and protoco
 
   const response = await postJson(server.address().port, har);
   assert.equal(response.statusCode, 200, response.body);
-  assert.equal(api.trafficLog[0].protocol, 'h2');
+  assert.equal(api.trafficLog[0].protocol, 'https');
+  assert.equal(api.trafficLog[0].requestHttpVersion, 'HTTP/1.0');
+  assert.equal(api.trafficLog[0].responseHttpVersion, 'HTTP/1.1');
 
   const exported = trafficToHar(api.trafficLog, { maskSensitive: false }).log.entries[0];
-  assert.equal(exported.request.httpVersion, 'HTTP/2');
-  assert.equal(exported.response.httpVersion, 'HTTP/2');
+  assert.equal(exported.request.httpVersion, 'HTTP/1.0');
+  assert.equal(exported.response.httpVersion, 'HTTP/1.1');
   assert.deepEqual(exported.request.cookies, requestCookies);
   assert.deepEqual(exported.response.cookies, responseCookies);
   assert.equal(exported.request.postData.mimeType, 'multipart/form-data');

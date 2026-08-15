@@ -909,6 +909,11 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${field} must be a string`;
         }
       }
+      for (const field of ['requestHttpVersion', 'responseHttpVersion']) {
+        if (request[field] !== undefined && typeof request[field] !== 'string') {
+          return `requests[${index}].${field} must be a string`;
+        }
+      }
       if (request.method !== undefined && request.method !== null &&
           !HTTP_TOKEN_PATTERN.test(request.method)) {
         return `requests[${index}].method must be a valid HTTP token`;
@@ -1419,7 +1424,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
               ? entry.request.postData.params
               : undefined,
             requestPostDataMimeType: entry.request.postData?.mimeType || '',
-            requestHttpVersion: entry.request.httpVersion || '',
+            requestHttpVersion: entry.request.httpVersion === undefined
+              ? ''
+              : entry.request.httpVersion,
             requestBodySize: normalizeHarBodySize(entry.request.bodySize),
             ...(requestTruncation ? {
               requestBodyTruncated: true,
@@ -1433,7 +1440,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseBodyEncoding: responseBody.encoding,
             responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
             responseContentMimeType: entry.response?.content?.mimeType || '',
-            responseHttpVersion: entry.response?.httpVersion || '',
+            responseHttpVersion: entry.response?.httpVersion === undefined
+              ? ''
+              : entry.response.httpVersion,
             responseBodySize: normalizeHarBodySize(entry.response?.bodySize),
             ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
             ...(responseTruncation ? {
