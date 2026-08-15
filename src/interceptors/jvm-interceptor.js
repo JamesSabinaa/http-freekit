@@ -298,6 +298,12 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
     this.active = next.size > 0;
   }
 
+  _isCurrentTrackedOwnership(pid, ownership) {
+    // Lifecycle transitions replace or remove ownership records, so reference
+    // identity is the generation token for status work outside manager locks.
+    return this.activatedProcesses.get(pid) === ownership;
+  }
+
   _runAvailabilityCommand(file, args, options) {
     return execFileAsync(file, args, options);
   }
@@ -621,6 +627,8 @@ public class ProxyAgent {
   async _syncActivatedProcesses(processes) {
     for (const [pid, activated] of Array.from(this.activatedProcesses.entries())) {
       const state = await this._classifyTrackedTarget(pid, activated, processes);
+      if (!this._isCurrentTrackedOwnership(pid, activated)) continue;
+
       if (state === 'gone' || state === 'replaced') {
         try {
           this._forgetTrackedOwnership(pid);
