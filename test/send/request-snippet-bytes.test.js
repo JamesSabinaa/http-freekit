@@ -138,7 +138,9 @@ test('malformed base64 provenance fails closed instead of sending display text',
     'not-a-data-uri',
     'data:application/octet-stream;base64,%%%',
     'data:application/octet-stream;base64,AAA',
-    'data:application/octet-stream;base64,A==='
+    'data:application/octet-stream;base64,A===',
+    'data:application/octet-stream;base64,AB==',
+    'data:application/octet-stream;base64,AAF='
   ];
 
   for (const format of formats) {

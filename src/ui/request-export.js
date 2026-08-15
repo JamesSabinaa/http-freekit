@@ -68,7 +68,13 @@ function renderNodeExportHeaders(headers, additionalEntries = []) {
 }
 
 function isValidExportBase64(value) {
-  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    return false;
+  }
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  if (value.endsWith('==')) return alphabet.indexOf(value.at(-3)) % 16 === 0;
+  if (value.endsWith('=')) return alphabet.indexOf(value.at(-2)) % 4 === 0;
+  return true;
 }
 
 function getExportRequestBody(req) {
