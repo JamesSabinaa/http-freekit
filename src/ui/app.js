@@ -3235,26 +3235,24 @@
         : 'None';
     }
 
-    function rebuildProtobufRoot() {
-      protobufSchemaError = '';
-      protobufRoot = null;
-      if (!protobufSchemaFiles.length) {
-        updateProtobufSchemaStatus();
-        return;
-      }
+    function buildProtobufRoot(schemaFiles) {
+      if (!schemaFiles.length) return null;
       if (!window.protobuf?.parse || !window.protobuf?.Root) {
-        protobufSchemaError = 'protobufjs did not load';
-        updateProtobufSchemaStatus();
-        return;
+        throw new Error('protobufjs did not load');
       }
 
+      const root = new window.protobuf.Root();
+      for (const file of schemaFiles) {
+        window.protobuf.parse(file.content, root, { keepCase: true, alternateCommentMode: true });
+      }
+      root.resolveAll();
+      return root;
+    }
+
+    function rebuildProtobufRoot() {
       try {
-        const root = new window.protobuf.Root();
-        for (const file of protobufSchemaFiles) {
-          window.protobuf.parse(file.content, root, { keepCase: true, alternateCommentMode: true });
-        }
-        root.resolveAll();
-        protobufRoot = root;
+        protobufRoot = buildProtobufRoot(protobufSchemaFiles);
+        protobufSchemaError = '';
       } catch (err) {
         protobufSchemaError = err.message || String(err);
         protobufRoot = null;
@@ -3274,13 +3272,19 @@
     }
 
     function saveProtobufSchemas(nextSchemaFiles) {
+      // Parse and resolve the whole candidate set before changing either durable
+      // storage or the live decoder. Parsing may partially populate its Root
+      // before throwing, so it must always happen in an isolated candidate.
+      const nextRoot = buildProtobufRoot(nextSchemaFiles);
       if (!safeLocalStorageSet(
         PROTOBUF_SCHEMA_STORAGE_KEY,
         JSON.stringify(nextSchemaFiles),
         false
       )) return false;
       protobufSchemaFiles = nextSchemaFiles;
-      rebuildProtobufRoot();
+      protobufRoot = nextRoot;
+      protobufSchemaError = '';
+      updateProtobufSchemaStatus();
       return true;
     }
 
@@ -3313,12 +3317,8 @@
             );
             return;
           }
-          if (protobufSchemaError) {
-            toast('Schema import failed: ' + protobufSchemaError, 'error');
-          } else {
-            toast('Imported ' + imported.length + ' protobuf schema file' + (imported.length === 1 ? '' : 's'), 'success');
-            refreshVisibleBodyViewers();
-          }
+          toast('Imported ' + imported.length + ' protobuf schema file' + (imported.length === 1 ? '' : 's'), 'success');
+          refreshVisibleBodyViewers();
         } catch (err) {
           toast('Schema import failed: ' + err.message, 'error');
         }

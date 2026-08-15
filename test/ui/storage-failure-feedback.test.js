@@ -28,8 +28,11 @@ function storageHelpersContext(storage) {
 function protobufContext({ setResult = true, removeResult = true } = {}) {
   const toasts = [];
   let input;
+  class Root {
+    resolveAll() {}
+  }
   const context = {
-    window: {},
+    window: { protobuf: { Root, parse() {} } },
     document: {
       createElement() {
         input = { click() {} };
@@ -113,6 +116,7 @@ test('routine storage failures show one actionable warning without throwing', ()
 
 test('protobuf import and clear retain live state when storage fails', async () => {
   const imported = protobufContext({ setResult: false });
+  const importedRoot = vm.runInContext('protobufRoot', imported.context);
   imported.context.importProtobufSchemas();
   await imported.input().onchange({
     target: { files: [{ name: 'new.proto', text: async () => 'message New {}' }] }
@@ -122,6 +126,7 @@ test('protobuf import and clear retain live state when storage fails', async () 
     plain(vm.runInContext('protobufSchemaFiles', imported.context)),
     [{ name: 'old.proto', content: 'old' }]
   );
+  assert.strictEqual(vm.runInContext('protobufRoot', imported.context), importedRoot);
   assert.equal(imported.toasts.length, 1);
   assert.equal(imported.toasts[0].type, 'error');
   assert.doesNotMatch(imported.toasts[0].message, /^Imported /);
