@@ -115,6 +115,15 @@ function wildcardValueMatches(pattern, value) {
   return patternIndex === pattern.length;
 }
 
+function testRegExpPreservingLastIndex(pattern, value) {
+  const previousIndex = pattern.lastIndex;
+  try {
+    return pattern.test(value);
+  } finally {
+    pattern.lastIndex = previousIndex;
+  }
+}
+
 function jsonValuesEqual(left, right) {
   const pending = [[left, right]];
   while (pending.length > 0) {
@@ -1001,9 +1010,7 @@ export class ProxyServer {
         || rule.method.toUpperCase() === String(method || '').toUpperCase();
       let urlMatches = false;
       if (rule.urlPattern instanceof RegExp) {
-        const previousIndex = rule.urlPattern.lastIndex;
-        urlMatches = rule.urlPattern.test(String(url || ''));
-        rule.urlPattern.lastIndex = previousIndex;
+        urlMatches = testRegExpPreservingLastIndex(rule.urlPattern, String(url || ''));
       }
       else if (typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0) {
         urlMatches = String(url || '').includes(rule.urlPattern);
@@ -8413,7 +8420,9 @@ export class ProxyServer {
       // Legacy format: method + urlPattern + response
       if (typeof rule.method === 'string' && rule.method !== '*'
         && rule.method.toUpperCase() !== String(method || '').toUpperCase()) return false;
-      if (rule.urlPattern instanceof RegExp) return rule.urlPattern.test(String(url || ''));
+      if (rule.urlPattern instanceof RegExp) {
+        return testRegExpPreservingLastIndex(rule.urlPattern, String(url || ''));
+      }
       if (typeof rule.urlPattern === 'string' && rule.urlPattern.length > 0) {
         return String(url || '').includes(rule.urlPattern);
       }
