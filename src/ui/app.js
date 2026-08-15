@@ -9602,6 +9602,54 @@
       }
     }
 
+    function inferCurlSendBodyFormat(headers) {
+      const contentTypeEntry = Object.entries(headers || {})
+        .find(([name]) => name.toLowerCase() === 'content-type');
+      const contentType = (Array.isArray(contentTypeEntry?.[1])
+        ? contentTypeEntry[1]
+        : [contentTypeEntry?.[1]])
+        .map(value => String(value || '').toLowerCase())
+        .join(';');
+
+      if (contentType.includes('json')) return 'json';
+      if (contentType.includes('xml')) return 'xml';
+      if (contentType.includes('html')) return 'html';
+      if (contentType.includes('css')) return 'css';
+      if (contentType.includes('javascript')) return 'javascript';
+      if (contentType.includes('markdown') || contentType.includes('/x-markdown')) return 'markdown';
+      if (contentType.includes('yaml') || contentType.includes('yml')) return 'yaml';
+      return 'text';
+    }
+
+    function replaceActiveSendTabFromCurl(parsed) {
+      const tabIndex = sendTabs.findIndex(tab => tab.id === activeSendTab);
+      if (tabIndex === -1) return null;
+
+      // A pasted command describes the whole request, not a patch over the
+      // current editor. Build the complete replacement before publishing it so
+      // omitted credentials, bodies, form fields, files, and boundaries cannot
+      // survive from the previous target. Keep parsed data raw to preserve its
+      // exact bytes instead of normalizing it through URLSearchParams.
+      const replacement = {
+        id: sendTabs[tabIndex].id,
+        method: parsed.method || 'GET',
+        url: parsed.url || '',
+        headers: normalizeSendHeaderRows(parsed.headers),
+        body: parsed.hasData ? String(parsed.body ?? '') : '',
+        bodyType: 'raw',
+        bodyFormat: inferCurlSendBodyFormat(parsed.headers),
+        urlEncodedFields: [],
+        multipartFields: [],
+        multipartBoundary: '',
+        response: null
+      };
+
+      sendTabs[tabIndex] = replacement;
+      loadSendTabState(replacement);
+      persistSendTabs([replacement]);
+      return replacement;
+    }
+
     function switchSendTab(tabId) {
       saveSendTabState();
       activeSendTab = tabId;
@@ -13649,16 +13697,7 @@
           return;
         }
         if (parsed) {
-          document.getElementById('sendUrl').value = parsed.url;
-          document.getElementById('sendMethod').value = parsed.method;
-          if (typeof updateSendMethodColor === 'function') updateSendMethodColor();
-          if (Object.keys(parsed.headers).length > 0) {
-            loadSendHeadersFromJson(JSON.stringify(parsed.headers));
-          }
-          if (parsed.hasData) {
-            setSendBodyValue(parsed.body);
-          }
-          saveSendTabState();
+          replaceActiveSendTabFromCurl(parsed);
           renderSendTabs();
           scheduleSendExportUpdate();
           toast('cURL command parsed!', 'success');
