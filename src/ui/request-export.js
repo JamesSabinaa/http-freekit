@@ -32,9 +32,12 @@ function phpStringLiteral(value) {
 
 export function getExportHeaders(req, omitContentType = false) {
   const headers = [];
+  const semanticReplay = req.requestBodyContentDecoded === true;
   Object.entries(req.requestHeaders || {}).forEach(([key, value]) => {
     const lowerKey = key.toLowerCase();
-    if (lowerKey === 'host' || lowerKey === 'proxy-connection' || (omitContentType && lowerKey === 'content-type')) return;
+    if (lowerKey === 'host' || lowerKey === 'proxy-connection' ||
+        (omitContentType && lowerKey === 'content-type') ||
+        (semanticReplay && (lowerKey === 'content-encoding' || lowerKey === 'content-length'))) return;
     const values = Array.isArray(value) ? value : [value];
     values.forEach(item => headers.push([key, item]));
   });
@@ -103,6 +106,20 @@ function getExportRequestBody(req) {
 function generateUnavailableExportSnippet(format, reason) {
   const prefix = ['javascript-fetch', 'javascript-node', 'php', 'go'].includes(format) ? '//' : '#';
   return `${prefix} EXACT REPLAY UNAVAILABLE\n${prefix} ${reason}\n${prefix} No request was generated.`;
+}
+
+function addSemanticReplayWarning(req, format, snippet) {
+  if (req.requestBodyContentDecoded !== true ||
+      /^(?:#|\/\/) EXACT REPLAY UNAVAILABLE(?:\r?\n|$)/.test(snippet)) {
+    return snippet;
+  }
+  const warning = 'SEMANTIC REPLAY: The captured body was content-decoded. ' +
+    'Content-Encoding and Content-Length were removed; this request sends the decoded body bytes.';
+  if (format === 'php' && snippet.startsWith('<?php\n')) {
+    return `<?php\n// ${warning}\n${snippet.slice('<?php\n'.length)}`;
+  }
+  const prefix = ['javascript-fetch', 'javascript-node', 'go'].includes(format) ? '//' : '#';
+  return `${prefix} ${warning}\n${snippet}`;
 }
 
 const HTTP_METHOD_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -392,13 +409,13 @@ function findHeaderKey(headers, name) {
   return Object.keys(headers).find(key => key.toLowerCase() === lowerName) || null;
 }
 
-export function generateExportSnippet(req, format) {
+function generateExportSnippetCore(req, format) {
   if (req.bodyType === 'urlencoded') {
     const params = new URLSearchParams();
     getExportFormFields(req).forEach(field => params.append(field.key, field.value || ''));
     const headers = { ...(req.requestHeaders || {}) };
     if (!findHeaderKey(headers, 'Content-Type')) headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    return generateExportSnippet({
+    return generateExportSnippetCore({
       ...req,
       bodyType: 'raw',
       requestHeaders: headers,
@@ -552,4 +569,8 @@ export function generateExportSnippet(req, format) {
     default:
       return `// Unknown format: ${format}`;
   }
+}
+
+export function generateExportSnippet(req, format) {
+  return addSemanticReplayWarning(req, format, generateExportSnippetCore(req, format));
 }

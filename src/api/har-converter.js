@@ -54,6 +54,8 @@ export function trafficToHar(requests, options = {}) {
         );
         const requestTruncation = toHarTruncation(req, 'request', requestBody);
         const responseTruncation = toHarTruncation(req, 'response', responseBody);
+        const requestContentDecoded = req.requestBodyContentDecoded === true;
+        const responseContentDecoded = req.responseBodyContentDecoded === true;
         const requestWireBodySize = toHarSize(req.requestBodySize);
         const responseWireBodySize = toHarSize(req.responseBodySize);
         const responseDecodedBodySize = toHarSize(
@@ -66,7 +68,8 @@ export function trafficToHar(requests, options = {}) {
         const requestPostDataParams = Array.isArray(req.requestPostDataParams)
           ? req.requestPostDataParams
           : null;
-        const hasPostData = !!requestBody || requestPostDataParams !== null || !!requestTruncation;
+        const hasPostData = !!requestBody || requestPostDataParams !== null || !!requestTruncation ||
+          requestContentDecoded;
 
         return {
           startedDateTime: new Date(req.timestamp).toISOString(),
@@ -83,6 +86,7 @@ export function trafficToHar(requests, options = {}) {
               ...(requestBody ? { text: requestBody.text } : {}),
               ...(requestBody?.encoding ? { encoding: requestBody.encoding } : {}),
               ...(requestPostDataParams !== null ? { params: requestPostDataParams } : {}),
+              ...(requestContentDecoded ? { _contentDecoded: true } : {}),
               ...(requestTruncation || {})
             } : undefined,
             headersSize: -1,
@@ -99,6 +103,7 @@ export function trafficToHar(requests, options = {}) {
               mimeType: req.responseContentMimeType || resContentType,
               text: responseBody?.text || '',
               ...(responseBody?.encoding ? { encoding: responseBody.encoding } : {}),
+              ...(responseContentDecoded ? { _contentDecoded: true } : {}),
               ...(responseTruncation || {})
             },
             redirectURL: getHeaderValue(req.responseHeaders, 'location'),

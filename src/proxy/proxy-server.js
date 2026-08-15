@@ -214,17 +214,19 @@ function utf8PrefixWithinByteLimit(buffer, limit) {
 }
 
 class TruncatedBodyString extends String {
-  constructor(value, capturedSize, decodedSize) {
+  constructor(value, capturedSize, decodedSize, contentDecoded = false) {
     super(value);
     this.capturedSize = capturedSize;
     this.decodedSize = decodedSize;
+    if (contentDecoded) this.contentDecoded = true;
   }
 }
 
 class EncodedBodyString extends String {
-  constructor(value, encoding) {
+  constructor(value, encoding, contentDecoded = false) {
     super(value);
     this.encoding = encoding;
+    if (contentDecoded) this.contentDecoded = true;
   }
 }
 
@@ -9664,6 +9666,10 @@ export class ProxyServer {
         data[`${field}CapturedSize`] = body.capturedSize;
         data[`${field}DecodedSize`] ??= body.decodedSize;
       }
+      if ((body instanceof EncodedBodyString || body instanceof TruncatedBodyString) &&
+          body.contentDecoded === true) {
+        data[`${field}ContentDecoded`] = true;
+      }
       if (typeof data[field] === 'string' && data[encodingField] === undefined) {
         data[encodingField] = 'utf8';
       }
@@ -9677,14 +9683,15 @@ export class ProxyServer {
       .filter(Boolean);
   }
 
-  _decompressBody(buffer, encoding) {
-    if (!buffer || buffer.length === 0) return buffer;
+  _decodeContentBody(buffer, encoding) {
+    if (!buffer || buffer.length === 0) return { body: buffer, contentDecoded: false };
     const codings = this._parseContentCodings(encoding);
-    if (codings.length === 0) return buffer;
+    if (codings.length === 0) return { body: buffer, contentDecoded: false };
 
     const options = { maxOutputLength: this.maxDecompressedBodyBytes };
     try {
       let decoded = buffer;
+      let contentDecoded = false;
       for (let index = codings.length - 1; index >= 0; index--) {
         switch (codings[index]) {
           case 'identity':
@@ -9692,25 +9699,33 @@ export class ProxyServer {
           case 'gzip':
           case 'x-gzip':
             decoded = zlib.gunzipSync(decoded, options);
+            contentDecoded = true;
             break;
           case 'deflate':
             decoded = zlib.inflateSync(decoded, options);
+            contentDecoded = true;
             break;
           case 'br':
             decoded = zlib.brotliDecompressSync(decoded, options);
+            contentDecoded = true;
             break;
           case 'zstd':
-            if (!zlib.zstdDecompressSync) return buffer;
+            if (!zlib.zstdDecompressSync) return { body: buffer, contentDecoded: false };
             decoded = zlib.zstdDecompressSync(decoded, options);
+            contentDecoded = true;
             break;
           default:
-            return buffer;
+            return { body: buffer, contentDecoded: false };
         }
       }
-      return decoded;
+      return { body: decoded, contentDecoded };
     } catch {
-      return buffer; // If decompression fails, return raw
+      return { body: buffer, contentDecoded: false }; // If decompression fails, return raw
     }
+  }
+
+  _decompressBody(buffer, encoding) {
+    return this._decodeContentBody(buffer, encoding).body;
   }
 
   _requestBodyForMatching(buffer, headers = {}) {
@@ -9727,8 +9742,11 @@ export class ProxyServer {
   _safeBodyString(buffer, contentEncoding, contentType) {
     if (!buffer || buffer.length === 0) return '';
 
-    // Decompress if needed
-    let decoded = this._decompressBody(buffer, contentEncoding);
+    // Decompress if needed, retaining whether the displayed bytes differ from
+    // the captured Content-Encoding representation so replay can stay honest.
+    const decodedContent = this._decodeContentBody(buffer, contentEncoding);
+    const decoded = decodedContent.body;
+    const contentDecoded = decodedContent.contentDecoded;
 
     // For images, encode as base64 data URI so the UI can display them
     const ct = (contentType || '').toLowerCase();
@@ -9741,7 +9759,8 @@ export class ProxyServer {
       const mimeType = ct.split(';')[0].trim() || 'application/x-protobuf';
       return new EncodedBodyString(
         `data:${mimeType};base64,${decoded.toString('base64')}`,
-        'base64'
+        'base64',
+        contentDecoded
       );
     }
 
@@ -9749,7 +9768,8 @@ export class ProxyServer {
       const mimeType = ct.split(';')[0].trim();
       return new EncodedBodyString(
         `data:${mimeType};base64,${decoded.toString('base64')}`,
-        'base64'
+        'base64',
+        contentDecoded
       );
     }
 
@@ -9769,20 +9789,32 @@ export class ProxyServer {
       const maxSize = 512 * 1024;
       if (decoded.length > maxSize) {
         const captured = utf8PrefixWithinByteLimit(decoded, maxSize);
-        return new TruncatedBodyString(captured.toString('utf8'), captured.length, decoded.length);
+        return new TruncatedBodyString(
+          captured.toString('utf8'),
+          captured.length,
+          decoded.length,
+          contentDecoded
+        );
       }
-      return decoded.toString('utf8');
+      const text = decoded.toString('utf8');
+      return contentDecoded ? new EncodedBodyString(text, 'utf8', true) : text;
     }
 
     if (decoded.length < 2 * 1024 * 1024) {
       const mimeType = ct.split(';')[0].trim() || 'application/octet-stream';
       return new EncodedBodyString(
         `data:${mimeType};base64,${decoded.toString('base64')}`,
-        'base64'
+        'base64',
+        contentDecoded
       );
     }
 
-    return new TruncatedBodyString(`[Binary data: ${buffer.length} bytes]`, 0, decoded.length);
+    return new TruncatedBodyString(
+      `[Binary data: ${buffer.length} bytes]`,
+      0,
+      decoded.length,
+      contentDecoded
+    );
   }
 
   // ---- Breakpoint methods ----

@@ -1746,6 +1746,7 @@
         toast('Cannot resend this request because its captured binary body is malformed.', 'error');
         return;
       }
+      const semanticReplay = req.requestBodyContentDecoded === true;
 
       // Save current tab state before creating a new one
       if (saveSendTabState(true) === false) return;
@@ -1754,6 +1755,7 @@
       const newHeaders = [];
       if (req.requestHeaders && Object.keys(req.requestHeaders).length > 0) {
         const skip = ['host', 'proxy-connection', 'content-length', 'connection', 'accept-encoding'];
+        if (semanticReplay) skip.push('content-encoding');
         for (const [k, v] of Object.entries(req.requestHeaders)) {
           if (!skip.includes(k.toLowerCase())) {
             const values = Array.isArray(v) ? v : [v];
@@ -1809,7 +1811,15 @@
 
       loadSendTabState(newTab);
       renderSendTabs();
-      toast('Request loaded in new Send tab', 'success');
+      if (semanticReplay) {
+        toast(
+          'Request loaded for semantic replay with decoded body bytes. ' +
+            'Content-Encoding and Content-Length were omitted.',
+          'warning'
+        );
+      } else {
+        toast('Request loaded in new Send tab', 'success');
+      }
     }
 
     // Track collapsed state per card so chevron icon updates

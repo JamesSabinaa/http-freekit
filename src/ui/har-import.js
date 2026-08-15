@@ -131,6 +131,14 @@ function normalizeHarTruncation(body, fieldPath) {
   return { capturedSize, originalSize };
 }
 
+function normalizeHarContentDecoded(body, fieldPath) {
+  if (body === undefined || !Object.hasOwn(body, '_contentDecoded')) return false;
+  if (typeof body._contentDecoded !== 'boolean') {
+    throw new Error(`${fieldPath}._contentDecoded must be a boolean`);
+  }
+  return body._contentDecoded;
+}
+
 function normalizeHarEntry(entry, index, createId) {
   const entryPath = `log.entries[${index}]`;
   assertHarObject(entry, entryPath);
@@ -206,6 +214,14 @@ function normalizeHarEntry(entry, index, createId) {
     content,
     `${entryPath}.response.content`
   );
+  const requestContentDecoded = normalizeHarContentDecoded(
+    requestPostData,
+    `${entryPath}.request.postData`
+  );
+  const responseContentDecoded = normalizeHarContentDecoded(
+    content,
+    `${entryPath}.response.content`
+  );
   const responseBodyDecodedSize = responseTruncation?.originalSize
     ?? (content?.size === undefined
       ? undefined
@@ -221,6 +237,7 @@ function normalizeHarEntry(entry, index, createId) {
     requestHeaders: normalizeHarHeaders(request.headers, `${entryPath}.request.headers`),
     requestBody: normalizedRequestBody.body,
     requestBodyEncoding: normalizedRequestBody.encoding,
+    ...(requestContentDecoded ? { requestBodyContentDecoded: true } : {}),
     requestCookies: Array.isArray(request.cookies) ? request.cookies : [],
     requestPostDataParams: Array.isArray(requestPostData?.params) ? requestPostData.params : undefined,
     requestPostDataMimeType,
@@ -236,6 +253,7 @@ function normalizeHarEntry(entry, index, createId) {
     responseHeaders: normalizeHarHeaders(response.headers, `${entryPath}.response.headers`),
     responseBody: normalizedResponseBody.body,
     responseBodyEncoding: normalizedResponseBody.encoding,
+    ...(responseContentDecoded ? { responseBodyContentDecoded: true } : {}),
     responseCookies: Array.isArray(response.cookies) ? response.cookies : [],
     responseContentMimeType,
     responseHttpVersion,

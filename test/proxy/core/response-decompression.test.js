@@ -67,6 +67,7 @@ test('response capture decodes mixed-case Content-Encoding tokens', async t => {
   const captured = await captureEncodedResponse(t, 'GZip', zlib.gzipSync(text));
 
   assert.equal(captured.responseBody, text);
+  assert.equal(captured.responseBodyContentDecoded, true);
 });
 
 test('response capture decodes stacked Content-Encoding values in reverse order', async t => {
@@ -76,6 +77,7 @@ test('response capture decodes stacked Content-Encoding values in reverse order'
   const captured = await captureEncodedResponse(t, 'gzip, br', stackedBody);
 
   assert.equal(captured.responseBody, text);
+  assert.equal(captured.responseBodyContentDecoded, true);
 });
 
 test('stacked decompression returns the original bytes when a stage exceeds the ceiling', () => {

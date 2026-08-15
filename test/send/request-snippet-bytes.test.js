@@ -16,9 +16,11 @@ const formats = [
   'go'
 ];
 
-function captureRequestBody(bytes) {
+function captureRequestBody(bytes, contentEncoding, contentType) {
   const proxy = new ProxyServer(null);
-  const captured = { requestBody: proxy._safeBodyString(bytes) };
+  const captured = {
+    requestBody: proxy._safeBodyString(bytes, contentEncoding, contentType)
+  };
   proxy._normalizeCapturedBodies(captured);
   return captured;
 }
@@ -59,6 +61,7 @@ test('all raw snippet formats decode binary and compressed captures back to wire
     const base64 = bytes.toString('base64');
     assert.equal(captured.requestBodyEncoding, 'base64');
     assert.equal(dataUri, `data:application/octet-stream;base64,${base64}`);
+    assert.equal(Object.hasOwn(captured, 'requestBodyContentDecoded'), false);
 
     for (const format of formats) {
       await t.test(`${label} / ${format}`, () => {
@@ -93,6 +96,99 @@ test('UTF-8 and legacy text bodies remain literal, including data-URI-looking te
     assert.ok(legacy.includes(literal), `${format} dropped legacy literal text`);
     assert.doesNotMatch(utf8, /EXACT REPLAY UNAVAILABLE/);
     assert.doesNotMatch(legacy, /EXACT REPLAY UNAVAILABLE/);
+  }
+});
+
+function assertSemanticWarningPlacement(format, snippet) {
+  if (format === 'php') {
+    assert.match(snippet, /^<\?php\n\/\/ SEMANTIC REPLAY:/);
+  } else if (['javascript-fetch', 'javascript-node', 'go'].includes(format)) {
+    assert.match(snippet, /^\/\/ SEMANTIC REPLAY:/);
+  } else {
+    assert.match(snippet, /^# SEMANTIC REPLAY:/);
+  }
+}
+
+test('every snippet format emits an executable semantic replay warning and strips stale encoding headers', async t => {
+  const text = 'decoded snippet body EXACT REPLAY UNAVAILABLE \u2713';
+  const captured = captureRequestBody(
+    zlib.gzipSync(Buffer.from(text)),
+    'gzip',
+    'text/plain'
+  );
+  assert.equal(captured.requestBody, text);
+  assert.equal(captured.requestBodyEncoding, 'utf8');
+  assert.equal(captured.requestBodyContentDecoded, true);
+
+  for (const format of formats) {
+    await t.test(format, () => {
+      const snippet = generateExportSnippet(rawRequest(captured, {
+        'Content-Encoding': 'gzip',
+        'cOnTeNt-LeNgTh': '987654',
+        'X-Retained': 'retained-value'
+      }), format);
+
+      assertSemanticWarningPlacement(format, snippet);
+      assert.match(snippet, /Content-Encoding and Content-Length were removed/);
+      assert.equal(snippet.includes('gzip'), false);
+      assert.equal(snippet.includes('987654'), false);
+      assert.match(snippet, /retained-value/);
+      assert.match(snippet, /decoded snippet body EXACT REPLAY UNAVAILABLE/);
+    });
+  }
+});
+
+test('semantic replay keeps decoded binary bytes on the BUG-404 export paths', async t => {
+  const decodedBytes = Buffer.from([0x00, 0xff, 0x41]);
+  const captured = captureRequestBody(
+    zlib.gzipSync(decodedBytes),
+    'gzip',
+    'application/octet-stream'
+  );
+  const base64 = decodedBytes.toString('base64');
+  assert.equal(captured.requestBodyEncoding, 'base64');
+  assert.equal(captured.requestBodyContentDecoded, true);
+
+  for (const format of formats) {
+    await t.test(format, () => {
+      const snippet = generateExportSnippet(rawRequest(captured, {
+        'Content-Encoding': 'gzip',
+        'Content-Length': '123456'
+      }), format);
+      assertSemanticWarningPlacement(format, snippet);
+      assertBinaryDecoder(format, snippet, base64);
+      assert.equal(snippet.includes('gzip'), false);
+      assert.equal(snippet.includes('123456'), false);
+      assert.equal(snippet.includes(captured.requestBody), false);
+    });
+  }
+});
+
+test('failed and unknown decoding preserve raw base64 bytes and original headers in every format', async t => {
+  const rawBytes = zlib.gzipSync(Buffer.from('raw fallback body'));
+  for (const [label, encoding] of [
+    ['malformed declared gzip', 'gzip'],
+    ['unknown coding', 'made-up-coding']
+  ]) {
+    const bytes = label.startsWith('malformed') ? Buffer.from([0x00, 0xff, 0x41]) : rawBytes;
+    const captured = captureRequestBody(bytes, encoding, 'application/octet-stream');
+    const base64 = bytes.toString('base64');
+    assert.equal(captured.requestBodyEncoding, 'base64');
+    assert.equal(Object.hasOwn(captured, 'requestBodyContentDecoded'), false);
+
+    for (const format of formats) {
+      await t.test(`${label} / ${format}`, () => {
+        const snippet = generateExportSnippet(rawRequest(captured, {
+          'Content-Encoding': encoding,
+          'Content-Length': String(bytes.length)
+        }), format);
+        assert.doesNotMatch(snippet, /SEMANTIC REPLAY/);
+        assertBinaryDecoder(format, snippet, base64);
+        assert.doesNotMatch(snippet, /SEMANTIC REPLAY/);
+        assert.ok(snippet.includes(encoding), `${format} dropped ${encoding}`);
+        assert.ok(snippet.includes(String(bytes.length)), `${format} dropped Content-Length`);
+      });
+    }
   }
 });
 
