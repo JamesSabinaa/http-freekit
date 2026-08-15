@@ -41,7 +41,7 @@ const METHODS_WITHOUT_DEFAULT_CHUNKED_BODY = new Set([
 const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TRAFFIC_BASE64_DATA_URI_PATTERN =
-  /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/i;
+  /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/;
 const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
 class SendBodyValidationError extends Error {

@@ -84,6 +84,7 @@ test('traffic imports reject malformed base64 provenance atomically and preserve
   for (const requestBody of [
     'AQID',
     'data:application/octet-stream;base64,AQ=',
+    'data:application/octet-stream;BASE64,AQID',
     'data:application/octet-stream;base64,AQID\n'
   ]) {
     const invalid = await requestJson(port, '/api/traffic/import', {
