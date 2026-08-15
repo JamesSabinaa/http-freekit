@@ -57,7 +57,9 @@ function createLogLifecycle() {
   return {
     ready: Promise.resolve(),
     startupFailure: new Promise(() => {}),
+    closed: Promise.resolve(),
     attached: [],
+    detached: [],
     completeCalls: 0,
     closeCalls: 0,
     writes: [],
@@ -65,10 +67,17 @@ function createLogLifecycle() {
       this.attached.push(proc);
       return true;
     },
+    detachProcess(proc) {
+      this.detached.push(proc);
+      return true;
+    },
     completeStartup() { this.completeCalls++; },
     write(message) {
       this.writes.push(message);
       return true;
+    },
+    async writeAndWait(message) {
+      this.writes.push(message);
     },
     close() { this.closeCalls++; }
   };
@@ -207,10 +216,15 @@ test('a forced release-and-rebind collision is cleaned up and retried on a new p
     assert.deepEqual(Array.from(call.options.stdio), ['ignore', 'pipe', 'pipe', 'ipc']);
   }
   assert.deepEqual(harness.processes[0].killSignals, ['SIGKILL']);
-  assert.equal(harness.logs[0].closeCalls, 1);
-  assert.equal(harness.logs[0].completeCalls, 0);
-  assert.equal(harness.logs[1].closeCalls, 0);
-  assert.equal(harness.logs[1].completeCalls, 1);
+  assert.equal(harness.logs.length, 1);
+  assert.equal(harness.logs[0].closeCalls, 0);
+  assert.equal(harness.logs[0].completeCalls, 1);
+  assert.deepEqual(harness.logs[0].detached, [harness.processes[0]]);
+  assert.match(harness.logs[0].options.initialMessage, /port 8123/);
+  const retryMessages = harness.logs[0].writes.filter(message => message.includes('Server starting'));
+  assert.equal(retryMessages.length, 1);
+  assert.match(retryMessages[0], /port 8124/);
+  assert.match(harness.logs[0].writes[0], /Server exited/);
   const state = harness.context.serverState();
   assert.equal(state.apiPort, 8124);
   assert.equal(state.serverProcess, harness.processes[1]);
@@ -234,7 +248,16 @@ test('repeated collisions exhaust the bounded retries without leaving failed chi
   assert.deepEqual(harness.processes.map(proc => proc.killSignals), [
     ['SIGKILL'], ['SIGKILL'], ['SIGKILL']
   ]);
-  assert.deepEqual(harness.logs.map(log => log.closeCalls), [1, 1, 1]);
+  assert.equal(harness.logs.length, 1);
+  assert.equal(harness.logs[0].closeCalls, 1);
+  assert.deepEqual(harness.logs[0].detached, harness.processes);
+  assert.match(harness.logs[0].options.initialMessage, /port 8123/);
+  assert.deepEqual(
+    harness.logs[0].writes
+      .filter(message => message.includes('Server starting'))
+      .map(message => /port (\d+)/.exec(message)?.[1]),
+    ['8124', '8125']
+  );
   const state = harness.context.serverState();
   assert.equal(state.apiPort, 8125);
   assert.equal(state.serverProcess, null);
