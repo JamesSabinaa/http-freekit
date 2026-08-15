@@ -142,6 +142,56 @@ test('repeated cURL data options are joined in command order', () => {
   assert.equal(result.headers['Content-Type'], 'application/x-www-form-urlencoded');
 });
 
+test('explicit cURL methods stay authoritative with data in either option order', () => {
+  const cases = [
+    ["curl -X GET https://example.test -d 'q=one'", 'GET', 'q=one'],
+    ["curl --data 'q=one' --request GET https://example.test", 'GET', 'q=one'],
+    ["curl -X HEAD https://example.test --data-binary 'payload'", 'HEAD', 'payload'],
+    ["curl --data-urlencode 'q=hello world' -X PROPFIND https://example.test", 'PROPFIND', 'q=hello+world']
+  ];
+
+  for (const [command, method, body] of cases) {
+    const result = parseCurlCommand(command);
+    assert.equal(result.method, method, command);
+    assert.equal(result.body, body, command);
+    assert.equal(result.hasData, true, command);
+  }
+});
+
+test('data promotes only the implicit default method to POST', () => {
+  for (const option of [
+    "-d 'value'",
+    "--data 'value'",
+    "--data-ascii 'value'",
+    "--data-raw 'value'",
+    "--data-binary 'value'",
+    "--data-urlencode 'value'"
+  ]) {
+    const result = parseCurlCommand(`curl ${option} https://example.test`);
+    assert.equal(result.method, 'POST', option);
+    assert.equal(result.hasData, true, option);
+  }
+
+  const controlsOnly = parseCurlCommand(
+    "curl -H 'X-Test: one' -A agent -b session=one -u user:pass https://example.test"
+  );
+  assert.equal(controlsOnly.method, 'GET');
+  assert.equal(controlsOnly.hasData, false);
+  assert.equal(controlsOnly.body, '');
+});
+
+test('the last explicit cURL request option wins without later data promotion', () => {
+  const cases = [
+    ["curl -X PUT -d 'value' --request GET https://example.test", 'GET'],
+    ["curl --data 'value' -X HEAD -X PATCH https://example.test", 'PATCH'],
+    ["curl -X GET --data 'value' -X DELETE --data-raw 'again' https://example.test", 'DELETE']
+  ];
+
+  for (const [command, method] of cases) {
+    assert.equal(parseCurlCommand(command).method, method, command);
+  }
+});
+
 test('--data-urlencode encodes values before joining them', () => {
   const result = parseCurlCommand(
     "curl https://example.test --data-urlencode 'name=hello world!' --data-urlencode '=plain value' --data-urlencode 'emoji=✓' --data-urlencode 'whole/value'"
@@ -276,6 +326,25 @@ test('explicitly empty cURL data clears a previous body without losing POST sema
     plain(state.headers.map(({ key, value }) => [key, value])),
     [['Content-Type', 'application/x-www-form-urlencoded']]
   );
+});
+
+test('cURL paste keeps explicit GET with a body in either option order', () => {
+  for (const command of [
+    "curl -X GET https://get.example.test/items --data 'q=one'",
+    "curl --data 'q=one' --request GET https://get.example.test/items"
+  ]) {
+    const harness = createCurlPasteHarness();
+    const { prevented, state } = harness.paste(command);
+
+    assert.equal(prevented, true, command);
+    assert.equal(state.tab.method, 'GET', command);
+    assert.equal(harness.elements.sendMethod.value, 'GET', command);
+    assert.equal(state.body, 'q=one', command);
+    assert.equal(state.tab.bodyType, 'raw', command);
+    assert.equal(state.tab.response, null, command);
+    assert.equal(harness.persisted.length, 1, command);
+    assert.equal(harness.persisted[0][0].method, 'GET', command);
+  }
 });
 
 test('a rejected cURL paste leaves the entire active request unchanged', () => {

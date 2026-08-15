@@ -71,6 +71,7 @@ export function parseCurlCommand(curlStr) {
   };
   const dataParts = [];
   const explicitHeaderNames = new Set();
+  let hasExplicitMethod = false;
 
   // Normalize: remove line continuations and extra whitespace
   let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
@@ -113,6 +114,7 @@ export function parseCurlCommand(curlStr) {
     const token = tokens[i];
     if (token === '-X' || token === '--request') {
       result.method = (tokens[++i] || 'GET').toUpperCase();
+      hasExplicitMethod = true;
     } else if (token === '-H' || token === '--header') {
       const header = tokens[++i] || '';
       const colonIndex = header.indexOf(':');
@@ -134,7 +136,7 @@ export function parseCurlCommand(curlStr) {
       }
       dataParts.push(value);
       result.hasData = true;
-      if (result.method === 'GET') result.method = 'POST';
+      if (!hasExplicitMethod) result.method = 'POST';
     } else if (token === '--data-urlencode') {
       const value = tokens[++i] ?? '';
       if (curlDataValueReadsFile(token, value)) {
@@ -142,7 +144,7 @@ export function parseCurlCommand(curlStr) {
       }
       dataParts.push(encodeCurlDataUrlValue(value));
       result.hasData = true;
-      if (result.method === 'GET') result.method = 'POST';
+      if (!hasExplicitMethod) result.method = 'POST';
     } else if (token === '-A' || token === '--user-agent') {
       setCurlHeader(result.headers, 'User-Agent', tokens[++i] || '');
       explicitHeaderNames.delete('user-agent');
