@@ -4070,7 +4070,7 @@ export class ProxyServer {
       let breakpointBodyModified = false;
       let transformedRequestHeaders = false;
       let pendingEmitted = false;
-      const matcherBody = this._requestBodyForMatching(body, clientReq.headers);
+      let matcherBody = this._requestBodyForMatching(body, clientReq.headers);
       const matcherHeaders = this._rawHeadersToObject(clientReq.rawHeaders, {
         stripUpstreamHeaders: false
       });
@@ -4118,7 +4118,8 @@ export class ProxyServer {
         clientReq.headers = transformed.headers;
         body = transformed.body;
         breakpointBodyModified ||= transformed.bodyChanged;
-        transformedRequestHeaders = transformed.headersChanged;
+        transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+        matcherBody = this._requestBodyForMatching(body, clientReq.headers);
       }
 
       // Check breakpoint rules
@@ -4829,7 +4830,7 @@ export class ProxyServer {
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
         let transformedRequestHeaders = false;
-        const matcherBody = this._requestBodyForMatching(body, req.headers);
+        let matcherBody = this._requestBodyForMatching(body, req.headers);
         const matcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
           stripUpstreamHeaders: false
         });
@@ -5300,7 +5301,8 @@ export class ProxyServer {
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
-          transformedRequestHeaders = transformed.headersChanged;
+          transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+          matcherBody = this._requestBodyForMatching(body, req.headers);
         }
 
         // Check breakpoint rules
@@ -5805,7 +5807,7 @@ export class ProxyServer {
 
         // Convert h2 pseudo-headers to regular headers for matching
         const downstream = this._trackDownstreamCancellation(stream, { http2Stream: true });
-        const matcherBody = this._requestBodyForMatching(body, reqHeaders);
+        let matcherBody = this._requestBodyForMatching(body, reqHeaders);
 
         // Emit pending request immediately so it appears in the UI
         const pendingEmitted = this._emitPendingRequest({
@@ -5860,6 +5862,7 @@ export class ProxyServer {
           this._setTargetHostHeader(reqHeaders, authority);
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
+          matcherBody = this._requestBodyForMatching(body, reqHeaders);
         }
 
         // Check breakpoint rules
@@ -6241,7 +6244,7 @@ export class ProxyServer {
         let body = this._concatBody(requestBody);
         let breakpointBodyModified = false;
         let transformedRequestHeaders = false;
-        const matcherBody = this._requestBodyForMatching(body, req.headers);
+        let matcherBody = this._requestBodyForMatching(body, req.headers);
         const matcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
           stripUpstreamHeaders: false
         });
@@ -6298,7 +6301,8 @@ export class ProxyServer {
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
-          transformedRequestHeaders = transformed.headersChanged;
+          transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+          matcherBody = this._requestBodyForMatching(body, req.headers);
         }
 
         // Check breakpoint rules
