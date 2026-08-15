@@ -105,6 +105,17 @@ function generateUnavailableExportSnippet(format, reason) {
   return `${prefix} EXACT REPLAY UNAVAILABLE\n${prefix} ${reason}\n${prefix} No request was generated.`;
 }
 
+function isFetchBodyForbiddenMethod(method) {
+  return /^(?:GET|HEAD)$/i.test(String(method));
+}
+
+function generateFetchBodyUnavailableSnippet(method) {
+  return generateUnavailableExportSnippet(
+    'javascript-fetch',
+    `The browser Fetch API rejects request bodies for ${String(method).toUpperCase()} requests, so the captured request body cannot be replayed.`
+  );
+}
+
 function generateMultipartExportSnippet(req, format) {
   const fields = getExportFormFields(req);
   const headers = getExportHeaders(req, true);
@@ -112,6 +123,10 @@ function generateMultipartExportSnippet(req, format) {
   const url = String(req.url || '');
   const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
   if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
+
+  if (format === 'javascript-fetch' && isFetchBodyForbiddenMethod(method)) {
+    return generateFetchBodyUnavailableSnippet(method);
+  }
 
   if (format === 'powershell' || format === 'php') {
     const unsafeField = fields.find((field) => {
@@ -419,6 +434,9 @@ export function generateExportSnippet(req, format) {
       return code;
     }
     case 'javascript-fetch': {
+      if (hasBody && isFetchBodyForbiddenMethod(method)) {
+        return generateFetchBodyUnavailableSnippet(method);
+      }
       let code = `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)}`;
       if (headers.length) {
         code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
