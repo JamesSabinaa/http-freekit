@@ -182,14 +182,26 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'javascript-fetch') {
-    let code = 'const formData = new FormData();\n';
+    const fileCount = fields.filter(field => field.type === 'file').length;
+    let code = '';
+    if (fileCount) {
+      const fileLabel = fileCount === 1 ? 'file' : 'files';
+      const inputHint = fileCount === 1
+        ? 'Select the captured file before running this snippet.'
+        : 'Use a multiple file input and select files in captured multipart part order.';
+      code += `const requiredFileCount = ${fileCount};\n`;
+      code += `const fileInput = document.querySelector('input[type="file"]'); // ${inputHint}\n`;
+      code += 'const selectedFiles = Array.from(fileInput?.files || []);\n';
+      code += 'if (selectedFiles.length < requiredFileCount) {\n';
+      code += `  throw new Error(${JSON.stringify(`Select at least ${fileCount} ${fileLabel} in captured multipart part order before running this snippet.`)});\n`;
+      code += '}\n';
+    }
+    code += 'const formData = new FormData();\n';
     let fileIndex = 0;
     fields.forEach((field) => {
       if (field.type === 'file') {
         const filename = field.file?.name || field.fileName || 'file';
-        const variable = `file${fileIndex++}`;
-        code += `const ${variable} = document.querySelector('input[type="file"]').files[0]; // Select ${filename.replace(/[\r\n]/g, ' ')}\n`;
-        code += `formData.append(${JSON.stringify(field.key)}, ${variable}, ${JSON.stringify(filename)});\n`;
+        code += `formData.append(${JSON.stringify(field.key)}, selectedFiles[${fileIndex++}], ${JSON.stringify(filename)});\n`;
       } else {
         code += `formData.append(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')});\n`;
       }
