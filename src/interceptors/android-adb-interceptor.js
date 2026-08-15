@@ -26,6 +26,8 @@ const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
 const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
 const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
 const ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED = 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED';
+const ANDROID_VPN_DEACTIVATION_STATUS_ATTEMPTS = 5;
+const ANDROID_VPN_DEACTIVATION_POLL_INTERVAL_MS = 250;
 
 function getActivityLaunchError(output) {
   const statuses = String(output || '')
@@ -582,6 +584,28 @@ export class AndroidAdbInterceptor {
     }
   }
 
+  async _waitForHttpToolkitVpnInactive(deviceId) {
+    for (let attempt = 1; attempt <= ANDROID_VPN_DEACTIVATION_STATUS_ATTEMPTS; attempt++) {
+      const vpnStatus = await this._getHttpToolkitVpnStatus(deviceId);
+      if (vpnStatus?.success !== true) {
+        console.warn(
+          `[Interceptor] Could not confirm HTTP Toolkit Android VPN shutdown on ${deviceId}:`,
+          vpnStatus?.error || 'Android VPN state was not reported'
+        );
+        return false;
+      }
+      if (vpnStatus.value === false) return true;
+      if (attempt < ANDROID_VPN_DEACTIVATION_STATUS_ATTEMPTS) {
+        await this._sleep(ANDROID_VPN_DEACTIVATION_POLL_INTERVAL_MS);
+      }
+    }
+
+    console.warn(
+      `[Interceptor] HTTP Toolkit Android VPN is still active on ${deviceId} after deactivation`
+    );
+    return false;
+  }
+
   async _reconcileCompanionActivation(serial, activeInfo) {
     let appInstalled;
     try {
@@ -822,6 +846,10 @@ export class AndroidAdbInterceptor {
       encoding: options.encoding || 'utf8',
       timeout: options.timeout || 10000
     });
+  }
+
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async _queryHttpToolkitAppInstalled(deviceId) {
@@ -1188,14 +1216,17 @@ export class AndroidAdbInterceptor {
         const launchError = getActivityLaunchError(output);
         if (launchError) throw new Error(launchError);
         console.log(`[Interceptor] HTTP Toolkit Android app deactivation intent sent to ${deviceId}`);
-        appDeactivated = true;
+        // -W confirms that Android launched the activity, not that the
+        // companion's asynchronous VPN shutdown has completed.
+        appDeactivated = await this._waitForHttpToolkitVpnInactive(deviceId);
       }
     } catch (err) {
       console.warn(`[Interceptor] Failed to deactivate HTTP Toolkit Android app on ${deviceId}:`, err.message);
       return false;
     }
+    if (!appDeactivated) return false;
     const tunnelRemoved = await this._removeReverseTunnel(deviceId, proxyPort);
-    return appDeactivated && tunnelRemoved;
+    return tunnelRemoved;
   }
 
   /**

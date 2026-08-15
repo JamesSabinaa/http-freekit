@@ -424,6 +424,7 @@ test('ambiguous companion commit after old cleanup remains durable and blocks fa
   restarted._isHttpToolkitAppInstalled = async () => true;
   restarted._bringHttpToolkitAppToFront = async () => {};
   restarted._getReverseMapping = async () => 'tcp:9090';
+  restarted._getHttpToolkitVpnStatus = async () => ({ success: true, value: false });
   const commands = [];
   restarted._adb = async (_serial, args) => {
     commands.push(args);

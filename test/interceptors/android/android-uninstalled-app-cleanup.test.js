@@ -42,6 +42,7 @@ test('installed companion app follows normal deactivation and restores the rever
     if (args[0] === 'shell' && args[1] === 'am') {
       return 'Starting: Intent { act=tech.httptoolkit.android.DEACTIVATE }\nStatus: ok\n';
     }
+    if (args[0] === 'shell' && args[1] === 'dumpsys') return 'VPNs:\n';
     return '';
   };
 
@@ -51,6 +52,7 @@ test('installed companion app follows normal deactivation and restores the rever
     ['shell', 'pm', 'path', PACKAGE_NAME],
     ['shell', 'monkey', '-p', PACKAGE_NAME, '1'],
     ['shell', 'am', 'start', '-W', '-a', 'tech.httptoolkit.android.DEACTIVATE'],
+    ['shell', 'dumpsys', 'vpn_management'],
     ['reverse', `tcp:${PROXY_PORT}`, 'tcp:9302']
   ]);
   assert.equal(interceptor.activatedDevices.has(DEVICE_ID), false);
