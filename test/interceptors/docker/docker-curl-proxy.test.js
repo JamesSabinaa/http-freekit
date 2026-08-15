@@ -39,6 +39,7 @@ function select(object, names) {
 
 async function generatedDockerInstructions(proxyUrl) {
   const interceptor = new DockerInterceptor();
+  interceptor._platform = () => 'linux';
   interceptor._getDockerHost = async () => new URL(proxyUrl).hostname;
   interceptor._getCombinedCaBundlePath = () => '/tmp/FreeKit CA bundle.pem';
   const result = await interceptor.activate(new URL(proxyUrl).port);
@@ -102,7 +103,7 @@ test('Docker run, Compose, and renderer fallback emit the exact lowercase proxy 
   assert.equal(run.REQUESTS_CA_BUNDLE, '/etc/http-freekit/ca-bundle.pem');
   assert.equal(run.CURL_CA_BUNDLE, '/etc/http-freekit/ca-bundle.pem');
   assert.equal(run.NODE_EXTRA_CA_CERTS, '/etc/http-freekit/ca-bundle.pem');
-  assert.match(instructions.run, /source="\/tmp\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/ca-bundle\.pem,readonly/);
+  assert.match(instructions.run, /--mount 'type=bind,"source=\/tmp\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/ca-bundle\.pem,readonly'/);
   assert.match(instructions.compose, /"\/tmp\/FreeKit CA bundle\.pem:\/etc\/http-freekit\/ca-bundle\.pem:ro"/);
 
   const fallback = rendererFallback(8297);

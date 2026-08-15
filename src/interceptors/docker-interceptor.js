@@ -9,6 +9,55 @@ import {
   createProxyBindUnreachableError
 } from './proxy-bind-reachability.js';
 
+function quoteDockerCsvField(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function quotePosixShellArgument(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function quoteWindowsNativeArgument(value) {
+  // Encode one argv value for the Windows native command-line parser. This is
+  // consumed after PowerShell's stop-parsing token, not by PowerShell itself.
+  const escaped = String(value)
+    .replace(/(\\*)"/g, (_match, backslashes) => `${backslashes}${backslashes}\\"`)
+    .replace(/(\\+)$/, (_match, backslashes) => `${backslashes}${backslashes}`);
+  return `"${escaped}"`;
+}
+
+function buildWindowsPowerShellRunInstruction(mountValue, runEnvironment) {
+  const percentVariable = 'HTTP_FREEKIT_DOCKER_LITERAL_PERCENT';
+  const protectedMountValue = mountValue.replace(/%/g, `%${percentVariable}%`);
+  const dockerCommand = `docker --% run --mount ${quoteWindowsNativeArgument(protectedMountValue)} ${runEnvironment} <image>`;
+  const commonLines = [
+    // PowerShell 5 removes embedded native quotes and PowerShell 7 uses a
+    // different argv mode. Scope Legacy mode and stop parsing so both versions
+    // deliver the same literal, single mount operand to Docker.
+    "  $PSNativeCommandArgumentPassing = 'Legacy'",
+    `  ${dockerCommand}`
+  ];
+
+  if (protectedMountValue === mountValue) {
+    return ['& {', ...commonLines, '}'].join('\n');
+  }
+
+  // PowerShell expands %NAME% even after --%. Replace each literal percent
+  // with one non-recursively expanded helper value, then restore the process
+  // environment after Docker exits.
+  return [
+    '& {',
+    `  $previousLiteralPercent = [Environment]::GetEnvironmentVariable('${percentVariable}', 'Process')`,
+    `  [Environment]::SetEnvironmentVariable('${percentVariable}', '%', 'Process')`,
+    '  try {',
+    ...commonLines.map(line => `  ${line}`),
+    '  } finally {',
+    `    [Environment]::SetEnvironmentVariable('${percentVariable}', $previousLiteralPercent, 'Process')`,
+    '  }',
+    '}'
+  ].join('\n');
+}
+
 export class DockerInterceptor {
   constructor(options = {}) {
     this.id = 'docker';
@@ -102,7 +151,14 @@ export class DockerInterceptor {
     const proxyUrl = `http://${hostIp}:${proxyPort}`;
     const caBundlePath = this._getCombinedCaBundlePath();
     const containerCaBundlePath = '/etc/http-freekit/ca-bundle.pem';
-    const certMount = `--mount type=bind,source="${String(caBundlePath).replace(/"/g, '\\"')}",target=${containerCaBundlePath},readonly`;
+    // Docker parses --mount as CSV, so quotes must surround the complete
+    // source=<path> field and must still be present after shell tokenization.
+    const mountValue = [
+      'type=bind',
+      quoteDockerCsvField(`source=${caBundlePath}`),
+      `target=${containerCaBundlePath}`,
+      'readonly'
+    ].join(',');
     const trustEnvironment = [
       `SSL_CERT_FILE=${containerCaBundlePath}`,
       `REQUESTS_CA_BUNDLE=${containerCaBundlePath}`,
@@ -121,7 +177,9 @@ export class DockerInterceptor {
     const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
     const composeEnvironment = environment.map(value => `  - ${value}`).join('\n');
     const composeMount = JSON.stringify(`${caBundlePath}:${containerCaBundlePath}:ro`);
-    const runInstruction = `docker run ${certMount} ${runEnvironment} <image>`;
+    const runInstruction = this._platform() === 'win32'
+      ? buildWindowsPowerShellRunInstruction(mountValue, runEnvironment)
+      : `docker run --mount ${quotePosixShellArgument(mountValue)} ${runEnvironment} <image>`;
     const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n${composeEnvironment}`;
     this.active = true;
 

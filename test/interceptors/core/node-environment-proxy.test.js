@@ -211,7 +211,7 @@ test('all advertised Node paths emit the exact environment-proxy contract', asyn
   assert.equal(dockerResult.metadata.nodeProxyNote, NODE_ENV_PROXY_SUPPORT_NOTE);
   assert.equal(
     dockerResult.metadata.instructions.run,
-    'docker run --mount type=bind,source="/tmp/freekit-ca-bundle.pem",target=/etc/http-freekit/ca-bundle.pem,readonly ' +
+    'docker run --mount \'type=bind,"source=/tmp/freekit-ca-bundle.pem",target=/etc/http-freekit/ca-bundle.pem,readonly\' ' +
       `-e HTTP_PROXY=http://172.17.0.1:${proxyPort} -e HTTPS_PROXY=http://172.17.0.1:${proxyPort} ` +
       `-e http_proxy=http://172.17.0.1:${proxyPort} -e https_proxy=http://172.17.0.1:${proxyPort} -e NO_PROXY= ` +
       '-e SSL_CERT_FILE=/etc/http-freekit/ca-bundle.pem -e REQUESTS_CA_BUNDLE=/etc/http-freekit/ca-bundle.pem ' +

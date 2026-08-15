@@ -11,7 +11,7 @@ test('Docker instructions mount the combined CA bundle for common HTTPS clients'
   const result = await interceptor.activate(8080);
   const { run, compose } = result.metadata.instructions;
 
-  assert.match(run, /--mount type=bind,source="\/home\/user\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/ca-bundle\.pem,readonly/);
+  assert.match(run, /--mount 'type=bind,"source=\/home\/user\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/ca-bundle\.pem,readonly'/);
   assert.match(run, /SSL_CERT_FILE=\/etc\/http-freekit\/ca-bundle\.pem/);
   assert.match(run, /REQUESTS_CA_BUNDLE=\/etc\/http-freekit\/ca-bundle\.pem/);
   assert.match(run, /CURL_CA_BUNDLE=\/etc\/http-freekit\/ca-bundle\.pem/);
