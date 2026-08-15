@@ -61,6 +61,49 @@ function setCurlHeader(headers, name, value) {
   headers[findCurlHeaderKey(headers, name) || name] = value;
 }
 
+const CURL_SHORT_VALUE_OPTIONS = new Set(['-X', '-H', '-d', '-A', '-b', '-u']);
+const CURL_LONG_VALUE_OPTIONS = new Set([
+  '--request',
+  '--header',
+  '--data',
+  '--data-ascii',
+  '--data-raw',
+  '--data-binary',
+  '--data-urlencode',
+  '--user-agent',
+  '--cookie',
+  '--user'
+]);
+
+function parseCurlValueOptionToken(token) {
+  if (token.startsWith('--')) {
+    const equalsIndex = token.indexOf('=', 2);
+    const option = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+    if (!CURL_LONG_VALUE_OPTIONS.has(option)) return null;
+    return {
+      option,
+      hasAttachedValue: equalsIndex !== -1,
+      value: equalsIndex === -1 ? '' : token.slice(equalsIndex + 1)
+    };
+  }
+
+  const option = token.slice(0, 2);
+  if (!CURL_SHORT_VALUE_OPTIONS.has(option)) return null;
+  return {
+    option,
+    hasAttachedValue: token.length > 2,
+    value: token.slice(2)
+  };
+}
+
+function curlUnsupportedOptionName(token) {
+  if (token.startsWith('--')) {
+    const equalsIndex = token.indexOf('=', 2);
+    return equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+  }
+  return token.slice(0, 2);
+}
+
 export function parseCurlCommand(curlStr) {
   const result = {
     method: 'GET',
@@ -72,6 +115,7 @@ export function parseCurlCommand(curlStr) {
   const dataParts = [];
   const explicitHeaderNames = new Set();
   let hasExplicitMethod = false;
+  let hasUrl = false;
 
   // Normalize: remove line continuations and extra whitespace
   let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
@@ -109,54 +153,89 @@ export function parseCurlCommand(curlStr) {
   }
   if (escaped) current += '\\';
   if (tokenStarted) tokens.push(current);
+  if (inSingle || inDouble) {
+    return { error: 'Cannot import cURL command: an argument has an unterminated quote' };
+  }
 
+  let optionsEnded = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token === '-X' || token === '--request') {
-      result.method = (tokens[++i] || 'GET').toUpperCase();
-      hasExplicitMethod = true;
-    } else if (token === '-H' || token === '--header') {
-      const header = tokens[++i] || '';
-      const colonIndex = header.indexOf(':');
-      if (colonIndex > 0) {
-        const name = header.slice(0, colonIndex).trim();
-        const value = header.slice(colonIndex + 1).trim();
-        if (explicitHeaderNames.has(name.toLowerCase())) {
-          appendCurlHeader(result.headers, name, value);
-        } else {
-          setCurlHeader(result.headers, name, value);
-          explicitHeaderNames.add(name.toLowerCase());
-        }
-      }
-    } else if (token === '-d' || token === '--data' || token === '--data-ascii' ||
-        token === '--data-raw' || token === '--data-binary') {
-      const value = tokens[++i] ?? '';
-      if (curlDataValueReadsFile(token, value)) {
-        return { error: `File-backed ${token} values cannot be imported from a pasted cURL command` };
-      }
-      dataParts.push(value);
-      result.hasData = true;
-      if (!hasExplicitMethod) result.method = 'POST';
-    } else if (token === '--data-urlencode') {
-      const value = tokens[++i] ?? '';
-      if (curlDataValueReadsFile(token, value)) {
-        return { error: 'File-backed --data-urlencode values cannot be imported from a pasted cURL command' };
-      }
-      dataParts.push(encodeCurlDataUrlValue(value));
-      result.hasData = true;
-      if (!hasExplicitMethod) result.method = 'POST';
-    } else if (token === '-A' || token === '--user-agent') {
-      setCurlHeader(result.headers, 'User-Agent', tokens[++i] || '');
-      explicitHeaderNames.delete('user-agent');
-    } else if (token === '-b' || token === '--cookie') {
-      setCurlHeader(result.headers, 'Cookie', tokens[++i] || '');
-      explicitHeaderNames.delete('cookie');
-    } else if (token === '-u' || token === '--user') {
-      setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(tokens[++i] || ''));
-      explicitHeaderNames.delete('authorization');
-    } else if (!token.startsWith('-') && !result.url) {
-      result.url = token;
+    if (!optionsEnded && token === '--') {
+      optionsEnded = true;
+      continue;
     }
+
+    if (!optionsEnded && token.startsWith('-') && token !== '-') {
+      const parsedOption = parseCurlValueOptionToken(token);
+      if (!parsedOption) {
+        const option = curlUnsupportedOptionName(token);
+        return {
+          error: `Unsupported cURL option: ${option}. Remove it before pasting the command.`
+        };
+      }
+      const { option } = parsedOption;
+      let value = parsedOption.value;
+      if (!parsedOption.hasAttachedValue) {
+        if (i + 1 >= tokens.length) {
+          return { error: `Missing value for cURL option: ${option}` };
+        }
+        value = tokens[++i];
+      }
+
+      if (option === '-X' || option === '--request') {
+        if (!value) return { error: `Missing value for cURL option: ${option}` };
+        result.method = value.toUpperCase();
+        hasExplicitMethod = true;
+      } else if (option === '-H' || option === '--header') {
+        const colonIndex = value.indexOf(':');
+        if (colonIndex > 0) {
+          const name = value.slice(0, colonIndex).trim();
+          const headerValue = value.slice(colonIndex + 1).trim();
+          if (explicitHeaderNames.has(name.toLowerCase())) {
+            appendCurlHeader(result.headers, name, headerValue);
+          } else {
+            setCurlHeader(result.headers, name, headerValue);
+            explicitHeaderNames.add(name.toLowerCase());
+          }
+        }
+      } else if (option === '-d' || option === '--data' || option === '--data-ascii' ||
+          option === '--data-raw' || option === '--data-binary') {
+        if (curlDataValueReadsFile(option, value)) {
+          return { error: `File-backed ${option} values cannot be imported from a pasted cURL command` };
+        }
+        dataParts.push(value);
+        result.hasData = true;
+        if (!hasExplicitMethod) result.method = 'POST';
+      } else if (option === '--data-urlencode') {
+        if (curlDataValueReadsFile(option, value)) {
+          return { error: 'File-backed --data-urlencode values cannot be imported from a pasted cURL command' };
+        }
+        dataParts.push(encodeCurlDataUrlValue(value));
+        result.hasData = true;
+        if (!hasExplicitMethod) result.method = 'POST';
+      } else if (option === '-A' || option === '--user-agent') {
+        setCurlHeader(result.headers, 'User-Agent', value);
+        explicitHeaderNames.delete('user-agent');
+      } else if (option === '-b' || option === '--cookie') {
+        setCurlHeader(result.headers, 'Cookie', value);
+        explicitHeaderNames.delete('cookie');
+      } else if (option === '-u' || option === '--user') {
+        setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(value));
+        explicitHeaderNames.delete('authorization');
+      }
+      continue;
+    }
+
+    if (hasUrl) {
+      return {
+        error: 'Multiple cURL URLs cannot be imported into one Send request'
+      };
+    }
+    if (!token) {
+      return { error: 'The cURL destination URL cannot be empty' };
+    }
+    result.url = token;
+    hasUrl = true;
   }
   if (dataParts.length && !findCurlHeaderKey(result.headers, 'Content-Type')) {
     setCurlHeader(result.headers, 'Content-Type', 'application/x-www-form-urlencoded');
@@ -165,5 +244,5 @@ export function parseCurlCommand(curlStr) {
     return body.length > 0 ? body + '&' + part : body + part;
   }, '');
 
-  return result.url ? result : null;
+  return hasUrl ? result : { error: 'cURL command is missing a destination URL' };
 }

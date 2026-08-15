@@ -192,6 +192,118 @@ test('the last explicit cURL request option wins without later data promotion', 
   }
 });
 
+test('supported cURL options accept attached short and equals-style long values', () => {
+  const result = parseCurlCommand(
+    "curl -XPOST -H'X-Short: one' --header='X-Long: two' " +
+    "-dalpha=one --data=beta=two --data-ascii=gamma=three " +
+    "--data-raw=@literal --data-binary=bytes " +
+    "--data-urlencode='space=hello world' -Ashort-agent --user-agent=long-agent " +
+    "-bsession=short --cookie=session=long -ushort:secret --user=long:secret " +
+    'https://example.test/path'
+  );
+
+  assert.equal(result.method, 'POST');
+  assert.equal(result.url, 'https://example.test/path');
+  assert.equal(
+    result.body,
+    'alpha=one&beta=two&gamma=three&@literal&bytes&space=hello+world'
+  );
+  assert.deepEqual(plain(result.headers), {
+    'X-Short': 'one',
+    'X-Long': 'two',
+    'User-Agent': 'long-agent',
+    Cookie: 'session=long',
+    Authorization: 'Basic ' + Buffer.from('long:secret').toString('base64'),
+    'Content-Type': 'application/x-www-form-urlencoded'
+  });
+
+  assert.equal(
+    parseCurlCommand("curl -XGET --data=value https://example.test").method,
+    'GET'
+  );
+  assert.equal(
+    parseCurlCommand("curl --data=value --request=HEAD https://example.test").method,
+    'HEAD'
+  );
+  assert.equal(
+    parseCurlCommand("curl -XPUT --request=PROPFIND -dvalue https://example.test").method,
+    'PROPFIND'
+  );
+});
+
+test('unsupported cURL options fail before their operands can become the URL', () => {
+  const cases = [
+    ['curl --proxy http://proxy.example:3128 https://target.example/path', '--proxy'],
+    ['curl --proxy=http://proxy.example:3128 https://target.example/path', '--proxy'],
+    ['curl --compressed https://target.example/path', '--compressed'],
+    ['curl -xhttp://proxy.example:3128 https://target.example/path', '-x'],
+    ["curl -F 'name=value' https://target.example/path", '-F'],
+    ['curl -v https://target.example/path', '-v']
+  ];
+
+  for (const [command, option] of cases) {
+    const result = parseCurlCommand(command);
+    assert.deepEqual(Object.keys(result), ['error'], command);
+    assert.match(result.error, new RegExp(`^Unsupported cURL option: ${option.replace('-', '\\-')}`), command);
+    assert.match(result.error, /Remove it before pasting/, command);
+  }
+});
+
+test('supported cURL options report truly missing values', () => {
+  for (const option of [
+    '-X', '--request',
+    '-H', '--header',
+    '-d', '--data', '--data-ascii', '--data-raw', '--data-binary', '--data-urlencode',
+    '-A', '--user-agent',
+    '-b', '--cookie',
+    '-u', '--user'
+  ]) {
+    const result = parseCurlCommand(`curl https://example.test ${option}`);
+    assert.match(result.error, new RegExp(`^Missing value for cURL option: ${option.replace('-', '\\-')}$`), option);
+  }
+
+  for (const command of [
+    "curl -X '' https://example.test",
+    'curl --request= https://example.test'
+  ]) {
+    assert.match(parseCurlCommand(command).error, /^Missing value for cURL option:/, command);
+  }
+});
+
+test('required option values may look like options, matching cURL argument consumption', () => {
+  const data = parseCurlCommand('curl --data --compressed https://example.test');
+  assert.equal(data.method, 'POST');
+  assert.equal(data.body, '--compressed');
+  assert.equal(data.url, 'https://example.test');
+
+  const attached = parseCurlCommand('curl --data=-leading-dash https://example.test');
+  assert.equal(attached.body, '-leading-dash');
+
+  const method = parseCurlCommand('curl --request -custom https://example.test');
+  assert.equal(method.method, '-CUSTOM');
+  assert.equal(method.url, 'https://example.test');
+});
+
+test('the option terminator protects dash-prefixed URLs and multiple URLs fail explicitly', () => {
+  const dashUrl = parseCurlCommand('curl -- -https://example.test/path');
+  assert.equal(dashUrl.url, '-https://example.test/path');
+  assert.equal(dashUrl.method, 'GET');
+
+  assert.match(
+    parseCurlCommand('curl https://one.example https://two.example').error,
+    /Multiple cURL URLs/
+  );
+  assert.match(
+    parseCurlCommand('curl https://one.example -- -https://two.example').error,
+    /Multiple cURL URLs/
+  );
+  assert.match(parseCurlCommand('curl -- ').error, /missing a destination URL/);
+  assert.match(
+    parseCurlCommand("curl 'https://unterminated.example").error,
+    /unterminated quote/
+  );
+});
+
 test('--data-urlencode encodes values before joining them', () => {
   const result = parseCurlCommand(
     "curl https://example.test --data-urlencode 'name=hello world!' --data-urlencode '=plain value' --data-urlencode 'emoji=✓' --data-urlencode 'whole/value'"
@@ -257,7 +369,9 @@ test('prototype-named cURL headers remain own fields with repeated values', () =
 test('file-backed data is rejected instead of being imported as literal text', () => {
   for (const command of [
     'curl https://example.test -d @payload.txt',
+    'curl https://example.test -d@payload.txt',
     'curl https://example.test --data-binary @payload.bin',
+    'curl https://example.test --data-binary=@payload.bin',
     'curl https://example.test --data-urlencode name@payload.txt'
   ]) {
     assert.match(parseCurlCommand(command).error, /File-backed/);
@@ -344,6 +458,49 @@ test('cURL paste keeps explicit GET with a body in either option order', () => {
     assert.equal(state.tab.response, null, command);
     assert.equal(harness.persisted.length, 1, command);
     assert.equal(harness.persisted[0][0].method, 'GET', command);
+  }
+});
+
+test('cURL paste applies attached supported options without losing BUG-407 method semantics', () => {
+  const harness = createCurlPasteHarness();
+  const { prevented, state } = harness.paste(
+    "curl --data=q=one --request=GET -H'X-Mode: attached' https://attached.example/items"
+  );
+
+  assert.equal(prevented, true);
+  assert.equal(state.tab.method, 'GET');
+  assert.equal(state.tab.url, 'https://attached.example/items');
+  assert.equal(state.body, 'q=one');
+  assert.deepEqual(
+    plain(state.headers.map(({ key, value }) => [key, value])),
+    [
+      ['X-Mode', 'attached'],
+      ['Content-Type', 'application/x-www-form-urlencoded']
+    ]
+  );
+  assert.equal(harness.persisted.length, 1);
+  assert.equal(harness.toasts[0].type, 'success');
+});
+
+test('unsupported, malformed, and multi-URL cURL pastes leave Send state atomic', () => {
+  for (const command of [
+    'curl --proxy http://proxy.example:3128 https://target.example/path',
+    'curl https://target.example/path --request',
+    'curl https://one.example https://two.example',
+    "curl 'https://unterminated.example"
+  ]) {
+    const harness = createCurlPasteHarness();
+    const { prevented, state } = harness.paste(command);
+
+    assert.equal(prevented, true, command);
+    assert.strictEqual(state.tab, harness.initialTab, command);
+    assert.strictEqual(state.headers, harness.initialTab.headers, command);
+    assert.equal(state.body, 'stale secret body', command);
+    assert.equal(harness.elements.sendMethod.value, 'PATCH', command);
+    assert.equal(harness.elements.sendUrl.value, 'https://stale.example/private', command);
+    assert.equal(harness.persisted.length, 0, command);
+    assert.equal(harness.toasts.length, 1, command);
+    assert.equal(harness.toasts[0].type, 'error', command);
   }
 });
 
