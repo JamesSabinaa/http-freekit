@@ -10252,6 +10252,9 @@
     }
 
     let trafficListsSaveGeneration = 0;
+    let trafficListsMutationGeneration = 0;
+    let trafficListsStateGeneration = 0;
+    let trafficListsLoadGeneration = 0;
     let trafficListsDirty = false;
     let trafficListsFilterTimer = null;
 
@@ -10282,6 +10285,8 @@
     }
 
     function markTrafficListsChanged({ affectsFilter = true, immediate = false } = {}) {
+      trafficListsMutationGeneration++;
+      trafficListsStateGeneration++;
       setTrafficListsDirty(true);
       if (affectsFilter) refreshTrafficListsFilter(immediate);
     }
@@ -10316,6 +10321,7 @@
 
     function synchronizeTrafficLists(data, updateDefaults = false) {
       trafficLists = cloneTrafficLists(data.lists);
+      trafficListsStateGeneration++;
       const validIds = new Set(trafficLists.map(list => list.id));
       let accordionStateChanged = false;
       for (const id of expandedTrafficListIds) {
@@ -10334,13 +10340,18 @@
     }
 
     async function loadTrafficLists() {
-      const loadGeneration = trafficListsSaveGeneration;
+      const loadGeneration = ++trafficListsLoadGeneration;
+      const loadSaveGeneration = trafficListsSaveGeneration;
+      const loadStateGeneration = trafficListsStateGeneration;
       loadTrafficListAccordionState();
       renderTrafficListsEditor();
       try {
         const response = await fetch(API_BASE + '/api/traffic-lists');
         const data = await parseTrafficListsResponse(response);
-        if (loadGeneration === trafficListsSaveGeneration && !trafficListsDirty) {
+        if (loadGeneration === trafficListsLoadGeneration &&
+            loadSaveGeneration === trafficListsSaveGeneration &&
+            loadStateGeneration === trafficListsStateGeneration &&
+            !trafficListsDirty) {
           synchronizeTrafficLists(data, true);
         }
       } catch (error) {
@@ -10658,22 +10669,37 @@
 
     async function saveTrafficLists() {
       const saveGeneration = ++trafficListsSaveGeneration;
+      const submittedMutationGeneration = trafficListsMutationGeneration;
+      const submittedLists = cloneTrafficLists(trafficLists);
       clearTimeout(trafficListsFilterTimer);
       refreshTrafficListsFilter(true);
       try {
         const response = await fetch(API_BASE + '/api/traffic-lists', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lists: trafficLists })
+          body: JSON.stringify({ lists: submittedLists })
         });
         const data = await parseTrafficListsResponse(response, true);
         if (saveGeneration !== trafficListsSaveGeneration) return;
+        if (submittedMutationGeneration !== trafficListsMutationGeneration) {
+          setTrafficListsDirty(true);
+          toast('Traffic list snapshot saved; newer local changes remain unsaved', 'success');
+          return;
+        }
         synchronizeTrafficLists(data);
         toast('Traffic lists saved', 'success');
       } catch (error) {
         if (saveGeneration !== trafficListsSaveGeneration) return;
+        const hasNewerLocalChanges =
+          submittedMutationGeneration !== trafficListsMutationGeneration;
         setTrafficListsDirty(true);
-        toast('Error: ' + error.message, 'error');
+        toast(
+          'Error: ' + error.message +
+            (hasNewerLocalChanges
+              ? '. The submitted snapshot and newer local changes remain unsaved.'
+              : ''),
+          'error'
+        );
       }
     }
 
