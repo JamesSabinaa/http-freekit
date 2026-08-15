@@ -4,6 +4,8 @@ export function normalizeHarBodySize(value) {
     : 0;
 }
 
+const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
 function assertHarObject(value, fieldPath) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${fieldPath} must be an object`);
@@ -16,6 +18,14 @@ function normalizeHarString(value, fieldPath, options = {}) {
   if (typeof value !== 'string') throw new Error(`${fieldPath} must be a string`);
   if (!options.allowEmpty && value.length === 0) throw new Error(`${fieldPath} must not be empty`);
   return value;
+}
+
+function normalizeHarMethod(value, fieldPath) {
+  const method = normalizeHarString(value, fieldPath);
+  if (!HTTP_TOKEN_PATTERN.test(method)) {
+    throw new Error(`${fieldPath} must be a valid HTTP token`);
+  }
+  return method;
 }
 
 function normalizeHarNonNegativeNumber(value, fieldPath, options = {}) {
@@ -117,7 +127,7 @@ function normalizeHarEntry(entry, index, createId) {
   assertHarObject(entry, entryPath);
   const request = assertHarObject(entry.request, `${entryPath}.request`);
   const response = assertHarObject(entry.response, `${entryPath}.response`);
-  const method = normalizeHarString(request.method, `${entryPath}.request.method`);
+  const method = normalizeHarMethod(request.method, `${entryPath}.request.method`);
   const url = normalizeHarString(request.url, `${entryPath}.request.url`);
   let parsedUrl;
   try {

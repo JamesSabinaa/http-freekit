@@ -176,3 +176,46 @@ test('traffic import rejects records that would break HAR and MCP consumers', as
   assert.equal(api.trafficLog.length, 4);
   assert.doesNotThrow(() => trafficToHar(api.trafficLog));
 });
+
+test('traffic import rejects attribute-delimiting methods but accepts valid extension methods', async t => {
+  const proxy = {
+    port: 8081,
+    mockRules: [],
+    onBreakpoint: null,
+    onUpstreamProxyRetry: null,
+    matchApiSpec: () => null
+  };
+  const api = new ApiServer(proxy, null, null);
+  const server = http.createServer(api.app);
+  server.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port;
+
+  const injected = await postJson(port, {
+    requests: [{
+      id: 'injected-method',
+      timestamp: Date.now(),
+      method: 'GET" data-audit="present',
+      source: 'proxy'
+    }]
+  });
+  assert.equal(injected.statusCode, 400);
+  assert.match(injected.body.error, /method must be a valid HTTP token/);
+  assert.deepEqual(api.trafficLog, []);
+
+  const valid = await postJson(port, {
+    requests: [{
+      id: 'extension-method',
+      timestamp: Date.now(),
+      method: 'M-SEARCH',
+      source: 'Node.js'
+    }]
+  });
+  assert.equal(valid.statusCode, 200, valid.body.error);
+  assert.equal(api.trafficLog[0].method, 'M-SEARCH');
+  assert.equal(api.trafficLog[0].source, 'Node.js');
+});
