@@ -228,6 +228,83 @@ test('bulk and item APIs reject missing or unreadable files without writes or re
   assert.deepEqual(proxy._trustedCaCertificates, ['valid-ca', 'item-ca']);
 });
 
+test('identical item updates revalidate complete TLS material collections without mutation',
+  async t => {
+    const { proxy, settings, port, fixture } = await createHarness(t);
+    const firstPfx = fixture('first.pfx', Buffer.from('first-pfx'));
+    const secondPfx = fixture('second.pfx', Buffer.from('second-pfx'));
+    const firstCa = fixture('first.pem', 'first-ca');
+    const secondCa = fixture('second.pem', 'second-ca');
+    proxy.setClientCertificates([
+      { host: 'first.example.test', pfxPath: firstPfx, passphrase: 'first-secret' },
+      { host: 'second.example.test', pfxPath: secondPfx }
+    ]);
+    proxy.setTrustedCAs([firstCa, secondCa]);
+    settings.setAll({
+      clientCertificates: proxy.clientCertificates,
+      trustedCAs: proxy.trustedCAs
+    });
+    const previous = captureRuntime(proxy);
+    const configured = {
+      clientCertificates: structuredClone(proxy.clientCertificates),
+      trustedCAs: [...proxy.trustedCAs]
+    };
+    const beforeSettings = fs.readFileSync(settings.filePath);
+    const resets = countConnectionResets(proxy);
+    const clientBody = { host: 'first.example.test', pfxPath: firstPfx };
+    const caBody = { ca: firstCa };
+
+    const readableClient = await requestJson(
+      port, 'POST', '/api/client-certificates/items', clientBody
+    );
+    const readableCa = await requestJson(port, 'POST', '/api/trusted-cas/items', caBody);
+    assert.equal(readableClient.statusCode, 200);
+    assert.equal(readableCa.statusCode, 200);
+    assertRuntimeIdentity(proxy, previous);
+    assert.deepEqual(proxy.clientCertificates, configured.clientCertificates);
+    assert.deepEqual(proxy.trustedCAs, configured.trustedCAs);
+    assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+    assert.deepEqual(resets, { agents: 0, sessions: 0 });
+
+    fs.rmSync(firstPfx);
+    fs.rmSync(firstCa);
+    for (const [pathname, body, missingPath] of [
+      ['/api/client-certificates/items', clientBody, firstPfx],
+      ['/api/trusted-cas/items', caBody, firstCa]
+    ]) {
+      const response = await requestJson(port, 'POST', pathname, body);
+      assert.equal(response.statusCode, 400, pathname);
+      assert.match(response.body.error, /Could not read/);
+      assert.match(response.body.error, new RegExp(
+        missingPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      ));
+      assertRuntimeIdentity(proxy, previous);
+      assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+    }
+
+    fs.writeFileSync(firstPfx, Buffer.from('first-pfx'));
+    fs.writeFileSync(firstCa, 'first-ca');
+    fs.rmSync(secondPfx);
+    fs.rmSync(secondCa);
+    for (const [pathname, body, missingPath] of [
+      ['/api/client-certificates/items', clientBody, secondPfx],
+      ['/api/trusted-cas/items', caBody, secondCa]
+    ]) {
+      const response = await requestJson(port, 'POST', pathname, body);
+      assert.equal(response.statusCode, 400, pathname);
+      assert.match(response.body.error, /Could not read/);
+      assert.match(response.body.error, new RegExp(
+        missingPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      ));
+      assertRuntimeIdentity(proxy, previous);
+      assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+    }
+
+    assert.deepEqual(proxy.clientCertificates, configured.clientCertificates);
+    assert.deepEqual(proxy.trustedCAs, configured.trustedCAs);
+    assert.deepEqual(resets, { agents: 0, sessions: 0 });
+  });
+
 test('persistence rollback restores exact loaded snapshots without rereading removed files', async t => {
   const { proxy, settings, port, fixture } = await createHarness(t);
   const beforePfx = fixture('before.pfx', Buffer.from('before-pfx'));
