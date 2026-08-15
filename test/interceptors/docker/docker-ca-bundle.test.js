@@ -74,6 +74,7 @@ test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle
   await ca.initialize();
   const interceptor = new DockerInterceptor();
   interceptor.ca = ca;
+  interceptor._platform = () => 'linux';
   interceptor._getDockerHost = async () => '172.18.0.1';
 
   const result = await interceptor.activate(8310);
@@ -91,7 +92,7 @@ test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle
   assert.equal(result.metadata.containerCaBundlePath, containerBundlePath);
   assert.match(result.metadata.caBundleDescription, /combines public trust roots with the HTTP FreeKit CA/);
   assert.match(result.metadata.caBundleDescription, /verification remain enabled/);
-  assert.ok(run.includes(`--mount type=bind,source="${bundlePath}",target=${containerBundlePath},readonly`));
+  assert.ok(run.includes(`--mount 'type=bind,"source=${bundlePath}",target=${containerBundlePath},readonly'`));
   assert.ok(compose.includes(JSON.stringify(`${bundlePath}:${containerBundlePath}:ro`)));
 
   assert.deepEqual(runEnv, composeEnv);
