@@ -365,19 +365,25 @@ export class AndroidAdbInterceptor {
     return this.active;
   }
 
+  _isCurrentActivation(serial, activeInfo) {
+    // Lifecycle transitions replace or remove records, so reference identity
+    // is the generation token for status work that runs outside manager locks.
+    return this.activatedDevices.get(serial) === activeInfo;
+  }
+
   async _reconcileActivationStatus() {
     if (this.activationStatusReconciliation) {
       return await this.activationStatusReconciliation;
     }
 
-    const hasStatusToCheck = Array.from(this.activatedDevices.values()).some(info =>
+    const activationsToCheck = Array.from(this.activatedDevices.entries()).filter(([, info]) =>
       ANDROID_INTERCEPTING_MODES.has(info?.mode) ||
       info?.mode === 'proxy-uncertain' ||
       info?.mode === 'app-uncertain'
     );
-    if (!hasStatusToCheck) return;
+    if (activationsToCheck.length === 0) return;
 
-    const reconciliation = this._performActivationStatusReconciliation();
+    const reconciliation = this._performActivationStatusReconciliation(activationsToCheck);
     this.activationStatusReconciliation = reconciliation;
     try {
       await reconciliation;
@@ -389,17 +395,21 @@ export class AndroidAdbInterceptor {
     }
   }
 
-  async _performActivationStatusReconciliation() {
+  async _performActivationStatusReconciliation(
+    activationsToCheck = Array.from(this.activatedDevices.entries()).filter(([, info]) =>
+      ANDROID_INTERCEPTING_MODES.has(info?.mode) ||
+      info?.mode === 'proxy-uncertain' ||
+      info?.mode === 'app-uncertain'
+    )
+  ) {
     const connectedDevices = new Map(
       (await this._getConnectedDevices())
         .filter(device => device.status === 'device')
         .map(device => [device.serial, device])
     );
 
-    for (const [serial, activeInfo] of Array.from(this.activatedDevices.entries())) {
-      if (!ANDROID_INTERCEPTING_MODES.has(activeInfo?.mode) &&
-          activeInfo?.mode !== 'proxy-uncertain' &&
-          activeInfo?.mode !== 'app-uncertain') continue;
+    for (const [serial, activeInfo] of activationsToCheck) {
+      if (!this._isCurrentActivation(serial, activeInfo)) continue;
 
       const isGlobalProxy = activeInfo.mode === 'global-proxy' ||
         activeInfo.mode === 'proxy-uncertain';
@@ -473,6 +483,7 @@ export class AndroidAdbInterceptor {
       ? `${activeInfo.hostIp}:${activeInfo.proxyPort}`
       : null;
     const currentProxy = await this._getProxy(serial);
+    if (!this._isCurrentActivation(serial, activeInfo)) return;
     if (!ownedProxy || currentProxy?.success !== true ||
         !this._isSafeJournalString(currentProxy.value)) {
       this._setUncertainActivation(serial, activeInfo, 'proxy-uncertain');
@@ -576,15 +587,18 @@ export class AndroidAdbInterceptor {
     try {
       appInstalled = await this._queryHttpToolkitAppInstalled(serial);
     } catch {
+      if (!this._isCurrentActivation(serial, activeInfo)) return;
       this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
       return;
     }
+    if (!this._isCurrentActivation(serial, activeInfo)) return;
     if (!appInstalled) {
       this._clearInactiveCompanion(serial, activeInfo);
       return;
     }
 
     const vpnStatus = await this._getHttpToolkitVpnStatus(serial);
+    if (!this._isCurrentActivation(serial, activeInfo)) return;
     if (vpnStatus?.success !== true) {
       this._setUncertainActivation(serial, activeInfo, 'app-uncertain');
       return;
@@ -608,11 +622,13 @@ export class AndroidAdbInterceptor {
     if (ownsReverseTunnel) {
       try {
         const currentMapping = await this._getReverseMapping(serial, activeInfo.proxyPort);
+        if (!this._isCurrentActivation(serial, activeInfo)) return;
         if (currentMapping !== `tcp:${activeInfo.proxyPort}`) {
           this._setUncertainActivation(serial, confirmedInfo, 'app-uncertain');
           return;
         }
       } catch {
+        if (!this._isCurrentActivation(serial, activeInfo)) return;
         this._setUncertainActivation(serial, confirmedInfo, 'app-uncertain');
         return;
       }

@@ -19,6 +19,22 @@ function connectedDevice() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createDataDir(t, suffix) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `http-freekit-bug-395-${suffix}-`));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  return dataDir;
+}
+
 function configureGlobal(interceptor) {
   interceptor.activatedDevices.set(DEVICE_ID, {
     mode: 'global-proxy',
@@ -87,6 +103,78 @@ test('externally replaced global proxy becomes cleanup-only without overwriting 
   await interceptor.deactivate({ deviceId: DEVICE_ID });
   assert.equal(restoredProxy, false, 'an external proxy setting must be preserved');
   assert.equal(interceptor.active, false);
+});
+
+test('stale proxy status cannot resurrect stopped ownership or its recovery journal', async t => {
+  const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t, 'stopped') });
+  configureGlobal(interceptor);
+  const activeInfo = {
+    ...interceptor.activatedDevices.get(DEVICE_ID),
+    mode: 'proxy-uncertain'
+  };
+  interceptor.activatedDevices.set(DEVICE_ID, activeInfo);
+  interceptor._rememberGlobalProxyOwnership(DEVICE_ID, activeInfo);
+  interceptor._getConnectedDevices = async () => [connectedDevice()];
+
+  const proxyQueryStarted = deferred();
+  const proxyResult = deferred();
+  interceptor._getProxy = async () => {
+    proxyQueryStarted.resolve();
+    return await proxyResult.promise;
+  };
+  interceptor._cleanupActivatedDevice = async (_serial, info) => {
+    assert.equal(info, activeInfo);
+    return true;
+  };
+
+  const statusRefresh = interceptor.isActive();
+  await proxyQueryStarted.promise;
+  await interceptor.deactivate({ deviceId: DEVICE_ID });
+
+  assert.equal(interceptor.activatedDevices.size, 0);
+  assert.equal(interceptor.journaledGlobalDevices.size, 0);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+
+  proxyResult.resolve({ success: true, value: `192.0.2.10:${PROXY_PORT}` });
+  assert.equal(await statusRefresh, false);
+  assert.equal(interceptor.activatedDevices.size, 0);
+  assert.equal(interceptor.journaledGlobalDevices.size, 0);
+  assert.equal(fs.existsSync(interceptor.recoveryFile), false);
+});
+
+test('stale device discovery cannot overwrite a superseding activation or cleanup baseline', async t => {
+  const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t, 'superseded') });
+  configureGlobal(interceptor);
+  const previous = interceptor.activatedDevices.get(DEVICE_ID);
+  interceptor._rememberGlobalProxyOwnership(DEVICE_ID, previous);
+
+  const deviceQueryStarted = deferred();
+  const deviceResult = deferred();
+  interceptor._getConnectedDevices = async () => {
+    deviceQueryStarted.resolve();
+    return await deviceResult.promise;
+  };
+
+  const statusRefresh = interceptor.isActive();
+  await deviceQueryStarted.promise;
+
+  const replacement = {
+    mode: 'global-proxy',
+    hostIp: '198.51.100.20',
+    proxyPort: PROXY_PORT + 1,
+    previousProxy: 'corporate.proxy:8888',
+    remoteCertPath: '/data/local/tmp/http-freekit-ca.pem',
+    model: 'Replacement Device'
+  };
+  interceptor._rememberGlobalProxyOwnership(DEVICE_ID, replacement);
+  interceptor.activatedDevices.set(DEVICE_ID, replacement);
+  const replacementJournal = fs.readFileSync(interceptor.recoveryFile, 'utf8');
+
+  deviceResult.resolve([]);
+  assert.equal(await statusRefresh, true);
+  assert.equal(interceptor.activatedDevices.get(DEVICE_ID), replacement);
+  assert.equal(interceptor.journaledGlobalDevices.get(DEVICE_ID).previousProxy, 'corporate.proxy:8888');
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), replacementJournal);
 });
 
 test('stopped companion VPN retains only reverse-tunnel cleanup ownership', async () => {
