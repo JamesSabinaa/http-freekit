@@ -3168,6 +3168,94 @@ export class ProxyServer {
     });
   }
 
+  _serveWebhookMock({
+    action,
+    body,
+    method,
+    targetUrl,
+    requestHeaders,
+    startTime,
+    respond,
+    emitRequest,
+    traffic
+  }) {
+    respond();
+
+    const webhookDelivery = (async () => {
+      if (this._stopping) {
+        throw new Error('Proxy stopped before webhook delivery started');
+      }
+      const webhookTarget = new URL(action.webhookUrl);
+      if (webhookTarget.protocol !== 'http:' && webhookTarget.protocol !== 'https:') {
+        throw new Error(`Unsupported webhook protocol: ${webhookTarget.protocol}`);
+      }
+      const isHttps = webhookTarget.protocol === 'https:';
+      const lib = isHttps ? https : http;
+      const webhookHeaders = {
+        'content-type': requestHeaders['content-type'] || 'application/octet-stream',
+        'x-forwarded-method': method,
+        'x-forwarded-url': targetUrl.href,
+        'x-forwarded-host': targetUrl.hostname,
+        ...(action.webhookHeaders || {})
+      };
+      await new Promise((resolve, reject) => {
+        const webhookReq = lib.request({
+          hostname: webhookTarget.hostname,
+          port: webhookTarget.port || (isHttps ? 443 : 80),
+          path: webhookTarget.pathname + webhookTarget.search,
+          method: 'POST',
+          headers: webhookHeaders,
+          ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
+        }, (webhookRes) => {
+          webhookRes.resume();
+          const webhookStatus = webhookRes.statusCode || 0;
+          if (webhookStatus >= 200 && webhookStatus < 300) {
+            resolve();
+            return;
+          }
+          reject(new Error(`Webhook endpoint responded with HTTP ${webhookStatus}`));
+        });
+        this._activeWebhookRequests.add(webhookReq);
+        webhookReq.once('close', () => this._activeWebhookRequests.delete(webhookReq));
+        webhookReq.once('error', reject);
+        try {
+          this._configureUpstreamRequest(webhookReq);
+          webhookReq.end(body);
+        } catch (error) {
+          webhookReq.destroy();
+          reject(error);
+        }
+      });
+    })();
+    const recordDelivery = (webhookError = null) => {
+      const statusCode = webhookError ? 502 : 200;
+      const statusMessage = webhookError ? 'Webhook delivery failed' : 'Webhook sent';
+      emitRequest({
+        ...traffic,
+        statusCode,
+        statusMessage,
+        responseHeaders: { 'Content-Type': 'text/plain' },
+        responseBody: '',
+        responseBodySize: 0,
+        duration: Date.now() - startTime,
+        ...(webhookError ? { error: webhookError.message } : {})
+      });
+    };
+    const webhookFinalization = webhookDelivery.then(
+      () => recordDelivery(),
+      error => {
+        console.error('[Proxy] Webhook error:', error.message);
+        recordDelivery(error);
+      }
+    ).catch(error => {
+      console.error('[Proxy] Webhook result handler failed:', error.message);
+    });
+    this._pendingWebhookFinalizations.add(webhookFinalization);
+    void webhookFinalization.then(() => {
+      this._pendingWebhookFinalizations.delete(webhookFinalization);
+    });
+  }
+
   start() {
     this._lifecycleGeneration++;
     this._stopping = false;
@@ -4781,6 +4869,19 @@ export class ProxyServer {
             body: mockRule.response?.body || '',
             delay: 0
           };
+
+          if (action.type === 'webhook') {
+            await this._serveMockResponse(
+              requestId, req, res, new URL(fullUrl), body, mockRule, startTime, {
+                protocol: 'https',
+                tls: tlsDetails,
+                updatePending: pendingEmitted,
+                trafficLifecycleId,
+                downstream
+              }
+            );
+            return;
+          }
 
           // Capture original request data before pre-steps modify it
           const origMethod = req.method;
@@ -6586,7 +6687,11 @@ export class ProxyServer {
       body: mockRule.response?.body || '',
       delay: 0
     };
+    const webhookPreparation = action.type === 'webhook' && action.webhookUrl
+      ? this._beginWebhookPreparation()
+      : null;
 
+    try {
     // Capture original request data before pre-steps modify it
     const origMethod = method;
     const origUrl = fullUrl;
@@ -6597,7 +6702,9 @@ export class ProxyServer {
     for (const step of preSteps) {
       switch (step.type) {
         case 'delay':
-          if (step.ms > 0) await new Promise(r => setTimeout(r, step.ms));
+          if (step.ms > 0) {
+            if (!await this._waitForMockDelay(step.ms, webhookPreparation)) return;
+          }
           break;
         case 'add-header':
           if (step.name) reqHeaders[step.name.toLowerCase()] = step.value || '';
@@ -6650,7 +6757,7 @@ export class ProxyServer {
 
     // Apply delay
     if (action.delay && action.delay > 0) {
-      await new Promise(r => setTimeout(r, action.delay));
+      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
     }
 
     // Forward action
@@ -6831,6 +6938,37 @@ export class ProxyServer {
       return;
     }
 
+    if (action.type === 'webhook' && action.webhookUrl) {
+      if (!webhookPreparation.isCurrent()) return;
+      const targetUrl = new URL(fullUrl);
+      this._serveWebhookMock({
+        action,
+        body,
+        method,
+        targetUrl,
+        requestHeaders: reqHeaders,
+        startTime,
+        respond: () => {
+          try {
+            if (!stream.destroyed && !stream.closed) {
+              stream.respond({ ':status': 200, 'content-type': 'text/plain' });
+              stream.end('');
+            }
+          } catch { /* stream closed */ }
+        },
+        emitRequest: emitCapturedRequest,
+        traffic: {
+          id: requestId, protocol: 'h2', method, url: targetUrl.href,
+          host: authority, path, requestHeaders: reqHeaders,
+          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          timestamp: startTime, source: 'mock',
+          tls: tlsDetails, remote: null,
+          originalRequest, transformedBy
+        }
+      });
+      return;
+    }
+
     // Breakpoint on request
     if (action.type === 'breakpoint-request') {
       emitCapturedRequest({
@@ -6967,6 +7105,9 @@ export class ProxyServer {
       tls: tlsDetails, remote: null,
       originalRequest, transformedBy
     });
+    } finally {
+      webhookPreparation?.finish();
+    }
   }
 
   // Helper for HTTP/1.1 mock responses on the h2 fallback server
@@ -8724,83 +8865,27 @@ export class ProxyServer {
     // Webhook — send a copy of the request to a configured URL
     if (action.type === 'webhook' && action.webhookUrl) {
       if (!webhookPreparation.isCurrent()) return;
-      clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
-      clientRes.end('');
-
-      const webhookDelivery = (async () => {
-        if (this._stopping) {
-          throw new Error('Proxy stopped before webhook delivery started');
-        }
-        const webhookTarget = new URL(action.webhookUrl);
-        if (webhookTarget.protocol !== 'http:' && webhookTarget.protocol !== 'https:') {
-          throw new Error(`Unsupported webhook protocol: ${webhookTarget.protocol}`);
-        }
-        const isHttps = webhookTarget.protocol === 'https:';
-        const lib = isHttps ? https : http;
-        const webhookHeaders = {
-          'content-type': clientReq.headers['content-type'] || 'application/octet-stream',
-          'x-forwarded-method': clientReq.method,
-          'x-forwarded-url': targetUrl.href,
-          'x-forwarded-host': targetUrl.hostname,
-          ...(action.webhookHeaders || {})
-        };
-        await new Promise((resolve, reject) => {
-          const webhookReq = lib.request({
-            hostname: webhookTarget.hostname,
-            port: webhookTarget.port || (isHttps ? 443 : 80),
-            path: webhookTarget.pathname + webhookTarget.search,
-            method: 'POST',
-            headers: webhookHeaders,
-            ...(isHttps ? this._getUpstreamTlsOptions(webhookTarget.hostname) : {})
-          }, (webhookRes) => {
-            webhookRes.resume();
-            const webhookStatus = webhookRes.statusCode || 0;
-            if (webhookStatus >= 200 && webhookStatus < 300) {
-              resolve();
-              return;
-            }
-            reject(new Error(`Webhook endpoint responded with HTTP ${webhookStatus}`));
-          });
-          this._activeWebhookRequests.add(webhookReq);
-          webhookReq.once('close', () => this._activeWebhookRequests.delete(webhookReq));
-          webhookReq.once('error', reject);
-          try {
-            this._configureUpstreamRequest(webhookReq);
-            webhookReq.end(body);
-          } catch (error) {
-            webhookReq.destroy();
-            reject(error);
-          }
-        });
-      })();
-      const recordDelivery = (webhookError = null) => {
-        const statusCode = webhookError ? 502 : 200;
-        const statusMessage = webhookError ? 'Webhook delivery failed' : 'Webhook sent';
-        emitRequest({
+      this._serveWebhookMock({
+        action,
+        body,
+        method: clientReq.method,
+        targetUrl,
+        requestHeaders: clientReq.headers,
+        startTime,
+        respond: () => {
+          clientRes.writeHead(200, { 'Content-Type': 'text/plain' });
+          clientRes.end('');
+        },
+        emitRequest,
+        traffic: {
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
-          requestBodySize: body.length, statusCode, statusMessage,
-          responseHeaders: { 'Content-Type': 'text/plain' }, responseBody: '',
-          responseBodySize: 0,
-          duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
-          ...(webhookError ? { error: webhookError.message } : {}),
+          requestBodySize: body.length,
+          timestamp: startTime, source: 'mock',
           tls: captureTls, remote: null,
           originalRequest, transformedBy
-        });
-      };
-      const webhookFinalization = webhookDelivery.then(
-        () => recordDelivery(),
-        error => {
-          console.error('[Proxy] Webhook error:', error.message);
-          recordDelivery(error);
         }
-      ).catch(error => {
-        console.error('[Proxy] Webhook result handler failed:', error.message);
-      });
-      this._pendingWebhookFinalizations.add(webhookFinalization);
-      void webhookFinalization.then(() => {
-        this._pendingWebhookFinalizations.delete(webhookFinalization);
       });
       return;
     }
