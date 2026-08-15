@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 test('configured trusted CAs and client PFX files feed outbound TLS options', (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-tls-config-'));
@@ -14,7 +15,7 @@ test('configured trusted CAs and client PFX files feed outbound TLS options', (t
   fs.writeFileSync(caPath, 'TEST PRIVATE CA');
   fs.writeFileSync(pfxPath, Buffer.from([0, 1, 2, 3]));
 
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   proxy.setTrustedCAs([caPath]);
   proxy.setClientCertificates([{
     host: 'MTLS.EXAMPLE.TEST.',

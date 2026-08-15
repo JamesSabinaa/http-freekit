@@ -2406,12 +2406,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/tls-fingerprint', (req, res) => {
-      const { fingerprint } = req.body;
-      this._mutateProxySetting({
-        property: 'tlsFingerprint',
-        apply: () => this.proxy.setTlsFingerprint(fingerprint),
-        restore: previous => this.proxy.setTlsFingerprint(previous)
-      });
+      const fingerprint = req.body?.fingerprint;
+      try {
+        this._mutateProxySetting({
+          property: 'tlsFingerprint',
+          apply: () => this.proxy.setTlsFingerprint(fingerprint),
+          restore: previous => this.proxy.setTlsFingerprint(previous)
+        });
+      } catch (error) {
+        if (error?.code !== 'ERR_INVALID_TLS_FINGERPRINT') throw error;
+        return res.status(400).json({ error: error.message });
+      }
       res.json({ success: true, fingerprint: this.proxy.tlsFingerprint });
     });
 

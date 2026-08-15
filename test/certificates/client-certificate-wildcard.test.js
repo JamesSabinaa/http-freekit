@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 function createCertificateFiles(t) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-client-cert-'));
@@ -28,7 +29,7 @@ function exactCertificate(pfxPath) {
 
 test('wildcard client certificates are fallbacks and exact normalized hosts always win', (t) => {
   const { wildcardPath, exactPath } = createCertificateFiles(t);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
 
   for (const certificates of [
     [wildcardCertificate(wildcardPath), exactCertificate(exactPath)],
@@ -50,7 +51,7 @@ test('wildcard client certificates are fallbacks and exact normalized hosts alwa
 
 test('malformed client certificate entries are rejected without replacing active material', (t) => {
   const { exactPath } = createCertificateFiles(t);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   proxy.setClientCertificates([exactCertificate(exactPath)]);
   const previousCertificates = proxy.clientCertificates;
   const previousOptions = proxy._clientCertificateOptions;
@@ -80,6 +81,7 @@ test('malformed client certificate entries are rejected without replacing active
 test('the HTTP/1 request path passes wildcard client certificate options to HTTPS', async (t) => {
   const { wildcardPath } = createCertificateFiles(t);
   const proxy = new ProxyServer(null, {
+    ...tlsMaterialValidationStubs,
     upstreamConnectTimeoutMs: 0,
     upstreamIdleTimeoutMs: 0
   });
@@ -122,7 +124,7 @@ test('the HTTP/1 request path passes wildcard client certificate options to HTTP
 
 test('the HTTP/2 session path passes the exact certificate over an earlier wildcard', async (t) => {
   const { wildcardPath, exactPath } = createCertificateFiles(t);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   proxy.setClientCertificates([
     wildcardCertificate(wildcardPath),
     exactCertificate(exactPath)
@@ -157,7 +159,7 @@ test('the HTTP/2 session path passes the exact certificate over an earlier wildc
 
 test('HTTPS upstream agents receive wildcard client certificate options', (t) => {
   const { wildcardPath } = createCertificateFiles(t);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   proxy.setClientCertificates([wildcardCertificate(wildcardPath)]);
   proxy.setUpstreamProxy({ type: 'https', host: 'proxy.example.test', port: 8443 });
   t.after(() => proxy._destroyUpstreamAgent());

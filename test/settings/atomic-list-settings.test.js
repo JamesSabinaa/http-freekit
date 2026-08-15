@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 function requestJson(port, method, pathname, body) {
   return new Promise((resolve, reject) => {
@@ -28,7 +29,7 @@ function requestJson(port, method, pathname, body) {
 }
 
 async function createServer(t) {
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   const api = new ApiServer(proxy, null, null);
   const server = http.createServer(api.app);
   server.listen(0, '127.0.0.1');

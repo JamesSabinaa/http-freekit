@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { isUtf8 } from 'node:buffer';
+import { X509Certificate } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'http';
 import http2 from 'http2';
@@ -32,6 +33,9 @@ import {
   MAX_TLS_MATERIAL_ENTRIES,
   TlsMaterialConfigError
 } from './tls-material-config.js';
+import {
+  validateTlsFingerprint
+} from './tls-fingerprint-config.js';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
@@ -318,6 +322,10 @@ export class ProxyServer {
     this._trustedCaCertificates = [];
     this._readTlsMaterialFileSync = options.readTlsMaterialFileSync ||
       ((filePath, encoding) => fs.readFileSync(filePath, encoding));
+    this._createTlsSecureContext = options.createTlsSecureContext ||
+      (tlsOptions => tls.createSecureContext(tlsOptions));
+    this._parseX509Certificate = options.parseX509Certificate ||
+      (certificate => new X509Certificate(certificate));
     this.httpsWhitelist = Object.freeze([]); // [hostname]
     this._validatedHttpsWhitelist = Object.freeze([]);
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
@@ -982,6 +990,14 @@ export class ProxyServer {
     }
     return this._safeBodyString(
       this._concatBody(collector),
+      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-type')[0]
+    );
+  }
+
+  _safeRequestBodyString(buffer, headers = {}) {
+    return this._safeBodyString(
+      buffer,
       getHeaderValues(headers, 'content-encoding')[0],
       getHeaderValues(headers, 'content-type')[0]
     );
@@ -2867,12 +2883,9 @@ export class ProxyServer {
     const configured = this._canonicalizeClientCertificates(validated);
     const loaded = configured.map((config, index) => {
       const pfxPath = config.pfxPath.trim();
+      let pfx;
       try {
-        return {
-          host: this._getClientCertificateHostKey(config.host),
-          pfx: this._readTlsMaterialFileSync(pfxPath),
-          ...(config.passphrase ? { passphrase: config.passphrase } : {})
-        };
+        pfx = this._readTlsMaterialFileSync(pfxPath);
       } catch (err) {
         const detail = err?.message || String(err);
         throw this._tlsMaterialError(
@@ -2880,6 +2893,23 @@ export class ProxyServer {
           err
         );
       }
+      const passphrase = Object.prototype.hasOwnProperty.call(config, 'passphrase')
+        ? { passphrase: config.passphrase }
+        : {};
+      try {
+        this._createTlsSecureContext({ pfx, ...passphrase });
+      } catch (err) {
+        const detail = err?.message || String(err);
+        throw this._tlsMaterialError(
+          `Client certificate ${index} at "${pfxPath}" is not a usable PFX with the supplied passphrase: ${detail}`,
+          err
+        );
+      }
+      return {
+        host: this._getClientCertificateHostKey(config.host),
+        pfx,
+        ...passphrase
+      };
     });
     return { configured, loaded };
   }
@@ -2906,8 +2936,9 @@ export class ProxyServer {
       }
     );
     const loaded = configured.map((certPath, index) => {
+      let certificateBundle;
       try {
-        return this._readTlsMaterialFileSync(certPath, 'utf8');
+        certificateBundle = this._readTlsMaterialFileSync(certPath, 'utf8');
       } catch (err) {
         const detail = err?.message || String(err);
         throw this._tlsMaterialError(
@@ -2915,8 +2946,40 @@ export class ProxyServer {
           err
         );
       }
+      try {
+        this._assertUsableTrustedCaCertificateBundle(certificateBundle);
+      } catch (err) {
+        const detail = err?.message || String(err);
+        throw this._tlsMaterialError(
+          `Trusted CA ${index} at "${certPath}" is not a usable PEM certificate bundle: ${detail}`,
+          err
+        );
+      }
+      return certificateBundle;
     });
     return { configured, loaded };
+  }
+
+  _assertUsableTrustedCaCertificateBundle(certificateBundle) {
+    const certificateBlocks = typeof certificateBundle === 'string'
+      ? certificateBundle.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || []
+      : [];
+    const trailingMaterial = typeof certificateBundle === 'string'
+      ? certificateBundle.replace(
+        /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+        ''
+      )
+      : '';
+    if (/-----BEGIN\b|-----END\b/.test(trailingMaterial)) {
+      throw new Error('expected one or more complete PEM certificate blocks');
+    }
+    if (certificateBlocks.length === 0) {
+      this._parseX509Certificate(certificateBundle);
+      this._createTlsSecureContext({ ca: [certificateBundle] });
+      return;
+    }
+    for (const certificate of certificateBlocks) this._parseX509Certificate(certificate);
+    this._createTlsSecureContext({ ca: certificateBundle });
   }
 
   _installPreparedTrustedCAs(prepared) {
@@ -2959,7 +3022,7 @@ export class ProxyServer {
   }
 
   setTlsFingerprint(preset) {
-    const nextFingerprint = preset || 'chrome-136';
+    const nextFingerprint = validateTlsFingerprint(preset, this.constructor.TLS_FINGERPRINTS);
     if (nextFingerprint !== this.tlsFingerprint) {
       this.tlsFingerprint = nextFingerprint;
       this._destroyUpstreamAgent();
@@ -4270,7 +4333,7 @@ export class ProxyServer {
           host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers,
-          requestBody: this._safeBodyString(body),
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length,
           timestamp: startTime,
           source: 'mock',
@@ -4316,7 +4379,8 @@ export class ProxyServer {
           id: requestId, protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
           method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, timestamp: startTime, source: 'breakpoint',
           tls: null, remote: null
         }, trafficLifecycleId);
@@ -4332,7 +4396,7 @@ export class ProxyServer {
           this._storePendingBreakpoint(requestId, {
             method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
             path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-            body: this._safeBodyString(body), trafficLifecycleId,
+            body: this._safeRequestBodyString(body, clientReq.headers), trafficLifecycleId,
             timestamp: Date.now(), resolve
           });
           this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
@@ -4444,7 +4508,8 @@ export class ProxyServer {
         pendingEmitted = this._emitPendingRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, timestamp: startTime, source: 'proxy',
           tls: null, remote: null
         }, trafficLifecycleId);
@@ -4550,7 +4615,7 @@ export class ProxyServer {
               host: targetUrl.hostname,
               path: targetUrl.pathname + targetUrl.search,
               requestHeaders: clientReq.headers,
-              requestBody: this._safeBodyString(body),
+              requestBody: this._safeRequestBodyString(body, clientReq.headers),
               requestBodySize: body.length,
               statusCode: finalResponse.statusCode,
               statusMessage: finalResponse.statusMessage,
@@ -4607,7 +4672,7 @@ export class ProxyServer {
             host: targetUrl.hostname,
             path: targetUrl.pathname + targetUrl.search,
             requestHeaders: clientReq.headers,
-            requestBody: this._safeBodyString(body),
+            requestBody: this._safeRequestBodyString(body, clientReq.headers),
             requestBodySize: body.length,
             statusCode: 502,
             statusMessage: 'Bad Gateway',
@@ -4669,7 +4734,9 @@ export class ProxyServer {
         host: targetUrl?.hostname || '',
         path: targetUrl ? targetUrl.pathname + targetUrl.search : requestUrl,
         requestHeaders: clientReq.headers,
-        requestBody: Buffer.isBuffer(requestBody) ? this._safeBodyString(requestBody) : requestBody,
+        requestBody: Buffer.isBuffer(requestBody)
+          ? this._safeRequestBodyString(requestBody, clientReq.headers)
+          : requestBody,
         requestBodySize,
         ...requestCaptureFields,
         statusCode,
@@ -5019,7 +5086,7 @@ export class ProxyServer {
         const pendingEmitted = this._emitPendingRequest({
           id: requestId, protocol: 'https', method: req.method, url: fullUrl,
           host: hostname, path: req.url, requestHeaders: req.headers,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
@@ -5036,7 +5103,7 @@ export class ProxyServer {
           this._holdMockTimeout(downstream, {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
           }, { pendingEmitted, trafficLifecycleId });
           return;
@@ -5113,7 +5180,7 @@ export class ProxyServer {
             JSON.stringify(origHeaders) !== JSON.stringify(req.headers);
           const originalRequest = transformed ? {
             method: origMethod, url: origUrl, headers: origHeaders,
-            body: this._safeBodyString(body)
+            body: this._safeRequestBodyString(body, origHeaders)
           } : null;
           const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
 
@@ -5123,7 +5190,7 @@ export class ProxyServer {
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
               statusCode: 0, statusMessage: 'Connection Closed', responseHeaders: {},
               responseBody: '', responseBodySize: 0,
               duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -5139,7 +5206,7 @@ export class ProxyServer {
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
               statusCode: 0, statusMessage: 'Connection Reset', responseHeaders: {},
               responseBody: '', responseBodySize: 0,
               duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -5176,7 +5243,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: 500, statusMessage: 'Mock Error', responseHeaders: {},
                 responseBody: `Forward setup error: ${err.message}`, responseBodySize: 0,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -5211,7 +5278,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
                 responseHeaders: resHeaders,
                 responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
@@ -5231,7 +5298,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
                 responseBody: `Forward Error: ${err.message}`, responseBodySize: 0,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -5259,7 +5326,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: 500, statusMessage: 'Mock Error',
                 responseHeaders: { 'Content-Type': 'text/plain' },
                 responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
@@ -5278,7 +5345,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: fileStatus, statusMessage: 'Mocked (file)',
                 responseHeaders: { 'Content-Type': mime },
                 responseBody: file.content ? this._safeBodyString(file.content) : '',
@@ -5305,7 +5372,7 @@ export class ProxyServer {
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
-                requestBody: this._safeBodyString(body), requestBodySize: body.length,
+                requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: failure.statusCode, statusMessage: failure.statusMessage,
                 responseHeaders: failure.responseHeaders,
                 responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
@@ -5328,7 +5395,7 @@ export class ProxyServer {
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
               _trafficLifecycleComplete: false,
               statusCode: 0, statusMessage: 'Breakpoint',
               responseHeaders: {}, responseBody: '', responseBodySize: 0,
@@ -5348,7 +5415,7 @@ export class ProxyServer {
               this._storePendingBreakpoint(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
-                body: this._safeBodyString(body), trafficLifecycleId,
+                body: this._safeRequestBodyString(body, req.headers), trafficLifecycleId,
                 timestamp: Date.now(), resolve
               });
               this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
@@ -5380,7 +5447,7 @@ export class ProxyServer {
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
               _trafficLifecycleComplete: false,
               statusCode: 0, statusMessage: 'Breakpoint (response)',
               breakpointPhase: 'response',
@@ -5402,7 +5469,7 @@ export class ProxyServer {
               this._storePendingBreakpoint(requestId, {
                 method: req.method, url: fullUrl, host: hostname,
                 path: req.url, headers: req.headers,
-                body: this._safeBodyString(body), trafficLifecycleId,
+                body: this._safeRequestBodyString(body, req.headers), trafficLifecycleId,
                 timestamp: Date.now(), phase: 'response', resolve
               });
               this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
@@ -5425,7 +5492,7 @@ export class ProxyServer {
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
-              requestBody: this._safeBodyString(body), requestBodySize: body.length,
+              requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
               statusCode, statusMessage: 'Breakpoint released', responseHeaders,
               responseBody, responseBodySize: Buffer.byteLength(responseBody),
               duration: Date.now() - startTime, timestamp: startTime, source: 'breakpoint',
@@ -5453,7 +5520,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode: mockStatus, statusMessage: 'Mocked', responseHeaders: mockHeaders,
             responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
             duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -5498,7 +5565,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
@@ -5517,7 +5584,7 @@ export class ProxyServer {
             this._storePendingBreakpoint(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
-              body: this._safeBodyString(body), trafficLifecycleId,
+              body: this._safeRequestBodyString(body, req.headers), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
@@ -5571,7 +5638,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
             responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
@@ -5586,7 +5653,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
             duration, timestamp: startTime, error: err.message,
@@ -5993,7 +6060,7 @@ export class ProxyServer {
         const pendingEmitted = this._emitPendingRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
@@ -6010,7 +6077,7 @@ export class ProxyServer {
           this._holdMockTimeout(downstream, {
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
           }, { pendingEmitted, trafficLifecycleId });
           return;
@@ -6054,7 +6121,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
             _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
@@ -6073,7 +6140,7 @@ export class ProxyServer {
             this._storePendingBreakpoint(requestId, {
               method, url: fullUrl, host: authority,
               path, headers: reqHeaders,
-              body: this._safeBodyString(body), trafficLifecycleId,
+              body: this._safeRequestBodyString(body, reqHeaders), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
@@ -6120,7 +6187,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
             responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime,
@@ -6134,7 +6201,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: 'Proxy Error: ' + err.message, responseBodySize: 0,
             duration, timestamp: startTime, error: err.message,
@@ -6435,7 +6502,7 @@ export class ProxyServer {
         const pendingEmitted = this._emitPendingRequest({
           id: requestId, protocol: 'https', method: req.method, url: fullUrl,
           host: hostname, path: req.url, requestHeaders: req.headers,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
@@ -6452,7 +6519,7 @@ export class ProxyServer {
           this._holdMockTimeout(downstream, {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
           }, { pendingEmitted, trafficLifecycleId });
           return;
@@ -6500,7 +6567,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             _trafficLifecycleComplete: false,
             statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
             responseBody: '', responseBodySize: 0,
@@ -6519,7 +6586,7 @@ export class ProxyServer {
             this._storePendingBreakpoint(requestId, {
               method: req.method, url: fullUrl, host: hostname,
               path: req.url, headers: req.headers,
-              body: this._safeBodyString(body), trafficLifecycleId,
+              body: this._safeRequestBodyString(body, req.headers), trafficLifecycleId,
               timestamp: Date.now(), resolve
             });
             this._setBreakpointTimeout(requestId, res, trafficLifecycleId);
@@ -6564,7 +6631,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
             responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
@@ -6578,7 +6645,7 @@ export class ProxyServer {
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
-            requestBody: this._safeBodyString(body), requestBodySize: body.length,
+            requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
             responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
             duration, timestamp: startTime, error: err.message,
@@ -6921,7 +6988,7 @@ export class ProxyServer {
       JSON.stringify(origHeaders) !== JSON.stringify(reqHeaders);
     const originalRequest = transformed ? {
       method: origMethod, url: origUrl, headers: origHeaders,
-      body: this._safeBodyString(body)
+      body: this._safeRequestBodyString(body, origHeaders)
     } : null;
     const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
 
@@ -6931,7 +6998,7 @@ export class ProxyServer {
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
-        requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
         statusCode: 0, statusMessage: action.type === 'close' ? 'Connection Closed' : 'Connection Reset',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -6970,7 +7037,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: 500, statusMessage: 'Mock Error', responseHeaders: {},
           responseBody: 'Forward setup error: ' + err.message, responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -7007,7 +7074,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
           responseHeaders: fwdRes.headers,
           responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
@@ -7029,7 +7096,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
           responseBody: 'Forward Error: ' + err.message, responseBodySize: 0,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -7059,7 +7126,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: 500, statusMessage: 'Mock Error',
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
@@ -7079,7 +7146,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fileStatus, statusMessage: 'Mocked (file)',
           responseHeaders: { 'Content-Type': mime },
           responseBody: file.content ? this._safeBodyString(file.content) : '',
@@ -7106,7 +7173,7 @@ export class ProxyServer {
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: failure.statusCode, statusMessage: failure.statusMessage,
           responseHeaders: failure.responseHeaders,
           responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
@@ -7146,7 +7213,7 @@ export class ProxyServer {
         traffic: {
           id: requestId, protocol: 'h2', method, url: targetUrl.href,
           host: authority, path, requestHeaders: reqHeaders,
-          requestBody: this._safeBodyString(body), requestBodySize: body.length,
+          requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           timestamp: startTime, source: 'mock',
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
@@ -7160,7 +7227,7 @@ export class ProxyServer {
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
-        requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
         _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint', responseHeaders: {},
         responseBody: '', responseBodySize: 0,
@@ -7177,7 +7244,7 @@ export class ProxyServer {
       const modifications = await new Promise((resolve) => {
         this._storePendingBreakpoint(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, reqHeaders), trafficLifecycleId,
           timestamp: Date.now(), resolve
         });
         this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
@@ -7210,7 +7277,7 @@ export class ProxyServer {
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
-        requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
         _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint (response)', responseHeaders: {},
         breakpointPhase: 'response',
@@ -7228,7 +7295,7 @@ export class ProxyServer {
       const modifications = await new Promise((resolve) => {
         this._storePendingBreakpoint(requestId, {
           method, url: fullUrl, host: authority, path, headers: reqHeaders,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, reqHeaders), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, stream, trafficLifecycleId);
@@ -7250,7 +7317,7 @@ export class ProxyServer {
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
-        requestBody: this._safeBodyString(body), requestBodySize: body.length,
+        requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
         statusCode, statusMessage: 'Breakpoint released', responseHeaders,
         responseBody, responseBodySize: Buffer.byteLength(responseBody),
         duration: Date.now() - startTime, timestamp: startTime, source: 'breakpoint',
@@ -7283,7 +7350,7 @@ export class ProxyServer {
     emitCapturedRequest({
       id: requestId, protocol: 'h2', method, url: fullUrl,
       host: authority, path, requestHeaders: reqHeaders,
-      requestBody: this._safeBodyString(body), requestBodySize: body.length,
+      requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
       statusCode: action.status || 200, statusMessage: 'Mocked',
       responseHeaders: actionHeaders,
       responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
@@ -8844,7 +8911,7 @@ export class ProxyServer {
       JSON.stringify(origHeaders) !== JSON.stringify(clientReq.headers);
     const originalRequest = transformed ? {
       method: origMethod, url: origUrl, headers: origHeaders,
-      body: this._safeBodyString(body)
+      body: this._safeRequestBodyString(body, origHeaders)
     } : null;
     const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
 
@@ -8854,7 +8921,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Closed',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -8870,7 +8938,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, statusCode: 0, statusMessage: 'Connection Reset',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
         duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
@@ -8906,7 +8975,8 @@ export class ProxyServer {
           emitRequest({
             id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
             host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-            requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+            requestHeaders: clientReq.headers,
+            requestBody: this._safeRequestBodyString(body, clientReq.headers),
             requestBodySize: body.length, statusCode: 500, statusMessage: 'Mock Error',
             responseHeaders: {}, responseBody: `Forward setup error: ${err.message}`,
             responseBodySize: 0, duration: Date.now() - startTime,
@@ -8943,7 +9013,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: proxyRes.statusCode,
           statusMessage: proxyRes.statusMessage, responseHeaders: resHeaders,
           responseBody: this._safeBodyString(proxyRes.body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
@@ -8962,7 +9033,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: 502, statusMessage: 'Bad Gateway',
           responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
           responseBodySize: 0, duration: Date.now() - startTime,
@@ -8988,7 +9060,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: 500, statusMessage: 'Mock Error',
           responseHeaders: { 'Content-Type': 'text/plain' },
           responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
@@ -9007,7 +9080,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: fileStatus, statusMessage: 'Mocked (file)',
           responseHeaders: { 'Content-Type': mime },
           responseBody: file.content ? this._safeBodyString(file.content) : '',
@@ -9032,7 +9106,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: failure.statusCode,
           statusMessage: failure.statusMessage, responseHeaders: failure.responseHeaders,
           responseBody: failure.responseBody, responseBodySize: failure.responseBodySize,
@@ -9068,7 +9143,8 @@ export class ProxyServer {
         traffic: {
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length,
           timestamp: startTime, source: 'mock',
           tls: captureTls, remote: null,
@@ -9083,7 +9159,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
@@ -9103,7 +9180,7 @@ export class ProxyServer {
         this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, clientReq.headers), trafficLifecycleId,
           timestamp: Date.now(), resolve
         });
         this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
@@ -9129,7 +9206,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint (response)',
         breakpointPhase: 'response',
@@ -9151,7 +9229,7 @@ export class ProxyServer {
         this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, clientReq.headers), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
@@ -9172,7 +9250,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode, statusMessage: 'Breakpoint released',
           responseHeaders, responseBody, responseBodySize: Buffer.byteLength(responseBody),
           duration: Date.now() - startTime, timestamp: startTime, source: 'breakpoint',
@@ -9189,7 +9268,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint (request)',
         responseHeaders: {}, responseBody: '', responseBodySize: 0,
@@ -9210,7 +9290,7 @@ export class ProxyServer {
         this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, clientReq.headers), trafficLifecycleId,
           timestamp: Date.now(), phase: 'request', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
@@ -9232,7 +9312,8 @@ export class ProxyServer {
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-        requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
         requestBodySize: body.length, _trafficLifecycleComplete: false,
         statusCode: 0, statusMessage: 'Breakpoint (response)',
         breakpointPhase: 'response',
@@ -9254,7 +9335,7 @@ export class ProxyServer {
         this._storePendingBreakpoint(requestId, {
           method: clientReq.method, url: targetUrl.href, host: targetUrl.hostname,
           path: targetUrl.pathname + targetUrl.search, headers: clientReq.headers,
-          body: this._safeBodyString(body), trafficLifecycleId,
+          body: this._safeRequestBodyString(body, clientReq.headers), trafficLifecycleId,
           timestamp: Date.now(), phase: 'response', resolve
         });
         this._setBreakpointTimeout(requestId, clientRes, trafficLifecycleId);
@@ -9275,7 +9356,8 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers, requestBody: this._safeBodyString(body),
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode, statusMessage: 'Breakpoint released',
           responseHeaders, responseBody, responseBodySize: Buffer.byteLength(responseBody),
           duration: Date.now() - startTime, timestamp: startTime, source: 'breakpoint',
@@ -9309,7 +9391,7 @@ export class ProxyServer {
       host: targetUrl.hostname,
       path: targetUrl.pathname + targetUrl.search,
       requestHeaders: clientReq.headers,
-      requestBody: this._safeBodyString(body),
+      requestBody: this._safeRequestBodyString(body, clientReq.headers),
       requestBodySize: body.length,
       statusCode,
       statusMessage: 'Mocked',
@@ -10107,7 +10189,7 @@ export class ProxyServer {
       host,
       path,
       requestHeaders,
-      requestBody: this._safeBodyString(requestBody),
+      requestBody: this._safeRequestBodyString(requestBody, requestHeaders),
       requestBodySize: requestBody.length,
       _trafficLifecycleComplete: false,
       statusCode: 0,

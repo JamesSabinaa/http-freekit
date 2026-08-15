@@ -8,6 +8,7 @@ import test from 'node:test';
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { Settings } from '../../src/settings.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 function requestJson(port, method, pathname, body) {
   return new Promise((resolve, reject) => {
@@ -44,7 +45,7 @@ async function createHarness(t) {
     return filePath;
   };
   const settings = new Settings(dataDir);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   const api = new ApiServer(proxy, null, null);
   api.settings = settings;
   const server = http.createServer(api.app);
@@ -137,7 +138,7 @@ test('item additions replace the normalized host in place and persist one active
     expected
   );
 
-  const restartedProxy = new ProxyServer(null);
+  const restartedProxy = new ProxyServer(null, tlsMaterialValidationStubs);
   restartedProxy.setClientCertificates(settings.get('clientCertificates'));
   assert.deepEqual(restartedProxy.clientCertificates, expected);
   assert.deepEqual(
@@ -185,7 +186,7 @@ function createSynchronousHarness(t) {
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   return {
     dataDir,
-    proxy: new ProxyServer(null),
+    proxy: new ProxyServer(null, tlsMaterialValidationStubs),
     certificatePath(name, contents) {
       const filePath = path.join(dataDir, name);
       fs.writeFileSync(filePath, contents);

@@ -8,6 +8,7 @@ import test from 'node:test';
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { Settings } from '../../src/settings.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 function requestJson(port, method, pathname, body = {}) {
   return new Promise((resolve, reject) => {
@@ -38,7 +39,7 @@ async function createHarness(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-352-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const settings = new Settings(dataDir);
-  const proxy = new ProxyServer(null);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
   const api = new ApiServer(proxy, null, null);
   api.settings = settings;
   const server = http.createServer(api.app);
@@ -69,7 +70,7 @@ test('the item API preserves a supplied passphrase through persistence and resta
   assert.deepEqual(settings.get('clientCertificates'), proxy.clientCertificates);
 
   const restartedSettings = new Settings(dataDir);
-  const restartedProxy = new ProxyServer(null);
+  const restartedProxy = new ProxyServer(null, tlsMaterialValidationStubs);
   restartedProxy.setClientCertificates(restartedSettings.get('clientCertificates'));
   const options = restartedProxy._getClientCertificateOptions('secure.example.test');
 

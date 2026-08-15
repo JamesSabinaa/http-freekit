@@ -20,6 +20,7 @@ import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 import { restoreHttpsWhitelistSetting } from './proxy/https-whitelist.js';
 import { restoreSavedTlsMaterialSettings } from './proxy/tls-material-config.js';
+import { restoreSavedTlsFingerprintSetting } from './proxy/tls-fingerprint-config.js';
 import { startWithValidatedApiPort } from './startup-config.js';
 import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
 import { restoreSavedApiSpecs } from './startup-api-spec-restoration.js';
@@ -151,8 +152,7 @@ async function initializeApplication(apiPort) {
   if (savedHttp2) proxy.setHttp2Config(savedHttp2);
   restoreSavedTlsMaterialSettings(proxy, settings);
   restoreHttpsWhitelistSetting(proxy, settings);
-  const savedTlsFingerprint = settings.get('tlsFingerprint');
-  if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
+  restoreSavedTlsFingerprintSetting(proxy, settings);
   restoreSavedRuleSettings(proxy, settings);
   restoreSavedApiSpecs(proxy, settings);
 

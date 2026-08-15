@@ -154,17 +154,24 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
     const originPort = await listen(origin);
 
     const breakpointHits = [];
+    const captured = [];
+    let resumeModifications = {};
     let proxy;
     proxy = new ProxyServer(ca, {
       port: 0,
+      onRequest: request => captured.push(request),
       onBreakpoint: event => {
         if (event.type !== 'breakpoint-hit') return;
         breakpointHits.push(event);
-        setImmediate(() => proxy.resumeBreakpoint(
-          event.requestId,
-          {},
-          event.trafficLifecycleId
-        ));
+        setImmediate(() => {
+          const modifications = resumeModifications;
+          resumeModifications = {};
+          proxy.resumeBreakpoint(
+            event.requestId,
+            modifications,
+            event.trafficLifecycleId
+          );
+        });
       }
     });
     await proxy.start();
@@ -244,6 +251,7 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
           const checkStart = breakpointChecks.length;
           const hitStart = breakpointHits.length;
           const receivedStart = received.length;
+          const captureStart = captured.length;
           const response = await protocol.send(input, inputHeaders);
 
           assert.equal(response.statusCode, 200);
@@ -256,6 +264,16 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
           assert.equal(received.length, receivedStart + 1);
           assert.equal(received[receivedStart].body.toString('utf8'), transformed);
           assert.equal(received[receivedStart].headers['content-encoding'], undefined);
+          const completedCapture = captured.slice(captureStart)
+            .findLast(item => item.method === 'POST' && item.statusCode === 200);
+          assert.ok(completedCapture);
+          assert.equal(completedCapture.requestBody, transformed);
+          assert.equal(completedCapture.requestBodyEncoding, 'utf8');
+          assert.equal(Object.hasOwn(
+            completedCapture,
+            'requestBodyContentDecoded'
+          ), false);
+          assert.equal(completedCapture.requestHeaders['content-encoding'], undefined);
         };
 
         await runScenario({
@@ -269,6 +287,34 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
           transformed: '',
           expectedRule: 'removed-body'
         });
+
+        const decodedBody = `buffered gzip capture for ${protocol.name}`;
+        const compressedBody = zlib.gzipSync(decodedBody);
+        proxy.mockRules = [];
+        proxy.breakpointRules = [{
+          id: 'decoded-gzip-body',
+          enabled: true,
+          matchers: [{ type: 'body-contains', value: decodedBody }]
+        }];
+        resumeModifications = {
+          url: `http://127.0.0.1:${originPort}/buffered-gzip`
+        };
+        const captureStart = captured.length;
+        const response = await protocol.send(compressedBody, {
+          'content-encoding': 'gzip',
+          'content-type': 'text/plain; charset=utf-8'
+        });
+
+        assert.equal(response.statusCode, 200);
+        const requestCaptures = captured.slice(captureStart).filter(item => item.method === 'POST');
+        assert.ok(requestCaptures.length >= 2, 'expected pending and completed captures');
+        for (const requestCapture of requestCaptures) {
+          assert.equal(requestCapture.requestBody, decodedBody);
+          assert.equal(requestCapture.requestBodyEncoding, 'utf8');
+          assert.equal(requestCapture.requestBodyContentDecoded, true);
+          assert.equal(requestCapture.requestHeaders['content-encoding'], 'gzip');
+          assert.equal(requestCapture.requestHeaders['content-type'], 'text/plain; charset=utf-8');
+        }
       });
     }
   });

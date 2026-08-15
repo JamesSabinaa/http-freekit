@@ -63,8 +63,8 @@ test('body matcher sees tokens beyond the bounded capture preview', async t => {
   assert.equal(recorded.requestBody.includes(token), false);
 });
 
-test('gzip request bodies are decoded for body and JSON matchers', async t => {
-  const { proxy } = await startProxy(t, [{
+test('gzip request bodies are decoded for body and JSON matchers and buffered mock capture', async t => {
+  const { proxy, captured } = await startProxy(t, [{
     matchers: [
       { type: 'path', matchType: 'exact', value: '/json' },
       { type: 'json-body-includes', value: '{"match":true}' }
@@ -93,6 +93,16 @@ test('gzip request bodies are decoded for body and JSON matchers', async t => {
 
   assert.deepEqual(jsonResponse, { statusCode: 210, body: 'json matched' });
   assert.deepEqual(bodyResponse, { statusCode: 211, body: 'body matched' });
+  const completed = captured.filter(request => [210, 211].includes(request.statusCode));
+  assert.deepEqual(completed.map(request => request.requestBody), [
+    '{"match":true,"other":"value"}',
+    'prefix compressed token suffix'
+  ]);
+  for (const request of completed) {
+    assert.equal(request.requestBodyEncoding, 'utf8');
+    assert.equal(request.requestBodyContentDecoded, true);
+    assert.equal(request.requestHeaders['content-encoding'], 'gzip');
+  }
 });
 
 test('breakpoint body matchers use decoded input within existing ceilings', () => {

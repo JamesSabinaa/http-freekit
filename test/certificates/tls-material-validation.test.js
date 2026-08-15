@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import forge from 'node-forge';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../../src/proxy/tls-material-config.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { Settings } from '../../src/settings.js';
+import { tlsMaterialValidationStubs } from '../fixtures/tls-material-validation-stubs.js';
 
 function requestJson(port, method, pathname, body) {
   return new Promise((resolve, reject) => {
@@ -56,10 +58,13 @@ function readTlsMaterial(filePath, encoding) {
   return fs.readFileSync(filePath, encoding);
 }
 
-async function createHarness(t) {
+async function createHarness(t, proxyOptions = tlsMaterialValidationStubs) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-tls-material-'));
   const settings = new Settings(dataDir);
-  const proxy = new ProxyServer(null, { readTlsMaterialFileSync: readTlsMaterial });
+  const proxy = new ProxyServer(null, {
+    ...proxyOptions,
+    readTlsMaterialFileSync: readTlsMaterial
+  });
   const api = new ApiServer(proxy, null, null);
   api.settings = settings;
   const server = http.createServer(api.app);
@@ -76,6 +81,58 @@ async function createHarness(t) {
     port: server.address().port,
     fixture: (name, contents) => fixtureFile(dataDir, name, contents)
   };
+}
+
+function generateKeyPair() {
+  return new Promise((resolve, reject) => {
+    forge.pki.rsa.generateKeyPair({ bits: 2048 }, (error, keys) => {
+      if (error) reject(error);
+      else resolve(keys);
+    });
+  });
+}
+
+async function createUsableTlsMaterial(dataDir, passphrase = 'correct secret') {
+  const keys = await generateKeyPair();
+  const certificate = forge.pki.createCertificate();
+  certificate.publicKey = keys.publicKey;
+  certificate.serialNumber = '01';
+  certificate.validity.notBefore = new Date(Date.now() - 60_000);
+  certificate.validity.notAfter = new Date(Date.now() + 86_400_000);
+  const attributes = [{ name: 'commonName', value: 'TLS material test CA' }];
+  certificate.setSubject(attributes);
+  certificate.setIssuer(attributes);
+  certificate.setExtensions([
+    { name: 'basicConstraints', cA: true },
+    { name: 'keyUsage', keyCertSign: true, digitalSignature: true },
+    { name: 'subjectKeyIdentifier' }
+  ]);
+  certificate.sign(keys.privateKey, forge.md.sha256.create());
+
+  const caPem = forge.pki.certificateToPem(certificate);
+  const pfxAsn1 = forge.pkcs12.toPkcs12Asn1(
+    keys.privateKey,
+    [certificate],
+    passphrase,
+    { algorithm: '3des' }
+  );
+  const pfxPath = fixtureFile(
+    dataDir,
+    'usable.pfx',
+    Buffer.from(forge.asn1.toDer(pfxAsn1).getBytes(), 'binary')
+  );
+  const certificateOnlyPfx = forge.pkcs12.toPkcs12Asn1(
+    null,
+    [certificate],
+    passphrase,
+    { algorithm: '3des' }
+  );
+  const certificateOnlyPfxPath = fixtureFile(
+    dataDir,
+    'certificate-only.pfx',
+    Buffer.from(forge.asn1.toDer(certificateOnlyPfx).getBytes(), 'binary')
+  );
+  return { caPem, certificateOnlyPfxPath, passphrase, pfxPath };
 }
 
 function captureRuntime(proxy) {
@@ -109,6 +166,106 @@ function countConnectionResets(proxy) {
   proxy._closeAllH2Sessions = () => { counts.sessions++; };
   return counts;
 }
+
+test('readable TLS material is cryptographically validated before every mutation boundary',
+  async t => {
+    const { dataDir, proxy, settings, port, fixture } = await createHarness(t, {});
+    const {
+      caPem,
+      certificateOnlyPfxPath,
+      passphrase,
+      pfxPath
+    } = await createUsableTlsMaterial(dataDir);
+    const commentedCaPath = fixture(
+      'commented-ca.pem',
+      `# Local trust bundle\nGenerated for compatibility testing\n${caPem}# End bundle\n`
+    );
+    const malformedPfxPath = fixture('readable-invalid.pfx', Buffer.from('ordinary text'));
+    const textCaPath = fixture('readable-invalid-ca.pem', 'ordinary text');
+    const incompleteCaPath = fixture(
+      'incomplete-ca.pem',
+      `${caPem}\n-----BEGIN CERTIFICATE-----\ntruncated`
+    );
+
+    proxy.setClientCertificates([{
+      host: 'before.example.test',
+      pfxPath,
+      passphrase
+    }]);
+    proxy.setTrustedCAs([commentedCaPath]);
+    assert.match(proxy._trustedCaCertificates[0], /Generated for compatibility testing/);
+    settings.setAll({
+      clientCertificates: proxy.clientCertificates,
+      trustedCAs: proxy.trustedCAs
+    });
+    const previous = captureRuntime(proxy);
+    const beforeSettings = fs.readFileSync(settings.filePath);
+    const resets = countConnectionResets(proxy);
+
+    for (const candidate of [
+      [{ host: 'invalid.example.test', pfxPath: malformedPfxPath }],
+      [{ host: 'invalid.example.test', pfxPath: certificateOnlyPfxPath, passphrase }],
+      [{ host: 'invalid.example.test', pfxPath, passphrase: 'wrong secret' }]
+    ]) {
+      assert.throws(
+        () => proxy.setClientCertificates(candidate),
+        error => error?.code === 'ERR_INVALID_TLS_MATERIAL_CONFIG' && /usable PFX/.test(error.message)
+      );
+      assertRuntimeIdentity(proxy, previous);
+    }
+    for (const candidate of [[textCaPath], [incompleteCaPath]]) {
+      assert.throws(
+        () => proxy.setTrustedCAs(candidate),
+        error => error?.code === 'ERR_INVALID_TLS_MATERIAL_CONFIG' && /usable PEM/.test(error.message)
+      );
+      assertRuntimeIdentity(proxy, previous);
+    }
+
+    for (const [pathname, body, message] of [
+      ['/api/client-certificates', {
+        certificates: [{ host: 'invalid.example.test', pfxPath: malformedPfxPath }]
+      }, /usable PFX/],
+      ['/api/client-certificates', {
+        certificates: [{
+          host: 'invalid.example.test',
+          pfxPath: certificateOnlyPfxPath,
+          passphrase
+        }]
+      }, /usable PFX/],
+      ['/api/client-certificates', {
+        certificates: [{ host: 'invalid.example.test', pfxPath, passphrase: 'wrong secret' }]
+      }, /usable PFX/],
+      ['/api/trusted-cas', { cas: [textCaPath] }, /usable PEM/],
+      ['/api/trusted-cas', { cas: [incompleteCaPath] }, /usable PEM/]
+    ]) {
+      const response = await requestJson(port, 'POST', pathname, body);
+      assert.equal(response.statusCode, 400, pathname);
+      assert.match(response.body.error, message);
+      assertRuntimeIdentity(proxy, previous);
+      assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+    }
+
+    settings.setAll({
+      clientCertificates: [{
+        host: 'invalid.example.test',
+        pfxPath,
+        passphrase: 'wrong secret'
+      }],
+      trustedCAs: [incompleteCaPath]
+    });
+    const invalidSavedSettings = fs.readFileSync(settings.filePath);
+    const errors = [];
+    const restored = restoreSavedTlsMaterialSettings(proxy, settings, {
+      error: message => errors.push(message)
+    });
+    assert.deepEqual(restored, { clientCertificates: false, trustedCAs: false });
+    assertRuntimeIdentity(proxy, previous);
+    assert.deepEqual(fs.readFileSync(settings.filePath), invalidSavedSettings);
+    assert.deepEqual(resets, { agents: 0, sessions: 0 });
+    assert.equal(errors.length, 2);
+    assert.match(errors[0], /Ignoring invalid saved client certificates.*usable PFX/);
+    assert.match(errors[1], /Ignoring invalid saved trusted CAs.*usable PEM/);
+  });
 
 test('direct TLS material setters reject every unreadable candidate before mutation', async t => {
   const { dataDir, proxy, fixture } = await createHarness(t);
