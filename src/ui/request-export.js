@@ -14,6 +14,14 @@ function isSafeCurlFormContentType(value) {
   return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(value));
 }
 
+function isSafeMultipartDispositionValue(value) {
+  return !/[\0-\x1f\x7f]/.test(String(value));
+}
+
+function multipartQuotedString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function powerShellStringLiteral(value) {
   return `'${String(value ?? '').replace(/'/g, "''")}'`;
 }
@@ -98,6 +106,22 @@ function generateMultipartExportSnippet(req, format) {
   const url = String(req.url || '');
   const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
   if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
+
+  if (format === 'powershell' || format === 'php') {
+    const unsafeField = fields.find((field) => {
+      if (!isSafeMultipartDispositionValue(field.key)) return true;
+      if (field.type !== 'file') return false;
+      const filename = field.file?.name || field.fileName || 'file';
+      const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+      return !isSafeMultipartDispositionValue(filename) || !isSafeCurlFormContentType(contentType);
+    });
+    if (unsafeField) {
+      return generateUnavailableExportSnippet(
+        format,
+        'The captured multipart field or file metadata cannot be represented safely in MIME headers.'
+      );
+    }
+  }
 
   if (format === 'curl') {
     const unsafeFileField = fields.find((field) => {
@@ -201,14 +225,38 @@ function generateMultipartExportSnippet(req, format) {
   if (format === 'powershell') {
     let code = '$headers = @{}\n';
     headers.forEach(([key, value]) => { code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`; });
-    code += '\n$form = @{}\n';
-    fields.forEach((field) => {
-      const value = field.type === 'file'
-        ? `Get-Item -LiteralPath ${powerShellStringLiteral(field.file?.name || field.fileName || 'file')}`
-        : powerShellStringLiteral(field.value || '');
-      code += `$form[${powerShellStringLiteral(field.key)}] = ${value}\n`;
+    code += "\n$boundary = '----HTTPFreeKit' + [Guid]::NewGuid().ToString('N')\n";
+    code += '$bodyStream = [System.IO.MemoryStream]::new()\n';
+    code += '$multipartUtf8 = [System.Text.UTF8Encoding]::new($false)\n';
+    code += '$writeMultipartText = {\n';
+    code += '    param([string]$value)\n';
+    code += '    [byte[]]$bytes = $multipartUtf8.GetBytes($value)\n';
+    code += '    $bodyStream.Write($bytes, 0, $bytes.Length)\n';
+    code += '}\n\ntry {\n';
+    fields.forEach((field, index) => {
+      const safeName = multipartQuotedString(field.key);
+      code += '    & $writeMultipartText (\'--\' + $boundary + "`r`n")\n';
+      if (field.type === 'file') {
+        const filename = field.file?.name || field.fileName || 'file';
+        const safeFilename = multipartQuotedString(filename);
+        const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+        code += `    & $writeMultipartText ${powerShellStringLiteral(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"`)}\n`;
+        code += '    & $writeMultipartText "`r`n"\n';
+        code += `    & $writeMultipartText ${powerShellStringLiteral(`Content-Type: ${contentType}`)}\n`;
+        code += '    & $writeMultipartText "`r`n`r`n"\n';
+        code += `    $multipartFile${index} = [System.IO.File]::OpenRead(${powerShellStringLiteral(filename)})\n`;
+        code += `    try { $multipartFile${index}.CopyTo($bodyStream) } finally { $multipartFile${index}.Dispose() }\n`;
+      } else {
+        code += `    & $writeMultipartText ${powerShellStringLiteral(`Content-Disposition: form-data; name="${safeName}"`)}\n`;
+        code += '    & $writeMultipartText "`r`n`r`n"\n';
+        code += `    & $writeMultipartText ${powerShellStringLiteral(field.value || '')}\n`;
+      }
+      code += '    & $writeMultipartText "`r`n"\n';
     });
-    code += `\n$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers -Form $form\n$response.StatusCode\n$response.Content`;
+    code += '    & $writeMultipartText (\'--\' + $boundary + "--`r`n")\n';
+    code += '    [byte[]]$body = $bodyStream.ToArray()\n';
+    code += '} finally {\n    $bodyStream.Dispose()\n}\n\n';
+    code += `$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers -ContentType ('multipart/form-data; boundary=' + $boundary) -Body $body\n$response.StatusCode\n$response.Content`;
     return code;
   }
 
@@ -236,15 +284,31 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'php') {
-    let code = `<?php\n$ch = curl_init(${phpStringLiteral(url)});\n$postFields = [\n`;
-    fields.forEach((field) => {
-      const value = field.type === 'file'
-        ? `new CURLFile(${phpStringLiteral(field.file?.name || field.fileName || 'file')}, ${phpStringLiteral(field.file?.type || field.fileType || 'application/octet-stream')})`
-        : phpStringLiteral(field.value || '');
-      code += `    ${phpStringLiteral(field.key)} => ${value},\n`;
+    let code = `<?php\n$boundary = '----HTTPFreeKit' . bin2hex(random_bytes(16));\n$body = '';\n`;
+    fields.forEach((field, index) => {
+      const safeName = multipartQuotedString(field.key);
+      code += `$body .= '--' . $boundary . "\\r\\n";\n`;
+      if (field.type === 'file') {
+        const filename = field.file?.name || field.fileName || 'file';
+        const safeFilename = multipartQuotedString(filename);
+        const contentType = field.file?.type || field.fileType || 'application/octet-stream';
+        code += `$body .= ${phpStringLiteral(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"`)} . "\\r\\n";\n`;
+        code += `$body .= ${phpStringLiteral(`Content-Type: ${contentType}`)} . "\\r\\n\\r\\n";\n`;
+        code += `$multipartFile${index} = file_get_contents(${phpStringLiteral(filename)});\n`;
+        code += `if ($multipartFile${index} === false) {\n    throw new RuntimeException(${phpStringLiteral(`Unable to read multipart file ${index}`)});\n}\n`;
+        code += `$body .= $multipartFile${index};\n`;
+      } else {
+        code += `$body .= ${phpStringLiteral(`Content-Disposition: form-data; name="${safeName}"`)} . "\\r\\n\\r\\n";\n`;
+        code += `$body .= ${phpStringLiteral(field.value || '')};\n`;
+      }
+      code += `$body .= "\\r\\n";\n`;
     });
-    code += `];\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);\n`;
-    if (headers.length) code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
+    code += `$body .= '--' . $boundary . "--\\r\\n";\n\n`;
+    code += `$ch = curl_init(${phpStringLiteral(url)});\n`;
+    code += `curl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $body);\n`;
+    const headerLines = headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`);
+    headerLines.push("    'Content-Type: multipart/form-data; boundary=' . $boundary");
+    code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headerLines.join(',\n')}\n]);\n`;
     code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
     return code;
   }
