@@ -59,6 +59,15 @@ function normalizeHarTimestamp(value, fieldPath) {
   return timestamp;
 }
 
+function normalizeHarProtocol(parsedUrl, httpVersion) {
+  const urlProtocol = parsedUrl.protocol.toLowerCase();
+  if (urlProtocol === 'ws:' || urlProtocol === 'wss:') {
+    return urlProtocol.slice(0, -1);
+  }
+  if (/^HTTP\/2(?:\.\d+)?$/i.test(httpVersion)) return 'h2';
+  return urlProtocol === 'https:' ? 'https' : 'http';
+}
+
 function normalizeHarHeaders(headers, fieldPath) {
   if (!Array.isArray(headers)) throw new Error(`${fieldPath} must be an array`);
   const normalized = Object.create(null);
@@ -204,9 +213,7 @@ function normalizeHarEntry(entry, index, createId) {
 
   return {
     id: createId(),
-    protocol: /^HTTP\/2(?:\.\d+)?$/i.test(requestHttpVersion)
-      ? 'h2'
-      : parsedUrl.protocol.toLowerCase() === 'https:' ? 'https' : 'http',
+    protocol: normalizeHarProtocol(parsedUrl, requestHttpVersion),
     method,
     url,
     host: parsedUrl.hostname,

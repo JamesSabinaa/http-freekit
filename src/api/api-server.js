@@ -109,6 +109,19 @@ function normalizeHarBodySize(value) {
     : 0;
 }
 
+function normalizeHarProtocol(parsedUrl, httpVersion, rawUrl) {
+  const urlProtocol = parsedUrl?.protocol?.toLowerCase();
+  if (urlProtocol === 'ws:' || urlProtocol === 'wss:') {
+    return urlProtocol.slice(0, -1);
+  }
+  if (/^HTTP\/2(?:\.\d+)?$/i.test(httpVersion || '')) return 'h2';
+  if (urlProtocol === 'https:') return 'https';
+  // Preserve the legacy classification fallback for non-standard or malformed URLs.
+  return String(rawUrl || '').toLowerCase().startsWith('https')
+    ? 'https'
+    : 'http';
+}
+
 function harTruncationToTraffic(body, fieldPath) {
   if (!body || typeof body !== 'object' || Array.isArray(body)
       || !Object.prototype.hasOwnProperty.call(body, '_truncated')) return null;
@@ -1336,12 +1349,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
         const importTimestamp = Date.now();
         const imported = har.log.entries.map(entry => {
-          let host, pathname, search;
+          let parsedUrl, host, pathname, search;
           try {
-            const parsed = new URL(entry.request.url);
-            host = parsed.hostname;
-            pathname = parsed.pathname;
-            search = parsed.search;
+            parsedUrl = new URL(entry.request.url);
+            host = parsedUrl.hostname;
+            pathname = parsedUrl.pathname;
+            search = parsedUrl.search;
           } catch {
             host = '';
             pathname = entry.request.url;
@@ -1367,9 +1380,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
           return {
             id: crypto.randomUUID(),
-            protocol: /^HTTP\/2(?:\.\d+)?$/i.test(entry.request.httpVersion || '')
-              ? 'h2'
-              : entry.request.url?.toLowerCase().startsWith('https') ? 'https' : 'http',
+            protocol: normalizeHarProtocol(
+              parsedUrl,
+              entry.request.httpVersion,
+              entry.request.url
+            ),
             method: entry.request.method ?? 'GET',
             url: entry.request.url || '',
             host,
