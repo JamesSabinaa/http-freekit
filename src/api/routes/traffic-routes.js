@@ -123,7 +123,7 @@ export function registerTrafficRoutes(router, api) {
       exported: new Date().toISOString(),
       tool: 'HTTP FreeKit',
       version: '1.0.0',
-      requests: api._getTrafficWithoutDefaultExclusions()
+      requests: api._getTrafficExportTraffic()
     });
   });
 

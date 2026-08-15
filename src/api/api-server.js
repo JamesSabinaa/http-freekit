@@ -843,15 +843,36 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return this._getTrafficWithListsApplied();
   }
 
-  _getHarExportTraffic() {
+  _getTrafficExportTraffic() {
     const hideTunnelRequests = this.settings?.get('hideTunnelRequests', true) !== false;
     const filterSafeFonts = this.settings?.get('filterSafeFonts', false) === true;
-    return this._getTrafficWithoutDefaultExclusions().filter(req => {
-      if (req?.protocol === 'ws-frame') return false;
+    const traffic = this._getTrafficWithoutDefaultExclusions();
+    const parentEligibility = new Map();
+    const isEligibleBaseRequest = req => {
       if (hideTunnelRequests && this._isTunnelRequest(req)) return false;
       if (filterSafeFonts && ['fonts.gstatic.com', 'fonts.googleapis.com'].includes(String(req?.host || '').toLowerCase())) return false;
       return true;
+    };
+
+    for (const request of traffic) {
+      if (request?.protocol === 'ws-frame' || !request?.id) continue;
+      parentEligibility.set(
+        this._trafficIdentityKey(request.id, request.trafficLifecycleId ?? null),
+        isEligibleBaseRequest(request)
+      );
+    }
+
+    return traffic.filter(request => {
+      if (request?.protocol !== 'ws-frame') return isEligibleBaseRequest(request);
+      return parentEligibility.get(this._trafficIdentityKey(
+        request.parentId,
+        request.parentTrafficLifecycleId ?? null
+      )) === true;
     });
+  }
+
+  _getHarExportTraffic() {
+    return this._getTrafficExportTraffic().filter(req => req?.protocol !== 'ws-frame');
   }
 
   _getTrafficImportValidationError(requests) {

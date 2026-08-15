@@ -10814,12 +10814,16 @@
           a.click();
           toast('HAR download started', 'success');
         } else {
-          const blob = new Blob([JSON.stringify({
-            exported: new Date().toISOString(),
-            tool: 'HTTP FreeKit',
-            version: '1.0.0',
-            requests
-          }, null, 2)], { type: 'application/json' });
+          // The server owns the complete traffic log and applies the same saved
+          // Traffic Lists, Safe Fonts, and tunnel settings used by HAR exports.
+          const response = await fetch(`${API_BASE}/api/traffic/export`);
+          if (!response?.ok) {
+            throw new Error(`JSON export returned HTTP ${response?.status || 'unknown'}`);
+          }
+          const blob = await response.blob();
+          if (!(blob instanceof Blob) || !/^application\/json(?:;|$)/i.test(blob.type)) {
+            throw new Error('JSON export returned an invalid response');
+          }
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
