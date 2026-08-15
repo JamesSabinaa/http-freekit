@@ -183,6 +183,23 @@ test('an invalid second HAR entry causes no partial renderer mutation or success
   assert.doesNotMatch(harness.toasts[0].message, /Imported 1 request/);
 });
 
+test('renderer HAR normalization preserves distinct request and response HTTP versions', () => {
+  const entry = validEntry();
+  entry.request.httpVersion = 'HTTP/1.0';
+  entry.response.httpVersion = 'HTTP/1.1';
+
+  const [imported] = normalizeHarEntries(har([entry]), {
+    createId: () => 'versioned-import'
+  });
+
+  assert.equal(imported.protocol, 'https');
+  assert.equal(imported.requestHttpVersion, 'HTTP/1.0');
+  assert.equal(imported.responseHttpVersion, 'HTTP/1.1');
+  const reexported = trafficToHar([imported], { maskSensitive: false }).log.entries[0];
+  assert.equal(reexported.request.httpVersion, 'HTTP/1.0');
+  assert.equal(reexported.response.httpVersion, 'HTTP/1.1');
+});
+
 test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe search fields', async () => {
   const rich = validEntry();
   rich.time = 25.5;
