@@ -2,9 +2,23 @@ import { trafficToHar } from '../har-converter.js';
 
 function parsePaginationValue(value, fallback) {
   if (value === undefined) return fallback;
-  if (!/^\d+$/.test(String(value))) return null;
+  if (!/^\d+$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function readScalarQueryParameters(query, names) {
+  const keys = Object.keys(query);
+  const values = Object.create(null);
+  for (const name of names) {
+    const hasNestedForm = keys.some(key => key.startsWith(`${name}[`));
+    const value = Object.hasOwn(query, name) ? query[name] : undefined;
+    if (hasNestedForm || (value !== undefined && typeof value !== 'string')) {
+      return { error: `${name} must be a single string query value` };
+    }
+    values[name] = value;
+  }
+  return { values };
 }
 
 function resolveTrafficRequest(api, req) {
@@ -49,12 +63,14 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.get('/api/traffic', (req, res) => {
-    const limit = parsePaginationValue(req.query.limit, 100);
-    const offset = parsePaginationValue(req.query.offset, 0);
+    const parsedQuery = readScalarQueryParameters(req.query, ['limit', 'offset', 'filter']);
+    if (parsedQuery.error) return res.status(400).json({ error: parsedQuery.error });
+    const { limit: limitValue, offset: offsetValue, filter = '' } = parsedQuery.values;
+    const limit = parsePaginationValue(limitValue, 100);
+    const offset = parsePaginationValue(offsetValue, 0);
     if (limit === null || offset === null) {
       return res.status(400).json({ error: 'limit and offset must be non-negative integers' });
     }
-    const filter = req.query.filter || '';
 
     const visibleTraffic = api._getTrafficWithoutDefaultExclusions();
     let filtered = visibleTraffic;
@@ -131,7 +147,12 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.get('/api/traffic/search', (req, res) => {
-    const { method, status, host, path: pathFilter, source } = req.query;
+    const parsedQuery = readScalarQueryParameters(
+      req.query,
+      ['method', 'status', 'host', 'path', 'source']
+    );
+    if (parsedQuery.error) return res.status(400).json({ error: parsedQuery.error });
+    const { method, status, host, path: pathFilter, source } = parsedQuery.values;
     let results = api._getTrafficWithoutDefaultExclusions();
 
     if (method) results = results.filter(request =>
