@@ -4,13 +4,13 @@ import test from 'node:test';
 import { ApiServer } from '../../src/api/api-server.js';
 import { trafficToHar } from '../../src/api/har-converter.js';
 
-function postJson(port, body) {
+function postJson(port, body, pathname = '/api/traffic/import-har') {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const req = http.request({
       hostname: '127.0.0.1',
       port,
-      path: '/api/traffic/import-har',
+      path: pathname,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -185,4 +185,129 @@ test('HAR import and export preserve base64 bodies and duplicate headers', async
   assert.equal(Object.hasOwn(exportedEntries[1].request.postData, 'encoding'), false);
   assert.equal(exportedEntries[1].response.content.text, literalResponseBody);
   assert.equal(Object.hasOwn(exportedEntries[1].response.content, 'encoding'), false);
+});
+
+test('server HAR import preserves WebSocket schemes and round-trips their original URLs', async (t) => {
+  const proxy = {
+    port: 8081,
+    mockRules: [],
+    onBreakpoint: null,
+    onUpstreamProxyRetry: null,
+    matchApiSpec: () => null
+  };
+  const api = new ApiServer(proxy, null, null);
+  const server = http.createServer(api.app);
+  server.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const cases = [
+    {
+      url: 'ws://socket.example.test/chat?room=one#client-state',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'ws',
+      path: '/chat?room=one'
+    },
+    {
+      url: 'ws://socket.example.test:80/default-port',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'ws',
+      path: '/default-port'
+    },
+    {
+      url: 'ws://socket.example.test:8080/explicit-port?token=two',
+      httpVersion: 'HTTP/2',
+      protocol: 'ws',
+      path: '/explicit-port?token=two'
+    },
+    {
+      url: 'wss://secure.example.test:443/default-port',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'wss',
+      path: '/default-port'
+    },
+    {
+      url: 'wss://secure.example.test:8443/explicit-port?token=three#local',
+      httpVersion: 'HTTP/2',
+      protocol: 'wss',
+      path: '/explicit-port?token=three'
+    },
+    {
+      url: 'http://ordinary.example.test/resource',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'http',
+      path: '/resource'
+    },
+    {
+      url: 'https://ordinary.example.test/resource',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'https',
+      path: '/resource'
+    },
+    {
+      url: 'https://h2.example.test/resource',
+      httpVersion: 'HTTP/2',
+      protocol: 'h2',
+      path: '/resource'
+    }
+  ];
+  const entries = cases.map(({ url, httpVersion }) => ({
+    startedDateTime: '2026-01-01T00:00:00.000Z',
+    time: 1,
+    request: { method: 'GET', url, httpVersion, headers: [] },
+    response: {
+      status: url.startsWith('ws') ? 101 : 200,
+      statusText: url.startsWith('ws') ? 'Switching Protocols' : 'OK',
+      httpVersion,
+      headers: [],
+      content: { text: '' }
+    }
+  }));
+
+  const response = await postJson(server.address().port, { log: { entries } });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(
+    api.trafficLog.map(({ protocol, url, path }) => ({ protocol, url, path })),
+    cases.map(({ protocol, url, path }) => ({ protocol, url, path }))
+  );
+  assert.deepEqual(
+    api.trafficLog.map(request => request.host),
+    cases.map(({ url }) => new URL(url).hostname)
+  );
+  assert.equal(new Set(api.trafficLog.map(request => request.id)).size, cases.length);
+
+  const importedParent = api.trafficLog[0];
+  const frame = {
+    id: 'imported-har-frame',
+    protocol: 'ws-frame',
+    method: 'WS',
+    url: '',
+    host: '',
+    path: '',
+    requestHeaders: {},
+    requestBody: 'hello',
+    responseHeaders: {},
+    responseBody: '',
+    statusCode: 0,
+    statusMessage: 'text',
+    duration: 0,
+    timestamp: '2026-01-01T00:00:01.000Z',
+    source: 'websocket',
+    parentId: importedParent.id
+  };
+  const frameResponse = await postJson(
+    server.address().port,
+    { requests: [frame] },
+    '/api/traffic/import'
+  );
+  assert.equal(frameResponse.statusCode, 200, frameResponse.body);
+  assert.equal(api.trafficLog.at(-1).parentId, importedParent.id);
+
+  const reexportedUrls = trafficToHar(
+    api._getHarExportTraffic(),
+    { maskSensitive: false }
+  ).log.entries.map(entry => entry.request.url);
+  assert.deepEqual(reexportedUrls, cases.map(({ url }) => url));
 });

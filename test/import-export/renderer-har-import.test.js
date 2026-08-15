@@ -24,6 +24,10 @@ const filterSource = sourceBetween(
   'function parseFilters(',
   'function showFilterHint('
 );
+const webSocketClassificationSource = sourceBetween(
+  'function isWebSocketConnection(',
+  'function wsConnectionKey('
+);
 
 function validEntry() {
   return {
@@ -83,9 +87,12 @@ function createRendererHarness() {
 
   vm.createContext(context);
   vm.runInContext(`
+    ${webSocketClassificationSource}
     ${filterSource}
     ${harImportSource}
     globalThis.importHarForTest = importHar;
+    globalThis.isWebSocketConnectionForTest = isWebSocketConnection;
+    globalThis.isConnectedWebSocketForTest = isConnectedWebSocket;
     globalThis.matchesRawFilterForTest = (request, raw) =>
       matchesAllFilters(request, parseFilters(raw));
   `, context);
@@ -118,6 +125,7 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     ['attribute-delimiting method', (() => { const value = validEntry(); value.request.method = 'GET" data-audit="present'; return har([value]); })(), /request\.method must be a valid HTTP token/],
     ['whitespace in method', (() => { const value = validEntry(); value.request.method = 'GET onclick=alert(1)'; return har([value]); })(), /request\.method must be a valid HTTP token/],
     ['object URL', (() => { const value = validEntry(); value.request.url = { unsafe: true }; return har([value]); })(), /request\.url must be a string/],
+    ['relative URL', (() => { const value = validEntry(); value.request.url = '/relative'; return har([value]); })(), /request\.url must be a valid absolute URL/],
     ['numeric header name', (() => { const value = validEntry(); value.request.headers = [{ name: 1, value: 'ok' }]; return har([value]); })(), /headers\[0\]\.name must be a string/],
     ['object header value', (() => { const value = validEntry(); value.response.headers = [{ name: 'X-Test', value: {} }]; return har([value]); })(), /headers\[0\]\.value must be a string/],
     ['numeric request body', (() => { const value = validEntry(); value.request.postData = { text: 42 }; return har([value]); })(), /postData\.text must be a string/],
@@ -260,6 +268,108 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:post'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'rich-token'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'header:x-repeated=two'), true);
+});
+
+test('renderer HAR import preserves WebSocket schemes, URL components, and classification', () => {
+  const cases = [
+    {
+      url: 'ws://socket.example.test/chat?room=one#client-state',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'ws',
+      host: 'socket.example.test',
+      path: '/chat?room=one'
+    },
+    {
+      url: 'ws://socket.example.test:80/default-port',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'ws',
+      host: 'socket.example.test',
+      path: '/default-port'
+    },
+    {
+      url: 'ws://socket.example.test:8080/explicit-port?token=two',
+      httpVersion: 'HTTP/2',
+      protocol: 'ws',
+      host: 'socket.example.test',
+      path: '/explicit-port?token=two'
+    },
+    {
+      url: 'wss://secure.example.test:443/default-port',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'wss',
+      host: 'secure.example.test',
+      path: '/default-port'
+    },
+    {
+      url: 'wss://secure.example.test:8443/explicit-port?token=three#local',
+      httpVersion: 'HTTP/2',
+      protocol: 'wss',
+      host: 'secure.example.test',
+      path: '/explicit-port?token=three'
+    },
+    {
+      url: 'http://ordinary.example.test/resource',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'http',
+      host: 'ordinary.example.test',
+      path: '/resource'
+    },
+    {
+      url: 'https://ordinary.example.test/resource',
+      httpVersion: 'HTTP/1.1',
+      protocol: 'https',
+      host: 'ordinary.example.test',
+      path: '/resource'
+    },
+    {
+      url: 'https://h2.example.test/resource',
+      httpVersion: 'HTTP/2',
+      protocol: 'h2',
+      host: 'h2.example.test',
+      path: '/resource'
+    }
+  ];
+  const entries = cases.map(({ url, httpVersion }) => {
+    const entry = validEntry();
+    entry.request.url = url;
+    entry.request.httpVersion = httpVersion;
+    entry.response.httpVersion = httpVersion;
+    entry.response.status = url.startsWith('ws') ? 101 : 200;
+    return entry;
+  });
+
+  const normalized = normalizeHarEntries(har(entries), {
+    createId: (() => {
+      let id = 0;
+      return () => `scheme-${++id}`;
+    })()
+  });
+  const harness = createRendererHarness();
+
+  assert.deepEqual(
+    normalized.map(({ protocol, url, host, path }) => ({ protocol, url, host, path })),
+    cases.map(({ protocol, url, host, path }) => ({ protocol, url, host, path }))
+  );
+  assert.deepEqual(
+    normalized.map(request => harness.context.isWebSocketConnectionForTest(request)),
+    [true, true, true, true, true, false, false, false]
+  );
+  assert.deepEqual(
+    normalized.map(request => harness.context.isConnectedWebSocketForTest(request)),
+    [true, true, true, true, true, false, false, false]
+  );
+  assert.equal(
+    harness.context.matchesRawFilterForTest(normalized[0], 'room=one'),
+    true
+  );
+  assert.equal(
+    harness.context.matchesRawFilterForTest(normalized[4], 'secure.example.test:8443'),
+    true
+  );
+  assert.deepEqual(
+    trafficToHar(normalized, { maskSensitive: false }).log.entries.map(entry => entry.request.url),
+    cases.map(({ url }) => url)
+  );
 });
 
 test('renderer HAR normalization preserves valid extension and punctuation method tokens', () => {
