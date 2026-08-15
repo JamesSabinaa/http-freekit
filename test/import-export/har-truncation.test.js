@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { trafficToHar } from '../../src/api/har-converter.js';
@@ -12,6 +13,7 @@ import { ProxyServer } from '../../src/proxy/proxy-server.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const rendererStyles = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'styles.css'), 'utf8');
+const TEXT_CAPTURE_LIMIT = 512 * 1024;
 
 function postJson(port, pathname, body) {
   return new Promise((resolve, reject) => {
@@ -61,6 +63,71 @@ async function waitForCapture(captures, predicate, timeoutMs = 3000) {
   throw new Error(`Timed out waiting for an incomplete body capture: ${JSON.stringify(captures)}`);
 }
 
+test('UTF-8 capture truncation retains only complete 2, 3, and 4-byte code points', () => {
+  const proxy = new ProxyServer(null);
+  const cases = [
+    { name: '2-byte split after 1 byte', character: '¢', bytesInsideLimit: 1 },
+    { name: '3-byte split after 2 bytes', character: '€', bytesInsideLimit: 2 },
+    { name: '4-byte split after 3 bytes', character: '😀', bytesInsideLimit: 3 },
+    { name: 'reported 4-byte split after 1 byte', character: '😀', bytesInsideLimit: 1 }
+  ];
+
+  for (const scenario of cases) {
+    const asciiSize = TEXT_CAPTURE_LIMIT - scenario.bytesInsideLimit;
+    const body = Buffer.concat([
+      Buffer.alloc(asciiSize, 0x61),
+      Buffer.from(scenario.character),
+      Buffer.from('tail')
+    ]);
+
+    const captured = proxy._safeBodyString(body, undefined, 'text/plain; charset=utf-8');
+    const text = String(captured);
+
+    assert.equal(captured.capturedSize, asciiSize, scenario.name);
+    assert.equal(captured.decodedSize, body.length, scenario.name);
+    assert.equal(Buffer.byteLength(text), asciiSize, scenario.name);
+    assert.equal(text.length, asciiSize, scenario.name);
+    assert.equal(text.includes('\ufffd'), false, scenario.name);
+  }
+});
+
+test('exact-limit UTF-8 and non-text bytes preserve their existing capture representations', () => {
+  const proxy = new ProxyServer(null);
+  const exactText = Buffer.concat([
+    Buffer.alloc(TEXT_CAPTURE_LIMIT - 4, 0x61),
+    Buffer.from('😀')
+  ]);
+  const exactCapture = proxy._safeBodyString(exactText, undefined, 'text/plain');
+
+  assert.equal(typeof exactCapture, 'string');
+  assert.equal(Buffer.byteLength(exactCapture), TEXT_CAPTURE_LIMIT);
+  assert.equal(exactCapture.endsWith('😀'), true);
+  assert.equal(exactCapture.includes('\ufffd'), false);
+
+  const invalidUtf8 = Buffer.alloc(TEXT_CAPTURE_LIMIT + 1, 0x61);
+  invalidUtf8[invalidUtf8.length - 1] = 0xff;
+  const invalidCapture = proxy._safeBodyString(
+    invalidUtf8,
+    undefined,
+    'text/plain; charset=utf-8'
+  );
+  assert.equal(invalidCapture.encoding, 'base64');
+  assert.equal(String(invalidCapture).startsWith('data:text/plain;base64,'), true);
+  assert.equal(
+    Buffer.from(String(invalidCapture).split(',')[1], 'base64').equals(invalidUtf8),
+    true
+  );
+
+  const binary = Buffer.alloc(TEXT_CAPTURE_LIMIT + 1, 0x61);
+  binary[0] = 0;
+  const binaryCapture = proxy._safeBodyString(binary, undefined, 'application/octet-stream');
+  assert.equal(binaryCapture.encoding, 'base64');
+  assert.equal(
+    Buffer.from(String(binaryCapture).split(',')[1], 'base64').equals(binary),
+    true
+  );
+});
+
 test('large text captures retain bounded previews and export explicit HAR truncation metadata', () => {
   let captured;
   const proxy = new ProxyServer(null, { onRequest: request => { captured = request; } });
@@ -89,6 +156,82 @@ test('large text captures retain bounded previews and export explicit HAR trunca
   assert.equal(response.content._capturedSize, 512 * 1024);
   assert.equal(response.content._originalSize, body.length);
   assert.match(response.content.comment, /524288 of 1048576 bytes retained/);
+});
+
+test('compressed HTTP captures and HAR export retain byte-accurate UTF-8 prefixes', async t => {
+  const decodedBody = Buffer.concat([
+    Buffer.alloc(TEXT_CAPTURE_LIMIT - 1, 0x61),
+    Buffer.from('😀')
+  ]);
+  const wireBody = zlib.gzipSync(decodedBody);
+  const origin = http.createServer((_request, response) => {
+    response.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-encoding': 'gzip',
+      'content-length': String(wireBody.length),
+      connection: 'close'
+    });
+    response.end(wireBody);
+  });
+  origin.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    origin.once('listening', resolve);
+    origin.once('error', reject);
+  });
+
+  const captures = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: capture => captures.push(capture)
+  });
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await new Promise(resolve => origin.close(resolve));
+  });
+
+  const targetUrl = `http://127.0.0.1:${origin.address().port}/utf8-boundary`;
+  const clientResponse = await new Promise((resolve, reject) => {
+    const request = http.get({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: targetUrl,
+      headers: { connection: 'close' }
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('end', () => resolve({
+        statusCode: response.statusCode,
+        body: Buffer.concat(chunks)
+      }));
+    });
+    request.once('error', reject);
+  });
+
+  assert.equal(clientResponse.statusCode, 200);
+  assert.equal(clientResponse.body.equals(wireBody), true);
+  const captured = await waitForCapture(
+    captures,
+    capture => capture.path === '/utf8-boundary' && capture.statusCode === 200
+  );
+  assert.equal(Buffer.byteLength(captured.responseBody), TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(captured.responseBody.includes('\ufffd'), false);
+  assert.equal(captured.responseBodyTruncated, true);
+  assert.equal(captured.responseBodyCapturedSize, TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(captured.responseBodyDecodedSize, decodedBody.length);
+  assert.equal(captured.responseBodySize, wireBody.length);
+  assert.equal(captured.responseBodyEncoding, 'utf8');
+
+  const response = trafficToHar([captured], { maskSensitive: false }).log.entries[0].response;
+  assert.equal(response.content.text.includes('\ufffd'), false);
+  assert.equal(Buffer.byteLength(response.content.text), TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(response.content.size, TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(response.content.mimeType, 'text/plain; charset=utf-8');
+  assert.equal(response.content._truncated, true);
+  assert.equal(response.content._capturedSize, TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(response.content._originalSize, decodedBody.length);
+  assert.equal(response.bodySize, wireBody.length);
+  assert.match(response.content.comment, /524287 of 524291 bytes retained/);
 });
 
 test('omitted large binary captures are not exported as fake HAR body text', () => {

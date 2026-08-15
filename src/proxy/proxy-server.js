@@ -199,6 +199,12 @@ function splitMultipartBody(body, boundary) {
   }
 }
 
+function utf8PrefixWithinByteLimit(buffer, limit) {
+  let end = Math.min(buffer.length, limit);
+  while (end > 0 && end < buffer.length && (buffer[end] & 0xc0) === 0x80) end--;
+  return buffer.subarray(0, end);
+}
+
 class TruncatedBodyString extends String {
   constructor(value, capturedSize, decodedSize) {
     super(value);
@@ -9595,8 +9601,8 @@ export class ProxyServer {
     if (isText && isUtf8(decoded)) {
       const maxSize = 512 * 1024;
       if (decoded.length > maxSize) {
-        const text = decoded.subarray(0, maxSize).toString('utf8');
-        return new TruncatedBodyString(text, Buffer.byteLength(text), decoded.length);
+        const captured = utf8PrefixWithinByteLimit(decoded, maxSize);
+        return new TruncatedBodyString(captured.toString('utf8'), captured.length, decoded.length);
       }
       return decoded.toString('utf8');
     }
