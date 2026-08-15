@@ -46,6 +46,19 @@ function assertVersionAtLeast(name, minimum) {
   }
 }
 
+function assertEveryVersionAtLeast(name, minimum) {
+  const packageSuffix = `node_modules/${name}`;
+  const matches = Object.entries(packageLock.packages)
+    .filter(([packagePath]) => packagePath === packageSuffix || packagePath.endsWith(`/${packageSuffix}`));
+  assert.ok(matches.length > 0, `${name} is missing from the dependency lockfile`);
+  for (const [packagePath, packageData] of matches) {
+    assert.ok(
+      isVersionAtLeast(packageData.version, minimum),
+      `${packagePath} resolved vulnerable ${name} ${packageData.version}`
+    );
+  }
+}
+
 test('locked packages meet the audited safe minimums', () => {
   const minimumVersions = {
     '@electron/asar': '4.2.1',
@@ -53,16 +66,16 @@ test('locked packages meet the audited safe minimums', () => {
     '@hono/node-server': '2.0.12',
     'app-builder-lib': '26.15.0',
     'body-parser': '2.3.0',
-    'brace-expansion': '5.0.8',
+    'brace-expansion': '5.0.9',
     'builder-util-runtime': '9.7.0',
-    'dompurify': '3.4.12',
+    'dompurify': '3.4.13',
     'electron': '43.2.0',
     'electron-builder': '26.15.7',
-    'fast-uri': '3.1.4',
-    'hono': '4.12.27',
+    'fast-uri': '3.1.5',
+    'hono': '4.13.2',
     'https-proxy-agent': '9.1.0',
     'jake': '12.10.1',
-    'js-yaml': '4.3.0',
+    'js-yaml': '4.3.1',
     'monaco-editor': '0.56.0',
     'pako': '3.0.1',
     'protobufjs': '8.7.1',
@@ -77,17 +90,10 @@ test('locked packages meet the audited safe minimums', () => {
   }
 });
 
-test('the complete dependency graph excludes vulnerable brace expansion releases', () => {
-  const bracePackages = Object.entries(packageLock.packages)
-    .filter(([packagePath]) => packagePath.endsWith('node_modules/brace-expansion'));
-
-  assert.ok(bracePackages.length > 0, 'Expected brace-expansion in the dependency graph');
-  for (const [packagePath, packageData] of bracePackages) {
-    assert.ok(
-      isVersionAtLeast(packageData.version, '5.0.8'),
-      `${packagePath} resolved vulnerable brace-expansion ${packageData.version}`
-    );
-  }
+test('the complete dependency graph excludes newly audited vulnerable releases', () => {
+  assertEveryVersionAtLeast('brace-expansion', '5.0.9');
+  assertEveryVersionAtLeast('fast-uri', '3.1.5');
+  assertEveryVersionAtLeast('js-yaml', '4.3.1');
 
   const squirrelPackages = Object.keys(packageLock.packages)
     .filter(packagePath => packagePath.endsWith('node_modules/electron-builder-squirrel-windows'));
