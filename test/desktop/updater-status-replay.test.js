@@ -75,6 +75,7 @@ function loadRendererUpdaterUI() {
   const ui = renderer.slice(start, end);
   const notifications = [];
   const renderedToasts = [];
+  const renderedLinks = [];
   let liveStatusHandler;
   let resolveSnapshot;
   const snapshot = new Promise(resolve => { resolveSnapshot = resolve; });
@@ -88,17 +89,29 @@ function loadRendererUpdaterUI() {
         return null;
       },
       createElement() {
-        return {
+        const children = [];
+        const element = {
+          children,
           classList: { add() {} },
           addEventListener() {},
+          appendChild(child) { children.push(child); },
           querySelector() { return null; },
           remove() {},
           set textContent(value) { this.innerHTML = String(value); }
         };
+        Object.defineProperty(element, 'href', {
+          get() { return this._href || ''; },
+          set(value) {
+            this._href = String(value);
+            renderedLinks.push(this);
+          }
+        });
+        return element;
       }
     },
-    setTimeout,
+    setTimeout: () => 0,
     toast: message => notifications.push(message),
+    URL,
     window: {
       electronApi: {
         onUpdaterStatus: handler => { liveStatusHandler = handler; },
@@ -111,6 +124,7 @@ function loadRendererUpdaterUI() {
   return {
     liveStatus: data => liveStatusHandler(data),
     notifications,
+    renderedLinks,
     renderedToasts,
     resolveSnapshot,
     snapshot
@@ -207,4 +221,26 @@ test('renderer ignores duplicate and stale transient snapshot events while repla
 
   assert.deepEqual(duplicateReplay.notifications, ['Update check failed: new failure']);
   assert.equal(duplicateReplay.renderedToasts.length, 1);
+});
+
+test('live and replayed Linux statuses use the same normalized DOM href path', async () => {
+  const quoteBearingUrl = 'https://updates.example/path" data-audit="present?channel=stable#download';
+  const normalizedUrl = new URL(quoteBearingUrl).href;
+  const live = loadRendererUpdaterUI();
+  live.liveStatus({
+    status: 'update-available-linux', version: '3.0.0', url: quoteBearingUrl, eventId: 1
+  });
+  assert.equal(live.renderedLinks.length, 1);
+  assert.equal(live.renderedLinks[0].href, normalizedUrl);
+
+  const replayUrl = 'http://updates.example/releases/3.0.1?format=appimage#download';
+  const replay = loadRendererUpdaterUI();
+  replay.resolveSnapshot({
+    status: 'update-available-linux', version: '3.0.1', url: replayUrl, eventId: 2
+  });
+  await replay.snapshot;
+  await Promise.resolve();
+
+  assert.equal(replay.renderedLinks.length, 1);
+  assert.equal(replay.renderedLinks[0].href, replayUrl);
 });

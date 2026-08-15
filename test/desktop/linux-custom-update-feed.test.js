@@ -105,7 +105,7 @@ function availableStatus(harness) {
 }
 
 test('a generic custom feed drives the same manual renderer status and native prompt URL', async () => {
-  const feedUrl = 'https://updates.example.test/linux/latest.yml?channel=stable';
+  const feedUrl = 'https://updates.example.test/linux/latest.yml?channel=stable#download';
   const harness = loadUpdater({ updateUrl: `  ${feedUrl}  ` });
   const sender = {};
 
@@ -164,7 +164,7 @@ test('custom GitHub web and API feeds resolve to their own repository releases',
 
 test('a safe release-notes URL takes precedence and unsafe notes fall back to the custom provider', async () => {
   const feedUrl = 'https://updates.example.test/stable/latest.yml';
-  const releaseNotesUrl = 'https://downloads.example.test/releases/3.0.0';
+  const releaseNotesUrl = 'http://downloads.example.test/releases/3.0.0?format=appimage#download';
   const harness = loadUpdater({ updateUrl: feedUrl });
 
   await harness.ipcHandlers.get('updater-check-now')({});
@@ -187,6 +187,45 @@ test('a safe release-notes URL takes precedence and unsafe notes fall back to th
   assert.equal(availableStatus(unsafeHarness).url, feedUrl);
   assert.deepEqual(unsafeHarness.openedUrls, [feedUrl]);
   unsafeHarness.stop();
+});
+
+test('validated Linux URLs are serialized before reaching feed, status, and native link consumers', async t => {
+  const quoteBearingUrl = 'https://updates.example.test/path" data-audit="present?channel=stable#download';
+  const normalizedUrl = new URL(quoteBearingUrl).href;
+  assert.match(normalizedUrl, /path%22%20data-audit=%22present\?channel=stable#download$/);
+
+  await t.test('custom feed', async () => {
+    const harness = loadUpdater({ updateUrl: `  ${quoteBearingUrl}  ` });
+    await harness.ipcHandlers.get('updater-check-now')({});
+    harness.autoUpdater.emit('update-available', {
+      version: '3.1.0',
+      releaseNotes: 'Release notes without a link'
+    });
+    await settlePromises();
+
+    assert.deepEqual(harness.configuredFeeds, [normalizedUrl]);
+    assert.equal(availableStatus(harness).url, normalizedUrl);
+    assert.equal(harness.ipcHandlers.get('updater-get-status')({}).url, normalizedUrl);
+    assert.deepEqual(harness.openedUrls, [normalizedUrl]);
+    harness.stop();
+  });
+
+  await t.test('release notes', async () => {
+    const feedUrl = 'https://updates.example.test/stable/latest.yml?channel=stable#metadata';
+    const harness = loadUpdater({ updateUrl: feedUrl });
+    await harness.ipcHandlers.get('updater-check-now')({});
+    harness.autoUpdater.emit('update-available', {
+      version: '3.1.1',
+      releaseNotes: `  ${quoteBearingUrl}  `
+    });
+    await settlePromises();
+
+    assert.deepEqual(harness.configuredFeeds, [feedUrl]);
+    assert.equal(availableStatus(harness).url, normalizedUrl);
+    assert.equal(harness.ipcHandlers.get('updater-get-status')({}).url, normalizedUrl);
+    assert.deepEqual(harness.openedUrls, [normalizedUrl]);
+    harness.stop();
+  });
 });
 
 test('malformed and non-web custom sources are ignored without exposing getter text', async t => {

@@ -130,7 +130,7 @@ function getWebUrl(value) {
   try {
     const parsed = new URL(source);
     return parsed.protocol === 'http:' || parsed.protocol === 'https:'
-      ? { source, parsed }
+      ? { href: parsed.href, parsed }
       : null;
   } catch {
     return null;
@@ -154,11 +154,11 @@ function getGitHubDownloadUrl(parsedUrl) {
 
 function getLinuxDownloadUrl(info = {}) {
   const releaseNotesUrl = getWebUrl(info.releaseNotes);
-  if (releaseNotesUrl) return releaseNotesUrl.source;
+  if (releaseNotesUrl) return releaseNotesUrl.href;
 
   const configuredSource = getWebUrl(configuredFeedUrl);
   if (configuredSource) {
-    return getGitHubDownloadUrl(configuredSource.parsed) || configuredSource.source;
+    return getGitHubDownloadUrl(configuredSource.parsed) || configuredSource.href;
   }
 
   return DEFAULT_LINUX_DOWNLOAD_URL;
@@ -433,10 +433,10 @@ function initAutoUpdater(win, options = {}) {
     ? options.onInstallPreparationFailed
     : () => {};
 
-  // Retain the validated source instead of reading it back through electron-
+  // Retain the normalized URL instead of reading it back through electron-
   // updater's deprecated getFeedURL() API when building Linux download links.
   const configuredSource = getWebUrl(process.env.UPDATE_URL);
-  configuredFeedUrl = configuredSource?.source || null;
+  configuredFeedUrl = configuredSource?.href || null;
   if (configuredFeedUrl) {
     autoUpdater.setFeedURL(configuredFeedUrl);
   }
