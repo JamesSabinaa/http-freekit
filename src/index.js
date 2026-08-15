@@ -18,6 +18,7 @@ import {
 import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
+import { restoreHttpsWhitelistSetting } from './proxy/https-whitelist.js';
 import { startWithValidatedApiPort } from './startup-config.js';
 import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
 import { restoreSavedApiSpecs } from './startup-api-spec-restoration.js';
@@ -151,8 +152,7 @@ async function initializeApplication(apiPort) {
   if (savedClientCerts) proxy.setClientCertificates(savedClientCerts);
   const savedTrustedCAs = settings.get('trustedCAs');
   if (savedTrustedCAs) proxy.setTrustedCAs(savedTrustedCAs);
-  const savedHttpsWhitelist = settings.get('httpsWhitelist');
-  if (savedHttpsWhitelist) proxy.setHttpsWhitelist(savedHttpsWhitelist);
+  restoreHttpsWhitelistSetting(proxy, settings);
   const savedTlsFingerprint = settings.get('tlsFingerprint');
   if (savedTlsFingerprint) proxy.setTlsFingerprint(savedTlsFingerprint);
   restoreSavedRuleSettings(proxy, settings);

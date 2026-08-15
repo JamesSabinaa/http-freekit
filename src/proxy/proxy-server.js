@@ -27,6 +27,7 @@ import {
 } from './ws-permessage-deflate.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
 import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
+import { normalizeHttpsWhitelist, normalizeTlsHostname } from './https-whitelist.js';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
@@ -306,7 +307,8 @@ export class ProxyServer {
     this.trustedCAs = []; // [certPath]
     this._clientCertificateOptions = [];
     this._trustedCaCertificates = [];
-    this.httpsWhitelist = []; // [hostname]
+    this.httpsWhitelist = Object.freeze([]); // [hostname]
+    this._validatedHttpsWhitelist = Object.freeze([]);
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
     this.filterSafeFonts = false;
@@ -2764,25 +2766,22 @@ export class ProxyServer {
   }
 
   setHttpsWhitelist(hosts) {
-    this.httpsWhitelist = hosts || [];
+    const nextWhitelist = Object.freeze(normalizeHttpsWhitelist(hosts));
+    const matchPatterns = Object.freeze(nextWhitelist.map(host => this._normalizeTlsHostname(host)));
+    this.httpsWhitelist = nextWhitelist;
+    this._validatedHttpsWhitelist = matchPatterns;
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
   }
 
   _normalizeTlsHostname(value) {
-    return String(value || '')
-      .trim()
-      .toLowerCase()
-      .replace(/^\[|\]$/g, '')
-      .replace(/\.$/, '');
+    return normalizeTlsHostname(value);
   }
 
   _isHttpsWhitelisted(hostname) {
     const target = this._normalizeTlsHostname(hostname);
-    return target.length > 0 && this.httpsWhitelist.some(
-      host => this._normalizeTlsHostname(host) === target
-    );
+    return target.length > 0 && this._validatedHttpsWhitelist.includes(target);
   }
 
   _getClientCertificateOptions(hostname) {
