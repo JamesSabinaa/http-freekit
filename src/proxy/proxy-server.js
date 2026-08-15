@@ -29,6 +29,10 @@ import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstrea
 import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
 import { normalizeHttpsWhitelist, normalizeTlsHostname } from './https-whitelist.js';
 import {
+  MAX_TLS_MATERIAL_ENTRIES,
+  TlsMaterialConfigError
+} from './tls-material-config.js';
+import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
   isObjectRecord,
@@ -307,6 +311,8 @@ export class ProxyServer {
     this.trustedCAs = []; // [certPath]
     this._clientCertificateOptions = [];
     this._trustedCaCertificates = [];
+    this._readTlsMaterialFileSync = options.readTlsMaterialFileSync ||
+      ((filePath, encoding) => fs.readFileSync(filePath, encoding));
     this.httpsWhitelist = Object.freeze([]); // [hostname]
     this._validatedHttpsWhitelist = Object.freeze([]);
     this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
@@ -2728,41 +2734,173 @@ export class ProxyServer {
     });
   }
 
-  setClientCertificates(certs) {
-    this.clientCertificates = this._canonicalizeClientCertificates(certs);
-    this._clientCertificateOptions = this.clientCertificates.flatMap((config) => {
-      const pfxPath = typeof config?.pfxPath === 'string' ? config.pfxPath.trim() : '';
-      const host = this._getClientCertificateHostKey(config?.host);
-      if (!host || !pfxPath) return [];
-      try {
-        return [{
+  _tlsMaterialError(message, cause) {
+    return new TlsMaterialConfigError(message, cause === undefined ? {} : { cause });
+  }
+
+  _ownTlsMaterialValue(object, property, label, { required = true } = {}) {
+    let descriptor;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(object, property);
+    } catch (error) {
+      throw this._tlsMaterialError(`${label} must be a readable data property`, error);
+    }
+    if (!descriptor) {
+      if (!required) return { present: false, value: undefined };
+      throw this._tlsMaterialError(`${label} is required`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw this._tlsMaterialError(`${label} must be a data property`);
+    }
+    return { present: true, value: descriptor.value };
+  }
+
+  _denseTlsMaterialArray(value, label) {
+    let isArray = false;
+    try {
+      isArray = Array.isArray(value);
+    } catch (error) {
+      throw this._tlsMaterialError(`${label} must be an array`, error);
+    }
+    if (!isArray) throw this._tlsMaterialError(`${label} must be an array`);
+    const length = this._ownTlsMaterialValue(value, 'length', `${label}.length`).value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_TLS_MATERIAL_ENTRIES) {
+      throw this._tlsMaterialError(
+        `${label} must contain no more than ${MAX_TLS_MATERIAL_ENTRIES} entries`
+      );
+    }
+    const entries = [];
+    for (let index = 0; index < length; index++) {
+      entries.push(this._ownTlsMaterialValue(value, String(index), `${label}[${index}]`).value);
+    }
+    return entries;
+  }
+
+  _prepareClientCertificates(certs) {
+    const validated = this._denseTlsMaterialArray(certs, 'Client certificates').map(
+      (config, index) => {
+        if (!config || typeof config !== 'object') {
+          throw this._tlsMaterialError(`Client certificate ${index} must be an object`);
+        }
+        let configIsArray;
+        try {
+          configIsArray = Array.isArray(config);
+        } catch (error) {
+          throw this._tlsMaterialError(
+            `Client certificate ${index} must be a readable object`,
+            error
+          );
+        }
+        if (configIsArray) {
+          throw this._tlsMaterialError(`Client certificate ${index} must be an object`);
+        }
+        const host = this._ownTlsMaterialValue(
+          config,
+          'host',
+          `Client certificate ${index}.host`
+        ).value;
+        if (typeof host !== 'string') {
+          throw this._tlsMaterialError(`Client certificate ${index}.host must be a string`);
+        }
+        const hostKey = this._getClientCertificateHostKey(host);
+        if (!hostKey) {
+          throw this._tlsMaterialError(
+            `Client certificate ${index}.host must be a hostname or *`
+          );
+        }
+        const pfxPath = this._ownTlsMaterialValue(
+          config,
+          'pfxPath',
+          `Client certificate ${index}.pfxPath`
+        ).value;
+        if (typeof pfxPath !== 'string' || !pfxPath.trim()) {
+          throw this._tlsMaterialError(
+            `Client certificate ${index}.pfxPath must be a non-empty string`
+          );
+        }
+        const passphrase = this._ownTlsMaterialValue(
+          config,
+          'passphrase',
+          `Client certificate ${index}.passphrase`,
+          { required: false }
+        );
+        if (passphrase.present && typeof passphrase.value !== 'string') {
+          throw this._tlsMaterialError(
+            `Client certificate ${index}.passphrase must be a string`
+          );
+        }
+        return {
           host,
-          pfx: fs.readFileSync(pfxPath),
+          pfxPath,
+          ...(passphrase.present ? { passphrase: passphrase.value } : {})
+        };
+      }
+    );
+    const configured = this._canonicalizeClientCertificates(validated);
+    const loaded = configured.map((config, index) => {
+      const pfxPath = config.pfxPath.trim();
+      try {
+        return {
+          host: this._getClientCertificateHostKey(config.host),
+          pfx: this._readTlsMaterialFileSync(pfxPath),
           ...(config.passphrase ? { passphrase: config.passphrase } : {})
-        }];
+        };
       } catch (err) {
-        console.error(`[Proxy] Failed to load client certificate ${pfxPath}: ${err.message}`);
-        return [];
+        const detail = err?.message || String(err);
+        throw this._tlsMaterialError(
+          `Could not read client certificate ${index} at "${pfxPath}": ${detail}`,
+          err
+        );
       }
     });
+    return { configured, loaded };
+  }
+
+  _installPreparedClientCertificates(prepared) {
+    this.clientCertificates = prepared.configured;
+    this._clientCertificateOptions = prepared.loaded;
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] Client certificates: ${this.clientCertificates.length} configured`);
   }
 
-  setTrustedCAs(cas) {
-    this.trustedCAs = Array.isArray(cas) ? cas : [];
-    this._trustedCaCertificates = this.trustedCAs.flatMap((certPath) => {
+  setClientCertificates(certs) {
+    this._installPreparedClientCertificates(this._prepareClientCertificates(certs));
+  }
+
+  _prepareTrustedCAs(cas) {
+    const configured = this._denseTlsMaterialArray(cas, 'Trusted CAs').map(
+      (certPath, index) => {
+        if (typeof certPath !== 'string' || !certPath.trim()) {
+          throw this._tlsMaterialError(`Trusted CA ${index} must be a non-empty path string`);
+        }
+        return certPath;
+      }
+    );
+    const loaded = configured.map((certPath, index) => {
       try {
-        return [fs.readFileSync(certPath, 'utf8')];
+        return this._readTlsMaterialFileSync(certPath, 'utf8');
       } catch (err) {
-        console.error(`[Proxy] Failed to load trusted CA ${certPath}: ${err.message}`);
-        return [];
+        const detail = err?.message || String(err);
+        throw this._tlsMaterialError(
+          `Could not read trusted CA ${index} at "${certPath}": ${detail}`,
+          err
+        );
       }
     });
+    return { configured, loaded };
+  }
+
+  _installPreparedTrustedCAs(prepared) {
+    this.trustedCAs = prepared.configured;
+    this._trustedCaCertificates = prepared.loaded;
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] Trusted CAs: ${this.trustedCAs.length} configured`);
+  }
+
+  setTrustedCAs(cas) {
+    this._installPreparedTrustedCAs(this._prepareTrustedCAs(cas));
   }
 
   setHttpsWhitelist(hosts) {

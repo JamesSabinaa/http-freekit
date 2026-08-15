@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -64,16 +65,33 @@ test('stale removals delete the requested value rather than a current index', as
 
 test('client certificate and trusted CA mutations target stable values', async t => {
   const { proxy, port } = await createServer(t);
-  proxy.setClientCertificates([{ host: 'a.test', pfxPath: 'a.pfx' }, { host: 'b.test', pfxPath: 'b.pfx' }]);
-  proxy.setTrustedCAs(['new.pem', 'old.pem']);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-atomic-lists-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const fixturePath = (name) => {
+    const filePath = path.join(tempDir, name);
+    fs.writeFileSync(filePath, name);
+    return filePath;
+  };
+  const aPfx = fixturePath('a.pfx');
+  const bPfx = fixturePath('b.pfx');
+  const newPem = fixturePath('new.pem');
+  const oldPem = fixturePath('old.pem');
+  proxy.setClientCertificates([
+    { host: 'a.test', pfxPath: aPfx },
+    { host: 'b.test', pfxPath: bPfx }
+  ]);
+  proxy.setTrustedCAs([newPem, oldPem]);
 
-  const certificate = await requestJson(port, 'DELETE', '/api/client-certificates/items', { host: 'b.test', pfxPath: 'b.pfx' });
-  const ca = await requestJson(port, 'DELETE', '/api/trusted-cas/items', { ca: 'old.pem' });
+  const certificate = await requestJson(port, 'DELETE', '/api/client-certificates/items', {
+    host: 'b.test',
+    pfxPath: bPfx
+  });
+  const ca = await requestJson(port, 'DELETE', '/api/trusted-cas/items', { ca: oldPem });
 
   assert.equal(certificate.statusCode, 200);
   assert.equal(ca.statusCode, 200);
-  assert.deepEqual(proxy.clientCertificates, [{ host: 'a.test', pfxPath: 'a.pfx' }]);
-  assert.deepEqual(proxy.trustedCAs, ['new.pem']);
+  assert.deepEqual(proxy.clientCertificates, [{ host: 'a.test', pfxPath: aPfx }]);
+  assert.deepEqual(proxy.trustedCAs, [newPem]);
 });
 
 test('renderer list mutations use atomic item endpoints without preflight reads', () => {

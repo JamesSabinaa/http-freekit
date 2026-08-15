@@ -1,0 +1,304 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { ApiServer } from '../../src/api/api-server.js';
+import {
+  MAX_TLS_MATERIAL_ENTRIES,
+  restoreSavedTlsMaterialSettings
+} from '../../src/proxy/tls-material-config.js';
+import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { Settings } from '../../src/settings.js';
+
+function requestJson(port, method, pathname, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: pathname,
+      method,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload)
+      }
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let responseBody = text;
+        try { responseBody = JSON.parse(text); } catch {}
+        resolve({ statusCode: response.statusCode, body: responseBody });
+      });
+    });
+    request.once('error', reject);
+    request.end(payload);
+  });
+}
+
+function fixtureFile(dataDir, name, contents) {
+  const filePath = path.join(dataDir, name);
+  fs.writeFileSync(filePath, contents);
+  return filePath;
+}
+
+function readTlsMaterial(filePath, encoding) {
+  if (filePath.endsWith('.denied')) {
+    const error = new Error('simulated permission denial');
+    error.code = 'EACCES';
+    throw error;
+  }
+  return fs.readFileSync(filePath, encoding);
+}
+
+async function createHarness(t) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-tls-material-'));
+  const settings = new Settings(dataDir);
+  const proxy = new ProxyServer(null, { readTlsMaterialFileSync: readTlsMaterial });
+  const api = new ApiServer(proxy, null, null);
+  api.settings = settings;
+  const server = http.createServer(api.app);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  return {
+    dataDir,
+    settings,
+    proxy,
+    port: server.address().port,
+    fixture: (name, contents) => fixtureFile(dataDir, name, contents)
+  };
+}
+
+function captureRuntime(proxy) {
+  return {
+    clientCertificates: proxy.clientCertificates,
+    clientOptions: proxy._clientCertificateOptions,
+    trustedCAs: proxy.trustedCAs,
+    trustedCertificates: proxy._trustedCaCertificates
+  };
+}
+
+function assertRuntimeIdentity(proxy, previous) {
+  assert.equal(proxy.clientCertificates, previous.clientCertificates);
+  assert.equal(proxy._clientCertificateOptions, previous.clientOptions);
+  assert.equal(proxy.trustedCAs, previous.trustedCAs);
+  assert.equal(proxy._trustedCaCertificates, previous.trustedCertificates);
+}
+
+function installBaseline(proxy, pfxPath, caPath) {
+  proxy.setClientCertificates([{
+    host: 'before.example.test',
+    pfxPath,
+    passphrase: 'before-secret'
+  }]);
+  proxy.setTrustedCAs([caPath]);
+}
+
+function countConnectionResets(proxy) {
+  const counts = { agents: 0, sessions: 0 };
+  proxy._destroyUpstreamAgent = () => { counts.agents++; };
+  proxy._closeAllH2Sessions = () => { counts.sessions++; };
+  return counts;
+}
+
+test('direct TLS material setters reject every unreadable candidate before mutation', async t => {
+  const { dataDir, proxy, fixture } = await createHarness(t);
+  const beforePfx = fixture('before.pfx', Buffer.from('before-pfx'));
+  const beforeCa = fixture('before.pem', 'before-ca');
+  const validPfx = fixture('valid.pfx', Buffer.from('valid-pfx'));
+  const validCa = fixture('valid.pem', 'valid-ca');
+  const missingPfx = path.join(dataDir, 'missing.pfx');
+  const missingCa = path.join(dataDir, 'missing.pem');
+  installBaseline(proxy, beforePfx, beforeCa);
+  const previous = captureRuntime(proxy);
+  const resets = countConnectionResets(proxy);
+  let coerced = false;
+
+  for (const candidate of [
+    [{ host: 'valid.example.test', pfxPath: validPfx }, {
+      host: 'missing.example.test', pfxPath: missingPfx
+    }],
+    [{ host: 'denied.example.test', pfxPath: path.join(dataDir, 'client.denied') }],
+    [{ host: { toString() { coerced = true; return 'coerced.test'; } }, pfxPath: validPfx }],
+    Array(MAX_TLS_MATERIAL_ENTRIES + 1).fill({ host: 'valid.example.test', pfxPath: validPfx })
+  ]) {
+    assert.throws(
+      () => proxy.setClientCertificates(candidate),
+      error => error?.code === 'ERR_INVALID_TLS_MATERIAL_CONFIG'
+    );
+    assertRuntimeIdentity(proxy, previous);
+  }
+
+  for (const candidate of [
+    [validCa, missingCa],
+    [path.join(dataDir, 'ca.denied')],
+    [validCa, 42],
+    Array(MAX_TLS_MATERIAL_ENTRIES + 1).fill(validCa)
+  ]) {
+    assert.throws(
+      () => proxy.setTrustedCAs(candidate),
+      error => error?.code === 'ERR_INVALID_TLS_MATERIAL_CONFIG'
+    );
+    assertRuntimeIdentity(proxy, previous);
+  }
+
+  assert.equal(coerced, false);
+  assert.deepEqual(resets, { agents: 0, sessions: 0 });
+
+  proxy.setClientCertificates([{ host: '*', pfxPath: validPfx }]);
+  proxy.setTrustedCAs([validCa]);
+  assert.deepEqual(proxy._getClientCertificateOptions('other.test').pfx, Buffer.from('valid-pfx'));
+  assert.deepEqual(proxy._trustedCaCertificates, ['valid-ca']);
+});
+
+test('bulk and item APIs reject missing or unreadable files without writes or resets', async t => {
+  const { dataDir, proxy, settings, port, fixture } = await createHarness(t);
+  const beforePfx = fixture('before.pfx', Buffer.from('before-pfx'));
+  const beforeCa = fixture('before.pem', 'before-ca');
+  const validPfx = fixture('valid.pfx', Buffer.from('valid-pfx'));
+  const validCa = fixture('valid.pem', 'valid-ca');
+  const itemPfx = fixture('item.pfx', Buffer.from('item-pfx'));
+  const itemCa = fixture('item.pem', 'item-ca');
+  installBaseline(proxy, beforePfx, beforeCa);
+  settings.setAll({
+    clientCertificates: proxy.clientCertificates,
+    trustedCAs: proxy.trustedCAs
+  });
+  const previous = captureRuntime(proxy);
+  const beforeSettings = fs.readFileSync(settings.filePath);
+  const resets = countConnectionResets(proxy);
+
+  const invalidRequests = [
+    ['/api/client-certificates', {
+      certificates: [
+        { host: 'valid.example.test', pfxPath: validPfx },
+        { host: 'missing.example.test', pfxPath: path.join(dataDir, 'missing.pfx') }
+      ]
+    }],
+    ['/api/client-certificates', {
+      certificates: [{ host: 'denied.example.test', pfxPath: path.join(dataDir, 'api.denied') }]
+    }],
+    ['/api/client-certificates/items', {
+      host: 'missing.example.test', pfxPath: path.join(dataDir, 'item-missing.pfx')
+    }],
+    ['/api/trusted-cas', { cas: [validCa, path.join(dataDir, 'missing.pem')] }],
+    ['/api/trusted-cas', { cas: [path.join(dataDir, 'api-ca.denied')] }],
+    ['/api/trusted-cas/items', { ca: path.join(dataDir, 'item-missing.pem') }]
+  ];
+
+  for (const [pathname, body] of invalidRequests) {
+    const response = await requestJson(port, 'POST', pathname, body);
+    assert.equal(response.statusCode, 400, pathname);
+    assert.match(response.body.error, /Could not read/);
+    assertRuntimeIdentity(proxy, previous);
+    assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+  }
+  assert.deepEqual(resets, { agents: 0, sessions: 0 });
+
+  const clientSuccess = await requestJson(port, 'POST', '/api/client-certificates', {
+    certificates: [{ host: 'AFTER.EXAMPLE.TEST.', pfxPath: validPfx }]
+  });
+  const caSuccess = await requestJson(port, 'POST', '/api/trusted-cas', { cas: [validCa] });
+  assert.equal(clientSuccess.statusCode, 200);
+  assert.equal(caSuccess.statusCode, 200);
+  assert.deepEqual(proxy._getClientCertificateOptions('after.example.test').pfx,
+    Buffer.from('valid-pfx'));
+  assert.deepEqual(proxy._trustedCaCertificates, ['valid-ca']);
+  assert.deepEqual(settings.get('clientCertificates'), proxy.clientCertificates);
+  assert.deepEqual(settings.get('trustedCAs'), proxy.trustedCAs);
+
+  const clientItemSuccess = await requestJson(port, 'POST', '/api/client-certificates/items', {
+    host: 'item.example.test',
+    pfxPath: itemPfx
+  });
+  const caItemSuccess = await requestJson(port, 'POST', '/api/trusted-cas/items', { ca: itemCa });
+  assert.equal(clientItemSuccess.statusCode, 200);
+  assert.equal(caItemSuccess.statusCode, 200);
+  assert.deepEqual(proxy._getClientCertificateOptions('item.example.test').pfx,
+    Buffer.from('item-pfx'));
+  assert.deepEqual(proxy._trustedCaCertificates, ['valid-ca', 'item-ca']);
+});
+
+test('persistence rollback restores exact loaded snapshots without rereading removed files', async t => {
+  const { proxy, settings, port, fixture } = await createHarness(t);
+  const beforePfx = fixture('before.pfx', Buffer.from('before-pfx'));
+  const beforeCa = fixture('before.pem', 'before-ca');
+  const afterPfx = fixture('after.pfx', Buffer.from('after-pfx'));
+  const afterCa = fixture('after.pem', 'after-ca');
+  installBaseline(proxy, beforePfx, beforeCa);
+  settings.setAll({
+    clientCertificates: proxy.clientCertificates,
+    trustedCAs: proxy.trustedCAs
+  });
+  const previous = captureRuntime(proxy);
+  const beforeSettings = fs.readFileSync(settings.filePath);
+  settings._save = () => {
+    fs.rmSync(beforePfx, { force: true });
+    fs.rmSync(beforeCa, { force: true });
+    throw new Error('disk full after old material disappeared');
+  };
+
+  const clientResponse = await requestJson(port, 'POST', '/api/client-certificates', {
+    certificates: [{ host: 'after.example.test', pfxPath: afterPfx }]
+  });
+  assert.equal(clientResponse.statusCode, 500);
+  assertRuntimeIdentity(proxy, previous);
+  assert.deepEqual(proxy._clientCertificateOptions[0].pfx, Buffer.from('before-pfx'));
+  assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+
+  const caResponse = await requestJson(port, 'POST', '/api/trusted-cas', { cas: [afterCa] });
+  assert.equal(caResponse.statusCode, 500);
+  assertRuntimeIdentity(proxy, previous);
+  assert.deepEqual(proxy._trustedCaCertificates, ['before-ca']);
+  assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+});
+
+test('startup ignores invalid saved TLS material without rewriting settings', async t => {
+  const { dataDir, proxy, settings, fixture } = await createHarness(t);
+  const beforePfx = fixture('before.pfx', Buffer.from('before-pfx'));
+  const beforeCa = fixture('before.pem', 'before-ca');
+  const restoredPfx = fixture('restored.pfx', Buffer.from('restored-pfx'));
+  const restoredCa = fixture('restored.pem', 'restored-ca');
+  installBaseline(proxy, beforePfx, beforeCa);
+  settings.setAll({
+    clientCertificates: [
+      { host: 'valid.example.test', pfxPath: beforePfx },
+      { host: 'missing.example.test', pfxPath: path.join(dataDir, 'startup-missing.pfx') }
+    ],
+    trustedCAs: [beforeCa, path.join(dataDir, 'startup-missing.pem')]
+  });
+  const previous = captureRuntime(proxy);
+  const beforeSettings = fs.readFileSync(settings.filePath);
+  const resets = countConnectionResets(proxy);
+  const errors = [];
+
+  const ignored = restoreSavedTlsMaterialSettings(proxy, settings, {
+    error: message => errors.push(message)
+  });
+  assert.deepEqual(ignored, { clientCertificates: false, trustedCAs: false });
+  assertRuntimeIdentity(proxy, previous);
+  assert.deepEqual(resets, { agents: 0, sessions: 0 });
+  assert.deepEqual(fs.readFileSync(settings.filePath), beforeSettings);
+  assert.equal(errors.length, 2);
+  assert.match(errors[0], /Ignoring invalid saved client certificates.*Could not read/);
+  assert.match(errors[1], /Ignoring invalid saved trusted CAs.*Could not read/);
+
+  settings.setAll({
+    clientCertificates: [{ host: 'RESTORED.EXAMPLE.TEST.', pfxPath: restoredPfx }],
+    trustedCAs: [restoredCa]
+  });
+  const restored = restoreSavedTlsMaterialSettings(proxy, settings);
+  assert.deepEqual(restored, { clientCertificates: true, trustedCAs: true });
+  assert.deepEqual(proxy._getClientCertificateOptions('restored.example.test').pfx,
+    Buffer.from('restored-pfx'));
+  assert.deepEqual(proxy._trustedCaCertificates, ['restored-ca']);
+});

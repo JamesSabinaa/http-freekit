@@ -147,7 +147,7 @@ test('item additions replace the normalized host in place and persist one active
 });
 
 test('legacy duplicate certificate owners keep the last value in the first owner position', t => {
-  const { certificatePath, dataDir, proxy } = createSynchronousHarness(t);
+  const { certificatePath, proxy } = createSynchronousHarness(t);
   const wildcardOld = { host: '*', pfxPath: certificatePath('wildcard-old.pfx', 'wildcard-old') };
   const exactOld = { host: 'API.EXAMPLE.TEST.', pfxPath: certificatePath('exact-old.pfx', 'exact-old') };
   const unrelated = { host: 'other.example.test', pfxPath: certificatePath('other.pfx', 'other') };
@@ -166,15 +166,18 @@ test('legacy duplicate certificate owners keep the last value in the first owner
     Buffer.from('wildcard-new')
   );
 
-  const missingReplacement = path.join(dataDir, 'missing-replacement.pfx');
+  const secureReplacement = certificatePath('secure-replacement.pfx', 'secure-replacement');
   proxy.setClientCertificates([
     { host: 'secure.example.test', pfxPath: exactOld.pfxPath },
-    { host: 'SECURE.EXAMPLE.TEST.', pfxPath: missingReplacement }
+    { host: 'SECURE.EXAMPLE.TEST.', pfxPath: secureReplacement }
   ]);
   assert.deepEqual(proxy.clientCertificates, [
-    { host: 'SECURE.EXAMPLE.TEST.', pfxPath: missingReplacement }
+    { host: 'SECURE.EXAMPLE.TEST.', pfxPath: secureReplacement }
   ]);
-  assert.deepEqual(proxy._getClientCertificateOptions('secure.example.test'), {});
+  assert.deepEqual(
+    proxy._getClientCertificateOptions('secure.example.test').pfx,
+    Buffer.from('secure-replacement')
+  );
 });
 
 function createSynchronousHarness(t) {

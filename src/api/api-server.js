@@ -382,6 +382,28 @@ export class ApiServer {
     });
   }
 
+  _prepareTlsMaterialRequest(res, prepare) {
+    try {
+      return prepare();
+    } catch (error) {
+      if (error?.code !== 'ERR_INVALID_TLS_MATERIAL_CONFIG') throw error;
+      res.status(400).json({ error: error.message });
+      return null;
+    }
+  }
+
+  _mutatePreparedTlsMaterial({ property, loadedProperty, prepared, install }) {
+    return this._runPersistedMutation({
+      capture: () => ({
+        configured: this.proxy[property],
+        loaded: this.proxy[loadedProperty]
+      }),
+      apply: () => install(prepared),
+      persist: () => this._persistSettings({ [property]: this.proxy[property] }),
+      restore: previous => install(previous)
+    });
+  }
+
   _captureUpstreamProxy() {
     return {
       reference: this.proxy.upstreamProxy,
@@ -1983,16 +2005,25 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ certificates: publicClientCertificates(this.proxy.clientCertificates) });
     });
     router.post('/api/client-certificates', (req, res) => {
-      this._mutateProxySetting({
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareClientCertificates(req.body?.certificates)
+      );
+      if (!prepared) return;
+      this._mutatePreparedTlsMaterial({
         property: 'clientCertificates',
-        apply: () => this.proxy.setClientCertificates(req.body.certificates || []),
-        restore: previous => this.proxy.setClientCertificates(previous)
+        loadedProperty: '_clientCertificateOptions',
+        prepared,
+        install: value => this.proxy._installPreparedClientCertificates(value)
       });
       res.json({ success: true });
     });
     router.post('/api/client-certificates/items', (req, res) => {
-      const host = String(req.body?.host || '').trim();
-      const pfxPath = String(req.body?.pfxPath || '').trim();
+      if (typeof req.body?.host !== 'string' || typeof req.body?.pfxPath !== 'string') {
+        return res.status(400).json({ error: 'host and pfxPath must be strings' });
+      }
+      const host = req.body.host.trim();
+      const pfxPath = req.body.pfxPath.trim();
       if (!host || !pfxPath) return res.status(400).json({ error: 'host and pfxPath are required' });
       const hasPassphrase = Object.prototype.hasOwnProperty.call(req.body || {}, 'passphrase');
       if (hasPassphrase && typeof req.body.passphrase !== 'string') {
@@ -2024,23 +2055,27 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
               ? { passphrase: retainedPassphrase }
               : {})
         };
-        this._mutateProxySetting({
+        const certificates = [];
+        let replacementAdded = false;
+        for (const certificate of this.proxy.clientCertificates) {
+          if (!matchesHost(certificate)) {
+            certificates.push(certificate);
+          } else if (!replacementAdded) {
+            certificates.push(replacement);
+            replacementAdded = true;
+          }
+        }
+        if (!replacementAdded) certificates.push(replacement);
+        const prepared = this._prepareTlsMaterialRequest(
+          res,
+          () => this.proxy._prepareClientCertificates(certificates)
+        );
+        if (!prepared) return;
+        this._mutatePreparedTlsMaterial({
           property: 'clientCertificates',
-          apply: () => {
-            const certificates = [];
-            let replacementAdded = false;
-            for (const certificate of this.proxy.clientCertificates) {
-              if (!matchesHost(certificate)) {
-                certificates.push(certificate);
-              } else if (!replacementAdded) {
-                certificates.push(replacement);
-                replacementAdded = true;
-              }
-            }
-            if (!replacementAdded) certificates.push(replacement);
-            return this.proxy.setClientCertificates(certificates);
-          },
-          restore: previous => this.proxy.setClientCertificates(previous)
+          loadedProperty: '_clientCertificateOptions',
+          prepared,
+          install: value => this.proxy._installPreparedClientCertificates(value)
         });
       }
       res.json({
@@ -2055,10 +2090,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!host || !pfxPath || certificates.length === this.proxy.clientCertificates.length) {
         return res.status(404).json({ error: 'Client certificate not found' });
       }
-      this._mutateProxySetting({
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareClientCertificates(certificates)
+      );
+      if (!prepared) return;
+      this._mutatePreparedTlsMaterial({
         property: 'clientCertificates',
-        apply: () => this.proxy.setClientCertificates(certificates),
-        restore: previous => this.proxy.setClientCertificates(previous)
+        loadedProperty: '_clientCertificateOptions',
+        prepared,
+        install: value => this.proxy._installPreparedClientCertificates(value)
       });
       res.json({
         success: true,
@@ -2071,21 +2112,36 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ cas: this.proxy.trustedCAs });
     });
     router.post('/api/trusted-cas', (req, res) => {
-      this._mutateProxySetting({
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareTrustedCAs(req.body?.cas)
+      );
+      if (!prepared) return;
+      this._mutatePreparedTlsMaterial({
         property: 'trustedCAs',
-        apply: () => this.proxy.setTrustedCAs(req.body.cas || []),
-        restore: previous => this.proxy.setTrustedCAs(previous)
+        loadedProperty: '_trustedCaCertificates',
+        prepared,
+        install: value => this.proxy._installPreparedTrustedCAs(value)
       });
       res.json({ success: true });
     });
     router.post('/api/trusted-cas/items', (req, res) => {
-      const ca = String(req.body?.ca || '').trim();
+      if (typeof req.body?.ca !== 'string') {
+        return res.status(400).json({ error: 'ca must be a string' });
+      }
+      const ca = req.body.ca.trim();
       if (!ca) return res.status(400).json({ error: 'ca is required' });
       if (!this.proxy.trustedCAs.includes(ca)) {
-        this._mutateProxySetting({
+        const prepared = this._prepareTlsMaterialRequest(
+          res,
+          () => this.proxy._prepareTrustedCAs([...this.proxy.trustedCAs, ca])
+        );
+        if (!prepared) return;
+        this._mutatePreparedTlsMaterial({
           property: 'trustedCAs',
-          apply: () => this.proxy.setTrustedCAs([...this.proxy.trustedCAs, ca]),
-          restore: previous => this.proxy.setTrustedCAs(previous)
+          loadedProperty: '_trustedCaCertificates',
+          prepared,
+          install: value => this.proxy._installPreparedTrustedCAs(value)
         });
       }
       res.json({ success: true, cas: this.proxy.trustedCAs });
@@ -2096,10 +2152,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!ca || cas.length === this.proxy.trustedCAs.length) {
         return res.status(404).json({ error: 'Trusted CA not found' });
       }
-      this._mutateProxySetting({
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareTrustedCAs(cas)
+      );
+      if (!prepared) return;
+      this._mutatePreparedTlsMaterial({
         property: 'trustedCAs',
-        apply: () => this.proxy.setTrustedCAs(cas),
-        restore: previous => this.proxy.setTrustedCAs(previous)
+        loadedProperty: '_trustedCaCertificates',
+        prepared,
+        install: value => this.proxy._installPreparedTrustedCAs(value)
       });
       res.json({ success: true, cas: this.proxy.trustedCAs });
     });
