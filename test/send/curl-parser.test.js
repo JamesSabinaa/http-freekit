@@ -280,7 +280,7 @@ test('required option values may look like options, matching cURL argument consu
   assert.equal(attached.body, '-leading-dash');
 
   const method = parseCurlCommand('curl --request -custom https://example.test');
-  assert.equal(method.method, '-CUSTOM');
+  assert.equal(method.method, '-custom');
   assert.equal(method.url, 'https://example.test');
 });
 
@@ -482,10 +482,27 @@ test('cURL paste applies attached supported options without losing BUG-407 metho
   assert.equal(harness.toasts[0].type, 'success');
 });
 
+test('mixed-case and punctuation-rich cURL methods remain exact in the Send editor and storage', () => {
+  const customMethod = "MiXeD!#$%&'*+-.^_`|~09AZ";
+  const harness = createCurlPasteHarness();
+  const { prevented, state } = harness.paste(
+    `curl --request="${customMethod}" https://custom.example.test/resource`
+  );
+
+  assert.equal(prevented, true);
+  assert.equal(state.tab.method, customMethod);
+  assert.equal(harness.elements.sendMethod.value, customMethod);
+  assert.equal(harness.persisted.length, 1);
+  assert.equal(harness.persisted[0][0].method, customMethod);
+  assert.equal(harness.toasts[0].type, 'success');
+});
+
 test('unsupported, malformed, and multi-URL cURL pastes leave Send state atomic', () => {
   for (const command of [
     'curl --proxy http://proxy.example:3128 https://target.example/path',
     'curl https://target.example/path --request',
+    "curl --request='<img src=x>' https://target.example/path",
+    "curl --request='GET /smuggled' https://target.example/path",
     'curl https://one.example https://two.example',
     "curl 'https://unterminated.example"
   ]) {

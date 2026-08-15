@@ -13,7 +13,7 @@ const powerShellLiteral = value => `'${String(value).replace(/'/g, "''")}'`;
 const phpLiteral = value => `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 
 test('raw request exports quote every untrusted request component', () => {
-  const method = 'GET`touch method-pwned`';
+  const method = "MiXeD!#$%&'*+-.^_`|~09AZ";
   const url = 'https://example.test/a\' ; touch url-pwned ; "\\next';
   const headerValue = 'value\' ; touch header-pwned ; "\\next';
   const body = 'body\' ; touch body-pwned ; "\\next\n$(touch subshell-pwned)';
@@ -65,7 +65,7 @@ test('raw request exports quote every untrusted request component', () => {
 
 test('multipart PowerShell and PHP exports use their native safe literals', () => {
   const request = {
-    method: "POST'; touch method-pwned; '",
+    method: "MiXeD'*+.^_`|~",
     url: "https://example.test/' ; touch url-pwned ; '",
     bodyType: 'multipart',
     requestHeaders: { 'x-test': "value'; touch header-pwned; '" },
@@ -85,6 +85,26 @@ test('multipart PowerShell and PHP exports use their native safe literals', () =
     `Content-Disposition: form-data; name="${request.formFields[0].key}"`
   )));
   assert.ok(php.includes(phpLiteral(request.formFields[0].value)));
+});
+
+test('request exports preserve omitted-method compatibility but reject explicit invalid methods', () => {
+  const baseRequest = {
+    url: 'https://example.test/',
+    requestHeaders: {},
+    requestBody: ''
+  };
+
+  assert.match(generateExportSnippet(baseRequest, 'curl'), /^curl -X 'GET' /);
+  assert.match(generateExportSnippet({ ...baseRequest, bodyType: 'multipart' }, 'curl'), /^curl -X 'POST' /);
+
+  for (const method of ['', null, '<img>', 'GET /smuggled']) {
+    const raw = generateExportSnippet({ ...baseRequest, method }, 'curl');
+    const multipart = generateExportSnippet({ ...baseRequest, bodyType: 'multipart', method }, 'curl');
+    assert.match(raw, /^# EXACT REPLAY UNAVAILABLE/);
+    assert.match(raw, /non-empty valid HTTP token/);
+    assert.match(multipart, /^# EXACT REPLAY UNAVAILABLE/);
+    assert.match(multipart, /non-empty valid HTTP token/);
+  }
 });
 
 test('cURL exports keep leading-at bodies and multipart text fields literal', () => {

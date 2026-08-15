@@ -229,10 +229,11 @@
           <div id="sendRequestPane" style="flex:1;overflow-y:auto;padding:20px;border-right:none;">
             <div class="card" style="margin-bottom:0;">
               <div style="display:flex;gap:0;margin-bottom:16px;box-shadow:0 2px 3px 0 rgba(0,0,0,0.12);">
-                <div style="position:relative;flex:0 0 105px;">
-                  <select id="sendMethod" aria-label="Request method" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:pointer;width:100%;height:100%;appearance:none;-webkit-appearance:none;border-left:5px solid #4caf7d;" onchange="updateSendMethodColor();scheduleSendExportUpdate()">
-                    <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option>
-                  </select>
+                <div style="position:relative;flex:0 0 125px;">
+                  <input type="text" id="sendMethod" list="sendMethodOptions" aria-label="Request method" autocomplete="off" autocapitalize="off" spellcheck="false" title="Enter any valid HTTP method token" value="GET" style="background:var(--bg-lowlight,var(--bg-input));border:none;border-radius:0;color:var(--text-main);padding:10px 28px 10px 15px;font-weight:700;font-family:var(--font-mono);font-size:14px;outline:none;cursor:text;width:100%;height:100%;border-left:5px solid #4caf7d;" oninput="updateSendMethodColor();scheduleSendExportUpdate()">
+                  <datalist id="sendMethodOptions">
+                    <option value="GET"></option><option value="POST"></option><option value="PUT"></option><option value="DELETE"></option><option value="PATCH"></option><option value="HEAD"></option><option value="OPTIONS"></option>
+                  </datalist>
                   <i class="ph ph-caret-down" style="font-size:12px;position:absolute;top:50%;right:8px;transform:translateY(-50%);pointer-events:none;opacity:0.5;"></i>
                 </div>
                 <input type="url" id="sendUrl" aria-label="Request URL" spellcheck="false" placeholder="https://example.com/hello?name=world or paste a cURL command" style="flex:1;background:var(--bg-input);border:none;color:var(--text-main);padding:10px 14px;font-family:var(--font-mono);font-size:14px;outline:none;" oninput="scheduleSendExportUpdate()" onkeydown="if(event.ctrlKey && event.key==='Enter') sendRequest();" onfocus="prepopulateSendUrl(this)">

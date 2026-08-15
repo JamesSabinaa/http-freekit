@@ -1723,6 +1723,12 @@
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
+      const requestMethod = req.method === undefined ? 'GET' : req.method;
+      if (typeof requestMethod !== 'string' || requestMethod.length === 0 ||
+          /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(requestMethod)) {
+        toast('Cannot resend this request because its method is not a valid HTTP token.', 'error');
+        return;
+      }
       if (req.requestBodyTruncated === true) {
         toast('Cannot resend this request because its captured body is incomplete.', 'error');
         return;
@@ -1742,7 +1748,7 @@
       }
 
       // Save current tab state before creating a new one
-      saveSendTabState();
+      if (saveSendTabState(true) === false) return;
 
       // Build headers list for the new tab
       const newHeaders = [];
@@ -1778,7 +1784,7 @@
       // Create a new send tab with the request data
       const newTab = {
         id: allocateSendTabId(),
-        method: req.method,
+        method: requestMethod,
         url: req.url,
         headers: newHeaders,
         body: req.requestBody || '',
@@ -2884,7 +2890,7 @@
       } catch {}
 
       return {
-        method: document.getElementById('sendMethod')?.value || 'GET',
+        method: document.getElementById('sendMethod')?.value,
         url,
         host,
         path,
@@ -8483,14 +8489,27 @@
 
     function updateSendMethodColor() {
       const sel = document.getElementById('sendMethod');
+      if (!sel) return;
+      const isValid = typeof sel.value === 'string' && sel.value.length > 0 &&
+        !/[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(sel.value);
+      const validationMessage = isValid
+        ? ''
+        : 'Enter a non-empty HTTP method using only valid token characters.';
+      sel.setCustomValidity(validationMessage);
+      if (isValid) sel.removeAttribute('aria-invalid');
+      else sel.setAttribute('aria-invalid', 'true');
+
+      // HTTP methods are case-sensitive. Only the exact standard spellings get
+      // their standard color/body affordances; custom casing remains custom.
+      const presentationMethod = sel.value;
       const colors = {GET:'#4caf7d',POST:'#ff8c38',PUT:'#6e40aa',DELETE:'#ce3939',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'};
-      sel.style.borderLeftColor = colors[sel.value] || '#888';
+      sel.style.borderLeftColor = colors[presentationMethod] || '#888';
 
       // Auto-collapse/expand body card based on method (matches HTTP Toolkit behavior)
       const bodyContent = document.getElementById('sendBodyBody');
       if (bodyContent) {
         const hasBody = getSendBodyValue().trim().length > 0;
-        if (METHODS_WITHOUT_BODY.includes(sel.value)) {
+        if (METHODS_WITHOUT_BODY.includes(presentationMethod)) {
           // Collapse body card if body is empty
           if (!hasBody) {
             setSendCardExpanded('sendBodyBody', false);
@@ -9143,6 +9162,30 @@
         }));
     }
 
+    function normalizeSendMethod(method) {
+      // Missing methods existed in legacy workspaces and retain their historical
+      // GET meaning. Explicit empty, null, or malformed values are invalid.
+      if (method === undefined) return 'GET';
+      return typeof method === 'string' && method.length > 0 &&
+        !/[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(method)
+        ? method
+        : null;
+    }
+
+    function reportInvalidSendMethod(input = document.getElementById('sendMethod')) {
+      const message = 'Request method must be a non-empty valid HTTP token.';
+      input?.setCustomValidity?.(message);
+      input?.setAttribute?.('aria-invalid', 'true');
+      input?.focus?.();
+      if (typeof toast === 'function') toast(message, 'error');
+    }
+
+    function reportRejectedStoredSendWorkspace() {
+      if (typeof toast === 'function') {
+        toast('Stored Send tabs were ignored because a request method is invalid.', 'error');
+      }
+    }
+
     const SEND_TABS_LEGACY_KEY = 'http-freekit-send-tabs';
     const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
     const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace';
@@ -9186,6 +9229,8 @@
 
     function normalizeSendTab(tab, fallbackId, { includeFiles = true, includeResponse = true } = {}) {
       if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return null;
+      const method = normalizeSendMethod(tab.method);
+      if (method === null) return null;
       const bodyTypes = new Set(['raw', 'urlencoded', 'multipart']);
       const bodyFormats = new Set(['text', 'json', 'xml', 'html', 'css', 'javascript', 'markdown', 'yaml']);
       const savedId = parseSendTabId(tab.id) !== null
@@ -9193,7 +9238,7 @@
         : (parseSendTabId(fallbackId) !== null ? fallbackId : 'tab-1');
       return {
         id: savedId,
-        method: typeof tab.method === 'string' && tab.method ? tab.method : 'GET',
+        method,
         url: typeof tab.url === 'string' ? tab.url : '',
         headers: normalizeSendHeaderRows(tab.headers),
         body: typeof tab.body === 'string' ? tab.body : '',
@@ -9218,17 +9263,22 @@
       const usedIds = new Set();
       let generatedId = 1;
 
-      return tabs.flatMap(tab => {
-        if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return [];
+      const normalizedTabs = [];
+      for (const tab of tabs) {
+        if (!tab || typeof tab !== 'object' || Array.isArray(tab)) continue;
         let id = parseSendTabId(tab.id) !== null && !usedIds.has(tab.id) ? tab.id : null;
         if (!id) {
           do { id = `tab-${generatedId++}`; } while (reservedIds.has(id) || usedIds.has(id));
         }
-        usedIds.add(id);
         const normalized = normalizeSendTab(tab, id, { includeFiles: false, includeResponse: false });
+        // A method controls request semantics, so a hostile or corrupt method
+        // invalidates the whole snapshot instead of partially applying it.
+        if (!normalized) return null;
+        usedIds.add(id);
         normalized.id = id;
-        return [normalized];
-      });
+        normalizedTabs.push(normalized);
+      }
+      return normalizedTabs;
     }
 
     function allocateSendTabId() {
@@ -9302,9 +9352,11 @@
           .filter(id => parseSendTabId(id) !== null)
       ));
       const deletedIds = new Set(deletedTabIds);
+      const tabs = normalizeStoredSendTabs(workspace.tabs);
+      if (!tabs) return null;
       return {
         version: 2,
-        tabs: normalizeStoredSendTabs(workspace.tabs).filter(tab => !deletedIds.has(tab.id)),
+        tabs: tabs.filter(tab => !deletedIds.has(tab.id)),
         deletedTabIds
       };
     }
@@ -9312,43 +9364,44 @@
     // Each renderer writes only its tab-level changes. The cross-window lock
     // serializes read/merge/write operations, and permanent tombstones make
     // deletion win over any later write from a stale renderer.
-    function readStoredSendWorkspace() {
+    function readStoredSendWorkspace(reportInvalid = false) {
       const savedWorkspace = safeLocalStorageGet(SEND_TABS_WORKSPACE_KEY);
       if (savedWorkspace) {
         try {
           const workspace = normalizeStoredSendWorkspace(JSON.parse(savedWorkspace));
           if (workspace) return workspace;
+          if (reportInvalid) reportRejectedStoredSendWorkspace();
         } catch {}
       }
 
       const savedLegacyTabs = safeLocalStorageGet(SEND_TABS_LEGACY_KEY);
       if (savedLegacyTabs) {
         try {
-          return {
-            version: 2,
-            tabs: normalizeStoredSendTabs(JSON.parse(savedLegacyTabs)),
-            deletedTabIds: []
-          };
+          const tabs = normalizeStoredSendTabs(JSON.parse(savedLegacyTabs));
+          if (tabs) return { version: 2, tabs, deletedTabIds: [] };
+          if (reportInvalid) reportRejectedStoredSendWorkspace();
         } catch {}
       }
       return { version: 2, tabs: [], deletedTabIds: [] };
     }
 
     function mergeStoredSendWorkspace(workspace, upserts = [], deletedTabIds = []) {
-      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace) || {
-        version: 2,
-        tabs: [],
-        deletedTabIds: []
-      };
+      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace);
+      if (!normalizedWorkspace) return null;
+      const serializedUpserts = [];
+      for (const candidate of upserts) {
+        const tab = serializeSendTab(candidate);
+        if (!tab) return null;
+        serializedUpserts.push(tab);
+      }
       const deletedIds = new Set(normalizedWorkspace.deletedTabIds);
       for (const id of deletedTabIds) {
         if (parseSendTabId(id) !== null) deletedIds.add(id);
       }
 
       const tabs = normalizedWorkspace.tabs.filter(tab => !deletedIds.has(tab.id));
-      for (const candidate of upserts) {
-        const tab = serializeSendTab(candidate);
-        if (!tab || deletedIds.has(tab.id)) continue;
+      for (const tab of serializedUpserts) {
+        if (deletedIds.has(tab.id)) continue;
         const existingIndex = tabs.findIndex(existing => existing.id === tab.id);
         if (existingIndex === -1) tabs.push(tab);
         else tabs[existingIndex] = tab;
@@ -9556,9 +9609,14 @@
       const deletedTabIds = arguments[1] ?? [];
       const deletions = new Set((Array.isArray(deletedTabIds) ? deletedTabIds : [])
         .filter(id => parseSendTabId(id) !== null));
-      const upserts = (Array.isArray(tabsToUpsert) ? tabsToUpsert : [])
-        .map(serializeSendTab)
-        .filter(tab => tab && !deletions.has(tab.id));
+      const candidates = Array.isArray(tabsToUpsert) ? tabsToUpsert : [];
+      const serializedCandidates = candidates.map(serializeSendTab);
+      // Do not persist a valid subset when any requested upsert has an invalid
+      // method: the journal operation is all-or-nothing.
+      if (serializedCandidates.some(tab => !tab)) {
+        return Promise.resolve(readStoredSendWorkspace());
+      }
+      const upserts = serializedCandidates.filter(tab => !deletions.has(tab.id));
       const operationEntries = [];
       for (const tab of upserts) {
         const entry = stageSendTabJournal(createSendTabJournal(tab.id, tab));
@@ -9613,17 +9671,25 @@
     function handleSendTabStorageEvent(event) {
       if (event.key !== SEND_TABS_WORKSPACE_KEY || !event.newValue) return;
       try {
-        applyStoredSendWorkspace(overlaySendTabJournals(
+        const workspace = overlaySendTabJournals(
           JSON.parse(event.newValue),
           readStoredSendTabJournals()
-        ));
+        );
+        if (!workspace) {
+          reportRejectedStoredSendWorkspace();
+          return;
+        }
+        applyStoredSendWorkspace(workspace);
       } catch {}
     }
 
     function captureActiveSendTabState() {
       const tab = sendTabs.find(t => t.id === activeSendTab);
       if (!tab) return null;
-      tab.method = document.getElementById('sendMethod')?.value || 'GET';
+      const methodInput = document.getElementById('sendMethod');
+      const method = normalizeSendMethod(methodInput?.value);
+      if (method === null) return null;
+      tab.method = method;
       tab.url = document.getElementById('sendUrl')?.value || '';
       tab.headers = sendHeadersList.slice();
       tab.body = getSendBodyValue();
@@ -9638,14 +9704,23 @@
       return tab;
     }
 
-    function saveSendTabState() {
+    function saveSendTabState(reportMethodError = false) {
       const tab = captureActiveSendTabState();
-      if (!tab) return;
+      if (!tab) {
+        if (reportMethodError) reportInvalidSendMethod();
+        return false;
+      }
       return persistSendTabs([tab]);
     }
 
     function persistActiveSendTabBeforeUnload(event) {
       const tab = serializeSendTab(captureActiveSendTabState());
+      if (!tab) {
+        reportInvalidSendMethod();
+        event?.preventDefault?.();
+        if (event) event.returnValue = '';
+        return false;
+      }
       if (tab) {
         stageSendTabJournal(createSendTabJournal(tab.id, tab));
       }
@@ -9668,7 +9743,7 @@
     function restoreSendTabs() {
       try {
         const journalEntries = readStoredSendTabJournals();
-        const workspace = overlaySendTabJournals(readStoredSendWorkspace(), journalEntries);
+        const workspace = overlaySendTabJournals(readStoredSendWorkspace(true), journalEntries);
         let replacementTab = null;
         if (workspace.tabs.length > 0) {
           sendTabs = workspace.tabs;
@@ -9690,8 +9765,12 @@
     }
 
     function loadSendTabState(tab) {
-      tab = normalizeSendTab(tab, activeSendTab || 'tab-1') || normalizeSendTab({}, 'tab-1');
-      document.getElementById('sendMethod').value = tab.method || 'GET';
+      tab = normalizeSendTab(tab, activeSendTab || 'tab-1');
+      if (!tab) {
+        reportInvalidSendMethod();
+        return false;
+      }
+      document.getElementById('sendMethod').value = tab.method;
       document.getElementById('sendUrl').value = tab.url || '';
       sendHeadersList = tab.headers.slice();
       renderSendHeaders();
@@ -9756,6 +9835,7 @@
         const viewLink = document.getElementById('sendViewInTraffic');
         if (viewLink) viewLink.style.display = 'none';
       }
+      return true;
     }
 
     function inferCurlSendBodyFormat(headers) {
@@ -9780,6 +9860,12 @@
     function replaceActiveSendTabFromCurl(parsed) {
       const tabIndex = sendTabs.findIndex(tab => tab.id === activeSendTab);
       if (tabIndex === -1) return null;
+      const parsedMethod = parsed?.method;
+      if (typeof parsedMethod !== 'string' || parsedMethod.length === 0 ||
+          /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(parsedMethod)) {
+        toast('Cannot import cURL command: request method must be a valid HTTP token.', 'error');
+        return null;
+      }
 
       // A pasted command describes the whole request, not a patch over the
       // current editor. Build the complete replacement before publishing it so
@@ -9788,7 +9874,7 @@
       // exact bytes instead of normalizing it through URLSearchParams.
       const replacement = {
         id: sendTabs[tabIndex].id,
-        method: parsed.method || 'GET',
+        method: parsedMethod,
         url: parsed.url || '',
         headers: normalizeSendHeaderRows(parsed.headers),
         body: parsed.hasData ? String(parsed.body ?? '') : '',
@@ -9808,7 +9894,7 @@
     }
 
     function switchSendTab(tabId) {
-      saveSendTabState();
+      if (saveSendTabState(true) === false) return;
       activeSendTab = tabId;
       safeLocalStorageSet('http-freekit-send-active', activeSendTab);
       const tab = sendTabs.find(t => t.id === tabId);
@@ -9817,7 +9903,7 @@
     }
 
     function addSendTab() {
-      saveSendTabState();
+      if (saveSendTabState(true) === false) return;
       const newTab = createEmptySendTab();
       sendTabs.push(newTab);
       activeSendTab = newTab.id;
@@ -9828,7 +9914,7 @@
     }
 
     function closeSendTab(tabId, restoreTabFocus = false) {
-      saveSendTabState();
+      if (saveSendTabState(true) === false) return;
       const idx = sendTabs.findIndex(t => t.id === tabId);
       if (idx === -1) return;
       if (sendTabs.length <= 1) {
@@ -9974,10 +10060,22 @@
       if (currentSendAbort) return;
 
       const initiatingTabId = activeSendTab;
-      const method = document.getElementById('sendMethod').value;
+      const methodInput = document.getElementById('sendMethod');
+      const method = methodInput?.value;
       const url = document.getElementById('sendUrl').value.trim();
       const headersStr = document.getElementById('sendHeaders').value.trim();
 
+      if (typeof method !== 'string' || method.length === 0 ||
+          /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(method)) {
+        const message = 'Request method must be a non-empty valid HTTP token.';
+        methodInput?.setCustomValidity?.(message);
+        methodInput?.setAttribute?.('aria-invalid', 'true');
+        methodInput?.focus?.();
+        toast(message, 'error');
+        return;
+      }
+      methodInput.setCustomValidity?.('');
+      methodInput.removeAttribute?.('aria-invalid');
       if (!url) { toast('URL is required', 'error'); return; }
 
       let headers = {};

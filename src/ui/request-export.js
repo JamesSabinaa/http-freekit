@@ -105,6 +105,21 @@ function generateUnavailableExportSnippet(format, reason) {
   return `${prefix} EXACT REPLAY UNAVAILABLE\n${prefix} ${reason}\n${prefix} No request was generated.`;
 }
 
+const HTTP_METHOD_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function getExportMethod(req, fallback) {
+  if (!Object.prototype.hasOwnProperty.call(req, 'method')) return fallback;
+  if (typeof req.method !== 'string' || !HTTP_METHOD_TOKEN_PATTERN.test(req.method)) return null;
+  return req.method;
+}
+
+function generateInvalidMethodExportSnippet(format) {
+  return generateUnavailableExportSnippet(
+    format,
+    'The request method must be a non-empty valid HTTP token.'
+  );
+}
+
 function isFetchBodyForbiddenMethod(method) {
   return /^(?:GET|HEAD)$/i.test(String(method));
 }
@@ -119,7 +134,8 @@ function generateFetchBodyUnavailableSnippet(method) {
 function generateMultipartExportSnippet(req, format) {
   const fields = getExportFormFields(req);
   const headers = getExportHeaders(req, true);
-  const method = String(req.method || 'POST');
+  const method = getExportMethod(req, 'POST');
+  if (method === null) return generateInvalidMethodExportSnippet(format);
   const url = String(req.url || '');
   const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
   if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
@@ -393,7 +409,8 @@ export function generateExportSnippet(req, format) {
   }
   if (req.bodyType === 'multipart') return generateMultipartExportSnippet(req, format);
 
-  const method = String(req.method || 'GET');
+  const method = getExportMethod(req, 'GET');
+  if (method === null) return generateInvalidMethodExportSnippet(format);
   const url = String(req.url || '');
   const exportBody = getExportRequestBody(req);
   if (exportBody.kind === 'unavailable') {

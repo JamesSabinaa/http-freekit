@@ -76,6 +76,9 @@ const HOP_BY_HOP_HEADER_NAMES = new Set([
 ]);
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
+const METHODS_WITHOUT_DEFAULT_CHUNKED_BODY = new Set([
+  'GET', 'HEAD', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'
+]);
 
 function createHeaderMap(entries = []) {
   const headers = Object.create(null);
@@ -325,11 +328,11 @@ export class ProxyServer {
     this.maxWsCapturedMessageBytes = options.maxWsCapturedMessageBytes ?? DEFAULT_MAX_WS_MESSAGE_PAYLOAD;
   }
 
-  _registerInternalSendRequest(ttlMs = 120000) {
+  _registerInternalSendRequest(ttlMs = 120000, method) {
     const token = `${uuidv4()}-${uuidv4()}`;
     const requestId = uuidv4();
     const timeout = Number.isSafeInteger(ttlMs) && ttlMs > 0 ? ttlMs : 120000;
-    const context = { token, requestId, timer: null };
+    const context = { token, requestId, method, timer: null };
     context.timer = setTimeout(() => this._finishInternalSendRequest(requestId), timeout);
     context.timer.unref?.();
     this._internalSendTokens.set(token, context);
@@ -351,6 +354,29 @@ export class ProxyServer {
     this._internalSendRequestIds.delete(requestId);
     this._internalSendTokens.delete(context.token);
     return true;
+  }
+
+  _requestWithExactMethod(requestLib, options, onResponse, preserveConnectSemantics = false) {
+    const request = requestLib.request(options, onResponse);
+    // Node canonicalizes ClientRequest methods to uppercase even for extension
+    // tokens. Reassign before the request line is generated to retain RFC
+    // method case sensitivity on the wire.
+    if (typeof options?.method === 'string') {
+      request.method = options.method;
+      // The constructor also chooses default request-body framing after it has
+      // uppercased the method. A mixed-case token such as `gEt` is not GET, so
+      // recalculate this case-sensitive decision from the exact token.
+      request.useChunkedEncodingByDefault =
+        !METHODS_WITHOUT_DEFAULT_CHUNKED_BODY.has(options.method);
+      // Internal Send treats every token as an ordinary request/response exchange.
+      // Once CONNECT's exact request line is flushed, prevent ClientRequest from
+      // switching to its tunnel-only `connect` event. The dedicated upstream
+      // proxy tunnel path opts out below.
+      if (options.method === 'CONNECT' && !preserveConnectSemantics) {
+        request.once('finish', () => { request.method = 'POST'; });
+      }
+    }
+    return request;
   }
 
   _consumeInternalSendRequest(request) {
@@ -640,7 +666,7 @@ export class ProxyServer {
 
         let request;
         try {
-          request = requestLib.request(options, (response) => {
+          request = this._requestWithExactMethod(requestLib, options, (response) => {
             if (signal?.aborted) {
               response.destroy();
               return;
@@ -1413,7 +1439,7 @@ export class ProxyServer {
           clientHelloTls,
           useUpstreamProxy: usedUpstreamProxy
         });
-        request = requestLib.request(options);
+        request = this._requestWithExactMethod(requestLib, options);
       } catch (error) {
         void handleFailure(error, null, { attempt, proxyGeneration, usedUpstreamProxy });
         return;
@@ -2093,7 +2119,7 @@ export class ProxyServer {
           clientHelloTls,
           useUpstreamProxy: usedUpstreamProxy
         });
-        request = requestLib.request(options);
+        request = this._requestWithExactMethod(requestLib, options);
       } catch (error) {
         fail(error, null);
         return;
@@ -3601,7 +3627,7 @@ export class ProxyServer {
     if (socket.destroyed) queueMicrotask(onDownstreamClose);
 
     try {
-      proxyReq = requestLib.request(options);
+      proxyReq = this._requestWithExactMethod(requestLib, options);
     } catch (err) {
       socket.removeListener('close', onDownstreamClose);
       handshakeState = 'error';
@@ -3967,6 +3993,7 @@ export class ProxyServer {
   _handleHttpRequest(clientReq, clientRes) {
     const startTime = Date.now();
     const internalSend = this._consumeInternalSendRequest(clientReq);
+    if (typeof internalSend?.method === 'string') clientReq.method = internalSend.method;
     clientReq.headers = this._incomingMessageHeaders(clientReq);
     const requestId = internalSend?.requestId || uuidv4();
     const trafficLifecycleId = uuidv4();
@@ -4293,7 +4320,7 @@ export class ProxyServer {
         if (!isTargetHttps && useUpstreamProxy && requestLib === https) {
           Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
         }
-        const proxyReq = requestLib.request(options, (proxyRes) => {
+        const proxyReq = this._requestWithExactMethod(requestLib, options, (proxyRes) => {
           if (downstream.aborted) {
             proxyRes.destroy();
             return;
@@ -5588,7 +5615,8 @@ export class ProxyServer {
             clientHelloTls: tlsSocket._clientHelloTls,
             useUpstreamProxy
           });
-          proxyReq = requestLib.request(
+          proxyReq = this._requestWithExactMethod(
+            requestLib,
             options,
             handleResponse(attempt, proxyGeneration, useUpstreamProxy)
           );
@@ -6142,7 +6170,8 @@ export class ProxyServer {
               clientHelloTls: tlsSocket._clientHelloTls,
               useUpstreamProxy
             });
-            proxyReq = requestLib.request(
+            proxyReq = this._requestWithExactMethod(
+              requestLib,
               options,
               handleResponse(attempt, proxyGeneration, useUpstreamProxy)
             );
@@ -6583,7 +6612,8 @@ export class ProxyServer {
             clientHelloTls: tlsSocket._clientHelloTls,
             useUpstreamProxy
           });
-          proxyReq = requestLib.request(
+          proxyReq = this._requestWithExactMethod(
+            requestLib,
             options,
             handleResponse(attempt, proxyGeneration, useUpstreamProxy)
           );
@@ -8210,7 +8240,7 @@ export class ProxyServer {
       if (requestLib === https) {
         Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
       }
-      const request = requestLib.request(options);
+      const request = this._requestWithExactMethod(requestLib, options, undefined, true);
       this._configureUpstreamRequest(request);
       request.once('connect', (response, socket, proxyHead) => {
         if (response.statusCode !== 200) {
