@@ -3,7 +3,10 @@ import http from 'node:http';
 import test from 'node:test';
 
 import { ApiServer } from '../../src/api/api-server.js';
-import { validateMockRule } from '../../src/proxy/mock-rule-validation.js';
+import {
+  isCompleteMockMatcher,
+  validateMockRule
+} from '../../src/proxy/mock-rule-validation.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { restoreSavedRuleSettings } from '../../src/startup-rule-restoration.js';
 
@@ -125,6 +128,66 @@ test('runtime matcher evaluation fails closed for malformed rules', () => {
   assert.equal(proxy._findMockRule('GET', 'https://example.test/', null, ''), undefined);
   assert.equal(proxy._evaluateMatcher(null, 'GET', 'https://example.test/', {}, ''), false);
   assert.equal(proxy._evaluateMatcher({ type: 'host', value: 42 }, 'GET', 'https://example.test/', {}, ''), false);
+});
+
+test('method validation preserves wildcard and extension tokens while rejecting markup', () => {
+  const proxy = new ProxyServer(null);
+  const validMethods = ['*', 'M-SEARCH', "!#$%&'*+-.^_`|~AZaz09"];
+  const invalidMethods = [
+    '',
+    'GET POST',
+    'GET" data-audit="present',
+    'GET></span><img src=x onerror=alert(1)>'
+  ];
+
+  for (const method of validMethods) {
+    const matcher = { type: 'method', value: method };
+    assert.equal(isCompleteMockMatcher(matcher), true, method);
+    assert.equal(validateMockRule({
+      enabled: true,
+      matchers: [matcher],
+      action: { type: 'fixed-response' }
+    }), null, method);
+    assert.equal(proxy._evaluateMatcher(
+      matcher,
+      method === '*' ? 'GET' : method,
+      'https://example.test/',
+      {},
+      ''
+    ), true, method);
+  }
+
+  for (const method of invalidMethods) {
+    const matcher = { type: 'method', value: method };
+    assert.equal(isCompleteMockMatcher(matcher), false, method);
+    assert.equal(typeof validateMockRule({
+      enabled: true,
+      matchers: [matcher],
+      action: { type: 'fixed-response' }
+    }), 'string', method);
+    assert.equal(proxy._evaluateMatcher(
+      matcher, 'GET', 'https://example.test/', {}, ''
+    ), false, method);
+  }
+
+  assert.equal(validateMockRule({
+    enabled: true,
+    method: 'M-SEARCH',
+    urlPattern: '/',
+    response: {}
+  }), null);
+  assert.equal(validateMockRule({
+    enabled: true,
+    method: '*',
+    urlPattern: '/',
+    response: {}
+  }), null);
+  assert.match(validateMockRule({
+    enabled: true,
+    method: 'GET"><img src=x>',
+    urlPattern: '/',
+    response: {}
+  }), /valid HTTP method/);
 });
 
 test('validator rejects malformed execution fields before rules reach runtime handlers', () => {

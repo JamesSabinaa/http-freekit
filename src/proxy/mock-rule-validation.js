@@ -307,6 +307,9 @@ function validateLegacyResponse(response) {
 
 export function isCompleteMockMatcher(matcher) {
   if (!isObject(matcher) || !MOCK_MATCHER_TYPES.has(matcher.type)) return false;
+  if (matcher.type === 'method') {
+    return typeof matcher.value === 'string' && HTTP_TOKEN_PATTERN.test(matcher.value);
+  }
   if (NAME_MATCHER_TYPES.has(matcher.type)) {
     return typeof matcher.name === 'string' && matcher.name.trim().length > 0
       && (matcher.value === undefined || typeof matcher.value === 'string');
@@ -365,8 +368,9 @@ export function validateMockRule(rule, {
   if (!validUrlPattern) {
     return 'Legacy mock rule urlPattern must be a non-empty string or regular expression';
   }
-  if (rule.method !== undefined && typeof rule.method !== 'string') {
-    return 'Legacy mock rule method must be a string';
+  if (rule.method !== undefined
+    && (typeof rule.method !== 'string' || !HTTP_TOKEN_PATTERN.test(rule.method))) {
+    return 'Legacy mock rule method must be a valid HTTP method';
   }
   return validateLegacyResponse(rule.response);
 }
