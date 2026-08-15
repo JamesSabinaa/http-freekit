@@ -231,6 +231,14 @@ function createStartServerHarness(serverLog, waitForServer) {
       spawned.push(proc);
       return proc;
     },
+    terminateServerStartupProcess: async proc => {
+      if (!proc) return true;
+      let terminationRequested = false;
+      if (!proc.killed) {
+        try { terminationRequested = proc.kill('SIGKILL'); } catch {}
+      }
+      return proc.killed || terminationRequested;
+    },
     waitForServer,
     authToken: 'token',
     dialog: { showErrorBox: () => {} },
