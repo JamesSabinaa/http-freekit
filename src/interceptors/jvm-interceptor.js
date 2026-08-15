@@ -24,6 +24,9 @@ const MAX_JVM_RECOVERY_PROCESSES = 128;
 const JVM_AGENT_CACHE_VERSION = 1;
 const MAX_JVM_AGENT_JAR_BYTES = 2 * 1024 * 1024;
 const MAX_JVM_AGENT_STAMP_BYTES = 4096;
+const JVM_ATTACH_CACHE_VERSION = 1;
+const MAX_JVM_ATTACH_CLASS_BYTES = 1024 * 1024;
+const MAX_JVM_ATTACH_STAMP_BYTES = 4096;
 
 export class JvmInterceptor {
   constructor(options = {}) {
@@ -1171,6 +1174,54 @@ public class AttachProxy {
     return this._runJavac([sourcePath], cwd);
   }
 
+  _readAttachHelperClass(classPath, expectedClass = null) {
+    const bytes = this._readBoundedRegularFile(
+      classPath,
+      8,
+      MAX_JVM_ATTACH_CLASS_BYTES,
+      'compiled JVM attach helper class'
+    );
+    if (bytes.readUInt32BE(0) !== 0xcafebabe) {
+      throw new Error('compiled JVM attach helper class has invalid bytecode magic');
+    }
+    if (expectedClass && !bytes.equals(expectedClass)) {
+      throw new Error('compiled JVM attach helper class changed unexpectedly');
+    }
+    return bytes;
+  }
+
+  _getAttachHelperCacheStamp(classPath, sourceHash, expectedClass = null) {
+    const classBytes = this._readAttachHelperClass(classPath, expectedClass);
+    return {
+      version: JVM_ATTACH_CACHE_VERSION,
+      sourceHash,
+      classHash: crypto.createHash('sha256').update(classBytes).digest('hex'),
+      classSize: classBytes.length
+    };
+  }
+
+  _attachHelperCacheIsValid(classPath, stampPath, sourceHash, expectedClass = null) {
+    const stamp = JSON.parse(this._readBoundedRegularFile(
+      stampPath,
+      1,
+      MAX_JVM_ATTACH_STAMP_BYTES,
+      'JVM attach helper cache stamp'
+    ).toString('utf8'));
+    if (stamp?.version !== JVM_ATTACH_CACHE_VERSION || stamp.sourceHash !== sourceHash ||
+        !/^[a-f0-9]{64}$/.test(stamp.classHash || '') ||
+        !Number.isSafeInteger(stamp.classSize) || stamp.classSize < 8 ||
+        stamp.classSize > MAX_JVM_ATTACH_CLASS_BYTES) {
+      return false;
+    }
+    const actualStamp = this._getAttachHelperCacheStamp(
+      classPath,
+      sourceHash,
+      expectedClass
+    );
+    return actualStamp.classHash === stamp.classHash &&
+      actualStamp.classSize === stamp.classSize;
+  }
+
   async _ensureAttachHelper() {
     const attachDir = this.agentDir;
     const attachSource = this._getAttachSource();
@@ -1178,25 +1229,78 @@ public class AttachProxy {
     const attachClassPath = path.join(attachDir, 'AttachProxy.class');
     const attachStampPath = path.join(attachDir, 'attach-source.sha256');
     const sourceHash = crypto.createHash('sha256').update(attachSource).digest('hex');
-    const cachedHash = fs.existsSync(attachStampPath)
-      ? fs.readFileSync(attachStampPath, 'utf8')
-      : null;
 
-    if (fs.existsSync(attachClassPath) && cachedHash === sourceHash) return attachDir;
+    try {
+      if (fs.existsSync(attachClassPath) && fs.existsSync(attachStampPath) &&
+          this._attachHelperCacheIsValid(attachClassPath, attachStampPath, sourceHash)) {
+        return attachDir;
+      }
+    } catch (error) {
+      console.warn('[Interceptor] Ignoring invalid cached JVM attach helper:', error.message);
+    }
 
-    fs.mkdirSync(attachDir, { recursive: true });
-    for (const stalePath of [attachClassPath, attachStampPath]) {
-      try { fs.unlinkSync(stalePath); } catch (err) {
-        if (err.code !== 'ENOENT') throw err;
+    let buildDir = null;
+    try {
+      fs.mkdirSync(attachDir, { recursive: true });
+      buildDir = fs.mkdtempSync(path.join(attachDir, '.jvm-attach-build-'));
+      try { fs.chmodSync(buildDir, 0o700); } catch {}
+      const builtJavaPath = path.join(buildDir, 'AttachProxy.java');
+      const builtClassPath = path.join(buildDir, 'AttachProxy.class');
+      const builtStampPath = path.join(buildDir, 'attach-source.sha256');
+      this._writeNewAgentBuildFile(builtJavaPath, attachSource);
+      this._writeNewAgentBuildFile(builtClassPath, Buffer.alloc(0));
+
+      await this._compileJava(builtJavaPath, buildDir);
+      if (this._readBoundedRegularFile(
+        builtJavaPath,
+        Buffer.byteLength(attachSource),
+        Buffer.byteLength(attachSource),
+        'JVM attach helper source'
+      ).toString('utf8') !== attachSource) {
+        throw new Error('JVM attach helper source changed during compilation');
+      }
+      const compiledClass = this._readAttachHelperClass(builtClassPath);
+      this._writeNewAgentBuildFile(
+        builtStampPath,
+        JSON.stringify(this._getAttachHelperCacheStamp(
+          builtClassPath,
+          sourceHash,
+          compiledClass
+        ))
+      );
+      if (!this._attachHelperCacheIsValid(
+        builtClassPath,
+        builtStampPath,
+        sourceHash,
+        compiledClass
+      )) {
+        throw new Error('JVM attach helper build outputs changed before publication');
+      }
+
+      this._assertAgentCacheTargetIsReplaceable(attachJavaPath);
+      this._assertAgentCacheTargetIsReplaceable(attachClassPath);
+      this._assertAgentCacheTargetIsReplaceable(attachStampPath);
+      this._publishAgentCacheFile(builtJavaPath, attachJavaPath);
+      this._publishAgentCacheFile(builtClassPath, attachClassPath);
+      this._publishAgentCacheFile(builtStampPath, attachStampPath);
+      if (!this._attachHelperCacheIsValid(
+        attachClassPath,
+        attachStampPath,
+        sourceHash,
+        compiledClass
+      )) {
+        throw new Error('JVM attach helper cache changed during publication');
+      }
+      return attachDir;
+    } finally {
+      if (buildDir) {
+        try {
+          fs.rmSync(buildDir, { recursive: true, force: true });
+        } catch (error) {
+          console.warn('[Interceptor] Failed to remove temporary JVM attach build:', error.message);
+        }
       }
     }
-    fs.writeFileSync(attachJavaPath, attachSource);
-    await this._compileJava(attachJavaPath, attachDir);
-    if (!fs.existsSync(attachClassPath)) {
-      throw new Error('javac did not produce AttachProxy.class');
-    }
-    fs.writeFileSync(attachStampPath, sourceHash);
-    return attachDir;
   }
 
   _runAttachHelper(attachDir, pid, agentJar, agentArgs, onSpawn) {
