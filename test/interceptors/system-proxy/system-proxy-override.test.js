@@ -61,6 +61,43 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
   assert.equal((await interceptor._readCurrentSettings()).override, null);
 });
 
+test('registry snapshots keep empty ProxyServer values within their CRLF or LF row', async () => {
+  const interceptor = new SystemProxyInterceptor();
+
+  for (const lineEnding of ['\r\n', '\n']) {
+    interceptor._execRegistry = () => [
+      'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+      '    ProxyEnable      REG_DWORD    0x1',
+      '    ProxyServer      REG_SZ',
+      '    ProxyOverride    REG_SZ       intranet.example;<local>',
+      '    MigrateProxy     REG_DWORD    0x1',
+      ''
+    ].join(lineEnding);
+
+    assert.deepEqual(await interceptor._readCurrentSettings(), {
+      enabled: true,
+      server: '',
+      override: 'intranet.example;<local>'
+    });
+  }
+});
+
+test('registry snapshots still parse populated ProxyServer values with realistic spacing', async () => {
+  const interceptor = new SystemProxyInterceptor();
+  interceptor._execRegistry = () => [
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+    '\tProxyServer\tREG_SZ\tproxy.example.test:3128',
+    '\tProxyOverride\tREG_SZ\t<local>',
+    ''
+  ].join('\r\n');
+
+  assert.deepEqual(await interceptor._readCurrentSettings(), {
+    enabled: false,
+    server: 'proxy.example.test:3128',
+    override: '<local>'
+  });
+});
+
 test('activation clears bypasses and normal Stop restores the exact populated value', async t => {
   const dataDir = makeDataDir(t);
   const settings = {
