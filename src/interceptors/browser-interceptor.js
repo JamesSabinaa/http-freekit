@@ -42,6 +42,7 @@ export class BrowserInterceptor {
     this.recoveredProfiles = new Map();
     this.recoveredProfilesGeneration = 0;
     this.startupConfirmationMs = 500;
+    this.openUrlConfirmationMs = 500;
   }
 
   async isActivable() {
@@ -82,6 +83,21 @@ export class BrowserInterceptor {
       graceMs: this.startupConfirmationMs,
       label: this.name
     });
+  }
+
+  async _openChromiumUrl(browserPath, args) {
+    const opener = this._spawn(browserPath, args, {
+      detached: false,
+      stdio: 'ignore'
+    });
+    await waitForSpawnStability(opener, {
+      graceMs: this.openUrlConfirmationMs,
+      label: `${this.name} URL opener`,
+      acceptZeroExit: true
+    });
+    // Keep the child referenced while its immediate exit status is observable.
+    // A confirmed long-lived browser must not keep HTTP FreeKit alive afterward.
+    opener.unref();
   }
 
   _getLaunchInvocation(browserPath, args) {
@@ -473,14 +489,7 @@ export class BrowserInterceptor {
         { url: normalizedUrl },
         recovered.profileDir
       );
-      await new Promise((resolve, reject) => {
-        const opener = spawn(browserPath, args, { detached: false, stdio: 'ignore' });
-        opener.once('error', reject);
-        opener.once('spawn', () => {
-          opener.unref();
-          resolve();
-        });
-      });
+      await this._openChromiumUrl(browserPath, args);
       return { success: true, browser: this.name, url: normalizedUrl };
     }
     if (this.cleanupPending) {
@@ -514,17 +523,7 @@ export class BrowserInterceptor {
     }
 
     const args = this._getChromiumArgs(this.proxyPort, { url: normalizedUrl }, this.profileDir);
-    await new Promise((resolve, reject) => {
-      const opener = spawn(browserPath, args, {
-        detached: false,
-        stdio: 'ignore'
-      });
-      opener.once('error', reject);
-      opener.once('spawn', () => {
-        opener.unref();
-        resolve();
-      });
-    });
+    await this._openChromiumUrl(browserPath, args);
 
     return { success: true, browser: this.name, url: normalizedUrl };
   }

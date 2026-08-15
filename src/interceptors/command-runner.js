@@ -21,6 +21,7 @@ export function waitForSpawnStability(child, options = {}) {
     ? options.graceMs
     : 500;
   const label = options.label || 'Process';
+  const acceptZeroExit = options.acceptZeroExit === true;
 
   return new Promise((resolve, reject) => {
     let spawned = false;
@@ -50,6 +51,10 @@ export function waitForSpawnStability(child, options = {}) {
     const onExit = (code, signal) => {
       if (!spawned) {
         preSpawnExit = { code, signal };
+        return;
+      }
+      if (acceptZeroExit && signal == null && code === 0) {
+        finish(resolve);
         return;
       }
       finish(reject, startupExitError(code, signal));
