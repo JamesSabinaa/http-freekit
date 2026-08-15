@@ -105,6 +105,7 @@ test('confirmed companion cleanup removes reverse ownership before fallback and 
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
     reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
+  interceptor._getHttpToolkitVpnStatus = async () => ({ success: true, value: false });
   interceptor._adb = async (_serial, args) => {
     commands.push(args);
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
@@ -273,6 +274,7 @@ test('proxy setup failure after confirmed companion cleanup leaves no reverse ow
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
     reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
+  interceptor._getHttpToolkitVpnStatus = async () => ({ success: true, value: false });
   interceptor._adb = async (_serial, args) => {
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) return 'Status: timeout\n';
     if (args.includes('tech.httptoolkit.android.DEACTIVATE')) return 'Status: ok\n';

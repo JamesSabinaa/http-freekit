@@ -95,6 +95,7 @@ test('first ambiguous companion activation is journaled before mutation and reco
   const restarted = new AndroidAdbInterceptor({ dataDir });
   configureCompanion(restarted);
   restarted._getReverseMapping = async () => `tcp:${PROXY_PORT}`;
+  restarted._getHttpToolkitVpnStatus = async () => ({ success: true, value: vpnActive });
   const cleanupCommands = [];
   restarted._adb = async (_serial, args) => {
     cleanupCommands.push(args);
@@ -135,6 +136,7 @@ test('confirmed companion deactivation and reverse removal precede global fallba
     }
     return `tcp:${PROXY_PORT}`;
   };
+  interceptor._getHttpToolkitVpnStatus = async () => ({ success: true, value: vpnActive });
   interceptor._adb = async (_serial, args) => {
     if (args[0] === 'reverse' && args[1] === '--no-rebind') {
       events.push('create reverse');
@@ -202,6 +204,7 @@ test('confirmed deactivation with failed reverse removal retains app uncertainty
   let reverseReads = 0;
   interceptor._getReverseMapping = async () =>
     reverseReads++ === 0 ? null : `tcp:${PROXY_PORT}`;
+  interceptor._getHttpToolkitVpnStatus = async () => ({ success: true, value: false });
   interceptor._adb = async (_serial, args) => {
     if (args.includes('tech.httptoolkit.android.ACTIVATE')) {
       return 'Status: timeout\n';
