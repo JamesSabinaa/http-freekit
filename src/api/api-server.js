@@ -2897,6 +2897,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       for (const name of Object.keys(outboundHeaders)) {
         if (name.toLowerCase() === INTERNAL_SEND_HEADER_NAME) delete outboundHeaders[name];
       }
+      const hasExplicitBodyFraming = Object.keys(outboundHeaders).some(name => {
+        const lowerName = name.toLowerCase();
+        return lowerName === 'content-length' || lowerName === 'transfer-encoding';
+      });
+      // ClientRequest sends bodies for GET, HEAD, and several other methods as
+      // unframed bytes by default. Supply a byte-exact length unless the caller
+      // explicitly selected its own HTTP/1 framing.
+      if (outboundBody.length > 0 && !hasExplicitBodyFraming) {
+        outboundHeaders['Content-Length'] = Buffer.byteLength(outboundBody);
+      }
       const hasExplicitAuthorization = Object.keys(outboundHeaders)
         .some(name => name.toLowerCase() === 'authorization');
       if (!hasExplicitAuthorization && (parsedUrl.username !== '' || parsedUrl.password !== '')) {
@@ -2954,14 +2964,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             hostname: proxyHostname,
             port: proxyPort,
             path: parsedUrl.href,
-            // Node's inbound HTTP parser rejects many otherwise-valid extension
-            // tokens, while CONNECT takes a separate server path. The authenticated
-            // internal context restores their real method inside the proxy before
-            // matching, capture, or forwarding. Known ordinary methods retain their
-            // existing envelope and framing behavior.
-            method: http.METHODS.includes(outboundMethod) && outboundMethod !== 'CONNECT'
-              ? outboundMethod
-              : 'POST',
+            // A consistent POST envelope keeps Node's inbound parser and body
+            // framing independent of the requested token. The authenticated
+            // context restores the exact method inside the proxy before matching,
+            // capture, or forwarding.
+            method: 'POST',
             headers: outboundHeaders
           }
         : {

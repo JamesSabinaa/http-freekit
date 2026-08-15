@@ -136,8 +136,8 @@ function createRawOrigin() {
       socket.end(
         'HTTP/1.1 207 Multi-Status\r\n' +
         'Content-Type: text/plain\r\n' +
-        'Content-Length: 6\r\n' +
-        'Connection: close\r\n\r\norigin'
+        'Content-Length: 0\r\n' +
+        'Connection: close\r\n\r\n'
       );
     });
   });
@@ -308,6 +308,8 @@ test('Send API restores exact methods before mocks, capture, and upstream forwar
     { method: 'PROPFIND', body: '' },
     { method: 'PATCH', body: '' },
     { method: 'gEt', body: 'case-sensitive request body' },
+    { method: 'GET', body: 'uppercase GET request body' },
+    { method: 'HEAD', body: 'uppercase HEAD request body' },
     { method: 'CONNECT', body: '' }
   ];
   for (const { method, body } of forwardedRequests) {
@@ -357,4 +359,40 @@ test('Send API restores exact methods before mocks, capture, and upstream forwar
   assert.equal(origin.requests.length, originCount);
   assert.equal(proxy._internalSendTokens.size, 0);
   assert.equal(proxy._internalSendRequestIds.size, 0);
+});
+
+test('direct Send frames exact GET and HEAD bodies without a proxy', async t => {
+  const origin = createRawOrigin();
+  const originPort = await listen(origin.server);
+  t.after(() => close(origin.server));
+  const api = new ApiServer({ port: 0 }, null, null, {
+    sendConnectTimeoutMs: 1000,
+    sendIdleTimeoutMs: 1000,
+    sendTotalTimeoutMs: 5000
+  });
+  const directRequests = [
+    { method: 'GET', body: 'direct GET body' },
+    { method: 'HEAD', body: 'direct HEAD body' }
+  ];
+
+  for (const { method, body } of directRequests) {
+    const result = await api._sendRequest(
+      `http://127.0.0.1:${originPort}/direct-${method.toLowerCase()}`,
+      method,
+      {},
+      body
+    );
+    assert.equal(result.statusCode, 207, method);
+  }
+
+  assert.deepEqual(origin.requests.map(request => request.method), ['GET', 'HEAD']);
+  assert.deepEqual(origin.requests.map(request => request.body), directRequests.map(request => request.body));
+  for (let index = 0; index < directRequests.length; index++) {
+    assert.equal(
+      origin.requests[index].headers['content-length'],
+      String(Buffer.byteLength(directRequests[index].body)),
+      directRequests[index].method
+    );
+    assert.equal(origin.requests[index].headers['transfer-encoding'], undefined);
+  }
 });
