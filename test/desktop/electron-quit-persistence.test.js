@@ -6,6 +6,7 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const {
+  DEFAULT_RENDERER_PREPARE_TIMEOUT_MS,
   prepareRendererForQuit,
   runQuitCleanup
 } = require('../../electron/quit-cleanup.cjs');
@@ -22,6 +23,21 @@ function createWindow(executeJavaScript, calls = []) {
       isDestroyed: () => false,
       isLoadingMainFrame: () => false,
       executeJavaScript
+    }
+  };
+}
+
+function createTimerHarness() {
+  const timers = [];
+  return {
+    timers,
+    setTimeoutFn(callback, delay) {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn(timer) {
+      timer.cleared = true;
     }
   };
 }
@@ -74,6 +90,59 @@ test('successful renderer persistence closes its window before backend cleanup',
     'destroy-tray',
     'shutdown-server'
   ]);
+});
+
+test('a never-settling renderer is independently bounded before backend cleanup', async () => {
+  const calls = [];
+  const errors = [];
+  const timers = createTimerHarness();
+  const mainWindow = createWindow(() => {
+    calls.push('prepare-renderer');
+    return new Promise(() => {});
+  }, calls);
+  const logger = { error: (...args) => errors.push(args.join(' ')) };
+
+  const cleanup = runQuitCleanup({
+    mainWindow,
+    onPrepared: () => calls.push('mark-shutdown'),
+    stopAutoUpdater: () => calls.push('stop-updater'),
+    destroyTray: () => calls.push('destroy-tray'),
+    shutdownServer: async () => calls.push('shutdown-server'),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    logger
+  });
+
+  assert.equal(timers.timers.length, 1);
+  assert.equal(timers.timers[0].delay, DEFAULT_RENDERER_PREPARE_TIMEOUT_MS);
+  assert.deepEqual(calls, ['prepare-renderer']);
+
+  timers.timers[0].callback();
+
+  assert.equal(await cleanup, true);
+  assert.equal(timers.timers[0].cleared, true);
+  assert.deepEqual(calls, [
+    'prepare-renderer',
+    'mark-shutdown',
+    'destroy-window',
+    'stop-updater',
+    'destroy-tray',
+    'shutdown-server'
+  ]);
+  assert.match(errors[0], /did not complete within 5000ms; continuing cleanup/);
+  assert.equal(mainWindow.isDestroyed(), true);
+});
+
+test('settled renderer preparation cancels its independent timeout', async () => {
+  const timers = createTimerHarness();
+  const mainWindow = createWindow(async () => true);
+
+  assert.equal(await prepareRendererForQuit(mainWindow, console, {
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  }), true);
+  assert.equal(timers.timers.length, 1);
+  assert.equal(timers.timers[0].cleared, true);
 });
 
 test('renderer execution failures keep the application and backend alive', async () => {
