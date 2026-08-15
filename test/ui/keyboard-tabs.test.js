@@ -15,6 +15,22 @@ function sourceBetween(startMarker, endMarker) {
   return appSource.slice(start, end);
 }
 
+function cssBlock(marker) {
+  const start = stylesSource.indexOf(marker);
+  const open = stylesSource.indexOf('{', start);
+  assert.ok(start >= 0 && open > start, `${marker} CSS should be present`);
+
+  let depth = 0;
+  for (let index = open; index < stylesSource.length; index++) {
+    if (stylesSource[index] === '{') depth++;
+    if (stylesSource[index] === '}' && --depth === 0) {
+      return stylesSource.slice(start, index + 1);
+    }
+  }
+
+  assert.fail(`${marker} CSS block should be closed`);
+}
+
 class FakeTab {
   constructor(tablist, selected = false) {
     this.tablist = tablist;
@@ -199,6 +215,19 @@ test('generated Send tabs expose sibling tab and close controls with roving sema
   assert.match(stylesSource, /\.send-tab-item\s*{[\s\S]*?gap:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?overflow:\s*visible;/);
   assert.match(stylesSource, /\.send-tab\s*{[\s\S]*?padding:\s*0 6px 0 12px;/);
   assert.match(stylesSource, /\.send-tab:focus-visible,[\s\S]*?\.send-tab-close:focus-visible\s*{[\s\S]*?outline-offset:\s*-2px;/);
+});
+
+test('narrow Send layout stacks only the content panes and keeps tabs horizontally scrollable', () => {
+  const narrowLayout = cssBlock('@media (max-width: 768px)');
+
+  assert.match(narrowLayout, /#sendTabPanel\s*\{\s*flex-direction:\s*column;/);
+  assert.match(narrowLayout, /#sendTabPanel\s*>\s*div\s*\{/);
+  assert.doesNotMatch(narrowLayout, /#panel-send\s*>\s*div\s*\{/);
+
+  assert.match(stylesSource, /\.send-tab-bar\s*\{[\s\S]*?flex-direction:\s*row;[\s\S]*?flex-wrap:\s*nowrap;[\s\S]*?height:\s*38px;[\s\S]*?overflow-x:\s*auto;[\s\S]*?overflow-y:\s*hidden;/);
+  assert.match(stylesSource, /\.send-tab-item\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+  assert.match(stylesSource, /\.send-tab-add\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+  assert.match(stylesSource, /\.send-tab-add:focus-visible,[\s\S]*?outline-offset:\s*-2px;/);
 });
 
 test('keyboard tab closure focuses the newly active Send tab', () => {
