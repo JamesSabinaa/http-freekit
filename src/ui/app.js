@@ -8651,11 +8651,11 @@
               <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input class="send-file-input" type="file" onchange="updateSendFormFile(${index}, this.files[0])"></label>
               <span class="send-file-name${filePresentation.missing ? ' send-file-name-missing' : ''}" title="${escapeHtmlAttribute(filePresentation.title)}" aria-live="polite">${esc(filePresentation.displayName)}</span>
             </span>`
-          : `<input type="text" value="${esc(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
+          : `<input type="text" value="${escapeHtmlAttribute(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
 
         return `<div class="send-form-row">
           <input type="checkbox" ${enabled ? 'checked' : ''} onchange="updateSendFormField(${index}, 'enabled', this.checked)" title="Enable/disable field">
-          <input type="text" value="${esc(field.key || '')}" oninput="updateSendFormField(${index}, 'key', this.value)" placeholder="Field name">
+          <input type="text" value="${escapeHtmlAttribute(field.key || '')}" oninput="updateSendFormField(${index}, 'key', this.value)" placeholder="Field name">
           ${typeSelect}
           ${valueEditor}
           <button class="btn" onclick="removeSendFormField(${index})" style="padding:2px 6px;font-size:12px;color:#ce3939;" title="Remove field">&times;</button>
@@ -8828,8 +8828,8 @@
         container.innerHTML = sendHeadersList.map((h, i) =>
           `<div class="send-header-row" style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
             <input type="checkbox" ${h.enabled !== false ? 'checked' : ''} onchange="toggleSendHeaderEnabled(${i}, this.checked)" title="Enable/disable this header" style="cursor:pointer;">
-            <input type="text" value="${esc(h.key)}" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
-            <input type="text" value="${esc(h.value)}" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
+            <input type="text" value="${escapeHtmlAttribute(h.key)}" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
+            <input type="text" value="${escapeHtmlAttribute(h.value)}" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
             <button class="btn" onclick="removeSendHeader(${i})" style="padding:2px 6px;font-size:12px;color:#ce3939;flex-shrink:0;" title="Remove header">&times;</button>
           </div>`
         ).join('');
