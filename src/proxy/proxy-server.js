@@ -77,6 +77,12 @@ const HOP_BY_HOP_HEADER_NAMES = new Set([
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 
+function createHeaderMap(entries = []) {
+  const headers = Object.create(null);
+  for (const [name, value] of entries) headers[name] = value;
+  return headers;
+}
+
 function getHeaderValues(headers, name) {
   const normalizedName = String(name || '').toLowerCase();
   return Object.entries(headers)
@@ -658,7 +664,7 @@ export class ProxyServer {
                 return;
               }
 
-              const responseHeaders = { ...response.headers };
+              const responseHeaders = this._incomingMessageHeaders(response);
               if (response.statusCode !== 407) delete responseHeaders['proxy-authenticate'];
               delete responseHeaders['proxy-authorization'];
               delete responseHeaders['proxy-connection'];
@@ -667,7 +673,7 @@ export class ProxyServer {
                 statusMessage: response.statusMessage,
                 headers: responseHeaders,
                 body: responseBuffer,
-                trailers: response.trailers,
+                trailers: this._incomingMessageTrailers(response),
                 usedUpstreamProxy: useUpstreamProxy,
                 remote: { address: request.socket?.remoteAddress, port: request.socket?.remotePort }
               }));
@@ -1033,11 +1039,11 @@ export class ProxyServer {
     clientHelloTls = null
   }) {
     const method = clientReq.method;
-    const requestHeaders = { ...clientReq.headers };
-    const upstreamHeaders = this._stripUpstreamHeaders({
-      ...this._rawHeadersToObject(clientReq.rawHeaders),
-      ...clientReq.headers
-    });
+    clientReq.headers = this._incomingMessageHeaders(clientReq);
+    const requestHeaders = createHeaderMap(Object.entries(clientReq.headers));
+    const upstreamHeaders = this._stripUpstreamHeaders(
+      this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers)
+    );
     this._setTargetHostHeader(upstreamHeaders, targetUrl.host);
     const requestTrailerNames = this._advertisedTrailerNames(clientReq.headers);
     if (requestTrailerNames.length > 0) {
@@ -1319,10 +1325,11 @@ export class ProxyServer {
       }
 
       activeResponse = proxyRes;
-      const responseHeaders = this._stripHopByHopHeaders(proxyRes.headers, {
+      const incomingResponseHeaders = this._incomingMessageHeaders(proxyRes);
+      const responseHeaders = this._stripHopByHopHeaders(incomingResponseHeaders, {
         preserveProxyAuthenticate: proxyRes.statusCode === 407
       });
-      const responseTrailerNames = this._advertisedTrailerNames(proxyRes.headers);
+      const responseTrailerNames = this._advertisedTrailerNames(incomingResponseHeaders);
       if (responseTrailerNames.length > 0) {
         for (const name of Object.keys(responseHeaders)) {
           if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
@@ -1360,7 +1367,7 @@ export class ProxyServer {
       });
       proxyRes.once('end', () => {
         if (finalized || downstream.aborted) return;
-        const trailers = this._cleanTrailers(proxyRes.trailers);
+        const trailers = this._incomingMessageTrailers(proxyRes);
         responseEnded = true;
         responseResult = {
           ...responseMetadata,
@@ -1429,12 +1436,12 @@ export class ProxyServer {
     const sendH2Request = (session) => {
       if (finalized || downstream.aborted) return;
       connectStart = Date.now();
-      const h2Headers = {
-        ':method': method,
-        ':path': targetUrl.pathname + targetUrl.search,
-        ':scheme': targetUrl.protocol.slice(0, -1),
-        ':authority': targetUrl.host
-      };
+      const h2Headers = createHeaderMap([
+        [':method', method],
+        [':path', targetUrl.pathname + targetUrl.search],
+        [':scheme', targetUrl.protocol.slice(0, -1)],
+        [':authority', targetUrl.host]
+      ]);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
         if (lower.startsWith(':') || lower === 'host' || lower === 'trailer'
@@ -1473,7 +1480,7 @@ export class ProxyServer {
         const statusCode = Number(headers[':status']);
         if (statusCode >= 100 && statusCode < 200 && statusCode !== 101
             && !downstream.aborted) {
-          const informationalHeaders = {};
+          const informationalHeaders = createHeaderMap();
           for (const [name, value] of Object.entries(headers)) {
             if (!name.startsWith(':')) informationalHeaders[name] = value;
           }
@@ -1491,7 +1498,7 @@ export class ProxyServer {
         }
         const statusCode = Number(headers[':status']);
         resetH2IdleTimer(request);
-        const responseHeaders = {};
+        const responseHeaders = createHeaderMap();
         for (const [name, value] of Object.entries(headers)) {
           if (!name.startsWith(':')) responseHeaders[name] = value;
         }
@@ -1620,7 +1627,7 @@ export class ProxyServer {
     clientReq.once('end', () => {
       if (!requestBodyCompletion.complete()) return;
       requestEnded = true;
-      requestTrailers = this._cleanTrailers(clientReq.trailers);
+      requestTrailers = this._incomingMessageTrailers(clientReq);
       if (activeRequest && !activeRequest.destroyed && !activeRequest.writableEnded) {
         finishUpload(activeRequest);
       }
@@ -2120,7 +2127,7 @@ export class ProxyServer {
           upstreamResponse: proxyRes,
           statusCode: proxyRes.statusCode,
           statusMessage: proxyRes.statusMessage,
-          responseHeaders: this._stripHopByHopHeaders(proxyRes.headers, {
+          responseHeaders: this._stripHopByHopHeaders(this._incomingMessageHeaders(proxyRes), {
             preserveProxyAuthenticate: proxyRes.statusCode === 407
           }),
           remote: {
@@ -2128,7 +2135,7 @@ export class ProxyServer {
             port: request.socket?.remotePort
           },
           usedUpstreamProxy,
-          trailersOnEnd: () => proxyRes.trailers
+          trailersOnEnd: () => this._incomingMessageTrailers(proxyRes)
         });
       });
       request.once('error', async error => {
@@ -2164,12 +2171,12 @@ export class ProxyServer {
     const startH2 = (session) => {
       if (finalized || downstream.aborted) return;
       connectStart = Date.now();
-      const headers = {
-        ':method': method,
-        ':path': path,
-        ':scheme': targetUrl.protocol.slice(0, -1),
-        ':authority': targetUrl.host
-      };
+      const headers = createHeaderMap([
+        [':method', method],
+        [':path', path],
+        [':scheme', targetUrl.protocol.slice(0, -1)],
+        [':authority', targetUrl.host]
+      ]);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
         if (lower.startsWith(':') || lower === 'host' || value === undefined) continue;
@@ -2200,7 +2207,7 @@ export class ProxyServer {
       request.on('headers', informationalHeaders => {
         const statusCode = Number(informationalHeaders[':status']);
         if (statusCode >= 100 && statusCode < 200 && statusCode !== 101 && !downstream.aborted) {
-          const cleanHeaders = {};
+          const cleanHeaders = createHeaderMap();
           for (const [name, value] of Object.entries(informationalHeaders)) {
             if (!name.startsWith(':')) cleanHeaders[name] = value;
           }
@@ -2209,7 +2216,7 @@ export class ProxyServer {
       });
       request.once('response', responseHeadersWithStatus => {
         const statusCode = Number(responseHeadersWithStatus[':status']);
-        const responseHeaders = {};
+        const responseHeaders = createHeaderMap();
         for (const [name, value] of Object.entries(responseHeadersWithStatus)) {
           if (!name.startsWith(':')) responseHeaders[name] = value;
         }
@@ -2439,9 +2446,10 @@ export class ProxyServer {
     };
   }
 
-  _cleanTrailers(trailers) {
-    const clean = {};
-    for (const [name, value] of Object.entries(trailers || {})) {
+  _cleanTrailers(trailers, rawTrailers = []) {
+    const currentTrailers = this._headersWithRawFallback(rawTrailers, trailers);
+    const clean = createHeaderMap();
+    for (const [name, value] of Object.entries(currentTrailers)) {
       if (!name.startsWith(':') && value !== undefined) clean[name.toLowerCase()] = value;
     }
     return clean;
@@ -2494,7 +2502,7 @@ export class ProxyServer {
   }
 
   _cleanInformationalHeaders(headers) {
-    const clean = {};
+    const clean = createHeaderMap();
     for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
       const lower = name.toLowerCase();
       if (lower.startsWith(':') || value === undefined) {
@@ -2787,7 +2795,7 @@ export class ProxyServer {
   // Filters out proxy-specific headers that shouldn't be forwarded upstream unless
   // the caller needs the untouched values for request matching.
   _rawHeadersToObject(rawHeaders, { stripUpstreamHeaders = true } = {}) {
-    const headers = {};
+    const headers = createHeaderMap();
     for (let i = 0; i < rawHeaders.length; i += 2) {
       const name = rawHeaders[i];
       const value = rawHeaders[i + 1];
@@ -2810,6 +2818,36 @@ export class ProxyServer {
     return headers;
   }
 
+  // Node exposes prototype-colliding field names in rawHeaders/rawTrailers but
+  // omits them from the corresponding parsed object. Reconcile both views into
+  // a null-prototype map before any forwarding, transformation, or capture.
+  _headersWithRawFallback(rawHeaders, currentHeaders) {
+    const headers = createHeaderMap(Object.entries(currentHeaders || {}));
+    const presentNames = new Set(Object.keys(headers).map(name => name.toLowerCase()));
+    const raw = this._rawHeadersToObject(rawHeaders || [], { stripUpstreamHeaders: false });
+    const missing = new Map();
+    for (const [name, value] of Object.entries(raw)) {
+      const lower = name.toLowerCase();
+      if (presentNames.has(lower)) continue;
+      const values = Array.isArray(value) ? value : [value];
+      const existing = missing.get(lower);
+      if (existing) existing.values.push(...values);
+      else missing.set(lower, { name, values: [...values] });
+    }
+    for (const { name, values } of missing.values()) {
+      headers[name] = values.length === 1 ? values[0] : values;
+    }
+    return headers;
+  }
+
+  _incomingMessageHeaders(message) {
+    return this._headersWithRawFallback(message?.rawHeaders, message?.headers);
+  }
+
+  _incomingMessageTrailers(message) {
+    return this._cleanTrailers(message?.trailers, message?.rawTrailers);
+  }
+
   // Preserve original header casing while treating req.headers as the source of
   // truth after mock steps or breakpoints have added, changed, or removed fields.
   _currentHeadersWithRawCase(rawHeaders, currentHeaders) {
@@ -2818,7 +2856,7 @@ export class ProxyServer {
       pending.set(name.toLowerCase(), { name, value });
     }
 
-    const headers = {};
+    const headers = createHeaderMap();
     for (const rawName of Object.keys(this._rawHeadersToObject(rawHeaders || []))) {
       const lower = rawName.toLowerCase();
       const current = pending.get(lower);
@@ -2856,7 +2894,7 @@ export class ProxyServer {
   }
 
   _stripUpstreamHeaders(headers) {
-    const clean = {};
+    const clean = createHeaderMap();
     for (const [name, value] of Object.entries(this._stripHopByHopHeaders(headers))) {
       if (this._shouldStripUpstreamHeader(name)) continue;
       clean[name] = value;
@@ -2877,7 +2915,7 @@ export class ProxyServer {
       }
     }
 
-    const clean = {};
+    const clean = createHeaderMap();
     for (const [name, value] of Object.entries(headers || {})) {
       const lower = name.toLowerCase();
       const preserve = preserveProxyAuthenticate && lower === 'proxy-authenticate';
@@ -2907,7 +2945,9 @@ export class ProxyServer {
   }
 
   _applyMockHeaderTransform(headers, mode, replacements, removals = []) {
-    const transformed = mode === 'replace' ? {} : { ...(headers || {}) };
+    const transformed = mode === 'replace'
+      ? createHeaderMap()
+      : createHeaderMap(Object.entries(headers || {}));
     const remove = new Set(
       (Array.isArray(removals) ? removals : [])
         .filter(name => typeof name === 'string')
@@ -2970,7 +3010,7 @@ export class ProxyServer {
     const transformed = {
       method: request.method,
       url: request.url instanceof URL ? new URL(request.url.href) : new URL(request.url),
-      headers: { ...(request.headers || {}) },
+      headers: createHeaderMap(Object.entries(request.headers || {})),
       body: Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body || ''),
       changed: false,
       bodyChanged: false,
@@ -3076,9 +3116,14 @@ export class ProxyServer {
     });
     for (const [name, value] of Object.entries(cleanHeaders)) {
       const lower = name.toLowerCase();
-      converted[lower] = Array.isArray(value)
-        ? (lower === 'set-cookie' ? value : value.join(', '))
-        : value;
+      Object.defineProperty(converted, lower, {
+        value: Array.isArray(value)
+          ? (lower === 'set-cookie' ? value : value.join(', '))
+          : value,
+        writable: true,
+        enumerable: true,
+        configurable: true
+      });
     }
     return converted;
   }
@@ -3273,6 +3318,7 @@ export class ProxyServer {
     startTime,
     onFinalized = () => {}
   ) {
+    const responseHeaders = this._incomingMessageHeaders(proxyRes);
     const responseBody = this._createBodyCollector();
     let responseBodySize = 0;
     let finalized = false;
@@ -3286,7 +3332,7 @@ export class ProxyServer {
         ...requestRecord,
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
-        responseHeaders: proxyRes.headers,
+        responseHeaders,
         responseBody: responseBody.exceeded
           ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
           : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
@@ -3337,6 +3383,7 @@ export class ProxyServer {
 
   // Handle HTTP upgrade requests (WebSocket passthrough)
   _handleHttpUpgrade(req, socket, head, context = {}) {
+    req.headers = this._incomingMessageHeaders(req);
     const startTime = Date.now();
     const requestId = uuidv4();
     const trafficLifecycleId = uuidv4();
@@ -3492,6 +3539,7 @@ export class ProxyServer {
       handshakeState = 'upgraded';
       socket.removeListener('close', onDownstreamClose);
       const remote = { address: proxySocket.remoteAddress, port: proxySocket.remotePort };
+      const responseHeaders = this._incomingMessageHeaders(proxyRes);
 
       // Resolve the pending parent before parsing any buffered WebSocket frames.
       // This guarantees that every frame references an existing, inspectable
@@ -3502,7 +3550,7 @@ export class ProxyServer {
         requestBody: 'WebSocket: 0 sent, 0 received',
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage || 'Switching Protocols',
-        responseHeaders: proxyRes.headers,
+        responseHeaders,
         responseBody: 'WebSocket connection open',
         responseBodySize: 0,
         duration: Date.now() - startTime,
@@ -3629,7 +3677,7 @@ export class ProxyServer {
               requestBodySize: clientBytes,
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage || 'Switching Protocols',
-              responseHeaders: proxyRes.headers,
+              responseHeaders,
               responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
               responseBodySize: serverBytes,
               duration,
@@ -3824,6 +3872,7 @@ export class ProxyServer {
   _handleHttpRequest(clientReq, clientRes) {
     const startTime = Date.now();
     const internalSend = this._consumeInternalSendRequest(clientReq);
+    clientReq.headers = this._incomingMessageHeaders(clientReq);
     const requestId = internalSend?.requestId || uuidv4();
     const trafficLifecycleId = uuidv4();
     this.requestCount++;
@@ -4174,8 +4223,8 @@ export class ProxyServer {
               return;
             }
 
-            const trailers = proxyRes.trailers;
-            const resHeaders = { ...proxyRes.headers };
+            const trailers = this._incomingMessageTrailers(proxyRes);
+            const resHeaders = this._incomingMessageHeaders(proxyRes);
             if (proxyRes.statusCode !== 407) delete resHeaders['proxy-authenticate'];
             delete resHeaders['proxy-authorization'];
             delete resHeaders['proxy-connection'];
@@ -4312,7 +4361,9 @@ export class ProxyServer {
         });
 
         this._endH1Request(
-          proxyReq, body, breakpointBodyModified ? {} : clientReq.trailers
+          proxyReq,
+          body,
+          breakpointBodyModified ? {} : this._incomingMessageTrailers(clientReq)
         );
       };
 
@@ -4628,6 +4679,7 @@ export class ProxyServer {
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
     const virtualServer = http.createServer((req, res) => {
+      req.headers = this._incomingMessageHeaders(req);
       // URL rewrites are scoped to this request and must not retarget later
       // requests that reuse the same intercepted CONNECT tunnel.
       let hostname = tunnelHostname;
@@ -4860,12 +4912,12 @@ export class ProxyServer {
                 method: req.method,
                 headers: reqHeaders,
                 body,
-                trailers: req.trailers,
+                trailers: this._incomingMessageTrailers(req),
                 signal: downstream.signal,
                 onInformational: info => this._forwardH1Informational(res, info)
               });
               if (downstream.aborted) return;
-              const resHeaders = { ...fwdRes.headers };
+              const resHeaders = createHeaderMap(Object.entries(fwdRes.headers));
               if (action.addResponseHeaders) {
                 for (const [k, v] of Object.entries(action.addResponseHeaders)) {
                   resHeaders[k.toLowerCase()] = v;
@@ -5217,7 +5269,9 @@ export class ProxyServer {
         // Forward to real server — preserve raw header case to avoid bot detection
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
-        const requestTrailers = breakpointBodyModified ? {} : req.trailers;
+        const requestTrailers = breakpointBodyModified
+          ? {}
+          : this._incomingMessageTrailers(req);
         this._setTargetHostHeader(req.headers, upstreamUrl.host);
         const proxyHeaders = this._stripUpstreamHeaders({
           ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(req.rawHeaders)),
@@ -5362,12 +5416,13 @@ export class ProxyServer {
               return;
             }
 
-            const trailers = proxyRes.trailers;
+            const trailers = this._incomingMessageTrailers(proxyRes);
+            const responseHeaders = this._incomingMessageHeaders(proxyRes);
             const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
             let finalResponse = {
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage,
-              headers: proxyRes.headers,
+              headers: responseHeaders,
               body: resBody,
               trailers
             };
@@ -5376,7 +5431,7 @@ export class ProxyServer {
                 requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-                responseHeaders: proxyRes.headers, responseBody: resBody,
+                responseHeaders, responseBody: resBody,
                 trailers, startTime, tlsDetails, remote, abortTarget: res
               });
               if (!finalResponse || downstream.aborted) return;
@@ -5585,7 +5640,7 @@ export class ProxyServer {
       let upstreamHostname = hostname;
       let upstreamPort = targetPort;
 
-      let reqHeaders = {};
+      let reqHeaders = createHeaderMap();
       for (const [key, value] of Object.entries(headers)) {
         if (!key.startsWith(':')) reqHeaders[key] = value;
       }
@@ -5912,17 +5967,17 @@ export class ProxyServer {
             let finalResponse = {
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage,
-              headers: proxyRes.headers,
+              headers: this._incomingMessageHeaders(proxyRes),
               body: resBody,
-              trailers: proxyRes.trailers
+              trailers: this._incomingMessageTrailers(proxyRes)
             };
             if (responseBreakpoint) {
               finalResponse = await this._pauseResponseBreakpoint({
                 requestId, trafficLifecycleId, protocol: 'h2', method, url: fullUrl, host: authority, path,
                 requestHeaders: reqHeaders, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-                responseHeaders: proxyRes.headers, responseBody: resBody,
-                trailers: proxyRes.trailers, startTime, tlsDetails, remote, abortTarget: stream
+                responseHeaders: this._incomingMessageHeaders(proxyRes), responseBody: resBody,
+                trailers: this._incomingMessageTrailers(proxyRes), startTime, tlsDetails, remote, abortTarget: stream
               });
               if (!finalResponse || downstream.aborted) return;
             }
@@ -6029,6 +6084,7 @@ export class ProxyServer {
       // HTTP/2 requests are handled by the 'stream' event above, not this one.
       // Only handle if this is actually an HTTP/1.1 request (not an h2 stream).
       if (req.httpVersion === '2.0') return; // already handled by 'stream'
+      req.headers = this._incomingMessageHeaders(req);
 
       const startTime = Date.now();
       const requestId = uuidv4();
@@ -6209,7 +6265,9 @@ export class ProxyServer {
         // Forward to real server — try HTTP/2 upstream first for secure targets.
         const upstreamUrl = new URL(fullUrl);
         const isUpstreamHttps = upstreamUrl.protocol === 'https:';
-        const requestTrailers = breakpointBodyModified ? {} : req.trailers;
+        const requestTrailers = breakpointBodyModified
+          ? {}
+          : this._incomingMessageTrailers(req);
         this._setTargetHostHeader(req.headers, upstreamUrl.host);
         let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
@@ -6352,12 +6410,13 @@ export class ProxyServer {
               return;
             }
 
-            const trailers = proxyRes.trailers;
+            const trailers = this._incomingMessageTrailers(proxyRes);
+            const responseHeaders = this._incomingMessageHeaders(proxyRes);
             const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
             let finalResponse = {
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage,
-              headers: proxyRes.headers,
+              headers: responseHeaders,
               body: resBody,
               trailers
             };
@@ -6366,7 +6425,7 @@ export class ProxyServer {
                 requestId, trafficLifecycleId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-                responseHeaders: proxyRes.headers, responseBody: resBody,
+                responseHeaders, responseBody: resBody,
                 trailers, startTime, tlsDetails, remote, abortTarget: res
               });
               if (!finalResponse || downstream.aborted) return;
@@ -6878,7 +6937,7 @@ export class ProxyServer {
     }
 
     // Fixed response (default)
-    const mockHeaders = { ':status': action.status || 200 };
+    const mockHeaders = createHeaderMap([[':status', action.status || 200]]);
     const actionHeaders = action.headers || { 'Content-Type': 'application/json' };
     for (const [k, v] of Object.entries(actionHeaders)) {
       mockHeaders[k.toLowerCase()] = v;
@@ -7115,12 +7174,12 @@ export class ProxyServer {
         return;
       }
       // Build h2 pseudo-headers + regular headers
-      const h2Headers = {
-        ':method': method,
-        ':path': path,
-        ':scheme': 'https',
-        ':authority': this._formatHttpsAuthority(hostname, port)
-      };
+      const h2Headers = createHeaderMap([
+        [':method', method],
+        [':path', path],
+        [':scheme', 'https'],
+        [':authority', this._formatHttpsAuthority(hostname, port)]
+      ]);
 
       // Copy regular headers after removing both fixed and Connection-nominated
       // hop-by-hop fields. This protects H1-to-H2 conversion callers too.
@@ -7199,7 +7258,7 @@ export class ProxyServer {
       };
 
       let statusCode;
-      const responseHeaders = {};
+      const responseHeaders = createHeaderMap();
       let responseTrailers = {};
       const responseBody = this._createBodyCollector();
 
@@ -7221,7 +7280,7 @@ export class ProxyServer {
             informationalStatus >= 200 || informationalStatus === 101) {
           return;
         }
-        const informationalHeaders = {};
+        const informationalHeaders = createHeaderMap();
         for (const [k, v] of Object.entries(hdrs)) {
           if (!k.startsWith(':')) informationalHeaders[k] = v;
         }
@@ -8537,13 +8596,13 @@ export class ProxyServer {
           method: clientReq.method,
           headers: reqHeaders,
           body,
-          trailers: clientReq.trailers,
+          trailers: this._incomingMessageTrailers(clientReq),
           signal: downstream?.signal,
           onInformational: info => this._forwardH1Informational(clientRes, info)
         });
         if (downstream?.aborted) return;
-        const resHeaders = { ...proxyRes.headers };
-        const trailers = proxyRes.trailers;
+        const resHeaders = createHeaderMap(Object.entries(proxyRes.headers));
+        const trailers = this._cleanTrailers(proxyRes.trailers);
         // Apply response header modifications
         if (action.addResponseHeaders) {
           for (const [k, v] of Object.entries(action.addResponseHeaders)) {

@@ -188,6 +188,22 @@ test('explicit Content-Type matching is case-insensitive', () => {
   );
 });
 
+test('prototype-named cURL headers remain own fields with repeated values', () => {
+  const result = parseCurlCommand(
+    "curl https://example.test -H '__proto__: first' -H '__proto__: second' " +
+    "-H 'constructor: ctor' -H 'toString: text'"
+  );
+
+  assert.equal(Object.getPrototypeOf(result.headers), null);
+  assert.deepEqual(result.headers.__proto__, ['first', 'second']);
+  assert.equal(result.headers.constructor, 'ctor');
+  assert.equal(result.headers.toString, 'text');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(result.headers)),
+    JSON.parse('{"__proto__":["first","second"],"constructor":"ctor","toString":"text"}')
+  );
+});
+
 test('file-backed data is rejected instead of being imported as literal text', () => {
   for (const command of [
     'curl https://example.test -d @payload.txt',
