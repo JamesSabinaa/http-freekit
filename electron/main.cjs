@@ -20,6 +20,7 @@ const { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall } = require('./upd
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isHarTarget, loadHarTarget } = require('./har-deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
+const { resolveBundledServerScript } = require('./asar-path.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
 const { waitForServer } = require('./server-readiness.cjs');
@@ -90,10 +91,7 @@ async function startServer() {
   await serverLog.ready;
 
   // Server files are in app.asar.unpacked (via asarUnpack config)
-  let serverScript = path.join(__dirname, '..', 'src', 'index.js');
-  if (serverScript.includes('app.asar')) {
-    serverScript = serverScript.replace('app.asar', 'app.asar.unpacked');
-  }
+  const serverScript = resolveBundledServerScript(__dirname);
 
   let proc = null;
   let processStartupComplete = false;

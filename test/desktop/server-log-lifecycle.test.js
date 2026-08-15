@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import asarPathModule from '../../electron/asar-path.cjs';
 import serverLogModule from '../../electron/server-log.cjs';
 
+const { resolveBundledServerScript } = asarPathModule;
 const { createServerLogLifecycle } = serverLogModule;
 const mainSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.cjs'), 'utf8');
 const startServerStart = mainSource.indexOf('async function startServer()');
@@ -222,6 +224,7 @@ function createStartServerHarness(serverLog, waitForServer) {
     fs: { mkdirSync: () => {} },
     path,
     process: { execPath: 'electron', env: {} },
+    resolveBundledServerScript,
     resolveDesktopMcpExecutable: () => 'mcp',
     spawn: () => {
       const proc = new FakeProcess();
