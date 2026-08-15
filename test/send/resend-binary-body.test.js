@@ -301,6 +301,42 @@ test('ordinary UTF-8 and empty Resend bodies retain text semantics', async () =>
   }
 });
 
+test('Resend preserves exact custom methods and rejects malformed methods atomically', () => {
+  const customMethod = "MiXeD!#$%&'*+-.^_`|~09AZ";
+  const custom = resendRequest({
+    id: 'custom-method',
+    method: customMethod,
+    url: 'http://example.test/custom',
+    requestHeaders: {},
+    requestBody: ''
+  });
+  assert.equal(custom.tab.method, customMethod);
+  assert.equal(custom.persisted[0].method, customMethod);
+
+  const omitted = resendRequest({
+    id: 'legacy-omitted-method',
+    url: 'http://example.test/legacy',
+    requestHeaders: {},
+    requestBody: ''
+  });
+  assert.equal(omitted.tab.method, 'GET');
+
+  for (const method of ['', null, '<img src=x>', 'GET /smuggled']) {
+    const invalid = resendRequest({
+      id: `invalid-${String(method)}`,
+      method,
+      url: 'http://example.test/rejected',
+      requestHeaders: {},
+      requestBody: ''
+    });
+    assert.equal(invalid.tab, null);
+    assert.equal(invalid.persisted.length, 0);
+    assert.equal(invalid.toasts.length, 1);
+    assert.equal(invalid.toasts[0].type, 'error');
+    assert.match(invalid.toasts[0].message, /method.*valid HTTP token/i);
+  }
+});
+
 test('Send API decodes canonical base64 and rejects malformed encodings before outbound I/O', async t => {
   const receivedBodies = [];
   const origin = http.createServer((request, response) => {

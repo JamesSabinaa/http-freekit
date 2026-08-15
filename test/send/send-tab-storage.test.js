@@ -20,8 +20,11 @@ function loadNormalizationContext() {
 }
 
 function restoreTabs(savedTabs, savedActive = null, addTab = false) {
+  const toasts = [];
   const context = {
     __addTab: addTab,
+    toasts,
+    toast(message, type) { toasts.push({ message, type }); },
     safeLocalStorageGet(key) {
       if (key === 'http-freekit-send-tabs') return savedTabs;
       if (key === 'http-freekit-send-active') return savedActive;
@@ -36,7 +39,7 @@ function restoreTabs(savedTabs, savedActive = null, addTab = false) {
     ${source.slice(helpersStart, restoreEnd)}
     restoreSendTabs();
     const createdTab = __addTab ? createEmptySendTab() : null;
-    __result = { sendTabs, activeSendTab, sendTabCounter, createdTab };
+    __result = { sendTabs, activeSendTab, sendTabCounter, createdTab, toasts };
   `, context);
   return JSON.parse(JSON.stringify(context.__result));
 }
@@ -100,6 +103,34 @@ test('restore repairs the reported object-shaped headers and preserves active se
   assert.equal(result.sendTabs[1].url, 'https://example.test');
   assert.equal(result.activeSendTab, 'tab-2');
   assert.equal(result.sendTabCounter, 2);
+});
+
+test('stored custom methods remain exact while explicit invalid methods reject the snapshot atomically', () => {
+  const customMethod = "MiXeD!#$%&'*+-.^_`|~09AZ";
+  const context = loadNormalizationContext();
+  const normalized = context.normalizeSendTab({ id: 'tab-1', method: customMethod }, 'tab-1');
+  assert.equal(normalized.method, customMethod);
+  assert.equal(context.normalizeSendTab({ id: 'tab-1' }, 'tab-1').method, 'GET');
+
+  for (const method of ['', null, '<img src=x>', 'GET /smuggled']) {
+    assert.equal(context.normalizeSendTab({ id: 'tab-1', method }, 'tab-1'), null);
+  }
+
+  const restored = restoreTabs(JSON.stringify([
+    { id: 'tab-1', method: customMethod, url: 'https://custom.example.test' }
+  ]));
+  assert.equal(restored.sendTabs[0].method, customMethod);
+
+  const rejected = restoreTabs(JSON.stringify([
+    { id: 'tab-1', method: 'POST', url: 'https://valid.example.test' },
+    { id: 'tab-2', method: '<img src=x>', url: 'https://invalid.example.test' }
+  ]));
+  assert.deepEqual(rejected.sendTabs, [
+    { id: 'tab-1', method: 'GET', url: '', headers: [], body: '' }
+  ]);
+  assert.equal(rejected.toasts.length, 1);
+  assert.equal(rejected.toasts[0].type, 'error');
+  assert.match(rejected.toasts[0].message, /method is invalid/i);
 });
 
 test('live tab normalization retains selected multipart files and response state', () => {

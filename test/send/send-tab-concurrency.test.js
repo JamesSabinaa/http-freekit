@@ -56,7 +56,9 @@ function createStorage(initial = {}) {
 }
 
 function createRenderer(storage, locks, uuid) {
+  const toasts = [];
   const context = {
+    toasts,
     crypto: { randomUUID: () => typeof uuid === 'function' ? uuid() : uuid },
     navigator: { locks },
     window: { localStorage: storage },
@@ -70,7 +72,8 @@ function createRenderer(storage, locks, uuid) {
       return true;
     },
     loadSendTabState() {},
-    renderSendTabs() {}
+    renderSendTabs() {},
+    toast(message, type) { toasts.push({ message, type }); }
   };
   vm.createContext(context);
   vm.runInContext(`
@@ -86,7 +89,8 @@ function createRenderer(storage, locks, uuid) {
       handleStorage: handleSendTabStorageEvent,
       setTabs(tabs, active) { sendTabs = tabs; activeSendTab = active; },
       tabs() { return sendTabs; },
-      active() { return activeSendTab; }
+      active() { return activeSendTab; },
+      toasts() { return toasts; }
     };
   `, context);
   return context.sendTabTestApi;
@@ -230,4 +234,51 @@ test('legacy tabs migrate on first write without persisting file objects or resp
   assert.equal(workspace.tabs[0].multipartFields[0].fileName, 'local.bin');
   assert.equal('file' in workspace.tabs[0].multipartFields[0], false);
   assert.equal('response' in workspace.tabs[0], false);
+});
+
+test('shared workspaces preserve custom methods and ignore invalid method snapshots atomically', async () => {
+  const customMethod = "MiXeD!#$%&'*+-.^_`|~09AZ";
+  const storage = createStorage({
+    [WORKSPACE_KEY]: JSON.stringify({
+      version: 2,
+      tabs: [{ id: 'tab-1', method: 'GET', url: 'https://initial.test' }],
+      deletedTabIds: []
+    })
+  });
+  const renderer = createRenderer(storage, createLockManager(), firstUuid);
+  renderer.restore();
+
+  await renderer.persist([{
+    ...plain(renderer.tabs()[0]),
+    method: customMethod,
+    url: 'https://custom.test'
+  }]);
+  assert.equal(storage.json(WORKSPACE_KEY).tabs[0].method, customMethod);
+
+  renderer.handleStorage({
+    key: WORKSPACE_KEY,
+    newValue: JSON.stringify({
+      version: 2,
+      tabs: [{ id: 'tab-1', method: customMethod, url: 'https://custom.test' }],
+      deletedTabIds: []
+    })
+  });
+  assert.equal(renderer.tabs()[0].method, customMethod);
+
+  const before = plain(renderer.tabs());
+  renderer.handleStorage({
+    key: WORKSPACE_KEY,
+    newValue: JSON.stringify({
+      version: 2,
+      tabs: [
+        { id: 'tab-1', method: 'POST', url: 'https://partial.test' },
+        { id: 'tab-2', method: '<img src=x>', url: 'https://hostile.test' }
+      ],
+      deletedTabIds: []
+    })
+  });
+  assert.deepEqual(plain(renderer.tabs()), before);
+  assert.equal(renderer.toasts().length, 1);
+  assert.equal(renderer.toasts()[0].type, 'error');
+  assert.match(renderer.toasts()[0].message, /method is invalid/i);
 });

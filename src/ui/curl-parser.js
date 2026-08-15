@@ -75,6 +75,11 @@ const CURL_LONG_VALUE_OPTIONS = new Set([
   '--user'
 ]);
 
+function isHttpMethodToken(value) {
+  return typeof value === 'string' && value.length > 0 &&
+    !/[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(value);
+}
+
 function parseCurlValueOptionToken(token) {
   if (token.startsWith('--')) {
     const equalsIndex = token.indexOf('=', 2);
@@ -184,7 +189,10 @@ export function parseCurlCommand(curlStr) {
 
       if (option === '-X' || option === '--request') {
         if (!value) return { error: `Missing value for cURL option: ${option}` };
-        result.method = value.toUpperCase();
+        if (!isHttpMethodToken(value)) {
+          return { error: `Invalid HTTP method for cURL option ${option}: expected an HTTP token` };
+        }
+        result.method = value;
         hasExplicitMethod = true;
       } else if (option === '-H' || option === '--header') {
         const colonIndex = value.indexOf(':');

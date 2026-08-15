@@ -179,6 +179,28 @@ test('beforeunload journals unsent edits without writing the unlocked shared wor
   ]);
 });
 
+test('beforeunload journals punctuation-rich custom methods without normalization', () => {
+  const customMethod = "MiXeD!#$%&'*+-.^_`|~09AZ";
+  const storage = createStorage({
+    [WORKSPACE_KEY]: JSON.stringify({
+      version: 2,
+      tabs: [{ id: 'tab-1', method: 'GET', url: 'https://initial.test' }],
+      deletedTabIds: []
+    })
+  });
+  const harness = createHarness({
+    storage,
+    tabs: [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '' }]
+  });
+  harness.elements.sendMethod.value = customMethod;
+  harness.elements.sendUrl.value = 'https://custom.test';
+
+  assert.equal(harness.api.unload(), true);
+  const journals = storage.journalEntries();
+  assert.equal(journals.length, 1);
+  assert.equal(journals[0].value.tab.method, customMethod);
+});
+
 test('a delayed queued save commits the newer unload journal instead of overwriting it', async () => {
   const storage = createStorage({
     [WORKSPACE_KEY]: JSON.stringify({

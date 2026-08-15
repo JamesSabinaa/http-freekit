@@ -35,6 +35,9 @@ const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const METHODS_WITHOUT_DEFAULT_CHUNKED_BODY = new Set([
+  'GET', 'HEAD', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'
+]);
 const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
@@ -44,6 +47,22 @@ class SendBodyValidationError extends Error {
     this.name = 'SendBodyValidationError';
     this.code = 'ERR_INVALID_SEND_BODY';
   }
+}
+
+class SendMethodValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SendMethodValidationError';
+    this.code = 'ERR_INVALID_SEND_METHOD';
+  }
+}
+
+function validateSendMethod(method) {
+  if (typeof method !== 'string' || method.length === 0 ||
+      HTTP_TOKEN_PATTERN.exec(method)?.[0] !== method) {
+    throw new SendMethodValidationError('Send method must be a non-empty valid HTTP token');
+  }
+  return method;
 }
 
 function prepareOutboundSendBody(body, bodyEncoding) {
@@ -2418,10 +2437,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.once('close', abortOutbound);
 
       try {
-        const { url, method, headers, body, bodyEncoding } = req.body;
+        const payload = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+          ? req.body
+          : {};
+        const { url, method, headers, body, bodyEncoding } = payload;
+        // Old clients omitted method and historically received GET. An explicitly
+        // supplied empty, null, or malformed value is not an omission.
+        const outboundMethod = Object.prototype.hasOwnProperty.call(payload, 'method')
+          ? method
+          : 'GET';
         const result = await this._sendRequest(
           url,
-          method || 'GET',
+          outboundMethod,
           headers || {},
           body === undefined ? '' : body,
           bodyEncoding === undefined ? 'utf8' : bodyEncoding,
@@ -2430,7 +2457,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         if (!res.destroyed) res.json(result);
       } catch (err) {
         if (err.name !== 'AbortError' && !res.destroyed) {
-          res.status(err?.code === 'ERR_INVALID_SEND_BODY' ? 400 : 500).json({ error: err.message });
+          const isInvalidSendPayload = err?.code === 'ERR_INVALID_SEND_BODY' ||
+            err?.code === 'ERR_INVALID_SEND_METHOD';
+          res.status(isInvalidSendPayload ? 400 : 500).json({ error: err.message });
         }
       } finally {
         req.removeListener('aborted', abortOutbound);
@@ -2974,6 +3003,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8', signal) {
+    const outboundMethod = validateSendMethod(method);
     return new Promise((resolve, reject) => {
       const outboundBody = prepareOutboundSendBody(body, bodyEncoding);
       const parsedUrl = new URL(url);
@@ -2983,6 +3013,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       const outboundHeaders = { ...headers };
       for (const name of Object.keys(outboundHeaders)) {
         if (name.toLowerCase() === INTERNAL_SEND_HEADER_NAME) delete outboundHeaders[name];
+      }
+      const hasExplicitBodyFraming = Object.keys(outboundHeaders).some(name => {
+        const lowerName = name.toLowerCase();
+        return lowerName === 'content-length' || lowerName === 'transfer-encoding';
+      });
+      // ClientRequest sends bodies for GET, HEAD, and several other methods as
+      // unframed bytes by default. Supply a byte-exact length unless the caller
+      // explicitly selected its own HTTP/1 framing.
+      if (outboundBody.length > 0 && !hasExplicitBodyFraming) {
+        outboundHeaders['Content-Length'] = Buffer.byteLength(outboundBody);
       }
       const hasExplicitAuthorization = Object.keys(outboundHeaders)
         .some(name => name.toLowerCase() === 'authorization');
@@ -3018,7 +3058,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         ? totalTimeoutMs + 5000
         : 120000;
       const sendContext = canUseProxy
-        ? this.proxy._registerInternalSendRequest(sendContextTtl)
+        ? this.proxy._registerInternalSendRequest(sendContextTtl, outboundMethod)
         : null;
       const proxyBindHost = String(this.proxy?.bindHost || '127.0.0.1');
       const proxyHostname = proxyBindHost === '0.0.0.0'
@@ -3041,14 +3081,18 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             hostname: proxyHostname,
             port: proxyPort,
             path: parsedUrl.href,
-            method,
+            // A consistent POST envelope keeps Node's inbound parser and body
+            // framing independent of the requested token. The authenticated
+            // context restores the exact method inside the proxy before matching,
+            // capture, or forwarding.
+            method: 'POST',
             headers: outboundHeaders
           }
         : {
             hostname: parsedUrl.hostname,
             port: parsedUrl.port || (isHttps ? 443 : 80),
             path: parsedUrl.pathname + parsedUrl.search,
-            method,
+            method: outboundMethod,
             headers: outboundHeaders,
             ...(isHttps ? this.proxy._getUpstreamTlsOptions(parsedUrl.hostname) : {})
           };
@@ -3124,6 +3168,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           });
         });
       });
+      // ClientRequest canonicalizes methods to uppercase in its constructor.
+      // Restore the validated token before the request line is generated.
+      req.method = options.method;
+      req.useChunkedEncodingByDefault =
+        !METHODS_WITHOUT_DEFAULT_CHUNKED_BODY.has(options.method);
+      if (!sendContext && outboundMethod === 'CONNECT') {
+        req.once('finish', () => { req.method = 'POST'; });
+      }
 
       connectTimer = setTimeout(() => {
         fail(new Error(`Send connection timeout after ${connectTimeoutMs}ms`));
