@@ -155,7 +155,7 @@
     let vsRafId = null;
 
     // ============ SEND TABS STATE ============
-    let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyType: 'raw', bodyFormat: 'text', urlEncodedFields: [], multipartFields: [], multipartBoundary: '', response: null }];
+    let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyEncoding: 'utf8', bodyType: 'raw', bodyFormat: 'text', urlEncodedFields: [], multipartFields: [], multipartBoundary: '', response: null }];
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
     let currentSendAbort = null;
@@ -1688,12 +1688,56 @@
       }
     }
 
+    function isCanonicalSendBase64(value) {
+      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+        return false;
+      }
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      if (value.endsWith('==')) return alphabet.indexOf(value.at(-3)) % 16 === 0;
+      if (value.endsWith('=')) return alphabet.indexOf(value.at(-2)) % 4 === 0;
+      return true;
+    }
+
+    function parseSendBase64DataUri(value) {
+      if (typeof value !== 'string') return null;
+      const match = /^data:([^,\r\n]*);base64,([A-Za-z0-9+/=]*)$/i.exec(value);
+      if (!match || !isCanonicalSendBase64(match[2])) return null;
+      const mediaType = match[1].split(';', 1)[0].trim().toLowerCase();
+      return {
+        base64: match[2],
+        byteLength: (match[2].length / 4) * 3 - (match[2].endsWith('==') ? 2 : match[2].endsWith('=') ? 1 : 0),
+        contentType: /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/.test(mediaType)
+          ? mediaType
+          : 'application/octet-stream'
+      };
+    }
+
+    function getActiveSendBodyEncoding() {
+      const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
+      return getSendBodyType() === 'raw' && tab?.bodyEncoding === 'base64'
+        ? 'base64'
+        : 'utf8';
+    }
+
     function resendSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
       const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
       if (req.requestBodyTruncated === true) {
         toast('Cannot resend this request because its captured body is incomplete.', 'error');
+        return;
+      }
+      const capturedBodyEncoding = req.requestBodyEncoding === undefined || req.requestBodyEncoding === null
+        ? 'utf8'
+        : typeof req.requestBodyEncoding === 'string'
+          ? req.requestBodyEncoding.toLowerCase()
+          : '';
+      if (capturedBodyEncoding !== 'utf8' && capturedBodyEncoding !== 'base64') {
+        toast('Cannot resend this request because its captured body encoding is unsupported.', 'error');
+        return;
+      }
+      if (capturedBodyEncoding === 'base64' && !parseSendBase64DataUri(req.requestBody)) {
+        toast('Cannot resend this request because its captured binary body is malformed.', 'error');
         return;
       }
 
@@ -1716,7 +1760,7 @@
       let bodyType = 'raw';
       let bodyFormat = 'text';
       let urlEncodedFields = [];
-      if (req.requestBody) {
+      if (req.requestBody && capturedBodyEncoding === 'utf8') {
         const contentTypeKey = findHeaderKey(req.requestHeaders || {}, 'Content-Type');
         const ct = String(contentTypeKey ? req.requestHeaders[contentTypeKey] : '').toLowerCase();
         if (ct.includes('application/x-www-form-urlencoded')) {
@@ -1738,6 +1782,7 @@
         url: req.url,
         headers: newHeaders,
         body: req.requestBody || '',
+        bodyEncoding: capturedBodyEncoding,
         bodyType,
         bodyFormat: bodyFormat,
         urlEncodedFields,
@@ -2813,9 +2858,21 @@
       const bodyType = getSendBodyType();
       const bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
       const requestBody = bodyType === 'urlencoded' ? serializeUrlEncodedFields() : (bodyType === 'raw' ? getSendBodyValue() : '');
+      const requestBodyEncoding = bodyType === 'raw' && typeof getActiveSendBodyEncoding === 'function'
+        ? getActiveSendBodyEncoding()
+        : 'utf8';
       if (bodyType === 'urlencoded') setDefaultHeader(headers, 'Content-Type', 'application/x-www-form-urlencoded');
       if (bodyType === 'multipart') setDefaultHeader(headers, 'Content-Type', 'multipart/form-data');
-      if (bodyType === 'raw' && requestBody) setDefaultHeader(headers, 'Content-Type', formatToContentType(bodyFormat));
+      if (bodyType === 'raw' && requestBody) {
+        const binaryBody = requestBodyEncoding === 'base64'
+          ? parseSendBase64DataUri(requestBody)
+          : null;
+        setDefaultHeader(
+          headers,
+          'Content-Type',
+          binaryBody?.contentType || formatToContentType(bodyFormat)
+        );
+      }
 
       const url = document.getElementById('sendUrl')?.value.trim() || '';
       let host = '';
@@ -2833,6 +2890,7 @@
         path,
         requestHeaders: headers,
         requestBody,
+        requestBodyEncoding,
         bodyType,
         bodyFormat,
         formFields: cloneSendFormFields(bodyType === 'multipart' ? sendMultipartFields : sendUrlEncodedFields),
@@ -9100,6 +9158,7 @@
         url: typeof tab.url === 'string' ? tab.url : '',
         headers: normalizeSendHeaderRows(tab.headers),
         body: typeof tab.body === 'string' ? tab.body : '',
+        bodyEncoding: tab.bodyEncoding === 'base64' ? 'base64' : 'utf8',
         bodyType: bodyTypes.has(tab.bodyType) ? tab.bodyType : 'raw',
         bodyFormat: bodyFormats.has(tab.bodyFormat) ? tab.bodyFormat : 'text',
         urlEncodedFields: cloneSendFormFields(tab.urlEncodedFields, includeFiles),
@@ -9175,6 +9234,7 @@
         url: '',
         headers: [],
         body: '',
+        bodyEncoding: 'utf8',
         bodyType: 'raw',
         bodyFormat: 'text',
         urlEncodedFields: [],
@@ -9529,6 +9589,9 @@
       tab.headers = sendHeadersList.slice();
       tab.body = getSendBodyValue();
       tab.bodyType = getSendBodyType();
+      tab.bodyEncoding = tab.bodyType === 'raw' && tab.bodyEncoding === 'base64'
+        ? 'base64'
+        : 'utf8';
       tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
       tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
       tab.multipartFields = cloneSendFormFields(sendMultipartFields);
@@ -9690,6 +9753,7 @@
         url: parsed.url || '',
         headers: normalizeSendHeaderRows(parsed.headers),
         body: parsed.hasData ? String(parsed.body ?? '') : '',
+        bodyEncoding: 'utf8',
         bodyType: 'raw',
         bodyFormat: inferCurlSendBodyFormat(parsed.headers),
         urlEncodedFields: [],
@@ -9848,6 +9912,20 @@
       }
 
       const body = getSendBodyValue();
+      if (typeof getActiveSendBodyEncoding === 'function' && getActiveSendBodyEncoding() === 'base64') {
+        const parsedBody = parseSendBase64DataUri(body);
+        if (!parsedBody) {
+          throw new Error('Cannot send binary body: it is not a complete, canonical base64 data URI.');
+        }
+        if (parsedBody.base64) setDefaultHeader(headers, 'Content-Type', parsedBody.contentType);
+        if (signal) throwIfSendAborted(signal);
+        return {
+          body: parsedBody.base64,
+          bodyEncoding: 'base64',
+          displayBody: body,
+          byteLength: parsedBody.byteLength
+        };
+      }
       if (body) setDefaultHeader(headers, 'Content-Type', formatToContentType(document.getElementById('sendBodyFormat')?.value || 'text'));
       if (signal) throwIfSendAborted(signal);
       return { body, bodyEncoding: 'utf8', displayBody: body, byteLength: new TextEncoder().encode(body).length };
@@ -9928,6 +10006,7 @@
           path: new URL(url).pathname + new URL(url).search,
           requestHeaders: headers,
           requestBody: payload.displayBody,
+          requestBodyEncoding: payload.bodyEncoding,
           requestBodySize: payload.byteLength,
           statusCode: data.statusCode,
           statusMessage: data.statusMessage,

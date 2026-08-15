@@ -35,6 +35,33 @@ export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+class SendBodyValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SendBodyValidationError';
+    this.code = 'ERR_INVALID_SEND_BODY';
+  }
+}
+
+function prepareOutboundSendBody(body, bodyEncoding) {
+  if (typeof body !== 'string') {
+    throw new SendBodyValidationError('Send body must be a string');
+  }
+  if (bodyEncoding === 'utf8') return body;
+  if (bodyEncoding !== 'base64') {
+    throw new SendBodyValidationError('Send bodyEncoding must be utf8 or base64');
+  }
+  if (!CANONICAL_BASE64_PATTERN.test(body)) {
+    throw new SendBodyValidationError('Send base64 body is malformed or incomplete');
+  }
+  const decoded = Buffer.from(body, 'base64');
+  if (decoded.toString('base64') !== body) {
+    throw new SendBodyValidationError('Send base64 body is malformed or incomplete');
+  }
+  return decoded;
+}
 
 function normalizeDataUriMediaType(value) {
   const rawValue = Array.isArray(value) ? value[0] : value;
@@ -2264,14 +2291,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           url,
           method || 'GET',
           headers || {},
-          body || '',
-          bodyEncoding || 'utf8',
+          body === undefined ? '' : body,
+          bodyEncoding === undefined ? 'utf8' : bodyEncoding,
           controller.signal
         );
         if (!res.destroyed) res.json(result);
       } catch (err) {
         if (err.name !== 'AbortError' && !res.destroyed) {
-          res.status(500).json({ error: err.message });
+          res.status(err?.code === 'ERR_INVALID_SEND_BODY' ? 400 : 500).json({ error: err.message });
         }
       } finally {
         req.removeListener('aborted', abortOutbound);
@@ -2816,6 +2843,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   async _sendRequest(url, method, headers, body, bodyEncoding = 'utf8', signal) {
     return new Promise((resolve, reject) => {
+      const outboundBody = prepareOutboundSendBody(body, bodyEncoding);
       const parsedUrl = new URL(url);
       if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
         throw new Error(`Unsupported Send URL protocol: ${parsedUrl.protocol}`);
@@ -2983,7 +3011,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         fail(new Error(`Send idle timeout after ${idleTimeoutMs}ms`));
       });
       req.once('error', fail);
-      if (body) req.write(bodyEncoding === 'base64' ? Buffer.from(body, 'base64') : body);
+      if (outboundBody.length) req.write(outboundBody);
       req.end();
     });
   }

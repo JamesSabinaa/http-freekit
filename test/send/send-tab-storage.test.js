@@ -71,6 +71,7 @@ test('stored Send tabs normalize malformed collections without discarding valid 
       { key: 'X-Test', value: 'two', enabled: true }
     ],
     body: 'payload',
+    bodyEncoding: 'utf8',
     bodyType: 'multipart',
     bodyFormat: 'json',
     urlEncodedFields: [],
@@ -83,6 +84,7 @@ test('stored Send tabs normalize malformed collections without discarding valid 
   assert.notEqual(normalized[1].id, 'tab-7');
   assert.notEqual(normalized[2].id, normalized[1].id);
   assert.deepEqual(normalized[1].headers, []);
+  assert.equal(normalized[1].bodyEncoding, 'utf8');
   assert.equal(normalized[1].bodyType, 'raw');
   assert.deepEqual(normalized[2].headers, [{ key: '42', value: '', enabled: true }]);
 });
@@ -112,6 +114,25 @@ test('live tab normalization retains selected multipart files and response state
 
   assert.equal(normalized.multipartFields[0].file, file);
   assert.equal(normalized.response, response);
+});
+
+test('stored Send tabs retain only supported request body provenance', () => {
+  const context = loadNormalizationContext();
+  const binary = context.normalizeSendTab({
+    id: 'tab-1',
+    body: 'data:application/octet-stream;base64,AP9B',
+    bodyEncoding: 'base64',
+    bodyType: 'raw'
+  }, 'tab-1');
+  const unsupported = context.normalizeSendTab({
+    id: 'tab-2',
+    body: 'untrusted display text',
+    bodyEncoding: 'hex',
+    bodyType: 'raw'
+  }, 'tab-2');
+
+  assert.equal(binary.bodyEncoding, 'base64');
+  assert.equal(unsupported.bodyEncoding, 'utf8');
 });
 
 test('stored tabs discard untrusted response markup and object payloads', () => {
