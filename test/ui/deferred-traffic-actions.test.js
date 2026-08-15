@@ -54,6 +54,8 @@ const contextMenuSource = between(
   'function copyResponseHeadersForMock('
 );
 
+const TRAFFIC_GENERATION = '00000000-0000-4000-8000-000000000001';
+
 function deferred() {
   let resolve;
   const promise = new Promise(resolvePromise => { resolve = resolvePromise; });
@@ -63,6 +65,7 @@ function deferred() {
 function summary() {
   return {
     id: 'large-import',
+    trafficGeneration: TRAFFIC_GENERATION,
     trafficLifecycleId: 'life-1',
     method: 'CUSTOM-METHOD-TRUNCATED',
     url: 'https://example.test/truncated',
@@ -73,6 +76,7 @@ function summary() {
 function exact(lifecycleId = 'life-1') {
   return {
     id: 'large-import',
+    trafficGeneration: TRAFFIC_GENERATION,
     trafficLifecycleId: lifecycleId,
     method: 'CUSTOM-METHOD-THAT-WAS-NOT-TRUNCATED',
     url: 'https://example.test/the/full/path?with=query',
@@ -132,6 +136,9 @@ function createHarness(fetchImpl) {
     let requests = [${JSON.stringify(summary())}];
     let selectedRequestId = 'large-import';
     let selectedRequestLifecycleId = 'life-1';
+    let captureStateSessionId = 'session-a';
+    let trafficConnectionEpoch = 0;
+    let trafficDumpReady = true;
     ${identitySource}
     ${mergeSource}
     function isSelectedTrafficRequest(request) {
@@ -189,6 +196,11 @@ function createHarness(fetchImpl) {
       selectedRequestId = requestId;
       selectedRequestLifecycleId = lifecycleId;
     };
+    globalThis.setTrafficSession = value => { captureStateSessionId = value; };
+    globalThis.setTrafficReady = value => {
+      trafficConnectionEpoch += 1;
+      trafficDumpReady = value === true;
+    };
     globalThis.getRequests = () => requests;
   `, context);
   return {
@@ -215,6 +227,14 @@ test('concurrent content actions hydrate once and use exact deferred traffic', a
     harness.context.createBreakpointFromRequest('large-import', 'life-1')
   ];
   assert.equal(harness.calls.length, 1);
+  assert.equal(
+    harness.calls[0][1].headers['X-HTTP-FreeKit-Traffic-Session'],
+    'session-a'
+  );
+  assert.equal(
+    harness.calls[0][1].headers['X-HTTP-FreeKit-Traffic-Generation'],
+    TRAFFIC_GENERATION
+  );
   assert.deepEqual(harness.context.resolved, []);
 
   pending.resolve(response(exact()));
@@ -234,6 +254,19 @@ test('concurrent content actions hydrate once and use exact deferred traffic', a
     request.requestHeaders.Authorization === 'Bearer exact' &&
     request.requestBodyContentDecoded === true
   ));
+});
+
+test('old-session deferred hydration cannot merge into the new renderer session', async () => {
+  const pending = deferred();
+  const harness = createHarness(() => pending.promise);
+  const hydration = harness.context.startHydration(0);
+
+  harness.context.setTrafficSession('session-b');
+  pending.resolve(response(exact()));
+  await assert.rejects(hydration, /server session changed/i);
+
+  assert.equal(harness.context.getRequests()[0]._deferredTrafficDetail, true);
+  assert.equal(harness.context.getRequests()[0].method, 'CUSTOM-METHOD-TRUNCATED');
 });
 
 test('an open deferred context menu resolves the row again after replacement', async () => {
@@ -413,6 +446,18 @@ test('deferred actions fail closed on identity mismatch and stale deletion', asy
   assert.deepEqual(mismatched.context.resolved, []);
   assert.match(mismatched.toasts.at(-1).message, /different exchange/i);
 
+  const generationMismatch = createHarness(async () => response({
+    ...exact(),
+    trafficGeneration: '00000000-0000-4000-8000-000000000099'
+  }));
+  await generationMismatch.context.resendSelectedRequest('large-import', 'life-1');
+  assert.deepEqual(generationMismatch.context.resolved, []);
+  assert.match(generationMismatch.toasts.at(-1).message, /different exchange/i);
+  assert.equal(
+    generationMismatch.calls[0][1].headers['X-HTTP-FreeKit-Traffic-Generation'],
+    TRAFFIC_GENERATION
+  );
+
   const pending = deferred();
   const deleted = createHarness(() => pending.promise);
   const action = deleted.context.createMockFromRequest('large-import', 'life-1');
@@ -572,6 +617,35 @@ test('exact clipboard failures are observed and reported', async () => {
   assert.match(harness.toasts.at(-1).message, /cannot copy url: clipboard denied/i);
 });
 
+test('all context actions fail closed while a reconnect dump is pending', async () => {
+  const harness = createHarness(() => assert.fail('pending-dump actions must not fetch'));
+  harness.context.setRequests([exact()]);
+  harness.context.setSelection('large-import', 'life-1');
+  harness.context.showTrafficContextMenu({
+    preventDefault() {}, clientX: 1, clientY: 2
+  }, 'large-import', null, 'life-1');
+  harness.context.setTrafficReady(false);
+
+  const labels = [
+    'Copy URL',
+    'Copy as cURL',
+    'Resend in Send tab',
+    'Create mock rule',
+    'Create breakpoint',
+    'Pin exchange',
+    'Delete exchange'
+  ];
+  await Promise.all(labels.map(label =>
+    harness.menuItems().find(item => item.label === label).action()
+  ));
+
+  assert.deepEqual(harness.clipboard, []);
+  assert.deepEqual(harness.context.resolved, []);
+  assert.deepEqual(harness.context.identityOnly, []);
+  assert.equal(harness.calls.length, 0);
+  assert.equal(harness.toasts.filter(entry => /still synchronizing/i.test(entry.message)).length, 7);
+});
+
 function createCompactMutationHarness(kind) {
   const detail = deferred();
   const calls = [];
@@ -587,8 +661,12 @@ function createCompactMutationHarness(kind) {
     showDetail() {},
     closeDetail() {},
     toast: (message, type) => toasts.push({ message, type }),
-    applyTrafficPinned: (...args) => applied.push(['pin', ...args]),
+    applyTrafficPinned: (...args) => {
+      applied.push(['pin', ...args]);
+      return true;
+    },
     applyTrafficDeleted: (...args) => applied.push(['delete', ...args]),
+    tombstoneTrafficClearReplayIdentity: () => false,
     fetch: (url, options = {}) => {
       calls.push([url, options]);
       if (!options.method) return detail.promise;
@@ -597,6 +675,7 @@ function createCompactMutationHarness(kind) {
           success: true,
           requestId: 'large-import',
           trafficLifecycleId: 'life-1',
+          trafficGeneration: TRAFFIC_GENERATION,
           pinned: true,
           revision: 1
         }));
@@ -605,7 +684,9 @@ function createCompactMutationHarness(kind) {
         success: true,
         requestId: 'large-import',
         trafficLifecycleId: 'life-1',
-        webSocketConnection: false
+        trafficGeneration: TRAFFIC_GENERATION,
+        webSocketConnection: false,
+        clearRevision: 0
       }));
     }
   };
@@ -613,12 +694,17 @@ function createCompactMutationHarness(kind) {
   vm.runInContext(`
     let requests = [{
       id: 'large-import',
+      trafficGeneration: ${JSON.stringify(TRAFFIC_GENERATION)},
       method: 'GET',
       url: 'https://example.test/truncated',
       _deferredTrafficDetail: true
     }];
     let selectedRequestId = 'large-import';
     let selectedRequestLifecycleId = null;
+    let captureStateSessionId = 'session-a';
+    let latestTrafficClearRevision = 0;
+    let latestTrafficPinSnapshotRevision = 0;
+    const appliedTrafficPinRevisions = new Map();
     ${identitySource}
     ${mergeSource}
     function isSelectedTrafficRequest(request) {
@@ -658,7 +744,7 @@ test('compact Pin hydrates once and mutates the promoted lifecycle exactly', asy
   assert.equal(harness.calls.length, 2);
   assert.equal(harness.calls[1][0], '/api/traffic/large-import/pin?trafficLifecycleId=life-1');
   assert.deepEqual(JSON.parse(JSON.stringify(harness.applied)), [
-    ['pin', 'large-import', 'life-1', true, 1]
+    ['pin', 'large-import', 'life-1', true, 1, TRAFFIC_GENERATION]
   ]);
 });
 
@@ -676,7 +762,7 @@ test('compact Delete hydrates once and mutates the promoted lifecycle exactly', 
   assert.equal(harness.calls.length, 2);
   assert.equal(harness.calls[1][0], '/api/traffic/large-import?trafficLifecycleId=life-1');
   assert.deepEqual(JSON.parse(JSON.stringify(harness.applied)), [
-    ['delete', 'large-import', 'life-1', false]
+    ['delete', 'large-import', 'life-1', false, 0, TRAFFIC_GENERATION]
   ]);
 });
 

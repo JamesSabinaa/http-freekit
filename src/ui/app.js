@@ -7,6 +7,8 @@
     let isPaused = false;
     let captureStateSessionId = null;
     let captureStateRevision = -1;
+    let trafficConnectionEpoch = 0;
+    let trafficDumpReady = false;
     let pauseMutationPending = false;
     let sortField = null;
     let sortDirection = 'desc';
@@ -271,6 +273,55 @@
       ]);
     }
 
+    const TRAFFIC_SESSION_HEADER = 'X-HTTP-FreeKit-Traffic-Session';
+    const TRAFFIC_GENERATION_HEADER = 'X-HTTP-FreeKit-Traffic-Generation';
+
+    function trafficSessionHeaders(sessionId, headers = {}) {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new Error('Traffic actions are unavailable until the server session is known.');
+      }
+      return { ...headers, [TRAFFIC_SESSION_HEADER]: sessionId };
+    }
+
+    function trafficGenerationHeaders(request, sessionId, headers = {}) {
+      const generation = request?.trafficGeneration;
+      if (typeof generation !== 'string' || !generation) {
+        throw new Error('The exchange generation is unavailable; refresh traffic before retrying.');
+      }
+      return trafficSessionHeaders(sessionId, {
+        ...headers,
+        [TRAFFIC_GENERATION_HEADER]: generation
+      });
+    }
+
+    function captureTrafficActionAuthority() {
+      const sessionId = typeof captureStateSessionId === 'undefined'
+        ? null
+        : captureStateSessionId;
+      trafficSessionHeaders(sessionId);
+      if (typeof trafficDumpReady !== 'undefined' && trafficDumpReady !== true) {
+        throw new Error('Traffic is still synchronizing with the server.');
+      }
+      return {
+        sessionId,
+        connectionEpoch: typeof trafficConnectionEpoch === 'undefined'
+          ? null
+          : trafficConnectionEpoch
+      };
+    }
+
+    function trafficActionAuthorityIsCurrent(authority) {
+      const currentSessionId = typeof captureStateSessionId === 'undefined'
+        ? null
+        : captureStateSessionId;
+      const currentConnectionEpoch = typeof trafficConnectionEpoch === 'undefined'
+        ? null
+        : trafficConnectionEpoch;
+      return currentSessionId === authority.sessionId &&
+        currentConnectionEpoch === authority.connectionEpoch &&
+        (typeof trafficDumpReady === 'undefined' || trafficDumpReady === true);
+    }
+
     function isSelectedTrafficRequest(request) {
       return selectedRequestId !== null && trafficRequestMatchesIdentity(
         request,
@@ -316,12 +367,16 @@
           currentRequest?.trafficLifecycleId !== undefined) {
         restoredRequest.trafficLifecycleId = currentRequest.trafficLifecycleId;
       }
+      if (restoredRequest.trafficGeneration === undefined &&
+          currentRequest?.trafficGeneration !== undefined) {
+        restoredRequest.trafficGeneration = currentRequest.trafficGeneration;
+      }
       delete restoredRequest._rendererOnly;
       if (restoredRequest.pinned !== true) delete restoredRequest.pinned;
       return restoredRequest;
     }
 
-    const deferredTrafficGenerationTokens = new WeakMap();
+    let deferredTrafficGenerationTokens = new WeakMap();
 
     function ensureTrafficGenerationToken(request) {
       if (!request || typeof request !== 'object') return null;
@@ -350,6 +405,22 @@
       ) || null;
     }
 
+    function currentTrafficMutationGeneration(request, generationToken, lifecycleId) {
+      const currentRequest = currentTrafficGenerationRequest(request);
+      if (!currentRequest ||
+          deferredTrafficGenerationTokens.get(currentRequest) !== generationToken ||
+          currentRequest.id !== request.id ||
+          normalizeTrafficLifecycleId(currentRequest.trafficLifecycleId) !== lifecycleId) {
+        return null;
+      }
+      const identityMatches = requests.filter(candidate =>
+        trafficRequestMatchesIdentity(candidate, request.id, lifecycleId)
+      );
+      return identityMatches.length === 1 && identityMatches[0] === currentRequest
+        ? currentRequest
+        : null;
+    }
+
     function mergeTrafficRequestWithRendererState(currentRequest, serverRequest) {
       const hydratedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
       // Clear snapshots and detail requests can resolve after a newer pin event.
@@ -363,6 +434,11 @@
     }
 
     function mergeDeferredTrafficRequest(currentRequest, serverRequest) {
+      if (currentRequest?.trafficGeneration !== undefined &&
+          serverRequest?.trafficGeneration !== undefined &&
+          currentRequest.trafficGeneration !== serverRequest.trafficGeneration) {
+        return currentRequest;
+      }
       return transferTrafficGenerationToken(
         currentRequest,
         mergeTrafficRequestWithRendererState(currentRequest, serverRequest)
@@ -370,6 +446,11 @@
     }
 
     function mergeTrafficRequestUpdate(currentRequest, serverRequest) {
+      if (currentRequest?.trafficGeneration !== undefined &&
+          serverRequest?.trafficGeneration !== undefined &&
+          currentRequest.trafficGeneration !== serverRequest.trafficGeneration) {
+        return currentRequest;
+      }
       const updatedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
       const exactLifecycleUpdate = Object.hasOwn(currentRequest || {}, 'trafficLifecycleId') &&
         Object.hasOwn(serverRequest || {}, 'trafficLifecycleId') &&
@@ -428,15 +509,239 @@
 
     const appliedTrafficClearIds = new Set();
     const appliedTrafficPinRevisions = new Map();
+    const restTrafficClearReplayBarriers = new Map();
+    const latestTrafficClearRetainedGenerations = new Map();
     const pendingTrafficClearChunks = new Map();
+    const pendingTrafficDumpChunks = new Map();
+    const appliedTrafficDumpIds = new Set();
     let latestTrafficClearRevision = 0;
+    let latestTrafficPinSnapshotRevision = 0;
 
-    function applyTrafficCleared(clearId, retainedTraffic, revision, pinRevision) {
+    function resetTrafficOrderingState() {
+      appliedTrafficClearIds.clear();
+      appliedTrafficPinRevisions.clear();
+      restTrafficClearReplayBarriers.clear();
+      latestTrafficClearRetainedGenerations.clear();
+      pendingTrafficClearChunks.clear();
+      pendingTrafficDumpChunks.clear();
+      appliedTrafficDumpIds.clear();
+      latestTrafficClearRevision = 0;
+      latestTrafficPinSnapshotRevision = 0;
+    }
+
+    function applyTrafficServerSessionBoundary(previousSessionId, acceptedSessionId) {
+      if (previousSessionId === null || acceptedSessionId === previousSessionId) return false;
+      resetTrafficOrderingState();
+      requests = [];
+      filteredRequests = [];
+      requestCounter = 0;
+      vsRenderStart = -1;
+      vsRenderEnd = -1;
+      selectedRequestId = null;
+      selectedRequestLifecycleId = null;
+      if (typeof wsExpandedConnections !== 'undefined') wsExpandedConnections.clear();
+      if (typeof breakpointEditDrafts !== 'undefined') breakpointEditDrafts.clear();
+      deferredTrafficGenerationTokens = new WeakMap();
+      if (typeof deferredTrafficHydrations !== 'undefined') deferredTrafficHydrations.clear();
+      if (typeof closeDetail === 'function') closeDetail(false);
+      if (typeof applyFilter === 'function') applyFilter();
+      return true;
+    }
+
+    function beginTrafficDumpSync(awaitingDump = true) {
+      trafficConnectionEpoch += 1;
+      if (awaitingDump) trafficDumpReady = false;
+      pendingTrafficDumpChunks.clear();
+      appliedTrafficDumpIds.clear();
+    }
+
+    function applyTrafficDumpMessage(message) {
+      if (!message || !Array.isArray(message.requests) ||
+          typeof message.sessionId !== 'string' || !message.sessionId ||
+          message.sessionId !== captureStateSessionId) {
+        return false;
+      }
+      const hasChunkMetadata = message.dumpId !== undefined ||
+        message.chunkIndex !== undefined || message.chunkCount !== undefined;
+      if (!hasChunkMetadata) {
+        pendingTrafficDumpChunks.clear();
+        restoreTrafficDump(message.requests);
+        trafficDumpReady = true;
+        return true;
+      }
+      if (typeof message.dumpId !== 'string' || !message.dumpId ||
+          message.dumpId.length > 128 ||
+          !Number.isSafeInteger(message.chunkCount) || message.chunkCount < 1 ||
+          message.chunkCount > 10_000 ||
+          !Number.isSafeInteger(message.chunkIndex) || message.chunkIndex < 0 ||
+          message.chunkIndex >= message.chunkCount) {
+        return false;
+      }
+      if (appliedTrafficDumpIds.has(message.dumpId)) return false;
+
+      let pending = pendingTrafficDumpChunks.get(message.dumpId);
+      if (message.chunkIndex === 0) {
+        if (pending) return false;
+        pendingTrafficDumpChunks.clear();
+        pending = {
+          sessionId: message.sessionId,
+          chunkCount: message.chunkCount,
+          chunks: new Array(message.chunkCount),
+          received: 0
+        };
+        pendingTrafficDumpChunks.set(message.dumpId, pending);
+      } else if (!pending) {
+        return false;
+      }
+      if (pending.sessionId !== message.sessionId ||
+          pending.chunkCount !== message.chunkCount ||
+          pending.chunks[message.chunkIndex] !== undefined) {
+        return false;
+      }
+      pending.chunks[message.chunkIndex] = message.requests;
+      pending.received += 1;
+      if (pending.received !== pending.chunkCount) return false;
+
+      pendingTrafficDumpChunks.delete(message.dumpId);
+      appliedTrafficDumpIds.add(message.dumpId);
+      if (appliedTrafficDumpIds.size > 32) {
+        appliedTrafficDumpIds.delete(appliedTrafficDumpIds.values().next().value);
+      }
+      restoreTrafficDump(pending.chunks.flat());
+      trafficDumpReady = true;
+      return true;
+    }
+
+    function recordTrafficClearReplayPinOverride(
+      requestId,
+      trafficLifecycleId,
+      pinned,
+      revision,
+      trafficGeneration
+    ) {
+      if (!Number.isSafeInteger(revision) || revision <= 0) return false;
+      let recorded = false;
+      for (const barrier of restTrafficClearReplayBarriers.values()) {
+        if (!Number.isSafeInteger(barrier.pinRevision) || revision <= barrier.pinRevision) {
+          continue;
+        }
+        for (const entry of barrier.entries) {
+          if (entry.deleted === true || !trafficRequestMatchesIdentity(
+            entry.snapshot,
+            requestId,
+            trafficLifecycleId
+          ) || (trafficGeneration !== undefined &&
+            entry.snapshot.trafficGeneration !== trafficGeneration)) {
+            continue;
+          }
+          if (!entry.pinOverride || revision > entry.pinOverride.revision) {
+            entry.pinOverride = { revision, pinned: pinned === true };
+          }
+          recorded = true;
+        }
+      }
+      return recorded;
+    }
+
+    function currentLatestTrafficClearRetainedRequest(
+      requestId,
+      trafficLifecycleId,
+      trafficGeneration
+    ) {
+      const identityKey = trafficRequestIdentityKey({ id: requestId, trafficLifecycleId });
+      const installedRequest = latestTrafficClearRetainedGenerations.get(identityKey);
+      if (!installedRequest) return null;
+      const currentRequest = currentTrafficGenerationRequest(installedRequest);
+      if (!currentRequest || !trafficRequestMatchesIdentity(
+        currentRequest,
+        requestId,
+        trafficLifecycleId
+      ) || (trafficGeneration !== undefined &&
+        currentRequest.trafficGeneration !== trafficGeneration)) {
+        return null;
+      }
+      const identityMatches = requests.filter(request =>
+        trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId)
+      );
+      return identityMatches.length === 1 && identityMatches[0] === currentRequest
+        ? currentRequest
+        : null;
+    }
+
+    function rememberLatestTrafficClearRetainedGenerations(
+      retainedTraffic,
+      allowedGenerationTokens = null
+    ) {
+      latestTrafficClearRetainedGenerations.clear();
+      if (!Array.isArray(retainedTraffic)) return;
+      const identityCounts = new Map();
+      for (const request of retainedTraffic) {
+        const identityKey = trafficRequestIdentityKey(request);
+        identityCounts.set(identityKey, (identityCounts.get(identityKey) || 0) + 1);
+      }
+      for (const retainedRequest of retainedTraffic) {
+        const identityKey = trafficRequestIdentityKey(retainedRequest);
+        if (identityCounts.get(identityKey) !== 1) continue;
+        const matches = requests.filter(request => trafficRequestMatchesIdentity(
+          request,
+          retainedRequest.id,
+          normalizeTrafficLifecycleId(retainedRequest.trafficLifecycleId)
+        ));
+        if (matches.length !== 1) continue;
+        const generationToken = allowedGenerationTokens
+          ? deferredTrafficGenerationTokens.get(matches[0])
+          : ensureTrafficGenerationToken(matches[0]);
+        if (!generationToken ||
+            (allowedGenerationTokens && !allowedGenerationTokens.has(generationToken))) {
+          continue;
+        }
+        latestTrafficClearRetainedGenerations.set(identityKey, matches[0]);
+      }
+    }
+
+    function tombstoneTrafficClearReplayIdentity(
+      requestId,
+      trafficLifecycleId,
+      clearRevision,
+      trafficGeneration
+    ) {
+      if (!Number.isSafeInteger(clearRevision) || clearRevision < 0) return false;
+      let tombstoned = false;
+      for (const barrier of restTrafficClearReplayBarriers.values()) {
+        if (barrier.revision === null || clearRevision < barrier.revision) continue;
+        for (const entry of barrier.entries) {
+          if (trafficRequestMatchesIdentity(
+            entry.snapshot,
+            requestId,
+            trafficLifecycleId
+          ) && (trafficGeneration === undefined ||
+            entry.snapshot.trafficGeneration === trafficGeneration)) {
+            entry.deleted = true;
+            tombstoned = true;
+          }
+        }
+      }
+      return tombstoned;
+    }
+
+    function applyTrafficCleared(
+      clearId,
+      retainedTraffic,
+      revision,
+      pinRevision,
+      source = 'direct'
+    ) {
       const selectedBeforeClear = getSelectedTrafficRequest();
       const validRevision = Number.isSafeInteger(revision) && revision > 0 ? revision : null;
       const validPinRevision = Number.isSafeInteger(pinRevision) && pinRevision >= 0
         ? pinRevision
         : null;
+      const replayBarrier = source === 'ws' && typeof clearId === 'string'
+        ? restTrafficClearReplayBarriers.get(clearId)
+        : null;
+      const matchesReplayBarrier = replayBarrier &&
+        replayBarrier.revision === validRevision &&
+        replayBarrier.pinRevision === validPinRevision;
       if ((revision !== undefined && validRevision === null) ||
           (pinRevision !== undefined && validPinRevision === null) ||
           (validRevision === null && latestTrafficClearRevision > 0) ||
@@ -450,17 +755,75 @@
             pendingTrafficClearChunks.delete(pendingClearId);
           }
         }
+        for (const [barrierClearId, barrier] of restTrafficClearReplayBarriers) {
+          if (barrier.revision === null || barrier.revision < validRevision) {
+            restTrafficClearReplayBarriers.delete(barrierClearId);
+          }
+        }
       }
       const alreadyApplied = clearId && appliedTrafficClearIds.has(clearId);
-      const upgradesDeferredSnapshot = alreadyApplied && Array.isArray(retainedTraffic) &&
+      const replaysRestSnapshot = alreadyApplied && matchesReplayBarrier;
+      let replayCanonicalRequests = null;
+      let replayBarrierEntries = null;
+      if (replaysRestSnapshot) {
+        replayCanonicalRequests = new Map();
+        replayBarrierEntries = new Map();
+        retainedTraffic = replayBarrier.entries.flatMap(entry => {
+          if (entry.deleted === true) return [];
+          const canonicalRequest = currentTrafficGenerationRequest(entry.installedRequest);
+          if (canonicalRequest && trafficRequestMatchesIdentity(
+            canonicalRequest,
+            entry.snapshot.id,
+            normalizeTrafficLifecycleId(entry.snapshot.trafficLifecycleId)
+          )) {
+            replayCanonicalRequests.set(
+              trafficRequestIdentityKey(entry.snapshot),
+              canonicalRequest
+            );
+          } else {
+            // A queued pre-Clear dump may have replaced the REST-installed
+            // object before this echo. The barrier proves same-Clear
+            // continuity, so restore its original renderer generation.
+            replayCanonicalRequests.set(
+              trafficRequestIdentityKey(entry.snapshot),
+              entry.installedRequest
+            );
+          }
+          replayBarrierEntries.set(trafficRequestIdentityKey(entry.snapshot), entry);
+          return [entry.snapshot];
+        });
+      }
+      const upgradesDeferredSnapshot = !replaysRestSnapshot && alreadyApplied &&
+        Array.isArray(retainedTraffic) &&
         requests.some(request => request?._deferredTrafficDetail === true) &&
         retainedTraffic.some(request => request?._deferredTrafficDetail !== true);
-      if (alreadyApplied && !upgradesDeferredSnapshot) return false;
+      const deferredUpgradeGenerationTokens = upgradesDeferredSnapshot
+        ? new Set(Array.from(latestTrafficClearRetainedGenerations.values(), request =>
+            deferredTrafficGenerationTokens.get(request)
+          ).filter(Boolean))
+        : null;
+      if (alreadyApplied && !upgradesDeferredSnapshot && !replaysRestSnapshot) return false;
+      if (replaysRestSnapshot) restTrafficClearReplayBarriers.delete(clearId);
+      if (validPinRevision !== null && validPinRevision > latestTrafficPinSnapshotRevision) {
+        latestTrafficPinSnapshotRevision = validPinRevision;
+      }
       if (clearId && !alreadyApplied) {
         pendingTrafficClearChunks.delete(clearId);
         appliedTrafficClearIds.add(clearId);
+        if (source === 'rest' && Array.isArray(retainedTraffic)) {
+          restTrafficClearReplayBarriers.set(clearId, {
+            retainedTraffic: retainedTraffic.map(request =>
+              request && typeof request === 'object' ? { ...request } : request
+            ),
+            entries: [],
+            revision: validRevision,
+            pinRevision: validPinRevision
+          });
+        }
         if (appliedTrafficClearIds.size > 32) {
-          appliedTrafficClearIds.delete(appliedTrafficClearIds.values().next().value);
+          const oldestClearId = appliedTrafficClearIds.values().next().value;
+          appliedTrafficClearIds.delete(oldestClearId);
+          restTrafficClearReplayBarriers.delete(oldestClearId);
         }
       }
 
@@ -476,6 +839,11 @@
         }
         requests = requests.map(currentRequest => {
           if (currentRequest?._deferredTrafficDetail !== true) return currentRequest;
+          if (!deferredUpgradeGenerationTokens.has(
+            deferredTrafficGenerationTokens.get(currentRequest)
+          )) {
+            return currentRequest;
+          }
           let retainedRequest = retainedByIdentity.get(trafficRequestIdentityKey(currentRequest));
           if (!retainedRequest && currentRequest.trafficLifecycleId == null) {
             const sameId = retainedById.get(currentRequest.id) || [];
@@ -492,7 +860,16 @@
         );
         requests = retainedTraffic.flatMap(retainedRequest => {
           const identityKey = trafficRequestIdentityKey(retainedRequest);
-          const currentRequest = currentByIdentity.get(identityKey);
+          const currentRequest = replaysRestSnapshot
+            ? replayCanonicalRequests.get(identityKey)
+            : currentByIdentity.get(identityKey);
+          if (replaysRestSnapshot && currentRequest) {
+            const replayedRequest = mergeDeferredTrafficRequest(currentRequest, retainedRequest);
+            const pinOverride = replayBarrierEntries.get(identityKey)?.pinOverride;
+            if (pinOverride?.pinned === true) replayedRequest.pinned = true;
+            else if (pinOverride) delete replayedRequest.pinned;
+            return [replayedRequest];
+          }
           if (retainedRequest?.pinned === true) {
             const appliedPinRevision = appliedTrafficPinRevisions.get(identityKey);
             const pinChangedAfterClear = currentRequest && validPinRevision !== null &&
@@ -514,6 +891,33 @@
       for (const identityKey of appliedTrafficPinRevisions.keys()) {
         if (!retainedIdentityKeys.has(identityKey)) appliedTrafficPinRevisions.delete(identityKey);
       }
+      if (source === 'rest' && clearId && !alreadyApplied) {
+        const barrier = restTrafficClearReplayBarriers.get(clearId);
+        if (barrier) {
+          barrier.entries = barrier.retainedTraffic.flatMap(snapshot => {
+            const matches = requests.filter(request => trafficRequestMatchesIdentity(
+              request,
+              snapshot.id,
+              normalizeTrafficLifecycleId(snapshot.trafficLifecycleId)
+            ));
+            if (matches.length !== 1) return [];
+            ensureTrafficGenerationToken(matches[0]);
+            const generationSnapshot = snapshot.trafficGeneration === undefined &&
+                matches[0].trafficGeneration !== undefined
+              ? { ...snapshot, trafficGeneration: matches[0].trafficGeneration }
+              : snapshot;
+            return [{
+              snapshot: generationSnapshot,
+              installedRequest: matches[0],
+              deleted: false
+            }];
+          });
+        }
+      }
+      rememberLatestTrafficClearRetainedGenerations(
+        retainedTraffic,
+        deferredUpgradeGenerationTokens
+      );
       requestCounter = requests.length;
       vsRenderStart = -1;
       vsRenderEnd = -1;
@@ -558,12 +962,14 @@
       if (compactDeferred) {
         retainedTraffic = retainedTraffic.map(request => {
           if (!request || typeof request.id !== 'string' || !request.id ||
+              typeof request.g !== 'string' || !request.g ||
               (request.l !== undefined &&
                 (typeof request.l !== 'string' || !request.l))) {
             return null;
           }
           return {
             id: request.id,
+            trafficGeneration: request.g,
             ...(request.l === undefined ? {} : { trafficLifecycleId: request.l }),
             pinned: true,
             _deferredTrafficDetail: true
@@ -581,13 +987,18 @@
           clearId,
           retainedTraffic,
           revision ?? undefined,
-          pinRevision ?? undefined
+          pinRevision ?? undefined,
+          'ws'
         );
       }
+      const replayBarrier = restTrafficClearReplayBarriers.get(clearId);
+      const matchesReplayBarrier = replayBarrier &&
+        replayBarrier.revision === revision && replayBarrier.pinRevision === pinRevision;
       if (!Number.isSafeInteger(message.chunkCount) || message.chunkCount < 1 ||
           message.chunkCount > 10_000 ||
           !Number.isSafeInteger(message.chunkIndex) || message.chunkIndex < 0 ||
-          message.chunkIndex >= message.chunkCount || appliedTrafficClearIds.has(clearId)) {
+          message.chunkIndex >= message.chunkCount ||
+          (appliedTrafficClearIds.has(clearId) && !matchesReplayBarrier)) {
         return false;
       }
 
@@ -619,21 +1030,47 @@
         clearId,
         pending.chunks.flat(),
         revision ?? undefined,
-        pinRevision ?? undefined
+        pinRevision ?? undefined,
+        'ws'
       );
     }
 
-    function applyTrafficPinned(requestId, trafficLifecycleId, pinned, revision) {
+    function applyTrafficPinned(
+      requestId,
+      trafficLifecycleId,
+      pinned,
+      revision,
+      trafficGeneration
+    ) {
       const identityKey = trafficRequestIdentityKey({ id: requestId, trafficLifecycleId });
+      if (Number.isSafeInteger(revision) && revision <= latestTrafficPinSnapshotRevision) {
+        return false;
+      }
       if (Number.isSafeInteger(revision)) {
         const appliedRevision = appliedTrafficPinRevisions.get(identityKey);
         if (appliedRevision !== undefined && revision <= appliedRevision) return false;
-        appliedTrafficPinRevisions.set(identityKey, revision);
       }
-      const request = findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId);
-      if (!request) return false;
+      const identityMatches = requests.filter(request =>
+        trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId)
+      );
+      if (identityMatches.length !== 1) return false;
+      const request = identityMatches[0];
+      if (trafficGeneration !== undefined &&
+          request.trafficGeneration !== trafficGeneration) {
+        return false;
+      }
       if (pinned === true) request.pinned = true;
       else delete request.pinned;
+      if (Number.isSafeInteger(revision)) {
+        appliedTrafficPinRevisions.set(identityKey, revision);
+        recordTrafficClearReplayPinOverride(
+          requestId,
+          trafficLifecycleId,
+          pinned,
+          revision,
+          trafficGeneration
+        );
+      }
       if (isSelectedTrafficRequest(request)) updatePinIcon(request.pinned === true);
       renderTraffic();
       return true;
@@ -642,9 +1079,39 @@
     function applyTrafficDeleted(
       requestId,
       trafficLifecycleId,
-      webSocketConnection = false
+      webSocketConnection = false,
+      clearRevision,
+      trafficGeneration
     ) {
-      const target = findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId);
+      const identityKey = trafficRequestIdentityKey({ id: requestId, trafficLifecycleId });
+      const validClearRevision = Number.isSafeInteger(clearRevision) && clearRevision >= 0
+        ? clearRevision
+        : null;
+      // Missing metadata remains compatible with older servers. Current servers
+      // always provide the Clear epoch, which prevents older queued deletions
+      // from targeting a row installed by a newer snapshot.
+      if (clearRevision !== undefined && validClearRevision === null) {
+        return false;
+      }
+      if (validClearRevision !== null && validClearRevision < latestTrafficClearRevision) {
+        return false;
+      }
+      const identityMatches = requests.filter(request =>
+        trafficRequestMatchesIdentity(request, requestId, trafficLifecycleId)
+      );
+      if (identityMatches.length > 1) return false;
+      const target = identityMatches[0] || null;
+      const targetGenerationMatches = trafficGeneration === undefined ||
+        target?.trafficGeneration === trafficGeneration;
+      if (validClearRevision !== null) {
+        tombstoneTrafficClearReplayIdentity(
+          requestId,
+          trafficLifecycleId,
+          validClearRevision,
+          trafficGeneration
+        );
+      }
+      if (!targetGenerationMatches) return false;
       const removeFrames = webSocketConnection || isWebSocketConnection(target);
       const originalLength = requests.length;
       requests = requests.filter(request => {
@@ -667,6 +1134,7 @@
     function connectWebSocket() {
       const wsUrl = authenticatedApiUrl(`ws://${window.location.hostname}:${window.location.port}/ws`);
       ws = new WebSocket(wsUrl);
+      const connection = ws;
 
       ws.onopen = () => {
         wsReconnectDelay = 1000; // reset on success
@@ -676,6 +1144,7 @@
       };
 
       ws.onmessage = (event) => {
+        if (ws !== connection) return;
         try {
           const msg = JSON.parse(event.data);
           handleWsMessage(msg);
@@ -685,6 +1154,8 @@
       };
 
       ws.onclose = () => {
+        if (ws !== connection) return;
+        beginTrafficDumpSync(false);
         document.getElementById('statusDot')?.classList.remove('connected');
         const statusTextEl = document.getElementById('statusText');
         if (statusTextEl) statusTextEl.textContent = 'Disconnected';
@@ -705,6 +1176,7 @@
     function handleWsMessage(msg) {
       switch (msg.type) {
         case 'init': {
+          beginTrafficDumpSync();
           const proxyPortEl = document.getElementById('proxyPortDisplay');
           if (proxyPortEl) proxyPortEl.textContent = `127.0.0.1:${msg.proxyPort}`;
           const apiPortEl = document.getElementById('apiPortDisplay');
@@ -717,12 +1189,19 @@
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
           config.apiPort = msg.apiPort;
-          applyCapturePausedState(
+          const previousCaptureStateSessionId = captureStateSessionId;
+          const acceptedCaptureState = applyCapturePausedState(
             msg.capturePaused === true,
             msg.captureStateSessionId,
             msg.captureStateRevision,
             true
           );
+          if (acceptedCaptureState) {
+            applyTrafficServerSessionBoundary(
+              previousCaptureStateSessionId,
+              captureStateSessionId
+            );
+          }
           ws.send(JSON.stringify({
             type: 'get-traffic',
             limit: msg.trafficLimit || msg.trafficCount || 100
@@ -801,18 +1280,21 @@
             msg.requestId,
             msg.trafficLifecycleId,
             msg.pinned,
-            msg.revision
+            msg.revision,
+            msg.trafficGeneration
           );
           break;
         case 'traffic-deleted':
           applyTrafficDeleted(
             msg.requestId,
             msg.trafficLifecycleId,
-            msg.webSocketConnection === true
+            msg.webSocketConnection === true,
+            msg.clearRevision,
+            msg.trafficGeneration
           );
           break;
         case 'traffic-dump':
-          restoreTrafficDump(msg.requests);
+          applyTrafficDumpMessage(msg);
           break;
         case 'traffic-imported':
           addRequests(msg.requests);
@@ -881,7 +1363,7 @@
       captureStateRevision = revision;
       isPaused = paused === true;
       const btn = document.getElementById('pauseBtn');
-      if (!btn) return;
+      if (!btn) return true;
       if (isPaused) {
         btn.innerHTML = '<i class="ph ph-play" style="font-size:14px;"></i>';
         btn.title = 'Resume capture';
@@ -1549,6 +2031,12 @@
       const hydrationKey = JSON.stringify([lifecycleWasOmitted, lifecycleId]);
       const existing = generationHydrations.get(hydrationKey);
       if (existing) return existing;
+      let requestAuthority;
+      try {
+        requestAuthority = captureTrafficActionAuthority();
+      } catch (error) {
+        return Promise.reject(error);
+      }
 
       const hydration = (async () => {
         const lifecycleQuery = lifecycleWasOmitted
@@ -1557,14 +2045,25 @@
               ? ''
               : encodeURIComponent(lifecycleId));
         const response = await fetch(
-          API_BASE + '/api/traffic/' + encodeURIComponent(requestId) + lifecycleQuery
+          API_BASE + '/api/traffic/' + encodeURIComponent(requestId) + lifecycleQuery,
+          { headers: trafficGenerationHeaders(currentRequest, requestAuthority.sessionId) }
         );
         if (!response.ok) {
           throw new Error(`Could not load exact exchange details (HTTP ${response.status}).`);
         }
         const hydrated = await response.json();
+        const currentSessionId = typeof captureStateSessionId === 'undefined'
+          ? null
+          : captureStateSessionId;
+        if (currentSessionId !== requestAuthority.sessionId) {
+          throw new Error('The server session changed while loading exchange details.');
+        }
+        if (!trafficActionAuthorityIsCurrent(requestAuthority)) {
+          throw new Error('Traffic resynchronized while loading exchange details.');
+        }
         const hydratedLifecycleId = normalizeTrafficLifecycleId(hydrated?.trafficLifecycleId);
         if (!hydrated || hydrated.id !== requestId ||
+            hydrated.trafficGeneration !== currentRequest.trafficGeneration ||
             (!lifecycleWasOmitted && hydratedLifecycleId !== lifecycleId)) {
           throw new Error('The server returned details for a different exchange.');
         }
@@ -1766,6 +2265,11 @@
         toast(`Cannot ${actionLabel}: ${error?.message || 'exact exchange details are unavailable.'}`, 'error');
         return null;
       };
+      try {
+        captureTrafficActionAuthority();
+      } catch (error) {
+        return Promise.resolve(handleActionError(error));
+      }
       if (req._deferredTrafficDetail !== true) {
         try {
           return Promise.resolve(action(req)).catch(handleActionError);
@@ -1829,6 +2333,14 @@
       const identityKey = trafficRequestIdentityKey(req);
       if (trafficPinInFlight.has(identityKey)) return;
       const pinned = req.pinned !== true;
+      const mutationGenerationToken = ensureTrafficGenerationToken(req);
+      let requestAuthority;
+      try {
+        requestAuthority = captureTrafficActionAuthority();
+      } catch (error) {
+        toast('Failed to update pin: ' + error.message, 'error');
+        return;
+      }
       trafficPinInFlight.add(identityKey);
       try {
         const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
@@ -1839,22 +2351,77 @@
           API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + '/pin' + query,
           {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: trafficGenerationHeaders(req, requestAuthority.sessionId, {
+              'Content-Type': 'application/json'
+            }),
             body: JSON.stringify({ pinned })
           }
         );
         const data = await response.json().catch(() => ({}));
+        const currentSessionId = typeof captureStateSessionId === 'undefined'
+          ? null
+          : captureStateSessionId;
+        if (currentSessionId !== requestAuthority.sessionId) {
+          throw new Error('The server session changed while the pin update was pending.');
+        }
+        if (!trafficActionAuthorityIsCurrent(requestAuthority)) {
+          throw new Error('Traffic resynchronized while the pin update was pending.');
+        }
         if (!response.ok || data.success !== true || data.requestId !== req.id ||
             normalizeTrafficLifecycleId(data.trafficLifecycleId) !== lifecycleId ||
-            data.pinned !== pinned || !Number.isSafeInteger(data.revision)) {
+            data.trafficGeneration !== req.trafficGeneration ||
+            data.pinned !== pinned || !Number.isSafeInteger(data.revision) ||
+            data.revision <= 0) {
           throw new Error(data.error || `Pin exchange returned HTTP ${response.status}`);
         }
-        applyTrafficPinned(
+        const appliedRevision = appliedTrafficPinRevisions.get(identityKey);
+        const responseAlreadyApplied = data.revision <= latestTrafficPinSnapshotRevision ||
+          (appliedRevision !== undefined && data.revision <= appliedRevision);
+        const currentMutationRequest = currentTrafficMutationGeneration(
+          req,
+          mutationGenerationToken,
+          lifecycleId
+        );
+        let responseApplied = responseAlreadyApplied;
+        if (!responseApplied && currentMutationRequest) {
+          responseApplied = applyTrafficPinned(
+            data.requestId,
+            data.trafficLifecycleId,
+            data.pinned,
+            data.revision,
+            data.trafficGeneration
+          );
+        }
+        if (!responseApplied && currentLatestTrafficClearRetainedRequest(
+          data.requestId,
+          data.trafficLifecycleId,
+          data.trafficGeneration
+        )) {
+          responseApplied = applyTrafficPinned(
+            data.requestId,
+            data.trafficLifecycleId,
+            data.pinned,
+            data.revision,
+            data.trafficGeneration
+          );
+        }
+        if (!responseApplied && recordTrafficClearReplayPinOverride(
           data.requestId,
           data.trafficLifecycleId,
           data.pinned,
-          data.revision
-        );
+          data.revision,
+          data.trafficGeneration
+        )) {
+          appliedTrafficPinRevisions.set(identityKey, data.revision);
+          responseApplied = true;
+        }
+        if (!responseApplied) {
+          // Consume this validated response revision even when its originating
+          // renderer generation disappeared. A delayed duplicate WebSocket
+          // event must not be allowed to retarget a replacement row.
+          appliedTrafficPinRevisions.set(identityKey, data.revision);
+          throw new Error('The exchange changed while the pin update was pending.');
+        }
         toast(pinned ? 'Exchange pinned' : 'Exchange unpinned', 'success');
       } catch (err) {
         toast('Failed to update pin: ' + err.message, 'error');
@@ -1909,6 +2476,14 @@
       if (trafficDeleteInFlight.has(identityKey)) return;
       if (!confirm('Are you sure you want to delete this request?')) return;
 
+      const mutationGenerationToken = ensureTrafficGenerationToken(req);
+      let requestAuthority;
+      try {
+        requestAuthority = captureTrafficActionAuthority();
+      } catch (error) {
+        toast('Failed to delete exchange: ' + error.message, 'error');
+        return;
+      }
       trafficDeleteInFlight.add(identityKey);
       try {
         const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
@@ -1917,18 +2492,63 @@
           : encodeURIComponent(lifecycleId));
         const response = await fetch(
           API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + query,
-          { method: 'DELETE' }
+          {
+            method: 'DELETE',
+            headers: trafficGenerationHeaders(req, requestAuthority.sessionId)
+          }
         );
         const data = await response.json().catch(() => ({}));
+        const currentSessionId = typeof captureStateSessionId === 'undefined'
+          ? null
+          : captureStateSessionId;
+        if (currentSessionId !== requestAuthority.sessionId) {
+          throw new Error('The server session changed while deletion was pending.');
+        }
+        if (!trafficActionAuthorityIsCurrent(requestAuthority)) {
+          throw new Error('Traffic resynchronized while deletion was pending.');
+        }
         if (!response.ok || data.success !== true || data.requestId !== req.id ||
-            normalizeTrafficLifecycleId(data.trafficLifecycleId) !== lifecycleId) {
+            normalizeTrafficLifecycleId(data.trafficLifecycleId) !== lifecycleId ||
+            data.trafficGeneration !== req.trafficGeneration ||
+            (data.clearRevision !== undefined &&
+              (!Number.isSafeInteger(data.clearRevision) || data.clearRevision < 0))) {
           throw new Error(data.error || `Delete exchange returned HTTP ${response.status}`);
         }
-        applyTrafficDeleted(
-          data.requestId,
-          data.trafficLifecycleId,
-          data.webSocketConnection === true
+        const currentMutationRequest = currentTrafficMutationGeneration(
+          req,
+          mutationGenerationToken,
+          lifecycleId
         );
+        const identityStillPresent = requests.some(candidate =>
+          trafficRequestMatchesIdentity(candidate, req.id, lifecycleId)
+        );
+        const awaitsPriorClear = Number.isSafeInteger(data.clearRevision) &&
+          data.clearRevision > latestTrafficClearRevision;
+        const supersededByClear = Number.isSafeInteger(data.clearRevision) &&
+          data.clearRevision < latestTrafficClearRevision;
+        const tombstonedReplayBarrier = !awaitsPriorClear &&
+          tombstoneTrafficClearReplayIdentity(
+            data.requestId,
+            data.trafficLifecycleId,
+            data.clearRevision,
+            data.trafficGeneration
+          );
+
+        // A future epoch means the server queued a Clear before this deletion.
+        // Leave both operations for their per-client WebSocket FIFO so the
+        // pre-delete snapshot cannot resurrect this exchange.
+        if (!awaitsPriorClear && currentMutationRequest && !supersededByClear) {
+          applyTrafficDeleted(
+            data.requestId,
+            data.trafficLifecycleId,
+            data.webSocketConnection === true,
+            data.clearRevision,
+            data.trafficGeneration
+          );
+        } else if (!awaitsPriorClear && !tombstonedReplayBarrier &&
+            (supersededByClear || identityStillPresent)) {
+          throw new Error('The exchange changed while deletion was pending.');
+        }
         toast('Exchange deleted', 'success');
       } catch (err) {
         toast('Failed to delete exchange: ' + err.message, 'error');
@@ -11173,8 +11793,21 @@
       if (trafficClearInFlight) return;
       trafficClearInFlight = true;
       try {
-        const response = await fetch(API_BASE + '/api/traffic/clear', { method: 'POST' });
+        const requestAuthority = captureTrafficActionAuthority();
+        const response = await fetch(API_BASE + '/api/traffic/clear', {
+          method: 'POST',
+          headers: trafficSessionHeaders(requestAuthority.sessionId)
+        });
         const data = await response.json().catch(() => ({}));
+        const currentSessionId = typeof captureStateSessionId === 'undefined'
+          ? null
+          : captureStateSessionId;
+        if (currentSessionId !== requestAuthority.sessionId) {
+          throw new Error('The server session changed while Clear Traffic was pending.');
+        }
+        if (!trafficActionAuthorityIsCurrent(requestAuthority)) {
+          throw new Error('Traffic resynchronized while Clear Traffic was pending.');
+        }
         if (!response.ok || data.success !== true || typeof data.clearId !== 'string' ||
             !Array.isArray(data.retainedTraffic)) {
           throw new Error(data.error || `Clear Traffic returned HTTP ${response.status}`);
@@ -11183,7 +11816,8 @@
           data.clearId,
           data.retainedTraffic,
           data.revision,
-          data.pinRevision
+          data.pinRevision,
+          'rest'
         );
         toast('Traffic cleared', 'success');
       } catch (err) {

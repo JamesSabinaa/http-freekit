@@ -257,7 +257,7 @@ function createHarness() {
   const editableHelper = extract('function isEditableKeyboardTarget', 'function isClearTrafficShortcut');
   const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
   const generationHelpers = extract(
-    'const deferredTrafficGenerationTokens = new WeakMap();',
+    'let deferredTrafficGenerationTokens = new WeakMap();',
     'function mergeTrafficDumpPins('
   );
   const trafficAction = extract('function trafficActionRequest', 'const trafficPinInFlight');
@@ -267,6 +267,9 @@ function createHarness() {
   vm.runInContext(`
     let selectedRequestId = 'request-1';
     let selectedRequestLifecycleId = null;
+    let captureStateSessionId = 'session-a';
+    let trafficConnectionEpoch = 0;
+    let trafficDumpReady = true;
     let requests = [{ id: 'request-1', url: 'https://example.test/path' }];
     ${identityHelpers}
     ${generationHelpers}

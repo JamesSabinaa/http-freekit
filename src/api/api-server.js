@@ -239,6 +239,7 @@ export class ApiServer {
     this.wss = null;
     this.clients = new Set();
     this._clientBroadcastQueues = new WeakMap();
+    this._trafficGenerations = new WeakMap();
     this._httpSockets = new Set();
     this._startPromise = null;
     this._cancelStart = null;
@@ -1387,7 +1388,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         res.header('Vary', 'Origin');
       }
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-HTTP-FreeKit-Traffic-Session, ' +
+          'X-HTTP-FreeKit-Traffic-Generation'
+      );
       res.header('Access-Control-Max-Age', '86400');
       if (req.method === 'OPTIONS') return res.sendStatus(204);
       next();
@@ -2594,6 +2599,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       assignedIds.add(id);
       // Imported traffic is historical and cannot own a live resumable breakpoint.
       const { breakpointActive: _importedBreakpointActive, ...historicalRequest } = request;
+      // A generation imported from another server is never authoritative for
+      // this process. Every imported row receives a fresh server-owned token.
+      delete historicalRequest.trafficGeneration;
       let trafficLifecycleId = request.trafficLifecycleId;
       if (trafficLifecycleId &&
           !this._importedTrafficLifecycleIdFitsBroadcast(id, trafficLifecycleId)) {
@@ -2604,6 +2612,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         id,
         ...(trafficLifecycleId ? { trafficLifecycleId } : {})
       };
+      this._mintTrafficGeneration(assignedRequest);
       assignedIncoming.push(assignedRequest);
       if (request.protocol === 'ws' || request.protocol === 'wss') {
         // Legacy frames cannot disambiguate duplicate parent lifecycles, so
@@ -2668,12 +2677,46 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return assignedIncoming;
   }
 
+  _mintTrafficGeneration(request) {
+    if (!request || typeof request !== 'object') return null;
+    const generation = crypto.randomUUID();
+    this._trafficGenerations.set(request, generation);
+    return generation;
+  }
+
+  _ensureTrafficGeneration(request) {
+    if (!request || typeof request !== 'object') return null;
+    let generation = this._trafficGenerations.get(request);
+    if (!generation) generation = this._mintTrafficGeneration(request);
+    return generation;
+  }
+
+  _transferTrafficGeneration(currentRequest, nextRequest) {
+    const generation = this._ensureTrafficGeneration(currentRequest);
+    if (generation && nextRequest && typeof nextRequest === 'object') {
+      this._trafficGenerations.set(nextRequest, generation);
+    }
+    return generation;
+  }
+
+  _trafficRequestForRenderer(request) {
+    if (!request || typeof request !== 'object') return request;
+    const generation = this._ensureTrafficGeneration(request);
+    const renderedRequest = { ...request, trafficGeneration: generation };
+    // Renderer snapshots may be summarized or chunked again. Associate the
+    // clone with the same opaque generation so those representations cannot
+    // accidentally mint a different precondition token.
+    this._trafficGenerations.set(renderedRequest, generation);
+    return renderedRequest;
+  }
+
   _summarizeTrafficForBroadcast(request) {
     const truncate = (value, length) => value === undefined || value === null
       ? value
       : String(value).slice(0, length);
     return {
       id: request.id,
+      trafficGeneration: this._ensureTrafficGeneration(request),
       trafficLifecycleId: request.trafficLifecycleId,
       protocol: truncate(request.protocol, 32),
       method: truncate(request.method, 32),
@@ -2720,7 +2763,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Detail, pin, and delete routes all carry this value in the request
     // target. Leave room for a lifecycle query and ordinary HTTP headers.
     if (Buffer.byteLength(encodedId) > 4096) return false;
-    const deferredIdentity = { id, pinned: true, _deferredTrafficDetail: true };
+    const deferredIdentity = {
+      id,
+      trafficGeneration: '00000000-0000-4000-8000-000000000000',
+      pinned: true,
+      _deferredTrafficDetail: true
+    };
     return this._messageFitsWsBuffer(this._importBroadcastMessage(
       Number.MAX_SAFE_INTEGER,
       [deferredIdentity],
@@ -2749,6 +2797,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const deferredIdentity = {
       id,
       trafficLifecycleId,
+      trafficGeneration: '00000000-0000-4000-8000-000000000000',
       pinned: true,
       _deferredTrafficDetail: true
     };
@@ -2763,6 +2812,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _buildImportedTrafficMessages(requests, count) {
+    requests = (Array.isArray(requests) ? requests : []).map(request =>
+      this._trafficRequestForRenderer(request)
+    );
     const completeMessage = this._importBroadcastMessage(count, requests, 0, 1);
     if (this._messageFitsWsBuffer(completeMessage)) return [completeMessage];
 
@@ -2790,6 +2842,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         // Extremely small custom ceilings still receive the stable identity.
         batch = [{
           id: request.id,
+          trafficGeneration: request.trafficGeneration,
           ...(request.pinned === true ? { pinned: true } : {}),
           _deferredTrafficDetail: true
         }];
@@ -2865,6 +2918,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       identities.add(identityKey);
       compactTraffic.push({
         id: request.id,
+        g: request.trafficGeneration,
         ...(request.trafficLifecycleId == null ? {} : { l: request.trafficLifecycleId })
       });
     }
@@ -2915,6 +2969,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   }
 
   _buildTrafficClearedMessages(clearId, retainedTraffic, revision, pinRevision) {
+    retainedTraffic = (Array.isArray(retainedTraffic) ? retainedTraffic : []).map(request =>
+      this._trafficRequestForRenderer(request)
+    );
     const completeMessage = this._trafficClearBroadcastMessage(
       clearId,
       retainedTraffic,
@@ -2958,6 +3015,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         : this._summarizeTrafficForBroadcast(request);
       const deferredIdentity = {
         id: request.id,
+        trafficGeneration: request.trafficGeneration,
         trafficLifecycleId: request.trafficLifecycleId ?? null,
         pinned: true,
         _deferredTrafficDetail: true
@@ -2976,6 +3034,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         ? item
         : (deferredIdentityFits ? deferredIdentity : {
             id: request.id,
+            trafficGeneration: request.trafficGeneration,
             pinned: true,
             _deferredTrafficDetail: true
           });
@@ -3306,6 +3365,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (data._pending !== true) this._maybeAutoRotateProxyOnError(data);
       return false;
     }
+    // This precondition is minted only by the management server. Never trust
+    // a similarly named value arriving from proxy or Send traffic input.
+    delete data.trafficGeneration;
     this._pruneClearedPendingTrafficIds();
     this._pruneDeletedTrafficIdentities();
     // Enrich with API spec match
@@ -3400,18 +3462,24 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       );
       if (idx !== -1) {
         const existing = this.trafficLog[idx];
+        const trafficGeneration = this._ensureTrafficGeneration(existing);
         if (mergeUpdate) data = { ...existing, ...data };
         else if (Object.hasOwn(existing, 'pinned') && !Object.hasOwn(data, 'pinned')) {
           data.pinned = existing.pinned;
         }
+        this._trafficGenerations.set(data, trafficGeneration);
         this.trafficLog[idx] = data;
-        this._broadcast({ type: 'request-update', data });
+        this._broadcast({
+          type: 'request-update',
+          data: this._trafficRequestForRenderer(data)
+        });
       } else {
         // A completion whose pending row was evicted must be surfaced as a new
         // row so backend and renderer state stay consistent.
+        this._mintTrafficGeneration(data);
         this.trafficLog.push(data);
         this._trimTrafficLog();
-        this._broadcast({ type: 'request', data });
+        this._broadcast({ type: 'request', data: this._trafficRequestForRenderer(data) });
       }
       this._maybeAutoRotateProxyOnError(data);
     } else {
@@ -3428,9 +3496,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
       }
       delete data._pending;
+      this._mintTrafficGeneration(data);
       this.trafficLog.push(data);
       this._trimTrafficLog();
-      this._broadcast({ type: 'request', data });
+      this._broadcast({ type: 'request', data: this._trafficRequestForRenderer(data) });
     }
   }
 
@@ -3446,20 +3515,156 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   _broadcastSequence(messages) {
     const payloads = messages.map(message => JSON.stringify(message));
     for (const client of this.clients) {
-      let queue = this._clientBroadcastQueues.get(client);
-      if (!queue) {
-        queue = { payloads: [], sending: false };
-        this._clientBroadcastQueues.set(client, queue);
-      }
-      queue.payloads.push(...payloads);
-      this._drainClientBroadcastQueue(client, queue);
+      this._enqueueClientBroadcastPayloads(client, payloads, {
+        allowAtomicBatchOverflow: payloads.length > 1
+      });
     }
+  }
+
+  _trafficDumpMessage(requests, dumpId, chunkIndex, chunkCount, chunked = false) {
+    return {
+      type: 'traffic-dump',
+      sessionId: this.captureStateSessionId,
+      requests,
+      ...(chunked ? { dumpId, chunkIndex, chunkCount } : {})
+    };
+  }
+
+  _buildTrafficDumpMessages(requests) {
+    requests = (Array.isArray(requests) ? requests : []).map(request =>
+      this._trafficRequestForRenderer(request)
+    );
+    const completeMessage = this._trafficDumpMessage(requests, null, 0, 1);
+    // Leave room for live traffic events while a large immutable dump drains.
+    const chunkByteBudget = Math.min(
+      this.maxWsBufferedBytes,
+      Math.max(256, Math.floor(this.maxWsBufferedBytes / 2))
+    );
+    if (Buffer.byteLength(JSON.stringify(completeMessage)) <= chunkByteBudget) {
+      return [completeMessage];
+    }
+
+    const dumpId = crypto.randomUUID();
+    const batches = [];
+    let batch = [];
+    let batchItemBytes = 0;
+    const placeholderChunk = Number.MAX_SAFE_INTEGER;
+    const chunkEnvelopeBytes = Buffer.byteLength(JSON.stringify(this._trafficDumpMessage(
+      [],
+      dumpId,
+      placeholderChunk,
+      placeholderChunk,
+      true
+    )));
+    const fullFrameItemBudget = this.maxWsBufferedBytes - chunkEnvelopeBytes;
+    const targetItemBudget = chunkByteBudget - chunkEnvelopeBytes;
+    const serializedBytes = value => Buffer.byteLength(JSON.stringify(value));
+
+    for (const request of requests) {
+      const summary = this._summarizeTrafficForBroadcast(request);
+      const identity = {
+        id: request.id,
+        trafficGeneration: request.trafficGeneration,
+        ...(request.trafficLifecycleId === undefined
+          ? {}
+          : { trafficLifecycleId: request.trafficLifecycleId }),
+        ...(request.pinned === true ? { pinned: true } : {}),
+        _deferredTrafficDetail: true
+      };
+      let item = request;
+      let itemBytes = serializedBytes(item);
+      if (itemBytes > targetItemBudget) {
+        item = summary;
+        itemBytes = serializedBytes(item);
+      }
+      if (itemBytes > targetItemBudget) {
+        item = identity;
+        itemBytes = serializedBytes(item);
+      }
+      if (itemBytes > fullFrameItemBudget) return null;
+
+      const separatorBytes = batch.length === 0 ? 0 : 1;
+      if (batch.length > 0 &&
+          chunkEnvelopeBytes + batchItemBytes + separatorBytes + itemBytes >
+            chunkByteBudget) {
+        batches.push(batch);
+        batch = [];
+        batchItemBytes = 0;
+      }
+      batch.push(item);
+      batchItemBytes += (batch.length === 1 ? 0 : 1) + itemBytes;
+    }
+    if (batch.length > 0) batches.push(batch);
+    if (batches.length === 0) batches.push([]);
+
+    const messages = batches.map((requestsBatch, chunkIndex) => this._trafficDumpMessage(
+      requestsBatch,
+      dumpId,
+      chunkIndex,
+      batches.length,
+      true
+    ));
+    return messages.every(message => this._messageFitsWsBuffer(message)) ? messages : null;
+  }
+
+  _enqueueClientBroadcastPayloads(client, payloads, {
+    allowAtomicBatchOverflow = false,
+    trafficDumpSequence = false
+  } = {}) {
+    let queue = this._clientBroadcastQueues.get(client);
+    if (!queue) {
+      queue = {
+        payloads: [],
+        atomicPayloads: [],
+        trafficDumpPayloads: [],
+        queuedBytes: 0,
+        inFlightBytes: 0,
+        inFlightAtomic: false,
+        inFlightTrafficDump: false,
+        atomicOverflowPending: false,
+        trafficDumpPending: false,
+        sending: false
+      };
+      this._clientBroadcastQueues.set(client, queue);
+    }
+    const bufferedBytes = Number(client.bufferedAmount);
+    const payloadBytes = payloads.map(payload => Buffer.byteLength(payload));
+    const incomingBytes = payloadBytes.reduce((total, bytes) => total + bytes, 0);
+    const effectiveBufferedBytes = queue.inFlightAtomic
+      ? Math.max(0, bufferedBytes - queue.inFlightBytes)
+      : Math.max(bufferedBytes, queue.inFlightBytes);
+    const exceedsBacklogCap = effectiveBufferedBytes + queue.queuedBytes + incomingBytes >
+      this.maxWsBufferedBytes;
+    if (!Number.isFinite(bufferedBytes) || bufferedBytes < 0 ||
+        !Number.isSafeInteger(incomingBytes) || incomingBytes < 0 ||
+        payloadBytes.some(bytes => bytes > this.maxWsBufferedBytes) ||
+        (!allowAtomicBatchOverflow && exceedsBacklogCap) ||
+        (allowAtomicBatchOverflow && queue.atomicOverflowPending)) {
+      this._evictWebSocketClient(client);
+      return false;
+    }
+    const isAtomicBatch = allowAtomicBatchOverflow;
+    if (isAtomicBatch) queue.atomicOverflowPending = true;
+    if (trafficDumpSequence) queue.trafficDumpPending = true;
+    queue.payloads.push(...payloads);
+    queue.atomicPayloads.push(...payloads.map(() => isAtomicBatch));
+    queue.trafficDumpPayloads.push(...payloads.map(() => trafficDumpSequence));
+    if (!isAtomicBatch) queue.queuedBytes += incomingBytes;
+    this._drainClientBroadcastQueue(client, queue);
+    return true;
   }
 
   _drainClientBroadcastQueue(client, queue) {
     if (queue.sending) return;
     const json = queue.payloads.shift();
     if (json === undefined) return;
+    const atomicPayload = queue.atomicPayloads.shift() === true;
+    const trafficDumpPayload = queue.trafficDumpPayloads.shift() === true;
+    const messageBytes = Buffer.byteLength(json);
+    if (!atomicPayload) queue.queuedBytes -= messageBytes;
+    queue.inFlightBytes = messageBytes;
+    queue.inFlightAtomic = atomicPayload;
+    queue.inFlightTrafficDump = trafficDumpPayload;
     queue.sending = true;
     try {
       if (client.readyState !== 1) { // OPEN
@@ -3467,7 +3672,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         return;
       }
       const bufferedBytes = Number(client.bufferedAmount);
-      const messageBytes = Buffer.byteLength(json);
       if (!Number.isFinite(bufferedBytes) || bufferedBytes < 0 ||
           bufferedBytes + messageBytes > this.maxWsBufferedBytes) {
         this._evictWebSocketClient(client);
@@ -3478,7 +3682,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           this._evictWebSocketClient(client);
           return;
         }
+        queue.inFlightBytes = 0;
+        queue.inFlightAtomic = false;
+        queue.inFlightTrafficDump = false;
         queue.sending = false;
+        if (!queue.inFlightAtomic && !queue.atomicPayloads.includes(true)) {
+          queue.atomicOverflowPending = false;
+        }
+        if (!queue.inFlightTrafficDump && !queue.trafficDumpPayloads.includes(true)) {
+          queue.trafficDumpPending = false;
+        }
         queueMicrotask(() => this._drainClientBroadcastQueue(client, queue));
       });
     } catch {
@@ -3491,6 +3704,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const queue = this._clientBroadcastQueues.get(client);
     if (queue) {
       queue.payloads.length = 0;
+      queue.atomicPayloads.length = 0;
+      queue.trafficDumpPayloads.length = 0;
+      queue.queuedBytes = 0;
+      queue.inFlightBytes = 0;
+      queue.inFlightAtomic = false;
+      queue.inFlightTrafficDump = false;
+      queue.atomicOverflowPending = false;
+      queue.trafficDumpPending = false;
       queue.sending = false;
     }
     try {
@@ -3651,12 +3872,27 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
   _handleWsMessage(ws, msg) {
     switch (msg.type) {
-      case 'get-traffic':
-        ws.send(JSON.stringify({
-          type: 'traffic-dump',
-          requests: this.trafficLog.slice(-(msg.limit || 100))
-        }));
+      case 'get-traffic': {
+        if (!this.clients.has(ws)) break;
+        if (this._clientBroadcastQueues.get(ws)?.trafficDumpPending) {
+          this._evictWebSocketClient(ws);
+          break;
+        }
+        const requests = this.trafficLog.slice(-(msg.limit || 100));
+        const messages = this._buildTrafficDumpMessages(requests);
+        if (!messages) {
+          this._evictWebSocketClient(ws);
+          break;
+        }
+        const payloads = messages.map(message =>
+          JSON.stringify(message)
+        );
+        this._enqueueClientBroadcastPayloads(ws, payloads, {
+          allowAtomicBatchOverflow: payloads.length > 1,
+          trafficDumpSequence: true
+        });
         break;
+      }
       case 'clear-traffic':
         this._clearTraffic();
         break;
@@ -3673,7 +3909,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const retainedRequests = this.trafficLog.filter(request =>
       request?.pinned === true && request.protocol !== 'ws-frame'
     );
-    const retainedTraffic = retainedRequests.map(request => ({ ...request }));
+    // The renderer snapshot is a clone, but it must retain the server-owned
+    // mutation generation of each row that survives this Clear.
+    const retainedTraffic = retainedRequests.map(request =>
+      this._trafficRequestForRenderer(request)
+    );
     const retainedIdentityKeys = new Set(retainedRequests.map(request =>
       this._trafficIdentityKey(request.id, request.trafficLifecycleId ?? null)
     ));

@@ -304,6 +304,7 @@ test('renderer requests authoritative pause changes and renders server broadcast
   assert.equal(button.attributes.get('aria-disabled'), 'false');
   assert.equal(renders, 4);
   assert.match(websocketSource, /case 'init':[\s\S]*msg\.captureStateSessionId,[\s\S]*msg\.captureStateRevision,[\s\S]*true/);
+  assert.match(websocketSource, /acceptedCaptureState[\s\S]*applyTrafficServerSessionBoundary\([\s\S]*previousCaptureStateSessionId,[\s\S]*captureStateSessionId/);
   assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.sessionId, msg\.revision\)/);
   assert.doesNotMatch(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
 });

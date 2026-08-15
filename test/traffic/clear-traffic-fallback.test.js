@@ -80,6 +80,8 @@ test('authenticated clear API returns the same ID that it broadcasts', async t =
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const identityStart = rendererSource.indexOf('function normalizeTrafficLifecycleId(');
+const identityEnd = rendererSource.indexOf('function isSelectedTrafficRequest(', identityStart);
 const stateStart = rendererSource.indexOf('const appliedTrafficClearIds = new Set();');
 const stateEnd = rendererSource.indexOf('function connectWebSocket()', stateStart);
 const mergeStart = rendererSource.indexOf('function mergeServerTrafficRequest(');
@@ -89,6 +91,8 @@ const actionEnd = rendererSource.indexOf('async function exportTraffic', actionS
 const messageStart = rendererSource.indexOf('function handleWsMessage(msg)');
 const messageEnd = rendererSource.indexOf('// ============ TRAFFIC ============', messageStart);
 assert.notEqual(stateStart, -1);
+assert.notEqual(identityStart, -1);
+assert.notEqual(identityEnd, -1);
 assert.notEqual(stateEnd, -1);
 assert.notEqual(mergeStart, -1);
 assert.notEqual(mergeEnd, -1);
@@ -127,6 +131,7 @@ function createRenderer(fetch) {
     let filteredRequests = [...requests];
     let selectedRequestId = 'remove-me';
     let selectedRequestLifecycleId = null;
+    let captureStateSessionId = 'session-a';
     let requestCounter = requests.length;
     let vsRenderStart = 4;
     let vsRenderEnd = 8;
@@ -143,6 +148,7 @@ function createRenderer(fetch) {
       selectedRequestLifecycleId = null;
       closeCalls++;
     }
+    ${rendererSource.slice(identityStart, identityEnd)}
     function getSelectedTrafficRequest(collection = requests) {
       if (selectedRequestId === null) return null;
       return collection.find(request =>
@@ -150,17 +156,17 @@ function createRenderer(fetch) {
         (request.trafficLifecycleId || null) === selectedRequestLifecycleId
       ) || null;
     }
-    function trafficRequestIdentityKey(request) {
-      return JSON.stringify([
-        String(request?.id || ''),
-        request?.trafficLifecycleId || null
-      ]);
-    }
     function showDetail() {}
     function hydrateDeferredTrafficRequest() {}
     ${rendererSource.slice(mergeStart, mergeEnd)}
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}
+    globalThis.setTrafficSession = value => { captureStateSessionId = value; };
+    globalThis.setRequests = value => {
+      requests = value;
+      filteredRequests = [...value];
+      requestCounter = value.length;
+    };
   `, context);
   return {
     context,
@@ -198,6 +204,10 @@ test('disconnected renderer clears through REST and reports confirmed success', 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/traffic/clear');
   assert.equal(calls[0].options.method, 'POST');
+  assert.equal(
+    calls[0].options.headers['X-HTTP-FreeKit-Traffic-Session'],
+    'session-a'
+  );
   assert.deepEqual(renderer.snapshot(), {
     requests: [{ id: 'keep-me', pinned: true }],
     filteredRequests: [{ id: 'keep-me', pinned: true }],
@@ -211,6 +221,30 @@ test('disconnected renderer clears through REST and reports confirmed success', 
     trafficClearInFlight: false
   });
   assert.deepEqual(renderer.toasts, [{ message: 'Traffic cleared', type: 'success' }]);
+});
+
+test('an old-session Clear response cannot replace the new renderer session', async () => {
+  const pending = deferred();
+  const renderer = createRenderer(() => pending.promise);
+  const clearing = renderer.context.clearTraffic();
+
+  renderer.context.setTrafficSession('session-b');
+  assert.equal(
+    renderer.context.applyTrafficServerSessionBoundary('session-a', 'session-b'),
+    true
+  );
+  renderer.context.setRequests([{ id: 'new-session', marker: 'NEW' }]);
+  pending.resolve(rendererResponse({
+    success: true,
+    clearId: 'old-server-clear',
+    revision: 99,
+    pinRevision: 99,
+    retainedTraffic: []
+  }));
+  await clearing;
+
+  assert.deepEqual(renderer.snapshot().requests, [{ id: 'new-session', marker: 'NEW' }]);
+  assert.match(renderer.toasts.at(-1).message, /server session changed/i);
 });
 
 test('renderer clear failure preserves traffic and reports only the error', async () => {
