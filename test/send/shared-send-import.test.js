@@ -437,7 +437,8 @@ test('renderer uses server-owned import and Send traffic identities', () => {
   assert.match(selectSource, /req\._deferredTrafficDetail === true/);
   assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\((?:req\.id|requestId)\)/);
   assert.match(selectSource, /panel\._request = null/);
-  assert.match(selectSource, /isSelectedTrafficRequest\(req\)\) closeDetail\(\)/);
+  assert.match(selectSource, /currentTrafficGenerationRequest\(req\)/);
+  assert.match(selectSource, /!requests\.some\(isSelectedTrafficRequest\)/);
   assert.doesNotMatch(sendSource, /addRequest\(/);
   assert.match(sendSource, /id: data\.trafficId/);
   assert.match(sendSource, /selectRequest\(data\.trafficId/);
@@ -466,6 +467,7 @@ test('deferred import selection clears stale details and closes after hydration 
     selectedRequestLifecycleId: null,
     vsForceRender: false,
     API_BASE: '',
+    deferredTrafficGenerationTokens: new WeakMap(),
     window: { location: { hash: '#/view' } },
     history: { replaceState() {} },
     document: {
@@ -475,6 +477,7 @@ test('deferred import selection clears stale details and closes after hydration 
     },
     findTrafficRequestByIdentity: (rows, id) => rows.find(row => row.id === id) || null,
     isSelectedTrafficRequest: row => row.id === context.selectedRequestId,
+    currentTrafficGenerationRequest: row => context.requests.includes(row) ? row : null,
     normalizeTrafficLifecycleId: value => value ?? null,
     buildTrafficViewHash: id => `#/view/${id}`,
     scrollRowIntoView() {},

@@ -321,8 +321,23 @@
       return restoredRequest;
     }
 
+    const deferredTrafficGenerationTokens = new WeakMap();
+
+    function currentTrafficGenerationRequest(request) {
+      if (requests.includes(request)) return request;
+      const generationToken = deferredTrafficGenerationTokens.get(request);
+      if (!generationToken) return null;
+      return requests.find(candidate =>
+        deferredTrafficGenerationTokens.get(candidate) === generationToken
+      ) || null;
+    }
+
     function mergeDeferredTrafficRequest(currentRequest, serverRequest) {
       const hydratedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
+      const generationToken = deferredTrafficGenerationTokens.get(currentRequest);
+      if (generationToken) {
+        deferredTrafficGenerationTokens.set(hydratedRequest, generationToken);
+      }
       // Clear snapshots and detail requests can resolve after a newer pin event.
       // The deferred row is the renderer's current authority for that mutation.
       if (currentRequest?.pinned === true) hydratedRequest.pinned = true;
@@ -1481,19 +1496,24 @@
 
     function resolveDeferredTrafficRequest(req) {
       const requestId = req?.id;
+      const lifecycleWasOmitted = !Object.hasOwn(req || {}, 'trafficLifecycleId');
       const lifecycleId = normalizeTrafficLifecycleId(req?.trafficLifecycleId);
-      const identityKey = trafficRequestIdentityKey({
-        id: requestId,
-        trafficLifecycleId: lifecycleId
-      });
-      const currentRequest = findTrafficRequestByIdentity(requests, requestId, lifecycleId);
+      const currentRequest = requests.includes(req) ? req : null;
       if (!currentRequest) {
         return Promise.reject(new Error('The exchange is no longer available.'));
       }
       if (currentRequest._deferredTrafficDetail !== true) return Promise.resolve(currentRequest);
+      let generationToken = deferredTrafficGenerationTokens.get(currentRequest);
+      if (!generationToken) {
+        generationToken = {};
+        deferredTrafficGenerationTokens.set(currentRequest, generationToken);
+      }
 
-      const existing = deferredTrafficHydrations.get(identityKey);
-      if (existing) return existing;
+      const existing = deferredTrafficHydrations.get(generationToken);
+      if (existing && existing.lifecycleWasOmitted === lifecycleWasOmitted &&
+          existing.lifecycleId === lifecycleId) {
+        return existing.hydration;
+      }
 
       const hydration = (async () => {
         const lifecycleQuery = lifecycleId === null
@@ -1508,22 +1528,29 @@
         const hydrated = await response.json();
         const hydratedLifecycleId = normalizeTrafficLifecycleId(hydrated?.trafficLifecycleId);
         if (!hydrated || hydrated.id !== requestId ||
-            (lifecycleId !== null && hydratedLifecycleId !== lifecycleId)) {
+            (!lifecycleWasOmitted && hydratedLifecycleId !== lifecycleId)) {
           throw new Error('The server returned details for a different exchange.');
         }
 
-        const requestIndex = requests.findIndex(candidate =>
-          trafficRequestMatchesIdentity(candidate, requestId, lifecycleId)
-        );
+        // The original identity can be reused after deletion. Only a renderer
+        // generation transferred by mergeDeferredTrafficRequest may follow a
+        // legitimate compact-to-exact Clear promotion while this GET is pending.
+        const requestIndex = requests.indexOf(currentTrafficGenerationRequest(currentRequest));
         if (requestIndex === -1) throw new Error('The exchange was removed while loading details.');
         const latestRequest = requests[requestIndex];
+        const latestLifecycleId = normalizeTrafficLifecycleId(latestRequest.trafficLifecycleId);
+        if (latestRequest.id !== requestId ||
+            (!lifecycleWasOmitted && latestLifecycleId !== lifecycleId) ||
+            (lifecycleWasOmitted && latestLifecycleId !== hydratedLifecycleId)) {
+          throw new Error('The hydrated exchange identity changed unexpectedly.');
+        }
         if (latestRequest._deferredTrafficDetail !== true) return latestRequest;
 
         const wasSelected = isSelectedTrafficRequest(latestRequest);
         const mergedRequest = mergeDeferredTrafficRequest(latestRequest, hydrated);
         if (mergedRequest.id !== requestId ||
-            (lifecycleId !== null &&
-              normalizeTrafficLifecycleId(mergedRequest.trafficLifecycleId) !== lifecycleId)) {
+            normalizeTrafficLifecycleId(mergedRequest.trafficLifecycleId) !==
+              hydratedLifecycleId) {
           throw new Error('The hydrated exchange identity changed unexpectedly.');
         }
         requests[requestIndex] = mergedRequest;
@@ -1537,10 +1564,11 @@
         if (wasSelected) showDetail(mergedRequest);
         return mergedRequest;
       })();
-      deferredTrafficHydrations.set(identityKey, hydration);
+      const hydrationEntry = { lifecycleWasOmitted, lifecycleId, hydration };
+      deferredTrafficHydrations.set(generationToken, hydrationEntry);
       void hydration.finally(() => {
-        if (deferredTrafficHydrations.get(identityKey) === hydration) {
-          deferredTrafficHydrations.delete(identityKey);
+        if (deferredTrafficHydrations.get(generationToken) === hydrationEntry) {
+          deferredTrafficHydrations.delete(generationToken);
         }
       }).catch(() => {});
       return hydration;
@@ -1551,7 +1579,11 @@
         return await resolveDeferredTrafficRequest(req);
       } catch (error) {
         toast(error.message || 'Could not load exact exchange details.', 'error');
-        if (isSelectedTrafficRequest(req)) closeDetail();
+        const currentRequest = currentTrafficGenerationRequest(req);
+        if ((currentRequest && isSelectedTrafficRequest(currentRequest)) ||
+            (!currentRequest && !requests.some(isSelectedTrafficRequest))) {
+          closeDetail();
+        }
         return null;
       }
     }
@@ -1661,7 +1693,7 @@
       // promotion. Once selection moves elsewhere, there is no exact identity to
       // rebind; explicit null remains an exact legacy-null identity.
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
-        requestId !== selectedRequestId;
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection
         ? null
         : trafficActionRequest(requestId, trafficLifecycleId);
@@ -1669,31 +1701,55 @@
         toast(`Cannot ${actionLabel}: the exchange is no longer available.`, 'error');
         return null;
       }
-      if (req._deferredTrafficDetail !== true) return action(req);
+      const handleActionError = error => {
+        toast(`Cannot ${actionLabel}: ${error?.message || 'exact exchange details are unavailable.'}`, 'error');
+        return null;
+      };
+      if (req._deferredTrafficDetail !== true) {
+        try {
+          return Promise.resolve(action(req)).catch(handleActionError);
+        } catch (error) {
+          return Promise.resolve(handleActionError(error));
+        }
+      }
 
       return resolveDeferredTrafficRequest(req)
         .then(resolved => {
-          const exactRequest = trafficActionRequest(
-            resolved.id,
-            normalizeTrafficLifecycleId(resolved.trafficLifecycleId)
-          );
-          if (!exactRequest || exactRequest._deferredTrafficDetail === true) {
+          const exactRequest = currentTrafficGenerationRequest(resolved);
+          if (!exactRequest || exactRequest.id !== resolved.id ||
+              normalizeTrafficLifecycleId(exactRequest.trafficLifecycleId) !==
+                normalizeTrafficLifecycleId(resolved.trafficLifecycleId) ||
+              exactRequest._deferredTrafficDetail === true) {
             throw new Error('Exact exchange details are unavailable.');
           }
           return action(exactRequest);
         })
-        .catch(error => {
-          toast(`Cannot ${actionLabel}: ${error.message || 'exact exchange details are unavailable.'}`, 'error');
-          return null;
-        });
+        .catch(handleActionError);
     }
 
     const trafficPinInFlight = new Set();
 
-    async function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
+      if (req._deferredTrafficDetail === true &&
+          normalizeTrafficLifecycleId(req.trafficLifecycleId) === null) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'update pin',
+          togglePinResolvedRequest
+        );
+      }
+      return togglePinResolvedRequest(req);
+    }
+
+    async function togglePinResolvedRequest(req) {
       const identityKey = trafficRequestIdentityKey(req);
       if (trafficPinInFlight.has(identityKey)) return;
       const pinned = req.pinned !== true;
@@ -1738,10 +1794,27 @@
 
     const trafficDeleteInFlight = new Set();
 
-    async function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
+      if (req._deferredTrafficDetail === true &&
+          normalizeTrafficLifecycleId(req.trafficLifecycleId) === null) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'delete exchange',
+          deleteResolvedRequest
+        );
+      }
+      return deleteResolvedRequest(req);
+    }
+
+    async function deleteResolvedRequest(req) {
       if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
       const identityKey = trafficRequestIdentityKey(req);
       if (trafficDeleteInFlight.has(identityKey)) return;
@@ -1758,7 +1831,8 @@
           { method: 'DELETE' }
         );
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.success !== true || data.requestId !== req.id) {
+        if (!response.ok || data.success !== true || data.requestId !== req.id ||
+            normalizeTrafficLifecycleId(data.trafficLifecycleId) !== lifecycleId) {
           throw new Error(data.error || `Delete exchange returned HTTP ${response.status}`);
         }
         applyTrafficDeleted(
@@ -1807,7 +1881,11 @@
 
     function resendSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (req && req._deferredTrafficDetail !== true) return resendResolvedRequest(req);
       return withResolvedTrafficAction(
         requestId,
@@ -12446,7 +12524,11 @@
       }
 
       const invoker = menuInvoker || e.currentTarget || e.target;
-      const actionLifecycleId = req.trafficLifecycleId;
+      const actionLifecycleId = Object.hasOwn(req, 'trafficLifecycleId')
+        ? req.trafficLifecycleId
+        : req._deferredTrafficDetail === true
+          ? undefined
+          : null;
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
       showContextMenu(anchor.x, anchor.y, [
@@ -12493,7 +12575,11 @@
     }
 
     function createMockFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
-      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (req && req._deferredTrafficDetail !== true) return createMockFromResolvedRequest(req);
       return withResolvedTrafficAction(
         requestId,
@@ -12847,7 +12933,11 @@
 
     function createBreakpointFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
       if (!requestId) return;
-      const req = trafficActionRequest(requestId, trafficLifecycleId);
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (req && req._deferredTrafficDetail !== true) return createBreakpointFromResolvedRequest(req);
       return withResolvedTrafficAction(
         requestId,

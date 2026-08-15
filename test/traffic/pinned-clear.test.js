@@ -672,6 +672,7 @@ function createRenderer(fetch) {
       selectedRequestId = requestId;
       selectedRequestLifecycleId = lifecycleId;
     };
+    globalThis.requestAt = index => requests[index];
   `, context);
   return {
     context,
@@ -1056,6 +1057,53 @@ test('exact deferred hydration preserves pin mutations received while loading', 
     trafficLifecycleId: 'old',
     method: 'GET',
     responseBody: 'complete body'
+  }]);
+});
+
+test('pending compact hydration survives the matching REST Clear promotion', async () => {
+  const pending = deferred();
+  const renderer = createRenderer(() => pending.promise);
+  renderer.installDeferredHydration();
+  renderer.context.setRequests([{
+    id: 'oversized',
+    trafficLifecycleId: 'original-life',
+    pinned: true
+  }]);
+  renderer.context.setSelection('oversized', 'original-life');
+
+  renderer.context.applyTrafficCleared('promotion-race', [{
+    id: 'oversized',
+    pinned: true,
+    _deferredTrafficDetail: true
+  }]);
+  const hydration = renderer.context.resolveDeferredTrafficRequest(
+    renderer.context.requestAt(0)
+  );
+  assert.equal(renderer.fetchCalls.length, 1);
+
+  renderer.context.applyTrafficCleared('promotion-race', [{
+    id: 'oversized',
+    trafficLifecycleId: 'remapped-life',
+    method: 'GET',
+    responseBody: 'complete',
+    pinned: true
+  }]);
+  pending.resolve(rendererResponse({
+    id: 'oversized',
+    trafficLifecycleId: 'remapped-life',
+    method: 'GET',
+    responseBody: 'complete',
+    pinned: true
+  }));
+
+  const resolved = await hydration;
+  assert.equal(resolved.trafficLifecycleId, 'remapped-life');
+  assert.deepEqual(renderer.snapshot().requests, [{
+    id: 'oversized',
+    trafficLifecycleId: 'remapped-life',
+    method: 'GET',
+    responseBody: 'complete',
+    pinned: true
   }]);
 });
 
