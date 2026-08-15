@@ -10,6 +10,9 @@ const {
   prepareRendererForQuit,
   runQuitCleanup
 } = require('../../electron/quit-cleanup.cjs');
+const {
+  DEFAULT_SHUTDOWN_DEADLINE_MS
+} = require('../../electron/server-shutdown.cjs');
 
 function createWindow(executeJavaScript, calls = []) {
   let destroyed = false;
@@ -42,7 +45,7 @@ function createTimerHarness() {
   };
 }
 
-test('failed renderer persistence aborts Quit before any destructive cleanup', async () => {
+test('an explicit renderer cancellation aborts Quit before any destructive cleanup', async () => {
   const calls = [];
   const mainWindow = createWindow(async script => {
     calls.push('prepare-renderer');
@@ -145,16 +148,57 @@ test('settled renderer preparation cancels its independent timeout', async () =>
   assert.equal(timers.timers[0].cleared, true);
 });
 
-test('renderer execution failures keep the application and backend alive', async () => {
+test('renderer execution failures fail open into ordered backend cleanup', async () => {
+  const calls = [];
   const errors = [];
-  const mainWindow = createWindow(async () => {
-    throw new Error('renderer unavailable');
-  });
-  const logger = { error: (...args) => errors.push(args.join(' ')) };
+  const timers = createTimerHarness();
+  let rejectExecution;
+  const mainWindow = createWindow(() => {
+    calls.push('prepare-renderer');
+    return new Promise((_resolve, reject) => { rejectExecution = reject; });
+  }, calls);
+  const logger = {
+    error: (...args) => {
+      calls.push('log-error');
+      errors.push(args.join(' '));
+    }
+  };
 
-  assert.equal(await prepareRendererForQuit(mainWindow, logger), false);
-  assert.match(errors[0], /renderer unavailable/);
-  assert.equal(mainWindow.isDestroyed(), false);
+  const cleanup = runQuitCleanup({
+    mainWindow,
+    onPrepared: () => calls.push('mark-shutdown'),
+    stopAutoUpdater: () => calls.push('stop-updater'),
+    destroyTray: () => calls.push('destroy-tray'),
+    shutdownServer: async () => calls.push('shutdown-server'),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    logger
+  });
+
+  assert.equal(timers.timers.length, 1);
+  assert.deepEqual(calls, ['prepare-renderer']);
+
+  rejectExecution(new Error('renderer unavailable'));
+
+  assert.equal(await cleanup, true);
+  assert.equal(timers.timers[0].cleared, true);
+  assert.deepEqual(calls, [
+    'prepare-renderer',
+    'log-error',
+    'mark-shutdown',
+    'destroy-window',
+    'stop-updater',
+    'destroy-tray',
+    'shutdown-server'
+  ]);
+  assert.match(errors[0], /continuing cleanup: renderer unavailable/);
+  assert.equal(mainWindow.isDestroyed(), true);
+});
+
+test('renderer preflight keeps its five-second bound separate from backend shutdown', () => {
+  assert.equal(DEFAULT_RENDERER_PREPARE_TIMEOUT_MS, 5_000);
+  assert.equal(DEFAULT_SHUTDOWN_DEADLINE_MS, 30_000);
+  assert.notEqual(DEFAULT_RENDERER_PREPARE_TIMEOUT_MS, DEFAULT_SHUTDOWN_DEADLINE_MS);
 });
 
 test('a loading but interactive renderer must still pass persistence preflight', async () => {
