@@ -315,7 +315,12 @@ test('server-assigned imported traffic is broadcast to every connected tab', asy
   assert.equal(first.requests.length, 1);
   assert.notEqual(first.requests[0].id, 'collision');
   assert.equal(first.requests[0].path, '/imported');
-  assert.deepEqual(first.requests, api.trafficLog.slice(-1));
+  const rawImported = api.trafficLog.at(-1);
+  const { trafficGeneration, ...projectedImported } = first.requests[0];
+  assert.deepEqual(projectedImported, rawImported);
+  assert.match(trafficGeneration, /^[0-9a-f-]{36}$/i);
+  assert.equal(trafficGeneration, api._ensureTrafficGeneration(rawImported));
+  assert.equal(Object.hasOwn(rawImported, 'trafficGeneration'), false);
 });
 
 test('large imports stay within the WebSocket ceiling and retain lazy detail access', async t => {
@@ -435,9 +440,10 @@ test('renderer uses server-owned import and Send traffic identities', () => {
   assert.match(websocketSource, /case 'capture-state':[\s\S]*applyCapturePausedState\(msg\.paused === true, msg\.sessionId, msg\.revision\)/);
   assert.doesNotMatch(websocketSource, /!isPaused \|\| msg\.data\?\.source === 'Send'/);
   assert.match(selectSource, /req\._deferredTrafficDetail === true/);
-  assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\(req\.id\)/);
+  assert.match(selectSource, /\/api\/traffic\/.*encodeURIComponent\((?:req\.id|requestId)\)/);
   assert.match(selectSource, /panel\._request = null/);
-  assert.match(selectSource, /isSelectedTrafficRequest\(req\)\) closeDetail\(\)/);
+  assert.match(selectSource, /currentTrafficGenerationRequest\(req\)/);
+  assert.match(selectSource, /!requests\.some\(isSelectedTrafficRequest\)/);
   assert.doesNotMatch(sendSource, /addRequest\(/);
   assert.match(sendSource, /id: data\.trafficId/);
   assert.match(sendSource, /selectRequest\(data\.trafficId/);
@@ -445,6 +451,9 @@ test('renderer uses server-owned import and Send traffic identities', () => {
 
 test('deferred import selection clears stale details and closes after hydration failure', async () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+  const authorityStart = source.indexOf("const TRAFFIC_SESSION_HEADER =");
+  const authorityEnd = source.indexOf('function isSelectedTrafficRequest(', authorityStart);
+  const authoritySource = source.slice(authorityStart, authorityEnd);
   const start = source.indexOf('function selectRequest(');
   const end = source.indexOf('function selectBreakpointRequest(', start);
   const selectionSource = source.slice(start, end);
@@ -452,6 +461,7 @@ test('deferred import selection clears stale details and closes after hydration 
   const deferred = {
     id: 'deferred',
     trafficLifecycleId: null,
+    trafficGeneration: '00000000-0000-4000-8000-000000000001',
     _deferredTrafficDetail: true
   };
   const detailPanel = { _request: previous };
@@ -459,6 +469,8 @@ test('deferred import selection clears stale details and closes after hydration 
   const detailActive = { style: { display: 'flex' } };
   let closeCalls = 0;
   let showCalls = 0;
+  let fetchCalls = 0;
+  const toasts = [];
   const context = {
     requests: [previous, deferred],
     filteredRequests: [previous, deferred],
@@ -466,6 +478,10 @@ test('deferred import selection clears stale details and closes after hydration 
     selectedRequestLifecycleId: null,
     vsForceRender: false,
     API_BASE: '',
+    captureStateSessionId: 'session-a',
+    trafficConnectionEpoch: 4,
+    trafficDumpReady: true,
+    deferredTrafficGenerationTokens: new WeakMap(),
     window: { location: { hash: '#/view' } },
     history: { replaceState() {} },
     document: {
@@ -475,13 +491,22 @@ test('deferred import selection clears stale details and closes after hydration 
     },
     findTrafficRequestByIdentity: (rows, id) => rows.find(row => row.id === id) || null,
     isSelectedTrafficRequest: row => row.id === context.selectedRequestId,
+    currentTrafficGenerationRequest: row => context.requests.includes(row) ? row : null,
+    ensureTrafficGenerationToken(row) {
+      let token = context.deferredTrafficGenerationTokens.get(row);
+      if (!token) {
+        token = {};
+        context.deferredTrafficGenerationTokens.set(row, token);
+      }
+      return token;
+    },
     normalizeTrafficLifecycleId: value => value ?? null,
     buildTrafficViewHash: id => `#/view/${id}`,
     scrollRowIntoView() {},
     renderVirtualRows() {},
     applyFilter() {},
     showDetail() { showCalls++; },
-    toast() {},
+    toast: (message, type) => toasts.push({ message, type }),
     closeDetail() {
       closeCalls++;
       context.selectedRequestId = null;
@@ -489,10 +514,19 @@ test('deferred import selection clears stale details and closes after hydration 
       detailEmptyState.style.display = 'flex';
       detailActive.style.display = 'none';
     },
-    fetch: async () => ({ ok: false })
+    fetch: async (url, options) => {
+      fetchCalls++;
+      assert.equal(url, '/api/traffic/deferred?trafficLifecycleId=');
+      assert.equal(options.headers['X-HTTP-FreeKit-Traffic-Session'], 'session-a');
+      assert.equal(
+        options.headers['X-HTTP-FreeKit-Traffic-Generation'],
+        deferred.trafficGeneration
+      );
+      return { ok: false, status: 503 };
+    }
   };
   vm.createContext(context);
-  vm.runInContext(`${selectionSource}; globalThis.selectDeferred = selectRequest;`, context);
+  vm.runInContext(`${authoritySource}\n${selectionSource}; globalThis.selectDeferred = selectRequest;`, context);
 
   context.selectDeferred(deferred.id, false);
   assert.equal(detailPanel._request, null);
@@ -502,4 +536,9 @@ test('deferred import selection clears stale details and closes after hydration 
   assert.equal(closeCalls, 1);
   assert.equal(showCalls, 0);
   assert.equal(context.selectedRequestId, null);
+  assert.equal(fetchCalls, 1);
+  assert.deepEqual(toasts, [{
+    message: 'Could not load exact exchange details (HTTP 503).',
+    type: 'error'
+  }]);
 });

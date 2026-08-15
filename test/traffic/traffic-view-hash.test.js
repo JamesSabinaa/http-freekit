@@ -129,8 +129,12 @@ function createWsReaderHarness(hash, id) {
     window: { location: { hash } },
     document: { getElementById: () => null, querySelector: () => null },
     requests: [{ id }],
+    captureStateSessionId: null,
     config: {},
     ws: { send: noop },
+    beginTrafficDumpSync: noop,
+    applyCapturePausedState: () => false,
+    applyTrafficServerSessionBoundary: noop,
     setTimeout(callback, delay) {
       timeouts.push(delay);
       callback();

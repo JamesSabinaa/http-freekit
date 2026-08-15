@@ -1,5 +1,10 @@
 import { trafficToHar } from '../har-converter.js';
 
+const TRAFFIC_SESSION_HEADER = 'x-http-freekit-traffic-session';
+const TRAFFIC_GENERATION_HEADER = 'x-http-freekit-traffic-generation';
+const TRAFFIC_GENERATION_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function parsePaginationValue(value, fallback) {
   if (value === undefined) return fallback;
   if (!/^\d+$/.test(value)) return null;
@@ -22,16 +27,46 @@ function readScalarQueryParameters(query, names) {
 }
 
 function resolveTrafficRequest(api, req) {
+  const parsedQuery = readScalarQueryParameters(req.query, ['trafficLifecycleId']);
+  if (parsedQuery.error) return { status: 400, error: parsedQuery.error };
   const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
-  if (lifecycleProvided &&
-      (typeof req.query.trafficLifecycleId !== 'string' || !req.query.trafficLifecycleId)) {
-    return { status: 400, error: 'trafficLifecycleId must be a non-empty string' };
+  const lifecycleValue = parsedQuery.values.trafficLifecycleId;
+  if (lifecycleProvided && typeof lifecycleValue !== 'string') {
+    return { status: 400, error: 'trafficLifecycleId must be a single string query value' };
   }
+  const requestedLifecycleId = lifecycleValue === '' ? null : lifecycleValue;
 
-  const candidates = api.trafficLog.filter(request =>
+  let candidates = api.trafficLog.filter(request =>
     request.id === req.params.id &&
-    (!lifecycleProvided || request.trafficLifecycleId === req.query.trafficLifecycleId)
+    (!lifecycleProvided ||
+      (request.trafficLifecycleId ?? null) === requestedLifecycleId)
   );
+  const sessionPreconditionProvided = req.headers?.[TRAFFIC_SESSION_HEADER] !== undefined;
+  const requestedGeneration = req.headers?.[TRAFFIC_GENERATION_HEADER];
+  if (requestedGeneration === undefined && sessionPreconditionProvided) {
+    return {
+      status: 409,
+      error: 'Traffic exchange generation is missing; refresh traffic before retrying'
+    };
+  }
+  if (requestedGeneration !== undefined) {
+    if (typeof requestedGeneration !== 'string' ||
+        !TRAFFIC_GENERATION_PATTERN.test(requestedGeneration)) {
+      return {
+        status: 400,
+        error: 'Traffic exchange generation must be one valid opaque token'
+      };
+    }
+    candidates = candidates.filter(request =>
+      api._ensureTrafficGeneration(request) === requestedGeneration
+    );
+    if (candidates.length === 0) {
+      return {
+        status: 409,
+        error: 'Traffic exchange changed; refresh traffic before retrying'
+      };
+    }
+  }
   if (candidates.length === 0) return { status: 404, error: 'Request not found' };
   if (candidates.length > 1) {
     return {
@@ -48,6 +83,19 @@ function resolvedRequestOrRespond(api, req, res) {
   const resolved = resolveTrafficRequest(api, req);
   if (!resolved.request) res.status(resolved.status).json({ error: resolved.error });
   return resolved.request || null;
+}
+
+function hasMatchingTrafficSession(api, req, res) {
+  const requestedSessionId = req.headers?.[TRAFFIC_SESSION_HEADER];
+  if (requestedSessionId === undefined) return true;
+  if (typeof requestedSessionId !== 'string' ||
+      requestedSessionId !== api.captureStateSessionId) {
+    res.status(409).json({
+      error: 'Traffic server session changed; refresh traffic before retrying'
+    });
+    return false;
+  }
+  return true;
 }
 
 export function registerTrafficRoutes(router, api) {
@@ -86,7 +134,9 @@ export function registerTrafficRoutes(router, api) {
 
     res.json({
       total: filtered.length,
-      requests: filtered.slice(offset, offset + limit)
+      requests: filtered.slice(offset, offset + limit).map(request =>
+        api._trafficRequestForRenderer(request)
+      )
     });
   });
 
@@ -112,6 +162,7 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.post('/api/traffic/clear', (req, res) => {
+    if (!hasMatchingTrafficSession(api, req, res)) return;
     const result = api._clearTraffic();
     res.json({ success: true, ...result });
   });
@@ -173,15 +224,20 @@ export function registerTrafficRoutes(router, api) {
     if (pathFilter) results = results.filter(request => request.path?.includes(pathFilter));
     if (source) results = results.filter(request => request.source === source);
 
-    res.json({ total: results.length, requests: results });
+    res.json({
+      total: results.length,
+      requests: results.map(request => api._trafficRequestForRenderer(request))
+    });
   });
 
   router.get('/api/traffic/:id', (req, res) => {
+    if (!hasMatchingTrafficSession(api, req, res)) return;
     const request = resolvedRequestOrRespond(api, req, res);
-    if (request) res.json(request);
+    if (request) res.json(api._trafficRequestForRenderer(request));
   });
 
   router.put('/api/traffic/:id/pin', (req, res) => {
+    if (!hasMatchingTrafficSession(api, req, res)) return;
     if (typeof req.body?.pinned !== 'boolean') {
       return res.status(400).json({ error: 'pinned must be a boolean' });
     }
@@ -197,6 +253,7 @@ export function registerTrafficRoutes(router, api) {
     const pin = {
       requestId: request.id,
       trafficLifecycleId: request.trafficLifecycleId ?? null,
+      trafficGeneration: api._ensureTrafficGeneration(request),
       pinned: request.pinned,
       revision: ++api._trafficPinRevision
     };
@@ -205,6 +262,7 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.delete('/api/traffic/:id', (req, res) => {
+    if (!hasMatchingTrafficSession(api, req, res)) return;
     const request = resolvedRequestOrRespond(api, req, res);
     if (!request) return;
 
@@ -232,7 +290,9 @@ export function registerTrafficRoutes(router, api) {
     const deletion = {
       requestId: request.id,
       trafficLifecycleId,
+      trafficGeneration: api._ensureTrafficGeneration(request),
       webSocketConnection,
+      clearRevision: api._trafficClearRevision,
       removed
     };
     api._broadcast({ type: 'traffic-deleted', ...deletion });

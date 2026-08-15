@@ -15,6 +15,10 @@ function extract(startMarker, endMarker) {
 }
 
 const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+const generationHelpers = extract(
+  'let deferredTrafficGenerationTokens = new WeakMap();',
+  'function mergeTrafficDumpPins('
+);
 const pinState = extract('function applyTrafficPinned', 'function applyTrafficDeleted');
 const deletionState = extract('function applyTrafficDeleted', 'function connectWebSocket');
 const targetActions = extract('function trafficActionRequest', 'function resendSelectedRequest');
@@ -23,8 +27,14 @@ const breakpointAction = extract('function createBreakpointFromRequest', 'functi
 
 function createHarness() {
   const requests = [
-    { id: 'A', method: 'POST', host: 'a.example', url: 'https://a.example/path', pinned: false },
-    { id: 'B', method: 'GET', host: 'b.example', url: 'https://b.example/path', pinned: false }
+    {
+      id: 'A', trafficGeneration: '00000000-0000-4000-8000-00000000000a',
+      method: 'POST', host: 'a.example', url: 'https://a.example/path', pinned: false
+    },
+    {
+      id: 'B', trafficGeneration: '00000000-0000-4000-8000-00000000000b',
+      method: 'GET', host: 'b.example', url: 'https://b.example/path', pinned: false
+    }
   ];
   const state = {
     menuItems: [],
@@ -71,6 +81,7 @@ function createHarness() {
               success: true,
               requestId: decodeURIComponent(pinMatch[1]),
               trafficLifecycleId: null,
+              trafficGeneration: options.headers['X-HTTP-FreeKit-Traffic-Generation'],
               pinned: JSON.parse(options.body).pinned,
               revision: 1
             }
@@ -79,7 +90,9 @@ function createHarness() {
               success: true,
               requestId: decodeURIComponent(trafficMatch[1]),
               trafficLifecycleId: null,
+              trafficGeneration: options.headers['X-HTTP-FreeKit-Traffic-Generation'],
               webSocketConnection: false,
+              clearRevision: 0,
               removed: 1
             }
           : { success: true }
@@ -102,8 +115,14 @@ function createHarness() {
     let requests = __requests;
     let selectedRequestId = null;
     let selectedRequestLifecycleId = null;
+    let captureStateSessionId = 'session-a';
+    let trafficConnectionEpoch = 0;
+    let trafficDumpReady = true;
     let requestCounter = requests.length;
     const appliedTrafficPinRevisions = new Map();
+    const restTrafficClearReplayBarriers = new Map();
+    let latestTrafficClearRevision = 0;
+    let latestTrafficPinSnapshotRevision = 0;
     const wsExpandedConnections = new Set();
     function isWebSocketConnection(request) {
       return request?.protocol === 'ws' || request?.protocol === 'wss';
@@ -111,7 +130,10 @@ function createHarness() {
     function wsConnectionKey(request) {
       return JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId]);
     }
+    function recordTrafficClearReplayPinOverride() { return false; }
+    function tombstoneTrafficClearReplayIdentity() { return false; }
     ${identityHelpers}
+    ${generationHelpers}
     ${pinState}
     ${deletionState}
     ${targetActions}
