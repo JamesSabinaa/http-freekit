@@ -209,3 +209,39 @@ test('valid rich HAR entries retain normalization, metadata, bodies, and generat
   assert.equal(exported.response.bodySize, -1);
   assert.equal(exported.response.content.size, -1);
 });
+
+test('HAR import retains prototype-named headers as serializable own fields', async t => {
+  const { api, port } = await createApi(t);
+  const response = await postBody(port, har([harEntry({
+    request: {
+      headers: [
+        { name: '__proto__', value: 'request-one' },
+        { name: '__proto__', value: 'request-two' },
+        { name: 'constructor', value: 'request-ctor' },
+        { name: 'toString', value: 'request-text' }
+      ]
+    },
+    response: {
+      headers: [
+        { name: '__proto__', value: 'response-proto' },
+        { name: 'constructor', value: 'response-ctor' },
+        { name: 'toString', value: 'response-text' }
+      ]
+    }
+  })]));
+
+  assert.equal(response.statusCode, 200, response.body?.error);
+  const imported = api.trafficLog[0];
+  assert.equal(Object.getPrototypeOf(imported.requestHeaders), null);
+  assert.deepEqual(imported.requestHeaders.__proto__, ['request-one', 'request-two']);
+  assert.equal(imported.requestHeaders.constructor, 'request-ctor');
+  assert.equal(imported.requestHeaders.tostring, 'request-text');
+  assert.equal(Object.getPrototypeOf(imported.responseHeaders), null);
+  assert.equal(imported.responseHeaders.__proto__, 'response-proto');
+  assert.equal(imported.responseHeaders.constructor, 'response-ctor');
+  assert.equal(imported.responseHeaders.tostring, 'response-text');
+
+  const serialized = JSON.parse(JSON.stringify(imported));
+  assert.deepEqual(serialized.requestHeaders.__proto__, ['request-one', 'request-two']);
+  assert.equal(serialized.responseHeaders.constructor, 'response-ctor');
+});

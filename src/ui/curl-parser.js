@@ -62,7 +62,13 @@ function setCurlHeader(headers, name, value) {
 }
 
 export function parseCurlCommand(curlStr) {
-  const result = { method: 'GET', url: '', headers: {}, body: '', hasData: false };
+  const result = {
+    method: 'GET',
+    url: '',
+    headers: Object.create(null),
+    body: '',
+    hasData: false
+  };
   const dataParts = [];
   const explicitHeaderNames = new Set();
 

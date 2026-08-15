@@ -45,12 +45,12 @@ function normalizeDataUriMediaType(value) {
 }
 
 function harHeadersToObject(headers = []) {
-  const result = {};
+  const result = Object.create(null);
   for (const header of headers) {
     const name = String(header?.name || '').toLowerCase();
     if (!name) continue;
     const value = String(header?.value ?? '');
-    if (result[name] === undefined) {
+    if (!Object.prototype.hasOwnProperty.call(result, name)) {
       result[name] = value;
     } else if (Array.isArray(result[name])) {
       result[name].push(value);
