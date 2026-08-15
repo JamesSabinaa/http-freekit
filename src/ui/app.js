@@ -13586,11 +13586,34 @@
         // Don't auto-dismiss — let user decide when to restart
       }
 
+      function normalizeUpdaterDownloadUrl(value) {
+        if (typeof value !== 'string') return null;
+        try {
+          var parsed = new URL(value);
+          return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+            ? parsed.href
+            : null;
+        } catch {
+          return null;
+        }
+      }
+
       function showLinuxUpdateToast(version, url) {
         var container = document.getElementById('toastContainer');
         var t = document.createElement('div');
         t.className = 'toast toast-success';
-        t.innerHTML = 'Update v' + escapeHtml(version) + ' available. <a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="toast-action">Download</a>';
+        t.textContent = 'Update v' + String(version) + ' available.';
+        var normalizedUrl = normalizeUpdaterDownloadUrl(url);
+        if (normalizedUrl) {
+          t.textContent += ' ';
+          var downloadAction = document.createElement('a');
+          downloadAction.href = normalizedUrl;
+          downloadAction.target = '_blank';
+          downloadAction.rel = 'noopener';
+          downloadAction.className = 'toast-action';
+          downloadAction.textContent = 'Download';
+          t.appendChild(downloadAction);
+        }
         container.appendChild(t);
         setTimeout(function() {
           t.classList.add('toast-exit');

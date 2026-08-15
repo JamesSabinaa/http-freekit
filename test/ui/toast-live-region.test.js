@@ -25,6 +25,10 @@ const updaterStatusSource = sourceBetween(
   'window.electronApi.onUpdaterStatus(handleUpdaterStatus);'
 );
 const readyToastSource = sourceBetween('function showUpdateReadyToast(', 'function showLinuxUpdateToast(');
+const updaterDownloadUrlSource = sourceBetween(
+  'function normalizeUpdaterDownloadUrl(',
+  'function showLinuxUpdateToast('
+);
 const linuxToastSource = sourceBetween('function showLinuxUpdateToast(', 'function escapeHtml(');
 const escapeHtmlSource = sourceBetween('function escapeHtml(', '// Expose manual check for Settings page');
 
@@ -80,6 +84,15 @@ class FakeElement {
 
   set id(value) { this.setAttribute('id', value); }
   get id() { return this.getAttribute('id') || ''; }
+
+  set href(value) { this.setAttribute('href', value); }
+  get href() { return this.getAttribute('href') || ''; }
+
+  set target(value) { this.setAttribute('target', value); }
+  get target() { return this.getAttribute('target') || ''; }
+
+  set rel(value) { this.setAttribute('rel', value); }
+  get rel() { return this.getAttribute('rel') || ''; }
 
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
@@ -201,6 +214,7 @@ function createHarness() {
   const installCalls = [];
   const context = {
     document,
+    URL,
     window: {
       electronApi: {
         installUpdate: () => {
@@ -224,6 +238,7 @@ function createHarness() {
     ${installActionStateSource}
     ${updaterStatusSource}
     ${readyToastSource}
+    ${updaterDownloadUrlSource}
     ${linuxToastSource}
     ${escapeHtmlSource}
     globalThis.toastForTest = toast;
@@ -299,6 +314,53 @@ test('updater action toasts announce their full text and retain the current focu
     'Update v3.0 available. Download'
   ]);
   assert.deepEqual(harness.timers.map(timer => timer.delay), [15000]);
+});
+
+test('Linux updater statuses build protocol-checked download anchors without parsing URL markup', () => {
+  assert.doesNotMatch(linuxToastSource, /innerHTML/);
+  assert.match(linuxToastSource, /downloadAction\.href = normalizedUrl/);
+
+  const harness = createHarness();
+  const quoteBearingUrl = 'https://updates.test/path" data-audit="present?channel=stable#download';
+  harness.context.updaterStatusForTest({
+    status: 'update-available-linux',
+    version: '4.0"><img src=x onerror=alert(1)>',
+    url: quoteBearingUrl,
+    eventId: 1
+  });
+
+  const hostileToast = harness.container.children[0];
+  const hostileAction = hostileToast.querySelector('.toast-action');
+  assert.ok(hostileAction);
+  assert.equal(hostileAction.getAttribute('href'), new URL(quoteBearingUrl).href);
+  assert.equal(hostileAction.getAttribute('data-audit'), null);
+  assert.equal(hostileToast.children.length, 1, 'the URL and version cannot create sibling markup');
+  assert.equal(
+    hostileToast.textContent,
+    'Update v4.0"><img src=x onerror=alert(1)> available. Download'
+  );
+
+  const httpUrl = 'http://updates.test/releases/4.1?format=appimage#download';
+  harness.context.updaterStatusForTest({
+    status: 'update-available-linux',
+    version: '4.1',
+    url: httpUrl,
+    eventId: 2
+  });
+  assert.equal(
+    harness.container.children[1].querySelector('.toast-action').getAttribute('href'),
+    httpUrl
+  );
+
+  harness.context.updaterStatusForTest({
+    status: 'update-available-linux',
+    version: '4.2',
+    url: 'javascript:alert(1)',
+    eventId: 3
+  });
+  const rejectedToast = harness.container.children[2];
+  assert.equal(rejectedToast.querySelector('.toast-action'), null);
+  assert.equal(rejectedToast.textContent, 'Update v4.2 available.');
 });
 
 test('repeated same-version update cancellations restore the restart action', async () => {
