@@ -154,7 +154,7 @@ test('context-menu breakpoint creation keeps targeting row A after selection mov
   assert.deepEqual(JSON.parse(harness.state.fetches[0].options.body), {
     matchers: [
       { type: 'method', value: 'POST' },
-      { type: 'host', value: 'a.example' }
+      { type: 'hostname', value: 'a.example' }
     ]
   });
 });

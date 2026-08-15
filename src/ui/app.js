@@ -12287,9 +12287,9 @@
         { type: 'method', value: req.method }
       ];
 
-      // Add host matcher
+      // Captured hosts are hostname-only, so match them independently of port.
       if (req.host) {
-        matchers.push({ type: 'host', value: req.host });
+        matchers.push({ type: 'hostname', value: req.host });
       }
 
       // Add path matcher
@@ -12614,7 +12614,7 @@
           body: JSON.stringify({
             matchers: [
               { type: 'method', value: req.method },
-              { type: 'host', value: req.host }
+              { type: 'hostname', value: req.host }
             ]
           })
         });
