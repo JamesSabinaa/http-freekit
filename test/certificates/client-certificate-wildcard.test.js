@@ -48,11 +48,14 @@ test('wildcard client certificates are fallbacks and exact normalized hosts alwa
   assert.deepEqual(proxy._getClientCertificateOptions(''), {});
 });
 
-test('malformed client certificate entries stay ignored and unmatched hosts get no certificate', (t) => {
+test('malformed client certificate entries are rejected without replacing active material', (t) => {
   const { exactPath } = createCertificateFiles(t);
   const proxy = new ProxyServer(null);
+  proxy.setClientCertificates([exactCertificate(exactPath)]);
+  const previousCertificates = proxy.clientCertificates;
+  const previousOptions = proxy._clientCertificateOptions;
 
-  proxy.setClientCertificates([
+  for (const invalid of [
     null,
     { host: '', pfxPath: exactPath },
     { host: '   ', pfxPath: exactPath },
@@ -60,9 +63,15 @@ test('malformed client certificate entries stay ignored and unmatched hosts get 
     { host: 'api.example.test', pfxPath: '' },
     { host: 'api.example.test', pfxPath: 123 },
     { host: '*.', pfxPath: exactPath },
-    { host: '*.example.test', pfxPath: exactPath },
-    exactCertificate(exactPath)
-  ]);
+    { host: '*.example.test', pfxPath: exactPath }
+  ]) {
+    assert.throws(
+      () => proxy.setClientCertificates([invalid]),
+      error => error?.code === 'ERR_INVALID_TLS_MATERIAL_CONFIG'
+    );
+    assert.equal(proxy.clientCertificates, previousCertificates);
+    assert.equal(proxy._clientCertificateOptions, previousOptions);
+  }
 
   assert.equal(proxy._clientCertificateOptions.length, 1);
   assert.deepEqual(proxy._getClientCertificateOptions('unmatched.example.test'), {});
