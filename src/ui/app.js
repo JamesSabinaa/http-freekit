@@ -6314,7 +6314,7 @@
       html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
-      html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + summary.methodStr + '</span>';
+      html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
       const isRenaming = mockRenamingRuleId === rule.id;
       if (isRenaming) {
         const inputVal = esc(rule.title || '').replace(/"/g, '&quot;');
@@ -6546,7 +6546,7 @@
       let html = '<div class="mock-rule-card mock-breakpoint-rule' + disabledClass + '" data-breakpoint-id="' + escapeHtmlAttribute(rule.id) + '">';
       html += '<div class="mock-rule-summary">';
       html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
-      html += '<span class="method-badge method-' + (summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
+      html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
       html += '<span class="mock-rule-desc">' + summary.matchStr + '<span class="mock-arrow">\u2192</span><span style="color:#f1971f;">Breakpoint</span></span>';
       html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
       const toggleLabel = rule.enabled !== false ? 'Disable this breakpoint' : 'Enable this breakpoint';

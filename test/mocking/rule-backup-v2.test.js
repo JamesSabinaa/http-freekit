@@ -388,6 +388,65 @@ test('invalid mixed version 2 imports leave both runtime and persisted collectio
   assert.deepEqual(savedSettings(settings), beforeFile);
 });
 
+test('rule backups reject markup-bearing methods and preserve valid custom methods', async t => {
+  const { proxy, settings, port } = await createServer(t);
+  const oldMock = mockRule('old-mock');
+  const oldBreakpoint = breakpointRule('old-breakpoint');
+  proxy.loadMockRules([oldMock]);
+  proxy.loadBreakpoints([oldBreakpoint]);
+  settings.setAll({ mockRules: proxy.mockRules, breakpointRules: proxy.breakpointRules });
+  const beforeFile = savedSettings(settings);
+  const maliciousMethod = 'GET" data-audit="present"><img src=x onerror=alert(1)>';
+
+  const maliciousBackups = [
+    {
+      mockRules: [{
+        ...mockRule('hostile-mock'),
+        matchers: [{ type: 'method', value: maliciousMethod }]
+      }],
+      breakpointRules: [breakpointRule('valid-breakpoint')]
+    },
+    {
+      mockRules: [mockRule('valid-mock')],
+      breakpointRules: [{
+        ...breakpointRule('hostile-breakpoint'),
+        matchers: [{ type: 'method', value: maliciousMethod }]
+      }]
+    }
+  ];
+
+  for (const backup of maliciousBackups) {
+    const result = await requestJson(port, '/api/rules', backup);
+    assert.equal(result.statusCode, 400);
+    assert.deepEqual(proxy.mockRules, [oldMock]);
+    assert.deepEqual(proxy.breakpointRules, [oldBreakpoint]);
+    assert.deepEqual(savedSettings(settings), beforeFile);
+  }
+
+  const customMock = mockRule('custom-mock');
+  customMock.matchers[0].value = 'M-SEARCH';
+  const wildcardMock = mockRule('wildcard-mock');
+  wildcardMock.matchers[0].value = '*';
+  const customBreakpoint = breakpointRule('custom-breakpoint');
+  customBreakpoint.matchers[0].value = 'CUSTOM+METHOD';
+  const valid = await requestJson(port, '/api/rules', {
+    mockRules: [customMock, wildcardMock],
+    breakpointRules: [customBreakpoint]
+  });
+
+  assert.equal(valid.statusCode, 200, valid.body.error);
+  assert.deepEqual(
+    proxy.mockRules.map(rule => rule.matchers[0].value),
+    ['M-SEARCH', '*']
+  );
+  assert.deepEqual(
+    proxy.breakpointRules.map(rule => rule.matchers[0].value),
+    ['CUSTOM+METHOD']
+  );
+  assert.deepEqual(settings.get('mockRules'), proxy.mockRules);
+  assert.deepEqual(settings.get('breakpointRules'), proxy.breakpointRules);
+});
+
 test('version 2 persistence failure rolls back both collections and leaves the settings file intact', async t => {
   t.mock.method(console, 'error', () => {});
   const { proxy, settings, port } = await createServer(t);

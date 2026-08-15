@@ -159,6 +159,94 @@ test('mock, group, and breakpoint IDs stay in escaped data attributes', () => {
   assert.match(source, /api\/mock-rules\/' \+ encodeURIComponent\(groupId\)/);
 });
 
+test('mock and breakpoint method summaries escape text and class attributes', () => {
+  const attributeEscaper = functionSource('escapeHtmlAttribute', 'getSafeImageDataUri');
+  const textEscaper = functionSource('esc', 'formatSize');
+  const normalizer = functionSource('normalizeMockRule', 'mockRuleSummary');
+  const mockSummary = functionSource('mockRuleSummary', 'renderMockRuleRow');
+  const mockRow = functionSource('renderMockRuleRow', 'renderMockGroup');
+  const breakpointSummary = functionSource('breakpointRuleSummary', 'renderBreakpointRuleRow');
+  const breakpointRow = functionSource(
+    'renderBreakpointRuleRow', 'toggleBreakpointRuleEnabled'
+  ).replace(/\s*async\s*$/, '\n');
+  const context = {
+    MOCK_METHOD_COLORS: { '*': '#888' },
+    mockExpandedRules: new Set(),
+    mockEditingRule: null,
+    mockDraftRules: new Set(),
+    mockRenamingRuleId: null,
+    mockEditDraft: null,
+    mockSaveInProgress: false,
+    mockRevertInProgress: false,
+    mockResetInProgress: false,
+    mockCollectionMutationCount: 0,
+    _findContainingMockGroup: () => null,
+    renderMockRuleDetail: () => '',
+    renderMockRuleEditor: () => '',
+    document: {
+      createElement() {
+        return {
+          innerHTML: '',
+          set textContent(value) {
+            this.innerHTML = String(value)
+              .replaceAll('&', '&amp;')
+              .replaceAll('<', '&lt;')
+              .replaceAll('>', '&gt;');
+          }
+        };
+      }
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${attributeEscaper}
+    ${textEscaper}
+    ${normalizer}
+    ${mockSummary}
+    ${mockRow}
+    ${breakpointSummary}
+    ${breakpointRow}
+    globalThis.renderMock = renderMockRuleRow;
+    globalThis.renderBreakpoint = renderBreakpointRuleRow;
+  `, context);
+
+  const hostileMethod = 'GET" data-audit="present"></span><img src=x onerror=alert(1)>';
+  const mockHtml = context.renderMock({
+    id: 'mock',
+    enabled: true,
+    matchers: [{ type: 'method', value: hostileMethod }],
+    action: { type: 'fixed-response', status: 200 }
+  });
+  const breakpointHtml = context.renderBreakpoint({
+    id: 'breakpoint',
+    enabled: true,
+    matchers: [{ type: 'method', value: hostileMethod }]
+  });
+
+  for (const html of [mockHtml, breakpointHtml]) {
+    const methodTag = html.match(/<span class="method-badge[^>]*>/)?.[0];
+    assert.ok(methodTag);
+    assert.deepEqual(openingTagAttributeNames(methodTag), ['class', 'style']);
+    assert.match(methodTag, /method-GET&quot; data-audit=&quot;present&quot;&gt;&lt;\/span&gt;&lt;img/);
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  }
+
+  const customMockHtml = context.renderMock({
+    id: 'custom-mock',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'M-SEARCH' }],
+    action: { type: 'fixed-response', status: 200 }
+  });
+  const customBreakpointHtml = context.renderBreakpoint({
+    id: 'custom-breakpoint',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'CUSTOM+METHOD' }]
+  });
+  assert.match(customMockHtml, /class="method-badge method-M-SEARCH"[^>]*>M-SEARCH<\/span>/);
+  assert.match(customBreakpointHtml, /class="method-badge method-CUSTOM\+METHOD"[^>]*>CUSTOM\+METHOD<\/span>/);
+});
+
 test('newly created mock lookup compares data values instead of building a selector from the ID', () => {
   const createMock = functionSource('createMockFromRequest', 'showHeaderContextMenu');
 
