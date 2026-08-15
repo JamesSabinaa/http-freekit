@@ -40,6 +40,26 @@ function openingTagAttributeNames(tag) {
   return names;
 }
 
+function decodeHtml(value) {
+  return String(value)
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&');
+}
+
+function quotedAttribute(tag, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = tag.match(new RegExp(`\\s${escapedName}="([^"]*)"`));
+  assert.ok(match, `${name} should be a quoted attribute on ${tag}`);
+  return decodeHtml(match[1]);
+}
+
+function openingTags(html, tagName) {
+  return [...html.matchAll(new RegExp(`<${tagName}\\b[^>]*>`, 'g'))].map(match => match[0]);
+}
+
 test('Send tabs and response status render untrusted text through DOM properties', () => {
   const tabs = functionSource('renderSendTabs', 'renderSendResponseStatus');
   const status = functionSource('renderSendResponseStatus', 'cloneSendFormFields');
@@ -59,6 +79,7 @@ test('persisted TLS settings are escaped before list markup is parsed', () => {
 });
 
 test('traffic rows keep imported methods and sources inside their intended attributes', () => {
+  const remoteEndpointFormatter = functionSource('formatRemoteEndpoint', 'buildRowHtml');
   const rowRenderer = functionSource('buildRowHtml', 'renderVirtualRows');
   const attributeEscaper = functionSource('escapeHtmlAttribute', 'getSafeImageDataUri');
   const detailRenderer = functionSource('renderDetailCards', 'autoSizeExportEditor');
@@ -81,9 +102,12 @@ test('traffic rows keep imported methods and sources inside their intended attri
   vm.runInContext(`
     const SOURCE_ICONS = {
       proxy: '<i class="safe-proxy-icon"></i>',
-      'Node.js': '<i class="safe-node-icon"></i>'
+      'Node.js': '<i class="safe-node-icon"></i>',
+      'tls-error': '<i class="safe-tls-icon"></i>',
+      tunnel: '<i class="safe-tunnel-icon"></i>'
     };
     ${attributeEscaper}
+    ${remoteEndpointFormatter}
     ${rowRenderer}
     globalThis.renderTrafficRow = buildRowHtml;
   `, context);
@@ -120,9 +144,126 @@ test('traffic rows keep imported methods and sources inside their intended attri
   assert.match(legitimateHtml, /class="method-badge method-M-SEARCH">M-SEARCH<\/span>/);
   assert.match(legitimateHtml, /class="source-icon source-Node\.js" title="Node\.js"/);
 
+  const importedHost = 'api" & <host>.test';
+  const importedPath = '/"quoted"?one=1&two=<path>';
+  const standardHtml = context.renderTrafficRow({
+    id: 'quoted-standard',
+    method: 'GET',
+    source: 'proxy',
+    statusCode: 200,
+    host: importedHost,
+    path: importedPath,
+    pinned: false
+  }, 0);
+  const standardTitleCells = openingTags(standardHtml, 'td')
+    .filter(tag => openingTagAttributeNames(tag).includes('title'));
+  assert.equal(standardTitleCells.length, 2);
+  assert.deepEqual(
+    standardTitleCells.map(tag => quotedAttribute(tag, 'title')),
+    [importedHost, importedPath]
+  );
+
+  const framePayload = 'frame "one" & <two>';
+  const frameHtml = context.renderTrafficRow({
+    id: 'quoted-frame',
+    protocol: 'ws-frame',
+    direction: 'client',
+    requestBody: framePayload,
+    requestBodySize: framePayload.length
+  }, 0);
+  const framePreview = openingTags(frameHtml, 'td')
+    .find(tag => openingTagAttributeNames(tag).includes('class') &&
+      quotedAttribute(tag, 'class') === 'ws-frame-preview');
+  assert.ok(framePreview);
+  assert.equal(quotedAttribute(framePreview, 'title'), framePayload);
+
+  const tlsError = 'certificate "unknown" & <rejected>';
+  const tlsHtml = context.renderTrafficRow({
+    id: 'quoted-tls',
+    protocol: 'tls-error',
+    source: 'tls-error',
+    host: importedHost,
+    error: tlsError
+  }, 0);
+  const tlsTitleCell = openingTags(tlsHtml, 'td')
+    .find(tag => openingTagAttributeNames(tag).includes('title'));
+  assert.ok(tlsTitleCell);
+  assert.equal(quotedAttribute(tlsTitleCell, 'title'), tlsError);
+
+  const tunnelAddress = 'edge "one" & <two>';
+  const tunnelHtml = context.renderTrafficRow({
+    id: 'quoted-tunnel',
+    protocol: 'tunnel',
+    source: 'tunnel',
+    host: importedHost,
+    remote: { address: tunnelAddress, port: 9443 }
+  }, 0);
+  const tunnelTitleCell = openingTags(tunnelHtml, 'td')
+    .find(tag => openingTagAttributeNames(tag).includes('title'));
+  assert.ok(tunnelTitleCell);
+  assert.equal(quotedAttribute(tunnelTitleCell, 'title'), `Tunnel to ${tunnelAddress}:9443`);
+
+  assert.deepEqual(
+    standardTitleCells.map(openingTagAttributeNames),
+    [['role', 'title'], ['role', 'title']]
+  );
+  assert.deepEqual(
+    openingTagAttributeNames(framePreview),
+    ['role', 'colspan', 'class', 'title']
+  );
+  for (const tag of [tlsTitleCell, tunnelTitleCell]) {
+    assert.deepEqual(openingTagAttributeNames(tag), ['role', 'colspan', 'style', 'title']);
+  }
+
   assert.match(detailRenderer, /title="\$\{escapeHtmlAttribute\(wsSourceLabel\)\}"/);
   assert.match(detailRenderer, /title="\$\{escapeHtmlAttribute\(sourceLabel\)\}"/);
   assert.match(detailRenderer, /detail-summary-value">\$\{esc\(req\.source \|\| 'proxy'\)\}/);
+});
+
+test('imported header names stay in one context-menu data field', () => {
+  const headerRenderer = functionSource('renderHeadersGrid', 'renderHeaders');
+  const context = {
+    HEADER_DOCS: {},
+    esc: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
+    escapeHtmlAttribute: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+  };
+  vm.createContext(context);
+  vm.runInContext(`${headerRenderer}; globalThis.renderHeadersForTest = renderHeadersGrid;`, context);
+
+  const key = 'x-"quoted"-&-<header>';
+  const value = 'value "quoted" & <visible>';
+  const html = context.renderHeadersForTest({ [key]: value }, 'request');
+  const spans = openingTags(html, 'span');
+  const headerName = spans.find(tag => quotedAttribute(tag, 'class') === 'header-name');
+  const headerValue = spans.find(tag => quotedAttribute(tag, 'class') === 'header-value');
+  assert.ok(headerName);
+  assert.ok(headerValue);
+
+  for (const tag of [headerName, headerValue]) {
+    assert.deepEqual(openingTagAttributeNames(tag), [
+      'class', 'role', 'tabindex', 'aria-haspopup', 'data-context-header-key',
+      'data-context-section', 'oncontextmenu'
+    ]);
+    assert.equal(quotedAttribute(tag, 'data-context-header-key'), key);
+    assert.equal(quotedAttribute(tag, 'data-context-section'), 'request');
+    assert.equal(
+      quotedAttribute(tag, 'oncontextmenu'),
+      'showHeaderContextMenu(event, this.dataset.contextHeaderKey, this.dataset.contextSection)'
+    );
+  }
+
+  const nameText = html.match(/<span class="header-name"[^>]*>([\s\S]*?)<\/span>/)?.[1];
+  const valueText = html.match(/<span class="header-value"[^>]*>([\s\S]*?)<\/span>/)?.[1];
+  assert.equal(decodeHtml(nameText), `${key}: `);
+  assert.equal(decodeHtml(valueText), value);
 });
 
 test('custom themes discard unknown or unsafe values and build previews with DOM APIs', () => {
@@ -245,6 +386,129 @@ test('mock and breakpoint method summaries escape text and class attributes', ()
   });
   assert.match(customMockHtml, /class="method-badge method-M-SEARCH"[^>]*>M-SEARCH<\/span>/);
   assert.match(customBreakpointHtml, /class="method-badge method-CUSTOM\+METHOD"[^>]*>CUSTOM\+METHOD<\/span>/);
+
+  const persistedTitle = 'rule "quoted" & <named>';
+  context.mockRenamingRuleId = 'rename-mock';
+  const renameHtml = context.renderMock({
+    id: 'rename-mock',
+    title: persistedTitle,
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status: 200 }
+  });
+  const renameInput = openingTags(renameHtml, 'input')
+    .find(tag => quotedAttribute(tag, 'id') === 'mock-rename-input');
+  assert.ok(renameInput);
+  assert.equal(quotedAttribute(renameInput, 'value'), persistedTitle);
+  assert.deepEqual(openingTagAttributeNames(renameInput), [
+    'id', 'class', 'type', 'value', 'placeholder', 'onkeydown', 'onblur', 'onclick'
+  ]);
+});
+
+test('persisted matcher, action, and pre-step text round-trips through editor fields', () => {
+  const matcherRenderer = functionSource('renderMockMatcherRow', 'renderMockActionFields');
+  const actionRenderer = functionSource('renderMockActionFields', 'preserveOpenMockEdit');
+  const preStepRenderer = functionSource('renderMockPreStepRow', 'addMockPreStep');
+  const context = {
+    MOCK_MATCHER_GROUPS: [{
+      group: 'Request "fields" & <matchers>',
+      items: [
+        { value: 'header', label: 'Header' },
+        { value: 'unused" & <type>', label: 'Unused " & <type>' }
+      ]
+    }],
+    MOCK_PRE_STEP_TYPES: [
+      { value: 'add-header', label: 'Add header' },
+      { value: 'unused" & <step>', label: 'Unused " & <step>' }
+    ],
+    esc: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
+    escapeHtmlAttribute: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${matcherRenderer}
+    ${actionRenderer}
+    ${preStepRenderer}
+    globalThis.renderMatcherForTest = renderMockMatcherRow;
+    globalThis.renderActionForTest = renderMockActionFields;
+    globalThis.renderPreStepForTest = renderMockPreStepRow;
+  `, context);
+
+  const matcherName = 'x-"matcher"-&-<name>';
+  const matcherValue = 'matcher "value" & <one>';
+  const matcherHtml = context.renderMatcherForTest({
+    type: 'header',
+    name: matcherName,
+    value: matcherValue
+  }, 0, 'rule');
+  const matcherInputs = openingTags(matcherHtml, 'input');
+  assert.deepEqual(
+    matcherInputs.map(tag => quotedAttribute(tag, 'value')),
+    [matcherName, matcherValue]
+  );
+  const matcherOptions = openingTags(matcherHtml, 'option');
+  assert.equal(quotedAttribute(matcherOptions[1], 'value'), 'unused" & <type>');
+  const matcherOptgroup = openingTags(matcherHtml, 'optgroup')[0];
+  assert.equal(quotedAttribute(matcherOptgroup, 'label'), 'Request "fields" & <matchers>');
+
+  const actionHeader = 'x-"action"-&-<name>';
+  const actionValue = 'action "value" & <two>';
+  const actionBody = 'body "quoted" & <textarea>';
+  const actionHtml = context.renderActionForTest({
+    type: 'fixed-response',
+    status: 201,
+    delay: 0,
+    headers: { [actionHeader]: actionValue },
+    body: actionBody
+  }, 'rule');
+  const actionTextInputs = openingTags(actionHtml, 'input')
+    .filter(tag => quotedAttribute(tag, 'type') === 'text');
+  assert.deepEqual(
+    actionTextInputs.map(tag => quotedAttribute(tag, 'value')),
+    [actionHeader, actionValue]
+  );
+  const textareaBody = actionHtml.match(/<textarea\b[^>]*>([\s\S]*?)<\/textarea>/)?.[1];
+  assert.equal(decodeHtml(textareaBody), actionBody);
+
+  const forwardTo = 'https://forward.test/"route"?one=1&two=<value>';
+  const forwardHtml = context.renderActionForTest({
+    type: 'forward',
+    forwardTo,
+    delay: 0
+  }, 'rule');
+  const forwardInput = openingTags(forwardHtml, 'input')
+    .find(tag => quotedAttribute(tag, 'type') === 'text');
+  assert.ok(forwardInput);
+  assert.equal(quotedAttribute(forwardInput, 'value'), forwardTo);
+
+  const stepName = 'x-"step"-&-<name>';
+  const stepValue = 'step "value" & <three>';
+  const stepHtml = context.renderPreStepForTest({
+    type: 'add-header',
+    name: stepName,
+    value: stepValue
+  }, 0, 'rule');
+  const stepInputs = openingTags(stepHtml, 'input');
+  assert.deepEqual(
+    stepInputs.map(tag => quotedAttribute(tag, 'value')),
+    [stepName, stepValue]
+  );
+  const stepOptions = openingTags(stepHtml, 'option');
+  assert.equal(quotedAttribute(stepOptions[1], 'value'), 'unused" & <step>');
+
+  for (const renderer of [matcherRenderer, actionRenderer, preStepRenderer]) {
+    assert.doesNotMatch(renderer, /value="' \+ esc\(/);
+  }
+  assert.match(matcherRenderer, /<textarea[^\n]*' \+ esc\(matcher\.value \|\| ''\) \+ '<\/textarea>/);
+  assert.match(actionRenderer, /<textarea[^\n]*' \+ esc\(action\.body \|\| ''\) \+ '<\/textarea>/);
 });
 
 test('newly created mock lookup compares data values instead of building a selector from the ID', () => {
@@ -262,7 +526,14 @@ test('expanded mock editor actions never interpolate the persisted rule ID', () 
     MOCK_ACTION_TYPES: [{ value: 'fixed-response', label: 'Return a fixed response' }],
     renderMockMatcherRow: () => '',
     renderMockPreStepRow: () => '',
-    renderMockActionFields: () => ''
+    renderMockActionFields: () => '',
+    esc: value => String(value ?? ''),
+    escapeHtmlAttribute: value => String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
   };
   vm.createContext(context);
   vm.runInContext(`${editorSource}; globalThis.renderEditor = renderMockRuleEditor;`, context);

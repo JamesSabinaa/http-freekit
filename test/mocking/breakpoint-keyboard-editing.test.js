@@ -128,6 +128,23 @@ function attribute(tag, name) {
   return match[1];
 }
 
+function decodeHtml(value) {
+  return String(value)
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&');
+}
+
+function breakpointFieldText(html, field) {
+  const match = html.match(new RegExp(
+    `<(span|pre)\\b[^>]*id="breakpoint-edit-${field}"[^>]*>([\\s\\S]*?)<\\/\\1>`
+  ));
+  assert.ok(match, `${field} field content must be rendered`);
+  return decodeHtml(match[2]);
+}
+
 test('paused request and response fields render as named, instructed keyboard buttons', () => {
   const phases = [
     {
@@ -195,6 +212,37 @@ test('breakpoint identity attributes escape quotes before rendering', () => {
     assert.doesNotMatch(element, /data-request-id="paused" onmouseover=/);
     assert.doesNotMatch(element, /data-lifecycle-id="life' onfocus=/);
   }
+});
+
+test('breakpoint editor text fields preserve quoted imported values', () => {
+  const requestUrl = 'https://example.test/"quoted"?one=1&two=<angle>';
+  const requestHeaderValue = 'request "quoted" & <header>';
+  const requestBody = 'request "quoted" & <body>';
+  const requestHtml = renderPausedDetail('request', {
+    url: requestUrl,
+    requestHeaders: { 'x-request': requestHeaderValue },
+    requestBody
+  });
+
+  assert.equal(breakpointFieldText(requestHtml, 'url'), requestUrl);
+  assert.deepEqual(
+    JSON.parse(breakpointFieldText(requestHtml, 'headers')),
+    { 'x-request': requestHeaderValue }
+  );
+  assert.equal(breakpointFieldText(requestHtml, 'body'), requestBody);
+
+  const responseHeaderValue = 'response "quoted" & <header>';
+  const responseBody = 'response "quoted" & <body>';
+  const responseHtml = renderPausedDetail('response', {
+    responseHeaders: { 'x-response': responseHeaderValue },
+    responseBody
+  });
+
+  assert.deepEqual(
+    JSON.parse(breakpointFieldText(responseHtml, 'headers')),
+    { 'x-response': responseHeaderValue }
+  );
+  assert.equal(breakpointFieldText(responseHtml, 'body'), responseBody);
 });
 
 function createEditHarness() {
