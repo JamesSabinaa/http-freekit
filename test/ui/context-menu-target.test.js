@@ -15,6 +15,10 @@ function extract(startMarker, endMarker) {
 }
 
 const identityHelpers = extract('function normalizeTrafficLifecycleId', 'function mergeServerTrafficRequest');
+const generationHelpers = extract(
+  'const deferredTrafficGenerationTokens = new WeakMap();',
+  'function mergeTrafficDumpPins('
+);
 const pinState = extract('function applyTrafficPinned', 'function applyTrafficDeleted');
 const deletionState = extract('function applyTrafficDeleted', 'function connectWebSocket');
 const targetActions = extract('function trafficActionRequest', 'function resendSelectedRequest');
@@ -112,6 +116,7 @@ function createHarness() {
       return JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId]);
     }
     ${identityHelpers}
+    ${generationHelpers}
     ${pinState}
     ${deletionState}
     ${targetActions}

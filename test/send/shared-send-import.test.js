@@ -460,6 +460,8 @@ test('deferred import selection clears stale details and closes after hydration 
   const detailActive = { style: { display: 'flex' } };
   let closeCalls = 0;
   let showCalls = 0;
+  let fetchCalls = 0;
+  const toasts = [];
   const context = {
     requests: [previous, deferred],
     filteredRequests: [previous, deferred],
@@ -478,13 +480,21 @@ test('deferred import selection clears stale details and closes after hydration 
     findTrafficRequestByIdentity: (rows, id) => rows.find(row => row.id === id) || null,
     isSelectedTrafficRequest: row => row.id === context.selectedRequestId,
     currentTrafficGenerationRequest: row => context.requests.includes(row) ? row : null,
+    ensureTrafficGenerationToken(row) {
+      let token = context.deferredTrafficGenerationTokens.get(row);
+      if (!token) {
+        token = {};
+        context.deferredTrafficGenerationTokens.set(row, token);
+      }
+      return token;
+    },
     normalizeTrafficLifecycleId: value => value ?? null,
     buildTrafficViewHash: id => `#/view/${id}`,
     scrollRowIntoView() {},
     renderVirtualRows() {},
     applyFilter() {},
     showDetail() { showCalls++; },
-    toast() {},
+    toast: (message, type) => toasts.push({ message, type }),
     closeDetail() {
       closeCalls++;
       context.selectedRequestId = null;
@@ -492,7 +502,10 @@ test('deferred import selection clears stale details and closes after hydration 
       detailEmptyState.style.display = 'flex';
       detailActive.style.display = 'none';
     },
-    fetch: async () => ({ ok: false })
+    fetch: async () => {
+      fetchCalls++;
+      return { ok: false, status: 503 };
+    }
   };
   vm.createContext(context);
   vm.runInContext(`${selectionSource}; globalThis.selectDeferred = selectRequest;`, context);
@@ -505,4 +518,9 @@ test('deferred import selection clears stale details and closes after hydration 
   assert.equal(closeCalls, 1);
   assert.equal(showCalls, 0);
   assert.equal(context.selectedRequestId, null);
+  assert.equal(fetchCalls, 1);
+  assert.deepEqual(toasts, [{
+    message: 'Could not load exact exchange details (HTTP 503).',
+    type: 'error'
+  }]);
 });

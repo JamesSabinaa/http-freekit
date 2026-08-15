@@ -146,13 +146,23 @@ function createHarness(fetchImpl) {
     ${resendWrapperSource}
     ${mockWrapperSource}
     ${breakpointWrapperSource}
-    function togglePinRequest(requestId, trafficLifecycleId) {
-      const request = trafficActionRequest(requestId, trafficLifecycleId);
-      identityOnly.push(['pin', request?.id, request?.trafficLifecycleId]);
+    function togglePinRequest(requestId, trafficLifecycleId, originatingGenerationToken) {
+      return withResolvedTrafficAction(
+        requestId,
+        trafficLifecycleId,
+        'update pin',
+        request => identityOnly.push(['pin', request.id, request.trafficLifecycleId]),
+        originatingGenerationToken
+      );
     }
-    function deleteSelectedRequest(requestId, trafficLifecycleId) {
-      const request = trafficActionRequest(requestId, trafficLifecycleId);
-      identityOnly.push(['delete', request?.id, request?.trafficLifecycleId]);
+    function deleteSelectedRequest(requestId, trafficLifecycleId, originatingGenerationToken) {
+      return withResolvedTrafficAction(
+        requestId,
+        trafficLifecycleId,
+        'delete exchange',
+        request => identityOnly.push(['delete', request.id, request.trafficLifecycleId]),
+        originatingGenerationToken
+      );
     }
     ${contextMenuSource}
     globalThis.setRequests = value => { requests = value; };
@@ -164,6 +174,15 @@ function createHarness(fetchImpl) {
         selectedRequestLifecycleId = normalizeTrafficLifecycleId(promoted.trafficLifecycleId);
       }
       return promoted;
+    };
+    globalThis.replaceWithRequestUpdate = value => {
+      const current = requests[0];
+      const updated = mergeTrafficRequestUpdate(current, value);
+      requests = [updated];
+      if (selectedRequestId === current.id) {
+        selectedRequestLifecycleId = normalizeTrafficLifecycleId(updated.trafficLifecycleId);
+      }
+      return updated;
     };
     globalThis.startHydration = index => resolveDeferredTrafficRequest(requests[index]);
     globalThis.setSelection = (requestId, lifecycleId) => {
@@ -220,19 +239,22 @@ test('concurrent content actions hydrate once and use exact deferred traffic', a
 test('an open deferred context menu resolves the row again after replacement', async () => {
   const harness = createHarness(() => assert.fail('a replaced exact row must not refetch'));
   harness.context.setRequests([{ ...summary(), trafficLifecycleId: undefined }]);
+  delete harness.context.getRequests()[0].trafficLifecycleId;
   harness.context.showTrafficContextMenu({
     preventDefault() {},
     clientX: 1,
     clientY: 2
   }, 'large-import', null, '');
   const items = harness.menuItems();
-  harness.context.setRequests([exact()]);
-  harness.context.setSelection('large-import', 'life-1');
+  harness.context.promoteWithMerge(exact());
 
   await items.find(item => item.label === 'Copy URL').action();
   await items.find(item => item.label === 'Copy as cURL').action();
-  items.find(item => item.label === 'Pin exchange').action();
-  items.find(item => item.label === 'Delete exchange').action();
+  await items.find(item => item.label === 'Resend in Send tab').action();
+  await items.find(item => item.label === 'Create mock rule').action();
+  await items.find(item => item.label === 'Create breakpoint').action();
+  await items.find(item => item.label === 'Pin exchange').action();
+  await items.find(item => item.label === 'Delete exchange').action();
 
   assert.equal(harness.clipboard[0], exact().url);
   assert.deepEqual(JSON.parse(harness.clipboard[1]), {
@@ -247,7 +269,123 @@ test('an open deferred context menu resolves the row again after replacement', a
     ['pin', 'large-import', 'life-1'],
     ['delete', 'large-import', 'life-1']
   ]);
+  assert.deepEqual(harness.context.resolved.map(([action, request]) => [
+    action,
+    request.trafficLifecycleId
+  ]), [
+    ['resend', 'life-1'],
+    ['mock', 'life-1'],
+    ['breakpoint', 'life-1']
+  ]);
   assert.equal(harness.calls.length, 0);
+});
+
+test('omitted-lifecycle context actions never retarget a same-ID selected replacement', async () => {
+  const harness = createHarness(() => assert.fail('stale context actions must not fetch'));
+  harness.context.setRequests([{ ...summary(), trafficLifecycleId: undefined }]);
+  delete harness.context.getRequests()[0].trafficLifecycleId;
+  harness.context.setSelection('large-import', null);
+  harness.context.showTrafficContextMenu({
+    preventDefault() {}, clientX: 1, clientY: 2
+  }, 'large-import', null, '');
+  const items = harness.menuItems();
+
+  harness.context.setRequests([exact('life-2')]);
+  harness.context.setSelection('large-import', 'life-2');
+  await Promise.all([
+    items.find(item => item.label === 'Copy URL').action(),
+    items.find(item => item.label === 'Copy as cURL').action(),
+    items.find(item => item.label === 'Resend in Send tab').action(),
+    items.find(item => item.label === 'Create mock rule').action(),
+    items.find(item => item.label === 'Create breakpoint').action(),
+    items.find(item => item.label === 'Pin exchange').action(),
+    items.find(item => item.label === 'Delete exchange').action()
+  ]);
+
+  assert.deepEqual(harness.clipboard, []);
+  assert.deepEqual(harness.context.resolved, []);
+  assert.equal(harness.context.identityOnly.length, 0);
+  assert.equal(harness.calls.length, 0);
+  assert.equal(harness.toasts.filter(entry => /no longer available/i.test(entry.message)).length, 7);
+});
+
+test('explicit-lifecycle context actions still re-resolve the current exact row', async () => {
+  const harness = createHarness(() => assert.fail('an exact replacement must not refetch'));
+  harness.context.showTrafficContextMenu({
+    preventDefault() {}, clientX: 1, clientY: 2
+  }, 'large-import', null, 'life-1');
+  const items = harness.menuItems();
+  harness.context.replaceWithRequestUpdate(exact());
+
+  await items.find(item => item.label === 'Copy URL').action();
+  await items.find(item => item.label === 'Resend in Send tab').action();
+
+  assert.deepEqual(harness.clipboard, [exact().url]);
+  assert.deepEqual(harness.context.resolved.map(([action, request]) => [
+    action,
+    request.trafficLifecycleId
+  ]), [['resend', 'life-1']]);
+  assert.equal(harness.calls.length, 0);
+});
+
+test('unqualified request updates do not inherit an open context generation', async () => {
+  const harness = createHarness(() => assert.fail('an unqualified replacement must not refetch'));
+  harness.context.setRequests([exact()]);
+  harness.context.setSelection('large-import', 'life-1');
+  harness.context.showTrafficContextMenu({
+    preventDefault() {}, clientX: 1, clientY: 2
+  }, 'large-import', null, 'life-1');
+  const items = harness.menuItems();
+  const update = { ...exact(), method: 'REPLACEMENT' };
+  delete update.trafficLifecycleId;
+  harness.context.replaceWithRequestUpdate(update);
+
+  await items.find(item => item.label === 'Copy URL').action();
+  await items.find(item => item.label === 'Resend in Send tab').action();
+
+  assert.deepEqual(harness.clipboard, []);
+  assert.deepEqual(harness.context.resolved, []);
+  assert.equal(
+    harness.toasts.filter(entry => /no longer available/i.test(entry.message)).length,
+    2
+  );
+});
+
+test('exact context actions reject reused non-null and explicit-null identities', async () => {
+  for (const lifecycleId of ['life-1', null]) {
+    const harness = createHarness(() => assert.fail('reused exact identities must not fetch'));
+    const original = { ...exact(), trafficLifecycleId: lifecycleId };
+    harness.context.setRequests([original]);
+    harness.context.setSelection('large-import', lifecycleId);
+    harness.context.showTrafficContextMenu({
+      preventDefault() {}, clientX: 1, clientY: 2
+    }, 'large-import', null, lifecycleId ?? '');
+    const items = harness.menuItems();
+    harness.context.setRequests([{
+      ...original,
+      method: 'REPLACEMENT',
+      url: 'https://replacement.test/'
+    }]);
+
+    await Promise.all([
+      items.find(item => item.label === 'Copy URL').action(),
+      items.find(item => item.label === 'Copy as cURL').action(),
+      items.find(item => item.label === 'Resend in Send tab').action(),
+      items.find(item => item.label === 'Create mock rule').action(),
+      items.find(item => item.label === 'Create breakpoint').action(),
+      items.find(item => item.label === 'Pin exchange').action(),
+      items.find(item => item.label === 'Delete exchange').action()
+    ]);
+
+    assert.deepEqual(harness.clipboard, []);
+    assert.equal(harness.context.resolved.length, 0);
+    assert.equal(harness.context.identityOnly.length, 0);
+    assert.equal(harness.calls.length, 0);
+    assert.equal(
+      harness.toasts.filter(entry => /no longer available/i.test(entry.message)).length,
+      7
+    );
+  }
 });
 
 test('explicit-null content actions never rebind to a newer lifecycle', async () => {
@@ -312,6 +450,7 @@ test('omitted and explicit-null hydration cannot self-promote from an unqualifie
   delete omitted.context.getRequests()[0].trafficLifecycleId;
   omitted.context.setSelection('large-import', null);
   await omitted.context.resendSelectedRequest();
+  assert.equal(omitted.calls[0][0], '/api/traffic/large-import');
   assert.deepEqual(omitted.context.resolved, []);
   assert.match(omitted.toasts.at(-1).message, /identity changed/i);
 
@@ -319,8 +458,45 @@ test('omitted and explicit-null hydration cannot self-promote from an unqualifie
   explicitNull.context.setRequests([{ ...summary(), trafficLifecycleId: null }]);
   explicitNull.context.setSelection('large-import', null);
   await explicitNull.context.resendSelectedRequest();
+  assert.equal(
+    explicitNull.calls[0][0],
+    '/api/traffic/large-import?trafficLifecycleId='
+  );
   assert.deepEqual(explicitNull.context.resolved, []);
   assert.match(explicitNull.toasts.at(-1).message, /different exchange/i);
+});
+
+test('explicit-null and omitted callers do not share provenance during promotion', async () => {
+  const omittedPending = deferred();
+  const explicitNullPending = deferred();
+  const harness = createHarness(() =>
+    harness.calls.length === 1 ? omittedPending.promise : explicitNullPending.promise);
+  harness.context.setRequests([{ ...summary(), trafficLifecycleId: undefined }]);
+  delete harness.context.getRequests()[0].trafficLifecycleId;
+  harness.context.setSelection('large-import', null);
+
+  const omittedAction = harness.context.createMockFromRequest('large-import', undefined);
+  const explicitNullAction = harness.context.resendSelectedRequest('large-import', null);
+  const secondOmittedAction = harness.context.createBreakpointFromRequest(
+    'large-import',
+    undefined
+  );
+  assert.equal(harness.calls.length, 2);
+  assert.equal(harness.calls[0][0], '/api/traffic/large-import');
+  assert.equal(harness.calls[1][0], '/api/traffic/large-import?trafficLifecycleId=');
+  harness.context.promoteWithMerge(exact());
+  omittedPending.resolve(response(exact()));
+  explicitNullPending.resolve(response(exact()));
+  await Promise.all([omittedAction, explicitNullAction, secondOmittedAction]);
+
+  assert.deepEqual(harness.context.resolved.map(([action, request]) => [
+    action,
+    request.trafficLifecycleId
+  ]), [
+    ['mock', 'life-1'],
+    ['breakpoint', 'life-1']
+  ]);
+  assert.match(harness.toasts.at(-1).message, /different exchange/i);
 });
 
 test('pending hydration rejects same-identity replacements without its generation token', async () => {
@@ -456,13 +632,13 @@ function createCompactMutationHarness(kind) {
       requests = [mergeDeferredTrafficRequest(requests[0], value)];
       selectedRequestLifecycleId = normalizeTrafficLifecycleId(requests[0].trafficLifecycleId);
     };
-    globalThis.replaceAndMoveSelection = () => {
+    globalThis.captureGeneration = () => ensureTrafficGenerationToken(requests[0]);
+    globalThis.replaceSameIdAndKeepSelection = () => {
       requests = [
-        { id: 'large-import', trafficLifecycleId: 'life-2', method: 'GET' },
-        { id: 'other', trafficLifecycleId: 'other-life', method: 'GET' }
+        { id: 'large-import', trafficLifecycleId: 'life-2', method: 'GET' }
       ];
-      selectedRequestId = 'other';
-      selectedRequestLifecycleId = 'other-life';
+      selectedRequestId = 'large-import';
+      selectedRequestLifecycleId = 'life-2';
     };
   `, context);
   return { context, detail, calls, applied, toasts };
@@ -504,15 +680,40 @@ test('compact Delete hydrates once and mutates the promoted lifecycle exactly', 
   ]);
 });
 
-test('compact Pin and Delete closures fail closed after selection and generation replacement', async () => {
+test('compact context Pin and Delete closures follow authorized promotion tokens', async () => {
   for (const [kind, invoke] of [
-    ['pin', context => context.togglePinRequest('large-import', undefined)],
-    ['delete', context => context.deleteSelectedRequest('large-import', undefined)]
+    ['pin', (context, generation) =>
+      context.togglePinRequest('large-import', undefined, generation)],
+    ['delete', (context, generation) =>
+      context.deleteSelectedRequest('large-import', undefined, generation)]
   ]) {
     const harness = createCompactMutationHarness(kind);
-    harness.context.replaceAndMoveSelection();
-    await invoke(harness.context);
+    const generation = harness.context.captureGeneration();
+    const action = invoke(harness.context, generation);
+    assert.equal(harness.calls.length, 1);
+    harness.context.promote(exact());
+    harness.detail.resolve(response(exact()));
+    await action;
+
+    assert.equal(harness.calls.length, 2);
+    assert.match(harness.calls[1][0], /trafficLifecycleId=life-1$/);
+    assert.equal(harness.applied.length, 1);
+  }
+});
+
+test('compact Pin and Delete closures reject a same-ID selected replacement', async () => {
+  for (const [kind, invoke] of [
+    ['pin', (context, generation) =>
+      context.togglePinRequest('large-import', undefined, generation)],
+    ['delete', (context, generation) =>
+      context.deleteSelectedRequest('large-import', undefined, generation)]
+  ]) {
+    const harness = createCompactMutationHarness(kind);
+    const generation = harness.context.captureGeneration();
+    harness.context.replaceSameIdAndKeepSelection();
+    await invoke(harness.context, generation);
     assert.equal(harness.calls.length, 0);
     assert.deepEqual(harness.applied, []);
+    assert.match(harness.toasts.at(-1).message, /no longer available/i);
   }
 });

@@ -154,6 +154,42 @@ test('pin mutations reject ambiguous identities and invalid state without changi
   assert.deepEqual(broadcasts, []);
 });
 
+test('an empty lifecycle query pins only the exact legacy-null generation', async t => {
+  const api = createApi();
+  const replacement = { id: 'shared', trafficLifecycleId: 'life-2' };
+  api.trafficLog = [replacement];
+  const broadcasts = [];
+  api._broadcast = message => broadcasts.push(message);
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+
+  const stalePin = await requestJson(
+    port,
+    '/api/traffic/shared/pin?trafficLifecycleId=',
+    { method: 'PUT', body: { pinned: true } }
+  );
+  assert.equal(stalePin.statusCode, 404);
+  assert.equal(replacement.pinned, undefined);
+  assert.deepEqual(broadcasts, []);
+
+  const legacy = { id: 'shared', trafficLifecycleId: null };
+  api.trafficLog.unshift(legacy);
+  const exactDetail = await requestJson(port, '/api/traffic/shared?trafficLifecycleId=');
+  assert.equal(exactDetail.statusCode, 200);
+  assert.equal(exactDetail.body.trafficLifecycleId, null);
+
+  const exactPin = await requestJson(
+    port,
+    '/api/traffic/shared/pin?trafficLifecycleId=',
+    { method: 'PUT', body: { pinned: true } }
+  );
+  assert.equal(exactPin.statusCode, 200);
+  assert.equal(exactPin.body.trafficLifecycleId, null);
+  assert.equal(legacy.pinned, true);
+  assert.equal(replacement.pinned, undefined);
+});
+
 test('Clear chunks retained snapshots without exceeding the WebSocket ceiling', async () => {
   const api = createApi();
   const retainedTraffic = [
@@ -673,6 +709,9 @@ function createRenderer(fetch) {
       selectedRequestLifecycleId = lifecycleId;
     };
     globalThis.requestAt = index => requests[index];
+    globalThis.captureGenerationAt = index => ensureTrafficGenerationToken(requests[index]);
+    globalThis.hasGenerationAt = (index, generation) =>
+      deferredTrafficGenerationTokens.get(requests[index]) === generation;
   `, context);
   return {
     context,
@@ -725,6 +764,28 @@ test('renderer pins only after authoritative confirmation and applies broadcast/
   assert.deepEqual(renderer.snapshot().requests, [
     { id: 'shared', trafficLifecycleId: 'old', pinned: true }
   ]);
+});
+
+test('renderer encodes explicit-null pin identity and leaves an in-flight replacement untouched', async () => {
+  let renderer;
+  renderer = createRenderer(async () => {
+    renderer.context.setRequests([{ id: 'shared', trafficLifecycleId: 'life-2' }]);
+    renderer.context.setSelection('shared', 'life-2');
+    return rendererResponse({ error: 'Request not found' }, { ok: false, status: 404 });
+  });
+  renderer.context.setRequests([{ id: 'shared', trafficLifecycleId: null }]);
+  renderer.context.setSelection('shared', null);
+
+  await renderer.context.togglePinRequest();
+
+  assert.equal(renderer.fetchCalls[0][0], '/api/traffic/shared/pin?trafficLifecycleId=');
+  assert.deepEqual(renderer.snapshot().requests, [
+    { id: 'shared', trafficLifecycleId: 'life-2' }
+  ]);
+  assert.deepEqual(renderer.toasts, [{
+    message: 'Failed to update pin: Request not found',
+    type: 'error'
+  }]);
 });
 
 test('renderer replaces stale rows and restores missed retained rows from Clear', () => {
@@ -1058,6 +1119,23 @@ test('exact deferred hydration preserves pin mutations received while loading', 
     method: 'GET',
     responseBody: 'complete body'
   }]);
+});
+
+test('an ordinary retained Clear invalidates an older context generation', () => {
+  const renderer = createRenderer(async () => rendererResponse({ success: true }));
+  renderer.context.setRequests([{
+    id: 'shared', trafficLifecycleId: 'old', method: 'OLD', pinned: true
+  }]);
+  renderer.context.setSelection('shared', 'old');
+  const generation = renderer.context.captureGenerationAt(0);
+  renderer.context.applyTrafficPinned('shared', 'old', true, 2);
+
+  renderer.context.applyTrafficCleared('new-clear', [{
+    id: 'shared', trafficLifecycleId: 'old', method: 'REPLACEMENT', pinned: true
+  }], 1, 1);
+
+  assert.equal(renderer.snapshot().requests[0].method, 'REPLACEMENT');
+  assert.equal(renderer.context.hasGenerationAt(0, generation), false);
 });
 
 test('pending compact hydration survives the matching REST Clear promotion', async () => {

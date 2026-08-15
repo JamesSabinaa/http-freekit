@@ -323,6 +323,24 @@
 
     const deferredTrafficGenerationTokens = new WeakMap();
 
+    function ensureTrafficGenerationToken(request) {
+      if (!request || typeof request !== 'object') return null;
+      let generationToken = deferredTrafficGenerationTokens.get(request);
+      if (!generationToken) {
+        generationToken = {};
+        deferredTrafficGenerationTokens.set(request, generationToken);
+      }
+      return generationToken;
+    }
+
+    function transferTrafficGenerationToken(currentRequest, nextRequest) {
+      const generationToken = deferredTrafficGenerationTokens.get(currentRequest);
+      if (generationToken) {
+        deferredTrafficGenerationTokens.set(nextRequest, generationToken);
+      }
+      return nextRequest;
+    }
+
     function currentTrafficGenerationRequest(request) {
       if (requests.includes(request)) return request;
       const generationToken = deferredTrafficGenerationTokens.get(request);
@@ -332,12 +350,8 @@
       ) || null;
     }
 
-    function mergeDeferredTrafficRequest(currentRequest, serverRequest) {
+    function mergeTrafficRequestWithRendererState(currentRequest, serverRequest) {
       const hydratedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
-      const generationToken = deferredTrafficGenerationTokens.get(currentRequest);
-      if (generationToken) {
-        deferredTrafficGenerationTokens.set(hydratedRequest, generationToken);
-      }
       // Clear snapshots and detail requests can resolve after a newer pin event.
       // The deferred row is the renderer's current authority for that mutation.
       if (currentRequest?.pinned === true) hydratedRequest.pinned = true;
@@ -346,6 +360,24 @@
         hydratedRequest._index = currentRequest._index;
       }
       return hydratedRequest;
+    }
+
+    function mergeDeferredTrafficRequest(currentRequest, serverRequest) {
+      return transferTrafficGenerationToken(
+        currentRequest,
+        mergeTrafficRequestWithRendererState(currentRequest, serverRequest)
+      );
+    }
+
+    function mergeTrafficRequestUpdate(currentRequest, serverRequest) {
+      const updatedRequest = mergeServerTrafficRequest(currentRequest, serverRequest);
+      const exactLifecycleUpdate = Object.hasOwn(currentRequest || {}, 'trafficLifecycleId') &&
+        Object.hasOwn(serverRequest || {}, 'trafficLifecycleId') &&
+        normalizeTrafficLifecycleId(currentRequest.trafficLifecycleId) ===
+          normalizeTrafficLifecycleId(serverRequest.trafficLifecycleId);
+      return exactLifecycleUpdate
+        ? transferTrafficGenerationToken(currentRequest, updatedRequest)
+        : updatedRequest;
     }
 
     function mergeTrafficDumpPins(currentRequests, serverRequests) {
@@ -466,7 +498,9 @@
             const pinChangedAfterClear = currentRequest && validPinRevision !== null &&
               Number.isSafeInteger(appliedPinRevision) && appliedPinRevision > validPinRevision;
             return [pinChangedAfterClear
-              ? mergeDeferredTrafficRequest(currentRequest, retainedRequest)
+              // A different Clear can reuse an exact identity, so preserve the
+              // newer pin state without carrying an open menu generation forward.
+              ? mergeTrafficRequestWithRendererState(currentRequest, retainedRequest)
               : mergeServerTrafficRequest(currentRequest, retainedRequest)];
           }
           // Compatibility with older servers that returned identities only.
@@ -738,7 +772,7 @@
                 r.trafficLifecycleId === msg.data.trafficLifecycleId)
             );
             if (idx !== -1) {
-              msg.data = mergeServerTrafficRequest(requests[idx], msg.data);
+              msg.data = mergeTrafficRequestUpdate(requests[idx], msg.data);
               requests[idx] = msg.data;
               applyFilter();
               // If this request is currently selected, refresh the detail view
@@ -1494,31 +1528,34 @@
 
     const deferredTrafficHydrations = new Map();
 
-    function resolveDeferredTrafficRequest(req) {
+    function resolveDeferredTrafficRequest(
+      req,
+      lifecycleWasOmitted = !Object.hasOwn(req || {}, 'trafficLifecycleId')
+    ) {
       const requestId = req?.id;
-      const lifecycleWasOmitted = !Object.hasOwn(req || {}, 'trafficLifecycleId');
       const lifecycleId = normalizeTrafficLifecycleId(req?.trafficLifecycleId);
       const currentRequest = requests.includes(req) ? req : null;
       if (!currentRequest) {
         return Promise.reject(new Error('The exchange is no longer available.'));
       }
       if (currentRequest._deferredTrafficDetail !== true) return Promise.resolve(currentRequest);
-      let generationToken = deferredTrafficGenerationTokens.get(currentRequest);
-      if (!generationToken) {
-        generationToken = {};
-        deferredTrafficGenerationTokens.set(currentRequest, generationToken);
-      }
+      const generationToken = ensureTrafficGenerationToken(currentRequest);
 
-      const existing = deferredTrafficHydrations.get(generationToken);
-      if (existing && existing.lifecycleWasOmitted === lifecycleWasOmitted &&
-          existing.lifecycleId === lifecycleId) {
-        return existing.hydration;
+      let generationHydrations = deferredTrafficHydrations.get(generationToken);
+      if (!generationHydrations) {
+        generationHydrations = new Map();
+        deferredTrafficHydrations.set(generationToken, generationHydrations);
       }
+      const hydrationKey = JSON.stringify([lifecycleWasOmitted, lifecycleId]);
+      const existing = generationHydrations.get(hydrationKey);
+      if (existing) return existing;
 
       const hydration = (async () => {
-        const lifecycleQuery = lifecycleId === null
+        const lifecycleQuery = lifecycleWasOmitted
           ? ''
-          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+          : '?trafficLifecycleId=' + (lifecycleId === null
+              ? ''
+              : encodeURIComponent(lifecycleId));
         const response = await fetch(
           API_BASE + '/api/traffic/' + encodeURIComponent(requestId) + lifecycleQuery
         );
@@ -1564,10 +1601,13 @@
         if (wasSelected) showDetail(mergedRequest);
         return mergedRequest;
       })();
-      const hydrationEntry = { lifecycleWasOmitted, lifecycleId, hydration };
-      deferredTrafficHydrations.set(generationToken, hydrationEntry);
+      generationHydrations.set(hydrationKey, hydration);
       void hydration.finally(() => {
-        if (deferredTrafficHydrations.get(generationToken) === hydrationEntry) {
+        if (generationHydrations.get(hydrationKey) === hydration) {
+          generationHydrations.delete(hydrationKey);
+        }
+        if (generationHydrations.size === 0 &&
+            deferredTrafficHydrations.get(generationToken) === generationHydrations) {
           deferredTrafficHydrations.delete(generationToken);
         }
       }).catch(() => {});
@@ -1683,20 +1723,41 @@
       return findTrafficRequestByIdentity(requests, requestId, resolvedLifecycleId);
     }
 
+    function trafficActionGenerationRequest(requestId, trafficLifecycleId, generationToken) {
+      if (!generationToken) return null;
+      const request = requests.find(candidate =>
+        deferredTrafficGenerationTokens.get(candidate) === generationToken
+      ) || null;
+      if (request?.id !== requestId) return null;
+      if (trafficLifecycleId !== undefined &&
+          normalizeTrafficLifecycleId(request.trafficLifecycleId) !==
+            normalizeTrafficLifecycleId(trafficLifecycleId)) {
+        return null;
+      }
+      return request;
+    }
+
     function withResolvedTrafficAction(
       requestId = selectedRequestId,
       trafficLifecycleId,
       actionLabel,
-      action
+      action,
+      originatingGenerationToken
     ) {
       // Omitted lifecycles belong to compact selected rows and follow selection
       // promotion. Once selection moves elsewhere, there is no exact identity to
       // rebind; explicit null remains an exact legacy-null identity.
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
-      const req = omittedLifecycleLostSelection
-        ? null
-        : trafficActionRequest(requestId, trafficLifecycleId);
+      const req = originatingGenerationToken
+        ? trafficActionGenerationRequest(
+            requestId,
+            trafficLifecycleId,
+            originatingGenerationToken
+          )
+        : omittedLifecycleLostSelection
+          ? null
+          : trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) {
         toast(`Cannot ${actionLabel}: the exchange is no longer available.`, 'error');
         return null;
@@ -1713,7 +1774,9 @@
         }
       }
 
-      return resolveDeferredTrafficRequest(req)
+      const lifecycleWasOmitted = trafficLifecycleId === undefined &&
+        !Object.hasOwn(req, 'trafficLifecycleId');
+      return resolveDeferredTrafficRequest(req, lifecycleWasOmitted)
         .then(resolved => {
           const exactRequest = currentTrafficGenerationRequest(resolved);
           if (!exactRequest || exactRequest.id !== resolved.id ||
@@ -1729,8 +1792,21 @@
 
     const trafficPinInFlight = new Set();
 
-    function togglePinRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function togglePinRequest(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      originatingGenerationToken
+    ) {
       if (!requestId) return;
+      if (originatingGenerationToken) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'update pin',
+          togglePinResolvedRequest,
+          originatingGenerationToken
+        );
+      }
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection
@@ -1756,9 +1832,9 @@
       trafficPinInFlight.add(identityKey);
       try {
         const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
-        const query = lifecycleId === null
+        const query = '?trafficLifecycleId=' + (lifecycleId === null
           ? ''
-          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+          : encodeURIComponent(lifecycleId));
         const response = await fetch(
           API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + '/pin' + query,
           {
@@ -1794,8 +1870,21 @@
 
     const trafficDeleteInFlight = new Set();
 
-    function deleteSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function deleteSelectedRequest(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      originatingGenerationToken
+    ) {
       if (!requestId) return;
+      if (originatingGenerationToken) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'delete exchange',
+          deleteResolvedRequest,
+          originatingGenerationToken
+        );
+      }
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection
@@ -1823,9 +1912,9 @@
       trafficDeleteInFlight.add(identityKey);
       try {
         const lifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
-        const query = lifecycleId === null
+        const query = '?trafficLifecycleId=' + (lifecycleId === null
           ? ''
-          : '?trafficLifecycleId=' + encodeURIComponent(lifecycleId);
+          : encodeURIComponent(lifecycleId));
         const response = await fetch(
           API_BASE + '/api/traffic/' + encodeURIComponent(req.id) + query,
           { method: 'DELETE' }
@@ -1879,8 +1968,21 @@
         : 'utf8';
     }
 
-    function resendSelectedRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function resendSelectedRequest(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      originatingGenerationToken
+    ) {
       if (!requestId) return;
+      if (originatingGenerationToken) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'resend request',
+          resendResolvedRequest,
+          originatingGenerationToken
+        );
+      }
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection
@@ -12524,11 +12626,13 @@
       }
 
       const invoker = menuInvoker || e.currentTarget || e.target;
-      const actionLifecycleId = Object.hasOwn(req, 'trafficLifecycleId')
-        ? req.trafficLifecycleId
-        : req._deferredTrafficDetail === true
+      const lifecycleWasOmitted = !Object.hasOwn(req, 'trafficLifecycleId');
+      const actionLifecycleId = lifecycleWasOmitted
+        ? req._deferredTrafficDetail === true
           ? undefined
-          : null;
+          : null
+        : req.trafficLifecycleId;
+      const originatingGenerationToken = ensureTrafficGenerationToken(req);
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
       showContextMenu(anchor.x, anchor.y, [
@@ -12537,7 +12641,8 @@
           actionLifecycleId,
           'copy URL',
           exactRequest => navigator.clipboard.writeText(exactRequest.url)
-            .then(() => toast('URL copied', 'success'))
+            .then(() => toast('URL copied', 'success')),
+          originatingGenerationToken
         ) },
         { label: 'Copy as cURL', action: () => withResolvedTrafficAction(
           requestId,
@@ -12547,15 +12652,26 @@
             const snippet = generateExportSnippet(exactRequest, 'curl');
             return navigator.clipboard.writeText(snippet)
               .then(() => toast('cURL command copied', 'success'));
-          }
+          },
+          originatingGenerationToken
         ) },
         { separator: true },
-        { label: 'Resend in Send tab', action: () => resendSelectedRequest(requestId, actionLifecycleId) },
-        { label: 'Create mock rule', action: () => createMockFromRequest(requestId, actionLifecycleId) },
-        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(requestId, actionLifecycleId) },
+        { label: 'Resend in Send tab', action: () => resendSelectedRequest(
+          requestId, actionLifecycleId, originatingGenerationToken
+        ) },
+        { label: 'Create mock rule', action: () => createMockFromRequest(
+          requestId, actionLifecycleId, originatingGenerationToken
+        ) },
+        { label: 'Create breakpoint', action: () => createBreakpointFromRequest(
+          requestId, actionLifecycleId, originatingGenerationToken
+        ) },
         { separator: true },
-        { label: 'Pin exchange', action: () => togglePinRequest(requestId, actionLifecycleId) },
-        { label: 'Delete exchange', action: () => deleteSelectedRequest(requestId, actionLifecycleId) },
+        { label: 'Pin exchange', action: () => togglePinRequest(
+          requestId, actionLifecycleId, originatingGenerationToken
+        ) },
+        { label: 'Delete exchange', action: () => deleteSelectedRequest(
+          requestId, actionLifecycleId, originatingGenerationToken
+        ) },
       ], { invoker, focusFirst: keyboardInvoked });
     }
 
@@ -12574,7 +12690,20 @@
       return copiedHeaders;
     }
 
-    function createMockFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function createMockFromRequest(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      originatingGenerationToken
+    ) {
+      if (originatingGenerationToken) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'create mock rule',
+          createMockFromResolvedRequest,
+          originatingGenerationToken
+        );
+      }
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection
@@ -12931,8 +13060,21 @@
       }
     }
 
-    function createBreakpointFromRequest(requestId = selectedRequestId, trafficLifecycleId) {
+    function createBreakpointFromRequest(
+      requestId = selectedRequestId,
+      trafficLifecycleId,
+      originatingGenerationToken
+    ) {
       if (!requestId) return;
+      if (originatingGenerationToken) {
+        return withResolvedTrafficAction(
+          requestId,
+          trafficLifecycleId,
+          'create breakpoint',
+          createBreakpointFromResolvedRequest,
+          originatingGenerationToken
+        );
+      }
       const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
         typeof selectedRequestId !== 'undefined' && requestId !== selectedRequestId;
       const req = omittedLifecycleLostSelection

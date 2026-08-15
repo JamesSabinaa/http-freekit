@@ -22,15 +22,19 @@ function readScalarQueryParameters(query, names) {
 }
 
 function resolveTrafficRequest(api, req) {
+  const parsedQuery = readScalarQueryParameters(req.query, ['trafficLifecycleId']);
+  if (parsedQuery.error) return { status: 400, error: parsedQuery.error };
   const lifecycleProvided = Object.hasOwn(req.query, 'trafficLifecycleId');
-  if (lifecycleProvided &&
-      (typeof req.query.trafficLifecycleId !== 'string' || !req.query.trafficLifecycleId)) {
-    return { status: 400, error: 'trafficLifecycleId must be a non-empty string' };
+  const lifecycleValue = parsedQuery.values.trafficLifecycleId;
+  if (lifecycleProvided && typeof lifecycleValue !== 'string') {
+    return { status: 400, error: 'trafficLifecycleId must be a single string query value' };
   }
+  const requestedLifecycleId = lifecycleValue === '' ? null : lifecycleValue;
 
   const candidates = api.trafficLog.filter(request =>
     request.id === req.params.id &&
-    (!lifecycleProvided || request.trafficLifecycleId === req.query.trafficLifecycleId)
+    (!lifecycleProvided ||
+      (request.trafficLifecycleId ?? null) === requestedLifecycleId)
   );
   if (candidates.length === 0) return { status: 404, error: 'Request not found' };
   if (candidates.length > 1) {

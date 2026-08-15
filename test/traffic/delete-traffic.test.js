@@ -127,6 +127,37 @@ test('DELETE traffic rejects an ambiguous ID without changing or broadcasting st
   assert.deepEqual(broadcasts, []);
 });
 
+test('an empty lifecycle query never deletes a newer same-ID lifecycle', async t => {
+  const api = createApi();
+  const replacement = { id: 'shared', trafficLifecycleId: 'life-2' };
+  api.trafficLog = [replacement];
+  const broadcasts = [];
+  api._broadcast = message => broadcasts.push(message);
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+
+  const staleDelete = await requestJson(
+    port,
+    '/api/traffic/shared?trafficLifecycleId=',
+    'DELETE'
+  );
+  assert.equal(staleDelete.statusCode, 404);
+  assert.deepEqual(api.trafficLog, [replacement]);
+  assert.deepEqual(broadcasts, []);
+
+  const legacy = { id: 'shared', trafficLifecycleId: null };
+  api.trafficLog.unshift(legacy);
+  const exactDelete = await requestJson(
+    port,
+    '/api/traffic/shared?trafficLifecycleId=',
+    'DELETE'
+  );
+  assert.equal(exactDelete.statusCode, 200);
+  assert.equal(exactDelete.body.trafficLifecycleId, null);
+  assert.deepEqual(api.trafficLog, [replacement]);
+});
+
 test('a late completion cannot restore a deleted pending traffic lifecycle', async t => {
   const api = createApi();
   const broadcasts = [];
@@ -319,6 +350,11 @@ function createRenderer(fetch) {
     }
     ${rendererSource.slice(deletionStateStart, deletionStateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}
+    globalThis.setRequests = value => { requests = value; };
+    globalThis.setSelection = (requestId, lifecycleId) => {
+      selectedRequestId = requestId;
+      selectedRequestLifecycleId = lifecycleId;
+    };
   `, context);
   return {
     context,
@@ -375,6 +411,32 @@ test('renderer deletes only after server confirmation and applies its broadcast 
     inFlight: 0
   });
   assert.deepEqual(renderer.toasts, [{ message: 'Exchange deleted', type: 'success' }]);
+});
+
+test('renderer encodes explicit-null delete identity and leaves an in-flight replacement untouched', async () => {
+  let renderer;
+  renderer = createRenderer(async () => {
+    renderer.context.setRequests([{
+      id: 'socket', trafficLifecycleId: 'life-2', protocol: 'wss', pinned: false
+    }]);
+    renderer.context.setSelection('socket', 'life-2');
+    return rendererResponse({ error: 'Request not found' }, { ok: false, status: 404 });
+  });
+  renderer.context.setRequests([{
+    id: 'socket', trafficLifecycleId: null, protocol: 'wss', pinned: false
+  }]);
+  renderer.context.setSelection('socket', null);
+
+  await renderer.context.deleteSelectedRequest();
+
+  assert.equal(renderer.fetchCalls[0][0], '/api/traffic/socket?trafficLifecycleId=');
+  assert.deepEqual(renderer.snapshot().requests, [{
+    id: 'socket', trafficLifecycleId: 'life-2', protocol: 'wss', pinned: false
+  }]);
+  assert.deepEqual(renderer.toasts, [{
+    message: 'Failed to delete exchange: Request not found',
+    type: 'error'
+  }]);
 });
 
 test('renderer preserves the exchange when authoritative deletion fails', async () => {
