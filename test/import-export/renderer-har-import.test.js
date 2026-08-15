@@ -115,6 +115,8 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     ['null request', (() => { const value = validEntry(); value.request = null; return har([value]); })(), /request must be an object/],
     ['array response', (() => { const value = validEntry(); value.response = []; return har([value]); })(), /response must be an object/],
     ['numeric method', (() => { const value = validEntry(); value.request.method = 1; return har([value]); })(), /request\.method must be a string/],
+    ['attribute-delimiting method', (() => { const value = validEntry(); value.request.method = 'GET" data-audit="present'; return har([value]); })(), /request\.method must be a valid HTTP token/],
+    ['whitespace in method', (() => { const value = validEntry(); value.request.method = 'GET onclick=alert(1)'; return har([value]); })(), /request\.method must be a valid HTTP token/],
     ['object URL', (() => { const value = validEntry(); value.request.url = { unsafe: true }; return har([value]); })(), /request\.url must be a string/],
     ['numeric header name', (() => { const value = validEntry(); value.request.headers = [{ name: 1, value: 'ok' }]; return har([value]); })(), /headers\[0\]\.name must be a string/],
     ['object header value', (() => { const value = validEntry(); value.response.headers = [{ name: 'X-Test', value: {} }]; return har([value]); })(), /headers\[0\]\.value must be a string/],
@@ -258,6 +260,22 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:post'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'rich-token'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'header:x-repeated=two'), true);
+});
+
+test('renderer HAR normalization preserves valid extension and punctuation method tokens', () => {
+  const extension = validEntry();
+  extension.request.method = 'M-SEARCH';
+  const punctuation = validEntry();
+  punctuation.request.method = "!#$%&'*+-.^_`|~AZaz09";
+
+  const normalized = normalizeHarEntries(har([extension, punctuation]), {
+    createId: () => 'stable-id'
+  });
+
+  assert.deepEqual(normalized.map(request => request.method), [
+    'M-SEARCH',
+    "!#$%&'*+-.^_`|~AZaz09"
+  ]);
 });
 
 test('visible HAR import preserves literal data-URI request and response text', async () => {

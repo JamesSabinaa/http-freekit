@@ -1218,7 +1218,9 @@
       // ---- TLS error row (italic, 28px, centered text) ----
       if (req.protocol === 'tls-error') {
         const source = req.source || 'tls-error';
-        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS['tls-error'];
+        const sourceIcon = Object.hasOwn(SOURCE_ICONS, source)
+          ? SOURCE_ICONS[source]
+          : SOURCE_ICONS['tls-error'];
         return `<tr class="tls-error-row ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
@@ -1231,7 +1233,9 @@
       // ---- Tunnel row (italic, 28px, centered text) ----
       if (req.protocol === 'tunnel') {
         const source = req.source || 'tunnel';
-        const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.tunnel;
+        const sourceIcon = Object.hasOwn(SOURCE_ICONS, source)
+          ? SOURCE_ICONS[source]
+          : SOURCE_ICONS.tunnel;
         const bytesSent = formatSize(req.requestBodySize || 0);
         const bytesRecv = formatSize(req.responseBodySize || 0);
         const tunnelEndpoint = formatRemoteEndpoint(
@@ -1261,7 +1265,9 @@
         statusClass = 'status-2xx';
       }
       const source = req.source || 'proxy';
-      const sourceIcon = SOURCE_ICONS[source] || SOURCE_ICONS.proxy;
+      const sourceIcon = Object.hasOwn(SOURCE_ICONS, source)
+        ? SOURCE_ICONS[source]
+        : SOURCE_ICONS.proxy;
       const markerColor = req.source === 'breakpoint' ? '#f1971f' :
         ['POST','PUT','DELETE','PATCH'].includes(req.method) ? '#ce3939' :
         source === 'mock' ? '#6e40aa' : '#888';
@@ -1289,9 +1295,9 @@
 
       return `<tr class="${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" aria-haspopup="menu" tabindex="-1" ${identityAttributes} onclick="${selectHandler}" oncontextmenu="showTrafficContextMenu(event, this.dataset.id, this, this.dataset.lifecycleId)">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
-        <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${methodClass}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
+        <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${escapeHtmlAttribute(methodClass)}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
-        <td role="gridcell" class="source-cell"><span class="source-icon source-${source}" title="${source}">${sourceIcon}</span></td>
+        <td role="gridcell" class="source-cell"><span class="source-icon source-${escapeHtmlAttribute(source)}" title="${escapeHtmlAttribute(source)}">${sourceIcon}</span></td>
         <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
         <td role="gridcell" title="${esc(req.path)}">${esc(req.path || '/')}</td>
       </tr>`;
@@ -2139,7 +2145,9 @@
       // ---- WebSocket Card ----
       if (isConnectedWebSocket(req)) {
         const wsSourceLabel = req.source || 'Unknown';
-        const wsSourceIconHtml = SOURCE_ICONS[wsSourceLabel] || SOURCE_ICONS['Other'] || '';
+        const wsSourceIconHtml = Object.hasOwn(SOURCE_ICONS, wsSourceLabel)
+          ? SOURCE_ICONS[wsSourceLabel]
+          : SOURCE_ICONS.Other;
         const wsProtocolLabel = req.protocol === 'wss' ? 'WSS' : 'WS';
         const wsConnectionLabel = req.protocol === 'wss'
           ? `WSS (${esc(req.tls?.version || 'TLS')})`
@@ -2147,7 +2155,7 @@
         html += `<div class="detail-card dir-right" style="border-right-color:#4caf7d;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-              <span class="source-icon" title="${esc(wsSourceLabel)}" style="display:inline-flex;opacity:0.7;">${wsSourceIconHtml}</span>
+              <span class="source-icon" title="${escapeHtmlAttribute(wsSourceLabel)}" style="display:inline-flex;opacity:0.7;">${wsSourceIconHtml}</span>
               <span class="detail-pill" style="background:#4caf7d;color:#fff;">${wsProtocolLabel}</span>
               <span class="detail-card-heading">WebSocket</span>
               <span class="collapse-chevron">&#9650;</span>
@@ -2400,7 +2408,9 @@
       const effReq = getEffectiveRequest(req);
       const effMethodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[effReq.method] || '#888';
       const sourceLabel = req.source || 'Unknown';
-      const sourceIconHtml = SOURCE_ICONS[sourceLabel] || SOURCE_ICONS['Other'] || '';
+      const sourceIconHtml = Object.hasOwn(SOURCE_ICONS, sourceLabel)
+        ? SOURCE_ICONS[sourceLabel]
+        : SOURCE_ICONS.Other;
       const httpVersion = req.protocol === 'h2'
         ? 'HTTP/2'
         : req.protocol === 'https' || req.protocol === 'wss'
@@ -2409,7 +2419,7 @@
       html += `<div class="detail-card dir-right" id="card-request" aria-expanded="true" style="border-right-color:${effMethodColor};">
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-            <span class="source-icon" title="${esc(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
+            <span class="source-icon" title="${escapeHtmlAttribute(sourceLabel)}" style="display:inline-flex;opacity:0.7;">${sourceIconHtml}</span>
             <span class="detail-pill pill-muted" style="font-size:11px;">${httpVersion}</span>
             <span class="detail-pill" style="background:${effMethodColor};color:#fff;">${esc(effReq.method)} ${esc(effReq.host || '').replace(/\./g, '\u2008.\u2008')}</span>
             <span class="detail-card-heading">Request</span>
@@ -2570,7 +2580,7 @@
             <div class="detail-summary-item"><div class="detail-summary-label">Protocol</div><div class="detail-summary-value">${(req.protocol||'http').toUpperCase()}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Request Size</div><div class="detail-summary-value">${formatSize(req.requestBodySize)}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Response Size</div><div class="detail-summary-value">${formatSize(req.responseBodySize)}</div></div>
-            <div class="detail-summary-item"><div class="detail-summary-label">Source</div><div class="detail-summary-value">${req.source||'proxy'}</div></div>
+            <div class="detail-summary-item"><div class="detail-summary-label">Source</div><div class="detail-summary-value">${esc(req.source || 'proxy')}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Time</div><div class="detail-summary-value" style="font-size:11px;">${new Date(req.timestamp).toLocaleTimeString()}</div></div>
           </div>
           <div class="perf-timing">

@@ -33,6 +33,7 @@ const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 // A slow UI client is disconnected before pending broadcasts exceed 16 MiB.
 export const DEFAULT_MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MANAGEMENT_REQUEST_TIMEOUT_MS = 30000;
+const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 function normalizeDataUriMediaType(value) {
@@ -846,6 +847,10 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${field} must be a string`;
         }
       }
+      if (request.method !== undefined && request.method !== null &&
+          !HTTP_TOKEN_PATTERN.test(request.method)) {
+        return `requests[${index}].method must be a valid HTTP token`;
+      }
       for (const field of ['trafficLifecycleId', 'parentTrafficLifecycleId']) {
         if (request[field] === '') {
           return `requests[${index}].${field} must be non-empty when provided`;
@@ -1338,7 +1343,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             protocol: /^HTTP\/2(?:\.\d+)?$/i.test(entry.request.httpVersion || '')
               ? 'h2'
               : entry.request.url?.toLowerCase().startsWith('https') ? 'https' : 'http',
-            method: entry.request.method || 'GET',
+            method: entry.request.method ?? 'GET',
             url: entry.request.url || '',
             host,
             path: pathname + search,

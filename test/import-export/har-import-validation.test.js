@@ -127,6 +127,27 @@ test('HAR import rejects non-finite and out-of-range mapped numbers', async t =>
   assert.deepEqual(api.trafficLog, []);
 });
 
+test('HAR import rejects attribute-delimiting methods but preserves valid HTTP tokens', async t => {
+  const { api, port } = await createApi(t);
+
+  for (const method of ['GET" data-audit="present', 'GET onclick=alert(1)', 'GET<svg>']) {
+    const response = await postBody(port, har([harEntry({ request: { method } })]));
+    assert.equal(response.statusCode, 400, method);
+    assert.match(response.body.error, /method must be a valid HTTP token/, method);
+  }
+  assert.deepEqual(api.trafficLog, []);
+
+  const valid = await postBody(port, har([
+    harEntry({ request: { method: 'M-SEARCH' } }),
+    harEntry({ request: { method: "!#$%&'*+-.^_`|~AZaz09" } })
+  ]));
+  assert.equal(valid.statusCode, 200, valid.body?.error);
+  assert.deepEqual(api.trafficLog.map(request => request.method), [
+    'M-SEARCH',
+    "!#$%&'*+-.^_`|~AZaz09"
+  ]);
+});
+
 test('valid rich HAR entries retain normalization, metadata, bodies, and generated IDs', async t => {
   const { api, port } = await createApi(t);
   t.mock.method(crypto, 'randomUUID', () => 'stable-har-id');
