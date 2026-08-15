@@ -2067,38 +2067,38 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       );
       const alreadyConfigured = matchingCertificates.length === 1 && exactPair &&
         (!hasPassphrase || exactPair.passphrase === req.body.passphrase);
-      if (!alreadyConfigured) {
-        const retainedPassphrase = !hasPassphrase
-          ? matchingCertificates.find(certificate =>
-            certificate?.pfxPath === pfxPath &&
-            Object.prototype.hasOwnProperty.call(certificate, 'passphrase')
-          )?.passphrase
-          : undefined;
-        const replacement = {
-          host,
-          pfxPath,
-          ...(hasPassphrase
-            ? { passphrase: req.body.passphrase }
-            : retainedPassphrase !== undefined
-              ? { passphrase: retainedPassphrase }
-              : {})
-        };
-        const certificates = [];
-        let replacementAdded = false;
-        for (const certificate of this.proxy.clientCertificates) {
-          if (!matchesHost(certificate)) {
-            certificates.push(certificate);
-          } else if (!replacementAdded) {
-            certificates.push(replacement);
-            replacementAdded = true;
-          }
+      const retainedPassphrase = !hasPassphrase
+        ? matchingCertificates.find(certificate =>
+          certificate?.pfxPath === pfxPath &&
+          Object.prototype.hasOwnProperty.call(certificate, 'passphrase')
+        )?.passphrase
+        : undefined;
+      const replacement = {
+        host,
+        pfxPath,
+        ...(hasPassphrase
+          ? { passphrase: req.body.passphrase }
+          : retainedPassphrase !== undefined
+            ? { passphrase: retainedPassphrase }
+            : {})
+      };
+      const certificates = [];
+      let replacementAdded = false;
+      for (const certificate of this.proxy.clientCertificates) {
+        if (!matchesHost(certificate)) {
+          certificates.push(certificate);
+        } else if (!replacementAdded) {
+          certificates.push(replacement);
+          replacementAdded = true;
         }
-        if (!replacementAdded) certificates.push(replacement);
-        const prepared = this._prepareTlsMaterialRequest(
-          res,
-          () => this.proxy._prepareClientCertificates(certificates)
-        );
-        if (!prepared) return;
+      }
+      if (!replacementAdded) certificates.push(replacement);
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareClientCertificates(certificates)
+      );
+      if (!prepared) return;
+      if (!alreadyConfigured) {
         this._mutatePreparedTlsMaterial({
           property: 'clientCertificates',
           loadedProperty: '_clientCertificateOptions',
@@ -2159,12 +2159,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       }
       const ca = req.body.ca.trim();
       if (!ca) return res.status(400).json({ error: 'ca is required' });
-      if (!this.proxy.trustedCAs.includes(ca)) {
-        const prepared = this._prepareTlsMaterialRequest(
-          res,
-          () => this.proxy._prepareTrustedCAs([...this.proxy.trustedCAs, ca])
-        );
-        if (!prepared) return;
+      const alreadyConfigured = this.proxy.trustedCAs.includes(ca);
+      const cas = alreadyConfigured ? this.proxy.trustedCAs : [...this.proxy.trustedCAs, ca];
+      const prepared = this._prepareTlsMaterialRequest(
+        res,
+        () => this.proxy._prepareTrustedCAs(cas)
+      );
+      if (!prepared) return;
+      if (!alreadyConfigured) {
         this._mutatePreparedTlsMaterial({
           property: 'trustedCAs',
           loadedProperty: '_trustedCaCertificates',
