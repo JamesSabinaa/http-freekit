@@ -91,15 +91,9 @@ async function startServer() {
   const serverScript = resolveBundledServerScript(__dirname);
   const attemptedPorts = new Set();
   const maxAttempts = 3;
+  let serverLog = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    apiPort = await findFreePort(attemptedPorts);
-    attemptedPorts.add(apiPort);
-    const serverLog = createServerLogLifecycle({
-      logPath,
-      initialMessage: `\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`
-    });
-
     let proc = null;
     let processStartupComplete = false;
     let rejectProcessStartup;
@@ -109,7 +103,18 @@ async function startServer() {
     processStartupFailure.catch(() => {});
 
     try {
-      await serverLog.ready;
+      apiPort = await findFreePort(attemptedPorts);
+      attemptedPorts.add(apiPort);
+      const initialMessage = `\n--- Server starting at ${new Date().toISOString()} (port ${apiPort}) ---\n`;
+      if (!serverLog) {
+        serverLog = createServerLogLifecycle({ logPath, initialMessage });
+        await serverLog.ready;
+      } else {
+        // Keep one serialized destination across port-collision retries. This
+        // preserves every attempt without overlapping file rotations.
+        await serverLog.writeAndWait(initialMessage);
+      }
+
       proc = spawn(process.execPath, [serverScript], {
         env: {
           ...process.env,
@@ -163,13 +168,15 @@ async function startServer() {
       serverReady = true;
       return;
     } catch (error) {
-      serverLog.close();
       const processStopped = await terminateServerStartupProcess(proc);
       if (processStopped && serverProcess === proc) serverProcess = null;
+      if (processStopped && proc) serverLog?.detachProcess(proc);
       serverReady = false;
 
       const apiPortCollision = error?.code === 'EADDRINUSE' && error?.apiPort === apiPort;
       if (apiPortCollision && processStopped && attempt < maxAttempts) continue;
+      serverLog?.close();
+      if (serverLog) await serverLog.closed;
       throw error;
     }
   }
