@@ -1453,10 +1453,13 @@
       transition: opacity 0.15s;
     }
     .url-decoded-key:hover .url-decoded-copy,
-    .url-decoded-val:hover .url-decoded-copy {
+    .url-decoded-key:focus-within .url-decoded-copy,
+    .url-decoded-val:hover .url-decoded-copy,
+    .url-decoded-val:focus-within .url-decoded-copy {
       opacity: 1;
     }
-    .url-decoded-copy:hover {
+    .url-decoded-copy:hover,
+    .url-decoded-copy:focus-visible {
       color: var(--pop-color);
     }
     .url-decoded-value {
@@ -3569,7 +3572,8 @@
       opacity: 0;
       transition: opacity 0.15s;
     }
-    .mock-rule-summary:hover .mock-rule-actions {
+    .mock-rule-summary:hover .mock-rule-actions,
+    .mock-rule-summary:focus-within .mock-rule-actions {
       opacity: 1;
     }
 
