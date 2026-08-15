@@ -40,6 +40,8 @@ const METHODS_WITHOUT_DEFAULT_CHUNKED_BODY = new Set([
 ]);
 const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const TRAFFIC_BASE64_DATA_URI_PATTERN =
+  /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/i;
 
 class SendBodyValidationError extends Error {
   constructor(message) {
@@ -81,6 +83,40 @@ function prepareOutboundSendBody(body, bodyEncoding) {
     throw new SendBodyValidationError('Send base64 body is malformed or incomplete');
   }
   return decoded;
+}
+
+function isCanonicalTrafficBase64Body(body) {
+  if (typeof body !== 'string') return false;
+  const match = TRAFFIC_BASE64_DATA_URI_PATTERN.exec(body);
+  if (!match || !CANONICAL_BASE64_PATTERN.test(match[1])) return false;
+  return Buffer.from(match[1], 'base64').toString('base64') === match[1];
+}
+
+function readOptionalScalarQuery(query, name) {
+  const source = query && typeof query === 'object' ? query : {};
+  if (Object.keys(source).some(key => key.startsWith(`${name}[`))) {
+    return { error: `${name} must be a single string query value` };
+  }
+  const provided = Object.prototype.hasOwnProperty.call(source, name);
+  const value = provided ? source[name] : undefined;
+  if (provided && typeof value !== 'string') {
+    return { error: `${name} must be a single string query value` };
+  }
+  return { provided, value };
+}
+
+function validateTlsPassthroughHosts(hosts) {
+  if (!Array.isArray(hosts)) return 'hosts must be an array';
+  for (let index = 0; index < hosts.length; index++) {
+    const host = hosts[index];
+    if (typeof host !== 'string' || !host.trim()) {
+      return `hosts[${index}] must be a non-empty string`;
+    }
+    if (host.length > 1024 || /[\r\n\0]/.test(host)) {
+      return `hosts[${index}] is not a valid hostname pattern`;
+    }
+  }
+  return '';
 }
 
 function normalizeDataUriMediaType(value) {
@@ -1040,6 +1076,14 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${field} must be utf8 or base64`;
         }
       }
+      for (const side of ['request', 'response']) {
+        const encodingField = `${side}BodyEncoding`;
+        const bodyField = `${side}Body`;
+        if (request[encodingField] === 'base64' &&
+            !isCanonicalTrafficBase64Body(request[bodyField])) {
+          return `requests[${index}].${bodyField} must be a canonical base64 data URI when ${encodingField} is base64`;
+        }
+      }
       for (const field of ['requestHeaders', 'responseHeaders']) {
         const headers = request[field];
         if (headers === undefined || headers === null) continue;
@@ -1928,9 +1972,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.post('/api/breakpoints/pending/:requestId/resume', (req, res) => {
       const validationError = this.proxy.validateBreakpointModifications(req.body);
       if (validationError) return res.status(400).json({ error: validationError });
-      const trafficLifecycleId = typeof req.query.trafficLifecycleId === 'string'
-        ? req.query.trafficLifecycleId
-        : undefined;
+      const parsedLifecycle = readOptionalScalarQuery(req.query, 'trafficLifecycleId');
+      if (parsedLifecycle.error) {
+        return res.status(400).json({ error: parsedLifecycle.error });
+      }
+      const trafficLifecycleId = parsedLifecycle.value;
       const success = this.proxy.resumeBreakpoint(
         req.params.requestId,
         req.body,
@@ -2020,10 +2066,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/tls-passthrough', (req, res) => {
-      const { hosts } = req.body;
+      const hosts = req.body?.hosts;
+      const validationError = validateTlsPassthroughHosts(hosts);
+      if (validationError) return res.status(400).json({ error: validationError });
       this._mutateProxySetting({
         property: 'tlsPassthrough',
-        apply: () => this.proxy.setTlsPassthrough(hosts || []),
+        apply: () => this.proxy.setTlsPassthrough(hosts),
         restore: previous => this.proxy.setTlsPassthrough(previous)
       });
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });

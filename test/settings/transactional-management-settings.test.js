@@ -131,6 +131,34 @@ test('list mutations preserve the exact prior collection when persistence fails'
   assert.notEqual(settings.get('tlsPassthrough'), proxy.tlsPassthrough);
 });
 
+test('TLS passthrough bulk replacement rejects malformed collections atomically', async t => {
+  const { proxy, settings, port } = await createHarness(t);
+  proxy.setTlsPassthrough(['before.test']);
+  settings.set('tlsPassthrough', proxy.tlsPassthrough);
+  const previousHosts = proxy.tlsPassthrough;
+  const beforeSettings = readSettingsFile(settings);
+
+  for (const hosts of [
+    'malformed.test',
+    null,
+    { 0: 'malformed.test', length: 1 },
+    ['valid.test', 42],
+    ['valid.test', '']
+  ]) {
+    const response = await requestJson(port, 'POST', '/api/tls-passthrough', { hosts });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.error, /hosts/);
+    assert.equal(proxy.tlsPassthrough, previousHosts);
+    assert.deepEqual(settings.get('tlsPassthrough'), ['before.test']);
+    assert.deepEqual(readSettingsFile(settings), beforeSettings);
+  }
+
+  const cleared = await requestJson(port, 'POST', '/api/tls-passthrough', { hosts: [] });
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(proxy.tlsPassthrough, []);
+  assert.deepEqual(settings.get('tlsPassthrough'), []);
+});
+
 test('mock mutations restore runtime and settings trees after a failed save', async t => {
   const { proxy, settings, port } = await createHarness(t);
   settings.set('mockRules', [{

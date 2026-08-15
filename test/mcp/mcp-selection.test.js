@@ -75,6 +75,42 @@ test('MCP search exposes lifecycle IDs and select_request accepts one', () => {
   });
 });
 
+test('MCP select_request rejects ambiguous IDs without selecting the oldest lifecycle', () => {
+  const broadcasts = [];
+  const bridge = createBridge([
+    {
+      id: 'duplicate', trafficLifecycleId: 'life-1', method: 'GET',
+      url: 'https://one.test/', timestamp: 1
+    },
+    {
+      id: 'duplicate', trafficLifecycleId: 'life-2', method: 'POST',
+      url: 'https://two.test/', timestamp: 2
+    }
+  ], broadcasts);
+
+  const result = bridge._handleSelectRequest({ request_id: 'duplicate' });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /Multiple request lifecycles/);
+  assert.match(result.content[0].text, /provide traffic_lifecycle_id from search_traffic/);
+  assert.deepEqual(broadcasts, []);
+});
+
+test('MCP select_request preserves unambiguous ID-only selection', () => {
+  const broadcasts = [];
+  const bridge = createBridge([{
+    id: 'unique', trafficLifecycleId: 'life-unique', method: 'GET',
+    url: 'https://unique.test/', statusCode: 200, duration: 1
+  }], broadcasts);
+
+  const result = bridge._handleSelectRequest({ request_id: 'unique' });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(broadcasts, [{
+    type: 'mcp-select', requestId: 'unique', trafficLifecycleId: 'life-unique'
+  }]);
+});
+
 test('MCP request detail targets an exact reused lifecycle, including body pages', () => {
   const bridge = createBridge([
     {

@@ -489,7 +489,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'select_request',
-    description: 'Select a specific request in the HTTP FreeKit UI, opening its detail pane so the user can see the full request/response details in their browser.',
+    description: 'Select a specific request in the HTTP FreeKit UI, opening its detail pane so the user can see the full request/response details in their browser. Pass traffic_lifecycle_id from search_traffic when an ID has multiple retained lifecycles.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1054,11 +1054,22 @@ export class McpServerBridge {
   _handleSelectRequest(args) {
     const { request_id, traffic_lifecycle_id } = args;
     const lifecycleProvided = Object.prototype.hasOwnProperty.call(args, 'traffic_lifecycle_id');
-    const req = this.apiServer.trafficLog.find(r =>
-      r.id === request_id &&
-      (!lifecycleProvided || (r.trafficLifecycleId ?? null) === traffic_lifecycle_id)
+    if (typeof request_id !== 'string' || request_id.length === 0) {
+      throw new Error('request_id must be a non-empty string');
+    }
+    if (lifecycleProvided && traffic_lifecycle_id !== null &&
+        (typeof traffic_lifecycle_id !== 'string' || traffic_lifecycle_id.length === 0)) {
+      throw new Error('traffic_lifecycle_id must be a non-empty string or null');
+    }
+    let candidates = this.apiServer.trafficLog.filter(
+      record => ownDataValue(record, 'id') === request_id
     );
-    if (!req) {
+    if (lifecycleProvided) {
+      candidates = candidates.filter(
+        record => trafficLifecycleId(record) === traffic_lifecycle_id
+      );
+    }
+    if (candidates.length === 0) {
       const identity = !lifecycleProvided
         ? request_id
         : traffic_lifecycle_id === null
@@ -1066,6 +1077,13 @@ export class McpServerBridge {
           : `${request_id} (lifecycle ${traffic_lifecycle_id})`;
       return { content: [{ type: 'text', text: `Request ${identity} not found` }], isError: true };
     }
+    if (candidates.length > 1) {
+      const error = lifecycleProvided
+        ? `Multiple requests have traffic identity ${describeTrafficIdentity(request_id, traffic_lifecycle_id)}`
+        : `Multiple request lifecycles have ID ${request_id}; provide traffic_lifecycle_id from search_traffic`;
+      return { content: [{ type: 'text', text: error }], isError: true };
+    }
+    const req = candidates[0];
     // Broadcast to UI to select this request and open detail pane
     this._broadcastToUi({
       type: 'mcp-select',

@@ -72,6 +72,25 @@ test('duplicate request IDs retain and resume each breakpoint lifecycle independ
     [['duplicate', 'life-1'], ['duplicate', 'life-2']]
   );
 
+  for (const query of [
+    'trafficLifecycleId=life-2&trafficLifecycleId=life-2',
+    'trafficLifecycleId%5Bvalue%5D=life-2'
+  ]) {
+    const malformed = await requestJson(
+      port,
+      'POST',
+      `/api/breakpoints/pending/duplicate/resume?${query}`,
+      {}
+    );
+    assert.equal(malformed.statusCode, 400);
+    assert.match(malformed.body.error, /trafficLifecycleId must be a single string query value/);
+    assert.deepEqual(resolved, []);
+    assert.deepEqual(
+      proxy.getPendingBreakpoints().map(bp => bp.trafficLifecycleId),
+      ['life-1', 'life-2']
+    );
+  }
+
   const exact = await requestJson(
     port,
     'POST',
