@@ -1187,10 +1187,10 @@
         ? `[${rawAddress}]`
         : rawAddress;
       const displayPort = port === null || port === undefined ? fallbackPort : port;
-      return esc(displayAddress) + (
+      return displayAddress + (
         displayPort === null || displayPort === undefined
           ? ''
-          : ':' + esc(String(displayPort))
+          : ':' + String(displayPort)
       );
     }
 
@@ -1211,7 +1211,7 @@
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
           <td role="gridcell" colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
           <td role="gridcell" style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
-          <td role="gridcell" colspan="2" class="ws-frame-preview" title="${esc(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
+          <td role="gridcell" colspan="2" class="ws-frame-preview" title="${escapeHtmlAttribute(req.requestBody || '')}">${preview || '<span style="color:var(--text-watermark);">empty</span>'}</td>
         </tr>`;
       }
 
@@ -1226,7 +1226,7 @@
           <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
           <td role="gridcell"><span class="status-badge status-5xx">ERR</span></td>
           <td role="gridcell" class="source-cell"><span class="source-icon source-tls-error" title="TLS Error">${sourceIcon}</span></td>
-          <td role="gridcell" colspan="2" style="text-align:center;" title="${esc(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="${escapeHtmlAttribute(req.error || req.responseBody || '')}">${esc(req.host || '-')} — ${esc(req.error || req.responseBody || 'TLS Handshake Failed')}</td>
         </tr>`;
       }
 
@@ -1248,7 +1248,7 @@
           <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
           <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
           <td role="gridcell" class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
-          <td role="gridcell" colspan="2" style="text-align:center;" title="Tunnel to ${tunnelEndpoint}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="${escapeHtmlAttribute('Tunnel to ' + tunnelEndpoint)}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
         </tr>`;
       }
 
@@ -1298,8 +1298,8 @@
         <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${escapeHtmlAttribute(methodClass)}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
         <td role="gridcell" class="source-cell"><span class="source-icon source-${escapeHtmlAttribute(source)}" title="${escapeHtmlAttribute(source)}">${sourceIcon}</span></td>
-        <td role="gridcell" title="${esc(req.host)}">${esc(req.host || '-')}</td>
-        <td role="gridcell" title="${esc(req.path)}">${esc(req.path || '/')}</td>
+        <td role="gridcell" title="${escapeHtmlAttribute(req.host || '')}">${esc(req.host || '-')}</td>
+        <td role="gridcell" title="${escapeHtmlAttribute(req.path || '')}">${esc(req.path || '/')}</td>
       </tr>`;
     }
 
@@ -2248,7 +2248,7 @@
             ${req.responseHeaders && Object.keys(req.responseHeaders).length > 0 ? '<div class="detail-card-section" style="margin-top:12px;"><div class="section-label">Upgrade Response Headers</div>' + renderHeadersGrid(req.responseHeaders, 'response') + '</div>' : ''}
             <div style="margin-top:12px;font-size:12px;color:var(--text-lowlight);">Protocol: ${wsConnectionLabel}</div>
             ${req.protocol === 'wss' && req.tls?.cipher ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Cipher: ' + esc(req.tls.cipher) + '</div>' : ''}
-            ${remoteEndpoint ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + remoteEndpoint + '</div>' : ''}
+            ${remoteEndpoint ? '<div style="margin-top:4px;font-size:12px;color:var(--text-lowlight);">Remote: ' + esc(remoteEndpoint) + '</div>' : ''}
           </div>
         </div>`;
 
@@ -2354,7 +2354,7 @@
               <span style="font-size:20px;color:#888;">${SOURCE_ICONS.tunnel}</span>
               <div style="flex:1;">
                 <div style="font-weight:bold;color:var(--text-main);margin-bottom:4px;">Raw Tunnel</div>
-                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${tunnelEndpoint}</div>
+                <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${esc(tunnelEndpoint)}</div>
                 <div style="font-size:12px;color:var(--text-lowlight);">CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received</div>
               </div>
             </div>
@@ -2507,7 +2507,7 @@
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
-              ${reqBodyModes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('')}
+              ${reqBodyModes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('')}
             </select>
             <select class="body-view-select protobuf-type-select" id="reqBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('reqBody', this.value, 'request')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
@@ -2516,7 +2516,7 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <div id="reqBody" data-view-mode="${reqDefaultMode}" data-body-section="request">
+            <div id="reqBody" data-view-mode="${escapeHtmlAttribute(reqDefaultMode)}" data-body-section="request">
               <div id="reqBody-monaco" style="display:${reqUseMonaco ? 'block' : 'none'};min-height:80px;"></div>
               <pre class="body-content" id="reqBody-fallback" style="display:${reqUseMonaco ? 'none' : 'block'};">${reqUseMonaco ? '' : formatBodyAs(effBody, reqCt, reqDefaultMode, { request: effReq, section: 'request' })}</pre>
             </div>
@@ -2567,7 +2567,7 @@
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
-              ${resBodyModes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('')}
+              ${resBodyModes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('')}
             </select>
             <select class="body-view-select protobuf-type-select" id="resBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('resBody', this.value, 'response')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.responseBodySize)}</span>
@@ -2576,7 +2576,7 @@
           </span>
           </div>
           <div class="detail-card-body">
-            <div id="resBody" data-view-mode="${resDefaultMode}" data-body-section="response">
+            <div id="resBody" data-view-mode="${escapeHtmlAttribute(resDefaultMode)}" data-body-section="response">
               <div class="response-body-resizable" id="resBody-monaco" style="display:${resUseMonaco ? 'block' : 'none'};"></div>
               <pre class="body-content response-body-resizable" id="resBody-fallback" style="display:${resUseMonaco ? 'none' : 'block'};">${resUseMonaco ? '' : formatBodyAs(req.responseBody, ct, resDefaultMode, { request: req, section: 'response' })}</pre>
             </div>
@@ -2722,7 +2722,7 @@
               ${req.tls.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(remoteEndpoint)}</span>` : ''}
             </div>
           </div>`;
       } else if ((req.protocol === 'https' && req.tls) || req.protocol === 'wss') {
@@ -2735,7 +2735,7 @@
               ${req.tls?.cipher ? `<span style="color:var(--text-watermark);">Cipher:</span>
               <span style="font-family:var(--font-mono);">${esc(req.tls.cipher)}</span>` : ''}
               ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(remoteEndpoint)}</span>` : ''}
             </div>
           </div>`;
       } else if (req.protocol === 'http' || req.protocol === 'ws') {
@@ -2746,7 +2746,7 @@
               <span style="color:var(--text-watermark);">Protocol:</span>
               <span style="font-family:var(--font-mono);">${plainProtocol} (unencrypted)</span>
               ${remoteEndpoint ? `<span style="color:var(--text-watermark);">Remote:</span>
-              <span style="font-family:var(--font-mono);">${remoteEndpoint}</span>` : ''}
+              <span style="font-family:var(--font-mono);">${esc(remoteEndpoint)}</span>` : ''}
             </div>
           </div>`;
       }
@@ -3028,15 +3028,14 @@
       if (!headers || Object.keys(headers).length === 0) {
         return '<div class="headers-empty">(None)</div>';
       }
-      const sectionAttr = section ? ` data-section="${esc(section)}"` : '';
+      const sectionAttr = section ? ` data-section="${escapeHtmlAttribute(section)}"` : '';
       // Sort headers alphabetically by key (like HTTP Toolkit)
       const sorted = Object.entries(headers).sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()));
       return `<div class="headers-grid"${sectionAttr}>${
         sorted.map(([k, v], i) => {
           const val = Array.isArray(v) ? v.join(', ') : String(v);
           const hid = 'hdr-' + k.replace(/[^a-zA-Z0-9]/g, '_') + '-' + i;
-          const safeKey = k.replace(/'/g, "\\'");
-          const ctxMenu = section ? ` role="button" tabindex="0" aria-haspopup="menu" data-context-header-key="${esc(k)}" data-context-section="${esc(section)}" oncontextmenu="showHeaderContextMenu(event, '${safeKey}', '${section}')"` : '';
+          const ctxMenu = section ? ` role="button" tabindex="0" aria-haspopup="menu" data-context-header-key="${escapeHtmlAttribute(k)}" data-context-section="${escapeHtmlAttribute(section)}" oncontextmenu="showHeaderContextMenu(event, this.dataset.contextHeaderKey, this.dataset.contextSection)"` : '';
           const desc = HEADER_DOCS[k.toLowerCase()] || '';
           const descHtml = desc
             ? '<p style="color:var(--text-lowlight);font-size:12px;line-height:1.5;padding:8px 0;">' + esc(desc) + '</p>'
@@ -3369,7 +3368,7 @@
       const selected = bodySchemaTypeOverrides[elementId] || inferred?.fullName || '';
       const autoLabel = inferred?.fullName ? 'Auto: ' + inferred.fullName.replace(/^\./, '') : 'Auto';
       select.innerHTML = '<option value="">' + esc(autoLabel) + '</option>' +
-        typeOptions.map(typeName => '<option value="' + esc(typeName) + '">' + esc(typeName.replace(/^\./, '')) + '</option>').join('');
+        typeOptions.map(typeName => '<option value="' + escapeHtmlAttribute(typeName) + '">' + esc(typeName.replace(/^\./, '')) + '</option>').join('');
       select.value = selected && typeOptions.includes(selected) ? selected : '';
       select.style.display = 'block';
     }
@@ -4152,7 +4151,7 @@
 
       const select = document.getElementById(modeSelectId);
       if (select) {
-        select.innerHTML = modes.map(m => '<option value="' + m.value + '">' + m.label + '</option>').join('');
+        select.innerHTML = modes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('');
         select.value = mode;
         select.style.display = modes.length > 1 ? 'block' : 'none';
       }
@@ -6438,8 +6437,8 @@
       html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
       const isRenaming = mockRenamingRuleId === rule.id;
       if (isRenaming) {
-        const inputVal = esc(rule.title || '').replace(/"/g, '&quot;');
-        const placeholderVal = esc(summary.matchStr).replace(/"/g, '&quot;');
+        const inputVal = escapeHtmlAttribute(rule.title || '');
+        const placeholderVal = escapeHtmlAttribute(summary.matchStr);
         html += '<span class="mock-rule-desc" onclick="event.stopPropagation()">';
         html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, this.closest(\'.mock-rule-card\').dataset.ruleId)" onblur="confirmInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" onclick="event.stopPropagation()" />';
       } else if (summary.title) {
@@ -6918,12 +6917,12 @@
       html += '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
       html += '<optgroup label="Common">';
       for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions.includes(a.value))) {
-        html += '<option value="' + at.value + '"' + (draft.action.type === at.value ? ' selected' : '') + '>' + at.label + '</option>';
+        html += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (draft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
       }
       html += '</optgroup>';
       html += '<optgroup label="Advanced">';
       for (const at of MOCK_ACTION_TYPES.filter(a => _advancedActions.includes(a.value))) {
-        html += '<option value="' + at.value + '"' + (draft.action.type === at.value ? ' selected' : '') + '>' + at.label + '</option>';
+        html += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (draft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
       }
       html += '</optgroup>';
       html += '</select>';
@@ -6946,9 +6945,9 @@
       let html = '<div class="mock-matcher-row" data-idx="' + idx + '">';
       html += '<select onchange="updateMockMatcher(' + idx + ', \'type\', this.value, \'' + eid + '\')">';
       for (const grp of MOCK_MATCHER_GROUPS) {
-        html += '<optgroup label="' + grp.group + '">';
+        html += '<optgroup label="' + escapeHtmlAttribute(grp.group) + '">';
         for (const mt of grp.items) {
-          html += '<option value="' + mt.value + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + mt.label + '</option>';
+          html += '<option value="' + escapeHtmlAttribute(mt.value) + '"' + (matcher.type === mt.value ? ' selected' : '') + '>' + esc(mt.label) + '</option>';
         }
         html += '</optgroup>';
       }
@@ -6961,40 +6960,40 @@
         case 'method':
           html += '<select onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           for (const meth of ['*', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
-            html += '<option value="' + meth + '"' + (matcher.value === meth ? ' selected' : '') + '>' + (meth === '*' ? 'ANY' : meth) + '</option>';
+            html += '<option value="' + escapeHtmlAttribute(meth) + '"' + (matcher.value === meth ? ' selected' : '') + '>' + esc(meth === '*' ? 'ANY' : meth) + '</option>';
           }
           html += '</select>';
           break;
         case 'path':
           html += '<select class="mock-matcher-extra" onchange="updateMockMatcher(' + idx + ', \'matchType\', this.value, \'' + eid + '\')">';
           for (const pt of ['prefix', 'exact', 'regex']) {
-            html += '<option value="' + pt + '"' + ((matcher.matchType || 'prefix') === pt ? ' selected' : '') + '>' + pt + '</option>';
+            html += '<option value="' + escapeHtmlAttribute(pt) + '"' + ((matcher.matchType || 'prefix') === pt ? ' selected' : '') + '>' + esc(pt) + '</option>';
           }
           html += '</select>';
-          html += '<input type="text" placeholder="/api/users" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="/api/users" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'host':
-          html += '<input type="text" placeholder="example.com:8080 or *.example.com" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="example.com:8080 or *.example.com" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'hostname':
-          html += '<input type="text" placeholder="example.com (hostname only, no port)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="example.com (hostname only, no port)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'header':
-          html += '<input type="text" style="max-width:140px;" placeholder="Header name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
-          html += '<input type="text" placeholder="Value (optional, * for wildcard)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" style="max-width:140px;" placeholder="Header name" value="' + escapeHtmlAttribute(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="Value (optional, * for wildcard)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'query':
-          html += '<input type="text" style="max-width:140px;" placeholder="Param name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
-          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" style="max-width:140px;" placeholder="Param name" value="' + escapeHtmlAttribute(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'regex-path':
-          html += '<input type="text" placeholder="^/api/users/\\d+$" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="^/api/users/\\d+$" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'exact-query':
-          html += '<input type="text" placeholder="page=1&amp;sort=name" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="page=1&amp;sort=name" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'url-contains':
-          html += '<input type="text" placeholder="String to match in URL..." value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="String to match in URL..." value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'body-contains':
           html += '<textarea placeholder="String to match in request body..." style="min-height:60px;font-family:var(--font-mono);font-size:12px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
@@ -7006,7 +7005,7 @@
           html += '<textarea placeholder=\'{"username":"admin"}\' style="min-height:40px;font-family:monospace;font-size:12px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
           break;
         case 'port':
-          html += '<input type="number" placeholder="8080" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="max-width:100px;">';
+          html += '<input type="number" placeholder="8080" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="max-width:100px;">';
           break;
         case 'protocol':
           html += '<select onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
@@ -7015,15 +7014,15 @@
           html += '</select>';
           break;
         case 'cookie':
-          html += '<input type="text" placeholder="Cookie name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
-          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Cookie name" value="' + escapeHtmlAttribute(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
         case 'form-data':
-          html += '<input type="text" placeholder="Field name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
-          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Field name" value="' + escapeHtmlAttribute(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
         case 'regex-url':
-          html += '<input type="text" placeholder="^https://api\\.example\\.com/.*$" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="^https://api\\.example\\.com/.*$" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'regex-body':
           html += '<textarea placeholder="Regular expression to match against body" style="min-height:40px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
@@ -7032,8 +7031,8 @@
           html += '<textarea placeholder="Exact body content to match" style="min-height:60px;" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">' + esc(matcher.value || '') + '</textarea>';
           break;
         case 'multipart-form-data':
-          html += '<input type="text" placeholder="Field name" value="' + esc(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
-          html += '<input type="text" placeholder="Value (optional)" value="' + esc(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Field name" value="' + escapeHtmlAttribute(matcher.name || '') + '" onchange="updateMockMatcher(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value (optional)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
       }
 
@@ -7061,8 +7060,8 @@
           const hdrEntries = Object.entries(headers);
           hdrEntries.forEach(([k, v], hi) => {
             html += '<div class="mock-header-row">';
-            html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-            html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
             html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
             html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
@@ -7076,7 +7075,7 @@
 
         case 'forward':
           html += '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:11px;margin-bottom:3px;">Forward to URL</label>';
-          html += '<input type="text" placeholder="http://localhost:3000" value="' + esc(action.forwardTo || '') + '" onchange="mockEditDraft.action.forwardTo=this.value"></div>';
+          html += '<input type="text" placeholder="http://localhost:3000" value="' + escapeHtmlAttribute(action.forwardTo || '') + '" onchange="mockEditDraft.action.forwardTo=this.value"></div>';
           html += '<div class="form-group" style="margin-bottom:0;max-width:200px;"><label style="font-size:11px;margin-bottom:3px;">Delay (ms)</label>';
           html += '<input type="number" min="0" value="' + (action.delay || 0) + '" onchange="mockEditDraft.action.delay=parseInt(this.value)||0"></div>';
           break;
@@ -7099,7 +7098,7 @@
           html += '<select class="mock-transform-select" onchange="mockEditDraft.action.methodMode=this.value;rerenderMockActionConfig(\'' + eid + '\')">';
           html += '<option value="original"' + (action.methodMode === 'original' || !action.methodMode ? ' selected' : '') + '>Use the original request method</option>';
           ['GET','POST','PUT','DELETE','PATCH','HEAD','OPTIONS'].forEach(m => {
-            html += '<option value="' + m + '"' + (action.methodMode === m ? ' selected' : '') + '>Replace method with ' + m + '</option>';
+            html += '<option value="' + escapeHtmlAttribute(m) + '"' + (action.methodMode === m ? ' selected' : '') + '>Replace method with ' + esc(m) + '</option>';
           });
           html += '</select></div>';
 
@@ -7110,7 +7109,7 @@
           html += '<option value="modify"' + (action.urlMode === 'modify' ? ' selected' : '') + '>Modify the request URL</option>';
           html += '</select>';
           if (action.urlMode === 'modify') {
-            html += '<input type="text" class="mock-transform-input" placeholder="https://new-host.com/new-path" value="' + esc(action.urlReplace || '') + '" onchange="mockEditDraft.action.urlReplace=this.value">';
+            html += '<input type="text" class="mock-transform-input" placeholder="https://new-host.com/new-path" value="' + escapeHtmlAttribute(action.urlReplace || '') + '" onchange="mockEditDraft.action.urlReplace=this.value">';
           }
           html += '</div>';
 
@@ -7127,8 +7126,8 @@
             const hdrEntries = Object.entries(action.headers || {});
             hdrEntries.forEach(([k, v], hi) => {
               html += '<div class="mock-header-row">';
-              html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-              html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+              html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
               html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
@@ -7156,8 +7155,8 @@
             html += '<textarea class="mock-transform-textarea" placeholder=\'{"key": "new-value"}\' onchange="mockEditDraft.action.body=this.value">' + esc(action.body || '') + '</textarea>';
             html += '<div style="font-size:11px;color:var(--text-watermark);margin-top:4px;">Properties in this JSON will be merged into the request body, overwriting matching keys.</div>';
           } else if (reqBodyMode === 'match-replace') {
-            html += '<input type="text" class="mock-transform-input" placeholder="Text to find" value="' + esc(action.bodyMatchPattern || '') + '" onchange="mockEditDraft.action.bodyMatchPattern=this.value">';
-            html += '<input type="text" class="mock-transform-input" placeholder="Replace with" value="' + esc(action.bodyReplaceWith || '') + '" onchange="mockEditDraft.action.bodyReplaceWith=this.value">';
+            html += '<input type="text" class="mock-transform-input" placeholder="Text to find" value="' + escapeHtmlAttribute(action.bodyMatchPattern || '') + '" onchange="mockEditDraft.action.bodyMatchPattern=this.value">';
+            html += '<input type="text" class="mock-transform-input" placeholder="Replace with" value="' + escapeHtmlAttribute(action.bodyReplaceWith || '') + '" onchange="mockEditDraft.action.bodyReplaceWith=this.value">';
           }
           html += '</div>';
 
@@ -7188,8 +7187,8 @@
             const resHdrEntries = Object.entries(action.resHeaders || {});
             resHdrEntries.forEach(([k, v], hi) => {
               html += '<div class="mock-header-row">';
-              html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-              html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+              html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
               html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
@@ -7217,8 +7216,8 @@
             html += '<textarea class="mock-transform-textarea" placeholder=\'{"key": "new-value"}\' onchange="mockEditDraft.action.resBody=this.value">' + esc(action.resBody || '') + '</textarea>';
             html += '<div style="font-size:11px;color:var(--text-watermark);margin-top:4px;">Properties will be merged into the response body, overwriting matching keys.</div>';
           } else if (resBodyMode === 'match-replace') {
-            html += '<input type="text" class="mock-transform-input" placeholder="Text to find" value="' + esc(action.resBodyMatchPattern || '') + '" onchange="mockEditDraft.action.resBodyMatchPattern=this.value">';
-            html += '<input type="text" class="mock-transform-input" placeholder="Replace with" value="' + esc(action.resBodyReplaceWith || '') + '" onchange="mockEditDraft.action.resBodyReplaceWith=this.value">';
+            html += '<input type="text" class="mock-transform-input" placeholder="Text to find" value="' + escapeHtmlAttribute(action.resBodyMatchPattern || '') + '" onchange="mockEditDraft.action.resBodyMatchPattern=this.value">';
+            html += '<input type="text" class="mock-transform-input" placeholder="Replace with" value="' + escapeHtmlAttribute(action.resBodyReplaceWith || '') + '" onchange="mockEditDraft.action.resBodyReplaceWith=this.value">';
           }
           html += '</div>';
           break;
@@ -7237,12 +7236,12 @@
 
         case 'serve-file':
           html += '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:11px;margin-bottom:3px;">File Path</label>';
-          html += '<input type="text" placeholder="/path/to/file.json" value="' + esc(action.filePath || '') + '" onchange="mockEditDraft.action.filePath=this.value"></div>';
+          html += '<input type="text" placeholder="/path/to/file.json" value="' + escapeHtmlAttribute(action.filePath || '') + '" onchange="mockEditDraft.action.filePath=this.value"></div>';
           html += '<div class="form-row" style="gap:8px;margin-bottom:8px;">';
           html += '<div class="form-group" style="max-width:100px;margin-bottom:0;"><label style="font-size:11px;margin-bottom:3px;">Status</label>';
           html += '<input type="number" min="200" max="599" value="' + (action.status || 200) + '" onchange="mockEditDraft.action.status=parseInt(this.value)"></div>';
           html += '<div class="form-group" style="margin-bottom:0;"><label style="font-size:11px;margin-bottom:3px;">Content-Type</label>';
-          html += '<input type="text" placeholder="application/json" value="' + esc(action.contentType || '') + '" onchange="mockEditDraft.action.contentType=this.value"></div>';
+          html += '<input type="text" placeholder="application/json" value="' + escapeHtmlAttribute(action.contentType || '') + '" onchange="mockEditDraft.action.contentType=this.value"></div>';
           html += '</div>';
           html += '<div class="form-group" style="margin-bottom:0;max-width:200px;"><label style="font-size:11px;margin-bottom:3px;">Delay (ms)</label>';
           html += '<input type="number" min="0" value="' + (action.delay || 0) + '" onchange="mockEditDraft.action.delay=parseInt(this.value)||0"></div>';
@@ -7262,15 +7261,15 @@
 
         case 'webhook':
           html += '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:11px;margin-bottom:3px;">Webhook URL</label>';
-          html += '<input type="text" placeholder="https://example.com/webhook" value="' + esc(action.webhookUrl || '') + '" onchange="mockEditDraft.action.webhookUrl=this.value"></div>';
+          html += '<input type="text" placeholder="https://example.com/webhook" value="' + escapeHtmlAttribute(action.webhookUrl || '') + '" onchange="mockEditDraft.action.webhookUrl=this.value"></div>';
           html += '<div style="margin-bottom:8px;">';
           html += '<label style="font-size:11px;color:var(--text-watermark);display:block;margin-bottom:4px;">Custom Headers (optional)</label>';
           html += '<div id="mockWebhookHeaders_' + eid + '">';
           const whEntries = Object.entries(action.webhookHeaders || {});
           whEntries.forEach(([k, v], hi) => {
             html += '<div class="mock-header-row">';
-            html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-            html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
             html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
             html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
@@ -7427,7 +7426,7 @@
       let html = '<div class="mock-matcher-row" data-step-idx="' + idx + '">';
       html += '<select onchange="updateMockPreStep(' + idx + ', \'type\', this.value, \'' + eid + '\')">';
       for (const st of MOCK_PRE_STEP_TYPES) {
-        html += '<option value="' + st.value + '"' + (step.type === st.value ? ' selected' : '') + '>' + st.label + '</option>';
+        html += '<option value="' + escapeHtmlAttribute(st.value) + '"' + (step.type === st.value ? ' selected' : '') + '>' + esc(st.label) + '</option>';
       }
       html += '</select>';
 
@@ -7437,19 +7436,19 @@
           html += '<span style="font-size:11px;color:var(--text-watermark);white-space:nowrap;">ms</span>';
           break;
         case 'add-header':
-          html += '<input type="text" placeholder="Header name" value="' + esc(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
-          html += '<input type="text" placeholder="Value" value="' + esc(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
         case 'remove-header':
-          html += '<input type="text" placeholder="Header name to remove" value="' + esc(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="Header name to remove" value="' + escapeHtmlAttribute(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
           break;
         case 'rewrite-url':
-          html += '<input type="text" placeholder="https://new-host.com/path" value="' + esc(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
+          html += '<input type="text" placeholder="https://new-host.com/path" value="' + escapeHtmlAttribute(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'rewrite-method':
           html += '<select onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           for (const m of ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
-            html += '<option value="' + m + '"' + (step.value === m ? ' selected' : '') + '>' + m + '</option>';
+            html += '<option value="' + escapeHtmlAttribute(m) + '"' + (step.value === m ? ' selected' : '') + '>' + esc(m) + '</option>';
           }
           html += '</select>';
           break;
@@ -7577,12 +7576,12 @@
         let selectHtml = '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
         selectHtml += '<optgroup label="Common">';
         for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions2.includes(a.value))) {
-          selectHtml += '<option value="' + at.value + '"' + (mockEditDraft.action.type === at.value ? ' selected' : '') + '>' + at.label + '</option>';
+          selectHtml += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (mockEditDraft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
         }
         selectHtml += '</optgroup>';
         selectHtml += '<optgroup label="Advanced">';
         for (const at of MOCK_ACTION_TYPES.filter(a => _advancedActions2.includes(a.value))) {
-          selectHtml += '<option value="' + at.value + '"' + (mockEditDraft.action.type === at.value ? ' selected' : '') + '>' + at.label + '</option>';
+          selectHtml += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (mockEditDraft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
         }
         selectHtml += '</optgroup>';
         selectHtml += '</select>';
@@ -7639,8 +7638,8 @@
       let html = '';
       entries.forEach(([k, v], hi) => {
         html += '<div class="mock-header-row">';
-        html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
@@ -7697,8 +7696,8 @@
       let html = '';
       entries.forEach(([k, v], hi) => {
         html += '<div class="mock-header-row">';
-        html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
@@ -8473,8 +8472,8 @@
       let html = '';
       entries.forEach(([k, v], hi) => {
         html += '<div class="mock-header-row">';
-        html += '<input type="text" placeholder="Header name" value="' + esc(k) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + esc(v) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
         html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'' + kind + '\',' + hi + ', \'' + eid + '\')">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
