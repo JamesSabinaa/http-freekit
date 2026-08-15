@@ -22,6 +22,7 @@ import { startWithValidatedApiPort } from './startup-config.js';
 import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
 import { restoreSavedApiSpecs } from './startup-api-spec-restoration.js';
 import { resolveProxyBindAddress } from './interceptors/proxy-bind-reachability.js';
+import { reportDesktopApiPortInUse } from './desktop-startup-ipc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,7 +193,14 @@ async function initializeApplication(apiPort) {
 
   // 5. Start servers
   await proxy.start();
-  await api.start();
+  try {
+    await api.start();
+  } catch (error) {
+    if (process.env.ELECTRON === '1' && error?.code === 'EADDRINUSE') {
+      await reportDesktopApiPortInUse(apiPort);
+    }
+    throw error;
+  }
   if (process.env.ELECTRON === '1' && typeof process.send === 'function' && process.connected) {
     process.send({ type: 'http-freekit:server-ready', port: apiPort });
   }

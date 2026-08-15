@@ -5,7 +5,12 @@ import http from 'node:http';
 import test from 'node:test';
 import readinessModule from '../../electron/server-readiness.cjs';
 
-const { SERVER_READY_MESSAGE_TYPE, waitForServer } = readinessModule;
+const {
+  SERVER_API_PORT_IN_USE_MESSAGE_TYPE,
+  SERVER_READY_MESSAGE_TYPE,
+  terminateServerStartupProcess,
+  waitForServer
+} = readinessModule;
 const desktopSource = fs.readFileSync(new URL('../../electron/main.cjs', import.meta.url), 'utf8');
 const serverSource = fs.readFileSync(new URL('../../src/index.js', import.meta.url), 'utf8');
 
@@ -40,6 +45,7 @@ function waitWithTimers(port, proc, timeoutMs, timers) {
 
 test('the server child reports readiness only after its API listener starts', () => {
   const apiStarted = serverSource.indexOf('await api.start();');
+  const collisionReport = serverSource.indexOf('await reportDesktopApiPortInUse(apiPort);', apiStarted);
   const desktopGuard = serverSource.indexOf("process.env.ELECTRON === '1'", apiStarted);
   const readyMessage = serverSource.indexOf(
     `type: '${SERVER_READY_MESSAGE_TYPE}'`,
@@ -48,6 +54,7 @@ test('the server child reports readiness only after its API listener starts', ()
   const mcpInitialization = serverSource.indexOf('// 6. Initialize MCP Server', apiStarted);
 
   assert.ok(apiStarted >= 0);
+  assert.ok(collisionReport > apiStarted);
   assert.ok(desktopGuard > apiStarted);
   assert.ok(readyMessage > desktopGuard);
   assert.ok(mcpInitialization > readyMessage);
@@ -58,7 +65,8 @@ test('Electron startup uses the child IPC waiter instead of an HTTP readiness pr
   const startServerEnd = desktopSource.indexOf('function registerProtocolHandler()', startServerStart);
   const startServer = desktopSource.slice(startServerStart, startServerEnd);
 
-  assert.match(desktopSource, /const \{ waitForServer \} = require\('\.\/server-readiness\.cjs'\);/);
+  assert.match(desktopSource,
+    /const \{ terminateServerStartupProcess, waitForServer \} = require\('\.\/server-readiness\.cjs'\);/);
   assert.doesNotMatch(desktopSource, /function waitForServer\(/);
   assert.match(startServer, /ELECTRON: '1'/);
   assert.match(startServer, /waitForServer\(apiPort, proc\)/);
@@ -117,6 +125,9 @@ test('wrong IPC types, malformed ports, and wrong ports are ignored', async () =
     'ready',
     {},
     { type: 'other-service:ready', port: 8123 },
+    { type: SERVER_API_PORT_IN_USE_MESSAGE_TYPE },
+    { type: SERVER_API_PORT_IN_USE_MESSAGE_TYPE, port: '8123' },
+    { type: SERVER_API_PORT_IN_USE_MESSAGE_TYPE, port: 8124 },
     { type: SERVER_READY_MESSAGE_TYPE },
     { type: SERVER_READY_MESSAGE_TYPE, port: '8123' },
     { type: SERVER_READY_MESSAGE_TYPE, port: 8124 },
@@ -134,6 +145,26 @@ test('wrong IPC types, malformed ports, and wrong ports are ignored', async () =
   assert.equal(settled, true);
   assert.equal(proc.listenerCount('message'), 0);
   assert.equal(proc.listenerCount('exit'), 0);
+});
+
+test('the exact API-port collision signal rejects with retry metadata and cleans up', async () => {
+  const proc = new EventEmitter();
+  const timers = createTimers();
+  const waiting = waitWithTimers(8123, proc, 30000, timers);
+
+  proc.emit('message', {
+    type: SERVER_API_PORT_IN_USE_MESSAGE_TYPE,
+    port: 8123
+  });
+
+  await assert.rejects(waiting, error => {
+    assert.equal(error.code, 'EADDRINUSE');
+    assert.equal(error.apiPort, 8123);
+    return true;
+  });
+  assert.equal(proc.listenerCount('message'), 0);
+  assert.equal(proc.listenerCount('exit'), 0);
+  assert.deepEqual(timers.cleared, timers.scheduled);
 });
 
 test('child exit before readiness rejects immediately and cleans up', async () => {
@@ -158,6 +189,88 @@ test('readiness timeout rejects and removes child listeners', async () => {
 
   await assert.rejects(waiting, /Server did not start within 1234ms/);
   assert.equal(proc.listenerCount('message'), 0);
+  assert.equal(proc.listenerCount('exit'), 0);
+  assert.deepEqual(timers.cleared, timers.scheduled);
+});
+
+test('startup termination confirms child exit and clears its deadline', async () => {
+  const proc = new EventEmitter();
+  proc.exitCode = null;
+  proc.signalCode = null;
+  const signals = [];
+  proc.kill = signal => {
+    signals.push(signal);
+    return true;
+  };
+  const timers = createTimers();
+  const stopping = terminateServerStartupProcess(proc, 4321, {
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+
+  assert.deepEqual(signals, ['SIGKILL']);
+  assert.equal(timers.scheduled[0].delay, 4321);
+  proc.exitCode = 1;
+  proc.emit('exit', 1, null);
+
+  assert.equal(await stopping, true);
+  assert.equal(proc.listenerCount('exit'), 0);
+  assert.deepEqual(timers.cleared, timers.scheduled);
+});
+
+test('startup termination reports an unkillable child without leaking listeners', async () => {
+  const proc = new EventEmitter();
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.kill = () => false;
+  const timers = createTimers();
+  const stopping = terminateServerStartupProcess(proc, 4321, {
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+
+  assert.equal(proc.listenerCount('exit'), 1);
+  assert.equal(timers.scheduled[0].delay, 4321);
+  timers.fire();
+
+  assert.equal(await stopping, false);
+  assert.equal(proc.listenerCount('exit'), 0);
+  assert.deepEqual(timers.cleared, timers.scheduled);
+});
+
+test('a failed kill that raced with natural exit is still confirmed safely', async () => {
+  const proc = new EventEmitter();
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.kill = () => false;
+  const timers = createTimers();
+  const stopping = terminateServerStartupProcess(proc, 4321, {
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+
+  proc.exitCode = 1;
+  proc.emit('exit', 1, null);
+
+  assert.equal(await stopping, true);
+  assert.equal(proc.listenerCount('exit'), 0);
+  assert.deepEqual(timers.cleared, timers.scheduled);
+});
+
+test('startup termination timeout is bounded and removes its exit listener', async () => {
+  const proc = new EventEmitter();
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.kill = () => true;
+  const timers = createTimers();
+  const stopping = terminateServerStartupProcess(proc, 987, {
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+
+  timers.fire();
+
+  assert.equal(await stopping, false);
   assert.equal(proc.listenerCount('exit'), 0);
   assert.deepEqual(timers.cleared, timers.scheduled);
 });
