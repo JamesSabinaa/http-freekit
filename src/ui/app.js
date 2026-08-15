@@ -12280,6 +12280,22 @@
         toast('Cannot create a mock because this exchange contains an incomplete body capture.', 'error');
         return;
       }
+      const unsupportedBodySides = ['request', 'response'].filter(side => {
+        const encoding = req[`${side}BodyEncoding`];
+        return encoding !== undefined &&
+          (typeof encoding !== 'string' || encoding.toLowerCase() !== 'utf8');
+      });
+      if (unsupportedBodySides.length > 0) {
+        const bodyLabel = unsupportedBodySides.length === 1
+          ? `the ${unsupportedBodySides[0]} body uses`
+          : 'the request and response bodies use';
+        toast(
+          `Cannot create a mock because ${bodyLabel} a binary or unsupported encoding. ` +
+            'Create a byte-aware rule manually instead.',
+          'error'
+        );
+        return;
+      }
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
       // Build rich matchers from the request
@@ -12298,7 +12314,7 @@
       }
 
       // Add body matcher if there's a request body (for POST/PUT/PATCH)
-      if (req.requestBody && req.requestBody.length > 0 && !req.requestBody.startsWith('[Binary')) {
+      if (req.requestBody && req.requestBody.length > 0) {
         // Try JSON body match first
         try {
           JSON.parse(req.requestBody);
