@@ -195,6 +195,43 @@ test('an invalid second HAR entry causes no partial renderer mutation or success
   assert.doesNotMatch(harness.toasts[0].message, /Imported 1 request/);
 });
 
+test('an unsupported second HAR URL scheme is rejected without partial renderer mutation', async () => {
+  const first = validEntry();
+  first.request.url = 'https://valid-first.test/';
+  const second = validEntry();
+  second.request.url = 'file:///private/captured-request';
+  const harness = createRendererHarness();
+
+  await harness.importDocument(har([first, second]));
+
+  assert.deepEqual(harness.added, []);
+  assert.deepEqual(harness.fetches, []);
+  assert.deepEqual(harness.toasts.map(item => item.type), ['error']);
+  assert.match(
+    harness.toasts[0].message,
+    /log\.entries\[1\]\.request\.url must use the http, https, ws, or wss scheme/
+  );
+});
+
+test('renderer HAR normalization preserves each supported URL protocol and HTTP/2', () => {
+  const cases = [
+    ['http://plain.example.test/', '', 'http'],
+    ['https://secure.example.test/', '', 'https'],
+    ['ws://socket.example.test/', 'HTTP/1.1', 'ws'],
+    ['wss://secure-socket.example.test/', 'HTTP/1.1', 'wss'],
+    ['https://h2.example.test/', 'HTTP/2', 'h2']
+  ];
+
+  const imported = normalizeHarEntries(har(cases.map(([url, httpVersion]) => {
+    const entry = validEntry();
+    entry.request.url = url;
+    entry.request.httpVersion = httpVersion;
+    return entry;
+  })), { createId: () => 'supported-scheme' });
+
+  assert.deepEqual(imported.map(request => request.protocol), cases.map(([, , protocol]) => protocol));
+});
+
 test('renderer HAR normalization preserves distinct request and response HTTP versions', () => {
   const entry = validEntry();
   entry.request.httpVersion = 'HTTP/1.0';

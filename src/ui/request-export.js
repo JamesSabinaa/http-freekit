@@ -30,6 +30,14 @@ function phpStringLiteral(value) {
   return `'${String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
+const REBUILT_MULTIPART_HEADER_NAMES = new Set([
+  'content-encoding',
+  'content-length',
+  'content-type',
+  'trailer',
+  'transfer-encoding'
+]);
+
 export function getExportHeaders(req, omitContentType = false) {
   const headers = [];
   const semanticReplay = req.requestBodyContentDecoded === true;
@@ -42,6 +50,53 @@ export function getExportHeaders(req, omitContentType = false) {
     values.forEach(item => headers.push([key, item]));
   });
   return headers;
+}
+
+function getMultipartExportHeaders(req) {
+  return getExportHeaders(req).filter(([key]) => {
+    return !REBUILT_MULTIPART_HEADER_NAMES.has(key.toLowerCase());
+  });
+}
+
+function encodeBasicAuthorization(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `Basic ${btoa(binary)}`;
+}
+
+function prepareJavaScriptExportRequest(url, headers) {
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    return { url, headers };
+  }
+  if (target.username === '' && target.password === '') return { url, headers };
+
+  const preparedHeaders = headers.slice();
+  const hasExplicitAuthorization = preparedHeaders.some(([key]) => {
+    return key.toLowerCase() === 'authorization';
+  });
+  if (!hasExplicitAuthorization) {
+    let username;
+    let password;
+    try {
+      username = decodeURIComponent(target.username);
+      password = decodeURIComponent(target.password);
+    } catch {
+      return {
+        error: 'The request URL contains invalid percent-encoding in its credentials.'
+      };
+    }
+    preparedHeaders.push([
+      'Authorization',
+      encodeBasicAuthorization(`${username}:${password}`)
+    ]);
+  }
+  target.username = '';
+  target.password = '';
+  return { url: target.href, headers: preparedHeaders };
 }
 
 function getRepeatedExportHeaderName(headers) {
@@ -150,7 +205,7 @@ function generateFetchBodyUnavailableSnippet(method) {
 
 function generateMultipartExportSnippet(req, format) {
   const fields = getExportFormFields(req);
-  const headers = getExportHeaders(req, true);
+  const headers = getMultipartExportHeaders(req);
   const method = getExportMethod(req, 'POST');
   if (method === null) return generateInvalidMethodExportSnippet(format);
   const url = String(req.url || '');
@@ -230,6 +285,10 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'javascript-fetch') {
+    const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+    if (preparedRequest.error) {
+      return generateUnavailableExportSnippet(format, preparedRequest.error);
+    }
     const fileCount = fields.filter(field => field.type === 'file').length;
     let code = '';
     if (fileCount) {
@@ -254,13 +313,17 @@ function generateMultipartExportSnippet(req, format) {
         code += `formData.append(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')});\n`;
       }
     });
-    code += `\nconst response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)}`;
-    if (headers.length) code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
+    code += `\nconst response = await fetch(${JSON.stringify(preparedRequest.url)}, {\n  method: ${JSON.stringify(method)}`;
+    if (preparedRequest.headers.length) code += `,\n  headers: {\n${preparedRequest.headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
     code += ',\n  body: formData\n});\n\nconsole.log(response.status, await response.text());';
     return code;
   }
 
   if (format === 'javascript-node') {
+    const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+    if (preparedRequest.error) {
+      return generateUnavailableExportSnippet(format, preparedRequest.error);
+    }
     const boundary = req.multipartBoundary || '----HTTPFreeKitBoundary';
     let code = "const fs = require('fs');\nconst http = require('http');\nconst https = require('https');\n\n";
     code += `const boundary = ${JSON.stringify(boundary)};\nconst chunks = [];\nconst append = value => chunks.push(Buffer.from(value));\n`;
@@ -278,8 +341,9 @@ function generateMultipartExportSnippet(req, format) {
         code += `append(${JSON.stringify(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n${field.value || ''}\r\n`)});\n`;
       }
     });
-    code += `append('--' + boundary + '--\\r\\n');\nconst body = Buffer.concat(chunks);\nconst target = new URL(${JSON.stringify(url)});\n`;
-    const nodeHeaders = renderNodeExportHeaders(headers, [
+    code += `append('--' + boundary + '--\\r\\n');\nconst body = Buffer.concat(chunks);\nconst target = new URL(${JSON.stringify(preparedRequest.url)});\n`;
+    const nodeHeaders = renderNodeExportHeaders(preparedRequest.headers, [
+      `${JSON.stringify('Host')}, target.host`,
       `${JSON.stringify('Content-Type')}, 'multipart/form-data; boundary=' + boundary`,
       `${JSON.stringify('Content-Length')}, String(body.length)`
     ]);
@@ -471,9 +535,13 @@ function generateExportSnippetCore(req, format) {
       if (hasBody && isFetchBodyForbiddenMethod(method)) {
         return generateFetchBodyUnavailableSnippet(method);
       }
-      let code = `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)}`;
-      if (headers.length) {
-        code += `,\n  headers: {\n${headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
+      const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+      if (preparedRequest.error) {
+        return generateUnavailableExportSnippet(format, preparedRequest.error);
+      }
+      let code = `const response = await fetch(${JSON.stringify(preparedRequest.url)}, {\n  method: ${JSON.stringify(method)}`;
+      if (preparedRequest.headers.length) {
+        code += `,\n  headers: {\n${preparedRequest.headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
       }
       if (hasBody) {
         code += isBinaryBody
@@ -484,11 +552,17 @@ function generateExportSnippetCore(req, format) {
       return code;
     }
     case 'javascript-node': {
+      const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+      if (preparedRequest.error) {
+        return generateUnavailableExportSnippet(format, preparedRequest.error);
+      }
       let code = `const https = require('https');\nconst http = require('http');\n\n`;
-      code += `const target = new URL(${JSON.stringify(url)});\n`;
+      code += `const target = new URL(${JSON.stringify(preparedRequest.url)});\n`;
       code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  path: target.pathname + target.search,\n  port: target.port || undefined`;
-      if (headers.length) {
-        code += `,\n  headers: ${renderNodeExportHeaders(headers)}`;
+      if (preparedRequest.headers.length) {
+        code += `,\n  headers: ${renderNodeExportHeaders(preparedRequest.headers, [
+          `${JSON.stringify('Host')}, target.host`
+        ])}`;
       }
       code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
       if (hasBody) {

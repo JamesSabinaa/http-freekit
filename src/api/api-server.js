@@ -42,6 +42,7 @@ const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TRAFFIC_BASE64_DATA_URI_PATTERN =
   /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/i;
+const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
 class SendBodyValidationError extends Error {
   constructor(message) {
@@ -1476,7 +1477,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }
 
         const importTimestamp = Date.now();
-        const imported = har.log.entries.map(entry => {
+        const imported = har.log.entries.map((entry, index) => {
           let parsedUrl, host, pathname, search;
           try {
             parsedUrl = new URL(entry.request.url);
@@ -1487,6 +1488,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             host = '';
             pathname = entry.request.url;
             search = '';
+          }
+          if (parsedUrl && !SUPPORTED_HAR_URL_PROTOCOLS.has(parsedUrl.protocol.toLowerCase())) {
+            throw new TypeError(
+              `log.entries[${index}].request.url must use the http, https, ws, or wss scheme`
+            );
           }
           const parsedTimestamp = entry.startedDateTime === null || entry.startedDateTime === undefined
             ? NaN

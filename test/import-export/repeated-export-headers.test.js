@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
 
@@ -173,6 +174,89 @@ test('excluded repeated headers do not cause refusals or leak into snippets', ()
       assert.doesNotMatch(multipart, /headers: \{/);
     }
   }
+});
+
+test('rebuilt multipart exports discard captured body metadata and framing in every format', () => {
+  const request = requestFor('multipart', {
+    'Content-Encoding': 'audit-stale-content-coding',
+    'cOnTeNt-LeNgTh': 'audit-stale-length',
+    'Transfer-Encoding': 'audit-stale-transfer-coding',
+    Trailer: 'audit-stale-trailer',
+    'Content-Type': 'multipart/form-data; boundary=audit-stale-boundary',
+    'X-Retained': 'audit-retained-header'
+  });
+
+  for (const format of formats) {
+    const snippet = generateExportSnippet(request, format);
+    assert.doesNotMatch(snippet, /EXACT REPLAY UNAVAILABLE/, format);
+    assert.ok(snippet.includes('audit-retained-header'), format);
+    for (const staleValue of [
+      'audit-stale-content-coding',
+      'audit-stale-length',
+      'audit-stale-transfer-coding',
+      'audit-stale-trailer',
+      'audit-stale-boundary'
+    ]) {
+      assert.equal(snippet.includes(staleValue), false, `${format} retained ${staleValue}`);
+    }
+  }
+});
+
+test('a generated Node multipart request sends one accurate length and no stale framing', {
+  timeout: 5000
+}, async t => {
+  let resolveReceived;
+  const received = new Promise(resolve => { resolveReceived = resolve; });
+  const origin = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => {
+      resolveReceived({
+        headers: request.headers,
+        rawHeaders: request.rawHeaders,
+        body: Buffer.concat(chunks)
+      });
+      response.end('ok');
+    });
+  });
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  await new Promise((resolve, reject) => {
+    origin.once('error', reject);
+    origin.listen(0, '127.0.0.1', resolve);
+  });
+
+  const snippet = generateExportSnippet({
+    method: 'POST',
+    url: `http://127.0.0.1:${origin.address().port}/multipart-framing`,
+    bodyType: 'multipart',
+    multipartBoundary: '----RuntimeBoundary',
+    requestHeaders: {
+      'Content-Length': '1',
+      'Transfer-Encoding': 'chunked',
+      Trailer: 'X-Stale-Trailer',
+      'Content-Encoding': 'gzip',
+      Connection: 'close'
+    },
+    formFields: [{ key: 'field', value: 'runtime multipart value', enabled: true }]
+  }, 'javascript-node');
+  const require = createRequire(import.meta.url);
+  let resolveClientDone;
+  const clientDone = new Promise(resolve => { resolveClientDone = resolve; });
+  new Function('require', 'console', snippet)(require, { log: resolveClientDone });
+
+  const [wireRequest] = await Promise.all([received, clientDone]);
+  const contentLengthLines = [];
+  for (let index = 0; index < wireRequest.rawHeaders.length; index += 2) {
+    if (wireRequest.rawHeaders[index].toLowerCase() === 'content-length') {
+      contentLengthLines.push(wireRequest.rawHeaders[index + 1]);
+    }
+  }
+  assert.deepEqual(contentLengthLines, [String(wireRequest.body.length)]);
+  assert.equal(wireRequest.headers['transfer-encoding'], undefined);
+  assert.equal(wireRequest.headers.trailer, undefined);
+  assert.equal(wireRequest.headers['content-encoding'], undefined);
+  assert.match(wireRequest.headers['content-type'], /^multipart\/form-data; boundary=----RuntimeBoundary$/);
+  assert.match(wireRequest.body.toString('utf8'), /runtime multipart value/);
 });
 
 test('Node flat header arrays retain non-contiguous case variants in scalar-pair order', () => {

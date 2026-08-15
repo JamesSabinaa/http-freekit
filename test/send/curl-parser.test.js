@@ -382,6 +382,26 @@ test('file-backed data is rejected instead of being imported as literal text', (
   assert.equal(raw.error, undefined);
 });
 
+test('file- and stdin-backed header and cookie operands are rejected', () => {
+  for (const command of [
+    'curl https://example.test -H @headers.txt',
+    'curl https://example.test -H@-',
+    'curl https://example.test --header @headers.txt',
+    'curl https://example.test --header=@-',
+    'curl https://example.test -b cookies.txt',
+    'curl https://example.test -b@cookies.txt',
+    'curl https://example.test --cookie cookies.txt',
+    'curl https://example.test --cookie=-'
+  ]) {
+    assert.match(parseCurlCommand(command).error, /File- or stdin-backed/, command);
+  }
+
+  assert.equal(
+    parseCurlCommand("curl https://example.test -b 'session=one; mode=two'").headers.Cookie,
+    'session=one; mode=two'
+  );
+});
+
 test('headerless and bodyless cURL paste replaces every prior request field', () => {
   const harness = createCurlPasteHarness();
   const { prevented, state } = harness.paste('curl https://other.example.test/path');
@@ -531,4 +551,26 @@ test('a rejected cURL paste leaves the entire active request unchanged', () => {
   assert.equal(harness.persisted.length, 0);
   assert.match(harness.toasts[0].message, /File-backed/);
   assert.equal(harness.toasts[0].type, 'error');
+});
+
+test('external header and cookie cURL pastes are rejected atomically', () => {
+  for (const command of [
+    'curl https://other.example.test -H @headers.txt',
+    'curl https://other.example.test --header=@-',
+    'curl https://other.example.test -b cookies.txt',
+    'curl https://other.example.test --cookie=-'
+  ]) {
+    const harness = createCurlPasteHarness();
+    const { prevented, state } = harness.paste(command);
+
+    assert.equal(prevented, true, command);
+    assert.strictEqual(state.tab, harness.initialTab, command);
+    assert.strictEqual(state.headers, harness.initialTab.headers, command);
+    assert.equal(state.body, 'stale secret body', command);
+    assert.equal(state.multipartFields[0].file.marker, 'stale-file-handle', command);
+    assert.equal(harness.persisted.length, 0, command);
+    assert.equal(harness.toasts.length, 1, command);
+    assert.match(harness.toasts[0].message, /File- or stdin-backed/, command);
+    assert.equal(harness.toasts[0].type, 'error', command);
+  }
 });

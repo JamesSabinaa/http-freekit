@@ -195,6 +195,9 @@ export function parseCurlCommand(curlStr) {
         result.method = value;
         hasExplicitMethod = true;
       } else if (option === '-H' || option === '--header') {
+        if (value.startsWith('@')) {
+          return { error: `File- or stdin-backed ${option} values cannot be imported from a pasted cURL command` };
+        }
         const colonIndex = value.indexOf(':');
         if (colonIndex > 0) {
           const name = value.slice(0, colonIndex).trim();
@@ -225,6 +228,9 @@ export function parseCurlCommand(curlStr) {
         setCurlHeader(result.headers, 'User-Agent', value);
         explicitHeaderNames.delete('user-agent');
       } else if (option === '-b' || option === '--cookie') {
+        if (value !== '' && !value.includes('=')) {
+          return { error: `File- or stdin-backed ${option} values cannot be imported from a pasted cURL command` };
+        }
         setCurlHeader(result.headers, 'Cookie', value);
         explicitHeaderNames.delete('cookie');
       } else if (option === '-u' || option === '--user') {

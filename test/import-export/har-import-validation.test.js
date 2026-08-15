@@ -108,6 +108,38 @@ test('a malformed entry rejects a multi-entry HAR without mutating traffic', asy
   assert.equal(broadcastCount, 0);
 });
 
+test('unsupported HAR URL schemes reject the entire server import', async t => {
+  const { api, port } = await createApi(t);
+  const existing = {
+    id: 'existing',
+    timestamp: 0,
+    method: 'GET',
+    url: 'https://existing.test/'
+  };
+  api.trafficLog.push(existing);
+  let broadcastCount = 0;
+  api._broadcast = () => { broadcastCount += 1; };
+
+  for (const unsupportedUrl of [
+    'ftp://files.example.test/archive.har',
+    'file:///private/captured-request',
+    'data:text/plain,captured-request'
+  ]) {
+    const response = await postBody(port, har([
+      harEntry({ request: { url: 'https://valid-first.test/' } }),
+      harEntry({ request: { url: unsupportedUrl } })
+    ]));
+    assert.equal(response.statusCode, 400, unsupportedUrl);
+    assert.match(
+      response.body.error,
+      /log\.entries\[1\]\.request\.url must use the http, https, ws, or wss scheme/,
+      unsupportedUrl
+    );
+    assert.deepEqual(api.trafficLog, [existing], unsupportedUrl);
+    assert.equal(broadcastCount, 0, unsupportedUrl);
+  }
+});
+
 test('HAR import rejects non-string request and response HTTP versions atomically', async t => {
   const { api, port } = await createApi(t);
   for (const [side, value] of [

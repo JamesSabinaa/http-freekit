@@ -5,6 +5,7 @@ export function normalizeHarBodySize(value) {
 }
 
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
 function assertHarObject(value, fieldPath) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -151,6 +152,11 @@ function normalizeHarEntry(entry, index, createId) {
     parsedUrl = new URL(url);
   } catch {
     throw new Error(`${entryPath}.request.url must be a valid absolute URL`);
+  }
+  if (!SUPPORTED_HAR_URL_PROTOCOLS.has(parsedUrl.protocol.toLowerCase())) {
+    throw new Error(
+      `${entryPath}.request.url must use the http, https, ws, or wss scheme`
+    );
   }
   const requestHttpVersion = normalizeHarString(
     request.httpVersion,
