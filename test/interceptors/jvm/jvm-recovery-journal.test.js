@@ -217,6 +217,40 @@ test('stale JVM status cannot delete replacement PID ownership or its recovery j
   assert.equal(fs.readFileSync(recoveryFile(dataDir), 'utf8'), replacementJournal);
 });
 
+test('JVM status snapshots ownership before process discovery', async t => {
+  for (const method of ['isActive', 'getMetadata']) {
+    await t.test(method, async t => {
+      const dataDir = createDataDir(t);
+      writeJournal(dataDir);
+      const discoveryStarted = deferred();
+      const staleDiscovery = deferred();
+      const interceptor = createInterceptor(dataDir, async () => identity());
+      interceptor._getRunningProcesses = async () => {
+        discoveryStarted.resolve();
+        return await staleDiscovery.promise;
+      };
+
+      const statusRefresh = interceptor[method]();
+      await discoveryStarted.promise;
+
+      const replacement = {
+        name: 'Replacement',
+        mainClass: 'replacement.Main',
+        targetIdentity: identity({ startTime: '999999' }),
+        recoveryState: 'active'
+      };
+      interceptor._setTrackedOwnership(PID, replacement);
+      const replacementJournal = fs.readFileSync(recoveryFile(dataDir), 'utf8');
+
+      staleDiscovery.resolve([PROCESS]);
+      await statusRefresh;
+
+      assert.equal(interceptor.activatedProcesses.get(PID), replacement);
+      assert.equal(fs.readFileSync(recoveryFile(dataDir), 'utf8'), replacementJournal);
+    });
+  }
+});
+
 test('a live matching OS process omitted by jps retains recovery without attaching', async t => {
   const dataDir = createDataDir(t);
   writeJournal(dataDir);

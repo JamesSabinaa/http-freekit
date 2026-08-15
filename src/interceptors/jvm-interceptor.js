@@ -323,8 +323,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   async isActive() {
-    const processes = await this._getRunningProcesses();
-    await this._syncActivatedProcesses(processes);
+    await this._refreshActivatedProcesses();
     return this.active && this.activatedProcesses.size > 0;
   }
 
@@ -388,8 +387,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   async getMetadata() {
-    const processes = await this._getRunningProcesses();
-    await this._syncActivatedProcesses(processes);
+    const processes = await this._refreshActivatedProcesses();
     return {
       processes,
       activatedProcesses: this._getActivatedProcessMetadata(),
@@ -627,8 +625,18 @@ public class ProxyAgent {
     throw error;
   }
 
-  async _syncActivatedProcesses(processes) {
-    for (const [pid, activated] of Array.from(this.activatedProcesses.entries())) {
+  async _refreshActivatedProcesses() {
+    // Status queries run outside manager lifecycle locks. Snapshot references
+    // before discovery so observations cannot be applied to ownership created
+    // or replaced while the process list is being collected.
+    const ownershipSnapshot = Array.from(this.activatedProcesses.entries());
+    const processes = await this._getRunningProcesses();
+    await this._syncActivatedProcesses(processes, ownershipSnapshot);
+    return processes;
+  }
+
+  async _syncActivatedProcesses(processes, ownershipSnapshot) {
+    for (const [pid, activated] of ownershipSnapshot) {
       const state = await this._classifyTrackedTarget(pid, activated, processes);
       if (!this._isCurrentTrackedOwnership(pid, activated)) continue;
 
