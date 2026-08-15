@@ -99,6 +99,69 @@ test('exclusion patterns normalize URLs, comments, case, and duplicates', () => 
   assert.throws(() => normalizeDefaultExclusions('example.com'), /must be an array/);
 });
 
+test('IPv6 exclusion patterns normalize bare, bracketed, URL, port, and path forms', () => {
+  assert.deepEqual(normalizeDefaultExclusions([
+    ' ::1 ',
+    '[0:0:0:0:0:0:0:1]',
+    'HTTPS://[2001:0DB8:0:0:0:0:0:1]:9443/API?Mode=FULL',
+    '[2001:0DB8::2]:8080/RAW?X=Y',
+    '::ffff:192.0.2.128'
+  ]), [
+    '[::1]',
+    '[2001:db8::1]/api?mode=full',
+    '[2001:db8::2]/raw?x=y',
+    '[::ffff:c000:280]'
+  ]);
+});
+
+test('IPv6 exclusion patterns reject malformed literals, ports, and wildcards', () => {
+  for (const pattern of [
+    ':::1',
+    '[::1',
+    '::1]',
+    '[::1]suffix',
+    '[2001:db8::g]',
+    '2001:db8::*',
+    '*::1',
+    '[::1]:65536',
+    'http://[::1]:65536/path',
+    'http://::1/path'
+  ]) {
+    assert.throws(
+      () => normalizeDefaultExclusions([pattern]),
+      /valid URL or hostname pattern|invalid hostname pattern/,
+      pattern
+    );
+  }
+});
+
+test('IPv6 exclusion matching canonicalizes captured hosts and remains exact', () => {
+  const pathPattern = ['https://[2001:0db8::1]:8443/API?Mode='];
+  assert.equal(matchesDefaultExclusion({
+    host: '[2001:db8:0:0:0:0:0:1]:443',
+    path: '/API?MODE=full'
+  }, pathPattern), true);
+  assert.equal(matchesDefaultExclusion({
+    host: '2001:0DB8::1',
+    path: '/api?mode=compact'
+  }, pathPattern), true);
+  assert.equal(matchesDefaultExclusion({
+    url: 'http://[2001:db8::1]:9000/api?mode=full'
+  }, pathPattern), true);
+  assert.equal(matchesDefaultExclusion({
+    host: '[2001:db8::10]:443',
+    path: '/api?mode=full'
+  }, pathPattern), false);
+  assert.equal(matchesDefaultExclusion({
+    host: '[2001:db8::1]:443',
+    path: '/other?mode=full'
+  }, pathPattern), false);
+
+  assert.equal(matchesDefaultExclusion({ host: '[0:0:0:0:0:0:0:1]:8080' }, ['::1']), true);
+  assert.equal(matchesDefaultExclusion({ host: '::10' }, ['::1']), false);
+  assert.equal(matchesDefaultExclusion({ host: '[::1]suffix' }, ['::1']), false);
+});
+
 test('shared renderer filtering applies draft hostname and path patterns', () => {
   let isVisible = createTrafficListVisibilityMatcher([{
       id: 'custom-blacklist',
@@ -223,6 +286,37 @@ test('traffic lists combine whitelists as a union and give blacklists precedence
   assert.deepEqual(
     filterTrafficLists(requests, lists).map(request => request.id),
     ['api', 'admin']
+  );
+});
+
+test('traffic lists filter canonical IPv6 hosts with exact blacklist and whitelist semantics', () => {
+  const lists = normalizeTrafficLists([
+    { ...createDefaultTrafficList(), enabled: false },
+    {
+      id: 'ipv6-allowlist',
+      name: 'IPv6 allowlist',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['2001:0DB8::5']
+    },
+    {
+      id: 'ipv6-blocklist',
+      name: 'IPv6 blocklist',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: ['http://[2001:db8::5]:8080/private']
+    }
+  ]);
+  const requests = [
+    { id: 'allowed', host: '[2001:db8:0:0:0:0:0:5]:443', path: '/public' },
+    { id: 'blocked', host: '2001:db8::5', path: '/private/token' },
+    { id: 'nearby', host: '[2001:db8::50]', path: '/public' },
+    { id: 'dns', host: '2001-db8.example', path: '/public' }
+  ];
+
+  assert.deepEqual(
+    filterTrafficLists(requests, lists).map(request => request.id),
+    ['allowed']
   );
 });
 
@@ -359,6 +453,99 @@ test('Traffic Lists API migrates legacy settings and persists custom whitelist l
 
   const traffic = await requestJson(port, 'GET', '/api/traffic?limit=100');
   assert.deepEqual(traffic.body.requests.map(request => request.id), ['allowed']);
+});
+
+test('Traffic Lists API canonically persists, reloads, and applies IPv6 rules', async t => {
+  const { api, port, values } = await createApi(t);
+  const saved = await requestJson(port, 'PUT', '/api/traffic-lists', {
+    lists: [
+      {
+        id: 'default-exclusions',
+        name: 'Default Exclusions',
+        enabled: true,
+        mode: 'blacklist',
+        patterns: [
+          'http://[0:0:0:0:0:0:0:1]:8080/Admin?Mode=',
+          '[2001:0DB8::DEAD]'
+        ]
+      },
+      {
+        id: 'ipv6-services',
+        name: 'IPv6 services',
+        enabled: true,
+        mode: 'whitelist',
+        patterns: ['2001:0DB8:0:0:0:0:0:5']
+      }
+    ]
+  });
+  const normalizedDefaultPatterns = ['[::1]/admin?mode=', '[2001:db8::dead]'];
+  const normalizedLists = [
+    {
+      id: 'default-exclusions',
+      name: 'Default Exclusions',
+      enabled: true,
+      mode: 'blacklist',
+      patterns: normalizedDefaultPatterns,
+      builtIn: true
+    },
+    {
+      id: 'ipv6-services',
+      name: 'IPv6 services',
+      enabled: true,
+      mode: 'whitelist',
+      patterns: ['[2001:db8::5]'],
+      builtIn: false
+    }
+  ];
+  assert.deepEqual(saved, {
+    statusCode: 200,
+    body: { success: true, lists: normalizedLists }
+  });
+  assert.deepEqual(values, {
+    trafficLists: normalizedLists.map(({ builtIn, ...list }) => list),
+    defaultExclusionsEnabled: true,
+    defaultExclusions: normalizedDefaultPatterns
+  });
+
+  const reloaded = await requestJson(port, 'GET', '/api/traffic-lists');
+  assert.equal(reloaded.statusCode, 200);
+  assert.deepEqual(reloaded.body.lists, normalizedLists);
+
+  api.trafficLog.push(
+    { id: 'loopback-admin', host: '[::1]:49321', path: '/admin?mode=full' },
+    { id: 'allowed', host: '2001:db8::5', path: '/public' },
+    { id: 'nearby', host: '[2001:db8::50]:443', path: '/public' }
+  );
+  const traffic = await requestJson(port, 'GET', '/api/traffic?limit=100');
+  assert.deepEqual(traffic.body.requests.map(request => request.id), ['allowed']);
+});
+
+test('Traffic List APIs reject malformed IPv6 without changing persisted settings', async t => {
+  const { port, values } = await createApi(t);
+  for (const pattern of ['[::1', '2001:db8::*', '[::1]:65536']) {
+    const response = await requestJson(port, 'PUT', '/api/default-exclusions', {
+      enabled: true,
+      patterns: [pattern]
+    });
+    assert.equal(response.statusCode, 400, pattern);
+    assert.match(response.body.error, /valid URL or hostname pattern|invalid hostname pattern/);
+  }
+
+  const trafficListsResponse = await requestJson(port, 'PUT', '/api/traffic-lists', {
+    lists: [
+      createDefaultTrafficList(),
+      {
+        id: 'invalid-ipv6',
+        name: 'Invalid IPv6',
+        enabled: true,
+        mode: 'blacklist',
+        patterns: ['http://[2001:db8::g]/']
+      }
+    ]
+  });
+  assert.equal(trafficListsResponse.statusCode, 400);
+  assert.match(trafficListsResponse.body.error, /valid URL or hostname pattern/);
+  assert.deepEqual(values, {});
 });
 
 test('Traffic Lists API rejects invalid collections and reports persistence failures', async t => {
