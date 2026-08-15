@@ -17,6 +17,7 @@ import { validatePortRange } from '../proxy/port-range.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
+import { normalizeHttpsWhitelist } from '../proxy/https-whitelist.js';
 import {
   DEFAULT_EXCLUSIONS,
   normalizeDefaultExclusions
@@ -2087,16 +2088,32 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ hosts: this.proxy.httpsWhitelist });
     });
     router.post('/api/https-whitelist', (req, res) => {
+      let hosts;
+      try {
+        hosts = normalizeHttpsWhitelist(req.body?.hosts);
+      } catch (error) {
+        if (error?.code === 'ERR_INVALID_HTTPS_WHITELIST') {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
       this._mutateProxySetting({
         property: 'httpsWhitelist',
-        apply: () => this.proxy.setHttpsWhitelist(req.body.hosts || []),
+        apply: () => this.proxy.setHttpsWhitelist(hosts),
         restore: previous => this.proxy.setHttpsWhitelist(previous)
       });
       res.json({ success: true });
     });
     router.post('/api/https-whitelist/items', (req, res) => {
-      const host = String(req.body?.host || '').trim();
-      if (!host) return res.status(400).json({ error: 'host is required' });
+      let host;
+      try {
+        [host] = normalizeHttpsWhitelist([req.body?.host]);
+      } catch (error) {
+        if (error?.code === 'ERR_INVALID_HTTPS_WHITELIST') {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
       if (!this.proxy.httpsWhitelist.includes(host)) {
         this._mutateProxySetting({
           property: 'httpsWhitelist',
@@ -2107,9 +2124,17 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ success: true, hosts: this.proxy.httpsWhitelist });
     });
     router.delete('/api/https-whitelist/items', (req, res) => {
-      const host = String(req.body?.host || '').trim();
+      let host;
+      try {
+        [host] = normalizeHttpsWhitelist([req.body?.host]);
+      } catch (error) {
+        if (error?.code === 'ERR_INVALID_HTTPS_WHITELIST') {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
       const hosts = this.proxy.httpsWhitelist.filter(item => item !== host);
-      if (!host || hosts.length === this.proxy.httpsWhitelist.length) {
+      if (hosts.length === this.proxy.httpsWhitelist.length) {
         return res.status(404).json({ error: 'Host not found' });
       }
       this._mutateProxySetting({
