@@ -37,8 +37,11 @@ async function prepareRendererForQuit(mainWindow, logger = console, {
     }
     return result === true;
   } catch (error) {
-    logger.error('[Electron] Could not prepare renderer persistence for Quit:', error.message);
-    return false;
+    logger.error(
+      '[Electron] Could not prepare renderer persistence for Quit; continuing cleanup:',
+      error?.message || String(error)
+    );
+    return true;
   } finally {
     if (timeout !== null) clearTimeoutFn(timeout);
   }
