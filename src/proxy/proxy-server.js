@@ -3100,7 +3100,7 @@ export class ProxyServer {
     return {
       ...response,
       statusCode: statusMode === 'replace' && Number.isInteger(numericStatus)
-        && numericStatus >= 100 && numericStatus <= 599
+        && numericStatus >= 200 && numericStatus <= 599
         ? numericStatus
         : response.statusCode,
       headers,

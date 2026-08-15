@@ -60,6 +60,28 @@ test('invalid replacement imports leave every existing mock rule intact', async 
   assert.deepEqual(proxy.mockRules.map(rule => rule.id), ['existing']);
 });
 
+test('informational-status replacement imports are rejected atomically', async t => {
+  const { proxy, port } = await createServer(t);
+  proxy.mockRules = [{
+    id: 'existing',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status: 200, body: 'retained' }
+  }];
+  const before = structuredClone(proxy.mockRules);
+
+  const result = await putJson(port, '/api/mock-rules', {
+    rules: [{
+      enabled: true,
+      matchers: [{ type: 'method', value: 'GET' }],
+      action: { type: 'fixed-response', status: 199, body: 'invalid' }
+    }]
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.deepEqual(proxy.mockRules, before);
+});
+
 test('valid replacement imports are applied in one API operation', async t => {
   const { proxy, port } = await createServer(t);
   proxy.mockRules = [{ id: 'existing', urlPattern: '/old', response: {} }];

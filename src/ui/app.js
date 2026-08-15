@@ -7041,7 +7041,7 @@
         case 'fixed-response':
           html += '<div class="form-row" style="gap:8px;margin-bottom:8px;">';
           html += '<div class="form-group" style="max-width:100px;margin-bottom:0;"><label style="font-size:11px;margin-bottom:3px;">Status</label>';
-          html += '<input type="number" min="100" max="599" value="' + (action.status || 200) + '" onchange="mockEditDraft.action.status=parseInt(this.value)||200"></div>';
+          html += '<input type="number" min="200" max="599" value="' + (action.status || 200) + '" onchange="mockEditDraft.action.status=parseInt(this.value)||200"></div>';
           html += '<div class="form-group" style="margin-bottom:0;max-width:200px;"><label style="font-size:11px;margin-bottom:3px;">Delay (ms)</label>';
           html += '<input type="number" min="0" value="' + (action.delay || 0) + '" onchange="mockEditDraft.action.delay=parseInt(this.value)||0"></div>';
           html += '</div>';
@@ -7162,7 +7162,7 @@
           html += '<option value="replace"' + (action.resStatusMode === 'replace' ? ' selected' : '') + '>Replace the response status</option>';
           html += '</select>';
           if (action.resStatusMode === 'replace') {
-            html += '<input type="number" class="mock-transform-input" min="100" max="599" placeholder="200" value="' + (action.resStatusOverride || '') + '" onchange="mockEditDraft.action.resStatusOverride=parseInt(this.value)" style="max-width:100px;">';
+            html += '<input type="number" class="mock-transform-input" min="200" max="599" placeholder="200" value="' + (action.resStatusOverride || '') + '" onchange="mockEditDraft.action.resStatusOverride=parseInt(this.value)" style="max-width:100px;">';
           }
           html += '</div>';
 
@@ -7231,7 +7231,7 @@
           html += '<input type="text" placeholder="/path/to/file.json" value="' + esc(action.filePath || '') + '" onchange="mockEditDraft.action.filePath=this.value"></div>';
           html += '<div class="form-row" style="gap:8px;margin-bottom:8px;">';
           html += '<div class="form-group" style="max-width:100px;margin-bottom:0;"><label style="font-size:11px;margin-bottom:3px;">Status</label>';
-          html += '<input type="number" min="100" max="599" value="' + (action.status || 200) + '" onchange="mockEditDraft.action.status=parseInt(this.value)"></div>';
+          html += '<input type="number" min="200" max="599" value="' + (action.status || 200) + '" onchange="mockEditDraft.action.status=parseInt(this.value)"></div>';
           html += '<div class="form-group" style="margin-bottom:0;"><label style="font-size:11px;margin-bottom:3px;">Content-Type</label>';
           html += '<input type="text" placeholder="application/json" value="' + esc(action.contentType || '') + '" onchange="mockEditDraft.action.contentType=this.value"></div>';
           html += '</div>';
@@ -7800,6 +7800,39 @@
       return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
     }
 
+    function isValidMockFinalStatus(status) {
+      return Number.isInteger(status) && status >= 200 && status <= 599;
+    }
+
+    function mockActionFinalStatusError(action) {
+      let property;
+      let label;
+      switch (action?.type) {
+        case 'fixed-response':
+          property = 'status';
+          label = 'Mock response status';
+          break;
+        case 'serve-file':
+          property = 'status';
+          label = 'Mock file response status';
+          break;
+        case 'transform-request':
+          property = 'resStatusOverride';
+          label = 'Mock transform response status';
+          break;
+        case 'transform-response':
+          property = 'statusOverride';
+          label = 'Legacy response transform status';
+          break;
+        default:
+          return null;
+      }
+      const status = action[property];
+      return status === undefined || isValidMockFinalStatus(status)
+        ? null
+        : label + ' must be an integer from 200 to 599';
+    }
+
     function saveMockRule(ruleId) {
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return false;
       if (!mockEditDraft) return false;
@@ -7807,6 +7840,12 @@
       if (!Array.isArray(mockEditDraft.matchers) || mockEditDraft.matchers.length === 0
         || !mockEditDraft.matchers.every(isMockMatcherComplete)) {
         toast('Complete every matching condition before saving', 'error');
+        return false;
+      }
+
+      const statusError = mockActionFinalStatusError(mockEditDraft.action);
+      if (statusError) {
+        toast(statusError, 'error');
         return false;
       }
 
@@ -12244,7 +12283,9 @@
       // Request body goes into matchers (above), response data goes into the action
       const action = {
         type: 'fixed-response',
-        status: req.statusCode || 200,
+        status: Number.isInteger(req.statusCode) && req.statusCode >= 200 && req.statusCode <= 599
+          ? req.statusCode
+          : 200,
         headers: respHeaders,
         body: req.responseBody || ''
       };
