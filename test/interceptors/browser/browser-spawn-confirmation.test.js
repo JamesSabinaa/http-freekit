@@ -101,6 +101,37 @@ test('Global Chrome activation waits for spawn confirmation', async () => {
   assert.equal(interceptor.process, child);
 });
 
+test('Global Chrome activation observes exit delivery queued at the confirmation deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
+  const child = fakeChild();
+  interceptor._findBrowserPath = () => '/test/chrome';
+  interceptor._isBrowserRunning = async () => false;
+  interceptor._spawn = () => child;
+  interceptor.startupConfirmationMs = 50;
+  interceptor.ca = { systemTrustInstalled: true };
+
+  const activation = interceptor.activate(8080);
+  const rejection = assert.rejects(
+    activation,
+    /Global Chrome exited during startup \(exit code 9\)/
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  child.pid = 7251;
+  child.emit('spawn');
+  t.mock.timers.tick(50);
+  child.exitCode = 9;
+  child.emit('exit', 9, null);
+
+  await rejection;
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.process, null);
+  assert.equal(child.listenerCount('spawn'), 0);
+  assert.equal(child.listenerCount('exit'), 0);
+  assert.equal(child.listenerCount('error'), 0);
+});
+
 test('Global Chrome activation rejects spawn errors without becoming active', async () => {
   const interceptor = new ExistingBrowserInterceptor('existing-chrome', 'Global Chrome', 'chrome');
   const child = fakeChild();

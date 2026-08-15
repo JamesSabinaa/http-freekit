@@ -75,7 +75,7 @@ function assertNoConfirmationListeners(child) {
   assert.equal(child.listenerCount('error'), 0);
 }
 
-test('Open rejects the real immediate exit 9 reproduction', async () => {
+test('Open rejects a real exit 9 queued behind a stalled event loop', async () => {
   const interceptor = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
   interceptor.ca = { systemTrustInstalled: true };
   interceptor.active = true;
@@ -84,8 +84,13 @@ test('Open rejects the real immediate exit 9 reproduction', async () => {
   interceptor.isActive = async () => true;
   interceptor._findBrowserPath = () => process.execPath;
 
+  const opening = interceptor.openUrl('https://example.com/immediate-exit');
+  setImmediate(() => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 750);
+  });
+
   await assert.rejects(
-    interceptor.openUrl('https://example.com/immediate-exit'),
+    opening,
     error => {
       assert.equal(error.code, PROCESS_STARTUP_EXIT_ERROR_CODE);
       assert.equal(error.exitCode, 9);

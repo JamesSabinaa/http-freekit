@@ -3259,74 +3259,78 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         fail(error);
       };
 
-      signal?.addEventListener('abort', abortRequest, { once: true });
-      if (signal?.aborted) {
-        abortRequest();
-        return;
-      }
+      try {
+        signal?.addEventListener('abort', abortRequest, { once: true });
+        if (signal?.aborted) {
+          abortRequest();
+          return;
+        }
 
-      req = lib.request(options, (res) => {
-        const chunks = [];
-        let responseBytes = 0;
-        res.on('data', chunk => {
-          responseBytes += chunk.length;
-          if (responseBytes > this.sendMaxResponseBytes) {
-            fail(new Error(`Send response exceeds ${this.sendMaxResponseBytes} byte buffer limit`));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.once('aborted', () => fail(new Error('Send response aborted before completion')));
-        res.once('error', fail);
-        res.on('end', () => {
-          const responseBody = Buffer.concat(chunks);
-          const bodyEncoding = isUtf8(responseBody) ? 'utf8' : 'base64';
-          const rawContentType = Object.entries(res.headers)
-            .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-          const contentType = normalizeDataUriMediaType(rawContentType);
-          succeed({
-            statusCode: res.statusCode,
-            statusMessage: res.statusMessage,
-            headers: res.headers,
-            body: bodyEncoding === 'base64'
-              ? `data:${contentType};base64,${responseBody.toString('base64')}`
-              : responseBody.toString('utf8'),
-            bodyEncoding,
-            bodySize: responseBody.length,
-            duration: Date.now() - startTime,
-            ...(sendContext ? { trafficId: sendContext.requestId } : {})
+        req = lib.request(options, (res) => {
+          const chunks = [];
+          let responseBytes = 0;
+          res.on('data', chunk => {
+            responseBytes += chunk.length;
+            if (responseBytes > this.sendMaxResponseBytes) {
+              fail(new Error(`Send response exceeds ${this.sendMaxResponseBytes} byte buffer limit`));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.once('aborted', () => fail(new Error('Send response aborted before completion')));
+          res.once('error', fail);
+          res.on('end', () => {
+            const responseBody = Buffer.concat(chunks);
+            const bodyEncoding = isUtf8(responseBody) ? 'utf8' : 'base64';
+            const rawContentType = Object.entries(res.headers)
+              .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+            const contentType = normalizeDataUriMediaType(rawContentType);
+            succeed({
+              statusCode: res.statusCode,
+              statusMessage: res.statusMessage,
+              headers: res.headers,
+              body: bodyEncoding === 'base64'
+                ? `data:${contentType};base64,${responseBody.toString('base64')}`
+                : responseBody.toString('utf8'),
+              bodyEncoding,
+              bodySize: responseBody.length,
+              duration: Date.now() - startTime,
+              ...(sendContext ? { trafficId: sendContext.requestId } : {})
+            });
           });
         });
-      });
-      // ClientRequest canonicalizes methods to uppercase in its constructor.
-      // Restore the validated token before the request line is generated.
-      req.method = options.method;
-      req.useChunkedEncodingByDefault =
-        !METHODS_WITHOUT_DEFAULT_CHUNKED_BODY.has(options.method);
-      if (!sendContext && outboundMethod === 'CONNECT') {
-        req.once('finish', () => { req.method = 'POST'; });
-      }
-
-      connectTimer = setTimeout(() => {
-        fail(new Error(`Send connection timeout after ${connectTimeoutMs}ms`));
-      }, connectTimeoutMs);
-      totalTimer = setTimeout(() => {
-        fail(new Error(`Send request timeout after ${totalTimeoutMs}ms`));
-      }, totalTimeoutMs);
-      req.once('socket', socket => {
-        const connectedEvent = transportIsHttps ? 'secureConnect' : 'connect';
-        if (!socket.connecting && (!transportIsHttps || socket.encrypted)) {
-          clearTimeout(connectTimer);
-        } else {
-          socket.once(connectedEvent, () => clearTimeout(connectTimer));
+        // ClientRequest canonicalizes methods to uppercase in its constructor.
+        // Restore the validated token before the request line is generated.
+        req.method = options.method;
+        req.useChunkedEncodingByDefault =
+          !METHODS_WITHOUT_DEFAULT_CHUNKED_BODY.has(options.method);
+        if (!sendContext && outboundMethod === 'CONNECT') {
+          req.once('finish', () => { req.method = 'POST'; });
         }
-      });
-      req.setTimeout(idleTimeoutMs, () => {
-        fail(new Error(`Send idle timeout after ${idleTimeoutMs}ms`));
-      });
-      req.once('error', fail);
-      if (outboundBody.length) req.write(outboundBody);
-      req.end();
+
+        connectTimer = setTimeout(() => {
+          fail(new Error(`Send connection timeout after ${connectTimeoutMs}ms`));
+        }, connectTimeoutMs);
+        totalTimer = setTimeout(() => {
+          fail(new Error(`Send request timeout after ${totalTimeoutMs}ms`));
+        }, totalTimeoutMs);
+        req.once('socket', socket => {
+          const connectedEvent = transportIsHttps ? 'secureConnect' : 'connect';
+          if (!socket.connecting && (!transportIsHttps || socket.encrypted)) {
+            clearTimeout(connectTimer);
+          } else {
+            socket.once(connectedEvent, () => clearTimeout(connectTimer));
+          }
+        });
+        req.setTimeout(idleTimeoutMs, () => {
+          fail(new Error(`Send idle timeout after ${idleTimeoutMs}ms`));
+        });
+        req.once('error', fail);
+        if (outboundBody.length) req.write(outboundBody);
+        req.end();
+      } catch (error) {
+        fail(error);
+      }
     });
   }
 

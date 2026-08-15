@@ -256,6 +256,62 @@ test('internal Send method contexts are authenticated, stripped, and one-shot', 
   assert.equal(proxy._internalSendRequestIds.size, 0);
 });
 
+test('Send API immediately cancels internal context after synchronous request construction failure', async t => {
+  const proxy = new ProxyServer(null, { port: 0 });
+  const api = new ApiServer(proxy, null, null, { port: 0 });
+  api.port = 0;
+  await proxy.start();
+  await api.start();
+  t.after(async () => {
+    await api.stop();
+    await proxy.stop();
+  });
+
+  let registrationCount = 0;
+  let cancellationCount = 0;
+  let registeredContext = null;
+  const registeredTimers = new Set();
+  const clearedTimers = new Set();
+  const originalRegister = proxy._registerInternalSendRequest.bind(proxy);
+  const originalCancel = proxy._cancelInternalSendRequest.bind(proxy);
+  const originalClearTimeout = globalThis.clearTimeout;
+  t.mock.method(proxy, '_registerInternalSendRequest', (...args) => {
+    registrationCount++;
+    const result = originalRegister(...args);
+    registeredContext = proxy._internalSendRequestIds.get(result.requestId);
+    registeredTimers.add(registeredContext.timer);
+    return result;
+  });
+  t.mock.method(proxy, '_cancelInternalSendRequest', token => {
+    cancellationCount++;
+    return originalCancel(token);
+  });
+  t.mock.method(globalThis, 'clearTimeout', timer => {
+    if (registeredTimers.has(timer)) clearedTimers.add(timer);
+    return originalClearTimeout(timer);
+  });
+
+  const response = await requestJson(api.httpServer.address().port, {
+    url: 'http://127.0.0.1/never-sent',
+    method: 'GET',
+    headers: { 'bad header': 'invalid' },
+    body: ''
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.match(response.body.error, /Header name must be a valid HTTP token/i);
+  assert.equal(registrationCount, 1);
+  assert.equal(cancellationCount, 1);
+  assert.equal(proxy.requestCount, 0);
+  assert.equal(proxy._internalSendTokens.size, 0);
+  assert.equal(proxy._internalSendRequestIds.size, 0);
+  assert.ok(registeredContext);
+  assert.equal(clearedTimers.has(registeredContext.timer), true);
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancellationCount, 1, 'later failure delivery must not cancel the context twice');
+});
+
 test('Send API restores exact methods before mocks, capture, and upstream forwarding', async t => {
   const origin = createRawOrigin();
   const originPort = await listen(origin.server);

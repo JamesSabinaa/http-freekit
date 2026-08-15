@@ -27,9 +27,11 @@ export function waitForSpawnStability(child, options = {}) {
     let spawned = false;
     let settled = false;
     let timer = null;
+    let observation = null;
     let preSpawnExit = null;
     const cleanup = () => {
       clearTimeout(timer);
+      clearImmediate(observation);
       child.removeListener('spawn', onSpawn);
       child.removeListener('exit', onExit);
       child.removeListener('error', onError);
@@ -71,11 +73,16 @@ export function waitForSpawnStability(child, options = {}) {
         return;
       }
       timer = setTimeout(() => {
-        if (child.signalCode !== null || child.exitCode !== null) {
-          onExit(child.exitCode, child.signalCode);
-        } else {
-          finish(resolve);
-        }
+        // A long synchronous task can make this timer runnable before libuv has
+        // delivered an already-completed child's exit callback. Give queued
+        // process events one bounded event-loop turn before declaring success.
+        observation = setImmediate(() => {
+          if (child.signalCode !== null || child.exitCode !== null) {
+            onExit(child.exitCode, child.signalCode);
+          } else {
+            finish(resolve);
+          }
+        });
       }, graceMs);
     };
 
