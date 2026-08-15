@@ -48,14 +48,48 @@ export const DEFAULT_EXCLUSIONS = Object.freeze([
 export const MAX_DEFAULT_EXCLUSIONS = 500;
 const MAX_PATTERN_LENGTH = 1024;
 
+function canonicalizeIpv6Literal(value) {
+  const host = String(value || '').trim();
+  let literal = host;
+  if (host.startsWith('[')) {
+    if (!host.endsWith(']')) return null;
+    literal = host.slice(1, -1);
+  } else if (host.includes('[') || host.includes(']')) {
+    return null;
+  }
+  if (!literal.includes(':') || /[\s/?#@\\]/.test(literal)) return null;
+
+  try {
+    const parsed = new URL(`http://[${literal}]/`);
+    return parsed.hostname.startsWith('[') ? parsed.hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRequestHost(value) {
   let host = String(value || '').trim().toLowerCase();
+  if (!host) return '';
+
   if (host.startsWith('[')) {
-    const closingBracket = host.indexOf(']');
-    if (closingBracket !== -1) host = host.slice(0, closingBracket + 1);
-  } else {
-    host = host.replace(/:\d+$/, '');
+    if (/[\s/?#@\\]/.test(host)) return '';
+    try {
+      const parsed = new URL(`http://${host}/`);
+      return parsed.hostname.startsWith('[') ? parsed.hostname.toLowerCase() : '';
+    } catch {
+      return '';
+    }
   }
+
+  const ipv6Host = canonicalizeIpv6Literal(host);
+  if (ipv6Host) return ipv6Host;
+
+  const portMatch = host.match(/^(.*):(\d+)$/);
+  if (portMatch) {
+    if (!portMatch[1] || Number(portMatch[2]) > 65535) return '';
+    host = portMatch[1];
+  }
+  if (host.includes(':') || host.includes('[') || host.includes(']')) return '';
   return host.replace(/\.$/, '');
 }
 
@@ -97,7 +131,9 @@ function normalizePattern(pattern, index) {
   let host = (slashIndex === -1 ? value : value.slice(0, slashIndex)).toLowerCase();
   const path = slashIndex === -1 ? '' : value.slice(slashIndex).toLowerCase();
   host = normalizeRequestHost(host);
-  if (!host || host === '*' || !/^[a-z\d*.-]+$/.test(host) || host.includes('..')) {
+  const isIpv6Host = host.startsWith('[') && host.endsWith(']');
+  if (!host || host === '*' ||
+      (!isIpv6Host && (!/^[a-z\d*.-]+$/.test(host) || host.includes('..')))) {
     throw new TypeError(`patterns[${index}] has an invalid hostname pattern`);
   }
   if (path && /[\r\n\0]/.test(path)) {
@@ -146,7 +182,7 @@ function wildcardHostMatches(host, pattern) {
 }
 
 export function createDefaultExclusionMatcher(patterns = DEFAULT_EXCLUSIONS) {
-  const rules = patterns.map(pattern => {
+  const rules = normalizeDefaultExclusions(patterns).map(pattern => {
     const slashIndex = pattern.indexOf('/');
     const hostPattern = slashIndex === -1 ? pattern : pattern.slice(0, slashIndex);
     const pathPrefix = slashIndex === -1 ? '' : pattern.slice(slashIndex);
