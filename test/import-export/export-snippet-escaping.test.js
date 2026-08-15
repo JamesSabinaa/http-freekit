@@ -74,12 +74,16 @@ test('multipart PowerShell and PHP exports use their native safe literals', () =
 
   const powershell = generateExportSnippet(request, 'powershell');
   assert.ok(powershell.includes(powerShellLiteral(request.url)));
-  assert.ok(powershell.includes(powerShellLiteral(request.formFields[0].key)));
+  assert.ok(powershell.includes(powerShellLiteral(
+    `Content-Disposition: form-data; name="${request.formFields[0].key}"`
+  )));
   assert.ok(powershell.includes(powerShellLiteral(request.formFields[0].value)));
 
   const php = generateExportSnippet(request, 'php');
   assert.ok(php.includes(phpLiteral(request.url)));
-  assert.ok(php.includes(phpLiteral(request.formFields[0].key)));
+  assert.ok(php.includes(phpLiteral(
+    `Content-Disposition: form-data; name="${request.formFields[0].key}"`
+  )));
   assert.ok(php.includes(phpLiteral(request.formFields[0].value)));
 });
 
