@@ -32,6 +32,11 @@ const TERMINAL_SESSION_OWNERSHIP_VERSION = 1;
 const MAX_TERMINAL_OWNERSHIP_BYTES = 64 * 1024;
 const MAX_TERMINAL_SESSIONS = 32;
 const MAX_TERMINAL_HANDSHAKE_BYTES = 4096;
+const CMD_LITERAL_HELPERS = Object.freeze({
+  '%': '__HTTP_FREEKIT_CMD_LITERAL_PERCENT_4F91D2A7__',
+  '!': '__HTTP_FREEKIT_CMD_LITERAL_BANG_4F91D2A7__',
+  '^': '__HTTP_FREEKIT_CMD_LITERAL_CARET_4F91D2A7__'
+});
 
 function spawnDetached(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -61,8 +66,60 @@ function powerShellQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+function terminalEnvironmentValue(value) {
+  const normalized = String(value);
+  if (/[\x00-\x1f\x7f]/.test(normalized)) {
+    throw new TypeError('Terminal environment values cannot contain control characters');
+  }
+  // A literal double quote cannot occur in a valid Windows path, and it can
+  // terminate SET's protective quoting when these instructions are pasted.
+  if (normalized.includes('"')) {
+    throw new TypeError('Terminal environment values cannot contain double quotes');
+  }
+  return normalized;
+}
+
+function cmdNeedsLiteralHelpers(value) {
+  return /[%!]/.test(value);
+}
+
+function cmdLiteralHelperReference(character) {
+  return `^%${CMD_LITERAL_HELPERS[character]}^%`;
+}
+
+function cmdLiteralValue(value) {
+  let encoded = '';
+  for (const character of value) {
+    if (CMD_LITERAL_HELPERS[character]) {
+      // CALL resolves these helper references on its second expansion pass,
+      // after normal percent and delayed-exclamation expansion have finished.
+      encoded += cmdLiteralHelperReference(character);
+    } else if ('&|<>()'.includes(character)) {
+      // The assignment's protective quotes are deferred to CALL's second pass,
+      // so command metacharacters must survive the first pass explicitly.
+      encoded += `^${character}`;
+    } else {
+      encoded += character;
+    }
+  }
+  return encoded;
+}
+
 function cmdSet(variable, value) {
-  return `set "${variable}=${String(value)}"`;
+  if (!cmdNeedsLiteralHelpers(value)) return `set "${variable}=${value}"`;
+  return `call set ^"${variable}=${cmdLiteralValue(value)}^"`;
+}
+
+function cmdLiteralHelperSetup() {
+  return [
+    `set "${CMD_LITERAL_HELPERS['%']}=%"`,
+    `set "${CMD_LITERAL_HELPERS['!']}=!"`,
+    `set "${CMD_LITERAL_HELPERS['^']}=^"`
+  ];
+}
+
+function cmdLiteralHelperCleanup() {
+  return Object.values(CMD_LITERAL_HELPERS).map(name => `set "${name}="`);
 }
 
 function getTerminalCaPath(ca) {
@@ -91,14 +148,24 @@ function buildTerminalEnvironment(proxyUrl, certPath) {
 }
 
 export function buildExistingTerminalInstructions(proxyUrl, certPath) {
-  const environment = Object.entries(buildTerminalEnvironment(proxyUrl, certPath));
+  const environment = Object.entries(buildTerminalEnvironment(proxyUrl, certPath))
+    .map(([name, value]) => [name, terminalEnvironmentValue(value)]);
+  const cmdAssignments = [
+    cmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''),
+    ...environment.map(([name, value]) => cmdSet(name, value))
+  ];
+  const cmdUsesLiteralHelpers = environment.some(([, value]) => cmdNeedsLiteralHelpers(value));
   return {
     bash: `unset NODE_TLS_REJECT_UNAUTHORIZED; export ${environment.map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ')}`,
     powershell: [
       'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue',
       ...environment.map(([name, value]) => `$env:${name}=${powerShellQuote(value)}`)
     ].join('; '),
-    cmd: [cmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''), ...environment.map(([name, value]) => cmdSet(name, value))].join('&& ')
+    cmd: [
+      ...(cmdUsesLiteralHelpers ? cmdLiteralHelperSetup() : []),
+      ...cmdAssignments,
+      ...(cmdUsesLiteralHelpers ? cmdLiteralHelperCleanup() : [])
+    ].join('&& ')
   };
 }
 

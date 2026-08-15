@@ -4902,11 +4902,74 @@
       return `'${String(value).replace(/'/g, "''")}'`;
     }
 
+    const TERMINAL_CMD_LITERAL_HELPERS = Object.freeze({
+      '%': '__HTTP_FREEKIT_CMD_LITERAL_PERCENT_4F91D2A7__',
+      '!': '__HTTP_FREEKIT_CMD_LITERAL_BANG_4F91D2A7__',
+      '^': '__HTTP_FREEKIT_CMD_LITERAL_CARET_4F91D2A7__'
+    });
+
+    function normalizeTerminalEnvironmentValue(value) {
+      const normalized = String(value);
+      if (/[\x00-\x1f\x7f]/.test(normalized)) {
+        throw new TypeError('Terminal environment values cannot contain control characters');
+      }
+      if (normalized.includes('"')) {
+        throw new TypeError('Terminal environment values cannot contain double quotes');
+      }
+      return normalized;
+    }
+
+    function terminalCmdNeedsLiteralHelpers(value) {
+      return /[%!]/.test(value);
+    }
+
+    function terminalCmdLiteralValue(value) {
+      let encoded = '';
+      for (const character of value) {
+        const helper = TERMINAL_CMD_LITERAL_HELPERS[character];
+        if (helper) encoded += `^%${helper}^%`;
+        else if ('&|<>()'.includes(character)) encoded += `^${character}`;
+        else encoded += character;
+      }
+      return encoded;
+    }
+
     function terminalCmdSet(variable, value) {
-      return `set "${variable}=${String(value)}"`;
+      if (!terminalCmdNeedsLiteralHelpers(value)) return `set "${variable}=${value}"`;
+      return `call set ^"${variable}=${terminalCmdLiteralValue(value)}^"`;
+    }
+
+    function terminalCmdHelperSetup() {
+      return [
+        `set "${TERMINAL_CMD_LITERAL_HELPERS['%']}=%"`,
+        `set "${TERMINAL_CMD_LITERAL_HELPERS['!']}=!"`,
+        `set "${TERMINAL_CMD_LITERAL_HELPERS['^']}=^"`
+      ];
+    }
+
+    function terminalCmdHelperCleanup() {
+      return Object.values(TERMINAL_CMD_LITERAL_HELPERS).map(name => `set "${name}="`);
     }
 
     function buildTerminalFallbackInstructions(proxyUrl, certPath) {
+      proxyUrl = normalizeTerminalEnvironmentValue(proxyUrl);
+      certPath = normalizeTerminalEnvironmentValue(certPath);
+      const cmdAssignments = [
+        terminalCmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''),
+        terminalCmdSet('HTTP_PROXY', proxyUrl),
+        terminalCmdSet('HTTPS_PROXY', proxyUrl),
+        terminalCmdSet('http_proxy', proxyUrl),
+        terminalCmdSet('https_proxy', proxyUrl),
+        terminalCmdSet('NO_PROXY', ''),
+        terminalCmdSet('no_proxy', ''),
+        terminalCmdSet('NODE_USE_ENV_PROXY', '1'),
+        terminalCmdSet('SSL_CERT_FILE', certPath),
+        terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
+        terminalCmdSet('REQUESTS_CA_BUNDLE', certPath),
+        terminalCmdSet('CURL_CA_BUNDLE', certPath)
+      ];
+      const cmdUsesLiteralHelpers = [proxyUrl, certPath]
+        .some(terminalCmdNeedsLiteralHelpers);
       return {
         bash: [
           'unset NODE_TLS_REJECT_UNAUTHORIZED;',
@@ -4937,18 +5000,9 @@
           `$env:CURL_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`
         ].join('; '),
         cmd: [
-          terminalCmdSet('NODE_TLS_REJECT_UNAUTHORIZED', ''),
-          terminalCmdSet('HTTP_PROXY', proxyUrl),
-          terminalCmdSet('HTTPS_PROXY', proxyUrl),
-          terminalCmdSet('http_proxy', proxyUrl),
-          terminalCmdSet('https_proxy', proxyUrl),
-          terminalCmdSet('NO_PROXY', ''),
-          terminalCmdSet('no_proxy', ''),
-          terminalCmdSet('NODE_USE_ENV_PROXY', '1'),
-          terminalCmdSet('SSL_CERT_FILE', certPath),
-          terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
-          terminalCmdSet('REQUESTS_CA_BUNDLE', certPath),
-          terminalCmdSet('CURL_CA_BUNDLE', certPath)
+          ...(cmdUsesLiteralHelpers ? terminalCmdHelperSetup() : []),
+          ...cmdAssignments,
+          ...(cmdUsesLiteralHelpers ? terminalCmdHelperCleanup() : [])
         ].join('&& ')
       };
     }
