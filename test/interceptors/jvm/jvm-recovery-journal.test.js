@@ -57,6 +57,16 @@ function createInterceptor(dataDir, processIdentityLookup = async () => identity
   return interceptor;
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 test('successful JVM attach is journaled before mutation and survives restart for Stop', async t => {
   const dataDir = createDataDir(t);
   const original = createInterceptor(dataDir);
@@ -148,6 +158,63 @@ test('dead JVM recovery ownership is cleared without attaching', async t => {
   assert.equal(attachCount, 0);
   assert.equal(restarted.activatedProcesses.size, 0);
   assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
+});
+
+test('stale JVM status cannot resurrect stopped ownership or its recovery journal', async t => {
+  const dataDir = createDataDir(t);
+  writeJournal(dataDir);
+  const lookupStarted = deferred();
+  const staleLookup = deferred();
+  let lookupCount = 0;
+  const interceptor = createInterceptor(dataDir, async () => {
+    lookupCount += 1;
+    if (lookupCount === 1) {
+      lookupStarted.resolve();
+      return await staleLookup.promise;
+    }
+    return identity();
+  });
+  interceptor._attachAgent = async () => ({ success: true });
+
+  const statusRefresh = interceptor.isActive();
+  await lookupStarted.promise;
+  await interceptor.deactivate({ pid: PID });
+
+  assert.equal(interceptor.activatedProcesses.size, 0);
+  assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
+
+  staleLookup.resolve(identity());
+  assert.equal(await statusRefresh, false);
+  assert.equal(interceptor.activatedProcesses.size, 0);
+  assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
+});
+
+test('stale JVM status cannot delete replacement PID ownership or its recovery journal', async t => {
+  const dataDir = createDataDir(t);
+  writeJournal(dataDir);
+  const lookupStarted = deferred();
+  const staleLookup = deferred();
+  const interceptor = createInterceptor(dataDir, async () => {
+    lookupStarted.resolve();
+    return await staleLookup.promise;
+  });
+
+  const statusRefresh = interceptor.isActive();
+  await lookupStarted.promise;
+
+  const replacement = {
+    name: 'Replacement',
+    mainClass: 'replacement.Main',
+    targetIdentity: identity({ startTime: '999999' }),
+    recoveryState: 'active'
+  };
+  interceptor._setTrackedOwnership(PID, replacement);
+  const replacementJournal = fs.readFileSync(recoveryFile(dataDir), 'utf8');
+
+  staleLookup.resolve(replacement.targetIdentity);
+  assert.equal(await statusRefresh, true);
+  assert.equal(interceptor.activatedProcesses.get(PID), replacement);
+  assert.equal(fs.readFileSync(recoveryFile(dataDir), 'utf8'), replacementJournal);
 });
 
 test('a live matching OS process omitted by jps retains recovery without attaching', async t => {
