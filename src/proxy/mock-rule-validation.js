@@ -85,9 +85,9 @@ function validateHeaders(headers, label) {
 function validateOptionalStatus(container, property, label) {
   if (!hasOwn(container, property) || container[property] === undefined) return null;
   const status = container[property];
-  return Number.isInteger(status) && status >= 100 && status <= 599
+  return Number.isInteger(status) && status >= 200 && status <= 599
     ? null
-    : `${label} must be an integer from 100 to 599`;
+    : `${label} must be an integer from 200 to 599`;
 }
 
 function validateOptionalBody(container, property, label) {

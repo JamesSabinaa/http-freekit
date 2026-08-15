@@ -232,6 +232,66 @@ test('validator rejects malformed execution fields before rules reach runtime ha
   }
 });
 
+test('every mock final-response status accepts only integers from 200 through 599', () => {
+  const base = {
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }]
+  };
+  const rulesForStatus = status => [
+    { ...base, action: { type: 'fixed-response', status } },
+    { ...base, action: { type: 'serve-file', filePath: '/tmp/response.txt', status } },
+    {
+      ...base,
+      action: {
+        type: 'transform-request',
+        resStatusMode: 'replace',
+        resStatusOverride: status
+      }
+    },
+    { ...base, action: { type: 'transform-response', statusOverride: status } },
+    { enabled: true, method: 'GET', urlPattern: '/', response: { status } }
+  ];
+
+  for (const status of [100, 103, 199, 600]) {
+    for (const rule of rulesForStatus(status)) {
+      assert.match(validateMockRule(rule), /integer from 200 to 599/, String(status));
+    }
+  }
+  for (const status of [200, 599]) {
+    for (const rule of rulesForStatus(status)) {
+      assert.equal(validateMockRule(rule), null, String(status));
+    }
+  }
+});
+
+test('persisted and runtime informational mock rules are discarded or skipped', () => {
+  const proxy = new ProxyServer(null);
+  const informational = status => ({
+    id: `status-${status}`,
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status, body: 'unsafe informational response' }
+  });
+  const finalRule = validRule('status-599');
+  finalRule.action.status = 599;
+
+  const restored = proxy.loadMockRules([
+    informational(100),
+    { type: 'group', id: 'mixed-statuses', items: [informational(199), finalRule] }
+  ]);
+
+  assert.equal(restored.migrated, true);
+  assert.deepEqual(proxy.mockRules.map(rule => rule.id), ['mixed-statuses']);
+  assert.deepEqual(proxy.mockRules[0].items.map(rule => rule.id), ['status-599']);
+
+  const runtimeFallback = validRule('runtime-final');
+  proxy.mockRules = [informational(199), runtimeFallback];
+  assert.equal(
+    proxy._findMockRule('GET', 'https://example.test/', {}, ''),
+    runtimeFallback
+  );
+});
+
 test('mock APIs reject malformed group children and invalid updates atomically', async t => {
   const { proxy, port } = await createApi(t);
   const groupResult = await requestJson(port, 'POST', '/api/mock-rules/group', {
