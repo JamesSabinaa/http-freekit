@@ -210,11 +210,11 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
       timeout: 5000
     });
     const enabledMatch = output.match(/^\s*ProxyEnable\s+REG_DWORD\s+(\S+)/im);
-    const serverMatch = output.match(/^\s*ProxyServer\s+REG_SZ\s+(.*)$/im);
+    const serverMatch = output.match(/^[ \t]*ProxyServer[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
     const overrideMatch = output.match(/^[ \t]*ProxyOverride[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
     return {
       enabled: enabledMatch ? parseInt(enabledMatch[1], 0) !== 0 : false,
-      server: serverMatch ? serverMatch[1].trim() : null,
+      server: serverMatch ? (serverMatch[1] || '').trim() : null,
       // null means the value is absent; an empty string is an existing value
       // that must be recreated exactly during restoration.
       override: overrideMatch ? (overrideMatch[1] || '').trim() : null
