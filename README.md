@@ -201,7 +201,7 @@ The Electron desktop app provides:
 - **Application menu** — File (New Session, Quit), Edit (undo/redo/cut/copy/paste), View (zoom, fullscreen, devtools), Help
 - **System tray** — minimize to tray, context menu (Show/Hide, Quit)
 - **Bundled server** — proxy starts automatically on launch, graceful shutdown on close
-- **Auto-updates** — checks on launch and every 6 hours, downloads in background
+- **Auto-updates** — checks on launch and every 6 hours; Windows and macOS can download an approved update in the background and install it after you choose to restart, while Linux (including AppImage, `.deb`, and `.rpm`) opens the release page for a manual download and install
 - **Cross-platform** — Windows (.exe), macOS (.dmg), Linux (.AppImage, .deb, .rpm)
 - **Secure IPC** — context isolation enabled, preload script with contextBridge API
 

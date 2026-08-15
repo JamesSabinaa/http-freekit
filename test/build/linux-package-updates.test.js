@@ -23,3 +23,12 @@ test('Linux package activation enables checks while downloads remain disabled', 
   assert.match(source, /autoUpdater\.forceDevUpdateConfig = true/);
   assert.match(source, /shouldForceLinuxUpdateChecks\(process\.platform, app\.isPackaged, process\.env\)/);
 });
+
+test('README distinguishes managed desktop updates from the manual Linux flow', () => {
+  const readme = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+  const updateClaim = readme.split('\n').find(line => line.includes('**Auto-updates**')) || '';
+
+  assert.match(updateClaim, /Windows and macOS can download an approved update in the background/);
+  assert.match(updateClaim, /install it after you choose to restart/);
+  assert.match(updateClaim, /Linux \(including AppImage, `\.deb`, and `\.rpm`\) opens the release page for a manual download and install/);
+});
