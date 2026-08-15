@@ -153,6 +153,17 @@ function ownDataValue(value, key) {
   }
 }
 
+function trafficLifecycleId(record) {
+  const lifecycleId = ownDataValue(record, 'trafficLifecycleId');
+  return lifecycleId ?? null;
+}
+
+function describeTrafficIdentity(requestId, lifecycleId) {
+  return lifecycleId === null
+    ? `${requestId} (legacy lifecycle)`
+    : `${requestId} (lifecycle ${lifecycleId})`;
+}
+
 function isArraySafely(value) {
   try {
     return Array.isArray(value);
@@ -364,6 +375,7 @@ function stringifyBoundedRequestDetail(detail, requestId = 0) {
 
   const compact = {
     id: detail.id,
+    traffic_lifecycle_id: detail.traffic_lifecycle_id,
     timestamp: detail.timestamp,
     metadataTruncated: true,
     bodies: detail.bodies,
@@ -404,11 +416,18 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_request_detail',
-    description: 'Get bounded metadata and complete legacy body fields when they fit safely, or explicit previews for a larger captured HTTP request. Pass body_side and repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
+    description: 'Get bounded metadata and complete legacy body fields when they fit safely, or explicit previews for a larger captured HTTP request. Pass traffic_lifecycle_id from search_traffic when an ID has multiple retained lifecycles. Pass body_side and repeat with body_offset to retrieve every retained request, response, or original-request body code unit.',
     inputSchema: {
       type: 'object',
       properties: {
         request_id: { type: 'string', minLength: 1, description: 'The request ID to look up' },
+        traffic_lifecycle_id: {
+          anyOf: [
+            { type: 'string', minLength: 1 },
+            { type: 'null' }
+          ],
+          description: 'Optional traffic_lifecycle_id from search_traffic, including null for a legacy request without one'
+        },
         body_side: {
           type: 'string',
           enum: ['request', 'response', 'original_request'],
@@ -616,19 +635,24 @@ export class McpServerBridge {
       );
     }
 
-    const matched = results.slice(-max).map(r => ({
-      id: r.id,
-      trafficLifecycleId: r.trafficLifecycleId ?? null,
-      method: r.method,
-      statusCode: r.statusCode,
-      url: r.url,
-      host: r.host,
-      path: r.path,
-      duration: r.duration,
-      source: r.source,
-      timestamp: new Date(r.timestamp).toISOString(),
-      responseSize: r.responseBodySize
-    }));
+    const matched = results.slice(-max).map(r => {
+      const lifecycleId = trafficLifecycleId(r);
+      return {
+        id: r.id,
+        traffic_lifecycle_id: lifecycleId,
+        // Preserve the original response key for existing MCP clients.
+        trafficLifecycleId: lifecycleId,
+        method: r.method,
+        statusCode: r.statusCode,
+        url: r.url,
+        host: r.host,
+        path: r.path,
+        duration: r.duration,
+        source: r.source,
+        timestamp: new Date(r.timestamp).toISOString(),
+        responseSize: r.responseBodySize
+      };
+    });
 
     // Build a filter string and broadcast to the UI so it updates live
     const filterParts = [];
@@ -648,9 +672,18 @@ export class McpServerBridge {
     };
   }
 
-  _handleGetRequestDetail({ request_id, body_side, body_offset, body_limit }, requestId = 0) {
+  _handleGetRequestDetail(args = {}, requestId = 0) {
+    const { request_id, traffic_lifecycle_id, body_side, body_offset, body_limit } = args;
+    const lifecycleProvided = Object.prototype.hasOwnProperty.call(
+      args,
+      'traffic_lifecycle_id'
+    );
     if (typeof request_id !== 'string' || request_id.length === 0) {
       throw new Error('request_id must be a non-empty string');
+    }
+    if (lifecycleProvided && traffic_lifecycle_id !== null &&
+        (typeof traffic_lifecycle_id !== 'string' || traffic_lifecycle_id.length === 0)) {
+      throw new Error('traffic_lifecycle_id must be a non-empty string or null');
     }
     if (body_side !== undefined &&
       !['request', 'response', 'original_request'].includes(body_side)) {
@@ -669,12 +702,27 @@ export class McpServerBridge {
       throw new Error(`body_limit must be a safe integer from 1 to ${MCP_BODY_PAGE_MAX_CODE_UNITS}`);
     }
 
-    const req = this.apiServer.trafficLog.find(
+    let candidates = this.apiServer.trafficLog.filter(
       record => ownDataValue(record, 'id') === request_id
     );
-    if (!req) {
-      return { content: [{ type: 'text', text: `Request ${request_id} not found` }], isError: true };
+    if (lifecycleProvided) {
+      candidates = candidates.filter(
+        record => trafficLifecycleId(record) === traffic_lifecycle_id
+      );
     }
+    if (candidates.length === 0) {
+      const identity = lifecycleProvided
+        ? describeTrafficIdentity(request_id, traffic_lifecycle_id)
+        : request_id;
+      return { content: [{ type: 'text', text: `Request ${identity} not found` }], isError: true };
+    }
+    if (candidates.length > 1) {
+      const error = lifecycleProvided
+        ? `Multiple requests have traffic identity ${describeTrafficIdentity(request_id, traffic_lifecycle_id)}`
+        : `Multiple request lifecycles have ID ${request_id}; provide traffic_lifecycle_id from search_traffic`;
+      return { content: [{ type: 'text', text: error }], isError: true };
+    }
+    const req = candidates[0];
 
     const originalRequest = ownDataValue(req, 'originalRequest');
     const requestBody = retainedBody(ownDataValue(req, 'requestBody'), {
@@ -730,6 +778,7 @@ export class McpServerBridge {
     }
     const detail = {
       ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      traffic_lifecycle_id: trafficLifecycleId(req),
       originalRequest: originalRequestMetadata,
       timestamp,
       bodies,
