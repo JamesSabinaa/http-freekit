@@ -3937,10 +3937,10 @@
       }
 
       /* Send page: stack vertically */
-      #panel-send > div {
+      #sendTabPanel {
         flex-direction: column;
       }
-      #panel-send > div > div {
+      #sendTabPanel > div {
         border-right: none;
         border-bottom: 1px solid var(--border-color);
       }
@@ -4240,11 +4240,15 @@
        ============================================================ */
     .send-tab-bar {
       display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
       align-items: center;
       height: 38px;
+      min-width: 0;
       background: var(--bg-main);
       border-bottom: 1px solid var(--border-color);
       overflow-x: auto;
+      overflow-y: hidden;
       flex-shrink: 0;
     }
     .send-tab-item {
@@ -4305,6 +4309,7 @@
       color: var(--pop-color);
     }
     .send-tab:focus-visible,
+    .send-tab-add:focus-visible,
     .send-tab-close:focus-visible {
       outline-offset: -2px;
     }
@@ -4312,6 +4317,7 @@
       padding: 0 12px;
       height: 100%;
       display: flex;
+      flex: 0 0 auto;
       align-items: center;
       background: transparent;
       border: 0;
