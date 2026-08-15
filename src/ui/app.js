@@ -1657,14 +1657,14 @@
       actionLabel,
       action
     ) {
-      let req = trafficActionRequest(requestId, trafficLifecycleId);
-      // Extremely compact deferred rows can omit the lifecycle. After exact
-      // hydration promotes that provisional row to its server lifecycle, allow
-      // the old action closure to rebind only when the ID is still unambiguous.
-      if (!req && normalizeTrafficLifecycleId(trafficLifecycleId) === null) {
-        const sameIdRequests = requests.filter(candidate => candidate?.id === requestId);
-        if (sameIdRequests.length === 1) req = sameIdRequests[0];
-      }
+      // Omitted lifecycles belong to compact selected rows and follow selection
+      // promotion. Once selection moves elsewhere, there is no exact identity to
+      // rebind; explicit null remains an exact legacy-null identity.
+      const omittedLifecycleLostSelection = trafficLifecycleId === undefined &&
+        requestId !== selectedRequestId;
+      const req = omittedLifecycleLostSelection
+        ? null
+        : trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) {
         toast(`Cannot ${actionLabel}: the exchange is no longer available.`, 'error');
         return null;
@@ -12446,7 +12446,7 @@
       }
 
       const invoker = menuInvoker || e.currentTarget || e.target;
-      const actionLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
+      const actionLifecycleId = req.trafficLifecycleId;
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
       showContextMenu(anchor.x, anchor.y, [

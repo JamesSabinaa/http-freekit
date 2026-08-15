@@ -116,8 +116,7 @@ function createHarness(fetchImpl) {
     resendResolvedRequest: request => { context.resolved.push(['resend', structuredClone(request)]); },
     createMockFromResolvedRequest: request => { context.resolved.push(['mock', structuredClone(request)]); },
     createBreakpointFromResolvedRequest: request => { context.resolved.push(['breakpoint', structuredClone(request)]); },
-    togglePinRequest() {},
-    deleteSelectedRequest() {},
+    identityOnly: [],
     resolved: []
   };
   vm.createContext(context);
@@ -139,8 +138,20 @@ function createHarness(fetchImpl) {
     ${resendWrapperSource}
     ${mockWrapperSource}
     ${breakpointWrapperSource}
+    function togglePinRequest(requestId, trafficLifecycleId) {
+      const request = trafficActionRequest(requestId, trafficLifecycleId);
+      identityOnly.push(['pin', request?.id, request?.trafficLifecycleId]);
+    }
+    function deleteSelectedRequest(requestId, trafficLifecycleId) {
+      const request = trafficActionRequest(requestId, trafficLifecycleId);
+      identityOnly.push(['delete', request?.id, request?.trafficLifecycleId]);
+    }
     ${contextMenuSource}
     globalThis.setRequests = value => { requests = value; };
+    globalThis.setSelection = (requestId, lifecycleId) => {
+      selectedRequestId = requestId;
+      selectedRequestLifecycleId = lifecycleId;
+    };
     globalThis.getRequests = () => requests;
   `, context);
   return {
@@ -198,9 +209,12 @@ test('an open deferred context menu resolves the row again after replacement', a
   }, 'large-import', null, '');
   const items = harness.menuItems();
   harness.context.setRequests([exact()]);
+  harness.context.setSelection('large-import', 'life-1');
 
   await items.find(item => item.label === 'Copy URL').action();
   await items.find(item => item.label === 'Copy as cURL').action();
+  items.find(item => item.label === 'Pin exchange').action();
+  items.find(item => item.label === 'Delete exchange').action();
 
   assert.equal(harness.clipboard[0], exact().url);
   assert.deepEqual(JSON.parse(harness.clipboard[1]), {
@@ -211,7 +225,30 @@ test('an open deferred context menu resolves the row again after replacement', a
     encoding: 'utf8',
     decoded: true
   });
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.context.identityOnly)), [
+    ['pin', 'large-import', 'life-1'],
+    ['delete', 'large-import', 'life-1']
+  ]);
   assert.equal(harness.calls.length, 0);
+});
+
+test('explicit-null content actions never rebind to a newer lifecycle', async () => {
+  const harness = createHarness(() => assert.fail('explicit null must fail before fetch'));
+  harness.context.setRequests([exact()]);
+  harness.context.setSelection('large-import', 'life-1');
+
+  let acted = false;
+  const result = await harness.context.withResolvedTrafficAction(
+    'large-import',
+    null,
+    'copy URL',
+    () => { acted = true; }
+  );
+
+  assert.equal(result, null);
+  assert.equal(acted, false);
+  assert.equal(harness.calls.length, 0);
+  assert.match(harness.toasts.at(-1).message, /no longer available/i);
 });
 
 test('deferred actions fail closed on identity mismatch and stale deletion', async () => {

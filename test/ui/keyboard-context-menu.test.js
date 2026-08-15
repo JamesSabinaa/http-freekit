@@ -265,6 +265,12 @@ function createHarness() {
     let selectedRequestLifecycleId = null;
     let requests = [{ id: 'request-1', url: 'https://example.test/path' }];
     ${identityHelpers}
+    const recordTrafficSelection = selectRequest;
+    selectRequest = (id, _toggle, lifecycleId) => {
+      recordTrafficSelection(id);
+      selectedRequestId = id;
+      selectedRequestLifecycleId = normalizeTrafficLifecycleId(lifecycleId);
+    };
     ${trafficAction}
     ${editableHelper}
     ${menuBlock}
