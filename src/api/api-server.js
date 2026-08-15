@@ -169,6 +169,15 @@ function harTruncationToTraffic(body, fieldPath) {
   };
 }
 
+function harContentDecodedToTraffic(body, fieldPath) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) ||
+      !Object.prototype.hasOwnProperty.call(body, '_contentDecoded')) return false;
+  if (typeof body._contentDecoded !== 'boolean') {
+    throw new TypeError(`${fieldPath}._contentDecoded must be a boolean`);
+  }
+  return body._contentDecoded;
+}
+
 function publicClientCertificates(certificates) {
   if (!Array.isArray(certificates)) return [];
   return certificates.map(certificate => ({
@@ -931,7 +940,9 @@ print(json.dumps({"providers": get_proxy_providers()}))
     const capturedSizeFields = ['requestBodyCapturedSize', 'responseBodyCapturedSize'];
     const numberFields = ['statusCode', 'duration', ...bodySizeFields, ...capturedSizeFields];
     const booleanFields = [
-      'requestBodyTruncated', 'responseBodyTruncated', 'breakpointActive', 'pinned'
+      'requestBodyTruncated', 'responseBodyTruncated',
+      'requestBodyContentDecoded', 'responseBodyContentDecoded',
+      'breakpointActive', 'pinned'
     ];
 
     for (let index = 0; index < requests.length; index++) {
@@ -1441,6 +1452,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             entry.response?.content,
             'response.content'
           );
+          const requestContentDecoded = harContentDecodedToTraffic(
+            entry.request.postData,
+            'request.postData'
+          );
+          const responseContentDecoded = harContentDecodedToTraffic(
+            entry.response?.content,
+            'response.content'
+          );
           const responseBodyDecodedSize = responseTruncation?.originalSize
             ?? (entry.response?.content?.size === undefined
               ? undefined
@@ -1460,6 +1479,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             requestHeaders: harHeadersToObject(entry.request.headers),
             requestBody: requestBody.body,
             requestBodyEncoding: requestBody.encoding,
+            ...(requestContentDecoded ? { requestBodyContentDecoded: true } : {}),
             requestCookies: Array.isArray(entry.request.cookies) ? entry.request.cookies : [],
             requestPostDataParams: Array.isArray(entry.request.postData?.params)
               ? entry.request.postData.params
@@ -1479,6 +1499,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             responseHeaders: harHeadersToObject(entry.response?.headers),
             responseBody: responseBody.body,
             responseBodyEncoding: responseBody.encoding,
+            ...(responseContentDecoded ? { responseBodyContentDecoded: true } : {}),
             responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
             responseContentMimeType: entry.response?.content?.mimeType || '',
             responseHttpVersion: entry.response?.httpVersion === undefined

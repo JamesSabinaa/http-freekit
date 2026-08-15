@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
@@ -71,7 +72,7 @@ function resendRequest(request) {
   return { tab: loadedTab, toasts, persisted };
 }
 
-async function prepareTab(tab) {
+async function prepareTab(tab, initialHeaders = {}) {
   const context = {
     __tab: tab,
     TextEncoder,
@@ -104,9 +105,36 @@ async function prepareTab(tab) {
     ${prepareSource}
     globalThis.prepare = prepareSendRequestPayload;
   `, context);
-  const headers = {};
+  const headers = { ...initialHeaders };
   const payload = await context.prepare(headers);
   return { payload: plain(payload), headers: plain(headers) };
+}
+
+function headerRowsToObject(rows) {
+  return Object.fromEntries(
+    (rows || []).filter(row => row.enabled !== false && row.key)
+      .map(row => [row.key, row.value])
+  );
+}
+
+function capturedContentEncodedRequest({ id, method = 'POST', wireBytes, contentEncoding, contentType }) {
+  const proxy = new ProxyServer(null);
+  const captured = {
+    requestBody: proxy._safeBodyString(wireBytes, contentEncoding, contentType)
+  };
+  proxy._normalizeCapturedBodies(captured);
+  return {
+    id,
+    method,
+    url: 'http://example.test/replaced-by-test',
+    requestHeaders: {
+      'Content-Type': contentType,
+      'Content-Encoding': contentEncoding,
+      'Content-Length': String(wireBytes.length),
+      'X-Retained': id
+    },
+    ...captured
+  };
 }
 
 function currentExportRequest(tab) {
@@ -334,6 +362,138 @@ test('Resend preserves exact custom methods and rejects malformed methods atomic
     assert.equal(invalid.toasts.length, 1);
     assert.equal(invalid.toasts[0].type, 'error');
     assert.match(invalid.toasts[0].message, /method.*valid HTTP token/i);
+  }
+});
+
+test('Resend sends decoded semantic bytes without stale encoding headers and preserves raw fallbacks', async t => {
+  const received = [];
+  const origin = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => {
+      received.push({
+        method: request.method,
+        headers: request.headers,
+        body: Buffer.concat(chunks)
+      });
+      response.end('ok');
+    });
+  });
+  const originPort = await listen(origin);
+
+  let api;
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: data => api.onTrafficEvent(data)
+  });
+  api = new ApiServer(proxy, null, null, { port: 0 });
+  api.port = 0;
+  await proxy.start();
+  await api.start();
+  t.after(async () => {
+    await api.stop();
+    await proxy.stop();
+    await close(origin);
+  });
+
+  const decodedCases = [
+    {
+      id: 'decoded-text',
+      method: 'PROPFIND',
+      decodedBytes: Buffer.from('decoded request text'),
+      contentType: 'text/plain'
+    },
+    {
+      id: 'decoded-binary',
+      method: 'POST',
+      decodedBytes: Buffer.from([0x00, 0xff, 0x41]),
+      contentType: 'application/octet-stream'
+    }
+  ];
+
+  for (const item of decodedCases) {
+    const wireBytes = zlib.gzipSync(item.decodedBytes);
+    const capture = capturedContentEncodedRequest({
+      ...item,
+      wireBytes,
+      contentEncoding: 'gzip'
+    });
+    capture.url = `http://127.0.0.1:${originPort}/${item.id}`;
+    assert.equal(capture.requestBodyContentDecoded, true);
+
+    const resent = resendRequest(capture);
+    assert.equal(resent.tab.method, item.method);
+    assert.equal(resent.tab.headers.some(row => /content-(?:encoding|length)/i.test(row.key)), false);
+    assert.equal(resent.tab.headers.some(row => row.key === 'X-Retained'), true);
+    assert.deepEqual(resent.toasts, [{
+      message: 'Request loaded for semantic replay with decoded body bytes. Content-Encoding and Content-Length were omitted.',
+      type: 'warning'
+    }]);
+
+    const prepared = await prepareTab(resent.tab, headerRowsToObject(resent.tab.headers));
+    const response = await postJson(api.httpServer.address().port, {
+      url: resent.tab.url,
+      method: resent.tab.method,
+      headers: prepared.headers,
+      body: prepared.payload.body,
+      bodyEncoding: prepared.payload.bodyEncoding
+    });
+    assert.equal(response.statusCode, 200, item.id);
+    const receivedRequest = received.at(-1);
+    assert.equal(receivedRequest.method, item.method);
+    assert.deepEqual(receivedRequest.body, item.decodedBytes);
+    assert.equal(receivedRequest.headers['content-encoding'], undefined);
+    assert.equal(receivedRequest.headers['content-length'], String(item.decodedBytes.length));
+    assert.equal(receivedRequest.headers['x-retained'], item.id);
+  }
+
+  const rawFallbacks = [
+    {
+      id: 'malformed-gzip',
+      contentEncoding: 'gzip',
+      wireBytes: Buffer.from([0x00, 0xff, 0x41])
+    },
+    {
+      id: 'unknown-coding',
+      contentEncoding: 'made-up-coding',
+      wireBytes: zlib.gzipSync(Buffer.from('raw compressed bytes'))
+    }
+  ];
+  for (const item of rawFallbacks) {
+    const capture = capturedContentEncodedRequest({
+      ...item,
+      wireBytes: item.wireBytes,
+      contentType: 'application/octet-stream'
+    });
+    capture.url = `http://127.0.0.1:${originPort}/${item.id}`;
+    assert.equal(capture.requestBodyEncoding, 'base64');
+    assert.equal(Object.hasOwn(capture, 'requestBodyContentDecoded'), false);
+
+    const resent = resendRequest(capture);
+    assert.equal(
+      resent.tab.headers.find(row => row.key.toLowerCase() === 'content-encoding')?.value,
+      item.contentEncoding
+    );
+    assert.equal(resent.tab.headers.some(row => row.key.toLowerCase() === 'content-length'), false);
+    assert.deepEqual(resent.toasts, [{
+      message: 'Request loaded in new Send tab',
+      type: 'success'
+    }]);
+
+    const prepared = await prepareTab(resent.tab, headerRowsToObject(resent.tab.headers));
+    const response = await postJson(api.httpServer.address().port, {
+      url: resent.tab.url,
+      method: resent.tab.method,
+      headers: prepared.headers,
+      body: prepared.payload.body,
+      bodyEncoding: prepared.payload.bodyEncoding
+    });
+    assert.equal(response.statusCode, 200, item.id);
+    const receivedRequest = received.at(-1);
+    assert.deepEqual(receivedRequest.body, item.wireBytes);
+    assert.equal(receivedRequest.headers['content-encoding'], item.contentEncoding);
+    assert.equal(receivedRequest.headers['content-length'], String(item.wireBytes.length));
+    assert.equal(receivedRequest.headers['x-retained'], item.id);
   }
 });
 

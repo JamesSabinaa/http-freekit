@@ -142,6 +142,16 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
       value.response.content._originalSize = 1;
       return har([value]);
     })(), /content\._truncated must be a boolean/],
+    ['non-boolean request decoding provenance', (() => {
+      const value = validEntry();
+      value.request.postData = { text: 'body', _contentDecoded: 'yes' };
+      return har([value]);
+    })(), /postData\._contentDecoded must be a boolean/],
+    ['non-boolean response decoding provenance', (() => {
+      const value = validEntry();
+      value.response.content._contentDecoded = 1;
+      return har([value]);
+    })(), /content\._contentDecoded must be a boolean/],
     ['inverted truncation sizes', (() => {
       const value = validEntry();
       value.response.content._truncated = true;
@@ -170,16 +180,18 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
 test('an invalid second HAR entry causes no partial renderer mutation or success toast', async () => {
   const first = validEntry();
   first.request.url = 'https://valid-first.test/';
+  first.request.postData = { text: 'decoded', _contentDecoded: true };
   const second = validEntry();
   second.request.url = 'https://invalid-second.test/';
-  second.request.method = 2;
+  second.response.content._contentDecoded = 'yes';
   const harness = createRendererHarness();
 
   await harness.importDocument(har([first, second]));
 
   assert.deepEqual(harness.added, []);
+  assert.deepEqual(harness.fetches, []);
   assert.deepEqual(harness.toasts.map(item => item.type), ['error']);
-  assert.match(harness.toasts[0].message, /log\.entries\[1\]\.request\.method must be a string/);
+  assert.match(harness.toasts[0].message, /log\.entries\[1\]\.response\.content\._contentDecoded must be a boolean/);
   assert.doesNotMatch(harness.toasts[0].message, /Imported 1 request/);
 });
 
