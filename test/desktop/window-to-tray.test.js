@@ -48,19 +48,26 @@ function cancellableEvent() {
   };
 }
 
-test('minimize and ordinary close hide the live window without ending its session', () => {
+test('minimize and ordinary close hide only after the native transition finishes', async () => {
   const window = new FakeWindow();
   const remove = installWindowToTray(window);
 
   const minimize = cancellableEvent();
+  window.minimized = true;
   window.emit('minimize', minimize);
   assert.equal(minimize.prevented, true);
+  assert.equal(window.hideCalls, 0, 'minimize must not hide during native event dispatch');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(window.restoreCalls, 1, 'the native minimized state must be cleared before hiding');
+  assert.equal(window.minimized, false);
   assert.equal(window.hideCalls, 1);
 
   window.visible = true;
   const close = cancellableEvent();
   window.emit('close', close);
   assert.equal(close.prevented, true);
+  assert.equal(window.hideCalls, 1, 'close must not hide during native event dispatch');
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(window.hideCalls, 2);
 
   remove();
@@ -134,7 +141,7 @@ test('delayed native focus after tray restoration refocuses the renderer', () =>
   assert.equal(window.webContentsFocusCalls, 1);
 });
 
-test('the close button requests a full quit when configured while minimize still hides', () => {
+test('the close button requests a full quit when configured while minimize still hides', async () => {
   const window = new FakeWindow();
   let quitCalls = 0;
   installWindowToTray(window, {
@@ -143,8 +150,12 @@ test('the close button requests a full quit when configured while minimize still
   });
 
   const minimize = cancellableEvent();
+  window.minimized = true;
   window.emit('minimize', minimize);
   assert.equal(minimize.prevented, true);
+  assert.equal(window.hideCalls, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(window.restoreCalls, 1);
   assert.equal(window.hideCalls, 1);
   assert.equal(quitCalls, 0);
 
