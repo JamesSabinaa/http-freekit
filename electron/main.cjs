@@ -439,6 +439,10 @@ function createWindow({ showOnReady = true } = {}) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      // Keep Chromium's native render/input host alive while the tray window
+      // is hidden. Recreating that host after show() is unreliable on Windows
+      // and can leave a painted window that receives no mouse or keyboard input.
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs')
     }
   });

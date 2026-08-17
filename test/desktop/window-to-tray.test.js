@@ -164,6 +164,7 @@ test('Electron main and tray wire hide/restore to the cleanup-aware lifecycle', 
   assert.match(main, /installWindowToTray\(mainWindow,\s*\{[\s\S]*shouldAllowClose:\s*\(\) => quitCleanupComplete \|\| updateInstallPrepared/);
   assert.match(main, /shouldQuitOnClose:\s*\(\) => getCloseWindowBehavior\(\) === CLOSE_WINDOW_BEHAVIORS\.QUIT/);
   assert.match(main, /onQuitRequested:\s*\(\) => app\.quit\(\)/);
+  assert.match(main, /webPreferences:\s*\{[\s\S]*backgroundThrottling:\s*false/);
   assert.match(main, /function showMainWindow\(\)[\s\S]*showTrayWindow\(mainWindow\)/);
   assert.match(tray, /showTrayWindow\(mainWindow\)/);
   assert.match(main, /app\.on\('before-quit'[\s\S]*runQuitCleanup\(/);
