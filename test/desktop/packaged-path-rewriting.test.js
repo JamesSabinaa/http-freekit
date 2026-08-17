@@ -7,6 +7,7 @@ import asarPathModule from '../../electron/asar-path.cjs';
 import mcpLaunchModule from '../../electron/mcp-launch.cjs';
 
 const {
+  resolveBundledNodeExecutable,
   resolveBundledServerScript,
   rewriteResourcesAsarToUnpacked
 } = asarPathModule;
@@ -76,6 +77,8 @@ test('desktop server and MCP resolution share terminal archive semantics', () =>
   ];
 
   for (const { name, pathApi, root } of platforms) {
+    const platform = name === 'Windows' ? 'win32' : 'linux';
+    const nodeExecutable = platform === 'win32' ? 'node.exe' : 'node';
     const packedAppDirectory = pathApi.join(root, 'app.asar', 'ancestor', 'resources', 'app.asar', 'electron');
     const unpackedAppDirectory = pathApi.join(root, 'app.asar', 'ancestor', 'resources', 'app.asar.unpacked', 'electron');
     const developmentAppDirectory = pathApi.join(root, 'app.asar', 'ancestor', 'electron');
@@ -84,6 +87,21 @@ test('desktop server and MCP resolution share terminal archive semantics', () =>
       resolveBundledServerScript(packedAppDirectory, pathApi),
       pathApi.join(root, 'app.asar', 'ancestor', 'resources', 'app.asar.unpacked', 'src', 'index.js'),
       `${name} packaged server path`
+    );
+    assert.equal(
+      resolveBundledNodeExecutable(packedAppDirectory, platform, pathApi),
+      pathApi.join(
+        root,
+        'app.asar',
+        'ancestor',
+        'resources',
+        'app.asar.unpacked',
+        'node_modules',
+        'node',
+        'bin',
+        nodeExecutable
+      ),
+      `${name} packaged Node path`
     );
     assert.equal(
       resolveBundledMcpBridgeScript(packedAppDirectory, pathApi),
@@ -106,6 +124,19 @@ test('desktop server and MCP resolution share terminal archive semantics', () =>
       `${name} development server path`
     );
     assert.equal(
+      resolveBundledNodeExecutable(developmentAppDirectory, platform, pathApi),
+      pathApi.join(
+        root,
+        'app.asar',
+        'ancestor',
+        'node_modules',
+        'node',
+        'bin',
+        nodeExecutable
+      ),
+      `${name} development Node path`
+    );
+    assert.equal(
       resolveBundledMcpBridgeScript(developmentAppDirectory, pathApi),
       pathApi.join(root, 'app.asar', 'ancestor', 'src', 'mcp', 'stdio-bridge.js'),
       `${name} development MCP path`
@@ -121,8 +152,11 @@ test('desktop startup uses the packaged server resolver instead of replacing an 
 
   assert.match(
     mainSource,
-    /const \{ resolveBundledServerScript \} = require\('\.\/asar-path\.cjs'\);/
+    /resolveBundledNodeExecutable,[\s\S]*resolveBundledServerScript[\s\S]*require\('\.\/asar-path\.cjs'\);/
   );
   assert.match(startServerSource, /const serverScript = resolveBundledServerScript\(__dirname\);/);
+  assert.match(startServerSource, /const serverExecutable = resolveBundledNodeExecutable\(__dirname\);/);
+  assert.match(startServerSource, /spawn\(serverExecutable, \[serverScript\]/);
+  assert.doesNotMatch(startServerSource, /ELECTRON_RUN_AS_NODE:\s*'1'/);
   assert.doesNotMatch(startServerSource, /\.replace\([^\n]*app\.asar/);
 });

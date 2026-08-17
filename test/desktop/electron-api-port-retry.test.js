@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import asarPathModule from '../../electron/asar-path.cjs';
 import readinessModule from '../../electron/server-readiness.cjs';
 
-const { resolveBundledServerScript } = asarPathModule;
+const { resolveBundledNodeExecutable, resolveBundledServerScript } = asarPathModule;
 const {
   SERVER_API_PORT_IN_USE_MESSAGE_TYPE,
   SERVER_READY_MESSAGE_TYPE,
@@ -123,6 +123,7 @@ function createHarness({
       env: { APPIMAGE: 'HTTP-FreeKit.AppImage' },
       platform: 'linux'
     },
+    resolveBundledNodeExecutable,
     resolveBundledServerScript,
     resolveDesktopMcpExecutable: () => 'desktop-mcp',
     spawn: (command, args, options) => {
@@ -205,9 +206,10 @@ test('a forced release-and-rebind collision is cleaned up and retried on a new p
   assert.deepEqual(harness.excludedPortSnapshots, [[], [8123]]);
   assert.deepEqual(harness.spawnCalls.map(call => call.options.env.API_PORT), ['8123', '8124']);
   for (const call of harness.spawnCalls) {
+    assert.equal(call.command, resolveBundledNodeExecutable(path.join(process.cwd(), 'electron')));
     assert.equal(call.options.env.AUTH_TOKEN, 'stable-auth-token');
     assert.equal(call.options.env.ELECTRON, '1');
-    assert.equal(call.options.env.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(call.options.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(call.options.env.HTTP_FREEKIT_MCP_EXECUTABLE, 'desktop-mcp');
     assert.equal(call.options.env.HTTP_FREEKIT_MCP_PACKAGED_APP, '1');
     assert.equal(call.options.env.HTTP_FREEKIT_MCP_REMOUNTING_APP, '1');

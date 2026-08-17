@@ -13,6 +13,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import {
+  calculateJa4,
+  extensionParsers,
+  getExtensionData,
+  isGREASE
+} from 'read-tls-client-hello';
+import {
+  impersonateFromClientHello,
+  isSupported as isTlsImpersonationSupported
+} from 'tls-impersonate';
 import { Duplex, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import {
@@ -328,7 +338,7 @@ export class ProxyServer {
       (certificate => new X509Certificate(certificate));
     this.httpsWhitelist = Object.freeze([]); // [hostname]
     this._validatedHttpsWhitelist = Object.freeze([]);
-    this.tlsFingerprint = 'chrome-136'; // TLS fingerprint preset
+    this.tlsFingerprint = 'passthrough'; // Mirror intercepted clients by default
     this.apiSpecs = []; // [{id, title, baseUrl, spec}]
     this.filterSafeFonts = false;
     // HTTP/2 upstream session cache:
@@ -340,6 +350,10 @@ export class ProxyServer {
     // outage cannot disable H2 for the lifetime of the proxy process.
     this._h2BlacklistExpiresAt = new Map();
     this._h2BlacklistTtlMs = options.h2BlacklistTtlMs ?? 60000;
+    this._tlsImpersonationCache = new WeakMap();
+    this._tlsImpersonationWarnings = new Set();
+    this._tlsConfigGeneration = 0;
+    this._fingerprintedAgents = new Map();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
     this._upstreamProxyGeneration = 0;
@@ -601,7 +615,7 @@ export class ProxyServer {
 
     if (isHttps) {
       Object.assign(options, this._getUpstreamTlsOptions(targetHostname, clientHelloTls));
-      if (useUpstreamProxy) options.agent = this._getUpstreamAgent();
+      if (useUpstreamProxy) options.agent = this._getUpstreamAgent(clientHelloTls);
     } else if (useUpstreamProxy && this._isSocksProxy()) {
       options.createConnection = (_connectOptions, oncreate) => {
         this._connectViaSocks(targetHostname, targetPort)
@@ -938,6 +952,8 @@ export class ProxyServer {
     this._upstreamAgent?.destroy?.();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
+    for (const agent of this._fingerprintedAgents.values()) agent.destroy?.();
+    this._fingerprintedAgents.clear();
   }
 
   getUpstreamProxyGeneration() {
@@ -2917,6 +2933,7 @@ export class ProxyServer {
   _installPreparedClientCertificates(prepared) {
     this.clientCertificates = prepared.configured;
     this._clientCertificateOptions = prepared.loaded;
+    this._invalidateTlsConnectionState();
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] Client certificates: ${this.clientCertificates.length} configured`);
@@ -2985,6 +3002,7 @@ export class ProxyServer {
   _installPreparedTrustedCAs(prepared) {
     this.trustedCAs = prepared.configured;
     this._trustedCaCertificates = prepared.loaded;
+    this._invalidateTlsConnectionState();
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] Trusted CAs: ${this.trustedCAs.length} configured`);
@@ -2999,6 +3017,7 @@ export class ProxyServer {
     const matchPatterns = Object.freeze(nextWhitelist.map(host => this._normalizeTlsHostname(host)));
     this.httpsWhitelist = nextWhitelist;
     this._validatedHttpsWhitelist = matchPatterns;
+    this._invalidateTlsConnectionState();
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
@@ -3025,10 +3044,17 @@ export class ProxyServer {
     const nextFingerprint = validateTlsFingerprint(preset, this.constructor.TLS_FINGERPRINTS);
     if (nextFingerprint !== this.tlsFingerprint) {
       this.tlsFingerprint = nextFingerprint;
+      this._invalidateTlsConnectionState();
       this._destroyUpstreamAgent();
       this._closeAllH2Sessions();
     }
     console.log(`[Proxy] TLS fingerprint: ${this.tlsFingerprint}`);
+  }
+
+  _invalidateTlsConnectionState() {
+    this._tlsConfigGeneration++;
+    this._tlsImpersonationCache = new WeakMap();
+    this._tlsImpersonationWarnings.clear();
   }
 
   // Convert rawHeaders array to an object preserving original case.
@@ -3753,11 +3779,16 @@ export class ProxyServer {
     };
     this._setTargetHostHeader(options.headers, targetUrl.host);
     let requestLib = secureOrigin ? https : http;
-    if (secureOrigin) Object.assign(options, this._getUpstreamTlsOptions(targetUrl.hostname));
+    if (secureOrigin) {
+      Object.assign(
+        options,
+        this._getUpstreamTlsOptions(targetUrl.hostname, context.clientHelloTls)
+      );
+    }
     const proxyGeneration = this._upstreamProxyGeneration;
     const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
     if (useUpstreamProxy && secureOrigin) {
-      options.agent = this._getUpstreamAgent();
+      options.agent = this._getUpstreamAgent(context.clientHelloTls);
     } else if (useUpstreamProxy && this._isSocksProxy()) {
       options.createConnection = (connectOptions, oncreate) => {
         this._connectViaSocks(targetUrl.hostname, targetPort)
@@ -4954,13 +4985,11 @@ export class ProxyServer {
         ...tlsOptions
       });
 
-      // After TLS handshake, extract the captured ClientHello params
+      // Retain the complete parsed ClientHello for upstream fingerprint mirroring.
       if (socketForTls._captured !== undefined) {
         tlsServer.once('secure', () => {
           const parsed = socketForTls._captured;
-          if (parsed) {
-            tlsServer._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
-          }
+          if (parsed) tlsServer._clientHelloTls = parsed;
         });
       }
 
@@ -5868,7 +5897,8 @@ export class ProxyServer {
         secure: true,
         hostname,
         targetPort,
-        tlsDetails
+        tlsDetails,
+        clientHelloTls: tlsSocket._clientHelloTls
       });
     });
 
@@ -5955,9 +5985,7 @@ export class ProxyServer {
         version: secureSocket.getProtocol?.() || 'TLSv1.2'
       };
       const parsed = socket._captured;
-      if (parsed) {
-        secureSocket._clientHelloTls = ProxyServer._clientHelloToTlsOptions(parsed);
-      }
+      if (parsed) secureSocket._clientHelloTls = parsed;
     });
 
     // HTTP/2 streams — each stream is a separate request
@@ -6869,7 +6897,8 @@ export class ProxyServer {
         secure: true,
         hostname,
         targetPort,
-        tlsDetails
+        tlsDetails,
+        clientHelloTls: tlsSocket._clientHelloTls
       });
     });
 
@@ -7385,13 +7414,7 @@ export class ProxyServer {
   _getH2Session(hostname, port, clientHelloTls = null) {
     const origin = `${hostname}:${port}`;
     const cacheKey = this.tlsFingerprint === 'passthrough' && clientHelloTls
-      ? `${origin}|passthrough:${JSON.stringify([
-          clientHelloTls.minVersion || null,
-          clientHelloTls.maxVersion || null,
-          clientHelloTls.ciphers || null,
-          clientHelloTls.sigalgs || null,
-          clientHelloTls.ecdhCurve || null
-        ])}`
+      ? `${origin}|passthrough:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
       : origin;
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
@@ -7426,7 +7449,7 @@ export class ProxyServer {
       let connectTimeout;
 
       const session = http2.connect(url, {
-        ...this._getUpstreamTlsOptions(hostname, clientHelloTls),
+        ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2']),
         ALPNProtocols: ['h2']
       });
 
@@ -7826,13 +7849,17 @@ export class ProxyServer {
       // ClientHello: version(2) + random(32)
       if (pos + 34 > chEnd) return null;
       const tlsVersion = handshake.readUInt16BE(pos);
-      pos += 2 + 32;
+      pos += 2;
+      const random = Buffer.from(handshake.subarray(pos, pos + 32));
+      pos += 32;
 
       // Session ID
       if (pos + 1 > chEnd) return null;
       const sidLen = handshake[pos];
       if (pos + 1 + sidLen > chEnd) return null;
-      pos += 1 + sidLen;
+      pos += 1;
+      const sessionId = Buffer.from(handshake.subarray(pos, pos + sidLen));
+      pos += sidLen;
 
       // Cipher suites
       if (pos + 2 > chEnd) return null;
@@ -7846,12 +7873,16 @@ export class ProxyServer {
 
       // Compression methods
       if (pos + 1 > chEnd) return null;
-      const compLen = handshake[pos]; pos += 1 + compLen;
-      if (pos > chEnd) return null;
+      const compLen = handshake[pos];
+      pos += 1;
+      if (pos + compLen > chEnd) return null;
+      const compressionMethods = [...handshake.subarray(pos, pos + compLen)];
+      pos += compLen;
 
       // Extensions
       const groups = [];
       const sigalgs = [];
+      const extensions = [];
       if (pos < chEnd) {
         if (pos + 2 > chEnd) return null;
         const extLen = handshake.readUInt16BE(pos); pos += 2;
@@ -7862,6 +7893,17 @@ export class ProxyServer {
           const extDataLen = handshake.readUInt16BE(pos + 2);
           pos += 4;
           if (pos + extDataLen > extEnd) return null;
+          const extensionData = handshake.subarray(pos, pos + extDataLen);
+          let parsedData = null;
+          const parser = extensionParsers[extType];
+          if (parser && !isGREASE(extType)) {
+            try {
+              parsedData = parser(extensionData);
+            } catch {
+              parsedData = null;
+            }
+          }
+          extensions.push({ id: extType, data: parsedData });
           if (extType === 0x000a && extDataLen >= 2) {
             // supported_groups
             const listLen = handshake.readUInt16BE(pos);
@@ -7882,9 +7924,47 @@ export class ProxyServer {
         if (pos !== extEnd) return null;
       }
 
-      return { tlsVersion, cipherSuites, groups, sigalgs };
+      return {
+        version: tlsVersion,
+        tlsVersion,
+        random,
+        sessionId,
+        cipherSuites,
+        compressionMethods,
+        extensions,
+        groups,
+        sigalgs
+      };
     } catch {
       return null;
+    }
+  }
+
+  static _clientHelloCacheKey(clientHello) {
+    if (!Array.isArray(clientHello?.extensions)) {
+      return JSON.stringify([
+        clientHello?.minVersion || null,
+        clientHello?.maxVersion || null,
+        clientHello?.ciphers || null,
+        clientHello?.sigalgs || null,
+        clientHello?.ecdhCurve || null
+      ]);
+    }
+    try {
+      const groups = getExtensionData(clientHello, 'supported_groups')?.groups || [];
+      const sigalgs = getExtensionData(clientHello, 'signature_algorithms')?.algorithms || [];
+      const pointFormats = getExtensionData(clientHello, 'ec_point_formats')?.formats || [];
+      const alpn = getExtensionData(clientHello, 'alpn')?.protocols || [];
+      return JSON.stringify([
+        clientHello.cipherSuites,
+        clientHello.extensions.map(extension => extension.id),
+        groups,
+        sigalgs,
+        pointFormats,
+        alpn
+      ]);
+    } catch {
+      return calculateJa4(clientHello);
     }
   }
 
@@ -8116,8 +8196,8 @@ export class ProxyServer {
     return wrapper;
   }
 
-  // TLS fingerprint presets — emulate real browser Client Hello parameters
-  // to prevent JA3/bot detection (Cloudflare, Akamai, etc.) from blocking.
+  // Static presets provide best-effort OpenSSL profiles. Passthrough mode instead mirrors
+  // the complete inbound ClientHello with HTTP Toolkit's native TLS impersonator.
   static TLS_FINGERPRINTS = {
     'chrome-136': {
       label: 'Chrome 136',
@@ -8224,28 +8304,84 @@ export class ProxyServer {
     },
   };
 
-  _getUpstreamTlsOptions(hostname, clientHelloTls) {
+  _getUpstreamTlsOptions(hostname, clientHelloTls, requestedAlpn = ['http/1.1']) {
     const connectionHostname = this._normalizeConnectionHostname(hostname);
-    const base = {
+    const connectionOptions = {
       servername: net.isIP(connectionHostname) ? undefined : connectionHostname,
-      rejectUnauthorized: !this._isHttpsWhitelisted(connectionHostname),
+      rejectUnauthorized: !this._isHttpsWhitelisted(connectionHostname)
+    };
+    const contextOptions = {
       ...(this._trustedCaCertificates.length > 0
         ? { ca: [...tls.rootCertificates, ...this._trustedCaCertificates] }
         : {}),
-      ...this._getClientCertificateOptions(connectionHostname),
+      ...this._getClientCertificateOptions(connectionHostname)
     };
+    const base = { ...connectionOptions, ...contextOptions };
 
-    // Passthrough mode — mirror the client's exact TLS parameters
+    // Mirror cipher/extension order, GREASE, groups, signature algorithms, ALPN and ALPS.
     if (this.tlsFingerprint === 'passthrough' && clientHelloTls) {
-      return ProxyServer._sanitizeUpstreamTlsOptions({
-        ...base,
-        minVersion: clientHelloTls.minVersion,
-        maxVersion: clientHelloTls.maxVersion,
-        ciphers: clientHelloTls.ciphers,
-        sigalgs: clientHelloTls.sigalgs,
-        ecdhCurve: clientHelloTls.ecdhCurve,
-        requestOCSP: true,
-      });
+      const hasCompleteHello = Array.isArray(clientHelloTls.cipherSuites) &&
+        Array.isArray(clientHelloTls.extensions);
+      if (hasCompleteHello && isTlsImpersonationSupported()) {
+        let helloCache = this._tlsImpersonationCache.get(clientHelloTls);
+        if (!helloCache) {
+          helloCache = new Map();
+          this._tlsImpersonationCache.set(clientHelloTls, helloCache);
+        }
+        const alpn = [...new Set((requestedAlpn || []).map(String))];
+        const cacheKey = `${this._tlsConfigGeneration}|${connectionHostname}|${connectionOptions.rejectUnauthorized}|${alpn.join(',')}`;
+        if (!helloCache.has(cacheKey)) {
+          try {
+            const result = impersonateFromClientHello(clientHelloTls, {
+              ...contextOptions,
+              security: connectionOptions.rejectUnauthorized ? 'secure' : 'insecure'
+            });
+            const mirroredAlpn = result.tlsOptions.ALPNProtocols
+              ?.filter(protocol => alpn.includes(protocol));
+            helloCache.set(cacheKey, {
+              ...connectionOptions,
+              ...result.tlsOptions,
+              ALPNProtocols: mirroredAlpn?.length ? mirroredAlpn : alpn,
+              agent: this._getFingerprintAgent('direct', clientHelloTls)
+            });
+            if (result.unsupported.length > 0 && !this._tlsImpersonationWarnings.has(cacheKey)) {
+              this._tlsImpersonationWarnings.add(cacheKey);
+              const gaps = result.unsupported
+                .map(gap => `${gap.kind} 0x${gap.id.toString(16)} (${gap.reason})`)
+                .join(', ');
+              console.warn(`[Proxy] TLS fingerprint mirrored with reduced fidelity: ${gaps}`);
+            }
+          } catch (error) {
+            helloCache.set(cacheKey, null);
+            if (!this._tlsImpersonationWarnings.has(cacheKey)) {
+              this._tlsImpersonationWarnings.add(cacheKey);
+              console.warn(`[Proxy] Could not mirror TLS fingerprint: ${error.message}`);
+            }
+          }
+        }
+        const impersonated = helloCache.get(cacheKey);
+        if (impersonated) return impersonated;
+      } else if (hasCompleteHello &&
+          !isTlsImpersonationSupported() &&
+          !this._tlsImpersonationWarnings.has('unsupported-runtime')) {
+        this._tlsImpersonationWarnings.add('unsupported-runtime');
+        console.warn(
+          '[Proxy] TLS fingerprint mirroring requires standalone Node.js 24.15 or newer; ' +
+          'falling back to the closest OpenSSL profile.'
+        );
+      }
+
+      const fallback = clientHelloTls.ciphers
+        ? clientHelloTls
+        : ProxyServer._clientHelloToTlsOptions(clientHelloTls);
+      if (fallback) {
+        return ProxyServer._sanitizeUpstreamTlsOptions({
+          ...base,
+          ...fallback,
+          ALPNProtocols: requestedAlpn,
+          requestOCSP: true
+        });
+      }
     }
 
     const preset = ProxyServer.TLS_FINGERPRINTS[this.tlsFingerprint];
@@ -8286,34 +8422,69 @@ export class ProxyServer {
     return `${scheme}://${auth}${urlHost}:${p.port}`;
   }
 
+  _getAgentOptions() {
+    return {
+      keepAlive: true,
+      maxSockets: 64,
+      maxFreeSockets: 16,
+      scheduling: 'lifo'
+    };
+  }
+
+  _createUpstreamAgent(proxyUrl) {
+    const agentOptions = this._getAgentOptions();
+    if (this.upstreamProxy.type?.startsWith('socks')) {
+      return new SocksProxyAgent(proxyUrl, {
+        ...agentOptions,
+        timeout: this._upstreamConnectTimeoutMs
+      });
+    }
+    const proxyTlsOptions = this._getUpstreamTlsOptions(this.upstreamProxy.host);
+    return new HttpsProxyAgent(proxyUrl, {
+      ...agentOptions,
+      ...proxyTlsOptions
+    });
+  }
+
+  _getFingerprintAgent(route, clientHello) {
+    const helloKey = ProxyServer._clientHelloCacheKey(clientHello);
+    const routeKey = route === 'proxy'
+      ? `${route}:${this._upstreamProxyGeneration}:${this._getUpstreamProxyUrl()}`
+      : route;
+    const agentKey = `${this._tlsConfigGeneration}:${routeKey}:${helloKey}`;
+    const cached = this._fingerprintedAgents.get(agentKey);
+    if (cached) return cached;
+
+    const agent = route === 'proxy'
+      ? this._createUpstreamAgent(this._getUpstreamProxyUrl())
+      : new https.Agent(this._getAgentOptions());
+    this._fingerprintedAgents.set(agentKey, agent);
+    if (this._fingerprintedAgents.size > 128) {
+      const oldestKey = this._fingerprintedAgents.keys().next().value;
+      const oldestAgent = this._fingerprintedAgents.get(oldestKey);
+      this._fingerprintedAgents.delete(oldestKey);
+      oldestAgent?.destroy?.();
+    }
+    return agent;
+  }
+
   // Return an https-proxy-agent or socks-proxy-agent that handles CONNECT tunneling + TLS automatically.
   // Matches HTTP Toolkit's approach: the agent opens the CONNECT tunnel and TLS-wraps the socket.
-  _getUpstreamAgent() {
+  _getUpstreamAgent(clientHello = null) {
+    const hasCompleteHello = Array.isArray(clientHello?.cipherSuites) &&
+      Array.isArray(clientHello?.extensions);
+    if (this.tlsFingerprint === 'passthrough' && hasCompleteHello) {
+      return this._getFingerprintAgent('proxy', clientHello);
+    }
+
     const proxyUrl = this._getUpstreamProxyUrl();
     const agentKey = `${this._upstreamProxyGeneration}:${proxyUrl}`;
     if (this._upstreamAgent && this._upstreamAgentKey === agentKey) {
       return this._upstreamAgent;
     }
 
-    this._destroyUpstreamAgent();
-    const agentOptions = {
-      keepAlive: true,
-      maxSockets: 64,
-      maxFreeSockets: 16,
-      scheduling: 'lifo'
-    };
-    if (this.upstreamProxy.type?.startsWith('socks')) {
-      this._upstreamAgent = new SocksProxyAgent(proxyUrl, {
-        ...agentOptions,
-        timeout: this._upstreamConnectTimeoutMs
-      });
-    } else {
-      const proxyTlsOptions = this._getUpstreamTlsOptions(this.upstreamProxy.host);
-      this._upstreamAgent = new HttpsProxyAgent(proxyUrl, {
-        ...agentOptions,
-        ...proxyTlsOptions
-      });
-    }
+    this._upstreamAgent?.destroy?.();
+    this._upstreamAgent = this._createUpstreamAgent(proxyUrl);
     this._upstreamAgentKey = agentKey;
     return this._upstreamAgent;
   }

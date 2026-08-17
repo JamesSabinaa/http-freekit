@@ -26,7 +26,25 @@ function resolveBundledServerScript(appDirectory, pathApi = path) {
   return rewriteResourcesAsarToUnpacked(packedServer);
 }
 
+function resolveBundledNodeExecutable(
+  appDirectory,
+  platform = process.platform,
+  pathApi = path
+) {
+  const executableName = platform === 'win32' ? 'node.exe' : 'node';
+  const packedExecutable = pathApi.resolve(
+    appDirectory,
+    '..',
+    'node_modules',
+    'node',
+    'bin',
+    executableName
+  );
+  return rewriteResourcesAsarToUnpacked(packedExecutable);
+}
+
 module.exports = {
+  resolveBundledNodeExecutable,
   resolveBundledServerScript,
   rewriteResourcesAsarToUnpacked
 };

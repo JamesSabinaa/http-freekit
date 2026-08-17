@@ -20,7 +20,10 @@ const { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall } = require('./upd
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isHarTarget, loadHarTarget } = require('./har-deep-link.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
-const { resolveBundledServerScript } = require('./asar-path.cjs');
+const {
+  resolveBundledNodeExecutable,
+  resolveBundledServerScript
+} = require('./asar-path.cjs');
 const { resolveDesktopMcpExecutable } = require('./mcp-launch.cjs');
 const { createServerLogLifecycle } = require('./server-log.cjs');
 const { terminateServerStartupProcess, waitForServer } = require('./server-readiness.cjs');
@@ -89,6 +92,7 @@ async function startServer() {
   const logPath = path.join(logsDir, 'server.log');
   // Server files are in app.asar.unpacked (via asarUnpack config)
   const serverScript = resolveBundledServerScript(__dirname);
+  const serverExecutable = resolveBundledNodeExecutable(__dirname);
   const attemptedPorts = new Set();
   const maxAttempts = 3;
   let serverLog = null;
@@ -115,18 +119,19 @@ async function startServer() {
         await serverLog.writeAndWait(initialMessage);
       }
 
-      proc = spawn(process.execPath, [serverScript], {
-        env: {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: '1',
-          API_PORT: String(apiPort),
-          AUTH_TOKEN: authToken,
-          ELECTRON: '1',
-          HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
-          HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
-          HTTP_FREEKIT_MCP_REMOUNTING_APP: app.isPackaged && process.platform === 'linux' && process.env.APPIMAGE ? '1' : '0',
-          HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
-        },
+      const serverEnvironment = {
+        ...process.env,
+        API_PORT: String(apiPort),
+        AUTH_TOKEN: authToken,
+        ELECTRON: '1',
+        HTTP_FREEKIT_MCP_EXECUTABLE: resolveDesktopMcpExecutable({ isPackaged: app.isPackaged }),
+        HTTP_FREEKIT_MCP_PACKAGED_APP: app.isPackaged ? '1' : '0',
+        HTTP_FREEKIT_MCP_REMOUNTING_APP: app.isPackaged && process.platform === 'linux' && process.env.APPIMAGE ? '1' : '0',
+        HTTP_FREEKIT_MCP_DESCRIPTOR_PATH: path.join(app.getPath('userData'), 'mcp-runtime.json')
+      };
+      delete serverEnvironment.ELECTRON_RUN_AS_NODE;
+      proc = spawn(serverExecutable, [serverScript], {
+        env: serverEnvironment,
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         cwd: path.dirname(serverScript)
       });

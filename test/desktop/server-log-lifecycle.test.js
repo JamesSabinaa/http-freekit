@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import asarPathModule from '../../electron/asar-path.cjs';
 import serverLogModule from '../../electron/server-log.cjs';
 
-const { resolveBundledServerScript } = asarPathModule;
+const { resolveBundledNodeExecutable, resolveBundledServerScript } = asarPathModule;
 const {
   DEFAULT_SERVER_LOG_MAX_BYTES,
   DEFAULT_SERVER_LOG_MAX_FILES,
@@ -456,6 +456,7 @@ function createStartServerHarness(serverLog, waitForServer) {
     fs: { mkdirSync: () => {} },
     path,
     process: { execPath: 'electron', env: {} },
+    resolveBundledNodeExecutable,
     resolveBundledServerScript,
     resolveDesktopMcpExecutable: () => 'mcp',
     spawn: () => {

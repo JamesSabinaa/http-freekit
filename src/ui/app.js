@@ -12300,14 +12300,14 @@
         const res = await fetch(API_BASE + '/api/tls-fingerprint');
         const data = await res.json();
         const sel = document.getElementById('tlsFingerprint');
-        if (sel) sel.value = data.fingerprint || 'chrome-136';
+        if (sel) sel.value = data.fingerprint || 'passthrough';
       } catch (e) {
         console.error('[Error]', e.message);
       }
     }
 
     async function saveTlsFingerprint() {
-      const fingerprint = document.getElementById('tlsFingerprint')?.value || 'chrome-136';
+      const fingerprint = document.getElementById('tlsFingerprint')?.value || 'passthrough';
       try {
         await fetch(API_BASE + '/api/tls-fingerprint', {
           method: 'POST',

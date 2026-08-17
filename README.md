@@ -318,7 +318,7 @@ The proxy generates a CA certificate on first run (`data/ca.pem`). For browsers 
 
 ## Tech Stack
 
-- **Runtime:** Node.js 22.23.1+
+- **Runtime:** Node.js 24.15.0+ for source runs; desktop builds bundle Node.js 26.7 for full TLS fingerprint mirroring
 - **Desktop:** Electron with electron-builder packaging
 - **Backend:** Express, node-forge (certificates), ws (WebSocket), socks (SOCKS proxy)
 - **Frontend:** Vanilla HTML/CSS/JS, Monaco Editor (code viewing/editing), Phosphor Icons
