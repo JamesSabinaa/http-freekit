@@ -99,6 +99,16 @@ const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
 const METHODS_WITHOUT_DEFAULT_CHUNKED_BODY = new Set([
   'GET', 'HEAD', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'
 ]);
+const HTTP2_WIRE_DEFAULTS = Object.freeze({
+  headerTableSize: 4096,
+  enablePush: true,
+  initialWindowSize: 65535,
+  maxFrameSize: 16384,
+  maxConcurrentStreams: 0xffffffff,
+  maxHeaderListSize: 0xffffffff,
+  enableConnectProtocol: false
+});
+const HTTP2_SETTING_NAMES = Object.freeze(Object.keys(HTTP2_WIRE_DEFAULTS));
 
 function createHeaderMap(entries = []) {
   const headers = Object.create(null);
@@ -113,6 +123,34 @@ function getHeaderValues(headers, name) {
     .flatMap(([, value]) => Array.isArray(value) ? value : [value])
     .filter(value => value !== undefined && value !== null)
     .map(String);
+}
+
+function normalizeClientHttp2Profile(profile) {
+  const remoteSettings = profile?.settings || profile;
+  if (!remoteSettings || typeof remoteSettings !== 'object') return null;
+
+  const settings = {};
+  for (const name of HTTP2_SETTING_NAMES) {
+    const value = remoteSettings[name];
+    if (value !== undefined && value !== HTTP2_WIRE_DEFAULTS[name]) settings[name] = value;
+  }
+  const candidateWindow = Number(profile?.connectionWindowSize);
+  const connectionWindowSize = Number.isSafeInteger(candidateWindow)
+    && candidateWindow >= 65535 && candidateWindow <= 0x7fffffff
+    ? candidateWindow
+    : null;
+  if (Object.keys(settings).length === 0 && connectionWindowSize === null) return null;
+  return { settings, connectionWindowSize };
+}
+
+function clientHttp2ProfileCacheKey(profile) {
+  if (!profile) return '';
+  return JSON.stringify([
+    HTTP2_SETTING_NAMES
+      .filter(name => profile.settings[name] !== undefined)
+      .map(name => [name, profile.settings[name]]),
+    profile.connectionWindowSize
+  ]);
 }
 
 function wildcardValueMatches(pattern, value) {
@@ -1520,9 +1558,9 @@ export class ProxyServer {
       connectStart = Date.now();
       const h2Headers = createHeaderMap([
         [':method', method],
-        [':path', targetUrl.pathname + targetUrl.search],
+        [':authority', targetUrl.host],
         [':scheme', targetUrl.protocol.slice(0, -1)],
-        [':authority', targetUrl.host]
+        [':path', targetUrl.pathname + targetUrl.search]
       ]);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
@@ -1774,7 +1812,8 @@ export class ProxyServer {
     requestId,
     startTime,
     tlsDetails = null,
-    clientHelloTls = null
+    clientHelloTls = null,
+    clientHttp2Profile = null
   }) {
     const targetUrl = new URL(fullUrl);
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
@@ -2255,9 +2294,9 @@ export class ProxyServer {
       connectStart = Date.now();
       const headers = createHeaderMap([
         [':method', method],
-        [':path', path],
+        [':authority', targetUrl.host],
         [':scheme', targetUrl.protocol.slice(0, -1)],
-        [':authority', targetUrl.host]
+        [':path', path]
       ]);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
@@ -2310,7 +2349,8 @@ export class ProxyServer {
           remote: {
             address: session.socket?.remoteAddress,
             port: session.socket?.remotePort
-          }
+          },
+          usedUpstreamProxy: session._usedUpstreamProxy === true
         });
       });
       request.on('trailers', trailers => {
@@ -2356,9 +2396,10 @@ export class ProxyServer {
     }, { once: true });
 
     const selectUpstream = async () => {
-      if (targetUrl.protocol === 'https:'
-          && !this._shouldUseUpstreamProxy(targetHostname, targetPort)) {
-        const session = await this._getH2Session(targetHostname, targetPort, clientHelloTls);
+      if (targetUrl.protocol === 'https:') {
+        const session = await this._getH2Session(
+          targetHostname, targetPort, clientHelloTls, clientHttp2Profile
+        );
         if (session && !downstream.aborted && !finalized) {
           startH2(session);
           return;
@@ -5749,7 +5790,8 @@ export class ProxyServer {
                 finalResponse.headers,
                 finalResponse.body,
                 remote,
-                finalResponse.trailers
+                finalResponse.trailers,
+                h2Session._usedUpstreamProxy === true
               );
               return;
             }
@@ -5993,6 +6035,11 @@ export class ProxyServer {
     h2Server.on('stream', (stream, headers) => {
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
+      const clientHttp2Profile = stream.session._clientHttp2Profile || {
+        settings: { ...stream.session.remoteSettings },
+        connectionWindowSize: stream.session.state?.remoteWindowSize
+      };
+      stream.session._clientHttp2Profile = clientHttp2Profile;
 
       let authority = this._getConnectH2Authority(
         headers[':authority'], headers[':scheme'], hostname, targetPort
@@ -6039,7 +6086,8 @@ export class ProxyServer {
           requestId,
           startTime,
           tlsDetails,
-          clientHelloTls: tlsSocket?._clientHelloTls
+          clientHelloTls: tlsSocket?._clientHelloTls,
+          clientHttp2Profile
         });
         return;
       }
@@ -6243,14 +6291,17 @@ export class ProxyServer {
           });
         };
 
-        const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
         let h2RequestAttempted = false;
-        // Try HTTP/2 upstream when this host bypasses the configured proxy.
-        if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
+        // Preserve the downstream HTTP/2 protocol even when the destination is
+        // reached through an HTTP CONNECT or SOCKS upstream proxy.
+        if (isUpstreamHttps) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(
-              upstreamHostname, upstreamPort, tlsSocket._clientHelloTls
+              upstreamHostname,
+              upstreamPort,
+              tlsSocket._clientHelloTls,
+              clientHttp2Profile
             );
             if (downstream.aborted) return;
             if (h2Session) {
@@ -6297,7 +6348,8 @@ export class ProxyServer {
                 finalResponse.headers,
                 finalResponse.body,
                 remote,
-                finalResponse.trailers
+                finalResponse.trailers,
+                h2Session._usedUpstreamProxy === true
               );
               return;
             }
@@ -7412,11 +7464,20 @@ export class ProxyServer {
 
   // Get or create an HTTP/2 session to the given origin, with caching.
   // Returns the h2 session or null if the origin doesn't support h2.
-  _getH2Session(hostname, port, clientHelloTls = null) {
+  _getH2Session(hostname, port, clientHelloTls = null, clientHttp2Profile = null) {
+    const normalizedHttp2Profile = normalizeClientHttp2Profile(clientHttp2Profile);
+    if (this._shouldUseUpstreamProxy(hostname, port)) {
+      return this._getProxiedH2Session(
+        hostname, port, clientHelloTls, normalizedHttp2Profile
+      );
+    }
     const origin = `${hostname}:${port}`;
-    const cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
+    let cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
       ? `${origin}|${this.tlsFingerprint}:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
       : origin;
+    if (normalizedHttp2Profile) {
+      cacheKey += `|h2:${clientHttp2ProfileCacheKey(normalizedHttp2Profile)}`;
+    }
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
     // Known not to support h2
@@ -7451,7 +7512,10 @@ export class ProxyServer {
 
       const session = http2.connect(url, {
         ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2']),
-        ALPNProtocols: ['h2']
+        ALPNProtocols: ['h2'],
+        ...(normalizedHttp2Profile && Object.keys(normalizedHttp2Profile.settings).length > 0
+          ? { settings: normalizedHttp2Profile.settings }
+          : {})
       });
 
       attemptEntry = { session, timer: null, pending: null, attempt };
@@ -7485,6 +7549,7 @@ export class ProxyServer {
           resolve(null);
           return;
         }
+        this._applyClientHttp2ConnectionWindow(session, normalizedHttp2Profile);
         attemptEntry.pending = null;
         attemptEntry.abortPending = null;
         attemptEntry.timer = setTimeout(
@@ -7526,6 +7591,153 @@ export class ProxyServer {
     if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
 
     return pending;
+  }
+
+  _getProxiedH2Session(hostname, port, clientHelloTls, clientHttp2Profile) {
+    const origin = `${hostname}:${port}`;
+    const upstreamProxyGeneration = this._upstreamProxyGeneration;
+    const upstreamProxyUrl = this._getUpstreamProxyUrl();
+    let cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
+      ? `${origin}|${this.tlsFingerprint}:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
+      : origin;
+    cacheKey += `|proxy:${upstreamProxyGeneration}:${upstreamProxyUrl}`;
+    if (clientHttp2Profile) {
+      cacheKey += `|h2:${clientHttp2ProfileCacheKey(clientHttp2Profile)}`;
+    }
+    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
+
+    if (this._isH2Blacklisted(cacheKey)) return Promise.resolve(null);
+
+    const cached = this._h2Sessions.get(cacheKey);
+    if (cached?.pending) return cached.pending;
+    if (cached?.session && !cached.session.destroyed && !cached.session.closed) {
+      clearTimeout(cached.timer);
+      cached.timer = setTimeout(
+        () => this._evictH2Session(cacheKey, cached.session, cached.attempt),
+        60000
+      );
+      return Promise.resolve(cached.session);
+    }
+    if (cached) this._evictH2Session(cacheKey, cached.session, cached.attempt);
+
+    const attempt = Symbol('proxied-h2-session-attempt');
+    let attemptEntry;
+    const pending = new Promise((resolve) => {
+      let settled = false;
+      let connectTimeout;
+      attemptEntry = {
+        session: null,
+        connectSocket: null,
+        timer: null,
+        pending: null,
+        attempt
+      };
+      const isCurrentAttempt = () => {
+        const current = this._h2Sessions.get(cacheKey);
+        return current === attemptEntry && current.attempt === attempt;
+      };
+      const settlePendingFailure = ({ destroy = false } = {}) => {
+        if (settled) return false;
+        settled = true;
+        clearTimeout(connectTimeout);
+        clearTimeout(attemptEntry.timer);
+        if (isCurrentAttempt()) {
+          this._h2Sessions.delete(cacheKey);
+          this._blacklistH2Origin(cacheKey);
+        }
+        if (destroy) {
+          if (attemptEntry.session && !attemptEntry.session.destroyed) {
+            attemptEntry.session.destroy();
+          } else {
+            attemptEntry.connectSocket?.destroy?.();
+          }
+        }
+        resolve(null);
+        return true;
+      };
+      attemptEntry.abortPending = () => settlePendingFailure({ destroy: true });
+
+      const attachSession = (session) => {
+        if (settled || !isCurrentAttempt()) {
+          session.destroy();
+          return;
+        }
+        attemptEntry.session = session;
+        session._usedUpstreamProxy = true;
+        session._upstreamProxyGeneration = upstreamProxyGeneration;
+
+        session.on('connect', () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(connectTimeout);
+          if (!isCurrentAttempt()) {
+            if (!session.destroyed && !session.closed) session.close();
+            resolve(null);
+            return;
+          }
+          this._applyClientHttp2ConnectionWindow(session, clientHttp2Profile);
+          attemptEntry.pending = null;
+          attemptEntry.abortPending = null;
+          attemptEntry.connectSocket = null;
+          attemptEntry.timer = setTimeout(
+            () => this._evictH2Session(cacheKey, session, attempt),
+            60000
+          );
+          resolve(session);
+        });
+        session.on('error', () => {
+          if (!settled) settlePendingFailure();
+          else this._evictH2Session(cacheKey, session, attempt);
+        });
+        session.on('close', () => {
+          if (!settled) settlePendingFailure();
+          else this._evictH2Session(cacheKey, session, attempt);
+        });
+        session.on('goaway', () => this._evictH2Session(cacheKey, session, attempt));
+      };
+
+      connectTimeout = setTimeout(() => settlePendingFailure({ destroy: true }), 5000);
+      this._h2Sessions.set(cacheKey, attemptEntry);
+
+      void this._connectTcp(hostname, port).then((tunnelSocket) => {
+        if (settled || !isCurrentAttempt()) {
+          tunnelSocket.destroy();
+          return;
+        }
+        const upstreamTlsOptions = {
+          ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'])
+        };
+        delete upstreamTlsOptions.agent;
+        const secureSocket = tls.connect({
+          ...upstreamTlsOptions,
+          socket: tunnelSocket,
+          ALPNProtocols: ['h2']
+        });
+        attemptEntry.connectSocket = secureSocket;
+        const session = http2.connect(`https://${urlHostname}:${port}`, {
+          ...(clientHttp2Profile && Object.keys(clientHttp2Profile.settings).length > 0
+            ? { settings: clientHttp2Profile.settings }
+            : {}),
+          createConnection: () => secureSocket
+        });
+        attachSession(session);
+      }, () => settlePendingFailure());
+    });
+
+    const cachedEntry = this._h2Sessions.get(cacheKey);
+    if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
+    return pending;
+  }
+
+  _applyClientHttp2ConnectionWindow(session, clientHttp2Profile) {
+    const windowSize = clientHttp2Profile?.connectionWindowSize;
+    if (!windowSize || typeof session?.setLocalWindowSize !== 'function') return;
+    try {
+      session.setLocalWindowSize(windowSize);
+    } catch {
+      // Older runtimes may not expose connection-window control. SETTINGS and
+      // header ordering can still be mirrored independently.
+    }
   }
 
   _blacklistH2Origin(origin) {
@@ -7594,9 +7806,9 @@ export class ProxyServer {
       // Build h2 pseudo-headers + regular headers
       const h2Headers = createHeaderMap([
         [':method', method],
-        [':path', path],
+        [':authority', this._formatHttpsAuthority(hostname, port)],
         [':scheme', 'https'],
-        [':authority', this._formatHttpsAuthority(hostname, port)]
+        [':path', path]
       ]);
 
       // Copy regular headers after removing both fixed and Connection-nominated
