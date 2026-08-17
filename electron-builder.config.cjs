@@ -106,8 +106,10 @@ module.exports = {
     }
   ],
 
-  // Rebuild native dependencies for the target Electron version
-  npmRebuild: true,
+  // Native server dependencies run under the bundled standalone Node runtime,
+  // not Electron. Preserve their Node-API prebuilds instead of rebuilding them
+  // against Electron's incompatible BoringSSL toolchain.
+  npmRebuild: false,
 
   // asar enabled — the electron/ shell stays packed for performance.
   // src/ and all node_modules are unpacked because the server runs as a

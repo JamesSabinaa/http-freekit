@@ -171,6 +171,7 @@ test('packaged MCP config re-enters the stable application across AppImage remou
   assert.equal(packageJson.main, 'electron/bootstrap.cjs');
   assert.ok(builderConfig.asarUnpack.includes('src/**/*'));
   assert.ok(builderConfig.asarUnpack.includes('node_modules/**/*'));
+  assert.equal(builderConfig.npmRebuild, false);
 
   const mainSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.cjs'), 'utf8');
   const indexSource = fs.readFileSync(path.join(repoRoot, 'src', 'index.js'), 'utf8');
