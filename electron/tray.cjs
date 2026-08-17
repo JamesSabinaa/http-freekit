@@ -84,13 +84,18 @@ function createTray(mainWindow) {
       {
         label: isVisible ? 'Hide Window' : 'Show Window',
         click: () => {
-          if (!mainWindow || mainWindow.isDestroyed()) return;
-          if (mainWindow.isVisible()) {
-            mainWindow.hide();
-          } else {
-            showTrayWindow(mainWindow);
-          }
-          updateContextMenu();
+          // Let the native tray menu finish dispatching the click before its
+          // owner window changes visibility. Replacing the tray menu from the
+          // synchronous show/hide events while this callback is still active
+          // can leave Windows holding mouse capture against the old menu.
+          setImmediate(() => {
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            if (mainWindow.isVisible()) {
+              mainWindow.hide();
+            } else {
+              showTrayWindow(mainWindow);
+            }
+          });
         }
       },
       { type: 'separator' },
