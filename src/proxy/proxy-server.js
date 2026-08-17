@@ -66,6 +66,7 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'EAI_AGAIN'
 ]);
 const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
+const CLIENT_HELLO_TLS_FINGERPRINT_MODES = new Set(['passthrough', 'legacy-passthrough']);
 const STREAMING_UPLOAD_FAILURE_GRACE_MS = 100;
 const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
   'path', 'url-contains', 'body-contains', 'regex-path', 'regex-url', 'regex-body'
@@ -4933,11 +4934,11 @@ export class ProxyServer {
       '\r\n'
     );
 
-    // In passthrough mode, wrap the socket in a Duplex that captures
+    // In client-mirroring modes, wrap the socket in a Duplex that captures
     // the ClientHello as it passes through (unshift doesn't work with TLSSocket
     // because TLS reads from the native handle, not Node's readable buffer).
     let socketForTls = clientSocket;
-    if (this.tlsFingerprint === 'passthrough' || head.length > 0) {
+    if (CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) || head.length > 0) {
       // `head` may already contain the start (or all) of the ClientHello. Feed
       // it through the wrapper because TLSSocket does not consume socket.unshift().
       socketForTls = this._createCapturingSocket(clientSocket, head);
@@ -7413,8 +7414,8 @@ export class ProxyServer {
   // Returns the h2 session or null if the origin doesn't support h2.
   _getH2Session(hostname, port, clientHelloTls = null) {
     const origin = `${hostname}:${port}`;
-    const cacheKey = this.tlsFingerprint === 'passthrough' && clientHelloTls
-      ? `${origin}|passthrough:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
+    const cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
+      ? `${origin}|${this.tlsFingerprint}:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
       : origin;
     const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 
@@ -8317,6 +8318,23 @@ export class ProxyServer {
       ...this._getClientCertificateOptions(connectionHostname)
     };
     const base = { ...connectionOptions, ...contextOptions };
+
+    // Legacy mode retains the previous best-effort behavior: translate only the
+    // client's known ciphers, curves, signature algorithms and TLS versions into
+    // public Node/OpenSSL connection options.
+    if (this.tlsFingerprint === 'legacy-passthrough' && clientHelloTls) {
+      const legacyOptions = clientHelloTls.ciphers
+        ? clientHelloTls
+        : ProxyServer._clientHelloToTlsOptions(clientHelloTls);
+      if (legacyOptions) {
+        return ProxyServer._sanitizeUpstreamTlsOptions({
+          ...base,
+          ...legacyOptions,
+          ALPNProtocols: requestedAlpn,
+          requestOCSP: true
+        });
+      }
+    }
 
     // Mirror cipher/extension order, GREASE, groups, signature algorithms, ALPN and ALPS.
     if (this.tlsFingerprint === 'passthrough' && clientHelloTls) {

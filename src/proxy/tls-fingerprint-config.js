@@ -1,4 +1,8 @@
-export const TLS_FINGERPRINT_MODES = Object.freeze(['default', 'passthrough']);
+export const TLS_FINGERPRINT_MODES = Object.freeze([
+  'default',
+  'passthrough',
+  'legacy-passthrough'
+]);
 
 export class TlsFingerprintConfigError extends TypeError {
   constructor(message, options = {}) {

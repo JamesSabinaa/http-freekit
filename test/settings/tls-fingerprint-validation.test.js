@@ -66,7 +66,8 @@ test('TLS fingerprint setter accepts only presets and explicit modes', () => {
   const supported = [
     ...Object.keys(ProxyServer.TLS_FINGERPRINTS),
     'default',
-    'passthrough'
+    'passthrough',
+    'legacy-passthrough'
   ];
   for (const fingerprint of supported) {
     proxy.setTlsFingerprint(fingerprint);
@@ -110,6 +111,11 @@ test('TLS fingerprint API rejects unsupported IDs without runtime or persistence
     assert.equal(response.statusCode, 200);
     assert.equal(proxy.tlsFingerprint, 'default');
     assert.equal(settings.get('tlsFingerprint'), 'default');
+
+    const legacyResponse = await requestJson(port, { fingerprint: 'legacy-passthrough' });
+    assert.equal(legacyResponse.statusCode, 200);
+    assert.equal(proxy.tlsFingerprint, 'legacy-passthrough');
+    assert.equal(settings.get('tlsFingerprint'), 'legacy-passthrough');
   });
 
 test('startup ignores invalid saved TLS fingerprints without rewriting settings', t => {
@@ -134,7 +140,7 @@ test('startup ignores invalid saved TLS fingerprints without rewriting settings'
     /Ignoring invalid saved TLS fingerprint: Invalid TLS fingerprint/
   );
 
-  settings.set('tlsFingerprint', 'passthrough');
+  settings.set('tlsFingerprint', 'legacy-passthrough');
   assert.equal(restoreSavedTlsFingerprintSetting(proxy, settings), true);
-  assert.equal(proxy.tlsFingerprint, 'passthrough');
+  assert.equal(proxy.tlsFingerprint, 'legacy-passthrough');
 });

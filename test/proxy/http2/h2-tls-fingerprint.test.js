@@ -99,3 +99,23 @@ test('changing the TLS fingerprint evicts sessions and the fingerprinted proxy a
   assert.equal(retainedSession.closeCalls, 0);
   assert.equal(proxy._h2Sessions.size, 1);
 });
+
+test('legacy passthrough restores the previous public OpenSSL option mapping', () => {
+  const proxy = new ProxyServer(null);
+  proxy.setTlsFingerprint('legacy-passthrough');
+  const options = proxy._getUpstreamTlsOptions('legacy.example.test', {
+    tlsVersion: 0x0303,
+    cipherSuites: [0x0a0a, 0x1301, 0xc02f],
+    groups: [0x1a1a, 0x001d, 0x0017],
+    sigalgs: [0x0403, 0x0804],
+    extensions: []
+  });
+
+  assert.equal(options.secureContext, undefined);
+  assert.equal(options.ciphers, 'TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256');
+  assert.equal(options.ecdhCurve, 'X25519:prime256v1');
+  assert.equal(options.sigalgs, 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256');
+  assert.equal(options.minVersion, 'TLSv1.2');
+  assert.equal(options.maxVersion, 'TLSv1.3');
+  assert.deepEqual(options.ALPNProtocols, ['http/1.1']);
+});
