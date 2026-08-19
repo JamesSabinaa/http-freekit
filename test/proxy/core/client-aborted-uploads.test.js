@@ -21,7 +21,7 @@ function delay(ms) {
 async function waitForRecord(events, requestPath, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const record = events.find(event => event.path === requestPath);
+    const record = events.find(event => event.path === requestPath && !event._pending);
     if (record) return record;
     await delay(10);
   }
@@ -70,11 +70,14 @@ function endPartialH1Request(socket, requestPath, absoluteUrl = false) {
   );
 }
 
-function assertSingleAbort(events, requestPath, protocol) {
+function assertAbortLifecycle(events, requestPath, protocol) {
   const records = events.filter(event => event.path === requestPath);
-  assert.equal(records.length, 1, `${requestPath} emitted more than one traffic record`);
-  assert.deepEqual(records[0], {
-    ...records[0],
+  assert.equal(records.length, 2, `${requestPath} did not emit one pending and one final record`);
+  assert.equal(records[0]._pending, true);
+  assert.equal(records[0].statusCode, null);
+  assert.equal(records[0].trafficLifecycleId, records[1].trafficLifecycleId);
+  assert.deepEqual(records[1], {
+    ...records[1],
     protocol,
     requestBody: PARTIAL_BODY,
     requestBodySize: Buffer.byteLength(PARTIAL_BODY),
@@ -90,8 +93,8 @@ function assertSingleAbort(events, requestPath, protocol) {
     errorCode: 'ERR_REQUEST_BODY_ABORTED',
     errorPhase: 'request-body'
   });
-  assert.equal(records[0]._pending, undefined);
-  assert.equal(records[0]._update, undefined);
+  assert.equal(records[1]._pending, undefined);
+  assert.equal(records[1]._update, true);
 }
 
 test('an aborted oversized upload omits cleared body data without concatenating it', () => {
@@ -131,7 +134,9 @@ test('an aborted oversized upload omits cleared body data without concatenating 
   assert.equal(record.statusMessage, 'Client Upload Aborted');
 });
 
-test('client-aborted uploads are captured once across every inbound protocol', { timeout: 30000 }, async t => {
+test('client-aborted uploads complete one pending lifecycle across every inbound protocol', {
+  timeout: 30000
+}, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-aborted-upload-'));
   const ca = new CertificateAuthority(dataDir);
   await ca.initialize();
@@ -185,8 +190,8 @@ test('client-aborted uploads are captured once across every inbound protocol', {
 
   // Let the aborted/error/close event sequences finish before checking idempotency.
   await delay(100);
-  assertSingleAbort(events, '/plain-h1', 'http');
-  assertSingleAbort(events, '/intercepted-h1', 'https');
-  assertSingleAbort(events, '/native-h2', 'h2');
-  assertSingleAbort(events, '/h1-on-h2', 'https');
+  assertAbortLifecycle(events, '/plain-h1', 'http');
+  assertAbortLifecycle(events, '/intercepted-h1', 'https');
+  assertAbortLifecycle(events, '/native-h2', 'h2');
+  assertAbortLifecycle(events, '/h1-on-h2', 'https');
 });

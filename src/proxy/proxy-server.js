@@ -1781,6 +1781,9 @@ export class ProxyServer {
       });
     }, { once: true });
 
+    // Streaming requests can wait indefinitely for response headers. Publish
+    // the lifecycle before connecting upstream so it is visible while pending.
+    emitPending();
     clientReq.pause();
     const selectUpstream = async () => {
       if (targetUrl.protocol === 'https:'
@@ -2395,6 +2398,9 @@ export class ProxyServer {
       });
     }, { once: true });
 
+    // Streaming requests can wait indefinitely for response headers. Publish
+    // the lifecycle before connecting upstream so it is visible while pending.
+    emitPending();
     const selectUpstream = async () => {
       if (targetUrl.protocol === 'https:') {
         const session = await this._getH2Session(

@@ -128,6 +128,7 @@ test('plain HTTP responses reach the client before the origin ends them', async 
 
 test('plain HTTP uploads reach the origin before the client ends them', async t => {
   const firstOriginChunk = deferred();
+  const pendingSeen = deferred();
   let received = '';
   const origin = http.createServer((request, response) => {
     request.setEncoding('utf8');
@@ -139,13 +140,19 @@ test('plain HTTP uploads reach the origin before the client ends them', async t 
   });
   const destroyOriginSockets = trackSockets(origin);
   const originPort = await listen(origin);
-  const proxy = new ProxyServer(null, { port: 0 });
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: event => {
+      if (event.path === '/upload' && event._pending) pendingSeen.resolve(event);
+    }
+  });
   await proxy.start();
   t.after(async () => {
     await proxy.stop();
     await close(origin, destroyOriginSockets);
   });
 
+  let clientRequest;
   const responseComplete = new Promise((resolve, reject) => {
     const request = http.request({
       hostname: '127.0.0.1',
@@ -158,15 +165,18 @@ test('plain HTTP uploads reach the origin before the client ends them', async t 
       response.resume();
       response.once('end', resolve);
     });
+    clientRequest = request;
     request.once('error', reject);
     request.write('first');
-    void withTimeout(
-      firstOriginChunk.promise,
-      'proxy buffered the HTTP upload until request end'
-    ).then(() => request.end('last'), reject);
   });
 
   assert.equal(await withTimeout(firstOriginChunk.promise, 'origin did not receive upload data'), 'first');
+  const pending = await withTimeout(
+    pendingSeen.promise,
+    'streaming HTTP request was missing from pending traffic'
+  );
+  assert.equal(pending.statusCode, null);
+  clientRequest.end('last');
   await responseComplete;
   assert.equal(received, 'firstlast');
 });
@@ -177,6 +187,8 @@ test('native HTTP/2 streams request and response data bidirectionally', { timeou
   await ca.initialize();
   const originCert = await ca.generateCertForHost('127.0.0.1');
   const firstOriginChunk = deferred();
+  const releaseResponseHeaders = deferred();
+  const pendingSeen = deferred();
   let received = '';
 
   const origin = http2.createSecureServer({ key: originCert.key, cert: originCert.cert });
@@ -186,8 +198,10 @@ test('native HTTP/2 streams request and response data bidirectionally', { timeou
       received += chunk.toString();
       if (received === 'request-first') {
         firstOriginChunk.resolve();
-        originStream.respond({ ':status': 200, 'content-type': 'application/grpc' });
-        originStream.write('response-first');
+        void releaseResponseHeaders.promise.then(() => {
+          originStream.respond({ ':status': 200, 'content-type': 'application/grpc' });
+          originStream.write('response-first');
+        });
       }
     });
     originStream.on('end', () => originStream.end('response-last'));
@@ -196,11 +210,18 @@ test('native HTTP/2 streams request and response data bidirectionally', { timeou
   const originPort = await listen(origin);
 
   const events = [];
-  const proxy = new ProxyServer(ca, { port: 0, onRequest: event => events.push(event) });
+  const proxy = new ProxyServer(ca, {
+    port: 0,
+    onRequest: event => {
+      events.push(event);
+      if (event.path === '/bidirectional' && event._pending) pendingSeen.resolve(event);
+    }
+  });
   proxy.setHttp2Config('h2-only');
   proxy.setHttpsWhitelist(['127.0.0.1']);
   await proxy.start();
   t.after(async () => {
+    releaseResponseHeaders.resolve();
     await proxy.stop();
     await close(origin, destroyOriginSockets);
     await rm(dataDir, { recursive: true, force: true });
@@ -235,6 +256,12 @@ test('native HTTP/2 streams request and response data bidirectionally', { timeou
   request.write('request-first');
 
   await withTimeout(firstOriginChunk.promise, 'proxy buffered the HTTP/2 upload');
+  const pending = await withTimeout(
+    pendingSeen.promise,
+    'streaming HTTP/2 request was missing from pending traffic'
+  );
+  assert.equal(pending.statusCode, null);
+  releaseResponseHeaders.resolve();
   const [headers] = await withTimeout(responseHeaders, 'proxy buffered HTTP/2 response headers');
   const [firstChunk] = await withTimeout(firstResponseChunk, 'proxy buffered HTTP/2 response data');
   assert.equal(headers[':status'], 200);
