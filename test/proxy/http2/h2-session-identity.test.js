@@ -33,7 +33,7 @@ function installTimerHarness(t) {
   const timers = [];
 
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    if (delay !== 5000 && delay !== 60000) {
+    if (delay !== 15000 && delay !== 60000) {
       return realSetTimeout(callback, delay, ...args);
     }
     const timer = {
@@ -151,7 +151,7 @@ test('closeAll invalidates a pending attempt before its callbacks race with repl
   const sessionB = fakeSession('replacement B');
   const { proxy, timers } = createHarness(t, [sessionA, sessionB]);
   const pendingA = proxy._getH2Session(HOSTNAME, PORT);
-  const connectTimerA = timers.find(timer => timer.delay === 5000 && !timer.cleared);
+  const connectTimerA = timers.find(timer => timer.delay === 15000 && !timer.cleared);
   assert.ok(connectTimerA);
 
   proxy._closeAllH2Sessions();
@@ -185,7 +185,7 @@ test('current pre-connect errors and timeouts retain existing null/blacklist beh
       const pending = proxy._getH2Session(HOSTNAME, PORT);
 
       if (failure === 'error') session.emit('error', new Error('ALPN failed'));
-      else timers.find(timer => timer.delay === 5000 && !timer.cleared).run();
+      else timers.find(timer => timer.delay === 15000 && !timer.cleared).run();
 
       assert.equal(await pending, null);
       assert.equal(proxy._h2Sessions.has(ORIGIN), false);

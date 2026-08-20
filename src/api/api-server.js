@@ -2402,7 +2402,11 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     router.get('/api/tls-fingerprint', (req, res) => {
       const fingerprints = this.proxy.constructor.TLS_FINGERPRINTS || {};
       const presets = Object.entries(fingerprints).map(([id, p]) => ({ id, label: p.label }));
-      res.json({ fingerprint: this.proxy.tlsFingerprint, presets });
+      res.json({
+        fingerprint: this.proxy.tlsFingerprint,
+        presets,
+        fidelity: this.proxy.getTlsFingerprintFidelity()
+      });
     });
 
     router.post('/api/tls-fingerprint', (req, res) => {
@@ -3513,7 +3517,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       delete data._update;
       const mergeUpdate = data._mergeUpdate === true;
       delete data._mergeUpdate;
-      this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
+      if (trafficLifecycleComplete) {
+        this._completePendingTrafficLifecycle(data.id, trafficLifecycleToken);
+      }
       if (this._clearedPendingTrafficIds.delete(data.id)) {
         this._maybeAutoRotateProxyOnError(data);
         return;

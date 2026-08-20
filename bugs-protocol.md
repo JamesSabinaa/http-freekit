@@ -1,27 +1,28 @@
 # Protocol interception bug audit
 
 This file records bugs found while auditing the TLS impersonation, HTTP/2 forwarding,
-upstream-proxy, and pending-traffic work on `main` at `35a0158`. This is an initial
-scoped pass, not a claim that the protocol work is exhaustively clean.
-
-No implementation fixes were made as part of this audit. Every finding below is open.
+upstream-proxy, and pending-traffic work on `main` at `35a0158`, together with their
+subsequent resolutions. This remains a scoped pass, not a claim that the protocol work
+is exhaustively clean.
 
 ## Current status
 
 | ID | Severity | Area | Finding | Status |
 | --- | --- | --- | --- | --- |
-| PROTO-001 | Medium | TLS impersonation | Full mode remains distinguishable from Chrome at the raw ClientHello layer | Open |
-| PROTO-002 | Medium | TLS/ALPN | Full mode removes the client's HTTP/1.1 ALPN fallback on H2 connections | Open |
-| PROTO-003 | Medium | HTTP/2 fingerprinting | Every forwarded H2 request uses Chrome pseudo-header order | Open |
-| PROTO-004 | Medium | H2 connection lifecycle | H2 probes ignore the configured upstream connect timeout | Open |
-| PROTO-005 | Low/Medium | Pending traffic | Streaming uploads remain blank while a long-lived response is open | Open |
-| PROTO-006 | Low/Medium | Traffic metadata | Pre-response H2 failures through an upstream proxy are recorded as direct | Open |
+| PROTO-001 | Medium | TLS impersonation | Full mode remains distinguishable from Chrome at the raw ClientHello layer | Fixed by accurate capability disclosure |
+| PROTO-002 | Medium | TLS/ALPN | Full mode removes the client's HTTP/1.1 ALPN fallback on H2 connections | Fixed |
+| PROTO-003 | Medium | HTTP/2 fingerprinting | Every forwarded H2 request uses Chrome pseudo-header order | Fixed |
+| PROTO-004 | Medium | H2 connection lifecycle | H2 probes ignore the configured upstream connect timeout | Fixed |
+| PROTO-005 | Low/Medium | Pending traffic | Streaming uploads remain blank while a long-lived response is open | Fixed |
+| PROTO-006 | Low/Medium | Traffic metadata | Pre-response H2 failures through an upstream proxy are recorded as direct | Fixed |
 
 ## Findings
 
 ### PROTO-001 — Medium — Full mode remains distinguishable from Chrome at the raw ClientHello layer
 
-- Status: **Open**.
+- Status: **Fixed by accurate capability disclosure**. The underlying Node/OpenSSL
+  limitation remains, but the product no longer describes this mode as byte-exact or
+  "full" impersonation.
 - Evidence: passthrough mode is described as mirroring cipher order, extension order,
   GREASE, groups, signature algorithms, ALPN, and ALPS
   (`src/proxy/proxy-server.js:8557-8588`). The existing regression test asserts JA4
@@ -40,11 +41,16 @@ No implementation fixes were made as part of this audit. Every finding below is 
   rely on JA4 alone.
 - Expected: full mode should reproduce the relevant raw browser signals, or clearly
   expose the remaining runtime limitation instead of presenting the mode as complete.
+- Resolution: the setting is now named `Client fingerprint mirror (high fidelity)`.
+  The settings UI explicitly warns that raw ClientHello/JA3 can differ, and
+  `GET /api/tls-fingerprint` exposes `byteExactClientHello: false`, runtime versions,
+  and the known GREASE/OpenSSL limitations. JA4 and supported H2/TLS traits continue
+  to be mirrored.
 
 ### PROTO-002 — Medium — Full mode removes the client's HTTP/1.1 ALPN fallback on H2 connections
 
-- Status: **Open**.
-- Evidence: `_getUpstreamTlsOptions()` intersects the captured ALPN list with the
+- Status: **Fixed**.
+- Evidence at the audited revision: `_getUpstreamTlsOptions()` intersected the captured ALPN list with the
   single protocol requested by the selected upstream transport
   (`src/proxy/proxy-server.js:8574-8580`). Both direct and proxied H2 session creation
   then force `ALPNProtocols: ['h2']` (`:7521`, `:7720`).
@@ -61,11 +67,16 @@ No implementation fixes were made as part of this audit. Every finding below is 
   even in cases where JA4 remains equal.
 - Expected: preserve the client's ordered ALPN offer when it is compatible with the
   selected forwarding path, and handle a non-H2 negotiation as an explicit fallback.
+- Resolution: H2 session creation now retains the complete ordered client ALPN offer
+  when it contains H2, for direct and upstream-proxied TLS. A server negotiation to a
+  protocol other than H2 rejects that H2 probe so the normal H1 path can take over.
+  The intentional H1-to-H2 bridge still forces H2 when the downstream offer cannot be
+  used for an H2 connection.
 
 ### PROTO-003 — Medium — Every forwarded H2 request uses Chrome pseudo-header order
 
-- Status: **Open**.
-- Evidence: all H2 forwarding helpers construct pseudo-headers in the fixed order
+- Status: **Fixed**.
+- Evidence at the audited revision: all H2 forwarding helpers constructed pseudo-headers in the fixed order
   `:method`, `:authority`, `:scheme`, `:path`
   (`src/proxy/proxy-server.js:1560-1564,2299-2303,7814-7818`). The inbound stream
   handler discards every pseudo-header before building `requestHeaders`
@@ -88,11 +99,14 @@ No implementation fixes were made as part of this audit. Every finding below is 
   conflicts with client impersonation because it applies a Chrome trait globally.
 - Expected: capture and forward each inbound client's pseudo-header order, with a
   documented fallback only when the order cannot be observed.
+- Resolution: native H2 handling records the inbound pseudo-header order and passes it
+  through both streaming and buffered H2 forwarding. H1-to-H2 conversions, which have
+  no inbound pseudo-header order, retain the documented fallback order.
 
 ### PROTO-004 — Medium — H2 probes ignore the configured upstream connect timeout
 
-- Status: **Open**.
-- Evidence: the proxy stores `upstreamConnectTimeoutMs` as a configurable value
+- Status: **Fixed**.
+- Evidence at the audited revision: the proxy stored `upstreamConnectTimeoutMs` as a configurable value
   (`src/proxy/proxy-server.js:399`), and TCP/H1 paths use it (`:584-590,8823-8834`).
   Direct and proxied H2 session probes instead hard-code 5000 ms
   (`:7587`, `:7705`).
@@ -110,11 +124,13 @@ No implementation fixes were made as part of this audit. Every finding below is 
   fingerprint that was added for Cloudflare compatibility.
 - Expected: H2 connection establishment should use the same validated connect-timeout
   setting as TCP and H1, including its disabled semantics.
+- Resolution: direct and upstream-proxied H2 probes now use
+  `upstreamConnectTimeoutMs`; values at or below zero disable the timer consistently.
 
 ### PROTO-005 — Low/Medium — Streaming uploads remain blank while a long-lived response is open
 
-- Status: **Open**.
-- Evidence: streaming paths now emit their pending snapshot before connecting upstream
+- Status: **Fixed**.
+- Evidence at the audited revision: streaming paths emitted their pending snapshot before connecting upstream
   (`src/proxy/proxy-server.js:1784-1787,2401-2404`). Request chunks are captured later
   (`:1203-1206,1855-1858`), but request completion does not publish a merge update
   (`:1747-1763,2107-2121`). The next UI-visible update is finalization, which may never
@@ -137,11 +153,15 @@ No implementation fixes were made as part of this audit. Every finding below is 
   as if the client sent nothing until the response eventually closes.
 - Expected: publish an in-place pending update when the request upload completes,
   without waiting for response completion or creating another traffic row.
+- Resolution: streaming H1 and H2 paths now emit a merge update as soon as upload
+  capture completes while the response remains pending. The management API retains
+  the lifecycle token through intermediate updates, so the body refreshes in the
+  existing row and the terminal event still completes that same lifecycle.
 
 ### PROTO-006 — Low/Medium — Pre-response H2 failures through an upstream proxy are recorded as direct
 
-- Status: **Open**.
-- Evidence: a successful H2 response obtains `usedUpstreamProxy` from the session
+- Status: **Fixed**.
+- Evidence at the audited revision: a successful H2 response obtained `usedUpstreamProxy` from the session
   (`src/proxy/proxy-server.js:2356`), but `startH2()` does not copy the session's route
   or generation onto the request. Pre-response failure finalization therefore defaults
   `usedUpstreamProxy` to false and cannot read an upstream generation
@@ -164,13 +184,17 @@ No implementation fixes were made as part of this audit. Every finding below is 
   egress failures. Successful H2 requests are labelled correctly.
 - Expected: propagate the H2 session's route and proxy generation into every terminal
   record, including failures before response headers.
+- Resolution: every forwarded H2 stream inherits route and generation metadata from
+  its session, and failure finalization uses that request metadata before response
+  headers exist.
 
 ## Audit notes
 
 - The focused probes used the bundled Node 26.7.0 runtime and loopback origins/proxies.
 - The Chrome fingerprint diagnostic ran at below-normal priority and cleaned its
   temporary profiles and certificates.
-- No production source, tests, settings, installed application, or external service was
-  modified during this audit.
+- The fixes were verified with focused loopback regressions for ALPN and pseudo-header
+  parity, H2 cancellation metadata, configurable timeouts, and in-place pending upload
+  body refreshes.
 - A later pass should inspect H2 frame-order/priority behavior, TLS resumption, protocol
   fallback after proxy rotation, and extended CONNECT/WebSocket support.

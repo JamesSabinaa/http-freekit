@@ -38,6 +38,24 @@ function requestJson(port, body) {
   });
 }
 
+function getJson(port) {
+  return new Promise((resolve, reject) => {
+    const request = http.get({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/tls-fingerprint'
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({
+        statusCode: response.statusCode,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      }));
+    });
+    request.once('error', reject);
+  });
+}
+
 async function createHarness(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-tls-fingerprint-'));
   const proxy = new ProxyServer(null);
@@ -143,4 +161,23 @@ test('startup ignores invalid saved TLS fingerprints without rewriting settings'
   settings.set('tlsFingerprint', 'legacy-passthrough');
   assert.equal(restoreSavedTlsFingerprintSetting(proxy, settings), true);
   assert.equal(proxy.tlsFingerprint, 'legacy-passthrough');
+});
+
+test('TLS fingerprint settings expose the raw ClientHello fidelity limit', async t => {
+  const { port } = await createHarness(t);
+  const response = await getJson(port);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.fidelity.byteExactClientHello, false);
+  assert.equal(typeof response.body.fidelity.clientHelloMirroringSupported, 'boolean');
+  assert.equal(response.body.fidelity.runtime.node, process.versions.node);
+  assert.equal(response.body.fidelity.runtime.openssl, process.versions.openssl);
+  assert.ok(response.body.fidelity.limitations.some(limitation => /GREASE/.test(limitation)));
+
+  const settingsHtml = fs.readFileSync(
+    new URL('../../src/ui/index.html', import.meta.url),
+    'utf8'
+  );
+  assert.doesNotMatch(settingsHtml, /Client impersonation \(full\)/);
+  assert.match(settingsHtml, /Raw ClientHello\/JA3 can still differ/);
 });

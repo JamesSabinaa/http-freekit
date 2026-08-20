@@ -116,6 +116,34 @@ function createHeaderMap(entries = []) {
   return headers;
 }
 
+const HTTP2_PSEUDO_HEADER_FALLBACK_ORDER = Object.freeze([
+  ':method', ':authority', ':scheme', ':path'
+]);
+
+function createOrderedHttp2PseudoHeaders(values, observedOrder = null) {
+  const headers = createHeaderMap();
+  const added = new Set();
+  const add = (name) => {
+    const normalizedName = String(name || '').toLowerCase();
+    if (!HTTP2_PSEUDO_HEADER_FALLBACK_ORDER.includes(normalizedName) ||
+        added.has(normalizedName) || values[normalizedName] === undefined) return;
+    headers[normalizedName] = values[normalizedName];
+    added.add(normalizedName);
+  };
+  if (Array.isArray(observedOrder)) observedOrder.forEach(add);
+  HTTP2_PSEUDO_HEADER_FALLBACK_ORDER.forEach(add);
+  return headers;
+}
+
+function getClientHelloAlpnProtocols(clientHello) {
+  if (!Array.isArray(clientHello?.extensions)) return [];
+  try {
+    return (getExtensionData(clientHello, 'alpn')?.protocols || []).map(String);
+  } catch {
+    return [];
+  }
+}
+
 function getHeaderValues(headers, name) {
   const normalizedName = String(name || '').toLowerCase();
   return Object.entries(headers)
@@ -1264,6 +1292,14 @@ export class ProxyServer {
       if (pendingEmitted) return;
       pendingEmitted = this._emitPendingRequest(baseRecord(), trafficLifecycleId);
     };
+    const emitCompletedUpload = () => {
+      if (!pendingEmitted || finalized || responseEnded) return;
+      this._emitRequestUpdate({
+        ...baseRecord(),
+        _mergeUpdate: true,
+        _trafficLifecycleComplete: false
+      }, trafficLifecycleId);
+    };
     const clearH2IdleTimer = () => {
       if (!h2IdleTimer) return;
       clearTimeout(h2IdleTimer);
@@ -1751,6 +1787,7 @@ export class ProxyServer {
       if (activeRequest && !activeRequest.destroyed && !activeRequest.writableEnded) {
         finishUpload(activeRequest);
       }
+      emitCompletedUpload();
       if (pendingUpstreamFailure) {
         if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
         upstreamFailureTimer = null;
@@ -1816,7 +1853,8 @@ export class ProxyServer {
     startTime,
     tlsDetails = null,
     clientHelloTls = null,
-    clientHttp2Profile = null
+    clientHttp2Profile = null,
+    pseudoHeaderOrder = null
   }) {
     const targetUrl = new URL(fullUrl);
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
@@ -1914,6 +1952,14 @@ export class ProxyServer {
       if (pendingEmitted) return;
       pendingEmitted = this._emitPendingRequest(baseRecord(), trafficLifecycleId);
     };
+    const emitCompletedUpload = () => {
+      if (!pendingEmitted || finalized || responseEnded) return;
+      this._emitRequestUpdate({
+        ...baseRecord(),
+        _mergeUpdate: true,
+        _trafficLifecycleComplete: false
+      }, trafficLifecycleId);
+    };
     const clearIdleTimer = () => {
       if (!idleTimer) return;
       clearTimeout(idleTimer);
@@ -2004,7 +2050,7 @@ export class ProxyServer {
         trailers: responseTrailers,
         remote: metadata.remote,
         waiting: metadata.waiting,
-        usedUpstreamProxy: metadata.usedUpstreamProxy,
+        usedUpstreamProxy: metadata.usedUpstreamProxy ?? request?._usedUpstreamProxy,
         error,
         request,
         ...overrides
@@ -2108,6 +2154,7 @@ export class ProxyServer {
         if (!requestBodyCompletion.complete()) return;
         requestEnded = true;
         finishActiveUpload();
+        emitCompletedUpload();
         if (pendingUpstreamFailure) {
           if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
           upstreamFailureTimer = null;
@@ -2295,12 +2342,12 @@ export class ProxyServer {
     const startH2 = (session) => {
       if (finalized || downstream.aborted) return;
       connectStart = Date.now();
-      const headers = createHeaderMap([
-        [':method', method],
-        [':authority', targetUrl.host],
-        [':scheme', targetUrl.protocol.slice(0, -1)],
-        [':path', path]
-      ]);
+      const headers = createOrderedHttp2PseudoHeaders({
+        ':method': method,
+        ':authority': targetUrl.host,
+        ':scheme': targetUrl.protocol.slice(0, -1),
+        ':path': path
+      }, pseudoHeaderOrder);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
         if (lower.startsWith(':') || lower === 'host' || value === undefined) continue;
@@ -2320,6 +2367,8 @@ export class ProxyServer {
       }
       activeProtocol = 'h2';
       activeRequest = request;
+      request._usedUpstreamProxy = session._usedUpstreamProxy === true;
+      request._upstreamProxyGeneration = session._upstreamProxyGeneration;
       request.once('wantTrailers', () => {
         if (request.destroyed || request.closed) return;
         try {
@@ -3097,6 +3146,21 @@ export class ProxyServer {
       this._closeAllH2Sessions();
     }
     console.log(`[Proxy] TLS fingerprint: ${this.tlsFingerprint}`);
+  }
+
+  getTlsFingerprintFidelity() {
+    return {
+      clientHelloMirroringSupported: isTlsImpersonationSupported(),
+      byteExactClientHello: false,
+      runtime: {
+        node: process.versions.node,
+        openssl: process.versions.openssl
+      },
+      limitations: [
+        'GREASE cipher suites cannot be reproduced by the current Node TLS API.',
+        'OpenSSL controls EC point formats and some other ClientHello extension data.'
+      ]
+    };
   }
 
   _invalidateTlsConnectionState() {
@@ -6041,6 +6105,7 @@ export class ProxyServer {
     h2Server.on('stream', (stream, headers) => {
       httpRequestReceived = true;
       clearTimeout(tunnelTimer);
+      const pseudoHeaderOrder = Object.keys(headers).filter(name => name.startsWith(':'));
       const clientHttp2Profile = stream.session._clientHttp2Profile || {
         settings: { ...stream.session.remoteSettings },
         connectionWindowSize: stream.session.state?.remoteWindowSize
@@ -6093,7 +6158,8 @@ export class ProxyServer {
           startTime,
           tlsDetails,
           clientHelloTls: tlsSocket?._clientHelloTls,
-          clientHttp2Profile
+          clientHttp2Profile,
+          pseudoHeaderOrder
         });
         return;
       }
@@ -6317,7 +6383,8 @@ export class ProxyServer {
                 info => {
                   if (!downstream.aborted) this._forwardH2Informational(stream, info);
                 },
-                () => { h2RequestAttempted = true; }
+                () => { h2RequestAttempted = true; },
+                pseudoHeaderOrder
               );
               if (downstream.aborted) return;
               const remote = { address: h2Res.remoteAddress, port: h2Res.remotePort };
@@ -7517,8 +7584,7 @@ export class ProxyServer {
       let connectTimeout;
 
       const session = http2.connect(url, {
-        ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2']),
-        ALPNProtocols: ['h2'],
+        ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true),
         ...(normalizedHttp2Profile && Object.keys(normalizedHttp2Profile.settings).length > 0
           ? { settings: normalizedHttp2Profile.settings }
           : {})
@@ -7548,6 +7614,10 @@ export class ProxyServer {
 
       session.on('connect', () => {
         if (settled) return;
+        if (session.socket?.alpnProtocol && session.socket.alpnProtocol !== 'h2') {
+          settlePendingFailure({ destroy: true });
+          return;
+        }
         settled = true;
         clearTimeout(connectTimeout);
         if (!isCurrentAttempt()) {
@@ -7583,8 +7653,14 @@ export class ProxyServer {
         this._evictH2Session(cacheKey, session, attempt);
       });
 
-      // Timeout for initial connect
-      connectTimeout = setTimeout(() => settlePendingFailure({ destroy: true }), 5000);
+      // Use the same configurable connect timeout as TCP and HTTP/1 upstreams.
+      if (this._upstreamConnectTimeoutMs > 0) {
+        connectTimeout = setTimeout(
+          () => settlePendingFailure({ destroy: true }),
+          this._upstreamConnectTimeoutMs
+        );
+        connectTimeout.unref?.();
+      }
 
       // The pending promise is attached immediately after construction below.
       // Referencing it here would hit its temporal dead zone because Promise
@@ -7674,6 +7750,10 @@ export class ProxyServer {
 
         session.on('connect', () => {
           if (settled) return;
+          if (session.socket?.alpnProtocol && session.socket.alpnProtocol !== 'h2') {
+            settlePendingFailure({ destroy: true });
+            return;
+          }
           settled = true;
           clearTimeout(connectTimeout);
           if (!isCurrentAttempt()) {
@@ -7702,7 +7782,13 @@ export class ProxyServer {
         session.on('goaway', () => this._evictH2Session(cacheKey, session, attempt));
       };
 
-      connectTimeout = setTimeout(() => settlePendingFailure({ destroy: true }), 5000);
+      if (this._upstreamConnectTimeoutMs > 0) {
+        connectTimeout = setTimeout(
+          () => settlePendingFailure({ destroy: true }),
+          this._upstreamConnectTimeoutMs
+        );
+        connectTimeout.unref?.();
+      }
       this._h2Sessions.set(cacheKey, attemptEntry);
 
       void this._connectTcp(hostname, port).then((tunnelSocket) => {
@@ -7711,13 +7797,12 @@ export class ProxyServer {
           return;
         }
         const upstreamTlsOptions = {
-          ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'])
+          ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true)
         };
         delete upstreamTlsOptions.agent;
         const secureSocket = tls.connect({
           ...upstreamTlsOptions,
-          socket: tunnelSocket,
-          ALPNProtocols: ['h2']
+          socket: tunnelSocket
         });
         attemptEntry.connectSocket = secureSocket;
         const session = http2.connect(`https://${urlHostname}:${port}`, {
@@ -7802,7 +7887,7 @@ export class ProxyServer {
   // { statusCode, headers, body: Buffer, trailers } or null if the request can't be made via h2.
   _makeH2Request(
     session, method, hostname, port, path, headers, body, trailers = {}, signal = null,
-    onInformational = null, onRequestCreated = null
+    onInformational = null, onRequestCreated = null, pseudoHeaderOrder = null
   ) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -7810,12 +7895,12 @@ export class ProxyServer {
         return;
       }
       // Build h2 pseudo-headers + regular headers
-      const h2Headers = createHeaderMap([
-        [':method', method],
-        [':authority', this._formatHttpsAuthority(hostname, port)],
-        [':scheme', 'https'],
-        [':path', path]
-      ]);
+      const h2Headers = createOrderedHttp2PseudoHeaders({
+        ':method': method,
+        ':authority': this._formatHttpsAuthority(hostname, port),
+        ':scheme': 'https',
+        ':path': path
+      }, pseudoHeaderOrder);
 
       // Copy regular headers after removing both fixed and Connection-nominated
       // hop-by-hop fields. This protects H1-to-H2 conversion callers too.
@@ -8523,7 +8608,9 @@ export class ProxyServer {
     },
   };
 
-  _getUpstreamTlsOptions(hostname, clientHelloTls, requestedAlpn = ['http/1.1']) {
+  _getUpstreamTlsOptions(
+    hostname, clientHelloTls, requestedAlpn = ['http/1.1'], preserveClientAlpn = false
+  ) {
     const connectionHostname = this._normalizeConnectionHostname(hostname);
     const connectionOptions = {
       servername: net.isIP(connectionHostname) ? undefined : connectionHostname,
@@ -8565,15 +8652,18 @@ export class ProxyServer {
           this._tlsImpersonationCache.set(clientHelloTls, helloCache);
         }
         const alpn = [...new Set((requestedAlpn || []).map(String))];
-        const cacheKey = `${this._tlsConfigGeneration}|${connectionHostname}|${connectionOptions.rejectUnauthorized}|${alpn.join(',')}`;
+        const cacheKey = `${this._tlsConfigGeneration}|${connectionHostname}|${connectionOptions.rejectUnauthorized}|${alpn.join(',')}|${preserveClientAlpn}`;
         if (!helloCache.has(cacheKey)) {
           try {
             const result = impersonateFromClientHello(clientHelloTls, {
               ...contextOptions,
               security: connectionOptions.rejectUnauthorized ? 'secure' : 'insecure'
             });
-            const mirroredAlpn = result.tlsOptions.ALPNProtocols
-              ?.filter(protocol => alpn.includes(protocol));
+            const offeredAlpn = result.tlsOptions.ALPNProtocols?.map(String) || [];
+            const mirroredAlpn = preserveClientAlpn &&
+                alpn.every(protocol => offeredAlpn.includes(protocol))
+              ? offeredAlpn
+              : offeredAlpn.filter(protocol => alpn.includes(protocol));
             helloCache.set(cacheKey, {
               ...connectionOptions,
               ...result.tlsOptions,
@@ -8611,10 +8701,17 @@ export class ProxyServer {
         ? clientHelloTls
         : ProxyServer._clientHelloToTlsOptions(clientHelloTls);
       if (fallback) {
+        const capturedAlpn = preserveClientAlpn
+          ? getClientHelloAlpnProtocols(clientHelloTls)
+          : [];
+        const fallbackAlpn = capturedAlpn.length > 0 &&
+            requestedAlpn.every(protocol => capturedAlpn.includes(String(protocol)))
+          ? capturedAlpn
+          : requestedAlpn;
         return ProxyServer._sanitizeUpstreamTlsOptions({
           ...base,
           ...fallback,
-          ALPNProtocols: requestedAlpn,
+          ALPNProtocols: fallbackAlpn,
           requestOCSP: true
         });
       }
@@ -9982,7 +10079,10 @@ export class ProxyServer {
       data.trafficLifecycleId = pendingDecision.trafficLifecycleId;
     }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
-      pendingDecision.record = this._snapshotTrafficRecord(data);
+      const updateRecord = this._snapshotTrafficRecord(data);
+      pendingDecision.record = data._mergeUpdate === true
+        ? { ...pendingDecision.record, ...updateRecord }
+        : updateRecord;
     }
     if (hasPendingDecision && lifecycleComplete) {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);
@@ -10085,7 +10185,10 @@ export class ProxyServer {
       data.trafficLifecycleId = pendingDecision.trafficLifecycleId;
     }
     if (pendingDecision && typeof pendingDecision === 'object' && !lifecycleComplete) {
-      pendingDecision.record = this._snapshotTrafficRecord(data);
+      const updateRecord = this._snapshotTrafficRecord(data);
+      pendingDecision.record = data._mergeUpdate === true
+        ? { ...pendingDecision.record, ...updateRecord }
+        : updateRecord;
     }
     if (hasPendingDecision && lifecycleComplete) {
       this._deletePendingTrafficLogDecision(data.id, pendingDecision);

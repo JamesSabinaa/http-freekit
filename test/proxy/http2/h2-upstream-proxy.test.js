@@ -9,7 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
 
-import { trackClientHellos } from 'read-tls-client-hello';
+import { getExtensionData, trackClientHellos } from 'read-tls-client-hello';
 
 import { CertificateAuthority } from '../../../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
@@ -48,11 +48,16 @@ async function openTunnel(proxyPort, authority) {
   return socket;
 }
 
-async function requestH2({ port, path: requestPath, socket = undefined }) {
+async function requestH2({
+  port,
+  path: requestPath,
+  socket = undefined,
+  pseudoHeaderOrder = [':method', ':path', ':scheme', ':authority']
+}) {
   const secureSocket = tls.connect({
     ...(socket ? { socket } : { host: 'localhost', port }),
     servername: 'localhost',
-    ALPNProtocols: ['h2'],
+    ALPNProtocols: ['h2', 'http/1.1'],
     rejectUnauthorized: false
   });
   await once(secureSocket, 'secureConnect');
@@ -63,13 +68,16 @@ async function requestH2({ port, path: requestPath, socket = undefined }) {
   await once(session, 'connect');
   session.setLocalWindowSize(CHROME_LIKE_CONNECTION_WINDOW);
 
-  const stream = session.request({
+  const pseudoHeaderValues = {
     ':method': 'GET',
     ':authority': `localhost:${port}`,
     ':scheme': 'https',
-    ':path': requestPath,
-    'user-agent': 'HTTP FreeKit H2 fingerprint test'
-  });
+    ':path': requestPath
+  };
+  const requestHeaders = Object.create(null);
+  for (const name of pseudoHeaderOrder) requestHeaders[name] = pseudoHeaderValues[name];
+  requestHeaders['user-agent'] = 'HTTP FreeKit H2 fingerprint test';
+  const stream = session.request(requestHeaders);
   const chunks = [];
   stream.on('data', chunk => chunks.push(chunk));
   const responsePromise = once(stream, 'response');
@@ -103,10 +111,15 @@ test('HTTP/2 interception preserves H2 through an upstream CONNECT proxy', {
   origin.on('stream', (stream, headers) => {
     observations.set(headers[':path'], {
       ja4: stream.session.socket.tlsClientHello?.ja4,
+      alpn: getExtensionData(stream.session.socket.tlsClientHello, 'alpn')?.protocols,
       settings: settingsBySession.get(stream.session),
       connectionWindowSize: stream.session.state?.remoteWindowSize,
       headerOrder: Object.keys(headers)
     });
+    if (headers[':path'] === '/cancel-before-headers') {
+      stream.close(http2.constants.NGHTTP2_CANCEL);
+      return;
+    }
     stream.respond({ ':status': 200, 'content-type': 'text/plain' });
     stream.end('h2-upstream-ok');
   });
@@ -162,6 +175,8 @@ test('HTTP/2 interception preserves H2 through an upstream CONNECT proxy', {
   const interceptedObservation = observations.get('/intercepted');
   assert.equal(upstreamConnects, 1);
   assert.equal(interceptedObservation.ja4, directObservation.ja4);
+  assert.deepEqual(interceptedObservation.alpn, directObservation.alpn);
+  assert.deepEqual(interceptedObservation.alpn, ['h2', 'http/1.1']);
   assert.deepEqual(
     interceptedObservation.settings,
     directObservation.settings
@@ -170,11 +185,24 @@ test('HTTP/2 interception preserves H2 through an upstream CONNECT proxy', {
     interceptedObservation.connectionWindowSize,
     directObservation.connectionWindowSize
   );
+  assert.deepEqual(interceptedObservation.headerOrder, directObservation.headerOrder);
   assert.deepEqual(
     interceptedObservation.headerOrder.slice(0, 4),
-    [':method', ':authority', ':scheme', ':path']
+    [':method', ':path', ':scheme', ':authority']
   );
   const completed = events.find(event => event.path === '/intercepted' && event.statusCode === 200);
   assert.equal(completed?.protocol, 'h2');
   assert.equal(completed?.usedUpstreamProxy, true);
+
+  const cancelled = await requestH2({
+    port: originPort,
+    path: '/cancel-before-headers',
+    socket: await openTunnel(proxy.server.address().port, `localhost:${originPort}`)
+  });
+  assert.equal(cancelled.headers[':status'], 502);
+  const failed = events.find(event =>
+    event.path === '/cancel-before-headers' && event.statusCode === 502
+  );
+  assert.equal(failed?.usedUpstreamProxy, true);
+  assert.equal(failed?.upstreamProxyGeneration, proxy._upstreamProxyGeneration);
 });

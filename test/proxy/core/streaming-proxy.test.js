@@ -181,6 +181,70 @@ test('plain HTTP uploads reach the origin before the client ends them', async t 
   assert.equal(received, 'firstlast');
 });
 
+test('completed streaming uploads refresh their pending record before the response ends', async t => {
+  const uploadReceived = deferred();
+  const releaseResponse = deferred();
+  const origin = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+    request.on('end', () => {
+      uploadReceived.resolve(Buffer.concat(chunks).toString());
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: open\n\n');
+      void releaseResponse.promise.then(() => response.end('data: done\n\n'));
+    });
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  const events = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    onRequest: event => events.push(event)
+  });
+  await proxy.start();
+  t.after(async () => {
+    releaseResponse.resolve();
+    await proxy.stop();
+    await close(origin, destroyOriginSockets);
+  });
+
+  const responseComplete = new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: `http://127.0.0.1:${originPort}/pending-upload`,
+      method: 'POST',
+      agent: false,
+      headers: {
+        'content-type': 'text/plain',
+        'content-length': '12',
+        connection: 'close'
+      }
+    }, response => {
+      response.resume();
+      response.once('end', resolve);
+    });
+    request.once('error', reject);
+    request.end('uploaded-now');
+  });
+
+  assert.equal(await uploadReceived.promise, 'uploaded-now');
+  await withTimeout((async () => {
+    while (!events.some(event => event._update && event._trafficLifecycleComplete === false)) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  })(), 'pending upload record was not refreshed');
+  const pendingUpdate = events.find(event =>
+    event._update && event._trafficLifecycleComplete === false
+  );
+  assert.equal(pendingUpdate._mergeUpdate, true);
+  assert.equal(pendingUpdate.requestBody, 'uploaded-now');
+  assert.equal(pendingUpdate.requestBodySize, 12);
+
+  releaseResponse.resolve();
+  await responseComplete;
+});
+
 test('native HTTP/2 streams request and response data bidirectionally', { timeout: 20000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-h2-'));
   const ca = new CertificateAuthority(dataDir);

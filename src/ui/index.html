@@ -460,7 +460,7 @@
   <div class="settings-row">
     <label class="settings-label" for="tlsFingerprint">Upstream TLS Profile</label>
     <select id="tlsFingerprint" onchange="saveTlsFingerprint()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-size:12px;cursor:pointer;">
-      <option value="passthrough">Client impersonation (full)</option>
+      <option value="passthrough">Client fingerprint mirror (high fidelity)</option>
       <option value="legacy-passthrough">Legacy OpenSSL mirror</option>
       <option value="chrome-136">Chrome 136</option>
       <option value="chrome-124">Chrome 124</option>
@@ -470,10 +470,10 @@
       <option value="default">Node.js Default</option>
     </select>
   </div>
-  <p style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
-    "Client impersonation" uses HTTP Toolkit's native ClientHello mirroring, including ordered extensions, GREASE,
-    algorithms, and compatible ALPN. "Legacy OpenSSL mirror" restores the previous cipher, curve, signature, and
-    version-only behavior. Static profiles are best-effort fallbacks.
+  <p id="tlsFingerprintDescription" style="font-size:11px;color:var(--text-lowlight);margin-top:8px;line-height:1.4;">
+    "Client fingerprint mirror" preserves JA4, ordered extensions, algorithms, compatible ALPN, and the HTTP/2
+    profile. Raw ClientHello/JA3 can still differ because Node/OpenSSL controls cipher GREASE, EC point formats,
+    and some extension data. "Legacy OpenSSL mirror" restores the previous public-option behavior.
   </p>
 </div>
           <div class="card settings-card" data-settings-section="proxy" style="margin-bottom:20px;">

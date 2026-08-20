@@ -64,6 +64,26 @@ test('passthrough H2 sessions use and cache by captured ClientHello parameters',
   assert.equal(connections[1].options.ciphers, firefoxLike.ciphers);
 });
 
+test('passthrough H2 TLS options retain the captured ordered ALPN fallback', () => {
+  const proxy = new ProxyServer(null);
+  proxy.setTlsFingerprint('passthrough');
+  const clientHello = {
+    tlsVersion: 0x0303,
+    cipherSuites: [0x1301, 0xc02f],
+    extensions: [
+      { id: 0x000a, data: { groups: [0x001d, 0x0017] } },
+      { id: 0x000d, data: { algorithms: [0x0403, 0x0804] } },
+      { id: 0x0010, data: { protocols: ['h2', 'http/1.1'] } }
+    ]
+  };
+
+  const options = proxy._getUpstreamTlsOptions(
+    'fingerprint.example.test', clientHello, ['h2'], true
+  );
+
+  assert.deepEqual(options.ALPNProtocols, ['h2', 'http/1.1']);
+});
+
 test('changing the TLS fingerprint evicts sessions and the fingerprinted proxy agent', t => {
   const proxy = new ProxyServer(null);
   const firstSession = fakeSession();

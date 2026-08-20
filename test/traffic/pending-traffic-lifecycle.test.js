@@ -640,6 +640,54 @@ test('a mock remains suppressed when traffic filtering hid its pending event', a
   assert.equal(proxy._pendingTrafficLogDecisions.size, 0);
 });
 
+test('merge updates retain a pending lifecycle until its terminal update', () => {
+  const proxy = new ProxyServer(null);
+  const capture = attachTrafficLifecycle(proxy);
+  const baseEvent = {
+    id: 'streaming-upload-update',
+    protocol: 'http',
+    method: 'POST',
+    url: 'http://example.test/upload',
+    host: 'example.test',
+    path: '/upload',
+    requestHeaders: { 'content-type': 'text/plain' },
+    requestBody: '',
+    requestBodySize: 0,
+    timestamp: Date.now(),
+    source: 'proxy'
+  };
+
+  proxy._emitPendingRequest({ ...baseEvent }, 'upload-lifecycle');
+  proxy._emitRequestUpdate({
+    ...baseEvent,
+    requestBody: 'uploaded-now',
+    requestBodySize: 12,
+    _mergeUpdate: true,
+    _trafficLifecycleComplete: false
+  }, 'upload-lifecycle');
+
+  assert.equal(capture.api.trafficLog.length, 1);
+  assert.equal(capture.api.trafficLog[0].statusMessage, 'Pending');
+  assert.equal(capture.api.trafficLog[0].requestBody, 'uploaded-now');
+  assert.equal(capture.api._pendingTrafficIds.has(baseEvent.id), true);
+
+  proxy._emitRequestUpdate({
+    ...baseEvent,
+    requestBody: 'uploaded-now',
+    requestBodySize: 12,
+    statusCode: 200,
+    statusMessage: 'OK',
+    responseHeaders: {},
+    responseBody: '',
+    responseBodySize: 0,
+    duration: 10
+  }, 'upload-lifecycle');
+
+  assert.equal(capture.api.trafficLog.length, 1);
+  assert.equal(capture.api.trafficLog[0].statusCode, 200);
+  assert.equal(capture.api._pendingTrafficIds.has(baseEvent.id), false);
+});
+
 test('Safe Font filtering remains stable across each pending request lifecycle', () => {
   for (const initiallyFiltered of [false, true]) {
     const proxy = new ProxyServer(null);
