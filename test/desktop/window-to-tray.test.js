@@ -48,34 +48,31 @@ function cancellableEvent() {
   };
 }
 
-test('minimize and ordinary close hide only after the native transition finishes', async () => {
+test('minimize keeps the native window open while ordinary close hides it after the transition', async () => {
   const window = new FakeWindow();
   const remove = installWindowToTray(window);
 
   const minimize = cancellableEvent();
   window.minimized = true;
   window.emit('minimize', minimize);
-  assert.equal(minimize.prevented, true);
-  assert.equal(window.hideCalls, 0, 'minimize must not hide during native event dispatch');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(window.restoreCalls, 1, 'the native minimized state must be cleared before hiding');
-  assert.equal(window.minimized, false);
-  assert.equal(window.hideCalls, 1);
+  assert.equal(minimize.prevented, false);
+  assert.equal(window.restoreCalls, 0);
+  assert.equal(window.hideCalls, 0);
 
   window.visible = true;
   const close = cancellableEvent();
   window.emit('close', close);
   assert.equal(close.prevented, true);
-  assert.equal(window.hideCalls, 1, 'close must not hide during native event dispatch');
+  assert.equal(window.hideCalls, 0, 'close must not hide during native event dispatch');
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(window.hideCalls, 2);
+  assert.equal(window.hideCalls, 1);
 
   remove();
   window.visible = true;
   const detached = cancellableEvent();
   window.emit('close', detached);
   assert.equal(detached.prevented, false);
-  assert.equal(window.hideCalls, 2);
+  assert.equal(window.hideCalls, 1);
 });
 
 test('prepared updater or cleanup-approved Quit can close while tray restoration restores and focuses', () => {
@@ -141,7 +138,7 @@ test('delayed native focus after tray restoration refocuses the renderer', () =>
   assert.equal(window.webContentsFocusCalls, 1);
 });
 
-test('the close button requests a full quit when configured while minimize still hides', async () => {
+test('the close button requests a full quit when configured while minimize remains native', async () => {
   const window = new FakeWindow();
   let quitCalls = 0;
   installWindowToTray(window, {
@@ -152,18 +149,15 @@ test('the close button requests a full quit when configured while minimize still
   const minimize = cancellableEvent();
   window.minimized = true;
   window.emit('minimize', minimize);
-  assert.equal(minimize.prevented, true);
+  assert.equal(minimize.prevented, false);
   assert.equal(window.hideCalls, 0);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(window.restoreCalls, 1);
-  assert.equal(window.hideCalls, 1);
   assert.equal(quitCalls, 0);
 
   window.visible = true;
   const close = cancellableEvent();
   window.emit('close', close);
   assert.equal(close.prevented, true);
-  assert.equal(window.hideCalls, 1);
+  assert.equal(window.hideCalls, 0);
   assert.equal(quitCalls, 1);
 });
 

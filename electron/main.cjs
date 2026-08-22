@@ -431,9 +431,8 @@ function createWindow({ showOnReady = true } = {}) {
     title: 'HTTP FreeKit',
     icon: windowIcon,
     ...(useWaylandWindowControlsOverlay ? {
-      // Wayland does not expose native minimized state/events. Electron's
-      // client-side Window Controls Overlay does emit the minimize event that
-      // the tray lifecycle intercepts.
+      // Wayland does not expose native minimized state/events. Use client-side
+      // controls so the title bar remains available in that environment.
       titleBarStyle: 'hidden',
       titleBarOverlay: {
         color: '#1e2028',
