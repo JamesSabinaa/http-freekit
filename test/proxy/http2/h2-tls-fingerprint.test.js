@@ -84,6 +84,30 @@ test('passthrough H2 TLS options retain the captured ordered ALPN fallback', () 
   assert.deepEqual(options.ALPNProtocols, ['h2', 'http/1.1']);
 });
 
+test('default and static TLS fingerprints offer the requested H2 ALPN', t => {
+  const cachedCurveSupport = new Map(ProxyServer._ecdhCurveSupport);
+  for (const curve of ['X25519', 'P-256', 'P-384', 'P-521']) {
+    ProxyServer._ecdhCurveSupport.set(curve, true);
+  }
+  t.after(() => {
+    ProxyServer._ecdhCurveSupport.clear();
+    for (const [curve, supported] of cachedCurveSupport) {
+      ProxyServer._ecdhCurveSupport.set(curve, supported);
+    }
+  });
+
+  for (const fingerprint of ['default', 'safari-18']) {
+    const proxy = new ProxyServer(null);
+    proxy.setTlsFingerprint(fingerprint);
+
+    const options = proxy._getUpstreamTlsOptions(
+      'fingerprint.example.test', null, ['h2'], true
+    );
+
+    assert.deepEqual(options.ALPNProtocols, ['h2']);
+  }
+});
+
 test('changing the TLS fingerprint evicts sessions and the fingerprinted proxy agent', t => {
   const proxy = new ProxyServer(null);
   const firstSession = fakeSession();

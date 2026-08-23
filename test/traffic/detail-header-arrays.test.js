@@ -237,6 +237,20 @@ test('traffic detail keeps binary and no-store heuristics for scalar and repeate
   }
 });
 
+test('traffic compression analysis escapes unrecognized Content-Encoding values', () => {
+  const hostileEncoding = '<img src=x onerror=alert(1)>';
+  const { html } = renderDetail(baseRequest({
+    'content-encoding': hostileEncoding,
+    'content-type': 'text/plain'
+  }));
+
+  assert.doesNotMatch(html, /<img src=x onerror=alert\(1\)>/);
+  assert.match(
+    html,
+    /Response compressed with <strong>&lt;img src=x onerror=alert\(1\)&gt;<\/strong>/
+  );
+});
+
 test('WebSocket details specialize only successful upgrade handshakes', () => {
   for (const protocol of ['ws', 'wss']) {
     const connected = renderDetail(baseRequest({}, {

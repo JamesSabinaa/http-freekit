@@ -42,6 +42,8 @@
       select.disabled = false;
       setStatus(status, '');
     } catch (error) {
+      select.value = currentBehavior;
+      select.disabled = false;
       setStatus(status, `Could not load this setting: ${error.message}`, true);
     }
   }

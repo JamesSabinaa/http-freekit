@@ -321,6 +321,57 @@ test('quoted Windows backslashes and Unicode basic auth survive parsing', () => 
   assert.equal(result.headers.Authorization, 'Basic ' + Buffer.from('føø:päss', 'utf8').toString('base64'));
 });
 
+test('cURL accepts any tokenizer whitespace after the executable name', () => {
+  for (const separator of ['\t', '\n', '\r\n']) {
+    const command = `CuRL${separator}https://example.test/items`;
+    assert.equal(parseCurlCommand(command).url, 'https://example.test/items', command);
+  }
+  assert.equal(parseCurlCommand('curlx https://example.test'), null);
+  assert.equal(parseCurlCommand('curl'), null);
+});
+
+test('cURL paste recognizes shell whitespace without matching executable prefixes', () => {
+  for (const separator of ['\t', '\n', '\r\n']) {
+    const harness = createCurlPasteHarness();
+    const result = harness.paste(`curl${separator}https://example.test/items`);
+    assert.equal(result.prevented, true, JSON.stringify(separator));
+    assert.equal(result.state.tab.url, 'https://example.test/items');
+    assert.equal(harness.toasts[0].type, 'success');
+  }
+
+  const prefix = createCurlPasteHarness();
+  const result = prefix.paste('curlx https://example.test/items');
+  assert.equal(result.prevented, false);
+  assert.strictEqual(result.state.tab, prefix.initialTab);
+  assert.equal(prefix.toasts.length, 0);
+});
+
+test('prompt-dependent cURL credentials are rejected while explicit empty passwords are preserved', () => {
+  for (const command of [
+    'curl -u alice https://example.test',
+    'curl -ualice https://example.test',
+    'curl --user alice https://example.test',
+    'curl --user=alice https://example.test'
+  ]) {
+    const result = parseCurlCommand(command);
+    assert.deepEqual(Object.keys(result), ['error'], command);
+    assert.match(result.error, /Prompt-dependent (?:-u|--user) credentials cannot be imported/, command);
+    assert.match(result.error, /USER:/, command);
+  }
+
+  for (const [command, credentials] of [
+    ['curl -u alice: https://example.test', 'alice:'],
+    ['curl --user=bob: https://example.test', 'bob:']
+  ]) {
+    const result = parseCurlCommand(command);
+    assert.equal(
+      result.headers.Authorization,
+      'Basic ' + Buffer.from(credentials).toString('base64'),
+      command
+    );
+  }
+});
+
 test('an explicitly empty data argument does not consume the following option', () => {
   const result = parseCurlCommand(
     "curl https://example.test -d '' -H 'X-After: retained'"

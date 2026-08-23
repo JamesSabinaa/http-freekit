@@ -133,6 +133,28 @@ test('traffic query validation rejects object values from an extended query pars
   assert.deepEqual(api.trafficLog, trafficFixtures());
 });
 
+test('traffic search rejects malformed status filters before reading traffic', async t => {
+  const api = new ApiServer({ matchApiSpec: () => null }, null, null);
+  let trafficReads = 0;
+  api._getTrafficWithoutDefaultExclusions = () => {
+    trafficReads++;
+    return trafficFixtures();
+  };
+  const server = http.createServer(api.app);
+  const port = await listen(server);
+  t.after(() => close(server));
+
+  for (const status of ['', '200junk', '0xC8', '2x', '6xx', '20', '200.0']) {
+    const response = await requestJson(
+      port,
+      `/api/traffic/search?status=${encodeURIComponent(status)}`
+    );
+    assert.equal(response.statusCode, 400, status);
+    assert.match(response.body.error, /exact three-digit code/, status);
+  }
+  assert.equal(trafficReads, 0);
+});
+
 test('traffic routes preserve valid filtering, pagination, and search behavior', async t => {
   const api = new ApiServer({ matchApiSpec: () => null }, null, null);
   api.trafficLog = trafficFixtures();

@@ -22,6 +22,7 @@ const moveToGroupSource = section('function moveRuleToGroup(ruleId, groupId)', '
 
 function createEditorHarness({
   valid = false,
+  unchanged = false,
   expanded = ['A'],
   grouped = false,
   collapsedTarget = false
@@ -55,7 +56,7 @@ function createEditorHarness({
       priority: 'normal',
       matchers: [{
         type: 'path',
-        value: ${JSON.stringify(valid ? '/changed' : '')},
+        value: ${JSON.stringify(unchanged ? '/original' : valid ? '/changed' : '')},
         matchType: 'prefix'
       }],
       preSteps: [],
@@ -99,6 +100,7 @@ function createEditorHarness({
     globalThis.harness = {
       collapseAllMockRules,
       moveRuleToGroup,
+      saveMockRule,
       toggleMockGroup,
       toggleMockRuleExpand,
       state: () => ({
@@ -117,6 +119,7 @@ function createEditorHarness({
     harness: {
       collapseAllMockRules: context.harness.collapseAllMockRules,
       moveRuleToGroup: context.harness.moveRuleToGroup,
+      saveMockRule: context.harness.saveMockRule,
       toggleMockGroup: context.harness.toggleMockGroup,
       toggleMockRuleExpand: context.harness.toggleMockRuleExpand,
       state: () => JSON.parse(JSON.stringify(context.harness.state()))
@@ -195,6 +198,27 @@ test('valid edits become drafts before single-rule and Collapse All navigation',
     groups: [],
     hasEditDraft: false,
     savedPath: '/changed'
+  });
+});
+
+test('saving an unchanged grouped rule does not create a false draft', () => {
+  const editor = createEditorHarness({ grouped: true, unchanged: true });
+
+  assert.equal(editor.harness.saveMockRule('A'), true);
+  assert.deepEqual(editor.harness.state(), {
+    draftCount: 0,
+    editingRule: null,
+    expanded: ['A'],
+    groups: [
+      ['group-A', false],
+      ['group-B', false]
+    ],
+    hasEditDraft: false,
+    savedPath: null
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(editor.calls.toasts.at(-1))), {
+    message: 'No changes to save',
+    type: 'success'
   });
 });
 

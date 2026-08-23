@@ -4,6 +4,7 @@ import path from 'node:path';
 import tls from 'node:tls';
 
 const TERMINAL_CA_BUNDLE_NAME = 'terminal-ca-bundle.pem';
+const TERMINAL_CA_BUNDLE_MODE = 0o644;
 
 function normalizePem(pem) {
   return `${String(pem).trim()}\n`;
@@ -24,20 +25,20 @@ export function refreshTerminalCaBundle(certificatePath, options = {}) {
 
   try {
     if (fs.readFileSync(bundlePath, 'utf8') === bundle) {
-      fs.chmodSync(bundlePath, 0o600);
+      fs.chmodSync(bundlePath, TERMINAL_CA_BUNDLE_MODE);
       return bundlePath;
     }
   } catch {}
 
   try {
-    const descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+    const descriptor = fs.openSync(temporaryPath, 'wx', TERMINAL_CA_BUNDLE_MODE);
     try {
       fs.writeFileSync(descriptor, bundle, 'utf8');
       fs.fsyncSync(descriptor);
     } finally {
       fs.closeSync(descriptor);
     }
-    fs.chmodSync(temporaryPath, 0o600);
+    fs.chmodSync(temporaryPath, TERMINAL_CA_BUNDLE_MODE);
     try {
       renameFile(temporaryPath, bundlePath);
     } catch (error) {
@@ -47,7 +48,7 @@ export function refreshTerminalCaBundle(certificatePath, options = {}) {
       if (!installedByPeer) throw error;
       fs.unlinkSync(temporaryPath);
     }
-    fs.chmodSync(bundlePath, 0o600);
+    fs.chmodSync(bundlePath, TERMINAL_CA_BUNDLE_MODE);
     return bundlePath;
   } catch (error) {
     try { fs.unlinkSync(temporaryPath); } catch {}

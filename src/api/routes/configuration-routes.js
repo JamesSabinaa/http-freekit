@@ -8,6 +8,7 @@ import {
   DEFAULT_TRAFFIC_LIST_ID,
   normalizeTrafficLists
 } from '../../traffic/traffic-lists.js';
+import { isObjectRecord } from '../openapi-validation.js';
 
 export function registerConfigurationRoutes(router, api) {
   router.get('/api/version', (req, res) => {
@@ -37,11 +38,17 @@ export function registerConfigurationRoutes(router, api) {
   });
 
   router.post('/api/ui-settings', (req, res) => {
-    const hideTunnelRequests = Object.prototype.hasOwnProperty.call(req.body || {}, 'hideTunnelRequests')
-      ? req.body.hideTunnelRequests !== false
+    const body = isObjectRecord(req.body) ? req.body : {};
+    for (const field of ['hideTunnelRequests', 'filterSafeFonts']) {
+      if (Object.hasOwn(body, field) && typeof body[field] !== 'boolean') {
+        return res.status(400).json({ error: `${field} must be a boolean` });
+      }
+    }
+    const hideTunnelRequests = Object.hasOwn(body, 'hideTunnelRequests')
+      ? body.hideTunnelRequests
       : api.settings?.get('hideTunnelRequests', true) !== false;
-    const filterSafeFonts = Object.prototype.hasOwnProperty.call(req.body || {}, 'filterSafeFonts')
-      ? req.body.filterSafeFonts === true
+    const filterSafeFonts = Object.hasOwn(body, 'filterSafeFonts')
+      ? body.filterSafeFonts
       : api.settings?.get('filterSafeFonts', false) === true;
     api._runPersistedMutation({
       capture: () => api.proxy.filterSafeFonts,

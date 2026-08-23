@@ -14,6 +14,16 @@ function extractFunction(name, nextMarker) {
   return appSource.slice(start, end);
 }
 
+test('the skip link targets the application main landmark', () => {
+  assert.match(html, /<a\b[^>]*href="#main-content"[^>]*>/);
+  const mainTarget = html.match(/<([a-z][\w-]*)\b[^>]*\bid="main-content"[^>]*>/i);
+  assert.ok(mainTarget, '#main-content must exist');
+  assert.ok(
+    mainTarget[1].toLowerCase() === 'main' || /\brole="main"/.test(mainTarget[0]),
+    '#main-content must expose main landmark semantics'
+  );
+});
+
 test('all sortable and collapsible headers are focusable keyboard controls', () => {
   const sortableHeaders = [...html.matchAll(/<th role="columnheader" class="sortable"[^>]*>/g)].map(match => match[0]);
   assert.equal(sortableHeaders.length, 4);

@@ -223,6 +223,28 @@ test('adjacent multipart formats do not collapse duplicate text names', () => {
   }
 });
 
+test('Python multipart snippets preserve interleaved text and file part order', () => {
+  const request = multipartRequest('https://example.test/multipart');
+  request.formFields = [
+    { key: 'tag', value: 'first duplicate marker' },
+    request.formFields[1],
+    { key: 'tag', value: 'second duplicate marker' },
+    { key: 'scalar', value: 'ordinary marker' }
+  ];
+
+  const snippet = generateExportSnippet(request, 'python');
+
+  assert.match(snippet, /files = \[/);
+  assert.match(snippet, /files=files/);
+  assert.doesNotMatch(snippet, /\bdata\s*=/);
+  assertOrderedMarkers(snippet, [
+    '(None, "first duplicate marker")',
+    'open("payload.bin", \'rb\')',
+    '(None, "second duplicate marker")',
+    '(None, "ordinary marker")'
+  ], 'Python');
+});
+
 test('generated PowerShell multipart requests preserve duplicate order and binary files', async t => {
   const executables = powerShellExecutables();
   if (!executables.length) {

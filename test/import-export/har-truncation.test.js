@@ -364,7 +364,8 @@ test('premature upstream responses retain small captured prefixes as incomplete'
 
   const captured = await waitForCapture(
     captures,
-    capture => capture.path === '/partial' && !capture._pending
+    capture => capture.path === '/partial' && !capture._pending &&
+      capture._trafficLifecycleComplete !== false
   );
   client.destroy();
   assert.equal(captured.responseBody, 'partial');

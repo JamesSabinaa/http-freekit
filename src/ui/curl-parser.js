@@ -126,8 +126,8 @@ export function parseCurlCommand(curlStr) {
   let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
 
   // Check if it starts with curl
-  if (!cmd.toLowerCase().startsWith('curl ')) return null;
-  cmd = cmd.substring(5).trim();
+  if (!/^curl(?=\s)/i.test(cmd)) return null;
+  cmd = cmd.substring(4).trim();
 
   const tokens = [];
   let current = '';
@@ -234,6 +234,11 @@ export function parseCurlCommand(curlStr) {
         setCurlHeader(result.headers, 'Cookie', value);
         explicitHeaderNames.delete('cookie');
       } else if (option === '-u' || option === '--user') {
+        if (!value.includes(':')) {
+          return {
+            error: `Prompt-dependent ${option} credentials cannot be imported; include an explicit password separator (for example, USER:)`
+          };
+        }
         setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(value));
         explicitHeaderNames.delete('authorization');
       }

@@ -2,11 +2,13 @@
 
 const DEFAULT_RENDERER_PREPARE_TIMEOUT_MS = 5_000;
 const RENDERER_PREPARE_TIMED_OUT = Symbol('renderer-prepare-timed-out');
+const RENDERER_PREPARE_UNAVAILABLE = 'http-freekit:renderer-prepare-unavailable';
 
 const PREPARE_RENDERER_FOR_QUIT_SCRIPT = `(() => {
   const prepare = globalThis.prepareRendererForQuit ||
     globalThis.prepareSendTabPersistenceForQuit;
-  return typeof prepare === 'function' && prepare() === true;
+  if (typeof prepare !== 'function') return ${JSON.stringify(RENDERER_PREPARE_UNAVAILABLE)};
+  return prepare() === true;
 })()`;
 
 async function prepareRendererForQuit(mainWindow, logger = console, {
@@ -32,6 +34,12 @@ async function prepareRendererForQuit(mainWindow, logger = console, {
       // restoration. The backend starts its own deadline after this preflight.
       logger.error(
         `[Electron] Renderer Quit preparation did not complete within ${timeoutMs}ms; continuing cleanup.`
+      );
+      return true;
+    }
+    if (result === RENDERER_PREPARE_UNAVAILABLE) {
+      logger.error(
+        '[Electron] Renderer Quit preparation helper is unavailable; continuing cleanup.'
       );
       return true;
     }
@@ -101,6 +109,7 @@ async function runQuitCleanup({
 module.exports = {
   DEFAULT_RENDERER_PREPARE_TIMEOUT_MS,
   PREPARE_RENDERER_FOR_QUIT_SCRIPT,
+  RENDERER_PREPARE_UNAVAILABLE,
   prepareRendererForQuit,
   runQuitCleanup
 };

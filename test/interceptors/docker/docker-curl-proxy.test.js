@@ -13,7 +13,8 @@ const PROXY_NAMES = [
   'HTTPS_PROXY',
   'http_proxy',
   'https_proxy',
-  'NO_PROXY'
+  'NO_PROXY',
+  'no_proxy'
 ];
 
 function runEnvironment(instruction) {
@@ -89,7 +90,8 @@ test('Docker run, Compose, and renderer fallback emit the exact lowercase proxy 
     HTTPS_PROXY: proxyUrl,
     http_proxy: proxyUrl,
     https_proxy: proxyUrl,
-    NO_PROXY: ''
+    NO_PROXY: '',
+    no_proxy: ''
   };
   const instructions = await generatedDockerInstructions(proxyUrl);
   const run = runEnvironment(instructions.run);
@@ -115,6 +117,25 @@ test('Docker run, Compose, and renderer fallback emit the exact lowercase proxy 
   assert.deepEqual(select(fallbackCompose, PROXY_NAMES), expectedProxyEnvironment);
   assert.equal(fallbackRun.NODE_USE_ENV_PROXY, '1');
   assert.equal(fallbackCompose.NODE_USE_ENV_PROXY, '1');
+});
+
+test('Docker instructions bracket an IPv6 bridge gateway in every proxy URL', async t => {
+  t.mock.method(console, 'log', () => {});
+  const interceptor = new DockerInterceptor();
+  interceptor._platform = () => 'linux';
+  interceptor._getDockerHost = async () => 'fd00::1';
+  interceptor._getCombinedCaBundlePath = () => '/tmp/FreeKit CA bundle.pem';
+
+  const result = await interceptor.activate(8297);
+  const expectedProxyUrl = 'http://[fd00::1]:8297';
+  const run = runEnvironment(result.metadata.instructions.run);
+  const compose = composeEnvironment(result.metadata.instructions.compose);
+
+  assert.equal(result.metadata.proxyUrl, expectedProxyUrl);
+  for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
+    assert.equal(run[name], expectedProxyUrl, `Docker run ${name}`);
+    assert.equal(compose[name], expectedProxyUrl, `Compose ${name}`);
+  }
 });
 
 test('curl HTTP traffic uses the lowercase proxy URL from generated Docker environment', async t => {

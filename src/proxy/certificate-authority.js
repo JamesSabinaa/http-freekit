@@ -98,6 +98,7 @@ export class CertificateAuthority {
       }
 
       if (loadedExistingCa) {
+        this._hardenExistingCaKeyPermissions();
         const expiry = this.caCert.validity.notAfter;
         const renewalDue = expiry.getTime() - Date.now() < CA_AUTO_RENEWAL_WINDOW_MS;
         if (scheduledRenewal || (renewalDue && autoRenewExpiring)) {
@@ -406,6 +407,22 @@ export class CertificateAuthority {
   _isRenewalRequired(now = Date.now()) {
     return Boolean(this.caCert)
       && this.caCert.validity.notAfter.getTime() - now < CA_RENEWAL_NOTICE_WINDOW_MS;
+  }
+
+  _platform() {
+    return process.platform;
+  }
+
+  _hardenExistingCaKeyPermissions() {
+    if (this._platform() === 'win32') return;
+    try {
+      fs.chmodSync(this.caKeyPath, 0o600);
+    } catch (error) {
+      throw new Error(
+        `Could not secure existing CA private key "${this.caKeyPath}" for owner-only access: ` +
+        `${error.message}. Check that the file is owned by the current user and its permissions can be changed.`
+      );
+    }
   }
 
   _validateCaPair(certPem, keyPem) {

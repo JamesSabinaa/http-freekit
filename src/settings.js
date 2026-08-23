@@ -13,18 +13,38 @@ export class Settings {
   }
 
   _load() {
+    if (!fs.existsSync(this.filePath)) return;
+
+    let parsed;
     try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new TypeError('Settings file must contain a JSON object');
-        }
-        this.data = parsed;
+      const raw = fs.readFileSync(this.filePath, 'utf8');
+      parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new TypeError('Settings file must contain a JSON object');
       }
     } catch (err) {
       console.error('[Settings] Failed to load settings:', err.message);
       this.data = {};
+      return;
+    }
+
+    this._hardenExistingFilePermissions();
+    this.data = parsed;
+  }
+
+  _platform() {
+    return process.platform;
+  }
+
+  _hardenExistingFilePermissions() {
+    if (this._platform() === 'win32') return;
+    try {
+      fs.chmodSync(this.filePath, 0o600);
+    } catch (error) {
+      throw new Error(
+        `Could not secure existing settings file "${this.filePath}" for owner-only access: ` +
+        `${error.message}. Check that the file is owned by the current user and its permissions can be changed.`
+      );
     }
   }
 

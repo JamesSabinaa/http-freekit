@@ -21,7 +21,8 @@ const PROXY_VARIABLES = [
   'HTTPS_PROXY',
   'http_proxy',
   'https_proxy',
-  'NO_PROXY'
+  'NO_PROXY',
+  'no_proxy'
 ];
 
 function runEnvironment(instruction) {
@@ -101,7 +102,8 @@ test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle
     HTTPS_PROXY: 'http://172.18.0.1:8310',
     http_proxy: 'http://172.18.0.1:8310',
     https_proxy: 'http://172.18.0.1:8310',
-    NO_PROXY: ''
+    NO_PROXY: '',
+    no_proxy: ''
   });
   for (const variable of TRUST_VARIABLES) assert.equal(runEnv[variable], containerBundlePath);
   assert.equal(runEnv.NODE_USE_ENV_PROXY, '1');

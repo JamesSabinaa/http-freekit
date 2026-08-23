@@ -10,7 +10,7 @@ import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
-import { validateOpenApiSubmission } from './openapi-validation.js';
+import { isObjectRecord, validateOpenApiSubmission } from './openapi-validation.js';
 import { registerConfigurationRoutes } from './routes/configuration-routes.js';
 import { registerTrafficRoutes } from './routes/traffic-routes.js';
 import { validatePortRange } from '../proxy/port-range.js';
@@ -104,6 +104,14 @@ function readOptionalScalarQuery(query, name) {
     return { error: `${name} must be a single string query value` };
   }
   return { provided, value };
+}
+
+function requireJsonObjectBody(req, res) {
+  if (!isObjectRecord(req.body)) {
+    res.status(400).json({ error: 'request body must be a JSON object' });
+    return null;
+  }
+  return req.body;
 }
 
 function validateTlsPassthroughHosts(hosts) {
@@ -694,7 +702,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
       }),
       apply: () => {
         this.autoRotateProxy = {
-          enabled: !!config.enabled,
+          enabled: config.enabled,
           provider: String(config.provider || 'lemonprime').trim() || 'lemonprime'
         };
         return this.autoRotateProxy;
@@ -1424,6 +1432,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   _setupMiddleware() {
     // CORS
     this.app.use((req, res, next) => {
+      res.header('Content-Security-Policy', "frame-ancestors 'none'");
+      res.header('X-Frame-Options', 'DENY');
       const origin = req.get('origin');
       if (origin && !this._isAllowedBrowserOrigin(origin)) {
         return res.status(403).json({ error: 'Forbidden origin' });
@@ -1803,7 +1813,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/mock-rules/reorder', (req, res) => {
-      const { ids } = req.body;
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const { ids } = body;
       if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array is required' });
       const rules = this._mutateRules(
         'mockRules',
@@ -1815,10 +1827,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Create a rule group
     router.post('/api/mock-rules/group', (req, res) => {
-      const items = Array.isArray(req.body.items) ? req.body.items : [];
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const items = Array.isArray(body.items) ? body.items : [];
       const candidate = {
         type: 'group',
-        title: req.body.title || 'New Group',
+        title: body.title || 'New Group',
         enabled: true,
         items,
         collapsed: false
@@ -1887,7 +1901,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Move a rule into a group
     router.post('/api/mock-rules/move-to-group', (req, res) => {
-      const { ruleId, groupId } = req.body;
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const { ruleId, groupId } = body;
       if (ruleId === groupId) {
         return res.status(400).json({ error: 'A group cannot be moved into itself' });
       }
@@ -1910,7 +1926,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
 
     // Move a rule out of its group to top level
     router.post('/api/mock-rules/ungroup', (req, res) => {
-      const { ruleId } = req.body;
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const { ruleId } = body;
       const rule = this._mutateRules('mockRules', 'mockRules', () => {
         const removed = this._removeRuleById(ruleId);
         if (removed) this.proxy.mockRules.push(removed);
@@ -2038,9 +2056,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/bottingtools/rotate-proxy', async (req, res) => {
+      const body = isObjectRecord(req.body) ? req.body : {};
+      if (Object.hasOwn(body, 'refill') && typeof body.refill !== 'boolean') {
+        return res.status(400).json({ error: 'refill must be a boolean' });
+      }
       try {
-        const provider = req.body?.provider || 'lemonprime';
-        const refill = req.body?.refill !== false;
+        const provider = body.provider || 'lemonprime';
+        const refill = Object.hasOwn(body, 'refill') ? body.refill : true;
         const result = await this._rotateBottingToolsProxy(provider, refill, { persistProvider: true });
         if (result.applied === false) {
           return res.status(409).json({
@@ -2059,9 +2081,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/bottingtools/auto-rotate-proxy', (req, res) => {
+      const body = isObjectRecord(req.body) ? req.body : {};
+      if (Object.hasOwn(body, 'enabled') && typeof body.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      }
       const config = this._setAutoRotateProxyConfig({
-        enabled: req.body?.enabled,
-        provider: req.body?.provider
+        enabled: Object.hasOwn(body, 'enabled') ? body.enabled : false,
+        provider: body.provider
       });
       res.json({ success: true, ...config });
     });
@@ -2360,8 +2386,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.delete('/api/specs/:id', (req, res) => {
+      let removed;
       try {
-        this._mutateRules(
+        removed = this._mutateRules(
           'apiSpecs',
           'apiSpecs',
           () => this.proxy.removeApiSpec(req.params.id),
@@ -2370,6 +2397,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       } catch (err) {
         return res.status(500).json({ error: err.message || 'Failed to persist API spec removal' });
       }
+      if (!removed) return res.status(404).json({ error: 'API spec not found' });
       res.json({ success: true });
     });
 
@@ -2386,7 +2414,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/http2', (req, res) => {
-      const { mode } = req.body;
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const { mode } = body;
       if (!['all', 'h2-only', 'disabled'].includes(mode)) {
         return res.status(400).json({ error: 'Invalid mode. Use: all, h2-only, disabled' });
       }
@@ -2434,7 +2464,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     });
 
     router.post('/api/port-config', (req, res) => {
-      const { minPort, maxPort } = req.body;
+      const body = requireJsonObjectBody(req, res);
+      if (!body) return;
+      const { minPort, maxPort } = body;
       const range = validatePortRange(minPort, maxPort);
       if (!range) {
         return res.status(400).json({ error: 'Port range must use integers from 1 to 65535 with minimum no greater than maximum' });

@@ -232,6 +232,40 @@ test('validator rejects malformed execution fields before rules reach runtime ha
   }
 });
 
+test('mock delays stay within the supported Node timer range', () => {
+  const base = {
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }]
+  };
+  const rulesForDelay = delay => [
+    {
+      ...base,
+      preSteps: [{ type: 'delay', ms: delay }],
+      action: { type: 'fixed-response' }
+    },
+    { ...base, action: { type: 'fixed-response', delay } }
+  ];
+
+  for (const delay of [0, 2_147_483_647]) {
+    for (const rule of rulesForDelay(delay)) {
+      assert.equal(validateMockRule(rule), null, String(delay));
+    }
+  }
+
+  for (const delay of [2_147_483_648, Number.MAX_SAFE_INTEGER]) {
+    for (const rule of rulesForDelay(delay)) {
+      assert.match(validateMockRule(rule), /from 0 through 2147483647/, String(delay));
+    }
+  }
+});
+
+test('add-header pre-steps accept numeric zero as a valid header value', () => {
+  const rule = validRule('numeric-zero-header');
+  rule.preSteps = [{ type: 'add-header', name: 'x-zero', value: 0 }];
+
+  assert.equal(validateMockRule(rule), null);
+});
+
 test('every mock final-response status accepts only integers from 200 through 599', () => {
   const base = {
     enabled: true,

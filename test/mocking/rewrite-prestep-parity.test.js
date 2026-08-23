@@ -163,7 +163,7 @@ function setRewriteRule(proxy, rewriteUrl, forwardTo) {
     enabled: true,
     matchers: [{ type: 'wildcard' }],
     preSteps: [
-      { type: 'add-header', name: 'x-before', value: 'present' },
+      { type: 'add-header', name: 'x-before', value: 0 },
       { type: 'remove-header', name: 'x-remove' },
       { type: 'rewrite-url', value: rewriteUrl },
       { type: 'rewrite-method', value: 'PATCH' },
@@ -295,7 +295,7 @@ test('rewrite pre-steps have destination, method, header, and capture parity', {
       method: 'PATCH',
       path: expectedTarget.pathname + expectedTarget.search,
       host: expectedTarget.host,
-      before: 'present',
+      before: '0',
       after: 'present',
       body: requestBody
     }, scenario.name);
@@ -304,6 +304,7 @@ test('rewrite pre-steps have destination, method, header, and capture parity', {
     assert.equal(capture.url, expectedTarget.href, scenario.name);
     assert.equal(capture.path, expectedTarget.pathname + expectedTarget.search, scenario.name);
     assert.equal(getHeader(capture.requestHeaders, 'host'), expectedTarget.host, scenario.name);
+    assert.equal(String(getHeader(capture.requestHeaders, 'x-before')), '0', scenario.name);
     assert.equal(capture.originalRequest.method, 'POST', scenario.name);
     assert.equal(capture.originalRequest.url, scenario.originalUrl, scenario.name);
     assert.equal(capture.requestBody, requestBody, scenario.name);

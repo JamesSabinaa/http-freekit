@@ -66,7 +66,8 @@ test('decoded URL-encoded body view preserves one-pass values, ordering, escapin
   }
 
   assert.deepEqual(pairs, expectedPairs);
-  assert.equal((html.match(/navigator\.clipboard\.writeText/g) || []).length, expectedPairs.length * 2);
+  assert.equal((html.match(/copyTextToClipboard/g) || []).length, expectedPairs.length * 2);
+  assert.equal((html.match(/navigator\.clipboard\.writeText/g) || []).length, 0);
   assert.equal((html.match(/\.textContent/g) || []).length, expectedPairs.length * 2);
   assert.doesNotMatch(html, /<script>/);
 });

@@ -29,7 +29,12 @@ const breakpointSelectionSource = extract(
   'function selectBreakpointRequest(',
   '// ============ DETAIL PANEL'
 );
+const exchangeCountSource = extract(
+  'function countTrafficExchanges(',
+  'function wsConnectionKey('
+);
 const virtualRowsSource = extract('function renderVirtualRows()', 'function renderTraffic()');
+const trafficRenderSource = extract('function renderTraffic()', 'function updateTrafficActiveDescendant(');
 const keyboardSelectionSource = extract(
   'function selectRequestByIndex(',
   '// ============ WS FRAME EXPAND/COLLAPSE'
@@ -42,12 +47,15 @@ const shortcutsSource = extract(
 test('Traffic grid is the focusable active-descendant owner', () => {
   const wrapper = html.match(/<div[^>]*id="trafficTableWrapper"[^>]*>/)?.[0] || '';
   const grid = html.match(/<table[^>]*id="trafficGrid"[^>]*>/)?.[0] || '';
+  const headerRow = html.match(/<thead><tr[^>]*role="row"[^>]*>/)?.[0] || '';
   const body = html.match(/<tbody[^>]*id="trafficBody"[^>]*>/)?.[0] || '';
 
   assert.match(wrapper, /role="region"/);
   assert.match(wrapper, /tabindex="-1"/);
   assert.match(grid, /role="grid"/);
   assert.match(grid, /tabindex="0"/);
+  assert.match(grid, /aria-rowcount="1"/);
+  assert.match(headerRow, /aria-rowindex="1"/);
   assert.doesNotMatch(body, /aria-activedescendant/);
 });
 
@@ -154,7 +162,7 @@ function createVirtualGridHarness() {
       : `row-${request.id}`,
     scrollRowIntoView(index) { wrapper.scrollTop = Math.max(0, index * 32 - 64); },
     buildRowHtml(request, index) {
-      return `<tr id="row-${request.id}" role="row" aria-rowindex="${index + 1}" aria-selected="${request.id === context.selectedRequestId}"></tr>`;
+      return `<tr id="row-${request.id}" role="row" aria-rowindex="${index + 2}" aria-selected="${request.id === context.selectedRequestId}"></tr>`;
     },
     document: {
       getElementById(id) {
@@ -200,6 +208,81 @@ test('keyboard selection renders and selects the active virtual row before refer
   harness.gridApi.render();
   assert.equal(harness.body.innerHTML, '');
   assert.equal(harness.attributes.has('aria-activedescendant'), false);
+});
+
+test('virtualized spacer rows are hidden and data rows retain absolute grid positions', () => {
+  const harness = createVirtualGridHarness();
+  harness.wrapper.scrollTop = 1600;
+  harness.gridApi.setForce(true);
+  harness.gridApi.render();
+
+  const spacers = [...harness.body.innerHTML.matchAll(/<tr class="vs-spacer"([^>]*)>/g)];
+  assert.equal(spacers.length, 2);
+  for (const [, attributes] of spacers) {
+    assert.match(attributes, /role="presentation"/);
+    assert.match(attributes, /aria-hidden="true"/);
+  }
+  assert.match(harness.body.innerHTML, /<td role="presentation" colspan="6"/);
+  assert.match(
+    harness.body.innerHTML,
+    /id="row-request-35" role="row" aria-rowindex="37"/
+  );
+});
+
+test('expanded WebSocket frames count as grid rows but not displayed requests', () => {
+  const parent = { id: 'socket', protocol: 'wss' };
+  const frames = [
+    { id: 'frame-1', protocol: 'ws-frame', parentId: parent.id },
+    { id: 'frame-2', protocol: 'ws-frame', parentId: parent.id }
+  ];
+  const otherExchange = { id: 'ordinary', protocol: 'https' };
+  const elements = {
+    trafficBody: { innerHTML: '' },
+    emptyState: { innerHTML: '', style: {} },
+    trafficCount: { textContent: '' },
+    trafficCountLabel: { textContent: '' },
+    footerRequestCount: { textContent: '' },
+    footerFilterCount: { textContent: '' },
+    searchInput: { value: 'host:socket.test' },
+    trafficTableWrapper: { scrollTop: 0, scrollHeight: 0 }
+  };
+  const gridAttributes = new Map();
+  elements.trafficGrid = {
+    setAttribute: (name, value) => gridAttributes.set(name, value)
+  };
+  let virtualRenders = 0;
+  const context = {
+    requests: [parent, ...frames, otherExchange],
+    filteredRequests: [parent, ...frames],
+    hideTunnelRequests: false,
+    filterSafeFonts: false,
+    isPaused: false,
+    autoScroll: false,
+    vsForceRender: false,
+    vsRenderStart: 0,
+    vsRenderEnd: 0,
+    updateSortHeaders() {},
+    isTunnelRequest: () => false,
+    isSafeFontRequest: () => false,
+    isDefaultExcludedRequest: () => false,
+    parseFilters: () => [{ type: 'host' }],
+    updateTrafficActiveDescendant() {},
+    renderVirtualRows: () => { virtualRenders++; },
+    document: { getElementById: id => elements[id] || null }
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    ${exchangeCountSource}
+    ${trafficRenderSource}
+    renderTraffic();
+  `, context);
+
+  assert.equal(gridAttributes.get('aria-rowcount'), '4');
+  assert.equal(elements.trafficCount.textContent, '1 / 2');
+  assert.equal(elements.trafficCountLabel.textContent, 'requests');
+  assert.equal(elements.footerRequestCount.textContent, '2 requests');
+  assert.equal(elements.footerFilterCount.textContent, '(1 shown)');
+  assert.equal(virtualRenders, 1);
 });
 
 function keyboardElement(tagName = 'DIV', options = {}) {

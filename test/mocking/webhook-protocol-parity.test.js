@@ -309,6 +309,80 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
     }
   });
 
+test('close mocks apply their action delay across every HTTP ingress protocol',
+  { timeout: 30000 }, async t => {
+    const waitCalls = [];
+    const captures = [];
+    const { proxy } = await createProxy(t, event => captures.push({
+      event,
+      completedDelayCount: waitCalls.filter(call => call.completed).length
+    }));
+    const waitForMockDelay = proxy._waitForMockDelay.bind(proxy);
+    proxy._waitForMockDelay = async (milliseconds, preparation) => {
+      const call = { milliseconds, completed: false };
+      waitCalls.push(call);
+      const result = await waitForMockDelay(milliseconds, preparation);
+      call.completed = true;
+      return result;
+    };
+
+    const authority = 'close-delay.test:443';
+    const protocols = [
+      {
+        name: 'plain H1',
+        mode: 'disabled',
+        protocol: 'http',
+        send: body => requestPlain(proxy.server.address().port, body)
+      },
+      {
+        name: 'intercepted HTTPS H1',
+        mode: 'disabled',
+        protocol: 'https',
+        send: body => requestInterceptedH1(proxy.server.address().port, authority, body)
+      },
+      {
+        name: 'native H2',
+        mode: 'h2-only',
+        protocol: 'h2',
+        send: body => requestInterceptedH2(proxy.server.address().port, authority, body)
+      },
+      {
+        name: 'H1-on-H2',
+        mode: 'all',
+        protocol: 'https',
+        send: body => requestInterceptedH1(proxy.server.address().port, authority, body)
+      }
+    ];
+
+    for (const protocol of protocols) {
+      proxy.setHttp2Config(protocol.mode);
+      proxy.mockRules = [{
+        enabled: true,
+        matchers: [],
+        action: { type: 'close', delay: 20 }
+      }];
+      const waitStart = waitCalls.length;
+      const captureStart = captures.length;
+
+      await protocol.send(`close-${protocol.protocol}`).catch(() => {});
+      await waitFor(() => captures.slice(captureStart).some(
+        capture => capture.event.statusMessage === 'Connection Closed'
+      ));
+      const terminal = captures.slice(captureStart).find(
+        capture => capture.event.statusMessage === 'Connection Closed'
+      );
+
+      const protocolWaits = waitCalls.slice(waitStart);
+      assert.equal(protocolWaits.length, 1, `${protocol.name}: one action delay`);
+      assert.equal(protocolWaits[0].milliseconds, 20, protocol.name);
+      assert.equal(protocolWaits[0].completed, true, protocol.name);
+      assert.equal(terminal.completedDelayCount, waitStart + 1,
+        `${protocol.name}: delay completed before terminal capture`);
+      assert.equal(terminal.event.protocol, protocol.protocol, protocol.name);
+      assert.equal(terminal.event.statusCode, 0, protocol.name);
+    }
+  });
+
 test('shutdown cancels a delayed native H2 webhook without delivering it',
   { timeout: 20000 }, async t => {
     let deliveryCount = 0;

@@ -30,6 +30,7 @@ const NAME_MATCHER_TYPES = new Set([
 const OPTIONAL_VALUE_MATCHER_TYPES = new Set(['wildcard']);
 const EMPTY_VALUE_MATCHER_TYPES = new Set(['raw-body-exact', 'exact-query']);
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MOCK_ACTION_TYPES = new Set([
   'fixed-response',
   'serve-file',
@@ -55,6 +56,11 @@ function isObject(value) {
 
 function hasOwn(object, property) {
   return Object.prototype.hasOwnProperty.call(object, property);
+}
+
+function isSupportedTimerDelay(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+    && value >= 0 && value <= MAX_TIMER_DELAY_MS;
 }
 
 function isHeaderValue(value) {
@@ -117,9 +123,9 @@ function validatePreStep(step) {
     return 'Every mock rule pre-step must use a supported type';
   }
   if (step.type === 'delay') {
-    return typeof step.ms === 'number' && Number.isFinite(step.ms) && step.ms >= 0
+    return isSupportedTimerDelay(step.ms)
       ? null
-      : 'Delay pre-step milliseconds must be a non-negative number';
+      : `Delay pre-step must be a finite number of milliseconds from 0 through ${MAX_TIMER_DELAY_MS}`;
   }
   if (step.type === 'add-header' || step.type === 'remove-header') {
     if (!isValidHeader(step.name, step.type === 'add-header' ? (step.value ?? '') : '')) {
@@ -213,8 +219,8 @@ function validateAction(action) {
     return 'Mock rule action must use a supported type';
   }
   if (hasOwn(action, 'delay') && action.delay !== undefined
-    && (typeof action.delay !== 'number' || !Number.isFinite(action.delay) || action.delay < 0)) {
-    return 'Mock action delay must be a non-negative number';
+    && !isSupportedTimerDelay(action.delay)) {
+    return `Mock action delay must be a finite number of milliseconds from 0 through ${MAX_TIMER_DELAY_MS}`;
   }
   for (const [property, label] of [
     ['addRequestHeaders', 'Additional mock request headers'],

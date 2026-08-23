@@ -60,7 +60,7 @@ function rendererHarness(initialRequests = []) {
   const restoreEnd = rendererSource.indexOf('const appliedTrafficClearIds', restoreStart);
   const trafficStart = rendererSource.indexOf('function addRequest(');
   const trafficEnd = rendererSource.indexOf('function parseFilters(', trafficStart);
-  const rowStart = rendererSource.indexOf('function buildRowHtml(');
+  const rowStart = rendererSource.indexOf('function formatRemoteEndpoint(');
   const rowEnd = rendererSource.indexOf('// Render the visible virtual-scroll rows', rowStart);
   const toggleStart = rendererSource.indexOf('function toggleWsExpand(');
   const toggleEnd = rendererSource.indexOf('// ============ SCROLL TO END', toggleStart);
@@ -115,6 +115,7 @@ function rendererHarness(initialRequests = []) {
     globalThis.toggleTraffic = toggleWsExpand;
     globalThis.filterTraffic = applyFilter;
     globalThis.filteredTrafficIds = () => filteredRequests.map(request => request.id);
+    globalThis.filteredTrafficExchangeCount = () => countTrafficExchanges(filteredRequests);
     globalThis.frameIndex = () => Object.fromEntries(
       Object.entries(wsFramesByParent).map(([parentId, frames]) => [
         parentId,
@@ -125,9 +126,9 @@ function rendererHarness(initialRequests = []) {
     globalThis.frameIdsForRequest = request => (
       wsFramesByParent[wsConnectionKey(request)] || []
     ).map(frame => frame.id);
-    globalThis.trafficRowHtml = requestId => buildRowHtml(
+    globalThis.trafficRowHtml = (requestId, index = 0) => buildRowHtml(
       requests.find(request => request.id === requestId),
-      0
+      index
     );
   `, context);
   return { context, get renders() { return renders; } };
@@ -546,6 +547,7 @@ test('secure WebSocket parents expose their frame rows and WebSocket styling', (
     parent.id,
     frame.id
   ]);
+  assert.equal(harness.context.filteredTrafficExchangeCount(), 1);
   const html = harness.context.trafficRowHtml(parent.id);
   assert.match(html, /method-badge method-WS">WS</);
   assert.match(html, /status-badge status-2xx/);
@@ -556,6 +558,53 @@ test('secure WebSocket parents expose their frame rows and WebSocket styling', (
     rendererSource,
     /\/\/ ---- WebSocket Card ----\s+if \(isConnectedWebSocket\(req\)\)/
   );
+});
+
+test('the actual row renderer reserves grid row one across every data-row branch', () => {
+  const requests = [
+    {
+      id: 'ordinary-row',
+      protocol: 'http',
+      method: 'GET',
+      statusCode: 200,
+      host: 'ordinary.test',
+      path: '/ordinary',
+      source: 'proxy'
+    },
+    {
+      ...trafficRecord('frame-row', 'ws-frame', 'socket-parent'),
+      direction: 'client',
+      opcodeName: 'text'
+    },
+    {
+      id: 'tls-row',
+      protocol: 'tls-error',
+      host: 'tls.test',
+      error: 'certificate rejected',
+      source: 'tls-error'
+    },
+    {
+      id: 'tunnel-row',
+      protocol: 'tunnel',
+      host: 'tunnel.test',
+      source: 'tunnel',
+      requestBodySize: 12,
+      responseBodySize: 34
+    }
+  ];
+  const harness = rendererHarness(requests);
+  const dataIndex = 7;
+
+  for (const [request, branchMarker] of [
+    [requests[0], /aria-haspopup="menu"/],
+    [requests[1], /class="ws-frame-row/],
+    [requests[2], /class="tls-error-row/],
+    [requests[3], /class="tunnel-row/]
+  ]) {
+    const row = harness.context.trafficRowHtml(request.id, dataIndex);
+    assert.match(row, branchMarker, request.id);
+    assert.match(row, /role="row" aria-rowindex="9"/, request.id);
+  }
 });
 
 test('WebSocket rows preserve pending and failure status semantics', () => {

@@ -46,6 +46,7 @@ import {
 import {
   validateTlsFingerprint
 } from './tls-fingerprint-config.js';
+import { validateHttp2Mode } from './http2-config.js';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
@@ -538,7 +539,7 @@ export class ProxyServer {
   }
 
   _canSafelyReplayRequest(method) {
-    return ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(String(method || '').toUpperCase());
+    return ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(String(method || ''));
   }
 
   _settleNonReplayableH2Failure(method, requestAttempted, error, downstream, respond) {
@@ -2579,7 +2580,9 @@ export class ProxyServer {
         statusCode: responseStarted ? fileStatus : 0,
         statusMessage: 'Client Disconnected',
         responseHeaders: responseStarted ? { 'Content-Type': mime } : {},
-        responseBody: progress?.content ? this._safeBodyString(progress.content) : '',
+        responseBody: progress?.content
+          ? this._safeBodyString(progress.content, undefined, mime)
+          : '',
         responseBodySize: progress?.size || 0,
         responseBodyTruncated: progress?.truncated === true,
         ...(progress?.truncated === true ? {
@@ -2598,7 +2601,9 @@ export class ProxyServer {
         statusCode: fileStatus,
         statusMessage: 'File Delivery Error',
         responseHeaders: { 'Content-Type': mime },
-        responseBody: progress.content ? this._safeBodyString(progress.content) : '',
+        responseBody: progress.content
+          ? this._safeBodyString(progress.content, undefined, mime)
+          : '',
         responseBodySize: progress.size,
         responseBodyTruncated: progress.truncated,
         ...(progress.truncated ? {
@@ -2863,8 +2868,9 @@ export class ProxyServer {
   }
 
   setHttp2Config(mode) {
-    this.http2Enabled = mode; // 'all', 'h2-only', 'disabled'
-    console.log(`[Proxy] HTTP/2: ${mode}`);
+    const validatedMode = validateHttp2Mode(mode);
+    this.http2Enabled = validatedMode;
+    console.log(`[Proxy] HTTP/2: ${validatedMode}`);
   }
 
   _getClientCertificateHostKey(value) {
@@ -5287,7 +5293,7 @@ export class ProxyServer {
                 break;
               case 'add-header':
                 if (step.name) {
-                  req.headers[step.name.toLowerCase()] = step.value || '';
+                  req.headers[step.name.toLowerCase()] = step.value ?? '';
                 }
                 break;
               case 'remove-header':
@@ -5327,6 +5333,9 @@ export class ProxyServer {
 
           // Close connection
           if (action.type === 'close') {
+            if (action.delay && action.delay > 0) {
+              await this._waitForMockDelay(action.delay);
+            }
             res.destroy();
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
@@ -5489,7 +5498,7 @@ export class ProxyServer {
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: fileStatus, statusMessage: 'Mocked (file)',
                 responseHeaders: { 'Content-Type': mime },
-                responseBody: file.content ? this._safeBodyString(file.content) : '',
+                responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
                 responseBodySize: file.size,
                 responseBodyTruncated: file.truncated,
                 ...(file.truncated ? {
@@ -7115,7 +7124,7 @@ export class ProxyServer {
           }
           break;
         case 'add-header':
-          if (step.name) reqHeaders[step.name.toLowerCase()] = step.value || '';
+          if (step.name) reqHeaders[step.name.toLowerCase()] = step.value ?? '';
           break;
         case 'remove-header':
           if (step.name) delete reqHeaders[step.name.toLowerCase()];
@@ -7148,6 +7157,9 @@ export class ProxyServer {
     const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
 
     // Close connection
+    if (action.type === 'close' && action.delay && action.delay > 0) {
+      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+    }
     if (action.type === 'close' || action.type === 'reset') {
       try { stream.destroy(); } catch (e) { /* */ }
       emitCapturedRequest({
@@ -7304,7 +7316,7 @@ export class ProxyServer {
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fileStatus, statusMessage: 'Mocked (file)',
           responseHeaders: { 'Content-Type': mime },
-          responseBody: file.content ? this._safeBodyString(file.content) : '',
+          responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
           ...(file.truncated ? {
@@ -8622,7 +8634,11 @@ export class ProxyServer {
         : {}),
       ...this._getClientCertificateOptions(connectionHostname)
     };
-    const base = { ...connectionOptions, ...contextOptions };
+    const base = {
+      ...connectionOptions,
+      ...contextOptions,
+      ALPNProtocols: requestedAlpn
+    };
 
     // Legacy mode retains the previous best-effort behavior: translate only the
     // client's known ciphers, curves, signature algorithms and TLS versions into
@@ -9384,7 +9400,7 @@ export class ProxyServer {
           break;
         case 'add-header':
           if (step.name) {
-            clientReq.headers[step.name.toLowerCase()] = step.value || '';
+            clientReq.headers[step.name.toLowerCase()] = step.value ?? '';
           }
           break;
         case 'remove-header':
@@ -9421,6 +9437,9 @@ export class ProxyServer {
 
     // Close connection action
     if (action.type === 'close') {
+      if (action.delay && action.delay > 0) {
+        if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+      }
       clientRes.destroy();
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
@@ -9588,7 +9607,7 @@ export class ProxyServer {
           requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: fileStatus, statusMessage: 'Mocked (file)',
           responseHeaders: { 'Content-Type': mime },
-          responseBody: file.content ? this._safeBodyString(file.content) : '',
+          responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
           ...(file.truncated ? {

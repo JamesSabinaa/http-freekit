@@ -130,7 +130,6 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     ['object header value', (() => { const value = validEntry(); value.response.headers = [{ name: 'X-Test', value: {} }]; return har([value]); })(), /headers\[0\]\.value must be a string/],
     ['numeric request body', (() => { const value = validEntry(); value.request.postData = { text: 42 }; return har([value]); })(), /postData\.text must be a string/],
     ['object response body', (() => { const value = validEntry(); value.response.content.text = {}; return har([value]); })(), /content\.text must be a string/],
-    ['negative timestamp', (() => { const value = validEntry(); value.startedDateTime = '1969-12-31T23:59:59.999Z'; return har([value]); })(), /startedDateTime must be non-negative/],
     ['negative duration', (() => { const value = validEntry(); value.time = -1; return har([value]); })(), /\.time must be non-negative/],
     ['negative request size', (() => { const value = validEntry(); value.request.bodySize = -2; return har([value]); })(), /request\.bodySize must be non-negative or -1/],
     ['fractional response size', (() => { const value = validEntry(); value.response.bodySize = 1.5; return har([value]); })(), /response\.bodySize must be a safe integer/],
@@ -175,6 +174,19 @@ test('renderer HAR import rejects malformed primitives and unsafe mapped field t
     assert.match(harness.toasts[0].message, expectedError, name);
     assert.equal(harness.toasts.some(item => item.type === 'success'), false, name);
   }
+});
+
+test('renderer HAR normalization preserves epoch and pre-epoch timestamps', () => {
+  const preEpoch = validEntry();
+  preEpoch.startedDateTime = '1969-12-31T23:59:59.000Z';
+  const epoch = validEntry();
+  epoch.startedDateTime = '1970-01-01T00:00:00.000Z';
+
+  const normalized = normalizeHarEntries(har([preEpoch, epoch]), {
+    createId: () => 'historical-import'
+  });
+
+  assert.deepEqual(normalized.map(entry => entry.timestamp), [-1000, 0]);
 });
 
 test('an invalid second HAR entry causes no partial renderer mutation or success toast', async () => {

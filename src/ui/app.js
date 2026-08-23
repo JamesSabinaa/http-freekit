@@ -135,6 +135,13 @@
       return isWebSocketConnection(request) && request.statusCode === 101 && !request.error;
     }
 
+    function countTrafficExchanges(collection) {
+      return collection.reduce(
+        (count, request) => count + (request?.protocol === 'ws-frame' ? 0 : 1),
+        0
+      );
+    }
+
     function wsConnectionKey(request) {
       return request?.trafficLifecycleId
         ? JSON.stringify(['lifecycle', request.id, request.trafficLifecycleId])
@@ -1728,6 +1735,7 @@
     function buildRowHtml(req, index) {
       const rowSelected = isSelectedTrafficRequest(req);
       const selected = rowSelected ? 'selected' : '';
+      const ariaRowIndex = index + 2; // The real column-header row occupies row 1.
       const rowId = escapeHtmlAttribute(trafficRowDomId(req));
       const identityAttributes = trafficRowIdentityAttributes(req);
       const selectHandler = "selectRequest(this.dataset.id, true, this.dataset.lifecycleId)";
@@ -1738,7 +1746,7 @@
         const preview = esc((req.requestBody || '').substring(0, 80)) + (req.requestBody && req.requestBody.length > 80 ? '...' : '');
         const byteCount = formatSize(req.requestBodySize);
         const opName = esc(req.opcodeName || 'data');
-        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
+        return `<tr class="ws-frame-row ${dirClass} ${selected}" id="${rowId}" role="row" aria-rowindex="${ariaRowIndex}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#4caf7d;"></div></td>
           <td role="gridcell" colspan="2" style="padding-left:24px;"><span class="ws-frame-dir">${dirArrow}</span> <span class="ws-frame-opcode">${opName}</span></td>
           <td role="gridcell" style="font-size:11px;color:var(--text-lowlight);">${byteCount}</td>
@@ -1752,7 +1760,7 @@
         const sourceIcon = Object.hasOwn(SOURCE_ICONS, source)
           ? SOURCE_ICONS[source]
           : SOURCE_ICONS['tls-error'];
-        return `<tr class="tls-error-row ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
+        return `<tr class="tls-error-row ${selected}" id="${rowId}" role="row" aria-rowindex="${ariaRowIndex}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#ce3939;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TLS</span></td>
           <td role="gridcell"><span class="status-badge status-5xx">ERR</span></td>
@@ -1774,7 +1782,7 @@
           req.remote?.port,
           443
         );
-        return `<tr class="tunnel-row ${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
+        return `<tr class="tunnel-row ${selected}" id="${rowId}" role="row" aria-rowindex="${ariaRowIndex}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
           <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
           <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
@@ -1824,7 +1832,7 @@
         }
       }
 
-      return `<tr class="${selected}" id="${rowId}" role="row" aria-rowindex="${index + 1}" aria-selected="${rowSelected}" aria-haspopup="menu" tabindex="-1" ${identityAttributes} onclick="${selectHandler}" oncontextmenu="showTrafficContextMenu(event, this.dataset.id, this, this.dataset.lifecycleId)">
+      return `<tr class="${selected}" id="${rowId}" role="row" aria-rowindex="${ariaRowIndex}" aria-selected="${rowSelected}" aria-haspopup="menu" tabindex="-1" ${identityAttributes} onclick="${selectHandler}" oncontextmenu="showTrafficContextMenu(event, this.dataset.id, this, this.dataset.lifecycleId)">
         <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${markerColor};"></div></td>
         <td role="gridcell">${pinIcon}${truncatedBodyIcon}${wsFrameBadge}<span class="method-badge ${escapeHtmlAttribute(methodClass)}">${isWebSocketConnection(req) ? 'WS' : esc(req.method)}</span></td>
         <td role="gridcell">${statusHtml}</td>
@@ -1863,7 +1871,7 @@
       let html = '';
       // Top spacer
       if (renderStart > 0) {
-        html += `<tr class="vs-spacer"><td colspan="6" style="height:${renderStart * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+        html += `<tr class="vs-spacer" role="presentation" aria-hidden="true"><td role="presentation" colspan="6" style="height:${renderStart * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
       }
       // Visible rows
       for (let i = renderStart; i < renderEnd; i++) {
@@ -1871,7 +1879,7 @@
       }
       // Bottom spacer
       if (renderEnd < totalRows) {
-        html += `<tr class="vs-spacer"><td colspan="6" style="height:${(totalRows - renderEnd) * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+        html += `<tr class="vs-spacer" role="presentation" aria-hidden="true"><td role="presentation" colspan="6" style="height:${(totalRows - renderEnd) * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
       }
 
       tbody.innerHTML = html;
@@ -1893,7 +1901,7 @@
 
       // Update aria-rowcount on the traffic table
       const trafficTable = document.getElementById('trafficGrid');
-      if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length));
+      if (trafficTable) trafficTable.setAttribute('aria-rowcount', String(filteredRequests.length + 1));
 
       const query = document.getElementById('searchInput').value.trim();
       const visibleTotal = requests.filter(r =>
@@ -1902,12 +1910,13 @@
         (!filterSafeFonts || !isSafeFontRequest(r)) &&
         !isDefaultExcludedRequest(r)
       ).length;
+      const filteredExchangeCount = countTrafficExchanges(filteredRequests);
       const filterSummary = [];
-      if (query && filteredRequests.length !== visibleTotal) {
-        countEl.textContent = filteredRequests.length + ' / ' + visibleTotal;
-        filterSummary.push(filteredRequests.length + ' shown');
+      if (query && filteredExchangeCount !== visibleTotal) {
+        countEl.textContent = filteredExchangeCount + ' / ' + visibleTotal;
+        filterSummary.push(filteredExchangeCount + ' shown');
       } else {
-        countEl.textContent = filteredRequests.length;
+        countEl.textContent = filteredExchangeCount;
       }
       const bodySearchIsIncomplete = query
         && parseFilters(query).some(filter => filter.type === 'body' || filter.type === 'text')
@@ -1952,7 +1961,7 @@
         // Set scroll height based on total rows to position scrollbar correctly
         // We need to render first so the spacers create the correct content height
         // Temporarily set a large enough height so scrollTop can be set
-        tbody.innerHTML = `<tr class="vs-spacer"><td colspan="6" style="height:${filteredRequests.length * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
+        tbody.innerHTML = `<tr class="vs-spacer" role="presentation" aria-hidden="true"><td role="presentation" colspan="6" style="height:${filteredRequests.length * VS_ROW_HEIGHT}px;padding:0;border:none;"></td></tr>`;
         wrapper.scrollTop = wrapper.scrollHeight;
       }
 
@@ -2431,8 +2440,16 @@
     }
 
     function updatePinIcon(pinned) {
+      const isPinned = Boolean(pinned);
+      const button = document.getElementById('pinBtn');
       const icon = document.getElementById('pinBtnIcon');
-      if (icon) icon.style.transform = pinned ? 'none' : 'rotate(45deg)';
+      if (button) {
+        const actionLabel = isPinned ? 'Unpin this exchange' : 'Pin this exchange';
+        button.setAttribute('aria-pressed', String(isPinned));
+        button.setAttribute('aria-label', actionLabel);
+        button.setAttribute('title', actionLabel);
+      }
+      if (icon) icon.style.transform = isPinned ? 'none' : 'rotate(45deg)';
     }
 
     const trafficDeleteInFlight = new Set();
@@ -3565,7 +3582,7 @@
       html += '<div style="margin-top:16px;"><div class="section-label">Compression</div>';
       if (resEncoding) {
         const encodingName = {'br':'Brotli','gzip':'Gzip','x-gzip':'Gzip','deflate':'Deflate','zstd':'Zstandard'}[resEncoding] || resEncoding;
-        html += '<div style="font-size:12px;color:var(--text-main);margin-bottom:4px;">Response compressed with <strong>' + encodingName + '</strong> (' + formatSize(resSize) + ')</div>';
+        html += '<div style="font-size:12px;color:var(--text-main);margin-bottom:4px;">Response compressed with <strong>' + esc(encodingName) + '</strong> (' + formatSize(resSize) + ')</div>';
         if (resEncoding === 'gzip') {
           html += '<div style="font-size:11px;color:var(--text-lowlight);">Brotli (br) typically achieves 15-25% better compression than Gzip for text content.</div>';
         }
@@ -4851,8 +4868,8 @@
               html += '<div class="url-decoded-row">';
               const dk = esc(key);
               const dv = esc(value);
-              html += '<div class="url-decoded-key"><div class="url-decoded-label">Name <button class="url-decoded-copy" onclick="navigator.clipboard.writeText(this.closest(\'.url-decoded-key\').querySelector(\'.url-decoded-value\').textContent).then(()=>toast(\'Copied\',\'success\'))" title="Copy name">&#128203;</button></div><div class="url-decoded-value">' + dk + '</div></div>';
-              html += '<div class="url-decoded-val"><div class="url-decoded-label">Value <button class="url-decoded-copy" onclick="navigator.clipboard.writeText(this.closest(\'.url-decoded-val\').querySelector(\'.url-decoded-value\').textContent).then(()=>toast(\'Copied\',\'success\'))" title="Copy value">&#128203;</button></div><div class="url-decoded-value">' + dv + '</div></div>';
+              html += '<div class="url-decoded-key"><div class="url-decoded-label">Name <button class="url-decoded-copy" onclick="copyTextToClipboard(this.closest(\'.url-decoded-key\').querySelector(\'.url-decoded-value\').textContent)" title="Copy name">&#128203;</button></div><div class="url-decoded-value">' + dk + '</div></div>';
+              html += '<div class="url-decoded-val"><div class="url-decoded-label">Value <button class="url-decoded-copy" onclick="copyTextToClipboard(this.closest(\'.url-decoded-val\').querySelector(\'.url-decoded-value\').textContent)" title="Copy value">&#128203;</button></div><div class="url-decoded-value">' + dv + '</div></div>';
               html += '</div>';
             }
             html += '</div>';
@@ -5849,8 +5866,8 @@
     function renderDockerConfig(container) {
       const meta = expandedInterceptorMetadata;
       const proxyUrl = meta?.proxyUrl || `http://172.17.0.1:${config.proxyPort || 8000}`;
-      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e NODE_USE_ENV_PROXY=1 <image>`;
-      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1`;
+      const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e no_proxy= -e NODE_USE_ENV_PROXY=1 <image>`;
+      const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - no_proxy=\n  - NODE_USE_ENV_PROXY=1`;
       const caBundleDescription = meta?.caBundleDescription
         || 'Activate Docker interception to generate a read-only combined public-roots-plus-FreeKit CA bundle mount. This proxy-only fallback does not change TLS verification.';
 
@@ -8290,6 +8307,7 @@
           case 'wildcard': break; // no properties needed
           case 'method': newM.value = 'GET'; break;
           case 'path': newM.value = '/'; newM.matchType = 'prefix'; break;
+          case 'protocol': newM.value = 'http'; break;
           case 'host': newM.value = ''; break;
           case 'hostname': newM.value = ''; break;
           case 'header': newM.name = ''; newM.value = ''; break;
@@ -8345,7 +8363,7 @@
           break;
         case 'add-header':
           html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')" style="flex:1;">';
-          html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
+          html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(step.value ?? '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')" style="flex:1;">';
           break;
         case 'remove-header':
           html += '<input type="text" placeholder="Header name to remove" value="' + escapeHtmlAttribute(step.name || '') + '" onchange="updateMockPreStep(' + idx + ', \'name\', this.value, \'' + eid + '\')">';
@@ -8497,13 +8515,26 @@
       }
     }
 
+    function nextMockHeaderName(headers) {
+      const existingNames = new Set(
+        Object.getOwnPropertyNames(headers || {}).map(name => name.toLowerCase())
+      );
+      let key = 'X-Custom';
+      let suffix = 1;
+      while (existingNames.has(key.toLowerCase())) {
+        key = 'X-Custom-' + suffix;
+        suffix++;
+      }
+      return key;
+    }
+
     function updateMockRespHeader(idx, which, value, eid) {
       if (!mockEditDraft) return;
       const entries = Object.entries(mockEditDraft.action.headers || {});
       if (idx < 0 || idx >= entries.length) return;
       if (which === 'key') {
         const val = entries[idx][1];
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v], i) => {
           if (i === idx) newHeaders[value] = val;
           else newHeaders[k] = v;
@@ -8511,7 +8542,7 @@
         mockEditDraft.action.headers = newHeaders;
       } else {
         entries[idx][1] = value;
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v]) => { newHeaders[k] = v; });
         mockEditDraft.action.headers = newHeaders;
       }
@@ -8519,10 +8550,8 @@
 
     function addMockRespHeader(eid) {
       if (!mockEditDraft) return;
-      if (!mockEditDraft.action.headers) mockEditDraft.action.headers = {};
-      let key = 'X-Custom';
-      let n = 1;
-      while (mockEditDraft.action.headers[key]) { key = 'X-Custom-' + n; n++; }
+      if (!mockEditDraft.action.headers) mockEditDraft.action.headers = Object.create(null);
+      const key = nextMockHeaderName(mockEditDraft.action.headers);
       mockEditDraft.action.headers[key] = '';
       rerenderMockRespHeaders(eid);
     }
@@ -8531,7 +8560,7 @@
       if (!mockEditDraft) return;
       const entries = Object.entries(mockEditDraft.action.headers || {});
       if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = {};
+      const newHeaders = Object.create(null);
       entries.forEach(([k, v], i) => {
         if (i !== idx) newHeaders[k] = v;
       });
@@ -8561,7 +8590,7 @@
       if (idx < 0 || idx >= entries.length) return;
       if (which === 'key') {
         const val = entries[idx][1];
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v], i) => {
           if (i === idx) newHeaders[value] = val;
           else newHeaders[k] = v;
@@ -8569,7 +8598,7 @@
         mockEditDraft.action.webhookHeaders = newHeaders;
       } else {
         entries[idx][1] = value;
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v]) => { newHeaders[k] = v; });
         mockEditDraft.action.webhookHeaders = newHeaders;
       }
@@ -8577,10 +8606,10 @@
 
     function addMockWebhookHeader(eid) {
       if (!mockEditDraft) return;
-      if (!mockEditDraft.action.webhookHeaders) mockEditDraft.action.webhookHeaders = {};
-      let key = 'X-Custom';
-      let n = 1;
-      while (mockEditDraft.action.webhookHeaders[key]) { key = 'X-Custom-' + n; n++; }
+      if (!mockEditDraft.action.webhookHeaders) {
+        mockEditDraft.action.webhookHeaders = Object.create(null);
+      }
+      const key = nextMockHeaderName(mockEditDraft.action.webhookHeaders);
       mockEditDraft.action.webhookHeaders[key] = '';
       rerenderMockWebhookHeaders(eid);
     }
@@ -8589,7 +8618,7 @@
       if (!mockEditDraft) return;
       const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
       if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = {};
+      const newHeaders = Object.create(null);
       entries.forEach(([k, v], i) => {
         if (i !== idx) newHeaders[k] = v;
       });
@@ -8789,7 +8818,7 @@
       } else {
         draft.id = ruleId;
         // Compare against the original server rule — only create a draft if something actually changed
-        const original = mockRules.find(r => r.id === ruleId);
+        const original = _findMockRuleDeep(ruleId);
         const originalJson = original ? JSON.stringify({
           enabled: original.enabled !== false,
           priority: original.priority || 'normal',
@@ -9333,7 +9362,7 @@
       if (idx < 0 || idx >= entries.length) return;
       if (which === 'key') {
         const val = entries[idx][1];
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v], i) => {
           if (i === idx) newHeaders[value] = val;
           else newHeaders[k] = v;
@@ -9341,7 +9370,7 @@
         mockEditDraft.action[prop] = newHeaders;
       } else {
         entries[idx][1] = value;
-        const newHeaders = {};
+        const newHeaders = Object.create(null);
         entries.forEach(([k, v]) => { newHeaders[k] = v; });
         mockEditDraft.action[prop] = newHeaders;
       }
@@ -9350,10 +9379,8 @@
     function addMockTransformHeader(kind, eid) {
       if (!mockEditDraft) return;
       const prop = _getTransformHeadersProp(kind);
-      if (!mockEditDraft.action[prop]) mockEditDraft.action[prop] = {};
-      let key = 'X-Custom';
-      let n = 1;
-      while (mockEditDraft.action[prop][key]) { key = 'X-Custom-' + n; n++; }
+      if (!mockEditDraft.action[prop]) mockEditDraft.action[prop] = Object.create(null);
+      const key = nextMockHeaderName(mockEditDraft.action[prop]);
       mockEditDraft.action[prop][key] = '';
       rerenderMockTransformHeaders(kind, eid);
     }
@@ -9363,7 +9390,7 @@
       const prop = _getTransformHeadersProp(kind);
       const entries = Object.entries(mockEditDraft.action[prop] || {});
       if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = {};
+      const newHeaders = Object.create(null);
       entries.forEach(([k, v], i) => {
         if (i !== idx) newHeaders[k] = v;
       });
@@ -13314,7 +13341,7 @@
         'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade',
         'content-encoding', 'content-length'
       ]);
-      const copiedHeaders = {};
+      const copiedHeaders = Object.create(null);
       for (const [name, value] of Object.entries(headers || {})) {
         if (!skipHeaders.has(name.toLowerCase())) {
           copiedHeaders[name] = Array.isArray(value) ? [...value] : value;
@@ -13450,6 +13477,13 @@
     }
 
     // --- Header context menu ---
+    function copyTextToClipboard(text, successMessage = 'Copied') {
+      return Promise.resolve()
+        .then(() => navigator.clipboard.writeText(String(text)))
+        .then(() => toast(successMessage, 'success'))
+        .catch(() => toast('Failed to copy', 'error'));
+    }
+
     // Store current detail headers for safe lookup (avoids quote-escaping issues in inline handlers)
     window._detailHeaders = { request: {}, response: {} };
 
@@ -13462,9 +13496,9 @@
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
       showContextMenu(anchor.x, anchor.y, [
-        { label: 'Copy header value', action: () => navigator.clipboard.writeText(value).then(() => toast('Value copied', 'success')) },
-        { label: 'Copy header name', action: () => navigator.clipboard.writeText(headerKey).then(() => toast('Name copied', 'success')) },
-        { label: 'Copy as "name: value"', action: () => navigator.clipboard.writeText(headerKey + ': ' + value).then(() => toast('Header copied', 'success')) },
+        { label: 'Copy header value', action: () => copyTextToClipboard(value, 'Value copied') },
+        { label: 'Copy header name', action: () => copyTextToClipboard(headerKey, 'Name copied') },
+        { label: 'Copy as "name: value"', action: () => copyTextToClipboard(headerKey + ': ' + value, 'Header copied') },
       ], { invoker, focusFirst: keyboardInvoked });
     }
 
@@ -14073,9 +14107,10 @@
       }
 
       // Send tab shortcuts (only when send panel is active)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Tab' && document.getElementById('panel-send')?.classList.contains('active')) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Tab' &&
+          document.getElementById('panel-send')?.classList.contains('active') &&
+          sendTabs?.length >= 2) {
         e.preventDefault();
-        if (!sendTabs || sendTabs.length < 2) return;
         const currentIdx = sendTabs.findIndex(t => t.id === activeSendTab);
         if (e.shiftKey) {
           // Previous tab
@@ -14090,49 +14125,59 @@
       }
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
-        e.preventDefault();
-        if (document.getElementById('panel-send')?.classList.contains('active') && sendTabs.length > 1) {
+        if (document.getElementById('panel-send')?.classList.contains('active') &&
+            sendTabs?.length > 0) {
+          e.preventDefault();
           closeSendTab(activeSendTab, true);
+          return;
         }
-        return;
       }
 
       // Ctrl+P: Pin/unpin selected exchange
-      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput) {
+      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput &&
+          selectedRequestId) {
         e.preventDefault();
-        if (selectedRequestId) togglePinRequest();
+        togglePinRequest();
         return;
       }
 
       // Ctrl+R: Resend selected request
-      if (e.key === 'r' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput) {
+      if (e.key === 'r' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput &&
+          selectedRequestId) {
         e.preventDefault();
-        if (selectedRequestId) resendSelectedRequest();
+        resendSelectedRequest();
         return;
       }
 
       // Ctrl+M: Create mock rule from selected exchange
-      if (e.key === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput) {
+      if (e.key === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !isInput &&
+          selectedRequestId) {
         e.preventDefault();
-        if (selectedRequestId) createMockFromRequest();
+        createMockFromRequest();
         return;
       }
 
       // Ctrl+[: Focus traffic list pane (left side)
       if (e.key === '[' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        e.preventDefault();
-        const trafficList = document.getElementById('trafficGrid') ||
-          document.getElementById('trafficTableWrapper');
-        if (trafficList) trafficList.focus();
-        return;
+        const trafficList = trafficPanelActive
+          ? document.getElementById('trafficGrid') ||
+            document.getElementById('trafficTableWrapper')
+          : null;
+        if (trafficList) {
+          e.preventDefault();
+          trafficList.focus();
+          return;
+        }
       }
 
       // Ctrl+]: Focus detail pane (right side)
       if (e.key === ']' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        e.preventDefault();
-        const detailPane = document.getElementById('detailPanel');
-        if (detailPane) detailPane.focus();
-        return;
+        const detailPane = trafficPanelActive ? document.getElementById('detailPanel') : null;
+        if (detailPane) {
+          e.preventDefault();
+          detailPane.focus();
+          return;
+        }
       }
 
       // Arrow / vim navigation applies only to the active Traffic panel's
@@ -15014,7 +15059,7 @@
     // cURL paste detection on Send URL input
     document.getElementById('sendUrl')?.addEventListener('paste', (e) => {
       const text = (e.clipboardData || window.clipboardData).getData('text').trim();
-      if (text.toLowerCase().startsWith('curl ')) {
+      if (/^curl(?=\s)/i.test(text)) {
         e.preventDefault();
         const parsed = parseCurlCommand(text);
         if (parsed?.error) {

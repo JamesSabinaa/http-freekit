@@ -138,6 +138,13 @@ test('a manual check promotes an overlapping automatic check without duplicating
   assert.equal(updater.statuses.at(-1).manual, true);
 });
 
+test('updates install only through the explicit restart action', () => {
+  const updater = loadUpdater([deferred()]);
+
+  assert.equal(updater.autoUpdater.autoDownload, false);
+  assert.equal(updater.autoUpdater.autoInstallOnAppQuit, false);
+});
+
 test('an automatic check cannot demote an in-flight manual check', async () => {
   const check = deferred();
   const updater = loadUpdater([check]);

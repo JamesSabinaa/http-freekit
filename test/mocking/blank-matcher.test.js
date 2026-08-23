@@ -137,21 +137,26 @@ test('the renderer requires every matcher row to be complete', () => {
   assert.doesNotMatch(saveSource, /!hasContent && mockEditDraft\.matchers\.length === 0/);
 });
 
-test('the renderer initializes exact-empty matcher values explicitly', () => {
+test('the renderer initializes matcher values to immediately saveable defaults', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
   const start = source.indexOf('function updateMockMatcher');
   const end = source.indexOf('function addMockMatcher', start);
   const updateSource = source.slice(start, end);
+  const completeStart = source.indexOf('function isMockMatcherComplete');
+  const completeEnd = source.indexOf('function isValidMockFinalStatus', completeStart);
+  const completeSource = source.slice(completeStart, completeEnd);
   const context = {};
   vm.runInNewContext(`
     let mockEditDraft = { matchers: [{ type: 'path', value: '/' }] };
     function rerenderMockMatchers() {}
     ${updateSource}
+    ${completeSource}
     globalThis.harness = {
       setType(type) {
         updateMockMatcher(0, 'type', type, 'editor');
         return { ...mockEditDraft.matchers[0] };
-      }
+      },
+      isComplete() { return isMockMatcherComplete(mockEditDraft.matchers[0]); }
     };
   `, context);
 
@@ -161,4 +166,9 @@ test('the renderer initializes exact-empty matcher values explicitly', () => {
       { type, value: '' }
     );
   }
+
+  const protocol = JSON.parse(JSON.stringify(context.harness.setType('protocol')));
+  assert.deepEqual(protocol, { type: 'protocol', value: 'http' });
+  assert.equal(context.harness.isComplete(), true);
+  assert.equal(isCompleteMockMatcher(protocol), true);
 });

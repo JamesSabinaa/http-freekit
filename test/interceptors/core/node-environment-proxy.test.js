@@ -213,7 +213,8 @@ test('all advertised Node paths emit the exact environment-proxy contract', asyn
     dockerResult.metadata.instructions.run,
     'docker run --mount \'type=bind,"source=/tmp/freekit-ca-bundle.pem",target=/etc/http-freekit/ca-bundle.pem,readonly\' ' +
       `-e HTTP_PROXY=http://172.17.0.1:${proxyPort} -e HTTPS_PROXY=http://172.17.0.1:${proxyPort} ` +
-      `-e http_proxy=http://172.17.0.1:${proxyPort} -e https_proxy=http://172.17.0.1:${proxyPort} -e NO_PROXY= ` +
+      `-e http_proxy=http://172.17.0.1:${proxyPort} -e https_proxy=http://172.17.0.1:${proxyPort} ` +
+      '-e NO_PROXY= -e no_proxy= ' +
       '-e SSL_CERT_FILE=/etc/http-freekit/ca-bundle.pem -e REQUESTS_CA_BUNDLE=/etc/http-freekit/ca-bundle.pem ' +
       '-e CURL_CA_BUNDLE=/etc/http-freekit/ca-bundle.pem -e NODE_EXTRA_CA_CERTS=/etc/http-freekit/ca-bundle.pem ' +
       '-e NODE_USE_ENV_PROXY=1 <image>'
@@ -223,7 +224,7 @@ test('all advertised Node paths emit the exact environment-proxy contract', asyn
     `volumes:\n  - "/tmp/freekit-ca-bundle.pem:/etc/http-freekit/ca-bundle.pem:ro"\nenvironment:\n` +
       `  - HTTP_PROXY=http://172.17.0.1:${proxyPort}\n  - HTTPS_PROXY=http://172.17.0.1:${proxyPort}\n` +
       `  - http_proxy=http://172.17.0.1:${proxyPort}\n  - https_proxy=http://172.17.0.1:${proxyPort}\n` +
-      '  - NO_PROXY=\n  - SSL_CERT_FILE=/etc/http-freekit/ca-bundle.pem\n' +
+      '  - NO_PROXY=\n  - no_proxy=\n  - SSL_CERT_FILE=/etc/http-freekit/ca-bundle.pem\n' +
       '  - REQUESTS_CA_BUNDLE=/etc/http-freekit/ca-bundle.pem\n  - CURL_CA_BUNDLE=/etc/http-freekit/ca-bundle.pem\n' +
       '  - NODE_EXTRA_CA_CERTS=/etc/http-freekit/ca-bundle.pem\n  - NODE_USE_ENV_PROXY=1'
   );
@@ -231,12 +232,12 @@ test('all advertised Node paths emit the exact environment-proxy contract', asyn
   assert.ok(dockerFallback.includes(
     `docker run -e HTTP_PROXY=http://172.17.0.1:${proxyPort} -e HTTPS_PROXY=http://172.17.0.1:${proxyPort} ` +
       `-e http_proxy=http://172.17.0.1:${proxyPort} -e https_proxy=http://172.17.0.1:${proxyPort} ` +
-      '-e NO_PROXY= -e NODE_USE_ENV_PROXY=1 <image>'
+      '-e NO_PROXY= -e no_proxy= -e NODE_USE_ENV_PROXY=1 <image>'
   ));
   assert.ok(dockerFallback.includes(
     `environment:\n  - HTTP_PROXY=http://172.17.0.1:${proxyPort}\n  - HTTPS_PROXY=http://172.17.0.1:${proxyPort}\n` +
       `  - http_proxy=http://172.17.0.1:${proxyPort}\n  - https_proxy=http://172.17.0.1:${proxyPort}\n` +
-      '  - NO_PROXY=\n  - NODE_USE_ENV_PROXY=1'
+      '  - NO_PROXY=\n  - no_proxy=\n  - NODE_USE_ENV_PROXY=1'
   ));
   assert.ok(dockerFallback.includes(NODE_ENV_PROXY_SUPPORT_NOTE));
   const rendererNote = rendererSource.match(/const NODE_ENV_PROXY_SUPPORT_NOTE = '([^']+)';/)?.[1];

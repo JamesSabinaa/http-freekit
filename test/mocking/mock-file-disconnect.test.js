@@ -262,3 +262,36 @@ test('mock-file streaming preserves the first failure cause', async t => {
   assert.equal(failure.responseBody, '');
   assert.equal(failure.errorCode, 'ERR_DOWNSTREAM_ABORTED');
 });
+
+test('partial typed-binary file failures retain their configured media type', () => {
+  const proxy = new ProxyServer(null);
+  const content = Buffer.from([0x00, 0xff, 0x10, 0x80]);
+  const expectedBody = `data:image/png;base64,${content.toString('base64')}`;
+
+  for (const [name, code, statusMessage] of [
+    ['downstream disconnect', 'ERR_DOWNSTREAM_ABORTED', 'Client Disconnected'],
+    ['source read error', 'EIO', 'File Delivery Error']
+  ]) {
+    const error = Object.assign(new Error(name), {
+      code,
+      mockFileProgress: {
+        content,
+        size: content.length,
+        originalSize: content.length + 10,
+        truncated: true,
+        responseStarted: true
+      }
+    });
+    const record = proxy._mockFileFailure(
+      'partial.png', FILE_STATUS, 'image/png', error
+    );
+    proxy._normalizeCapturedBodies(record);
+
+    assert.equal(record.statusMessage, statusMessage, name);
+    assert.equal(record.responseHeaders['Content-Type'], 'image/png', name);
+    assert.equal(record.responseBody, expectedBody, name);
+    assert.equal(record.responseBodyEncoding, 'base64', name);
+    assert.equal(record.responseBodySize, content.length, name);
+    assert.equal(record.responseBodyTruncated, true, name);
+  }
+});

@@ -1,4 +1,5 @@
 import { trafficToHar } from '../har-converter.js';
+import { matchesTrafficStatus, parseTrafficStatusFilter } from '../../traffic/status-filter.js';
 
 const TRAFFIC_SESSION_HEADER = 'x-http-freekit-traffic-session';
 const TRAFFIC_GENERATION_HEADER = 'x-http-freekit-traffic-generation';
@@ -204,21 +205,20 @@ export function registerTrafficRoutes(router, api) {
     );
     if (parsedQuery.error) return res.status(400).json({ error: parsedQuery.error });
     const { method, status, host, path: pathFilter, source } = parsedQuery.values;
+    const statusProvided = Object.hasOwn(req.query, 'status');
+    const statusFilter = statusProvided ? parseTrafficStatusFilter(status) : null;
+    if (statusProvided && !statusFilter) {
+      return res.status(400).json({
+        error: 'status must be an exact three-digit code or a range from 1xx through 5xx'
+      });
+    }
     let results = api._getTrafficWithoutDefaultExclusions();
 
     if (method) results = results.filter(request =>
       request.method?.toUpperCase() === method.toUpperCase()
     );
-    if (status) {
-      const statusNumber = parseInt(status);
-      if (status.endsWith('xx')) {
-        const base = parseInt(status[0]) * 100;
-        results = results.filter(request =>
-          request.statusCode >= base && request.statusCode < base + 100
-        );
-      } else {
-        results = results.filter(request => request.statusCode === statusNumber);
-      }
+    if (statusFilter) {
+      results = results.filter(request => matchesTrafficStatus(request.statusCode, statusFilter));
     }
     if (host) results = results.filter(request => request.host?.includes(host));
     if (pathFilter) results = results.filter(request => request.path?.includes(pathFilter));

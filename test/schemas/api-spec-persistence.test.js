@@ -175,6 +175,22 @@ test('persistence failures roll live API spec mutations back', async t => {
   assert.deepEqual(proxy.getApiSpecs().map(spec => spec.id), ['existing-id']);
 });
 
+test('deleting a missing API spec returns 404 without persisting', async t => {
+  const proxy = new ProxyServer(null);
+  let persistenceCalls = 0;
+  const settings = { setAll() { persistenceCalls++; } };
+  const server = await startApi(proxy, settings);
+  t.after(() => server.close());
+
+  const response = await requestJson(server.port, 'DELETE', '/api/specs/missing-id');
+
+  assert.deepEqual(response, {
+    statusCode: 404,
+    body: { error: 'API spec not found' }
+  });
+  assert.equal(persistenceCalls, 0);
+});
+
 test('a failed startup repair write keeps validated specs live and warns', () => {
   const warnings = [];
   const proxy = new ProxyServer(null);

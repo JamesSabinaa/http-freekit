@@ -66,6 +66,40 @@ test('serve-file streams its response and records small file content', async t =
   assert.equal(record.responseBodyTruncated, false);
 });
 
+test('serve-file capture preserves the configured media type for binary content', async t => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'http-freekit-typed-file-'));
+  const filePath = path.join(tempDir, 'pixel.png');
+  const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  await fs.writeFile(filePath, content);
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+
+  const captured = [];
+  const proxy = new ProxyServer(null, { port: 0, onRequest: request => captured.push(request) });
+  proxy.addMockRule({
+    matchers: [{ type: 'wildcard' }],
+    action: { type: 'serve-file', filePath, contentType: 'image/png' }
+  });
+  await proxy.start();
+  t.after(() => proxy.stop());
+
+  const response = await requestThroughProxy(
+    proxy.server.address().port,
+    'http://unreachable.invalid/pixel.png'
+  );
+  const record = await waitFor(() => captured.find(
+    request => request.statusMessage === 'Mocked (file)'
+  ));
+
+  assert.equal(response.headers['content-type'], 'image/png');
+  assert.deepEqual(response.body, content);
+  assert.equal(
+    record.responseBody,
+    `data:image/png;base64,${content.toString('base64')}`
+  );
+  assert.equal(record.responseBodyEncoding, 'base64');
+  assert.equal(record.responseBodySize, content.length);
+});
+
 test('large serve-file captures stay bounded while the file is streamed', async t => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'http-freekit-large-file-'));
   const filePath = path.join(tempDir, 'large.bin');

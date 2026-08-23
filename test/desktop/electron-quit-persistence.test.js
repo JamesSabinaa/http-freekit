@@ -3,10 +3,13 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const {
   DEFAULT_RENDERER_PREPARE_TIMEOUT_MS,
+  PREPARE_RENDERER_FOR_QUIT_SCRIPT,
+  RENDERER_PREPARE_UNAVAILABLE,
   prepareRendererForQuit,
   runQuitCleanup
 } = require('../../electron/quit-cleanup.cjs');
@@ -193,6 +196,29 @@ test('renderer execution failures fail open into ordered backend cleanup', async
   ]);
   assert.match(errors[0], /continuing cleanup: renderer unavailable/);
   assert.equal(mainWindow.isDestroyed(), true);
+});
+
+test('a missing renderer preparation helper fails open without becoming an explicit veto', async () => {
+  assert.equal(
+    vm.runInNewContext(PREPARE_RENDERER_FOR_QUIT_SCRIPT, {}),
+    RENDERER_PREPARE_UNAVAILABLE
+  );
+  assert.equal(
+    vm.runInNewContext(PREPARE_RENDERER_FOR_QUIT_SCRIPT, {
+      prepareRendererForQuit: () => false
+    }),
+    false,
+    'an available helper must retain its explicit veto'
+  );
+
+  const errors = [];
+  const mainWindow = createWindow(async () => RENDERER_PREPARE_UNAVAILABLE);
+  const prepared = await prepareRendererForQuit(mainWindow, {
+    error: (...args) => errors.push(args.join(' '))
+  });
+
+  assert.equal(prepared, true);
+  assert.match(errors[0], /helper is unavailable; continuing cleanup/i);
 });
 
 test('renderer preflight keeps its five-second bound separate from backend shutdown', () => {

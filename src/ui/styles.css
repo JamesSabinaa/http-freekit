@@ -3982,6 +3982,13 @@
       border-color: var(--pop-color);
       outline: none;
     }
+    #sendMethod:focus-visible,
+    #sendUrl:focus-visible {
+      outline: 2px solid var(--pop-color);
+      outline-offset: -2px;
+      position: relative;
+      z-index: 1;
+    }
 
     /* --- 3. Selection styling --- */
     ::selection {
@@ -4342,3 +4349,25 @@
       flex-shrink: 0;
     }
     .send-resizer:hover, .send-resizer.active { opacity: 0.5; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0ms !important;
+        scroll-behavior: auto !important;
+      }
+
+      .status-dot:not(.connected),
+      .intercept-spinner,
+      #sendBtnSpinner,
+      .status-badge.status-pending svg {
+        animation: none !important;
+        transform: none !important;
+      }
+
+      .status-dot:not(.connected) {
+        opacity: 1 !important;
+      }
+    }

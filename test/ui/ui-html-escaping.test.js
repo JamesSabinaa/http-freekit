@@ -501,6 +501,15 @@ test('persisted matcher, action, and pre-step text round-trips through editor fi
     stepInputs.map(tag => quotedAttribute(tag, 'value')),
     [stepName, stepValue]
   );
+  const zeroStepHtml = context.renderPreStepForTest({
+    type: 'add-header',
+    name: 'x-zero',
+    value: 0
+  }, 1, 'rule');
+  assert.deepEqual(
+    openingTags(zeroStepHtml, 'input').map(tag => quotedAttribute(tag, 'value')),
+    ['x-zero', '0']
+  );
   const stepOptions = openingTags(stepHtml, 'option');
   assert.equal(quotedAttribute(stepOptions[1], 'value'), 'unused" & <step>');
 

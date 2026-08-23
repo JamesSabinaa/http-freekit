@@ -275,7 +275,7 @@ test('deleting an active WebSocket suppresses later frames and its final update'
     protocol: 'wss',
     statusCode: 101
   });
-  assert.equal(api._pendingTrafficIds.has('socket'), false);
+  assert.equal(api._pendingTrafficIds.has('socket'), true);
 
   const server = http.createServer(api.app);
   const port = await listen(server);

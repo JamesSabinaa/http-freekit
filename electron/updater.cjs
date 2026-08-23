@@ -443,7 +443,7 @@ function initAutoUpdater(win, options = {}) {
 
   // Don't auto-download — we notify the user first
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
 
   // electron-updater selects AppImageUpdater for every Linux package and its
   // normal activity check returns false without APPIMAGE. DEB/RPM only use the

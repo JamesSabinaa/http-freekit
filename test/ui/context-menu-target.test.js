@@ -5,6 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const html = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
 
 function extract(startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -40,6 +41,10 @@ function createHarness() {
     menuItems: [],
     detailId: null,
     closeCalls: 0,
+    pinButton: {
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, value); }
+    },
     pinIcon: { style: { transform: 'unchanged' } },
     renderCalls: 0,
     filterCalls: 0,
@@ -50,7 +55,13 @@ function createHarness() {
   const context = {
     __requests: requests,
     API_BASE: '',
-    document: { getElementById: id => id === 'pinBtnIcon' ? state.pinIcon : null },
+    document: {
+      getElementById: id => id === 'pinBtn'
+        ? state.pinButton
+        : id === 'pinBtnIcon'
+        ? state.pinIcon
+        : null
+    },
     navigator: { clipboard: { writeText: async () => {} } },
     generateExportSnippet: () => '',
     resendSelectedRequest() {},
@@ -83,7 +94,7 @@ function createHarness() {
               trafficLifecycleId: null,
               trafficGeneration: options.headers['X-HTTP-FreeKit-Traffic-Generation'],
               pinned: JSON.parse(options.body).pinned,
-              revision: 1
+              revision: state.fetches.length
             }
           : trafficMatch
           ? {
@@ -163,6 +174,14 @@ function actionAfterSelectionMoves(harness, label) {
   return harness.api.invoke(label);
 }
 
+test('pin control starts unpressed and exposes the Pin action', () => {
+  const pinButton = html.match(/<button\b[^>]*\bid="pinBtn"[^>]*>/)?.[0];
+  assert.ok(pinButton, '#pinBtn must exist');
+  assert.match(pinButton, /\baria-pressed="false"/);
+  assert.match(pinButton, /\baria-label="Pin this exchange"/);
+  assert.match(pinButton, /\btitle="Pin this exchange"/);
+});
+
 test('context-menu breakpoint creation keeps targeting row A after selection moves to B', async () => {
   const harness = createHarness();
 
@@ -213,6 +232,16 @@ test('default selected-row pin and delete behavior remains intact', async () => 
   await pinHarness.api.pinDefault();
   assert.equal(pinHarness.requests[0].pinned, true);
   assert.equal(pinHarness.state.pinIcon.style.transform, 'none');
+  assert.equal(pinHarness.state.pinButton.attributes.get('aria-pressed'), 'true');
+  assert.equal(pinHarness.state.pinButton.attributes.get('aria-label'), 'Unpin this exchange');
+  assert.equal(pinHarness.state.pinButton.attributes.get('title'), 'Unpin this exchange');
+
+  await pinHarness.api.pinDefault();
+  assert.equal(pinHarness.requests[0].pinned, undefined);
+  assert.equal(pinHarness.state.pinIcon.style.transform, 'rotate(45deg)');
+  assert.equal(pinHarness.state.pinButton.attributes.get('aria-pressed'), 'false');
+  assert.equal(pinHarness.state.pinButton.attributes.get('aria-label'), 'Pin this exchange');
+  assert.equal(pinHarness.state.pinButton.attributes.get('title'), 'Pin this exchange');
 
   const deleteHarness = createHarness();
   deleteHarness.api.select('A');

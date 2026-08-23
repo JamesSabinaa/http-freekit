@@ -5,6 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const markup = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
 const sendStart = source.indexOf('async function sendRequest()');
 const sendEnd = source.indexOf('function abortSendRequest()', sendStart);
 assert.ok(sendStart >= 0 && sendEnd > sendStart, 'sendRequest must be present');
@@ -141,7 +142,29 @@ test('Send response still renders and saves when its initiating tab is active', 
   assert.equal(harness.elements.sendResponse.style.display, 'block');
   assert.equal(harness.elements.sendEmptyResponse.style.display, 'none');
   assert.deepEqual(harness.state.renderedStatuses, [[200, 'OK']]);
+  assert.equal(harness.elements.sendResDuration.textContent, '125ms');
   assert.equal(harness.state.bodyRenders.length, 1);
   assert.deepEqual(harness.state.savedTabs, ['tab-1']);
   assert.deepEqual(harness.state.loading, [true, false]);
+});
+
+test('the Send completion summary is one atomic polite live region', () => {
+  const markerIndex = markup.indexOf('id="sendResponseSummary"');
+  assert.ok(markerIndex >= 0);
+  const tagStart = markup.lastIndexOf('<div', markerIndex);
+  const tagEnd = markup.indexOf('>', markerIndex);
+  const openingTag = markup.slice(tagStart, tagEnd + 1);
+  const nextCard = markup.indexOf(
+    '<div class="card"><div class="card-header">Response Headers',
+    tagEnd
+  );
+  assert.ok(nextCard > tagEnd);
+  const summaryMarkup = markup.slice(tagStart, nextCard);
+
+  assert.match(openingTag, /role="status"/);
+  assert.match(openingTag, /aria-live="polite"/);
+  assert.match(openingTag, /aria-atomic="true"/);
+  assert.match(openingTag, /aria-labelledby="sendResponseSummaryLabel"/);
+  assert.match(summaryMarkup, /id="sendResStatus"/);
+  assert.match(summaryMarkup, /id="sendResDuration"/);
 });

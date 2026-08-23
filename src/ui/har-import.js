@@ -56,7 +56,6 @@ function normalizeHarTimestamp(value, fieldPath) {
   if (typeof value !== 'string') throw new Error(`${fieldPath} must be a date string`);
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) throw new Error(`${fieldPath} must be a valid date`);
-  if (timestamp < 0) throw new Error(`${fieldPath} must be non-negative`);
   return timestamp;
 }
 

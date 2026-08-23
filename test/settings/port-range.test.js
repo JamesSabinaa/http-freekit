@@ -69,6 +69,31 @@ test('port range API persists a validated range for startup', async (t) => {
   assert.deepEqual(resolveProxyPortRange(reloaded, '20000'), { minPort: 20000, maxPort: 20000 });
 });
 
+test('an explicit invalid PROXY_PORT fails instead of using persisted or default ports', () => {
+  let settingsReads = 0;
+  const settings = {
+    get() {
+      settingsReads++;
+      return { minPort: 19000, maxPort: 19010 };
+    }
+  };
+
+  for (const value of ['', ' ', '8081 ', '+8081', '1e3', '0x1f91', '1.5', '0', '65536']) {
+    assert.throws(
+      () => resolveProxyPortRange(settings, value),
+      /Invalid PROXY_PORT: expected a decimal integer from 1 to 65535\./,
+      JSON.stringify(value)
+    );
+  }
+
+  assert.equal(settingsReads, 0, 'invalid explicit overrides must fail before reading fallback settings');
+  assert.deepEqual(
+    resolveProxyPortRange(settings),
+    { minPort: 19000, maxPort: 19010 },
+    'an absent override may still use persisted settings'
+  );
+});
+
 test('proxy startup advances to the first available port in its configured range', async (t) => {
   const blocker = http.createServer();
   let blockedPort = await listen(blocker, 0, '127.0.0.1');

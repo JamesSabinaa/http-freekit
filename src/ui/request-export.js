@@ -263,14 +263,12 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'python') {
-    const textFields = fields.filter(field => field.type !== 'file');
-    const fileFields = fields.filter(field => field.type === 'file');
     let code = 'import requests\n\n';
-    if (textFields.length) {
-      code += `data = [\n${textFields.map(field => `    (${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')})`).join(',\n')}\n]\n`;
-    }
-    if (fileFields.length) {
-      code += `files = [\n${fileFields.map(field => {
+    if (fields.length) {
+      code += `files = [\n${fields.map(field => {
+        if (field.type !== 'file') {
+          return `    (${JSON.stringify(field.key)}, (None, ${JSON.stringify(field.value || '')}))`;
+        }
         const filename = field.file?.name || field.fileName || 'file';
         const contentType = field.file?.type || field.fileType || 'application/octet-stream';
         return `    (${JSON.stringify(field.key)}, (${JSON.stringify(filename)}, open(${JSON.stringify(filename)}, 'rb'), ${JSON.stringify(contentType)}))`;
@@ -278,8 +276,7 @@ function generateMultipartExportSnippet(req, format) {
     }
     code += `\nresponse = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
     if (headers.length) code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
-    if (textFields.length) code += ',\n    data=data';
-    if (fileFields.length) code += ',\n    files=files';
+    if (fields.length) code += ',\n    files=files';
     code += '\n)\n\nprint(response.status_code)\nprint(response.text)';
     return code;
   }

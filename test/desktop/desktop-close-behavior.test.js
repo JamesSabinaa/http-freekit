@@ -174,6 +174,21 @@ test('desktop close setting stays hidden in browser mode and rolls back failed s
   assert.equal(desktop.status.classList.contains('is-error'), true);
 });
 
+test('a failed initial preference read leaves the safe default selectable', async () => {
+  const harness = runRenderer({
+    getCloseWindowBehavior: async () => { throw new Error('preferences unavailable'); },
+    setCloseWindowBehavior: async behavior => behavior
+  });
+
+  await harness.fireDomReady();
+
+  assert.equal(harness.card.hidden, false);
+  assert.equal(harness.select.value, 'hide');
+  assert.equal(harness.select.disabled, false);
+  assert.match(harness.status.textContent, /preferences unavailable/);
+  assert.equal(harness.status.classList.contains('is-error'), true);
+});
+
 test('window behavior UI and IPC are wired without exposing unrestricted messaging', () => {
   assert.match(markup, /id="desktopWindowBehaviorCard"[\s\S]*id="closeWindowBehaviorSelect"/);
   assert.match(markup, /Keep running in the system tray/);

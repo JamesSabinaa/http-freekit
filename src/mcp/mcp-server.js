@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { SocketAddress, isIP } from 'node:net';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -9,6 +10,7 @@ import {
   ErrorCode
 } from '@modelcontextprotocol/sdk/types.js';
 import { trafficToHar } from '../api/har-converter.js';
+import { matchesTrafficStatus, parseTrafficStatusFilter } from '../traffic/status-filter.js';
 
 const MCP_HAR_EXPORT_MAX_BYTES = 200 * 1024;
 const MCP_HAR_JSON_PREFIX = '{"log":{"version":"1.2","creator":{"name":"HTTP FreeKit","version":"1.0.0"},"entries":[';
@@ -34,6 +36,36 @@ const DATA_VIEW_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
 ).get;
 const ARRAY_BUFFER_IS_VIEW = ArrayBuffer.isView;
 const guardedMcpTransports = new WeakMap();
+
+function isLoopbackAuthority(authority) {
+  if (typeof authority !== 'string' || !authority.trim()) return false;
+  const value = authority.trim();
+  if (/[\\/?#@]/.test(value)) return false;
+  let hostname;
+  if (isIP(value)) {
+    hostname = value;
+  } else {
+    try {
+      const parsed = new URL(`http://${value}`);
+      if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+        return false;
+      }
+      hostname = parsed.hostname;
+    } catch {
+      return false;
+    }
+  }
+  hostname = hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+  if (hostname === 'localhost') return true;
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4) return hostname.split('.')[0] === '127';
+  if (ipVersion !== 6) return false;
+  try {
+    return new SocketAddress({ address: hostname, port: 0, family: 'ipv6' }).address === '::1';
+  } catch {
+    return false;
+  }
+}
 
 function oversizedMcpResponse(requestId) {
   return {
@@ -408,7 +440,11 @@ export const TOOL_DEFINITIONS = [
       properties: {
         query: { type: 'string', description: 'Free-text search across URL, host, path, request/response body' },
         method: { type: 'string', description: 'HTTP method filter (GET, POST, etc.)' },
-        status: { type: 'string', description: 'Status code or range (200, 4xx, 5xx)' },
+        status: {
+          type: 'string',
+          pattern: '^(?:\\d{3}|[1-5][xX]{2})$',
+          description: 'Status code or range (200, 4xx, 5xx)'
+        },
         host: { type: 'string', description: 'Hostname substring filter' },
         limit: { type: 'number', minimum: 1, maximum: 500, description: 'Max results (default 50, max 500)' }
       }
@@ -478,7 +514,11 @@ export const TOOL_DEFINITIONS = [
       properties: {
         method: { type: 'string', description: 'Filter by HTTP method' },
         host: { type: 'string', description: 'Filter by hostname' },
-        status: { type: 'string', description: 'Filter by status code or range (200, 4xx)' }
+        status: {
+          type: 'string',
+          pattern: '^(?:\\d{3}|[1-5][xX]{2})$',
+          description: 'Filter by status code or range (200, 4xx)'
+        }
       }
     }
   },
@@ -601,22 +641,23 @@ export class McpServerBridge {
   }
 
   _handleSearchTraffic({ query, method, status, host, limit }) {
-    let results = this._getHttpRequestTraffic();
     const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 50;
     const max = Math.min(Math.max(requestedLimit, 1), 500);
+    const statusProvided = status !== undefined;
+    const statusFilter = statusProvided ? parseTrafficStatusFilter(status) : null;
+    if (statusProvided && !statusFilter) {
+      throw new Error(
+        'status must be an exact three-digit code or a range from 1xx through 5xx'
+      );
+    }
+    let results = this._getHttpRequestTraffic();
 
     if (method) {
       const m = method.toUpperCase();
       results = results.filter(r => r.method?.toUpperCase() === m);
     }
-    if (status) {
-      if (status.endsWith('xx')) {
-        const base = parseInt(status[0]) * 100;
-        results = results.filter(r => r.statusCode >= base && r.statusCode < base + 100);
-      } else {
-        const code = parseInt(status);
-        results = results.filter(r => r.statusCode === code);
-      }
+    if (statusFilter) {
+      results = results.filter(r => matchesTrafficStatus(r.statusCode, statusFilter));
     }
     if (host) {
       const h = host.toLowerCase();
@@ -932,7 +973,7 @@ export class McpServerBridge {
       const responseHeaders = r.responseHeaders;
 
       // Missing HTTPS (excluding localhost)
-      const isLocalhost = /^(?:localhost|127\.0\.0\.1)(?::\d+)?$|^(?:::1|\[::1\](?::\d+)?)$/i.test(r.host || '');
+      const isLocalhost = isLoopbackAuthority(r.host);
       if (r.protocol === 'http' && r.host && !isLocalhost) {
         issues.push({ severity: 'high', category: 'Missing HTTPS', url: r.url, requestId: r.id,
           description: `Unencrypted HTTP request to ${r.host}` });
@@ -999,17 +1040,19 @@ export class McpServerBridge {
   }
 
   _handleExportTraffic({ method, host, status }) {
+    const statusProvided = status !== undefined;
+    const statusFilter = statusProvided ? parseTrafficStatusFilter(status) : null;
+    if (statusProvided && !statusFilter) {
+      throw new Error(
+        'status must be an exact three-digit code or a range from 1xx through 5xx'
+      );
+    }
     let filtered = this.apiServer._getHarExportTraffic();
 
     if (method) filtered = filtered.filter(r => r.method?.toUpperCase() === method.toUpperCase());
     if (host) filtered = filtered.filter(r => r.host?.toLowerCase().includes(host.toLowerCase()));
-    if (status) {
-      if (status.endsWith('xx')) {
-        const base = parseInt(status[0]) * 100;
-        filtered = filtered.filter(r => r.statusCode >= base && r.statusCode < base + 100);
-      } else {
-        filtered = filtered.filter(r => r.statusCode === parseInt(status));
-      }
+    if (statusFilter) {
+      filtered = filtered.filter(r => matchesTrafficStatus(r.statusCode, statusFilter));
     }
 
     const json = serializeHarWithinLimit(filtered, MCP_HAR_EXPORT_MAX_BYTES);

@@ -263,7 +263,7 @@ function createHarness() {
   const trafficAction = extract('function trafficActionRequest', 'const trafficPinInFlight');
   const menuBlock = extract('let activeContextMenu = null;', '// --- Traffic row context menu ---');
   const trafficMenu = extract('function showTrafficContextMenu', 'function copyResponseHeadersForMock');
-  const headerMenu = extract('window._detailHeaders = { request: {}, response: {} };', '// ============ HELPERS ============');
+  const headerMenu = extract('function copyTextToClipboard(', '// ============ HELPERS ============');
   vm.runInContext(`
     let selectedRequestId = 'request-1';
     let selectedRequestLifecycleId = null;

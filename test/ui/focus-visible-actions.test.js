@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const appSource = fs.readFileSync(new URL('../../src/ui/app.js', import.meta.url), 'utf8');
+const htmlSource = fs.readFileSync(new URL('../../src/ui/index.html', import.meta.url), 'utf8');
 const stylesSource = fs.readFileSync(new URL('../../src/ui/styles.css', import.meta.url), 'utf8');
 
 function sourceBetween(startMarker, endMarker) {
@@ -109,6 +110,12 @@ function declarationFor(selector, property) {
   );
   assert.ok(matches.length > 0, `${selector} must define ${property}`);
   return matches.at(-1).declarations.get(property);
+}
+
+function openingTagById(id) {
+  const tag = htmlSource.match(new RegExp(`<[^>]+\\bid="${id}"[^>]*>`))?.[0];
+  assert.ok(tag, `#${id} must exist`);
+  return tag;
 }
 
 class TestElement {
@@ -218,6 +225,14 @@ function decodedFields(document) {
   const valueCopy = document.element(['url-decoded-copy'], value);
   return { key, keyCopy, value, valueCopy };
 }
+
+test('Send method and URL fields retain a visible keyboard focus indicator', () => {
+  for (const id of ['sendMethod', 'sendUrl']) {
+    assert.doesNotMatch(openingTagById(id), /\bstyle="[^"]*\boutline\s*:/i);
+    assert.equal(declarationFor(`#${id}:focus-visible`, 'outline'), '2px solid var(--pop-color)');
+    assert.equal(declarationFor(`#${id}:focus-visible`, 'outline-offset'), '-2px');
+  }
+});
 
 test('brace-aware CSS audit scopes focus reveals to the existing hover containers', () => {
   assert.equal(declarationFor('.url-decoded-copy', 'opacity'), '0');

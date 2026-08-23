@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import { execFileAsync } from './command-runner.js';
 import {
   NODE_ENV_PROXY_SUPPORT_NOTE,
@@ -65,7 +66,6 @@ export class DockerInterceptor {
     this.active = false;
     this.ca = null;
     this.proxyBindHost = options.proxyBindHost || null;
-    this.interceptedContainers = new Set();
   }
 
   async isActivable() {
@@ -78,7 +78,7 @@ export class DockerInterceptor {
   }
 
   async isActive() {
-    return this.active && this.interceptedContainers.size > 0;
+    return this.active;
   }
 
   _platform() {
@@ -148,7 +148,8 @@ export class DockerInterceptor {
       };
     }
 
-    const proxyUrl = `http://${hostIp}:${proxyPort}`;
+    const proxyHost = net.isIP(hostIp) === 6 ? `[${hostIp}]` : hostIp;
+    const proxyUrl = `http://${proxyHost}:${proxyPort}`;
     const caBundlePath = this._getCombinedCaBundlePath();
     const containerCaBundlePath = '/etc/http-freekit/ca-bundle.pem';
     // Docker parses --mount as CSV, so quotes must surround the complete
@@ -171,7 +172,8 @@ export class DockerInterceptor {
       `HTTPS_PROXY=${proxyUrl}`,
       `http_proxy=${proxyUrl}`,
       `https_proxy=${proxyUrl}`,
-      'NO_PROXY='
+      'NO_PROXY=',
+      'no_proxy='
     ];
     const environment = [...proxyEnvironment, ...trustEnvironment];
     const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
@@ -206,7 +208,6 @@ export class DockerInterceptor {
   }
 
   async deactivate() {
-    this.interceptedContainers.clear();
     this.active = false;
     console.log('[Interceptor] Docker interceptor deactivated');
   }

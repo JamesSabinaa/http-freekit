@@ -20,6 +20,17 @@ const INTERNAL_SEND_HEADER = 'x-http-freekit-internal-send-token';
 const MIXED_METHOD = 'MiXeD-Custom';
 const PUNCTUATION_METHOD = "MiXeD!#$%&'*+-.^_`|~09AZ";
 
+test('only exact standard method tokens are replay-safe', () => {
+  const proxy = new ProxyServer(null);
+
+  for (const method of ['GET', 'HEAD', 'OPTIONS', 'TRACE']) {
+    assert.equal(proxy._canSafelyReplayRequest(method), true);
+  }
+  for (const method of ['gEt', 'head', 'MiXeD-Custom', '', null]) {
+    assert.equal(proxy._canSafelyReplayRequest(method), false);
+  }
+});
+
 function listen(server) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);

@@ -68,7 +68,32 @@ test('terminal CA bundle preserves every public root and appends FreeKit once', 
   assert.equal(certificates.at(-1), normalizePem(freeKitCa));
   assert.doesNotThrow(() => tls.createSecureContext({ ca: bundle }));
   if (process.platform !== 'win32') {
-    assert.equal(fs.statSync(bundlePath).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(bundlePath).mode & 0o777, 0o644);
+  }
+});
+
+test('terminal CA bundle repairs an unchanged owner-only file for container readers', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-terminal-ca-mode-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const certificatePath = path.join(dataDir, 'ca.pem');
+  const publicRoots = ['public root'];
+  const freeKitCa = 'FreeKit root';
+  fs.writeFileSync(certificatePath, freeKitCa);
+
+  const bundlePath = terminalCaBundlePath(certificatePath);
+  fs.writeFileSync(bundlePath, expectedBundle(publicRoots, freeKitCa), { mode: 0o600 });
+  fs.chmodSync(bundlePath, 0o600);
+  const chmodSync = fs.chmodSync;
+  const chmodCalls = [];
+  t.mock.method(fs, 'chmodSync', (filePath, mode) => {
+    chmodCalls.push([filePath, mode]);
+    return chmodSync(filePath, mode);
+  });
+
+  assert.equal(refreshTerminalCaBundle(certificatePath, { publicRoots }), bundlePath);
+  assert.deepEqual(chmodCalls, [[bundlePath, 0o644]]);
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(bundlePath).mode & 0o777, 0o644);
   }
 });
 

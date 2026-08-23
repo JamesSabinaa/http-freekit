@@ -17,6 +17,7 @@ import {
 } from './mcp/launch-config.js';
 import { Settings } from './settings.js';
 import { resolveProxyPortRange } from './proxy/port-range.js';
+import { restoreSavedHttp2Setting } from './proxy/http2-config.js';
 import { restoreUpstreamProxySetting } from './proxy/upstream-proxy-config.js';
 import { restoreHttpsWhitelistSetting } from './proxy/https-whitelist.js';
 import { restoreSavedTlsMaterialSettings } from './proxy/tls-material-config.js';
@@ -148,8 +149,7 @@ async function initializeApplication(apiPort) {
   restoreUpstreamProxySetting(proxy, settings);
   const savedTlsPassthrough = settings.get('tlsPassthrough');
   if (savedTlsPassthrough) proxy.setTlsPassthrough(savedTlsPassthrough);
-  const savedHttp2 = settings.get('http2Enabled');
-  if (savedHttp2) proxy.setHttp2Config(savedHttp2);
+  restoreSavedHttp2Setting(proxy, settings);
   restoreSavedTlsMaterialSettings(proxy, settings);
   restoreHttpsWhitelistSetting(proxy, settings);
   restoreSavedTlsFingerprintSetting(proxy, settings);
