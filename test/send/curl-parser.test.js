@@ -401,6 +401,27 @@ test('explicit Content-Type matching is case-insensitive', () => {
   );
 });
 
+test('cURL explicit-empty headers are preserved while suppression syntax is rejected', () => {
+  const explicitEmpty = parseCurlCommand(
+    "curl https://example.test -H 'X-Empty;' -H 'X-Empty;' -H 'X-Normal: value'"
+  );
+  assert.deepEqual(explicitEmpty.headers['X-Empty'], ['', '']);
+  assert.equal(explicitEmpty.headers['X-Normal'], 'value');
+
+  for (const command of [
+    "curl https://example.test -H 'Host:'",
+    "curl https://example.test --header 'X-Suppress:   '"
+  ]) {
+    const result = parseCurlCommand(command);
+    assert.deepEqual(Object.keys(result), ['error']);
+    assert.match(result.error, /Suppressed cURL header .* cannot be imported exactly/);
+  }
+  assert.match(
+    parseCurlCommand("curl https://example.test -H 'Malformed'").error,
+    /Invalid header syntax/
+  );
+});
+
 test('prototype-named cURL headers remain own fields with repeated values', () => {
   const result = parseCurlCommand(
     "curl https://example.test -H '__proto__: first' -H '__proto__: second' " +

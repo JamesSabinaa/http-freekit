@@ -29,6 +29,7 @@ test('Electron uses only FreeKit SPKI-scoped renderer trust when system trust is
 
   assert.deepEqual(args, [
     '--proxy-server=http://127.0.0.1:8080',
+    '--proxy-bypass-list=<-loopback>',
     '--ignore-certificate-errors-spki-list=freekit-spki'
   ]);
   assertNoBroadTlsBypasses(args);
@@ -48,7 +49,10 @@ test('system-trusted Electron launch emits no certificate switches', async () =>
   const args = interceptor._getLaunchArgs(8080);
   const manual = await interceptor.activate(8080);
 
-  assert.deepEqual(args, ['--proxy-server=http://127.0.0.1:8080']);
+  assert.deepEqual(args, [
+    '--proxy-server=http://127.0.0.1:8080',
+    '--proxy-bypass-list=<-loopback>'
+  ]);
   assert.equal(
     args.some(argument => argument.toLowerCase().includes('certificate')),
     false
@@ -57,7 +61,7 @@ test('system-trusted Electron launch emits no certificate switches', async () =>
   assert.equal(fingerprintReads, 0);
   assert.equal(
     manual.metadata.instructions,
-    'Launch your Electron app with:\n  your-app --proxy-server=http://127.0.0.1:8080'
+    'Launch your Electron app with:\n  your-app --proxy-server=http://127.0.0.1:8080 --proxy-bypass-list=<-loopback>'
   );
 });
 

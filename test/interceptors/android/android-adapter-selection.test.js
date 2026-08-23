@@ -18,6 +18,16 @@ const hostInterfaces = [
   { name: 'USB', address: '10.1.0.5', netmask: '255.255.255.0', prefixLength: 24 }
 ];
 
+test('ADB serial validation accepts device tokens and rejects renderer syntax', () => {
+  const interceptor = new AndroidAdbInterceptor();
+  for (const serial of ['emulator-5554', '192.168.1.10:5555', 'usb.device_1']) {
+    assert.equal(interceptor._isSafeDeviceSerial(serial), true, serial);
+  }
+  for (const serial of [`');document.body.dataset.pwned='1';//`, '" onmouseover="alert(1)', '-transport']) {
+    assert.equal(interceptor._isSafeDeviceSerial(serial), false, serial);
+  }
+});
+
 test('Android discovery exposes deterministic choices only for ambiguous fallback devices', async () => {
   const interceptor = new AndroidAdbInterceptor();
   const devices = [
@@ -138,9 +148,15 @@ function rendererHarness(metadata, fetchImpl = async () => assert.fail('unexpect
       .replaceAll('"', '&quot;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;'),
+    escapeHtmlAttribute: value => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
     document: {
       getElementById: id => id === 'interceptConfig-android-adb' ? container : null,
-      querySelector: () => null
+      querySelector: () => null,
+      querySelectorAll: () => []
     },
     beginInterceptorOperation: () => ({ id: 'android-adb' }),
     isCurrentInterceptorOperation: () => true,
@@ -150,6 +166,10 @@ function rendererHarness(metadata, fetchImpl = async () => assert.fail('unexpect
     fetch: async (url, options) => {
       requests.push({ url, options });
       return await fetchImpl(url, options);
+    },
+    fetchManagementJson: async (url, options) => {
+      const response = await context.fetch(url, options);
+      return { response, data: await response.json() };
     }
   };
   vm.createContext(context);
@@ -182,6 +202,20 @@ test('Android device DOM shows a choice only for ambiguous backend candidates', 
   assert.match(harness.container.innerHTML, /Wi-Fi · 192\.168\.50\.6/);
   assert.match(harness.container.innerHTML, /class="android-device-activate" disabled/);
   assert.doesNotMatch(harness.container.innerHTML, /USB · 10\.1\.0\.5/);
+});
+
+test('Android device rendering keeps hostile serials in data instead of inline JavaScript', () => {
+  const serial = `');document.body.dataset.pwned='1';//`;
+  const harness = rendererHarness({
+    devices: [{ ...physicalDevice, serial }],
+    activatedDevices: []
+  });
+
+  harness.context.renderAndroidConfig(harness.container);
+
+  assert.match(harness.container.innerHTML, /data-device-id="'\);document\.body\.dataset\.pwned='1';\/\/"/);
+  assert.doesNotMatch(harness.container.innerHTML, /activateAndroidDevice\('/);
+  assert.match(harness.container.innerHTML, /activateAndroidDevice\(this\.closest\('\.android-device-item'\)\.dataset\.deviceId\)/);
 });
 
 test('Android UI posts only the selected backend candidate as hostIp', async () => {

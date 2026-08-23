@@ -13,6 +13,7 @@ import {
   parseLinuxProcessStart,
   sameProcessIdentity
 } from './process-identity.js';
+import { formatProxyUrl, getLocalProxyHost } from './proxy-bind-reachability.js';
 
 const LINUX_TERMINAL_LAUNCHERS = [
   {
@@ -173,6 +174,7 @@ export class FreshTerminalInterceptor {
   constructor(options = {}) {
     this.id = 'fresh-terminal';
     this.name = 'Fresh Terminal';
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.processes = [];
     this.sessions = new Map();
@@ -968,7 +970,7 @@ export class FreshTerminalInterceptor {
       );
     }
     const certPath = getTerminalCaPath(this.ca);
-    const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+    const proxyUrl = formatProxyUrl(this.proxyHost, proxyPort);
 
     const env = {
       ...this._environment(),
@@ -1264,9 +1266,10 @@ export class FreshTerminalInterceptor {
 }
 
 export class ExistingTerminalInterceptor {
-  constructor() {
+  constructor(options = {}) {
     this.id = 'existing-terminal';
     this.name = 'Existing Terminal';
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.ca = null;
     this.proxyPort = null;
@@ -1284,7 +1287,7 @@ export class ExistingTerminalInterceptor {
     this.proxyPort = proxyPort;
     this.active = false;
     const certPath = getTerminalCaPath(this.ca);
-    const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+    const proxyUrl = formatProxyUrl(this.proxyHost, proxyPort);
 
     console.log(`[Interceptor] Existing terminal interceptor activated — users should set proxy env vars`);
 

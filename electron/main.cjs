@@ -63,6 +63,18 @@ function getCloseWindowBehavior() {
   return desktopPreferences?.getCloseWindowBehavior() || DEFAULT_CLOSE_WINDOW_BEHAVIOR;
 }
 
+function openExternalWithNativeError(url) {
+  return shell.openExternal(url).catch(error => {
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    return dialog.showMessageBox(parent, {
+      type: 'error',
+      title: 'Unable to Open Link',
+      message: 'HTTP FreeKit could not open the link in your browser.',
+      detail: error?.message || String(error)
+    }).catch(() => {});
+  });
+}
+
 /**
  * Find a free TCP port by temporarily binding to port 0. Ports from failed
  * startup attempts are excluded so collision recovery always tries a new one.
@@ -479,7 +491,7 @@ function createWindow({ showOnReady = true } = {}) {
     if (isAllowedRendererUrl(url, apiPort)) return;
     event.preventDefault();
     if (isSafeExternalUrl(url)) {
-      shell.openExternal(url).catch(() => {});
+      openExternalWithNativeError(url);
     }
   });
 
@@ -491,7 +503,7 @@ function createWindow({ showOnReady = true } = {}) {
         }
       } catch {}
     } else if (isSafeExternalUrl(url)) {
-      shell.openExternal(url).catch(() => {});
+      openExternalWithNativeError(url);
     }
     return { action: 'deny' };
   });
@@ -539,6 +551,18 @@ ipcMain.handle('get-device-info', (event) => {
     electronVersion: process.versions.electron,
     osVersion: process.getSystemVersion()
   };
+});
+
+ipcMain.handle('open-external-url', async (event, url) => {
+  if (!validateSender(event) || !isSafeExternalUrl(url)) {
+    return { success: false, error: 'The requested external URL is not allowed' };
+  }
+  try {
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('select-file-path', async (event, options) => {

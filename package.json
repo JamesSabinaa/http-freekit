@@ -36,6 +36,7 @@
     "socks": "^2.8.9",
     "socks-proxy-agent": "^10.1.0",
     "tls-impersonate": "^0.1.0",
+    "undici": "^7.29.0",
     "uuid": "^14.0.1",
     "ws": "^8.21.1"
   },
@@ -52,7 +53,6 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^43.2.0",
-    "electron-builder": "^26.15.7",
-    "sharp": "^0.35.3"
+    "electron-builder": "^26.15.7"
   }
 }

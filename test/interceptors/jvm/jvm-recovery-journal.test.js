@@ -398,6 +398,12 @@ test('corrupted and oversized JVM journals are ignored without target commands',
 
     assert.equal(await restarted.isActive(), false);
     await restarted.deactivate();
+    restarted._getRunningProcesses = async () => {
+      assert.fail('invalid recovery must stop activation before process discovery');
+    };
+    const activation = await restarted.activate(8080, { pid: PID });
+    assert.equal(activation.success, false);
+    assert.match(activation.error, /recovery journal is invalid.*resolved/i);
     assert.equal(attachCount, 0);
     assert.equal(restarted.activatedProcesses.size, 0);
     assert.equal(fs.existsSync(recoveryFile(dataDir)), true);

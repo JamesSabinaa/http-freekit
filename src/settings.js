@@ -9,6 +9,7 @@ export class Settings {
   constructor(dataDir) {
     this.filePath = path.join(dataDir, 'settings.json');
     this.data = {};
+    this.loadError = null;
     this._load();
   }
 
@@ -25,6 +26,11 @@ export class Settings {
     } catch (err) {
       console.error('[Settings] Failed to load settings:', err.message);
       this.data = {};
+      this.loadError = new Error(
+        `Settings cannot be saved because "${this.filePath}" could not be loaded: ${err.message}. ` +
+        'Repair or replace the settings file before trying again.',
+        { cause: err }
+      );
       return;
     }
 
@@ -49,6 +55,7 @@ export class Settings {
   }
 
   _save() {
+    if (this.loadError) throw this.loadError;
     const tempPath = path.join(
       path.dirname(this.filePath),
       `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`

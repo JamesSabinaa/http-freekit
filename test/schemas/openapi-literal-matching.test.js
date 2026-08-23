@@ -13,7 +13,7 @@ function createProxy() {
   const proxy = new ProxyServer(null);
   proxy.addApiSpec({
     title: 'Literal API',
-    baseUrl: 'https://Api.Example.COM.:8443/v1',
+    baseUrl: 'https://Api.Example.COM.:8443',
     spec: {
       paths: {
         '/v1/a.b': { get: { operationId: 'dot' } },

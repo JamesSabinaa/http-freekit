@@ -60,6 +60,13 @@ PROXY_PORT=9090 API_PORT=9001 npm start
 
 The proxy listens only on `127.0.0.1` by default. Remote device or container access can be explicitly enabled with `PROXY_BIND_HOST=0.0.0.0`; only do this on a trusted network or with firewall restrictions.
 
+Fresh-profile Firefox interception needs Mozilla NSS `certutil` when FreeKit
+cannot install its CA in the operating-system trust store. Install the NSS tools
+package (`nss-tools`, `libnss3-tools`, or Homebrew `nss`, depending on the OS)
+and make its `certutil` available on `PATH`. FreeKit checks for the NSS command
+before advertising Firefox as launchable; the unrelated Windows System32
+`certutil.exe` does not satisfy this check.
+
 ## Architecture
 
 ```

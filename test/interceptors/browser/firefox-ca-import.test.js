@@ -5,6 +5,33 @@ import path from 'node:path';
 import test from 'node:test';
 import { BrowserInterceptor } from '../../../src/interceptors/browser-interceptor.js';
 
+test('Firefox availability preflights Mozilla NSS certutil when OS trust is absent', async () => {
+  const interceptor = new BrowserInterceptor('firefox', 'Firefox', 'firefox');
+  interceptor._findBrowserPath = () => 'test-firefox';
+  interceptor.ca = { systemTrustInstalled: false };
+  interceptor._readNssCertutilHelp = async () => [
+    '-A Add a certificate to the database',
+    '-N Create a new certificate database',
+    '-d certdir'
+  ].join('\n');
+  assert.equal(await interceptor.isActivable(), true);
+
+  interceptor._readNssCertutilHelp = async () => [
+    '-addstore -- Add certificate to store',
+    '-delstore -- Delete certificate from store'
+  ].join('\n');
+  assert.equal(await interceptor.isActivable(), false);
+});
+
+test('system-trusted Firefox does not require external NSS tooling', async () => {
+  const interceptor = new BrowserInterceptor('firefox', 'Firefox', 'firefox');
+  interceptor._findBrowserPath = () => 'test-firefox';
+  interceptor.ca = { systemTrustInstalled: true };
+  interceptor._readNssCertutilHelp = async () => assert.fail('NSS should not be probed');
+
+  assert.equal(await interceptor.isActivable(), true);
+});
+
 test('Firefox activation fails when neither NSS nor OS trust can install the CA', async (t) => {
   const interceptor = new BrowserInterceptor('firefox', 'Firefox', 'firefox');
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-firefox-'));

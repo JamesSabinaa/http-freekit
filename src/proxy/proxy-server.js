@@ -50,6 +50,7 @@ import { validateHttp2Mode } from './http2-config.js';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
+  getApiSpecBasePath,
   isObjectRecord,
   normalizeApiSpecMatchHost,
   validateOpenApiSubmission
@@ -2796,6 +2797,7 @@ export class ProxyServer {
 
       const requestedHostname = this._normalizeConnectionHostname(parsed.hostname).toLowerCase();
       const connectionHostname = this._normalizeConnectionHostname(hostname).toLowerCase();
+      if (parsed.port === '0') return null;
       const requestedPort = parseInt(parsed.port, 10) || 443;
       if (requestedHostname !== connectionHostname || requestedPort !== Number(targetPort)) return null;
       return targetAuthority;
@@ -2807,6 +2809,13 @@ export class ProxyServer {
   _assertSupportedOutboundUrl(url, label = 'URL') {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new Error(`Unsupported ${label} protocol: ${url.protocol}`);
+    }
+    this._assertUsableDestinationPort(url, label);
+  }
+
+  _assertUsableDestinationPort(url, label = 'URL') {
+    if (url.port === '0') {
+      throw new Error(`${label} port must be between 1 and 65535`);
     }
   }
 
@@ -3513,6 +3522,12 @@ export class ProxyServer {
     return converted;
   }
 
+  _captureHeadersFromH2Response(headers) {
+    return createHeaderMap(
+      Object.entries(headers).filter(([name]) => !name.startsWith(':'))
+    );
+  }
+
   _beginWebhookPreparation() {
     const controller = new AbortController();
     const generation = this._lifecycleGeneration;
@@ -3792,6 +3807,11 @@ export class ProxyServer {
     onFinalized = () => {}
   ) {
     const responseHeaders = this._incomingMessageHeaders(proxyRes);
+    const transferCodings = getHeaderValues(responseHeaders, 'transfer-encoding')
+      .flatMap(value => String(value).split(','))
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean);
+    const reserializeChunked = transferCodings.at(-1) === 'chunked';
     const responseBody = this._createBodyCollector();
     let responseBodySize = 0;
     let finalized = false;
@@ -3801,6 +3821,7 @@ export class ProxyServer {
       finalized = true;
       socket.removeListener('close', onDownstreamClose);
       const body = this._concatBody(responseBody);
+      const trailers = this._incomingMessageTrailers(proxyRes);
       this._emitRequestUpdate({
         ...requestRecord,
         statusCode: proxyRes.statusCode,
@@ -3810,6 +3831,7 @@ export class ProxyServer {
           ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
           : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
         responseBodySize,
+        trailers: Object.keys(trailers).length > 0 ? trailers : null,
         duration: Date.now() - startTime,
         remote: proxyRes.socket
           ? { address: proxyRes.socket.remoteAddress, port: proxyRes.socket.remotePort }
@@ -3839,8 +3861,32 @@ export class ProxyServer {
     proxyRes.on('data', chunk => {
       responseBodySize += chunk.length;
       this._appendBodyChunk(responseBody, chunk);
+      if (reserializeChunked && !failed && !socket.destroyed && !socket.writableEnded) {
+        const frame = Buffer.concat([
+          Buffer.from(`${chunk.length.toString(16)}\r\n`, 'latin1'),
+          chunk,
+          Buffer.from('\r\n', 'latin1')
+        ]);
+        if (!socket.write(frame)) {
+          proxyRes.pause();
+          socket.once('drain', () => {
+            if (!failed && !finalized) proxyRes.resume();
+          });
+        }
+      }
     });
-    proxyRes.once('end', () => finalize());
+    proxyRes.once('end', () => {
+      if (failed) return;
+      if (reserializeChunked && !socket.destroyed && !socket.writableEnded) {
+        const trailerLines = [];
+        const rawTrailers = Array.isArray(proxyRes.rawTrailers) ? proxyRes.rawTrailers : [];
+        for (let index = 0; index < rawTrailers.length; index += 2) {
+          trailerLines.push(`${rawTrailers[index]}: ${rawTrailers[index + 1]}\r\n`);
+        }
+        socket.end(`0\r\n${trailerLines.join('')}\r\n`, 'latin1');
+      }
+      finalize();
+    });
     proxyRes.once('aborted', () => fail(new Error('Upstream WebSocket handshake response aborted')));
     proxyRes.on('error', fail);
     socket.once('close', onDownstreamClose);
@@ -3851,7 +3897,7 @@ export class ProxyServer {
     }
     responseStr += '\r\n';
     socket.write(responseStr);
-    proxyRes.pipe(socket);
+    if (!reserializeChunked) proxyRes.pipe(socket);
   }
 
   // Handle HTTP upgrade requests (WebSocket passthrough)
@@ -3876,6 +3922,19 @@ export class ProxyServer {
     }
     if (!SUPPORTED_UPGRADE_PROTOCOLS.has(targetUrl.protocol)) {
       const message = `Unsupported upgrade URL protocol: ${targetUrl.protocol}`;
+      socket.end(
+        'HTTP/1.1 400 Bad Request\r\n' +
+        'Content-Type: text/plain\r\n' +
+        `Content-Length: ${Buffer.byteLength(message)}\r\n` +
+        'Connection: close\r\n\r\n' +
+        message
+      );
+      return;
+    }
+    try {
+      this._assertUsableDestinationPort(targetUrl, 'upgrade URL');
+    } catch (error) {
+      const message = `Bad Request: ${error.message}`;
       socket.end(
         'HTTP/1.1 400 Bad Request\r\n' +
         'Content-Type: text/plain\r\n' +
@@ -4443,6 +4502,7 @@ export class ProxyServer {
         );
         this._serveEarlyHttpResponse({
           clientReq, clientRes, targetUrl, internalSend, requestId, trafficLifecycleId, startTime,
+          capture: true,
           requestBody: capturedRequestBody,
           requestBodySize,
           requestCaptureFields: this._incompleteBodyCaptureFields(
@@ -4553,7 +4613,11 @@ export class ProxyServer {
         if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
         // Apply modifications if provided
         if (modifications.url) {
-          try { targetUrl = new URL(modifications.url); } catch { /* keep original */ }
+          try {
+            const nextUrl = new URL(modifications.url);
+            this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
+            targetUrl = nextUrl;
+          } catch { /* keep original */ }
         }
         if (modifications.method) {
           clientReq.method = modifications.method;
@@ -4864,6 +4928,9 @@ export class ProxyServer {
     requestBody = Buffer.alloc(0),
     requestBodySize = Buffer.byteLength(requestBody),
     requestCaptureFields = {},
+    capture = Boolean(internalSend),
+    protocol = null,
+    tls: captureTls = null,
     statusCode,
     statusMessage = http.STATUS_CODES[statusCode] || '',
     responseHeaders,
@@ -4873,11 +4940,11 @@ export class ProxyServer {
       ? responseBody
       : Buffer.from(String(responseBody));
     clientRes.writeHead(statusCode, responseHeaders);
-    if (internalSend) {
+    if (capture) {
       const requestUrl = targetUrl?.href || String(clientReq.url || '');
       this._emitRequest({
         id: requestId,
-        protocol: targetUrl?.protocol === 'https:' ? 'https' : 'http',
+        protocol: protocol || (targetUrl?.protocol === 'https:' ? 'https' : 'http'),
         method: clientReq.method,
         url: requestUrl,
         host: targetUrl?.hostname || '',
@@ -4896,7 +4963,7 @@ export class ProxyServer {
         duration: Date.now() - startTime,
         timestamp: startTime,
         source: 'proxy',
-        tls: null,
+        tls: captureTls,
         remote: null
       }, trafficLifecycleId);
     }
@@ -4943,6 +5010,7 @@ export class ProxyServer {
     let connectTarget;
     try {
       connectTarget = new URL(`https://${req.url}`);
+      this._assertUsableDestinationPort(connectTarget, 'CONNECT target');
     } catch {
       clientSocket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
       return;
@@ -5216,8 +5284,28 @@ export class ProxyServer {
       req.on('end', async () => {
         if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
-          res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
-          res.end('Request body too large');
+          const capturedRequestBody = this._streamedCaptureBody(
+            requestBody, requestBodySize, 'Request', req.headers
+          );
+          this._serveEarlyHttpResponse({
+            clientReq: req,
+            clientRes: res,
+            targetUrl: new URL(fullUrl),
+            requestId,
+            trafficLifecycleId,
+            startTime,
+            requestBody: capturedRequestBody,
+            requestBodySize,
+            requestCaptureFields: this._incompleteBodyCaptureFields(
+              'request', capturedRequestBody, req.headers, requestBody.length
+            ),
+            capture: true,
+            protocol: 'https',
+            tls: tlsDetails,
+            statusCode: 413,
+            responseHeaders: { 'Content-Type': 'text/plain', Connection: 'close' },
+            responseBody: 'Request body too large'
+          });
           return;
         }
         let body = this._concatBody(requestBody);
@@ -5421,6 +5509,7 @@ export class ProxyServer {
                   resHeaders[k.toLowerCase()] = v;
                 }
               }
+              const trailers = this._cleanTrailers(fwdRes.trailers);
               downstream.complete();
               try {
                 this._sendH1Response(res, fwdRes.statusCode, resHeaders, fwdRes.body, fwdRes.trailers);
@@ -5436,6 +5525,7 @@ export class ProxyServer {
                 timestamp: startTime, source: 'mock',
                 usedUpstreamProxy: fwdRes.usedUpstreamProxy,
                 tls: tlsDetails, remote: fwdRes.remote,
+                trailers: Object.keys(trailers).length > 0 ? trailers : null,
                 originalRequest, transformedBy
               });
             } catch (err) {
@@ -5574,6 +5664,7 @@ export class ProxyServer {
             if (modifications.url) {
               try {
                 const nextUrl = new URL(modifications.url);
+                this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
                 fullUrl = nextUrl.href;
                 hostname = this._normalizeConnectionHostname(nextUrl.hostname);
                 targetPort = parseInt(nextUrl.port, 10)
@@ -5653,7 +5744,9 @@ export class ProxyServer {
           }
 
           // Fixed response (default)
-          const mockHeaders = action.headers || { 'Content-Type': 'application/json' };
+          const mockHeaders = createHeaderMap(Object.entries(
+            action.headers || { 'Content-Type': 'application/json' }
+          ));
           const mockBody = action.body || '';
           const mockStatus = action.status || 200;
           // Prevent browser caching of mocked responses
@@ -5744,6 +5837,7 @@ export class ProxyServer {
           if (modifications.url) {
             try {
               const modUrl = new URL(modifications.url);
+              this._assertSupportedOutboundUrl(modUrl, 'breakpoint URL');
               hostname = this._normalizeConnectionHostname(modUrl.hostname);
               targetPort = parseInt(modUrl.port) || (modUrl.protocol === 'https:' ? 443 : 80);
               req.url = modUrl.pathname + modUrl.search;
@@ -6201,10 +6295,38 @@ export class ProxyServer {
       stream.on('end', async () => {
         if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
+          const responseBody = 'Request body too large';
+          const capturedRequestBody = this._streamedCaptureBody(
+            requestBody, requestBodySize, 'Request', reqHeaders
+          );
           if (!stream.destroyed && !stream.closed) {
             stream.respond({ ':status': 413, 'content-type': 'text/plain' });
-            stream.end('Request body too large');
+            stream.end(responseBody);
           }
+          this._emitRequest({
+            id: requestId,
+            protocol: 'h2',
+            method,
+            url: fullUrl,
+            host: authority,
+            path,
+            requestHeaders: reqHeaders,
+            requestBody: capturedRequestBody,
+            requestBodySize,
+            ...this._incompleteBodyCaptureFields(
+              'request', capturedRequestBody, reqHeaders, requestBody.length
+            ),
+            statusCode: 413,
+            statusMessage: http.STATUS_CODES[413],
+            responseHeaders: { 'content-type': 'text/plain' },
+            responseBody,
+            responseBodySize: Buffer.byteLength(responseBody),
+            duration: Date.now() - startTime,
+            timestamp: startTime,
+            source: 'proxy',
+            tls: tlsDetails,
+            remote: null
+          }, trafficLifecycleId);
           return;
         }
         let body = this._concatBody(requestBody);
@@ -6307,6 +6429,7 @@ export class ProxyServer {
           if (modifications.url) {
             try {
               const nextUrl = new URL(modifications.url);
+              this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
               path = nextUrl.pathname + nextUrl.search;
               upstreamHostname = this._normalizeConnectionHostname(nextUrl.hostname);
               upstreamPort = parseInt(nextUrl.port, 10)
@@ -6648,8 +6771,28 @@ export class ProxyServer {
       req.on('end', async () => {
         if (!requestBodyCompletion.complete()) return;
         if (requestBody.exceeded) {
-          res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' });
-          res.end('Request body too large');
+          const capturedRequestBody = this._streamedCaptureBody(
+            requestBody, requestBodySize, 'Request', req.headers
+          );
+          this._serveEarlyHttpResponse({
+            clientReq: req,
+            clientRes: res,
+            targetUrl: new URL(fullUrl),
+            requestId,
+            trafficLifecycleId,
+            startTime,
+            requestBody: capturedRequestBody,
+            requestBodySize,
+            requestCaptureFields: this._incompleteBodyCaptureFields(
+              'request', capturedRequestBody, req.headers, requestBody.length
+            ),
+            capture: true,
+            protocol: 'https',
+            tls: tlsDetails,
+            statusCode: 413,
+            responseHeaders: { 'Content-Type': 'text/plain', Connection: 'close' },
+            responseBody: 'Request body too large'
+          });
           return;
         }
         let body = this._concatBody(requestBody);
@@ -6758,6 +6901,7 @@ export class ProxyServer {
           if (modifications.url) {
             try {
               const nextUrl = new URL(modifications.url);
+              this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
               fullUrl = nextUrl.href;
               hostname = this._normalizeConnectionHostname(nextUrl.hostname);
               targetPort = parseInt(nextUrl.port, 10)
@@ -6788,8 +6932,10 @@ export class ProxyServer {
         let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
         const emitH1Success = (
-          statusCode, statusMessage, responseHeaders, resBody, remote, usedUpstreamProxy = false
+          statusCode, statusMessage, responseHeaders, resBody, remote, trailers = {},
+          usedUpstreamProxy = false
         ) => {
+          const cleanTrailers = this._cleanTrailers(trailers);
           const duration = Date.now() - startTime;
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
@@ -6799,7 +6945,8 @@ export class ProxyServer {
             responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
             usedUpstreamProxy,
-            tls: tlsDetails, remote
+            tls: tlsDetails, remote,
+            trailers: Object.keys(cleanTrailers).length > 0 ? cleanTrailers : null
           });
         };
 
@@ -6873,7 +7020,8 @@ export class ProxyServer {
                 finalResponse.statusMessage,
                 finalResponse.headers,
                 finalResponse.body,
-                remote
+                remote,
+                finalResponse.trailers
               );
               return;
             }
@@ -6959,6 +7107,7 @@ export class ProxyServer {
               finalResponse.headers,
               finalResponse.body,
               remote,
+              finalResponse.trailers,
               usedUpstreamProxy
             );
           });
@@ -7226,29 +7375,34 @@ export class ProxyServer {
           onInformational: info => this._forwardH2Informational(stream, info)
         });
         if (downstream?.aborted) return;
-        const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, fwdRes.headers);
+        const mergedHeaders = createHeaderMap(Object.entries(fwdRes.headers));
         if (action.addResponseHeaders) {
           for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-            resHeaders[k.toLowerCase()] = v;
+            mergedHeaders[k.toLowerCase()] = v;
           }
         }
+        const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, mergedHeaders);
+        const captureHeaders = this._captureHeadersFromH2Response(resHeaders);
+        if (stream.destroyed || stream.closed) throw this._createDownstreamAbortError();
+        this._sendH2Response(stream, resHeaders, fwdRes.body, fwdRes.trailers);
         downstream?.complete();
-        try {
-          if (!stream.destroyed && !stream.closed) {
-            this._sendH2Response(stream, resHeaders, fwdRes.body, fwdRes.trailers);
-          }
-        } catch (e) { /* stream closed */ }
+        const trailers = this._cleanTrailers(fwdRes.trailers);
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
-          responseHeaders: fwdRes.headers,
-          responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
+          responseHeaders: captureHeaders,
+          responseBody: this._safeBodyString(
+            fwdRes.body,
+            captureHeaders['content-encoding'],
+            captureHeaders['content-type']
+          ),
           responseBodySize: fwdRes.body.length, duration: Date.now() - startTime,
           timestamp: startTime, source: 'mock',
           usedUpstreamProxy: fwdRes.usedUpstreamProxy,
           tls: tlsDetails, remote: fwdRes.remote,
+          trailers: Object.keys(trailers).length > 0 ? trailers : null,
           originalRequest, transformedBy
         });
       } catch (err) {
@@ -7420,6 +7574,7 @@ export class ProxyServer {
       if (modifications.url) {
         try {
           const nextUrl = new URL(modifications.url);
+          this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
           fullUrl = nextUrl.href;
           authority = nextUrl.host;
           path = nextUrl.pathname + nextUrl.search;
@@ -7495,31 +7650,46 @@ export class ProxyServer {
     }
 
     // Fixed response (default)
-    const mockHeaders = createHeaderMap([[':status', action.status || 200]]);
-    const actionHeaders = action.headers || { 'Content-Type': 'application/json' };
-    for (const [k, v] of Object.entries(actionHeaders)) {
-      mockHeaders[k.toLowerCase()] = v;
-    }
+    const mergedHeaders = createHeaderMap(Object.entries(
+      action.headers || { 'Content-Type': 'application/json' }
+    ));
     if (action.addResponseHeaders) {
       for (const [k, v] of Object.entries(action.addResponseHeaders)) {
-        mockHeaders[k.toLowerCase()] = v;
+        mergedHeaders[k.toLowerCase()] = v;
       }
     }
+    const mockHeaders = this._toH2ResponseHeaders(action.status || 200, mergedHeaders);
+    const captureHeaders = this._captureHeadersFromH2Response(mockHeaders);
     const mockBody = action.body || '';
 
     try {
-      if (!stream.destroyed && !stream.closed) {
-        stream.respond(mockHeaders);
-        stream.end(mockBody);
-      }
-    } catch (e) { /* stream closed */ }
+      if (stream.destroyed || stream.closed) throw this._createDownstreamAbortError();
+      this._sendH2Response(stream, mockHeaders, mockBody);
+      downstream?.complete();
+    } catch (error) {
+      downstream?.complete();
+      emitCapturedRequest({
+        id: requestId, protocol: 'h2', method, url: fullUrl,
+        host: authority, path, requestHeaders: reqHeaders,
+        requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
+        statusCode: 0, statusMessage: 'Mock Delivery Error', responseHeaders: {},
+        responseBody: '', responseBodySize: 0,
+        duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
+        error: error.message,
+        errorCode: this._getUpstreamErrorCode(error),
+        errorPhase: 'downstream',
+        tls: tlsDetails, remote: null,
+        originalRequest, transformedBy
+      });
+      return;
+    }
 
     emitCapturedRequest({
       id: requestId, protocol: 'h2', method, url: fullUrl,
       host: authority, path, requestHeaders: reqHeaders,
       requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
       statusCode: action.status || 200, statusMessage: 'Mocked',
-      responseHeaders: actionHeaders,
+      responseHeaders: captureHeaders,
       responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
       duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
       tls: tlsDetails, remote: null,
@@ -9711,7 +9881,11 @@ export class ProxyServer {
       if (modifications === BREAKPOINT_CLIENT_DISCONNECTED) return;
       // Apply modifications and continue as normal proxy request
       if (modifications.url) {
-        try { targetUrl = new URL(modifications.url); } catch { /* keep original */ }
+        try {
+          const nextUrl = new URL(modifications.url);
+          this._assertSupportedOutboundUrl(nextUrl, 'breakpoint URL');
+          targetUrl = nextUrl;
+        } catch { /* keep original */ }
       }
       if (modifications.method) clientReq.method = modifications.method;
       if (modifications.headers) clientReq.headers = { ...modifications.headers };
@@ -9892,7 +10066,9 @@ export class ProxyServer {
     }
 
     // Fixed response (default)
-    const resHeaders = action.headers || { 'Content-Type': 'application/json' };
+    const resHeaders = createHeaderMap(Object.entries(
+      action.headers || { 'Content-Type': 'application/json' }
+    ));
     const resBody = action.body || '';
     const statusCode = action.status || 200;
 
@@ -10360,7 +10536,8 @@ export class ProxyServer {
     const contentDecoded = decodedContent.contentDecoded;
 
     // For images, encode as base64 data URI so the UI can display them
-    const ct = (contentType || '').toLowerCase();
+    const ct = String(Array.isArray(contentType) ? contentType[0] ?? '' : contentType || '')
+      .toLowerCase();
     const isProtobufLike = ct.includes('application/grpc') ||
       ct.includes('application/connect+proto') ||
       ct.includes('protobuf') ||
@@ -10459,6 +10636,7 @@ export class ProxyServer {
       try {
         const url = new URL(modifications.url);
         if (!['http:', 'https:'].includes(url.protocol)) return 'Breakpoint URL must use HTTP or HTTPS';
+        if (url.port === '0') return 'Breakpoint URL port must be between 1 and 65535';
       } catch {
         return 'Invalid breakpoint URL';
       }
@@ -11085,30 +11263,49 @@ export class ProxyServer {
         if (!isObjectRecord(spec)) continue;
         const baseHost = getApiSpecBaseHost(spec.baseUrl ?? '');
         if (baseHost === null || (baseHost && normalizedHost !== baseHost)) continue;
+        const basePath = getApiSpecBasePath(spec.baseUrl ?? '');
+        if (basePath === null || (basePath && testPath !== basePath && !testPath.startsWith(`${basePath}/`))) {
+          continue;
+        }
+        const operationPath = basePath ? (testPath.slice(basePath.length) || '/') : testPath;
 
         const paths = spec.spec?.paths;
         if (!isObjectRecord(paths)) continue;
-        for (const [pathPattern, pathItem] of Object.entries(paths)) {
+        const hasTemplateParameter = value => /\{[^{}\/]+\}/.test(value);
+        const rankedPaths = Object.entries(paths).sort(([left], [right]) =>
+          Number(hasTemplateParameter(left)) - Number(hasTemplateParameter(right))
+        );
+        for (const [pathPattern, pathItem] of rankedPaths) {
           if (!isObjectRecord(pathItem)) continue;
           const operation = pathItem[normalizedMethod];
           if (!isObjectRecord(operation)) continue;
 
           const regex = compileOpenApiPathPattern(pathPattern);
           if (!regex) continue;
-          if (regex.test(testPath)) {
+          if (regex.test(operationPath)) {
             const operationParameters = Array.isArray(operation.parameters)
               ? operation.parameters.filter(isObjectRecord)
-              : null;
+              : [];
             const pathParameters = Array.isArray(pathItem.parameters)
               ? pathItem.parameters.filter(isObjectRecord)
               : [];
+            const parameters = [...pathParameters];
+            for (const parameter of operationParameters) {
+              const overrideIndex = typeof parameter.name === 'string' && typeof parameter.in === 'string'
+                ? parameters.findIndex(candidate =>
+                  candidate.name === parameter.name && candidate.in === parameter.in
+                )
+                : -1;
+              if (overrideIndex === -1) parameters.push(parameter);
+              else parameters[overrideIndex] = parameter;
+            }
             return {
               operationId: typeof operation.operationId === 'string' && operation.operationId
                 ? operation.operationId
                 : method + ' ' + pathPattern,
               summary: typeof operation.summary === 'string' ? operation.summary : '',
               description: typeof operation.description === 'string' ? operation.description : '',
-              parameters: operationParameters || pathParameters,
+              parameters,
               pathPattern,
               tags: Array.isArray(operation.tags)
                 ? operation.tags.filter(tag => typeof tag === 'string')

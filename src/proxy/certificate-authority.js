@@ -11,6 +11,7 @@ const CA_AUTO_RENEWAL_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CA_RENEWAL_NOTICE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const CERTIFICATE_VALIDITY_MS = 365 * 24 * 60 * 60 * 1000;
 const CA_REPLACEMENT_STATE_VERSION = 2;
+const CA_ACTIVE_STATE_VERSION = 1;
 
 export class CertificateAuthority {
   constructor(dataDir) {
@@ -18,6 +19,7 @@ export class CertificateAuthority {
     this.caKeyPath = path.join(dataDir, 'ca.key');
     this.caCertPath = path.join(dataDir, 'ca.pem');
     this.caReplacementStatePath = path.join(dataDir, 'ca-replacements.json');
+    this.caActiveStatePath = path.join(dataDir, 'ca-active.json');
     this.caMigrationStatePath = path.join(dataDir, 'ca-migration.json');
     this.caRenewalStatePath = path.join(dataDir, 'ca-renewal.json');
     this.terminalCaBundlePath = terminalCaBundlePath(this.caCertPath);
@@ -36,6 +38,7 @@ export class CertificateAuthority {
     const autoRenewExpiring = options.autoRenewExpiring !== false;
     this.autoRenewExpiring = autoRenewExpiring;
     const replacementState = this._loadReplacementFingerprints();
+    const recordedActiveFingerprint = this._loadActiveFingerprint();
     let replacedCertificateFingerprints = replacementState.fingerprints;
     this.pendingReplacementFingerprints = replacedCertificateFingerprints;
     this.pendingMigrationFingerprint = this._loadMigrationFingerprint();
@@ -51,16 +54,8 @@ export class CertificateAuthority {
         existingCertReadError = error;
       }
     }
-    const rememberReplacedCertificate = () => {
-      if (!existingCertPem) return;
-      let fingerprint;
-      try {
-        fingerprint = new crypto.X509Certificate(existingCertPem)
-          .fingerprint.replace(/:/g, '').toUpperCase();
-      } catch {
-        // Corrupt certificate data cannot correspond to an installed identity.
-        return;
-      }
+    const rememberReplacedFingerprint = fingerprint => {
+      if (!fingerprint) return;
       if (!replacedCertificateFingerprints.includes(fingerprint)) {
         replacedCertificateFingerprints = [...replacedCertificateFingerprints, fingerprint];
         // Persist before replacing either CA file. A crash or trust-store
@@ -69,11 +64,24 @@ export class CertificateAuthority {
       }
       this.setPendingMigrationFingerprint(fingerprint);
     };
+    const rememberReplacedCertificate = () => {
+      const existingFingerprint = this._sha1Fingerprint(existingCertPem);
+      rememberReplacedFingerprint(existingFingerprint);
+      if (recordedActiveFingerprint !== existingFingerprint) {
+        rememberReplacedFingerprint(recordedActiveFingerprint);
+      }
+    };
     if (existingCertReadError) {
       throw new Error(`Could not read existing CA certificate: ${existingCertReadError.message}`);
     }
 
     const existingCertificateFingerprint = this._sha1Fingerprint(existingCertPem);
+    if (recordedActiveFingerprint && existingCertificateFingerprint &&
+        recordedActiveFingerprint !== existingCertificateFingerprint) {
+      // The CA files were replaced after the previous active identity was
+      // recorded (for example, a crash between those durable writes).
+      rememberReplacedFingerprint(recordedActiveFingerprint);
+    }
     if (scheduledRenewal && existingCertificateFingerprint
         && scheduledRenewal.fingerprint !== existingCertificateFingerprint) {
       // A crash after writing the replacement but before deleting the marker
@@ -133,6 +141,9 @@ export class CertificateAuthority {
     const certContent = fs.readFileSync(this.caCertPath, 'utf8');
     const activeCertificateFingerprint = new crypto.X509Certificate(certContent)
       .fingerprint.replace(/:/g, '').toUpperCase();
+    if (recordedActiveFingerprint !== activeCertificateFingerprint) {
+      this.setActiveFingerprint(activeCertificateFingerprint);
+    }
     const obsoleteCertificateFingerprints = replacedCertificateFingerprints
       .filter(fingerprint => fingerprint !== activeCertificateFingerprint);
     if (obsoleteCertificateFingerprints.length !== replacedCertificateFingerprints.length) {
@@ -200,6 +211,43 @@ export class CertificateAuthority {
   _normalizeSha1Fingerprint(value) {
     const fingerprint = String(value || '').trim().replace(/:/g, '').toUpperCase();
     return /^[0-9A-F]{40}$/.test(fingerprint) ? fingerprint : null;
+  }
+
+  _loadActiveFingerprint() {
+    if (!fs.existsSync(this.caActiveStatePath)) return null;
+    const state = JSON.parse(fs.readFileSync(this.caActiveStatePath, 'utf8'));
+    const fingerprint = this._normalizeSha1Fingerprint(state?.fingerprint);
+    if (!state || state.version !== CA_ACTIVE_STATE_VERSION || !fingerprint ||
+        Object.keys(state).some(field => !['version', 'fingerprint'].includes(field))) {
+      throw new Error('Active CA identity state has an unsupported format');
+    }
+    return fingerprint;
+  }
+
+  setActiveFingerprint(value) {
+    const fingerprint = this._normalizeSha1Fingerprint(value);
+    if (!fingerprint) throw new TypeError('Active CA fingerprint is invalid');
+    const temporaryPath = `${this.caActiveStatePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    let descriptor = null;
+    try {
+      fs.mkdirSync(path.dirname(this.caActiveStatePath), { recursive: true });
+      descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(
+        descriptor,
+        JSON.stringify({ version: CA_ACTIVE_STATE_VERSION, fingerprint }),
+        'utf8'
+      );
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = null;
+      fs.renameSync(temporaryPath, this.caActiveStatePath);
+    } catch (error) {
+      if (descriptor !== null) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+      try { fs.unlinkSync(temporaryPath); } catch {}
+      throw error;
+    }
   }
 
   _loadReplacementFingerprints() {

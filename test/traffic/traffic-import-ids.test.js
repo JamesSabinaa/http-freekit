@@ -73,6 +73,35 @@ async function getTraffic(port, id) {
   return requestJson(port, 'GET', `/api/traffic/${encodeURIComponent(id)}`);
 }
 
+test('JSON import rejects unsupported protocols and invalid WebSocket opcodes atomically', async t => {
+  const { api, port } = await createApi(t);
+  const initial = traffic('retained', '/retained');
+  api.trafficLog.push(initial);
+
+  const hostileProtocol = await importTraffic(port, [{
+    ...traffic('hostile', '/hostile'),
+    protocol: '<img src=x onerror=alert(1)>'
+  }]);
+  assert.equal(hostileProtocol.statusCode, 400);
+  assert.match(hostileProtocol.body.error, /protocol must be a supported traffic protocol/);
+
+  for (const opcode of ['<img src=x onerror=alert(1)>', 3, 1.5]) {
+    const invalidFrame = await importTraffic(port, [
+      { ...traffic('socket', '/socket'), protocol: 'ws', statusCode: 101 },
+      {
+        ...traffic('frame', ''),
+        protocol: 'ws-frame',
+        method: 'WS',
+        parentId: 'socket',
+        opcode
+      }
+    ]);
+    assert.equal(invalidFrame.statusCode, 400, String(opcode));
+    assert.match(invalidFrame.body.error, /opcode must be a supported WebSocket opcode integer/);
+  }
+  assert.deepEqual(api.trafficLog, [initial]);
+});
+
 test('JSON import remaps intra-batch duplicates while preserving stable IDs and input', async t => {
   const { api, port } = await createApi(t);
   const submitted = [

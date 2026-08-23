@@ -43,6 +43,10 @@ const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A
 const TRAFFIC_BASE64_DATA_URI_PATTERN =
   /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/;
 const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
+const SUPPORTED_TRAFFIC_PROTOCOLS = new Set([
+  'http', 'https', 'h2', 'ws', 'wss', 'ws-frame', 'tunnel', 'tls-error'
+]);
+const SUPPORTED_WEBSOCKET_OPCODES = new Set([0, 1, 2, 8, 9, 10]);
 
 class SendBodyValidationError extends Error {
   constructor(message) {
@@ -1016,6 +1020,10 @@ print(json.dumps({"providers": get_proxy_providers()}))
           !HTTP_TOKEN_PATTERN.test(request.method)) {
         return `requests[${index}].method must be a valid HTTP token`;
       }
+      if (request.protocol !== undefined && request.protocol !== null &&
+          !SUPPORTED_TRAFFIC_PROTOCOLS.has(request.protocol)) {
+        return `requests[${index}].protocol must be a supported traffic protocol`;
+      }
       for (const field of ['trafficLifecycleId', 'parentTrafficLifecycleId']) {
         if (request[field] === '') {
           return `requests[${index}].${field} must be non-empty when provided`;
@@ -1027,6 +1035,10 @@ print(json.dumps({"providers": get_proxy_providers()}))
       }
       if (request.protocol === 'ws-frame' && request.pinned === true) {
         return `requests[${index}].pinned cannot be true for WebSocket frames`;
+      }
+      if (request.protocol === 'ws-frame' && request.opcode !== undefined &&
+          (!Number.isInteger(request.opcode) || !SUPPORTED_WEBSOCKET_OPCODES.has(request.opcode))) {
+        return `requests[${index}].opcode must be a supported WebSocket opcode integer`;
       }
       for (const field of numberFields) {
         if (request[field] !== undefined && request[field] !== null && !Number.isFinite(request[field])) {

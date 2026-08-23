@@ -184,15 +184,19 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
   const harness = createHarness({ firstRead: Promise.resolve(new ArrayBuffer(0)) });
   const boundary = 'stable-boundary';
   const fileBytes = Uint8Array.from([0x00, 0x7f, 0x80, 0xff]);
+  const textName = 'text"\\name';
+  const fileFieldName = 'upload"\\name';
+  const fileName = 'bytes"\\name.bin';
+  const quote = value => value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
   harness.api.setBoundary(boundary);
   harness.api.setMultipartFields([
-    { key: 'text', type: 'text', value: 'hello', enabled: true },
+    { key: textName, type: 'text', value: 'hello', enabled: true },
     {
-      key: 'upload',
+      key: fileFieldName,
       type: 'file',
       enabled: true,
       file: {
-        name: 'bytes.bin',
+        name: fileName,
         type: 'application/octet-stream',
         arrayBuffer: async () => fileBytes.buffer
       }
@@ -201,8 +205,8 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
   const multipartHeaders = {};
   const multipart = await harness.api.prepare(multipartHeaders, new AbortController().signal);
   const expected = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="text"\r\n\r\nhello\r\n`),
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="upload"; filename="bytes.bin"\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${quote(textName)}"\r\n\r\nhello\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${quote(fileFieldName)}"; filename="${quote(fileName)}"\r\n`),
     Buffer.from('Content-Type: application/octet-stream\r\n\r\n'),
     Buffer.from(fileBytes),
     Buffer.from(`\r\n--${boundary}--\r\n`)
@@ -211,6 +215,18 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
   assert.equal(multipart.bodyEncoding, 'base64');
   assert.equal(multipart.byteLength, expected.length);
   assert.equal(multipartHeaders['Content-Type'], `multipart/form-data; boundary=${boundary}`);
+
+  for (const unsafeField of [
+    { key: 'bad\r\nname', type: 'text', value: 'x', enabled: true },
+    { key: 'file', type: 'file', enabled: true, file: { name: 'bad\nname.bin', type: 'text/plain', arrayBuffer: async () => new ArrayBuffer(0) } },
+    { key: 'file', type: 'file', enabled: true, file: { name: 'safe.bin', type: 'text/plain\r\nX: y', arrayBuffer: async () => new ArrayBuffer(0) } }
+  ]) {
+    harness.api.setMultipartFields([unsafeField]);
+    await assert.rejects(
+      harness.api.prepare({}, new AbortController().signal),
+      /cannot contain control characters/
+    );
+  }
 
   harness.api.setBodyType('urlencoded');
   harness.api.setUrlEncodedFields([

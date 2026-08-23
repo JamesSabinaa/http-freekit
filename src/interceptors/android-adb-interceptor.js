@@ -94,11 +94,17 @@ export class AndroidAdbInterceptor {
       ? path.join(options.dataDir, 'android-adb-global-proxy-recovery.json')
       : options.recoveryFile || null;
     this.journaledGlobalDevices = new Map();
+    this.recoveryJournalError = null;
     this._adoptJournaledGlobalDevices();
   }
 
   _isSafeJournalString(value, maxLength = 2048) {
     return typeof value === 'string' && value.length <= maxLength && !/[\0\r\n]/.test(value);
+  }
+
+  _isSafeDeviceSerial(value) {
+    return this._isSafeJournalString(value, 255) &&
+      /^(?!-)[A-Za-z0-9._:[\]-]+$/.test(value);
   }
 
   _isSafeReverseEndpoint(value) {
@@ -147,8 +153,7 @@ export class AndroidAdbInterceptor {
           ...(version >= ANDROID_RECOVERY_VERSION ? ['manualCaRemovalRequired'] : [])
         ]);
     if (Object.keys(entry).some(field => !allowedFields.has(field))) return null;
-    if (!this._isSafeJournalString(entry.serial, 255) ||
-        !/^(?!-)[A-Za-z0-9._:[\]-]+$/.test(entry.serial)) return null;
+    if (!this._isSafeDeviceSerial(entry.serial)) return null;
     if (!Number.isInteger(entry.proxyPort) || entry.proxyPort < 1 || entry.proxyPort > 65535) return null;
     for (const field of ['model', 'deviceName']) {
       if (entry[field] !== undefined && !this._isSafeJournalString(entry[field], 512)) return null;
@@ -262,6 +267,7 @@ export class AndroidAdbInterceptor {
       }
       this.active = true;
     } catch (err) {
+      this.recoveryJournalError = err;
       console.warn('[Interceptor] Ignoring invalid Android recovery journal:', err.message);
     }
   }
@@ -338,6 +344,11 @@ export class AndroidAdbInterceptor {
   }
 
   _rememberGlobalProxyOwnership(serial, activeInfo) {
+    if (this.recoveryJournalError) {
+      throw new Error(
+        `Android recovery journal is invalid and must be resolved before changing device state: ${this.recoveryJournalError.message}`
+      );
+    }
     const entry = this._journalEntry(serial, activeInfo);
     if (!this._normalizeJournalDevice(entry)) {
       throw new Error('Refusing to persist invalid Android cleanup ownership');
@@ -744,6 +755,7 @@ export class AndroidAdbInterceptor {
 
         const serial = parts[0];
         const status = parts[1]; // device, offline, unauthorized, etc.
+        if (!this._isSafeDeviceSerial(serial)) continue;
 
         // Extract model from properties like "model:Pixel_6"
         let model = serial;
@@ -1515,6 +1527,13 @@ export class AndroidAdbInterceptor {
           ...qrMetadata,
           requiresDeviceSelection: true
         }
+      };
+    }
+
+    if (this.recoveryJournalError) {
+      return {
+        success: false,
+        error: `Android recovery journal is invalid and must be resolved before changing device state: ${this.recoveryJournalError.message}`
       };
     }
 

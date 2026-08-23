@@ -9,7 +9,6 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import express from 'express';
 import protobuf from 'protobufjs';
-import sharp from 'sharp';
 import { McpServerBridge } from '../../src/mcp/mcp-server.js';
 
 const require = createRequire(import.meta.url);
@@ -79,7 +78,6 @@ test('locked packages meet the audited safe minimums', () => {
     'monaco-editor': '0.56.0',
     'pako': '3.0.1',
     'protobufjs': '8.7.1',
-    'sharp': '0.35.3',
     'socks-proxy-agent': '10.1.0',
     'uuid': '14.0.1',
     'ws': '8.21.1'
@@ -132,22 +130,6 @@ test('protobuf parser and codec complete a schema round trip', () => {
   const Ping = root.lookupType('Ping');
   const decoded = Ping.decode(Ping.encode({ value: 'ok' }).finish());
   assert.equal(decoded.value, 'ok');
-});
-
-test('updated Sharp build dependency renders an image', async () => {
-  const { data, info } = await sharp({
-    create: {
-      width: 1,
-      height: 1,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  }).png().toBuffer({ resolveWithObject: true });
-
-  assert.ok(data.length > 0);
-  assert.equal(info.width, 1);
-  assert.equal(info.height, 1);
-  assert.equal(info.format, 'png');
 });
 
 test('MCP AJV stack validates URIs with the patched fast-uri dependency', () => {

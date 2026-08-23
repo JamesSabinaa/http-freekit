@@ -35,7 +35,8 @@ function createRendererHarness() {
     allInterceptors: [],
     expandedInterceptorMetadata: null,
     androidHostIpSelections: new Map(),
-    esc: value => String(value ?? '')
+    esc: value => String(value ?? ''),
+    escapeHtmlAttribute: value => String(value ?? '')
   };
   vm.createContext(context);
   vm.runInContext(`

@@ -12,6 +12,7 @@ import {
   probeProcessPid,
   sameProcessIdentity
 } from './process-identity.js';
+import { formatProxyUrl, getLocalProxyHost } from './proxy-bind-reachability.js';
 
 const AGENT_BYTECODE_POLICY = Object.freeze({
   classMajorVersion: 52,
@@ -32,6 +33,7 @@ export class JvmInterceptor {
   constructor(options = {}) {
     this.id = 'jvm';
     this.name = 'Java/JVM Application';
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.ca = null;
     this.activatedProcesses = new Map(); // pid -> { name, mainClass, activationUncertain? }
@@ -46,6 +48,7 @@ export class JvmInterceptor {
         ? path.join(options.dataDir, 'jvm-agent')
         : path.join(os.tmpdir(), `http-freekit-jvm-agent-${process.pid}`));
     this._preparedAgentJarPath = null;
+    this.recoveryJournalError = null;
     this._adoptRecoveryJournal();
   }
 
@@ -243,6 +246,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
       this.activatedProcesses = adopted;
       this.active = adopted.size > 0;
     } catch (err) {
+      this.recoveryJournalError = err;
       console.warn('[Interceptor] Ignoring invalid JVM recovery journal:', err.message);
     }
   }
@@ -285,6 +289,11 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _setTrackedOwnership(pid, info) {
+    if (this.recoveryJournalError) {
+      throw new Error(
+        `JVM recovery journal is invalid and must be resolved before attach: ${this.recoveryJournalError.message}`
+      );
+    }
     const next = new Map(this.activatedProcesses);
     next.set(pid, info);
     this._writeRecoveryJournal(next);
@@ -309,6 +318,56 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
 
   _runAvailabilityCommand(file, args, options) {
     return execFileAsync(file, args, options);
+  }
+
+  _environment() {
+    return process.env;
+  }
+
+  _findJavaExecutablePath() {
+    const executableNames = this._platform() === 'win32'
+      ? ['java.exe', 'java']
+      : ['java'];
+    const pathEntries = String(this._environment().PATH || '')
+      .split(path.delimiter)
+      .map(entry => entry.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean);
+    for (const directory of pathEntries) {
+      for (const executableName of executableNames) {
+        const candidate = path.join(directory, executableName);
+        try {
+          if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
+        } catch {}
+      }
+    }
+    return null;
+  }
+
+  _getJdk8ToolsJarPath() {
+    const candidates = [];
+    const javaExecutable = this._findJavaExecutablePath();
+    if (javaExecutable) {
+      const javaHome = path.dirname(path.dirname(javaExecutable));
+      candidates.push(path.join(javaHome, 'lib', 'tools.jar'));
+      if (path.basename(javaHome).toLowerCase() === 'jre') {
+        candidates.push(path.join(path.dirname(javaHome), 'lib', 'tools.jar'));
+      }
+    }
+    const configuredJavaHome = String(this._environment().JAVA_HOME || '').trim();
+    if (configuredJavaHome) {
+      candidates.push(path.join(configuredJavaHome, 'lib', 'tools.jar'));
+      if (path.basename(configuredJavaHome).toLowerCase() === 'jre') {
+        candidates.push(path.join(path.dirname(configuredJavaHome), 'lib', 'tools.jar'));
+      }
+    }
+    return candidates.find(candidate => {
+      try { return fs.statSync(candidate).isFile(); } catch { return false; }
+    }) || null;
+  }
+
+  _getAttachHelperClasspath(attachDir) {
+    const toolsJar = this._getJdk8ToolsJarPath();
+    return toolsJar ? `${attachDir}${path.delimiter}${toolsJar}` : attachDir;
   }
 
   async isActivable() {
@@ -1314,7 +1373,7 @@ public class AttachProxy {
   _runAttachHelper(attachDir, pid, agentJar, agentArgs, onSpawn) {
     return execFileAsync(
       'java',
-      ['-cp', attachDir, 'AttachProxy', String(pid), agentJar, agentArgs],
+      ['-cp', this._getAttachHelperClasspath(attachDir), 'AttachProxy', String(pid), agentJar, agentArgs],
       { encoding: 'utf8', timeout: 15000, cwd: attachDir, onSpawn }
     );
   }
@@ -1380,7 +1439,7 @@ public class AttachProxy {
     if (!pid) {
       // No specific process — return metadata with process list for UI selection
       const processes = await this._getRunningProcesses();
-      const proxyHost = '127.0.0.1';
+      const proxyHost = this.proxyHost;
       const fallbackAgentJar = await this._getAgentJarPath();
       this.active = true;
       return {
@@ -1395,6 +1454,13 @@ public class AttachProxy {
       };
     }
 
+    if (this.recoveryJournalError) {
+      return {
+        success: false,
+        error: `JVM recovery journal is invalid and must be resolved before attach: ${this.recoveryJournalError.message}`
+      };
+    }
+
     // Verify process exists
     const processes = await this._getRunningProcesses();
     const process_ = processes.find(p => p.pid === pid);
@@ -1403,7 +1469,7 @@ public class AttachProxy {
       return { success: false, error: `JVM process ${pid} not found` };
     }
 
-    const proxyHost = '127.0.0.1';
+    const proxyHost = this.proxyHost;
     let fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
     let pendingOwnership = null;
     if (this.recoveryFile) {
@@ -1572,7 +1638,7 @@ public class AttachProxy {
         pid,
         name: process_.name,
         mainClass: process_.mainClass,
-        proxyUrl: `http://${proxyHost}:${proxyPort}`,
+        proxyUrl: formatProxyUrl(proxyHost, proxyPort),
         processes: await this._getRunningProcesses(),
         activatedProcesses: this._getActivatedProcessMetadata(),
         activationUncertain: this._hasUncertainActivation(),

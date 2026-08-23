@@ -89,7 +89,7 @@ test('valid OpenAPI operations retain their matching metadata', async t => {
 
   assert.equal(response.statusCode, 200);
   assert.equal(proxy.apiSpecs[0].baseUrl, 'https://api.example.test/v1');
-  assert.deepEqual(proxy.matchApiSpec('GET', '/users/42?expand=true', 'api.example.test'), {
+  assert.deepEqual(proxy.matchApiSpec('GET', '/v1/users/42?expand=true', 'api.example.test'), {
     operationId: 'getUser',
     summary: 'Get one user',
     description: 'Returns a user.',
@@ -97,6 +97,54 @@ test('valid OpenAPI operations retain their matching metadata', async t => {
     pathPattern: '/users/{id}',
     tags: ['users']
   });
+});
+
+test('OpenAPI matching prefers concrete paths and merges inherited parameters', () => {
+  const proxy = new ProxyServer(null);
+  proxy.addApiSpec({
+    title: 'Ranked API',
+    baseUrl: 'https://api.example.test/v1/',
+    spec: {
+      paths: {
+        '/pets/{id}': {
+          parameters: [
+            { name: 'id', in: 'path', required: true },
+            { name: 'locale', in: 'query' }
+          ],
+          get: {
+            operationId: 'petById',
+            parameters: [
+              { name: 'locale', in: 'query', description: 'operation override' },
+              { name: 'trace', in: 'header' }
+            ]
+          },
+          post: { operationId: 'updatePet', parameters: [] }
+        },
+        '/pets/search': { get: { operationId: 'searchPets' } }
+      }
+    }
+  });
+
+  assert.equal(
+    proxy.matchApiSpec('GET', '/v1/pets/search', 'api.example.test').operationId,
+    'searchPets'
+  );
+  assert.deepEqual(
+    proxy.matchApiSpec('GET', '/v1/pets/42', 'api.example.test').parameters,
+    [
+      { name: 'id', in: 'path', required: true },
+      { name: 'locale', in: 'query', description: 'operation override' },
+      { name: 'trace', in: 'header' }
+    ]
+  );
+  assert.deepEqual(
+    proxy.matchApiSpec('POST', '/v1/pets/42', 'api.example.test').parameters,
+    [
+      { name: 'id', in: 'path', required: true },
+      { name: 'locale', in: 'query' }
+    ]
+  );
+  assert.equal(proxy.matchApiSpec('GET', '/pets/42', 'api.example.test'), null);
 });
 
 test('OpenAPI descriptions may omit paths and simply never match traffic', async t => {

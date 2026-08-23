@@ -34,6 +34,18 @@ test('decompression refuses output beyond the configured ceiling', () => {
   assert.deepEqual(proxy._decompressBody(compressed, 'gzip'), compressed);
 });
 
+test('body capture accepts array-valued Content-Type headers', () => {
+  const proxy = new ProxyServer(null);
+  const captured = proxy._safeBodyString(
+    Buffer.from([0, 1, 2, 3]),
+    undefined,
+    ['image/png']
+  );
+
+  assert.match(String(captured), /^data:image\/png;base64,/);
+  assert.equal(captured.encoding, 'base64');
+});
+
 test('oversized pass-through uploads stream while capture remains bounded', async (t) => {
   let originHits = 0;
   let receivedBody = '';
@@ -78,6 +90,58 @@ test('oversized pass-through uploads stream while capture remains bounded', asyn
   assert.equal(finalRecord.requestBodyTruncated, true);
   assert.equal(finalRecord.requestBodyCapturedSize, 0);
   assert.equal(finalRecord.requestBodySize, 9);
+});
+
+test('oversized body-dependent uploads return 413 with a traffic record', async t => {
+  let originHits = 0;
+  const origin = http.createServer((_request, response) => {
+    originHits++;
+    response.end('unexpected');
+  });
+  const originPort = await listen(origin);
+  const events = [];
+  const proxy = new ProxyServer(null, {
+    port: 0,
+    maxBufferedBodyBytes: 8,
+    onRequest: event => events.push(event)
+  });
+  proxy.mockRules = [{
+    enabled: true,
+    matchers: [{ type: 'body-contains', value: 'never matches' }],
+    action: { type: 'fixed-response', status: 200, body: 'mocked' }
+  }];
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin);
+  });
+
+  const result = await new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: proxy.server.address().port,
+      path: `http://127.0.0.1:${originPort}/buffered`,
+      method: 'POST',
+      headers: { 'content-length': '9' }
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('end', () => resolve({
+        statusCode: response.statusCode,
+        body: Buffer.concat(chunks).toString('utf8')
+      }));
+    });
+    request.once('error', reject);
+    request.end('123456789');
+  });
+
+  assert.deepEqual(result, { statusCode: 413, body: 'Request body too large' });
+  assert.equal(originHits, 0);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].statusCode, 413);
+  assert.equal(events[0].requestBodySize, 9);
+  assert.equal(events[0].requestBodyTruncated, true);
+  assert.equal(events[0].requestBodyCapturedSize, 0);
 });
 
 test('Send rejects an upstream response beyond its buffer ceiling', async (t) => {

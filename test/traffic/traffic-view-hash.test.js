@@ -121,14 +121,14 @@ test('row and keyboard selection encode every opaque request ID', () => {
   }
 });
 
-function createWsReaderHarness(hash, id) {
+function createWsReaderHarness(hash, id, preload = true) {
   const selected = [];
   const timeouts = [];
   const noop = () => {};
   const context = {
     window: { location: { hash } },
     document: { getElementById: () => null, querySelector: () => null },
-    requests: [{ id }],
+    requests: preload ? [{ id }] : [],
     captureStateSessionId: null,
     config: {},
     ws: { send: noop },
@@ -163,7 +163,11 @@ function createWsReaderHarness(hash, id) {
     hashHelpers,
     identityHelpers,
     wsMessageHandler,
-    'globalThis.readInitialHash = () => handleWsMessage({ type: \'init\', proxyPort: 8000, apiPort: 8001 });'
+    `globalThis.readInitialHash = () => handleWsMessage({ type: 'init', proxyPort: 8000, apiPort: 8001 });
+     globalThis.pendingHashApi = {
+       update: updatePendingTrafficViewFromHash,
+       resolve: resolvePendingTrafficView
+     };`
   ].join('\n'), context);
   return { context, selected, timeouts };
 }
@@ -200,13 +204,30 @@ test('both initial WebSocket and hash-route readers decode opaque IDs before loo
     const wsHarness = createWsReaderHarness(hash, id);
     wsHarness.context.readInitialHash();
     assert.deepEqual(wsHarness.selected, [{ requestId: id, toggle: false }]);
-    assert.deepEqual(wsHarness.timeouts, [1500]);
+    assert.deepEqual(wsHarness.timeouts, []);
 
     const navigationHarness = createNavigationHarness(hash, id);
     navigationHarness.context.navigate();
     assert.deepEqual(navigationHarness.selected, [{ requestId: id, toggle: false }]);
     assert.deepEqual(navigationHarness.activatedPanels, ['active']);
   }
+});
+
+test('a deep link stays pending until delayed traffic arrives and cancels on hash change', () => {
+  const delayed = createWsReaderHarness('#/view/delayed-id', 'delayed-id', false);
+  delayed.context.readInitialHash();
+  assert.deepEqual(delayed.selected, []);
+  delayed.context.requests.push({ id: 'delayed-id' });
+  assert.equal(delayed.context.pendingHashApi.resolve(), true);
+  assert.deepEqual(delayed.selected, [{ requestId: 'delayed-id', toggle: false }]);
+
+  const cancelled = createWsReaderHarness('#/view/cancelled-id', 'cancelled-id', false);
+  cancelled.context.readInitialHash();
+  cancelled.context.window.location.hash = '#/traffic';
+  cancelled.context.pendingHashApi.update('#/traffic');
+  cancelled.context.requests.push({ id: 'cancelled-id' });
+  assert.equal(cancelled.context.pendingHashApi.resolve(), false);
+  assert.deepEqual(cancelled.selected, []);
 });
 
 test('malformed view fragments still route to Traffic and never select', () => {

@@ -50,6 +50,7 @@ function collectH1Response(request) {
       response.once('end', () => resolve({
         statusCode: response.statusCode,
         body: Buffer.concat(chunks).toString('utf8'),
+        addedHeader: response.headers['x-added'],
         informational
       }));
     });
@@ -104,6 +105,7 @@ async function requestInterceptedH2(proxyPort, authority, pathname) {
     return {
       statusCode: responseHeaders[':status'],
       body: Buffer.concat(chunks).toString('utf8'),
+      addedHeader: responseHeaders['x-added'],
       informational: []
     };
   } finally {
@@ -120,6 +122,7 @@ function fixedRule(id, pathname, status, body) {
       type: 'fixed-response',
       status,
       headers: { 'content-type': 'text/plain' },
+      addResponseHeaders: { 'x-added': 'yes' },
       body
     }
   };
@@ -153,7 +156,8 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-final-status-'));
     const ca = new CertificateAuthority(dataDir);
     await ca.initialize();
-    const proxy = new ProxyServer(ca, { port: 0 });
+    const events = [];
+    const proxy = new ProxyServer(ca, { port: 0, onRequest: event => events.push(event) });
     await proxy.start();
     t.after(async () => {
       await proxy.stop();
@@ -197,6 +201,7 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
         assert.deepEqual(fallback, {
           statusCode: 200,
           body: 'safe final response',
+          addedHeader: 'yes',
           informational: []
         });
 
@@ -204,8 +209,20 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
         assert.deepEqual(upperBound, {
           statusCode: 599,
           body: 'upper bound response',
+          addedHeader: 'yes',
           informational: []
         });
+
+        for (const rule of proxy.mockRules) {
+          assert.deepEqual(rule.action.headers, { 'content-type': 'text/plain' });
+        }
+        if (protocol.name === 'native H2 engine') {
+          const capture = events.findLast(event =>
+            event.source === 'mock' && event.protocol === 'h2' && event.path === '/upper-bound'
+          );
+          assert.equal(capture.responseHeaders['x-added'], 'yes');
+          assert.equal(capture.responseHeaders.connection, undefined);
+        }
       });
     }
   });

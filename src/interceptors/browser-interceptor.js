@@ -1,9 +1,13 @@
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { findBrowserPath } from './browser-paths.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
+import {
+  formatProxyAuthority,
+  getLocalProxyHost
+} from './proxy-bind-reachability.js';
 import {
   collectRelatedProcessIds,
   createManagedBrowserProfile,
@@ -20,10 +24,11 @@ import {
 export const BROWSER_BECAME_INACTIVE_ERROR_CODE = 'BROWSER_BECAME_INACTIVE';
 
 export class BrowserInterceptor {
-  constructor(id, name, browserType) {
+  constructor(id, name, browserType, options = {}) {
     this.id = id;
     this.name = name;
     this.browserType = browserType;
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.process = null;
     this.profileDir = null;
     this.active = false;
@@ -46,7 +51,31 @@ export class BrowserInterceptor {
   }
 
   async isActivable() {
-    return this._findBrowserPath() !== null;
+    if (this._findBrowserPath() === null) return false;
+    if (this.browserType === 'firefox' && this.ca && !this.ca.systemTrustInstalled) {
+      return await this._hasNssCertutil();
+    }
+    return true;
+  }
+
+  _readNssCertutilHelp() {
+    return new Promise(resolve => {
+      execFile('certutil', ['-H'], {
+        encoding: 'utf8',
+        timeout: 3000,
+        windowsHide: true,
+        maxBuffer: 256 * 1024
+      }, (error, stdout, stderr) => {
+        resolve(`${stdout || ''}\n${stderr || ''}\n${error?.message || ''}`);
+      });
+    });
+  }
+
+  async _hasNssCertutil() {
+    const help = await this._readNssCertutilHelp();
+    return /(?:^|\n)\s*-A(?:\s|,)/m.test(help) &&
+      /(?:^|\n)\s*-N(?:\s|,)/m.test(help) &&
+      /(?:^|\n)\s*-d(?:\s|,)/m.test(help);
   }
 
   _findBrowserPath() {
@@ -537,7 +566,7 @@ export class BrowserInterceptor {
 
   _getChromiumArgs(proxyPort, options, profileDir = this.profileDir) {
     const args = [
-      `--proxy-server=127.0.0.1:${proxyPort}`,
+      `--proxy-server=${formatProxyAuthority(this.proxyHost, proxyPort)}`,
       `--user-data-dir=${profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
@@ -565,9 +594,9 @@ export class BrowserInterceptor {
     const prefsPath = path.join(profileDir, 'user.js');
     const prefs = [
       `user_pref("network.proxy.type", 1);`,
-      `user_pref("network.proxy.http", "127.0.0.1");`,
+      `user_pref("network.proxy.http", ${JSON.stringify(this.proxyHost)});`,
       `user_pref("network.proxy.http_port", ${proxyPort});`,
-      `user_pref("network.proxy.ssl", "127.0.0.1");`,
+      `user_pref("network.proxy.ssl", ${JSON.stringify(this.proxyHost)});`,
       `user_pref("network.proxy.ssl_port", ${proxyPort});`,
       `user_pref("network.proxy.no_proxies_on", "");`,
       // Allow the OS-trust fallback when NSS certutil is unavailable
@@ -1007,13 +1036,13 @@ public class Win32 {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
 }
 "@
-$candidatePids = @(${this.process.pid})
+$candidatePids = @()
 $profileDir = '${escapedProfileDir}'
 if ($profileDir) {
   $profileMatches = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profileDir) } |
     Select-Object -ExpandProperty ProcessId
-  $candidatePids = @($candidatePids + $profileMatches) | Select-Object -Unique
+  $candidatePids = @($profileMatches) | Select-Object -Unique
 }
 
 foreach ($pidValue in $candidatePids) {

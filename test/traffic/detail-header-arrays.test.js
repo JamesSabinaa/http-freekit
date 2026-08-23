@@ -164,6 +164,27 @@ function requestAndResponseCards(request) {
   };
 }
 
+test('traffic detail metadata remains inert if an unvalidated in-process record reaches the renderer', () => {
+  const protocolHtml = renderDetail(baseRequest({}, {
+    protocol: '<img src=x onerror=alert(1)>'
+  })).html;
+  assert.doesNotMatch(protocolHtml, /<img src=x/);
+  assert.match(protocolHtml, /&lt;IMG SRC=X ONERROR=ALERT\(1\)&gt;/);
+
+  const frameHtml = renderDetail(baseRequest({}, {
+    protocol: 'ws-frame',
+    method: 'WS',
+    direction: 'client',
+    opcodeName: 'hostile',
+    opcode: '<img src=x onerror=alert(1)>',
+    requestBody: 'frame data',
+    requestBodySize: 10,
+    responseHeaders: {}
+  })).html;
+  assert.doesNotMatch(frameHtml, /<img src=x/);
+  assert.match(frameHtml, /hostile \(0x0\)/);
+});
+
 test('traffic details preserve distinct imported HTTP versions with safe live fallbacks', () => {
   const imported = requestAndResponseCards(baseRequest({}, {
     requestHttpVersion: 'HTTP/1.0',

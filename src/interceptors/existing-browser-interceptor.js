@@ -6,6 +6,7 @@ import { getProcessArgv0, getProcessSnapshotAsync } from './browser-lifecycle.js
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import { normalizeBrowserUrl } from './browser-url.js';
 import { waitForSpawnStability } from './command-runner.js';
+import { formatProxyAuthority, getLocalProxyHost } from './proxy-bind-reachability.js';
 
 const GLOBAL_BROWSER_OWNERSHIP_VERSION = 1;
 const MAX_OWNERSHIP_JOURNAL_BYTES = 16 * 1024;
@@ -16,6 +17,7 @@ export class ExistingBrowserInterceptor {
     this.id = id;
     this.name = name;
     this.browserType = browserType;
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.ca = null;
     this.process = null;
@@ -416,7 +418,7 @@ export class ExistingBrowserInterceptor {
     // For "Global" mode, we re-launch the browser with proxy flags but using
     // the user's existing default profile (no --user-data-dir override)
     const args = [
-      `--proxy-server=127.0.0.1:${proxyPort}`,
+      `--proxy-server=${formatProxyAuthority(this.proxyHost, proxyPort)}`,
     ];
 
     if (launchOptions.url) {

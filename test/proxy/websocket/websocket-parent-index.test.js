@@ -90,6 +90,7 @@ function rendererHarness(initialRequests = []) {
     },
     closeDetail: () => {},
     showDetail: () => {},
+    resolvePendingTrafficView: () => {},
     renderTraffic: () => { renders++; },
     esc: value => String(value ?? ''),
     escapeHtmlAttribute: value => String(value ?? '')

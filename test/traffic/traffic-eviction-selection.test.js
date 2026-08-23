@@ -66,6 +66,7 @@ function createHarness(selectedIndex) {
       }
     },
     applyFilter: () => { filterCalls++; },
+    resolvePendingTrafficView: () => {},
     renderVirtualRows: () => { directVirtualRenders++; }
   };
   vm.createContext(context);

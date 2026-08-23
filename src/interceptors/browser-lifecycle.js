@@ -207,17 +207,6 @@ function browserProfileCommandMatch(
   return PROFILE_MATCH_NONE;
 }
 
-/** Match only browser launch arguments that unambiguously select this exact profile. */
-export function commandUsesBrowserProfile(
-  commandLine,
-  profileDir,
-  platform = process.platform,
-  commandName = null
-) {
-  return browserProfileCommandMatch(commandLine, profileDir, platform, commandName) ===
-    PROFILE_MATCH_EXACT;
-}
-
 /** Verify that a recursive-delete target is one of our direct temp children. */
 export function inspectManagedProfilePath(profileDir, tempDir = os.tmpdir()) {
   if (typeof profileDir !== 'string' || !profileDir) {
@@ -518,20 +507,6 @@ function requireUnambiguousRelatedProcessIds(processes, profileDir, rootPids, pl
     throw error;
   }
   return inspection.processIds;
-}
-
-export function getRelatedProcessIds(
-  profileDir,
-  rootPids = [],
-  snapshot,
-  platform = process.platform
-) {
-  return requireUnambiguousRelatedProcessIds(
-    snapshot || getProcessSnapshot(),
-    profileDir,
-    rootPids,
-    platform
-  );
 }
 
 export async function getRelatedProcessIdsAsync(

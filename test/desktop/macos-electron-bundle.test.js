@@ -83,7 +83,10 @@ test('macOS Electron bundle launch resolves and directly spawns its declared exe
 
   assert.equal(result.pid, child.pid);
   assert.equal(spawned.command, fs.realpathSync(bundle.executablePath));
-  assert.deepEqual(spawned.args, ['--proxy-server=http://127.0.0.1:8080']);
+  assert.deepEqual(spawned.args, [
+    '--proxy-server=http://127.0.0.1:8080',
+    '--proxy-bypass-list=<-loopback>'
+  ]);
   assert.equal(spawned.options.detached, false);
   assert.equal(spawned.options.stdio, 'ignore');
   assert.equal(interceptor.active, true);

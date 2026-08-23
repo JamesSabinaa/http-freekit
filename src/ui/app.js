@@ -121,6 +121,31 @@
       return parseTrafficViewIdentityHash(hash)?.trafficLifecycleId ?? null;
     }
 
+    let pendingTrafficViewIdentity = null;
+
+    function updatePendingTrafficViewFromHash(hash) {
+      pendingTrafficViewIdentity = parseTrafficViewIdentityHash(hash);
+      return pendingTrafficViewIdentity;
+    }
+
+    function resolvePendingTrafficView() {
+      const identity = pendingTrafficViewIdentity;
+      if (!identity) return false;
+      const request = findTrafficRequestByIdentity(
+        requests,
+        identity.requestId,
+        identity.trafficLifecycleId ?? undefined
+      );
+      if (!request) return false;
+      pendingTrafficViewIdentity = null;
+      selectRequest(
+        identity.requestId,
+        false,
+        identity.trafficLifecycleId ?? undefined
+      );
+      return true;
+    }
+
     // ============ WEBSOCKET FRAMES STATE ============
     /** Map of parent lifecycle keys -> [frame request objects] for WS frame sub-rows */
     let wsFramesByParent = Object.create(null);
@@ -217,10 +242,28 @@
         const payload = await response.clone().json().catch(() => ({}));
         const error = new Error(payload.error || `Management API returned HTTP ${response.status}`);
         error.status = response.status;
+        error.payload = payload;
+        error.response = response;
         throw error;
       }
       return response;
     };
+
+    async function fetchManagementJson(resource, options) {
+      let response;
+      try {
+        response = await fetch(resource, options);
+      } catch (error) {
+        if (error?.response && Object.prototype.hasOwnProperty.call(error, 'payload')) {
+          return { response: error.response, data: error.payload };
+        }
+        throw error;
+      }
+      return {
+        response,
+        data: await response.json().catch(() => ({}))
+      };
+    }
 
     // ============ WEBSOCKET ============
     let wsReconnectDelay = 1000;
@@ -510,6 +553,8 @@
         closeDetail(false);
       }
       applyFilter();
+
+      resolvePendingTrafficView();
 
       if (selectedRequest) showDetail(selectedRequest);
     }
@@ -1234,16 +1279,8 @@
           loadTlsFingerprint();
           loadApiSpecs();
           loadMcpStatus();
-          // Check for deep-linked request to auto-select after traffic loads
-          const deepLinkId = parseTrafficViewHash(window.location.hash);
-          const deepLinkLifecycleId = parseTrafficViewLifecycleHash(window.location.hash);
-          if (deepLinkId !== null) {
-            setTimeout(() => {
-              if (findTrafficRequestByIdentity(requests, deepLinkId, deepLinkLifecycleId ?? undefined)) {
-                selectRequest(deepLinkId, false, deepLinkLifecycleId ?? undefined);
-              }
-            }, 1500);
-          }
+          updatePendingTrafficViewFromHash(window.location.hash);
+          resolvePendingTrafficView();
           break;
         }
         case 'request':
@@ -1406,6 +1443,7 @@
         closeDetail(false);
       }
       applyFilter();
+      resolvePendingTrafficView();
     }
 
     function addRequest(req) {
@@ -1428,6 +1466,7 @@
         closeDetail(false);
       }
       applyFilter();
+      resolvePendingTrafficView();
     }
 
     function isTunnelRequest(req) {
@@ -3008,6 +3047,9 @@
         const dirLabel = req.direction === 'client' ? 'Client → Server' : 'Server → Client';
         const dirColor = req.direction === 'client' ? '#ff8c38' : '#4caf7d';
         const opName = esc(req.opcodeName || 'data');
+        const opcode = Number.isInteger(req.opcode) && [0, 1, 2, 8, 9, 10].includes(req.opcode)
+          ? req.opcode
+          : 0;
         const isTextFrame = req.opcode === 1; // TEXT opcode
         const isBinaryFrame = req.opcode === 2; // BINARY opcode
         const isCloseFrame = req.opcode === 8; // CLOSE opcode
@@ -3024,7 +3066,7 @@
           <div class="detail-card-body">
             <div class="detail-summary">
               <div class="detail-summary-item"><div class="detail-summary-label">Direction</div><div class="detail-summary-value">${dirLabel}</div></div>
-              <div class="detail-summary-item"><div class="detail-summary-label">Opcode</div><div class="detail-summary-value">${opName} (0x${(req.opcode || 0).toString(16)})</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Opcode</div><div class="detail-summary-value">${opName} (0x${opcode.toString(16)})</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Size</div><div class="detail-summary-value">${formatSize(req.requestBodySize)}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">FIN</div><div class="detail-summary-value">${req.fin ? 'Yes' : 'No'}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Masked</div><div class="detail-summary-value">${req.masked ? 'Yes' : 'No'}</div></div>
@@ -3556,7 +3598,7 @@
         <div class="detail-card-body">
           <div class="detail-summary">
             <div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value">${req.duration != null ? Math.round(req.duration) + 'ms' : '-'}</div></div>
-            <div class="detail-summary-item"><div class="detail-summary-label">Protocol</div><div class="detail-summary-value">${(req.protocol||'http').toUpperCase()}</div></div>
+            <div class="detail-summary-item"><div class="detail-summary-label">Protocol</div><div class="detail-summary-value">${esc(String(req.protocol || 'http').toUpperCase())}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Request Size</div><div class="detail-summary-value">${formatSize(req.requestBodySize)}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Response Size</div><div class="detail-summary-value">${formatSize(req.responseBodySize)}</div></div>
             <div class="detail-summary-item"><div class="detail-summary-label">Source</div><div class="detail-summary-value">${esc(req.source || 'proxy')}</div></div>
@@ -5348,13 +5390,24 @@
       brave: 'https://brave.com/download/',
     };
 
-    function downloadBrowser(id, name) {
+    async function downloadBrowser(id, name) {
       const url = BROWSER_DOWNLOAD_URLS[id];
       if (!url) return;
       interceptorSelectionGeneration++;
       if (confirm(`${name} is not installed. Would you like to download it now?`)) {
-        window.open(url, '_blank');
-        toast(`Opening ${name} download page...`, 'success');
+        try {
+          if (typeof window.electronApi?.openExternalUrl === 'function') {
+            const result = await window.electronApi.openExternalUrl(url);
+            if (result?.success !== true) {
+              throw new Error(result?.error || 'The system browser did not accept the link');
+            }
+          } else if (!window.open(url, '_blank')) {
+            throw new Error('The browser blocked the new window');
+          }
+          toast(`Opening ${name} download page...`, 'success');
+        } catch (error) {
+          toast(`Could not open the ${name} download page: ${error.message}`, 'error');
+        }
       }
     }
 
@@ -6175,7 +6228,7 @@
                 `
                 : '';
               return `
-                <div class="android-device-item${isActivated ? ' activated' : hasOwnedState ? ' warning' : ''}" data-device-id="${esc(d.serial)}">
+                <div class="android-device-item${isActivated ? ' activated' : hasOwnedState ? ' warning' : ''}" data-device-id="${escapeHtmlAttribute(d.serial)}">
                   <div class="android-device-info">
                     <i class="ph ph-device-mobile"></i>
                     <div class="android-device-details">
@@ -6193,7 +6246,7 @@
                         ? '<span class="android-device-status status-warning">Unauthorized</span>'
                         : isOffline
                           ? '<span class="android-device-status status-offline">Offline</span>'
-                          : `<button class="android-device-activate"${requiresHostIpSelection && !selectedHostIp ? ' disabled' : ''} onclick="event.stopPropagation(); activateAndroidDevice('${esc(d.serial)}');">Activate</button>`
+                          : `<button class="android-device-activate"${requiresHostIpSelection && !selectedHostIp ? ' disabled' : ''} onclick="event.stopPropagation(); activateAndroidDevice(this.closest('.android-device-item').dataset.deviceId);">Activate</button>`
                     }
                   </div>
                 </div>
@@ -6236,7 +6289,9 @@
       interceptorsInProgress.add('android-adb');
       filterInterceptors();
 
-      const item = document.querySelector(`[data-device-id="${deviceId}"]`);
+      const item = Array.from(document.querySelectorAll('.android-device-item')).find(
+        candidate => candidate.dataset.deviceId === deviceId
+      );
       const btn = item?.querySelector('.android-device-activate');
       if (btn) {
         btn.disabled = true;
@@ -6244,7 +6299,7 @@
       }
 
       try {
-        const res = await fetch(`${API_BASE}/api/interceptors/android-adb/activate`, {
+        const { response: res, data } = await fetchManagementJson(`${API_BASE}/api/interceptors/android-adb/activate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -6252,7 +6307,6 @@
             ...(requiresHostIpSelection ? { hostIp: selectedHostIp } : {})
           })
         });
-        const data = await res.json();
         if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh device and activation info
@@ -6479,12 +6533,11 @@
       }
 
       try {
-        const res = await fetch(`${API_BASE}/api/interceptors/jvm/activate`, {
+        const { response: res, data } = await fetchManagementJson(`${API_BASE}/api/interceptors/jvm/activate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pid })
         });
-        const data = await res.json();
         if (!isCurrentInterceptorOperation(operation)) return;
 
         // Update metadata with fresh process and activation info
@@ -6599,7 +6652,7 @@
         interceptorsInProgress.add(id);
         filterInterceptors();
         const requestDeactivation = async body => {
-          const response = await fetch(`${API_BASE}/api/interceptors/${id}/deactivate`, {
+          return fetchManagementJson(`${API_BASE}/api/interceptors/${id}/deactivate`, {
             method: 'POST',
             ...(body
               ? {
@@ -6608,10 +6661,6 @@
                 }
               : {})
           });
-          return {
-            response,
-            data: await response.json().catch(() => ({}))
-          };
         };
         let { response: res, data } = await requestDeactivation();
         if (data.code === 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED') {
@@ -9875,6 +9924,14 @@
       return btoa(binary);
     }
 
+    function quoteMultipartDispositionValue(value, label) {
+      const text = String(value);
+      if (/[\0-\x1f\x7f]/.test(text)) {
+        throw new Error(`${label} cannot contain control characters`);
+      }
+      return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
     async function serializeMultipartFields(fields, boundary, signal) {
       const encoder = new TextEncoder();
       const chunks = [];
@@ -9889,13 +9946,17 @@
       for (const field of fields) {
         throwIfSendAborted(signal);
         if (field.enabled === false || !field.key) continue;
-        const safeName = String(field.key).replace(/["\r\n]/g, '_');
+        const safeName = quoteMultipartDispositionValue(field.key, 'Multipart field name');
         append(`--${boundary}\r\n`);
         if (field.type === 'file') {
           if (!field.file) throw new Error(`Choose a file for multipart field "${field.key}"`);
-          const safeFilename = String(field.file.name).replace(/["\r\n]/g, '_');
+          const safeFilename = quoteMultipartDispositionValue(field.file.name, 'Multipart file name');
+          const contentType = String(field.file.type || 'application/octet-stream');
+          if (/[\0-\x1f\x7f]/.test(contentType)) {
+            throw new Error('Multipart file content type cannot contain control characters');
+          }
           append(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`);
-          append(`Content-Type: ${field.file.type || 'application/octet-stream'}\r\n\r\n`);
+          append(`Content-Type: ${contentType}\r\n\r\n`);
           throwIfSendAborted(signal);
           const fileBuffer = await awaitSendPreparation(field.file.arrayBuffer(), signal);
           throwIfSendAborted(signal);
@@ -12079,39 +12140,77 @@
       }
     }
 
+    let autoRotateProxyAuthoritative = {
+      enabled: false,
+      provider: 'lemonprime'
+    };
+    let autoRotateProxySavePromise = null;
+
+    function applyAutoRotateProxyControls(config) {
+      const checkbox = document.getElementById('autoRotateProxyOnError');
+      const providerEl = document.getElementById('bottingToolsProvider');
+      if (checkbox) checkbox.checked = config.enabled === true;
+      if (providerEl) providerEl.value = config.provider || 'lemonprime';
+    }
+
+    function setAutoRotateProxyControlsDisabled(disabled) {
+      const checkbox = document.getElementById('autoRotateProxyOnError');
+      const providerEl = document.getElementById('bottingToolsProvider');
+      if (checkbox) checkbox.disabled = disabled;
+      if (providerEl) providerEl.disabled = disabled;
+    }
+
     async function loadAutoRotateProxyOnError() {
       try {
         const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy');
         const data = await res.json();
-        const checkbox = document.getElementById('autoRotateProxyOnError');
-        const providerEl = document.getElementById('bottingToolsProvider');
-        if (checkbox) checkbox.checked = !!data.enabled;
-        if (providerEl && data.provider) providerEl.value = data.provider;
+        autoRotateProxyAuthoritative = {
+          enabled: data.enabled === true,
+          provider: String(data.provider || 'lemonprime').trim() || 'lemonprime'
+        };
+        applyAutoRotateProxyControls(autoRotateProxyAuthoritative);
       } catch (err) {
         console.warn('[BottingTools auto-rotate]', err.message);
       }
     }
 
     async function saveAutoRotateProxyOnError(showToast = true) {
+      if (autoRotateProxySavePromise) return autoRotateProxySavePromise;
       const checkbox = document.getElementById('autoRotateProxyOnError');
       const providerEl = document.getElementById('bottingToolsProvider');
       const enabled = !!checkbox?.checked;
       const provider = (providerEl?.value || 'lemonprime').trim() || 'lemonprime';
+      const previous = { ...autoRotateProxyAuthoritative };
+      setAutoRotateProxyControlsDisabled(true);
 
-      try {
-        const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled, provider })
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        if (showToast) {
-          toast(enabled ? 'Auto proxy rotation enabled' : 'Auto proxy rotation disabled', 'success');
+      autoRotateProxySavePromise = (async () => {
+        try {
+          const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled, provider })
+          });
+          const data = await res.json();
+          if (data.error || data.success !== true || typeof data.enabled !== 'boolean') {
+            throw new Error(data.error || 'Server returned an invalid auto-rotate setting');
+          }
+          autoRotateProxyAuthoritative = {
+            enabled: data.enabled,
+            provider: String(data.provider || provider).trim() || 'lemonprime'
+          };
+          applyAutoRotateProxyControls(autoRotateProxyAuthoritative);
+          if (showToast) {
+            toast(data.enabled ? 'Auto proxy rotation enabled' : 'Auto proxy rotation disabled', 'success');
+          }
+        } catch (err) {
+          applyAutoRotateProxyControls(previous);
+          toast('Auto rotate setting failed: ' + err.message, 'error');
+        } finally {
+          setAutoRotateProxyControlsDisabled(false);
+          autoRotateProxySavePromise = null;
         }
-      } catch (err) {
-        if (showToast) toast('Auto rotate setting failed: ' + err.message, 'error');
-      }
+      })();
+      return autoRotateProxySavePromise;
     }
 
     function handleProxyAutoRotateEvent(msg) {
@@ -12640,12 +12739,11 @@
 
       let degradedFailureStatus = null;
       try {
-        const response = await fetch(API_BASE + '/api/mcp/toggle', {
+        const { response, data } = await fetchManagementJson(API_BASE + '/api/mcp/toggle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: requestedEnabled })
         });
-        const data = await response.json().catch(() => null);
         if (!response.ok || data?.success !== true || data.enabled !== requestedEnabled) {
           if (data?.degraded === true && typeof data.enabled === 'boolean') {
             degradedFailureStatus = data;
@@ -12687,13 +12785,16 @@
         el.innerHTML = '<div style="font-size:12px;color:var(--text-watermark);padding:4px 0;">No API specs loaded</div>';
         return;
       }
-      el.innerHTML = specs.map(s =>
-        '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-color);">' +
-        '<span style="font-weight:600;font-size:13px;flex:1;">' + esc(s.title) + '</span>' +
-        '<span style="font-family:var(--font-mono);font-size:11px;color:var(--text-lowlight);">' + esc(s.baseUrl || 'any host') + '</span>' +
-        '<button class="btn btn-danger" onclick="removeApiSpec(\'' + s.id + '\')" style="padding:2px 6px;font-size:10px;">x</button>' +
-        '</div>'
-      ).join('');
+      el.innerHTML = specs.map(s => {
+        const title = String(s.title || 'Untitled API spec');
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-color);">' +
+          '<span style="font-weight:600;font-size:13px;flex:1;">' + esc(title) + '</span>' +
+          '<span style="font-family:var(--font-mono);font-size:11px;color:var(--text-lowlight);">' + esc(s.baseUrl || 'any host') + '</span>' +
+          '<button class="btn btn-danger" data-spec-id="' + escapeHtmlAttribute(s.id) + '" ' +
+          'onclick="removeApiSpec(this.dataset.specId)" aria-label="Remove API spec ' +
+          escapeHtmlAttribute(title) + '" style="padding:2px 6px;font-size:10px;">x</button>' +
+          '</div>';
+      }).join('');
     }
 
     async function readApiSpecUploadResponse(response) {
@@ -13061,6 +13162,7 @@
     // Navigate to panel by hash route on page load or hash change
     function navigateFromHash() {
       const hash = window.location.hash.replace(/^#\/?/, '');
+      updatePendingTrafficViewFromHash(window.location.hash);
 
       // Check for deep-linked request: #/view/<requestId>
       const viewMatch = window.location.hash.match(/^#\/view\/(.+)$/);
@@ -13072,16 +13174,7 @@
           document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
           document.getElementById('panel-traffic').classList.add('active');
         }
-        // Try to select the request after traffic loads
-        const requestId = parseTrafficViewHash(window.location.hash);
-        const trafficLifecycleId = parseTrafficViewLifecycleHash(window.location.hash);
-        if (requestId !== null) {
-          setTimeout(() => {
-            if (findTrafficRequestByIdentity(requests, requestId, trafficLifecycleId ?? undefined)) {
-              selectRequest(requestId, false, trafficLifecycleId ?? undefined);
-            }
-          }, 1000);
-        }
+        resolvePendingTrafficView();
         return;
       }
 

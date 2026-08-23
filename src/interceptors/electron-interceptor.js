@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
 import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
+import { formatProxyUrl, getLocalProxyHost } from './proxy-bind-reachability.js';
 import {
   inspectProcessIdentity,
   normalizeProcessIdentity,
@@ -15,6 +17,7 @@ export class ElectronInterceptor {
   constructor(options = {}) {
     this.id = 'electron';
     this.name = 'Electron App';
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.ca = null;
     this.process = null;
@@ -83,7 +86,7 @@ export class ElectronInterceptor {
   }
 
   _getLaunchArgs(proxyPort) {
-    const args = [`--proxy-server=http://127.0.0.1:${proxyPort}`];
+    const args = [`--proxy-server=${formatProxyUrl(this.proxyHost, proxyPort)}`];
 
     if (this.ca?.systemTrustInstalled !== true) {
       const spkiFingerprint = typeof this.ca?.getSpkiFingerprint === 'function'
@@ -95,7 +98,7 @@ export class ElectronInterceptor {
       args.push(`--ignore-certificate-errors-spki-list=${spkiFingerprint.trim()}`);
     }
 
-    return args;
+    return ensureChromiumLoopbackProxying(args);
   }
 
   _getMainProcessCaBundlePath() {
@@ -123,7 +126,7 @@ export class ElectronInterceptor {
   }
 
   _getLaunchEnvironment(proxyPort, caBundlePath) {
-    const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+    const proxyUrl = formatProxyUrl(this.proxyHost, proxyPort);
     const env = {
       ...this._environment(),
       HTTP_PROXY: proxyUrl,

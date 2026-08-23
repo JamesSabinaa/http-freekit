@@ -186,7 +186,11 @@ test('failed and unknown decoding preserve raw base64 bytes and original headers
         assertBinaryDecoder(format, snippet, base64);
         assert.doesNotMatch(snippet, /SEMANTIC REPLAY/);
         assert.ok(snippet.includes(encoding), `${format} dropped ${encoding}`);
-        assert.ok(snippet.includes(String(bytes.length)), `${format} dropped Content-Length`);
+        if (format === 'javascript-fetch') {
+          assert.match(snippet, /^\/\/ BROWSER-CONTROLLED HEADERS OMITTED:.*Content-Length/im);
+        } else {
+          assert.ok(snippet.includes(String(bytes.length)), `${format} dropped Content-Length`);
+        }
       });
     }
   }

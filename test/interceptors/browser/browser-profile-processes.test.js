@@ -5,8 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   collectRelatedProcessIds,
-  commandUsesBrowserProfile,
-  getRelatedProcessIds,
   inspectRelatedBrowserProcesses
 } from '../../../src/interceptors/browser-lifecycle.js';
 
@@ -108,8 +106,14 @@ test('Windows profile arguments are case-insensitive but remain exact', () => {
 
   assert.deepEqual(sortedProcessIds(processes, profileDir, [], 'win32'), [601, 602]);
   assert.deepEqual(sortedProcessIds(processes, profileDir, [], 'linux'), []);
-  assert.equal(commandUsesBrowserProfile(processes[0].command, profileDir, 'win32'), true);
-  assert.equal(commandUsesBrowserProfile(processes[0].command, profileDir, 'linux'), false);
+  assert.deepEqual(
+    [...inspectRelatedBrowserProcesses([processes[0]], profileDir, [], 'win32').processIds],
+    [601]
+  );
+  assert.deepEqual(
+    [...inspectRelatedBrowserProcesses([processes[0]], profileDir, [], 'linux').processIds],
+    []
+  );
 });
 
 test('explicit browser roots and complete descendant trees do not depend on profile text', () => {
@@ -161,22 +165,6 @@ test('macOS flattened arguments reject an existing longer profile interpretation
   const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'darwin');
   assert.deepEqual([...inspection.processIds], []);
   assert.deepEqual([...inspection.ambiguousProcessIds], [801, 802, 803]);
-  assert.throws(
-    () => getRelatedProcessIds(profileDir, [], processes, 'darwin'),
-    error => error?.code === 'AMBIGUOUS_BROWSER_PROFILE_PROCESS'
-  );
-  assert.equal(commandUsesBrowserProfile(
-    processes[0].command,
-    profileDir,
-    'darwin',
-    processes[0].commandName
-  ), false);
-  assert.equal(commandUsesBrowserProfile(
-    processes[1].command,
-    profileDir,
-    'darwin',
-    processes[1].commandName
-  ), false);
 });
 
 test('ambiguous browser descendants never enter the exact process closure', t => {

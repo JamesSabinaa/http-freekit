@@ -140,6 +140,18 @@ test('JVM attach failure metadata replaces and renders a stale fallback command'
         }
       })
     }),
+    fetchManagementJson: async () => ({
+      response: { ok: false, status: 500 },
+      data: {
+        success: false,
+        error: 'attach denied',
+        metadata: {
+          fallbackCommand: null,
+          processes: [{ pid: '123', name: 'Example' }],
+          activatedProcesses: []
+        }
+      }
+    }),
     document: {
       querySelector: () => ({ querySelector: () => button }),
       getElementById: id => id === 'interceptConfig-jvm' ? container : null

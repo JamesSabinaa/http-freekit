@@ -87,6 +87,46 @@ test('rejected WebSocket response errors close and finalize only once', async ()
   assert.equal(updates[0].errorCode, 'ECONNRESET');
 });
 
+test('chunked WebSocket rejections are re-framed with their trailers', async () => {
+  const updates = [];
+  const proxy = new ProxyServer(null, { onRequest: update => updates.push(update) });
+  const response = new PassThrough();
+  response.statusCode = 403;
+  response.statusMessage = 'Forbidden';
+  response.headers = {
+    'content-type': 'text/plain',
+    'transfer-encoding': 'chunked',
+    trailer: 'x-checksum'
+  };
+  response.rawHeaders = [
+    'Content-Type', 'text/plain',
+    'Transfer-Encoding', 'chunked',
+    'Trailer', 'X-Checksum'
+  ];
+  response.trailers = { 'x-checksum': 'complete' };
+  response.rawTrailers = ['X-Checksum', 'complete'];
+  response.socket = null;
+
+  const downstream = new PassThrough();
+  const chunks = [];
+  downstream.on('data', chunk => chunks.push(chunk));
+  const finished = once(downstream, 'finish');
+
+  proxy._forwardRejectedUpgradeResponse(response, downstream, {
+    id: 'chunked-rejection',
+    protocol: 'ws'
+  }, Date.now());
+  response.end('denied');
+  await finished;
+
+  const output = Buffer.concat(chunks).toString('latin1');
+  assert.match(output, /Transfer-Encoding: chunked\r\n/);
+  assert.match(output, /\r\n\r\n6\r\ndenied\r\n0\r\nX-Checksum: complete\r\n\r\n$/);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].responseBody, 'denied');
+  assert.equal(updates[0].trailers['x-checksum'], 'complete');
+});
+
 test('an aborted rejected WebSocket response forwards its partial body and closes the client', async t => {
   const origin = net.createServer(socket => {
     socket.once('data', () => {

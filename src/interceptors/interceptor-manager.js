@@ -34,17 +34,17 @@ export class InterceptorManager {
 
     // Register all interceptors (order matches HTTP Toolkit's sidebar)
     const isolatedBrowsers = [
-      new BrowserInterceptor('chrome', 'Chrome', 'chrome'),
-      new BrowserInterceptor('firefox', 'Firefox', 'firefox'),
-      new BrowserInterceptor('edge', 'Edge', 'edge'),
-      new BrowserInterceptor('brave', 'Brave', 'brave')
+      new BrowserInterceptor('chrome', 'Chrome', 'chrome', options),
+      new BrowserInterceptor('firefox', 'Firefox', 'firefox', options),
+      new BrowserInterceptor('edge', 'Edge', 'edge', options),
+      new BrowserInterceptor('brave', 'Brave', 'brave', options)
     ];
     this._register(isolatedBrowsers[0]);
     this._register(new ExistingBrowserInterceptor(
       'existing-chrome',
       'Global Chrome',
       'chrome',
-      { dataDir: options.dataDir }
+      { dataDir: options.dataDir, proxyBindHost: options.proxyBindHost }
     ));
     this._register(isolatedBrowsers[1]);
     this._register(isolatedBrowsers[2]);
@@ -59,18 +59,31 @@ export class InterceptorManager {
         );
       }
     }
-    this._register(new FreshTerminalInterceptor({ dataDir: options.dataDir }));
-    this._register(new ExistingTerminalInterceptor());
-    const systemProxy = new SystemProxyInterceptor({ dataDir: options.dataDir, ca });
+    this._register(new FreshTerminalInterceptor({
+      dataDir: options.dataDir,
+      proxyBindHost: options.proxyBindHost
+    }));
+    this._register(new ExistingTerminalInterceptor({ proxyBindHost: options.proxyBindHost }));
+    const systemProxy = new SystemProxyInterceptor({
+      dataDir: options.dataDir,
+      ca,
+      proxyBindHost: options.proxyBindHost
+    });
     this._register(systemProxy);
     this._initializationPromise = systemProxy.recoverStaleSettings();
     this._register(new DockerInterceptor({ proxyBindHost: options.proxyBindHost }));
-    this._register(new ElectronInterceptor({ dataDir: options.dataDir }));
+    this._register(new ElectronInterceptor({
+      dataDir: options.dataDir,
+      proxyBindHost: options.proxyBindHost
+    }));
     this._register(new AndroidAdbInterceptor({
       dataDir: options.dataDir,
       proxyBindHost: options.proxyBindHost
     }));
-    this._register(new JvmInterceptor({ dataDir: options.dataDir }));
+    this._register(new JvmInterceptor({
+      dataDir: options.dataDir,
+      proxyBindHost: options.proxyBindHost
+    }));
 
     // Give all interceptors that need it a reference to the CA
     for (const interceptor of this.interceptors.values()) {

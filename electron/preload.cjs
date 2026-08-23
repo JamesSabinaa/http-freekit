@@ -13,6 +13,7 @@ const ALLOWED_INVOKE_CHANNELS = [
   'get-desktop-version',
   'get-server-auth-token',
   'get-device-info',
+  'open-external-url',
   'get-close-window-behavior',
   'set-close-window-behavior',
   'select-file-path',
@@ -57,6 +58,9 @@ contextBridge.exposeInMainWorld('electronApi', {
    * @returns {Promise<{platform: string, arch: string, electronVersion: string, osVersion: string}>}
    */
   getDeviceInfo: () => safeInvoke('get-device-info'),
+
+  /** Opens an allowlisted web URL in the system browser. */
+  openExternalUrl: (url) => safeInvoke('open-external-url', url),
 
   /**
    * Returns whether the window close button hides to the tray or quits the app.

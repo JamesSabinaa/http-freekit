@@ -102,6 +102,36 @@ test('startup records an obsolete certificate even when its private key is missi
   assert.equal(fs.existsSync(ca.caReplacementStatePath), true);
 });
 
+test('startup records the previous active identity when only ca.pem is missing', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-missing-ca-cert-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.mock.method(console, 'log', () => {});
+  const oldCertificatePem = createPersistedCa(dataDir, '01');
+  const oldFingerprint = new crypto.X509Certificate(oldCertificatePem)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  const firstStart = new CertificateAuthority(dataDir);
+  await firstStart.initialize();
+  assert.equal(
+    JSON.parse(fs.readFileSync(firstStart.caActiveStatePath, 'utf8')).fingerprint,
+    oldFingerprint
+  );
+
+  fs.unlinkSync(path.join(dataDir, 'ca.pem'));
+  const replacement = new CertificateAuthority(dataDir);
+  replacement._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+  const info = await replacement.initialize();
+  const newFingerprint = new crypto.X509Certificate(fs.readFileSync(info.certPath, 'utf8'))
+    .fingerprint.replace(/:/g, '').toUpperCase();
+
+  assert.deepEqual(info.replacedCertificateFingerprints, [oldFingerprint]);
+  assert.equal(replacement.getCertInfo().certificateReplacementPending, true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(replacement.caActiveStatePath, 'utf8')).fingerprint,
+    newFingerprint
+  );
+  assert.notEqual(newFingerprint, oldFingerprint);
+});
+
 test('pending replacement cleanup survives trust failures and restarts', async t => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-cleanup-retry-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));

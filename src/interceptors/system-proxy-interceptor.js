@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { formatProxyAuthority, getLocalProxyHost } from './proxy-bind-reachability.js';
 
 const INTERNET_SETTINGS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 const WINHTTP_RECOVERY_FILENAME = 'winhttp-proxy-recovery.json';
@@ -9,6 +10,7 @@ export class SystemProxyInterceptor {
   constructor(options = {}) {
     this.id = 'system-proxy';
     this.name = 'System Proxy';
+    this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.previousSettings = null;
     this.activeProxyServer = null;
@@ -669,7 +671,7 @@ if ($null -eq $target) {
         }
         this.previousSettings = await this._readCurrentSettings();
         this.previousWinHttpSettings = await this._readWinHttpSettings();
-        const proxyServer = `127.0.0.1:${proxyPort}`;
+        const proxyServer = formatProxyAuthority(this.proxyHost, proxyPort);
         const ownedWinHttpSettings = {
           scope: 'machine',
           proxy: proxyServer,
@@ -705,7 +707,7 @@ if ($null -eq $target) {
         this.activeProxyServer = proxyServer;
         this.activeWinHttpSettings = ownedWinHttpSettings;
         this.active = true;
-        console.log(`[Interceptor] WinINet and machine WinHTTP proxies set to 127.0.0.1:${proxyPort}`);
+        console.log(`[Interceptor] WinINet and machine WinHTTP proxies set to ${proxyServer}`);
         return { success: true };
       } catch (err) {
         const rollbackErrors = [];

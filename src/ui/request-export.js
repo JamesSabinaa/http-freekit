@@ -37,6 +37,37 @@ const REBUILT_MULTIPART_HEADER_NAMES = new Set([
   'trailer',
   'transfer-encoding'
 ]);
+const FETCH_FORBIDDEN_HEADER_NAMES = new Set([
+  'accept-charset', 'accept-encoding', 'access-control-request-headers',
+  'access-control-request-method', 'connection', 'content-length', 'cookie',
+  'cookie2', 'date', 'dnt', 'expect', 'host', 'keep-alive', 'origin',
+  'permissions-policy', 'proxy-connection', 'referer', 'te', 'trailer',
+  'transfer-encoding', 'upgrade', 'via'
+]);
+
+function isFetchForbiddenHeaderName(name) {
+    const lowerName = name.toLowerCase();
+    return FETCH_FORBIDDEN_HEADER_NAMES.has(lowerName) ||
+      lowerName.startsWith('proxy-') || lowerName.startsWith('sec-');
+}
+
+function prepareFetchExportHeaders(headers) {
+  const emitted = [];
+  const omitted = [];
+  for (const header of headers) {
+    if (isFetchForbiddenHeaderName(header[0])) omitted.push(header[0]);
+    else emitted.push(header);
+  }
+  return { emitted, omitted: [...new Set(omitted)] };
+}
+
+function addFetchHeaderWarning(code, omitted) {
+  if (omitted.length === 0) return code;
+  const names = omitted.map(name => String(name).replace(/[^\x21-\x7e]/g, '?')).join(', ');
+  return `// BROWSER-CONTROLLED HEADERS OMITTED: ${names}\n` +
+    '// Fetch will derive or reject these fields; compare browser behavior before relying on exact replay.\n' +
+    code;
+}
 
 export function getExportHeaders(req, omitContentType = false) {
   const headers = [];
@@ -216,7 +247,7 @@ function generateMultipartExportSnippet(req, format) {
     return generateFetchBodyUnavailableSnippet(method);
   }
 
-  if (format === 'powershell' || format === 'php') {
+  if (['javascript-node', 'powershell', 'wget', 'php'].includes(format)) {
     const unsafeField = fields.find((field) => {
       if (!isSafeMultipartDispositionValue(field.key)) return true;
       if (field.type !== 'file') return false;
@@ -234,17 +265,17 @@ function generateMultipartExportSnippet(req, format) {
 
   if (format === 'curl') {
     const unsafeFileField = fields.find((field) => {
+      if (String(field.key).includes('=')) return true;
       if (field.type !== 'file') return false;
       const fileName = String(field.file?.name || field.fileName || 'file');
       const contentType = field.file?.type || field.fileType;
-      return String(field.key).includes('=')
-        || fileName === '-'
+      return fileName === '-'
         || (contentType && !isSafeCurlFormContentType(contentType));
     });
     if (unsafeFileField) {
       return generateUnavailableExportSnippet(
         format,
-        'The captured file metadata cannot be represented safely in cURL form syntax.'
+        'The captured multipart field or file metadata cannot be represented safely in cURL form syntax.'
       );
     }
     let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
@@ -282,7 +313,8 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'javascript-fetch') {
-    const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+    const fetchHeaders = prepareFetchExportHeaders(headers);
+    const preparedRequest = prepareJavaScriptExportRequest(url, fetchHeaders.emitted);
     if (preparedRequest.error) {
       return generateUnavailableExportSnippet(format, preparedRequest.error);
     }
@@ -313,7 +345,7 @@ function generateMultipartExportSnippet(req, format) {
     code += `\nconst response = await fetch(${JSON.stringify(preparedRequest.url)}, {\n  method: ${JSON.stringify(method)}`;
     if (preparedRequest.headers.length) code += `,\n  headers: {\n${preparedRequest.headers.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n  }`;
     code += ',\n  body: formData\n});\n\nconsole.log(response.status, await response.text());';
-    return code;
+    return addFetchHeaderWarning(code, fetchHeaders.omitted);
   }
 
   if (format === 'javascript-node') {
@@ -325,11 +357,11 @@ function generateMultipartExportSnippet(req, format) {
     let code = "const fs = require('fs');\nconst http = require('http');\nconst https = require('https');\n\n";
     code += `const boundary = ${JSON.stringify(boundary)};\nconst chunks = [];\nconst append = value => chunks.push(Buffer.from(value));\n`;
     fields.forEach((field) => {
-      const safeName = String(field.key).replace(/["\r\n]/g, '_');
+      const safeName = multipartQuotedString(field.key);
       code += `append('--' + boundary + '\\r\\n');\n`;
       if (field.type === 'file') {
         const filename = field.file?.name || field.fileName || 'file';
-        const safeFilename = filename.replace(/["\r\n]/g, '_');
+        const safeFilename = multipartQuotedString(filename);
         const contentType = field.file?.type || field.fileType || 'application/octet-stream';
         code += `append(${JSON.stringify(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`)});\n`;
         code += `append(${JSON.stringify(`Content-Type: ${contentType}\r\n\r\n`)});\n`;
@@ -391,11 +423,11 @@ function generateMultipartExportSnippet(req, format) {
     const boundary = req.multipartBoundary || '----HTTPFreeKitBoundary';
     let code = `boundary='${shellSingleQuote(boundary)}'\nbody_file=$(mktemp)\n{\n`;
     fields.forEach((field) => {
-      const safeName = String(field.key).replace(/["\r\n]/g, '_');
+      const safeName = multipartQuotedString(field.key);
       code += `  printf '%s\\r\\n' "--$boundary"\n`;
       if (field.type === 'file') {
         const filename = field.file?.name || field.fileName || 'file';
-        const safeFilename = filename.replace(/["\r\n]/g, '_');
+        const safeFilename = multipartQuotedString(filename);
         const contentType = field.file?.type || field.fileType || 'application/octet-stream';
         code += `  printf '%s\\r\\n' '${shellSingleQuote(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"`)}'\n`;
         code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Type: ${contentType}`)}'\n  cat '${shellSingleQuote(filename)}'\n  printf '\\r\\n'\n`;
@@ -532,7 +564,8 @@ function generateExportSnippetCore(req, format) {
       if (hasBody && isFetchBodyForbiddenMethod(method)) {
         return generateFetchBodyUnavailableSnippet(method);
       }
-      const preparedRequest = prepareJavaScriptExportRequest(url, headers);
+      const fetchHeaders = prepareFetchExportHeaders(headers);
+      const preparedRequest = prepareJavaScriptExportRequest(url, fetchHeaders.emitted);
       if (preparedRequest.error) {
         return generateUnavailableExportSnippet(format, preparedRequest.error);
       }
@@ -546,7 +579,7 @@ function generateExportSnippetCore(req, format) {
           : `,\n  body: ${JSON.stringify(body)}`;
       }
       code += `\n});\n\nconst data = await response.text();\nconsole.log(response.status, data);`;
-      return code;
+      return addFetchHeaderWarning(code, fetchHeaders.omitted);
     }
     case 'javascript-node': {
       const preparedRequest = prepareJavaScriptExportRequest(url, headers);

@@ -50,6 +50,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
       context.selectedRequestLifecycleId = null;
     },
     showDetail(value) { shown.push(value); },
+    resolvePendingTrafficView() {},
     renderTraffic() {
       filterCalls++;
     }

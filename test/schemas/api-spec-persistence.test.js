@@ -95,7 +95,7 @@ test('API spec uploads and deletions survive complete server restarts', async t 
     body: { specs: [{ id, title: 'Persistent API', baseUrl: 'https://api.example.test/v1' }] }
   });
   assert.equal(
-    restartedProxy.matchApiSpec('GET', '/widgets/42', 'api.example.test').operationId,
+    restartedProxy.matchApiSpec('GET', '/v1/widgets/42', 'api.example.test').operationId,
     'getWidget'
   );
 

@@ -202,12 +202,28 @@ export function parseCurlCommand(curlStr) {
         if (colonIndex > 0) {
           const name = value.slice(0, colonIndex).trim();
           const headerValue = value.slice(colonIndex + 1).trim();
+          if (headerValue === '') {
+            return {
+              error: `Suppressed cURL header ${name}: cannot be imported exactly; use ${name}; for an explicit empty header`
+            };
+          }
           if (explicitHeaderNames.has(name.toLowerCase())) {
             appendCurlHeader(result.headers, name, headerValue);
           } else {
             setCurlHeader(result.headers, name, headerValue);
             explicitHeaderNames.add(name.toLowerCase());
           }
+        } else if (colonIndex === -1 && value.endsWith(';')) {
+          const name = value.slice(0, -1).trim();
+          if (!name) return { error: `Invalid empty header for cURL option: ${option}` };
+          if (explicitHeaderNames.has(name.toLowerCase())) {
+            appendCurlHeader(result.headers, name, '');
+          } else {
+            setCurlHeader(result.headers, name, '');
+            explicitHeaderNames.add(name.toLowerCase());
+          }
+        } else {
+          return { error: `Invalid header syntax for cURL option ${option}` };
         }
       } else if (option === '-d' || option === '--data' || option === '--data-ascii' ||
           option === '--data-raw' || option === '--data-binary') {

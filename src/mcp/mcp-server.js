@@ -631,13 +631,16 @@ export class McpServerBridge {
 
   // ========== Tool Handlers ==========
 
-  _getHttpRequestTraffic() {
-    const traffic = typeof this.apiServer._getTrafficWithListsApplied === 'function'
+  _getVisibleTraffic() {
+    return typeof this.apiServer._getTrafficWithListsApplied === 'function'
       ? this.apiServer._getTrafficWithListsApplied()
       : typeof this.apiServer._getTrafficWithoutDefaultExclusions === 'function'
       ? this.apiServer._getTrafficWithoutDefaultExclusions()
       : this.apiServer.trafficLog;
-    return traffic.filter(record => record?.protocol !== 'ws-frame');
+  }
+
+  _getHttpRequestTraffic() {
+    return this._getVisibleTraffic().filter(record => record?.protocol !== 'ws-frame');
   }
 
   _handleSearchTraffic({ query, method, status, host, limit }) {
@@ -743,7 +746,7 @@ export class McpServerBridge {
       throw new Error(`body_limit must be a safe integer from 1 to ${MCP_BODY_PAGE_MAX_CODE_UNITS}`);
     }
 
-    let candidates = this.apiServer.trafficLog.filter(
+    let candidates = this._getVisibleTraffic().filter(
       record => ownDataValue(record, 'id') === request_id
     );
     if (lifecycleProvided) {
@@ -1104,7 +1107,7 @@ export class McpServerBridge {
         (typeof traffic_lifecycle_id !== 'string' || traffic_lifecycle_id.length === 0)) {
       throw new Error('traffic_lifecycle_id must be a non-empty string or null');
     }
-    let candidates = this.apiServer.trafficLog.filter(
+    let candidates = this._getVisibleTraffic().filter(
       record => ownDataValue(record, 'id') === request_id
     );
     if (lifecycleProvided) {

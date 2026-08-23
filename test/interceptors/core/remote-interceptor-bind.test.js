@@ -11,6 +11,9 @@ import { InterceptorManager } from '../../../src/interceptors/interceptor-manage
 import {
   canAdvertisedHostReachProxy,
   classifyProxyBindHost,
+  formatProxyAuthority,
+  formatProxyUrl,
+  getLocalProxyHost,
   resolveProxyBindAddress
 } from '../../../src/interceptors/proxy-bind-reachability.js';
 
@@ -73,11 +76,50 @@ test('proxy bind hostnames resolve once to the numeric address shared by startup
   assert.equal(await resolveProxyBindAddress('[::1]', () => assert.fail()), '::1');
 });
 
+test('local proxy destinations follow specific binds and normalize wildcard listeners', () => {
+  assert.equal(getLocalProxyHost('192.0.2.10'), '192.0.2.10');
+  assert.equal(getLocalProxyHost('0.0.0.0'), '127.0.0.1');
+  assert.equal(getLocalProxyHost('::'), '::1');
+  assert.equal(formatProxyAuthority('2001:db8::10', 8080), '[2001:db8::10]:8080');
+  assert.equal(formatProxyUrl('2001:db8::10', 8080), 'http://[2001:db8::10]:8080');
+});
+
 test('interceptor constructors receive the manager proxy bind host', () => {
   const manager = new InterceptorManager(null, { proxyBindHost: '::' });
 
   assert.equal(manager.interceptors.get('docker').proxyBindHost, '::');
   assert.equal(manager.interceptors.get('android-adb').proxyBindHost, '::');
+  for (const id of [
+    'chrome', 'firefox', 'edge', 'brave', 'existing-chrome',
+    'fresh-terminal', 'existing-terminal', 'system-proxy', 'electron', 'jvm'
+  ]) {
+    assert.equal(manager.interceptors.get(id).proxyHost, '::1', id);
+  }
+});
+
+test('specific bind hosts reach local browser, terminal, Electron, and JVM configurations', async t => {
+  const manager = new InterceptorManager(null, { proxyBindHost: '192.0.2.10' });
+  const chrome = manager.interceptors.get('chrome');
+  chrome.profileDir = '/tmp/freekit-chrome';
+  chrome.ca = { systemTrustInstalled: true };
+  assert.ok(chrome._getChromiumArgs(8080, {}).includes('--proxy-server=192.0.2.10:8080'));
+
+  const firefox = manager.interceptors.get('firefox');
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bind-firefox-'));
+  t.after(() => fs.rmSync(profileDir, { recursive: true, force: true }));
+  firefox.ca = { systemTrustInstalled: true, getCertInfo: () => ({ certificatePath: 'ca.pem' }) };
+  firefox._runCertutil = async () => {};
+  await firefox._getFirefoxArgs(8080, {}, profileDir);
+  assert.match(fs.readFileSync(path.join(profileDir, 'user.js'), 'utf8'), /"192\.0\.2\.10"/);
+
+  const electron = manager.interceptors.get('electron');
+  electron.ca = { systemTrustInstalled: true };
+  assert.equal(electron._getLaunchArgs(8080)[0], '--proxy-server=http://192.0.2.10:8080');
+  assert.equal(manager.interceptors.get('existing-terminal').proxyHost, '192.0.2.10');
+  assert.match(
+    manager.interceptors.get('jvm')._getAgentArgs('192.0.2.10', 8080),
+    /http\.proxyHost=192\.0\.2\.10/
+  );
 });
 
 test('Docker rejects unreachable gateway instructions and honors explicit remote binding', async () => {
@@ -502,7 +544,8 @@ test('renderer labels alias-only QR setup as emulator-only', () => {
       qrAvailabilityNote: 'This QR code is available only to Android emulators.'
     },
     androidHostIpSelections: new Map(),
-    esc: value => String(value ?? '')
+    esc: value => String(value ?? ''),
+    escapeHtmlAttribute: value => String(value ?? '')
   };
   vm.createContext(context);
   vm.runInContext(`${source.slice(start, end)}\nglobalThis.render = renderAndroidConfig;`, context);
@@ -532,7 +575,8 @@ test('renderer surfaces global proxy bind errors without disabling companion act
       qrError: 'QR unavailable'
     },
     androidHostIpSelections: new Map(),
-    esc: value => String(value ?? '')
+    esc: value => String(value ?? ''),
+    escapeHtmlAttribute: value => String(value ?? '')
   };
   vm.createContext(context);
   vm.runInContext(`${source.slice(start, end)}\nglobalThis.render = renderAndroidConfig;`, context);

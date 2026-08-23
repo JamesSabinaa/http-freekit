@@ -35,6 +35,7 @@ test('Electron interception passes Chromium proxy switches as process arguments'
   assert.equal(spawned.appPath, 'sample-electron-app');
   assert.deepEqual(spawned.args, [
     '--proxy-server=http://127.0.0.1:8080',
+    '--proxy-bypass-list=<-loopback>',
     '--ignore-certificate-errors-spki-list=test-spki'
   ]);
   assert.equal(spawned.options.env.ELECTRON_EXTRA_LAUNCH_ARGS, undefined);
@@ -58,6 +59,7 @@ test('manual Electron instructions use real command-line arguments', async () =>
   const result = await interceptor.activate(9090);
 
   assert.match(result.metadata.instructions, /your-app --proxy-server=http:\/\/127\.0\.0\.1:9090/);
+  assert.match(result.metadata.instructions, /--proxy-bypass-list=<-loopback>/);
   assert.match(result.metadata.instructions, /--ignore-certificate-errors-spki-list=manual-spki/);
   assert.doesNotMatch(result.metadata.instructions, /(?:^|\s)--ignore-certificate-errors(?:\s|$)/);
   assert.doesNotMatch(result.metadata.instructions, /ELECTRON_EXTRA_LAUNCH_ARGS/);

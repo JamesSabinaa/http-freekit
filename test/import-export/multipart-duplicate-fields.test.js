@@ -185,7 +185,7 @@ test('PowerShell and PHP multipart snippets serialize duplicate fields as ordere
 });
 
 test('unsafe hand-built multipart metadata is rejected instead of injected', () => {
-  for (const format of ['powershell', 'php']) {
+  for (const format of ['javascript-node', 'powershell', 'wget', 'php']) {
     for (const unsafeField of [
       { key: 'unsafe\r\nX-Injected: yes', value: 'value' },
       { key: 'file', type: 'file', fileName: 'safe.bin', fileType: 'text/plain\r\nX-Injected: yes' }
@@ -221,6 +221,14 @@ test('adjacent multipart formats do not collapse duplicate text names', () => {
       'ordinary marker'
     ], format);
   }
+});
+
+test('cURL refuses text field names containing its form separator', () => {
+  const request = multipartRequest('https://example.test/multipart');
+  request.formFields = [{ key: 'left=right', value: 'value' }];
+  const snippet = generateExportSnippet(request, 'curl');
+  assert.match(snippet, /EXACT REPLAY UNAVAILABLE/);
+  assert.match(snippet, /cannot be represented safely in cURL form syntax/);
 });
 
 test('Python multipart snippets preserve interleaved text and file part order', () => {
@@ -269,6 +277,20 @@ test('generated PowerShell multipart requests preserve duplicate order and binar
       assertCapturedParts(captured, fileName);
     });
   }
+});
+
+test('generated Node multipart requests preserve quoted names and binary files', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freekit-multipart-node-'));
+  const fileName = path.join(tempDir, 'payload.bin');
+  const scriptPath = path.join(tempDir, 'request.cjs');
+  fs.writeFileSync(fileName, fileBytes);
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const captured = await captureRequest(async url => {
+    fs.writeFileSync(scriptPath, generateExportSnippet(multipartRequest(url, fileName), 'javascript-node'));
+    return runScript(process.execPath, [scriptPath], { cwd: tempDir });
+  });
+  assertCapturedParts(captured, fileName);
 });
 
 test('generated PHP multipart requests preserve duplicate order and binary files when PHP is available', async t => {

@@ -14,4 +14,19 @@ test('falls back to empty settings when the settings file contains JSON null', (
 
   assert.equal(settings.get('missing', 'fallback'), 'fallback');
   assert.deepEqual(settings.getAll(), {});
+  assert.throws(() => settings.set('theme', 'dark'), /cannot be saved.*could not be loaded/i);
+  assert.throws(() => settings.setAll({ theme: 'light' }), /Repair or replace the settings file/);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8'), 'null');
+});
+
+test('malformed settings bytes are preserved until explicit recovery', (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-settings-malformed-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const filePath = path.join(dataDir, 'settings.json');
+  const malformed = '{"proxy":';
+  fs.writeFileSync(filePath, malformed);
+
+  const settings = new Settings(dataDir);
+  assert.throws(() => settings.set('port', 9000), /settings\.json.*could not be loaded/i);
+  assert.equal(fs.readFileSync(filePath, 'utf8'), malformed);
 });

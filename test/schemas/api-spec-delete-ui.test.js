@@ -7,6 +7,9 @@ const rendererSource = fs.readFileSync(new URL('../../src/ui/app.js', import.met
 const removeStart = rendererSource.indexOf('async function removeApiSpec(');
 const removeEnd = rendererSource.indexOf('function togglePause(', removeStart);
 assert.ok(removeStart >= 0 && removeEnd > removeStart);
+const renderStart = rendererSource.indexOf('function renderApiSpecs(');
+const renderEnd = rendererSource.indexOf('async function readApiSpecUploadResponse(', renderStart);
+assert.ok(renderStart >= 0 && renderEnd > renderStart);
 
 function harness(fetchImplementation) {
   const fetchCalls = [];
@@ -123,4 +126,24 @@ test('malformed and explicit logical failures cannot report deletion success', a
     assert.deepEqual(ui.toasts, [{ message: scenario.message, type: 'error' }]);
     assert.equal(ui.toasts.some(toast => toast.type === 'success'), false);
   }
+});
+
+test('API spec IDs stay inert in data attributes instead of becoming onclick source', () => {
+  const list = { innerHTML: '' };
+  const context = {
+    document: { getElementById: () => list },
+    esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    escapeHtmlAttribute: value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  };
+  vm.createContext(context);
+  vm.runInContext(`${rendererSource.slice(renderStart, renderEnd)}; globalThis.render = renderApiSpecs;`, context);
+  context.render([{
+    id: `" onclick="document.body.dataset.pwned='1'`,
+    title: 'Hostile spec',
+    baseUrl: 'https://example.test'
+  }]);
+
+  assert.match(list.innerHTML, /onclick="removeApiSpec\(this\.dataset\.specId\)"/);
+  assert.doesNotMatch(list.innerHTML, /onclick="document\.body/);
+  assert.match(list.innerHTML, /data-spec-id="&quot; onclick=&quot;document\.body/);
 });

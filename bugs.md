@@ -8,7 +8,7 @@ All 13 findings in the previous `bugs.md` (BUG-424 through BUG-436) are fixed on
 
 ## Current status
 
-This audit has **123 open findings**: 1 high, 38 medium, 36 low/medium, and 48 low.
+This audit has **91 open findings**: 1 high, 23 medium, 28 low/medium, and 39 low.
 
 ## Audit completion gate
 
@@ -66,77 +66,12 @@ Completion requires two consecutive complete passes with no new findings. A comp
 
 
 
-### BUG-440 — Medium — Advertised JDK 8 interception omits the Attach API at runtime
-
-- Status: **Open**.
-- Evidence: Java 8 compatibility is deliberate (`src/interceptors/jvm-interceptor.js:16-20`) and the availability regression accepts a JDK 8 toolchain (`test/interceptors/jvm/jdk8-jps-availability.test.js:6-23`). The generated helper imports `com.sun.tools.attach.VirtualMachine` (`src/interceptors/jvm-interceptor.js:1156-1174`), but `_runAttachHelper()` launches `java -cp <attachDir> AttachProxy ...` with no JDK 8 `lib/tools.jar` (`:1314-1319`). JDK 9+ exposes this through the `jdk.attach` module; JDK 8 does not put `tools.jar` on that classpath.
-- Impact: the JVM card is marked available on JDK 8, but every attach attempt fails during class loading instead of configuring the target process.
-- Reproduction: on JDK 8, run the generated `AttachProxy` with the current classpath; `VirtualMachine` cannot be loaded. Adding the active JDK's `lib/tools.jar` makes the helper resolvable.
-- Expected: locate the coherent JDK 8 toolchain and include `tools.jar`, or reject JDK 8 as unsupported.
-
-### BUG-441 — Low/Medium — Fresh Firefox has an undocumented external NSS prerequisite
-
-- Status: **Open**.
-- Evidence: the README promises Firefox support and automatic certificate trust for browsers launched from Intercept (`README.md:10,311-317`). Fresh Firefox always shells out to the bare command `certutil` with Mozilla NSS-only arguments (`src/interceptors/browser-interceptor.js:563-633`), but no NSS tool is bundled, located, or configurable. macOS/Linux startup sets `systemTrustInstalled = false` (`src/index.js:103-110`), so a missing command aborts launch. On Windows, bare lookup normally finds Microsoft's unrelated System32 `certutil.exe`; successful OS trust masks that collision, but failed OS trust leaves the same unusable fallback. Existing coverage already confirms that unavailable NSS certutil plus absent OS trust rejects activation (`test/interceptors/browser/firefox-ca-import.test.js:8-30`).
-- Impact: a standard macOS/Linux installation can advertise Firefox as available and then refuse to launch it; the required package and setup are absent from installation documentation.
-- Expected: bundle or robustly locate Mozilla NSS certutil, or document and preflight the prerequisite before presenting Firefox as launchable.
-
-### BUG-442 — Medium — Invalid Android and JVM recovery journals fail open and can be overwritten
-
-- Status: **Open**.
-- Evidence: Android catches every invalid-journal condition and only warns, leaving `journaledGlobalDevices` empty (`src/interceptors/android-adb-interceptor.js:200-266`). Device activation has no invalid-journal gate (`:1497-1535`), and `_rememberGlobalProxyOwnership()` builds a new map from that empty state before atomically replacing the recovery file (`:269-300,340-348`). JVM has the same sequence: catch-and-warn only (`src/interceptors/jvm-interceptor.js:216-247`), no activation gate (`:1377-1435`), then `_setTrackedOwnership()` replaces the journal from the empty in-memory map before attach (`:250-293,1435`). Other interceptors already fail closed when cleanup ownership cannot be resolved.
-- Impact: a corrupt or newer-version journal survives passive status/Stop checks but is destroyed by the next Start. Cleanup ownership for earlier Android proxy, VPN, reverse-tunnel, or JVM mutations is then irretrievably lost, so those targets may remain redirected after FreeKit exits.
-- Expected: retain an explicit unresolved-journal state and refuse every new mutation until the journal is recovered, quarantined with informed consent, or safely reconciled. Extend the malformed-journal tests beyond status/Stop to cover a subsequent activation (`test/interceptors/android/android-recovery-journal.test.js:173-225`; `test/interceptors/jvm/jvm-recovery-journal.test.js:386-404`).
-
-
-### BUG-444 — Low — Desktop renderer-link launch failures are swallowed while the UI reports success
-
-- Status: **Open**.
-- Evidence: both external navigation handlers invoke `shell.openExternal(url).catch(() => {})` (`electron/main.cjs:478-495`). Missing-browser cards use `window.open(..., '_blank')` and immediately toast that the download page is opening (`src/ui/app.js:5326-5341`). If the OS has no URL handler or policy blocks it, the rejected promise is discarded and the user sees only a false success message. The application menu and Linux updater already surface native launch errors, but the general renderer paths do not (`electron/menu.cjs:92-105`; `electron/updater.cjs:350-358`).
-- Impact: the offered browser-install recovery action can do nothing with no diagnosis or retry guidance.
-- Expected: await and report external-launch failures through a native dialog or a renderer-visible result instead of swallowing them.
-
 ## Proxy, API, and tests
 
 
 
 
-### BUG-448 — Medium — OpenAPI matching ignores server base paths and concrete-route precedence
-
-- Status: **Open**.
-- Evidence: upload pre-fills `baseUrl` from `spec.servers[0].url` (`src/ui/app.js:12721-12729`), but matching reduces that URL to a hostname and tests every Path Item against the full captured pathname unchanged (`src/proxy/proxy-server.js:11056-11079`). Thus server URL `https://api.example.test/v1` plus Path Item `/widgets/{id}` fails to match `/v1/widgets/42`. The same loop returns the first insertion-order match, so a preceding `/pets/{id}` wins over the concrete `/pets/search`, contrary to OpenAPI's concrete-before-templated rule. Existing tests encode the base-path error by storing `/v1` while matching `/widgets/42` (`test/schemas/openapi-validation.test.js:68-99`; `test/schemas/api-spec-persistence.test.js:73-99`).
-- Impact: the API insight panel silently disappears for common version-prefixed server definitions and can show the wrong operation for overlapping concrete and templated routes.
-- Expected: resolve the effective server base path before Path Item matching and rank concrete paths ahead of equally matching templated paths, with regressions for both cases.
-
-### BUG-449 — Low/Medium — OpenAPI operation parameters discard inherited Path Item parameters
-
-- Status: **Open**.
-- Evidence: `matchApiSpec()` returns `operationParameters || pathParameters` (`src/proxy/proxy-server.js:11080-11092`). Any operation-level array, including `[]`, therefore drops every shared Path Item parameter. OpenAPI inheritance instead requires both lists, with an operation parameter overriding only the same `(name, in)` pair. The UI consumes only the truncated `apiMatch.parameters` array (`src/ui/app.js:3308-3316`), and tests cover the two levels separately but never together (`test/schemas/openapi-validation.test.js:68-99,122-150`).
-- Impact: required shared path, query, header, or cookie parameters vanish from matched-operation details as soon as an operation defines any parameter of its own.
-- Expected: merge the two arrays by `(name, in)`, retaining inherited entries and replacing only explicit operation-level duplicates.
-
-### BUG-450 — Medium — Serving an H1 fixed mock mutates its stored rule headers
-
-- Status: **Open**.
-- Evidence: the direct intercepted HTTPS/H1 path aliases `action.headers`, then injects default cache-control and `addResponseHeaders` into that object (`src/proxy/proxy-server.js:5646-5657`). The common plain-H1/H1-on-H2 engine likewise aliases the live header object before merging additions (`:9875-9884`). Matched actions are references inside `this.mockRules`; `GET /api/mock-rules` returns that same live configuration (`src/api/api-server.js:1653-1655`), and later rule mutations persist the entire collection (`:417-430`).
-- Impact: merely matching traffic changes the rule shown by the API/UI. Temporary additional headers can leak into the base configuration, survive after the addition is removed, and be persisted by an unrelated later edit.
-- Expected: clone the base headers for each response, then apply defaults/additions only to that per-request copy.
-
-### BUG-451 — Medium — Native H2 mock headers can fail on the wire while capture reports success
-
-- Status: **Open**.
-- Evidence: forward mocks send sanitized-plus-added `resHeaders` but capture raw `fwdRes.headers` (`src/proxy/proxy-server.js:7217-7240`); fixed mocks send `mockHeaders` but capture only `actionHeaders`, omitting additions (`:7486-7514`). Additions are applied after H2 sanitation, and fixed headers bypass sanitation entirely. Generic rule validation accepts normal token names that are forbidden hop-by-hop H2 fields, including `connection` and `transfer-encoding` (`src/proxy/mock-rule-validation.js:219-234`; `src/proxy/proxy-server.js:85-96`). The response helpers pass the result directly to `stream.respond()` (`src/proxy/proxy-server.js:2669-2679`), suppress thrown errors as if the stream merely closed, and then emit a successful capture.
-- Impact: validly saved rules can send no H2 response while traffic/export/MCP data says the mock succeeded; even successful responses omit added headers from captured traffic.
-- Expected: merge first, sanitize the final H2 header set, treat delivery errors as failures, and capture the exact normalized headers sent on the wire.
-
 ## UI, accessibility, and styling
-
-### BUG-452 — Medium — Persisted API-spec IDs are interpolated into executable inline JavaScript
-
-- Status: **Open**.
-- Evidence: `renderApiSpecs()` concatenates `s.id` without HTML or JavaScript escaping into `onclick="removeApiSpec('...')"` (`src/ui/app.js:12656-12669`). Restored IDs accept any unique nonempty trimmed string and are returned unchanged to the renderer (`src/proxy/proxy-server.js:11003-11053`). Normal uploads mint UUIDs, but malicious, corrupt, or legacy persisted settings bypass that assumption. The existing delete UI test extracts `removeApiSpec()` and never exercises this rendering path (`test/schemas/api-spec-delete-ui.test.js`).
-- Impact: a persisted ID such as `');document.body.dataset.pwned='1';//` becomes executable renderer code when Delete is clicked. In the desktop renderer that code can manipulate the application and invoke exposed local control APIs.
-- Expected: validate restored IDs and bind deletion through an event listener or an escaped `data-*` value, never by constructing JavaScript source.
 
 ### BUG-453 — Medium — Generated controls are mouse-only and rerenders discard focus
 
@@ -153,70 +88,9 @@ Completion requires two consecutive complete passes with no new findings. A comp
 - Expected: associate every generated field with its visible label and give every action a contextual accessible name such as “Remove trusted CA <path>” or “Remove response header”.
 
 
-### BUG-456 — Medium — ADB device serials can inject renderer markup and JavaScript
-
-- Status: **Open**.
-- Evidence: live ADB discovery accepts the first non-whitespace token from `adb devices -l` as a serial without the safe recovery-journal character validation (`src/interceptors/android-adb-interceptor.js:137-151,731-765`). The renderer passes that serial through `esc()`, which escapes text content rather than attribute or JavaScript syntax, then inserts it into a double-quoted `data-device-id` and a single-quoted inline `onclick` argument (`src/ui/app.js:6118-6183,13472-13477`). A serial may contain quotes while remaining one non-whitespace ADB token. Activation also interpolates the resulting device ID directly into a CSS selector before entering its guarded request block (`:6222-6229`). The Android UI test substitutes a stronger quote-escaping `esc()` than production and has no hostile-serial case (`test/interceptors/android/android-adapter-selection.test.js:136-140`).
-- Impact: connecting a device with a crafted USB serial and opening its interceptor card can corrupt the generated DOM; clicking Activate can execute serial-controlled JavaScript in the renderer, which can call the application's local control APIs. A merely selector-invalid serial can throw before cleanup and leave the Android interceptor stuck in the UI's in-progress set.
-- Reproduction: a discovered serial of `');document.body.dataset.pwned='1';//` produces `onclick="...activateAndroidDevice('');document.body.dataset.pwned='1';//');"`. No whitespace is required, so the current parser accepts the complete payload as `parts[0]`.
-- Expected: validate live serials with the same safe bounded token policy used for recovery data, store values in properly attribute-escaped `data-*` fields, and bind events without constructing JavaScript source.
-
-
-### BUG-458 — Low — A bootstrap dependency failure leaves the UI permanently “Connecting”
-
-- Status: **Open**.
-- Evidence: `bootstrap.js` has four static imports before any executable recovery code (`src/ui/bootstrap.js:1-8`). If any module fetch, parse, or evaluation fails, the module body never reaches the application-script creation and error handler at `:28-36`. `index.html` installs only that module entry point and starts with “Connecting...” (`src/ui/index.html:660-661,691`); it has no bootstrap-level error handler or fallback. The renderer bootstrap regression verifies load ordering only (`test/ui/renderer-bootstrap.test.js:8-52`).
-- Impact: one missing or invalid shared module prevents the entire application from loading while presenting an indefinite connection state instead of a diagnosable load failure.
-- Expected: install failure reporting outside the dependency graph, or dynamically import dependencies inside a guarded bootstrap that always replaces the initial status.
-
-
 ## Additional pass-3 findings
 
-### BUG-460 — Low/Medium — Windows browser Focus can foreground a process that recycled the launcher PID
-
-- Status: **Open**.
-- Evidence: an isolated-browser lifecycle intentionally remains active when the spawned launcher exits but managed profile descendants remain (`src/interceptors/browser-interceptor.js:436-446`), leaving `this.process.pid` stale. Windows `focus()` unconditionally puts that PID first in `$candidatePids`, ahead of command lines matched to the managed profile, and foregrounds the first process with a window (`:997-1029`). It does not validate the seed's profile, executable, or start identity. The macOS path explicitly avoids the same PID-only seed because recycling is unsafe and revalidates launch identity (`:1045-1068`). Tests cover macOS PID recycling but have no Windows counterpart (`test/interceptors/browser/macos-browser-focus.test.js:208-280`).
-- Impact: after Windows reuses an exited launcher PID, clicking Focus can raise an unrelated application's window instead of the isolated browser.
-- Expected: derive Windows candidates only from exact managed-profile process matches, or retain and revalidate executable plus process-start identity before using the launcher PID.
-
-### BUG-461 — Medium — Chunked WebSocket rejection responses are forwarded with invalid framing
-
-- Status: **Open**.
-- Evidence: non-101 upgrade responses are routed to `_forwardRejectedUpgradeResponse()` (`src/proxy/proxy-server.js:4179-4195`). That helper copies `proxyRes.rawHeaders` verbatim and then pipes the `IncomingMessage` stream to the downstream socket (`:3825-3848`). Node has already decoded HTTP/1 chunk framing from that stream, while the copied headers still advertise `Transfer-Encoding: chunked`; trailers are not reconstructed either. Existing rejection coverage uses a fixed content-length response, and raw-header coverage exercises accepted 101 upgrades (`test/proxy/websocket/aborted-websocket-response.test.js:40-67`).
-- Impact: a chunked 401, 403, 404, or other WebSocket handshake rejection reaches the client as plain body bytes under chunked framing metadata, so the client can report malformed HTTP or wait indefinitely for nonexistent chunk delimiters.
-- Expected: either relay the untouched raw upstream bytes or reserialize the decoded response with corrected framing and reconstructed trailers.
-
-
-### BUG-463 — Low — Slow traffic restoration defeats request deep links
-
-- Status: **Open**.
-- Evidence: initial hash navigation performs one lookup after 1,000 ms, and WebSocket initialization performs one more after 1,500 ms (`src/ui/app.js:1230-1239,13035-13058`). Traffic dump completion only restores and renders rows; it never consumes a pending deep-link target (`:495-508,558-612`). A dump completing after both timers leaves the hash intact without selecting the request. The existing test preloads the request and executes timers synchronously (`test/traffic/traffic-view-hash.test.js:124-209`).
-- Impact: links to exchanges are unreliable for larger histories, slower machines, or delayed/chunked traffic dumps—the Traffic panel opens, but the requested exchange never does.
-- Expected: retain the parsed identity as pending state and resolve it when the relevant dump/request arrives, with explicit cancellation on hash change.
-
-### BUG-464 — Low — Failed auto-rotate saves leave stale controls and can fail silently
-
-- Status: **Open**.
-- Evidence: the auto-rotate checkbox and provider field change their displayed values before invoking autosave (`src/ui/index.html:507,512`). On failure, `saveAutoRotateProxyOnError()` neither restores the last authoritative values nor reloads them (`src/ui/app.js:12068-12088`). Checkbox failure at least toasts; provider change/blur calls pass `showToast=false`, so they leave an unpersisted value with no feedback. Loading is the only path that re-applies server state (`:12055-12066`).
-- Impact: settings can visibly claim a provider or enabled state that was never accepted, leading users to rely on error rotation that is not configured.
-- Expected: disable or mark controls while saving, restore/reload authoritative state on failure, and always expose a failure indication.
-
-
 ## Dead code and dependencies
-
-### BUG-466 — Low — Sharp is a dead product/build dependency with a self-justifying test
-
-- Status: **Open**.
-- Evidence: root `sharp` is declared as a dev dependency (`package.json:53-56`), but no product or build source imports it. Icon generation uses a custom zlib/fs PNG and ICO implementation (`scripts/generate-icons.js:11-14,21-99,184-214`). The only code consumer imports Sharp, creates an unrelated one-pixel PNG, and asserts that Sharp itself works (`test/build/dependency-security.test.js:12,82,137-151`). The lockfile consequently carries the native `@img/sharp-*` platform matrix (`package-lock.json:281-846,4548-4590`).
-- Impact: installs download and expose an unnecessary native dependency while its test covers no repository behavior.
-- Expected: remove the dependency and self-referential assertions, or use it in an actual build path.
-
-### BUG-467 — Low — Browser lifecycle exports two test-only process-discovery wrappers
-
-- Status: **Open**.
-- Evidence: exported `commandUsesBrowserProfile()` and synchronous `getRelatedProcessIds()` (`src/interceptors/browser-lifecycle.js:210-219,523-535`) are consumed only by `test/interceptors/browser/browser-profile-processes.test.js`; production related-process callers use `inspectRelatedBrowserProcesses()` and `getRelatedProcessIdsAsync()` (`src/interceptors/browser-interceptor.js:11,72-77`). The test always supplies a snapshot to the synchronous wrapper, so its fallback call is unused too. The underlying synchronous `getProcessSnapshot()` is not dead: startup calls `cleanupStaleBrowserProfiles()` without options (`src/interceptors/interceptor-manager.js:27`), which selects and invokes that provider (`src/interceptors/browser-lifecycle.js:630-665`).
-- Impact: two obsolete exports and a wrapper-only fallback duplicate the live inspector/async APIs and make the browser lifecycle surface harder to reason about.
-- Expected: migrate the tests to production primitives and remove the two test-only wrappers while retaining the synchronous snapshot path required by stale-profile cleanup.
 
 ### BUG-468 — Low — Backend/interceptor compatibility paths and state have no production consumer
 
@@ -234,20 +108,6 @@ Completion requires two consecutive complete passes with no new findings. A comp
 
 ## Additional pass-4 findings
 
-### BUG-470 — Medium — Remote HAR deep links permit blind loopback and LAN SSRF
-
-- Status: **Open**.
-- Evidence: the custom-protocol parser accepts any HTTP(S) target (`electron/deep-link.cjs:32-44`). A `.har` pathname causes Electron main to download it automatically (`electron/main.cjs:283-345`), while `loadHarTarget()` checks only that initial pathname and calls main-process Fetch with `redirect: 'follow'` (`electron/har-deep-link.cjs:7-13,39-89`). There is no hostname resolution, private/loopback/link-local address policy, or validation of redirect destinations. The existing remote-HAR test explicitly asserts automatic redirect following but has no destination-safety case (`test/desktop/har-deep-link.test.js:47-75`).
-- Impact: a crafted `http-freekit:` link can make an installed desktop app issue attacker-chosen GET requests to loopback or LAN services, including by redirecting an apparently public `.har` URL. This can trigger state-changing internal endpoints and expose response-derived behavior to the local user interface.
-- Expected: resolve and validate every destination, including every redirect hop, reject non-public addresses by default, and require an explicit user-mediated local-network import path if that capability is needed.
-
-### BUG-471 — Medium — A specific non-loopback proxy bind breaks most local interceptors
-
-- Status: **Open**.
-- Evidence: startup resolves `PROXY_BIND_HOST` and binds the proxy only to that address (`src/index.js:116-137`), but the manager propagates it only to Docker and Android (`src/interceptors/interceptor-manager.js:62-73`). Fresh Chromium/Firefox (`src/interceptors/browser-interceptor.js:538-572`), Global Chrome (`src/interceptors/existing-browser-interceptor.js:416-425`), Electron arguments/environment (`src/interceptors/electron-interceptor.js:85-98,125-145`), both terminal modes, System Proxy, and JVM still configure `127.0.0.1`. Direct binding to an advertised address is explicitly presented as supported recovery guidance (`src/interceptors/proxy-bind-reachability.js:76-85`), while current bind tests verify propagation only to Docker/Android (`test/interceptors/core/remote-interceptor-bind.test.js:76-81,551-564`).
-- Impact: with a valid specific bind such as `192.168.1.20`, Start can report success for local interceptors even though their configured loopback endpoint has no listener, so intercepted applications lose connectivity instead of reaching FreeKit.
-- Expected: propagate a locally reachable bound address to every interceptor, listen on loopback as well where appropriate, or reject incompatible interceptor activation with the same reachability preflight used for remote targets.
-
 ### BUG-472 — Low/Medium — Failed macOS terminal adoption can orphan a proxy-configured shell
 
 - Status: **Open**.
@@ -263,27 +123,6 @@ Completion requires two consecutive complete passes with no new findings. A comp
 - Impact: direct `ws://[IPv6]` and `wss://[IPv6]` upgrades fail hostname lookup/connection and are captured as 502 even though ordinary HTTP traffic to the same origin is supported.
 - Expected: pass the normalized connection hostname to direct HTTP(S) request and TLS options while preserving brackets only in URL/authority text, with direct WS and WSS IPv6 regressions.
 
-### BUG-475 — Low/Medium — Explicit destination port zero is silently rerouted to 80 or 443
-
-- Status: **Open**.
-- Evidence: all live forwarding engines select ports with `parseInt(url.port, 10) || default`, including shared H1/H2, WebSocket, CONNECT, buffered H1, and mock forward/rewrite paths (`src/proxy/proxy-server.js:1204-1207,1859-1863,3884,4583-4584,4947`). WHATWG URLs preserve explicit `:0` as the string `"0"`, whose numeric conversion falls through to the scheme default. Matching independently preserves port `"0"` (`:9285`), so a port-specific rule can match before forwarding changes the destination. There is no port-zero routing coverage.
-- Impact: a malformed or reserved `:0` target can unexpectedly send traffic to a real service on port 80/443 instead of being rejected or failing at port zero.
-- Expected: distinguish an absent port from explicit zero, validate the allowed range once, and reject port zero consistently before matching or opening any upstream connection.
-
-### BUG-476 — Medium — Global fetch error handling makes structured renderer recovery unreachable
-
-- Status: **Open**.
-- Evidence: the global same-origin management wrapper throws for every non-2xx `/api/` response after retaining only `error` and `status` (`src/ui/app.js:204-216`). Android Stop deliberately expects to parse a structured 409, branch on `ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED`, prompt, and retry with `confirmCaRemoved: true` (`:6584-6616`); the API intentionally emits that payload (`src/api/api-server.js:261-265,1606-1620`). The wrapper throws before `requestDeactivation()` returns. The same root discards intentional 422 recovery metadata for Android host-IP selection (`src/ui/app.js:6229-6262`) and JVM fallback/ownership (`:6465-6494`), plus MCP degraded authoritative state (`:12614-12637`). Existing tests validate the API payload or execute sliced renderer functions with a raw Fetch stub, bypassing the wrapper.
-- Impact: legacy Android CA cleanup cannot reach its only confirmation flow and remains pending, while other recoverable failures lose the state needed to guide or accurately restore their controls.
-- Expected: return non-2xx `Response` objects to consumers that own structured protocols, or attach the complete parsed payload/response to a typed error and update every consumer to handle it consistently; add integrated wrapper-plus-consumer tests.
-
-### BUG-477 — Low/Medium — Send and three exporters change multipart field and file names
-
-- Status: **Open**.
-- Evidence: the multipart field-name editor accepts arbitrary text (`src/ui/app.js:9736-9739`), but live Send replaces `"` with `_` and leaves backslashes unescaped in quoted `Content-Disposition` parameters (`:9851-9881`). The Node and wget exporters repeat that construction (`src/ui/request-export.js:330-342,393-408`). The correct quoted-string helper escapes quotes and backslashes (`:21-23`) and is used by PowerShell/PHP (`:367-371,419-423`). cURL adds a separate exact-name failure: it rejects `=` only for file-field keys, then concatenates every text field as one `--form-string 'KEY=VALUE'` operand, which cURL splits at the first `=` (`:1-3,235-260`). The regression fixture already defines `tag"\\name`, but exact-name assertions cover only PowerShell/PHP; Node/wget coverage changes it to plain `tag`, and no text field containing `=` is exercised (`test/import-export/multipart-duplicate-fields.test.js:11-15,152-223`).
-- Impact: requests sent from the editor or generated Node, wget, or cURL snippets can use a different multipart field or POSIX filename than the user entered/captured, breaking servers that key behavior on the exact name.
-- Expected: validate control characters and exporter-specific separators, preserve valid names with MIME quoted-string escaping in every hand-built serializer, and assert exact hostile-name round trips for Send, Node, wget, and cURL.
-
 ### BUG-478 — Low — Upstream-proxy settings misparse IPv6 and malformed ports
 
 - Status: **Open**.
@@ -293,48 +132,12 @@ Completion requires two consecutive complete passes with no new findings. A comp
 
 ## Additional pass-5 findings
 
-### BUG-479 — Low — A corrupt settings file is silently replaced by the next ordinary save
-
-- Status: **Open**.
-- Evidence: settings loading catches read, parse, and top-level-shape failures, logs only to the backend console, and continues with an empty object (`src/settings.js:16-31`). `set()` and `setAll()` then serialize that fallback state and atomically rename it over the original file (`:45-68`). Ordinary API persistence and UI settings writes reach those methods without an unresolved-corruption gate (`src/api/api-server.js:359-370`; `src/api/routes/configuration-routes.js:39-53`). The malformed-file test asserts the empty fallback but does not attempt a subsequent save (`test/settings/settings.test.js:8-17`).
-- Impact: one routine settings change after a malformed or partially written file can destroy otherwise recoverable proxy credentials, TLS paths/passphrases, rules, specifications, and lists without telling the user.
-- Expected: retain an explicit load-failure state, preserve or quarantine the original bytes, and reject writes until the user has recovered or deliberately replaced the file.
-
-### BUG-480 — Medium — MCP request lookup bypasses the active Traffic Lists
-
-- Status: **Open**.
-- Evidence: MCP search, statistics, security analysis, and export obtain traffic through the list-filtered helper (`src/mcp/mcp-server.js:594-604,860-861,922-923,1001-1015`). `get_request_detail`, however, searches the raw `apiServer.trafficLog` and returns request/response bodies (`:705-857`), while `select_request` performs the same raw lookup (`:1064-1092`). The UI describes lists as controlling which requests are displayed and analyzed (`src/ui/index.html:387-397`), and the README says Claude sees the same captured traffic as the UI (`README.md:265`). Existing MCP filtering coverage exercises HAR export only (`test/mcp/mcp-har-filtering.test.js:45-60`).
-- Impact: a retained or predictable request ID lets an MCP client retrieve and select traffic hidden by the active allow/block lists, including sensitive bodies, while `select_request` falsely reports success for a row the renderer cannot show.
-- Expected: route every MCP traffic operation through one authoritative visibility predicate and return not-found for requests excluded by the current lists.
-
-### BUG-481 — Medium — Electron renderer interception leaves Chromium's implicit loopback bypass enabled
-
-- Status: **Open**.
-- Evidence: Electron renderer launch arguments add the proxy server and SPKI trust pin but no loopback-bypass subtraction (`src/interceptors/electron-interceptor.js:85-99`), and both manual and spawned launch paths use that argument builder (`:580-595`). The shared Chromium builder explicitly adds `--proxy-bypass-list=<-loopback>` (`src/interceptors/chromium-proxy-args.js:1-31`), as do fresh and existing-browser Chromium paths (`src/interceptors/browser-interceptor.js:538-560`; `src/interceptors/existing-browser-interceptor.js:416-425`). Electron tests currently assert only the incomplete argument set (`test/interceptors/electron/electron-launch-args.test.js:33-40,58-63`; `test/interceptors/electron/electron-renderer-certificate-scope.test.js:28-33,48-60`).
-- Impact: renderer requests to `localhost`, `127.0.0.1`, and `::1` bypass FreeKit even though the Electron card reports renderer interception active.
-- Expected: use the same Chromium proxy-argument helper or explicitly subtract the implicit loopback bypass in every Electron launch form.
-
-
-### BUG-483 — Medium — Imported Traffic metadata is executable in detail cards
-
-- Status: **Open**.
-- Evidence: JSON import accepts any string as a request protocol and retains it for storage/broadcast (`src/api/api-server.js:967-1000`; `src/api/routes/traffic-routes.js:302-311`). The performance card uppercases that value and concatenates it into HTML (`src/ui/app.js:3531-3546`), which is later assigned through the aggregate detail `innerHTML` sink (`:3693`). Uppercasing does not make markup safe: HTML tag and event-attribute names are case-insensitive, and numeric character references in an event-handler value can preserve lowercase script text. WebSocket-frame import has the same sink class: validation requires a valid parent but does not type- or range-check `opcode`, and imported objects are retained by spread (`src/api/api-server.js:967-1125,1138-1150,2663-2679`). Frame detail escapes `opcodeName` but interpolates `(req.opcode || 0).toString(16)` unescaped before assigning the aggregate HTML; a string's `toString(16)` simply returns that string (`src/ui/app.js:2989-3014,3092`). No hostile protocol/opcode import-detail regression covers either path.
-- Impact: opening an imported request or WebSocket frame with crafted metadata can execute attacker-controlled JavaScript in the desktop renderer, with access to the application's local control surface.
-- Expected: validate imported protocols against the supported enum, require WebSocket opcodes to be supported integers, and render every display value as text or escape it at the final HTML sink.
-
 ### BUG-484 — Low/Medium — Failed TLS tunnels are displayed as successful HTTP 200 exchanges
 
 - Status: **Open**.
 - Evidence: failed passthrough/CONNECT setup is captured with status 502 and error metadata (`src/proxy/proxy-server.js:4960-4981,5004-5008`). The renderer's tunnel row nevertheless hardcodes `status-2xx` and `200`, and its tunnel detail uses a generic success-oriented representation rather than the captured failure (`src/ui/app.js:1764-1783,3244-3298`). Existing tunnel detail coverage checks port presentation, not failed status/error rendering (`test/traffic/detail-header-arrays.test.js:424-444`).
 - Impact: an upstream connection or TLS-passthrough failure appears as a green success in the traffic list and does not expose the useful captured diagnosis in detail.
 - Expected: render the captured tunnel status, status class, message, and error metadata, reserving the synthetic 200 presentation for successful CONNECT establishment only.
-
-### BUG-485 — Low/Medium — Browser Fetch exports retain headers browsers forbid or rewrite
-
-- Status: **Open**.
-- Evidence: export normalization removes only `Host` and `Proxy-Connection`, plus decoded framing in one special case (`src/ui/request-export.js:41-52`). Both raw and multipart Fetch generators emit the remaining request headers directly (`:287-319,534-552`), including browser-controlled fields such as `Content-Length`, `Connection`, `Transfer-Encoding`, `Cookie`, and `Origin`. Existing byte-fidelity coverage even expects raw `Content-Length` in every format (`test/send/request-snippet-bytes.test.js:167-190`).
-- Impact: generated Fetch snippets can throw, silently drop fields, or send browser-rewritten requests while claiming to replay the captured exchange.
-- Expected: apply a Fetch-specific forbidden-header policy and either omit each non-settable field with a clear warning or refuse that export when semantic replay is impossible.
 
 ### BUG-486 — Low — Generated Node.js requests use bracketed IPv6 socket hostnames
 
@@ -351,44 +154,7 @@ Completion requires two consecutive complete passes with no new findings. A comp
 - Impact: a WebSocket client receives a failed handshake even when a replacement proxy is obtained, and a 410 from an upstream proxy during passthrough CONNECT may neither retry nor rotate at all.
 - Expected: give safe WebSocket handshakes the same bounded transparent retry path as other GET requests, preserve CONNECT response status/error typing, and apply the configured rotation policy consistently before returning failure downstream.
 
-### BUG-489 — Low — Several buffered captures omit response trailers sent to the client
-
-- Status: **Open**.
-- Evidence: the body-dependent `allowHTTP1` path reads response trailers and forwards them through `_sendH1Response()` (`src/proxy/proxy-server.js:6920-6945`), but `emitH1Success()` has no trailers parameter or captured field and its call drops them (`:6781-6794,6947-6954`). Its H2-upstream branch likewise forwards `finalResponse.trailers` and then emits a record without them (`:6855-6868`). Forward mocks have the same split: intercepted HTTPS/H1 and native-H2 handlers forward `fwdRes.trailers` to the client but omit them from the emitted capture (`:5398-5431,7206-7241`), while the common H1 handler correctly normalizes and records them (`:9495-9529`). These buffered engines are selected when matching, breakpoints, or Forward actions require a complete body.
-- Impact: the traffic detail, export, and MCP record differs from the response delivered on the wire, hiding integrity metadata and any application data carried in trailers across multiple selectable rule/protocol combinations.
-- Expected: pass the final normalized trailers into every success capture and add H1- and H2-upstream regressions for body-dependent forwarding and Forward mocks.
-
-### BUG-490 — Low — Oversized body-dependent requests return 413 without a traffic record
-
-- Status: **Open**.
-- Evidence: the plain-H1 body-buffering path routes an exceeded collector through `_serveEarlyHttpResponse()`, but that helper emits traffic only for internal Send requests (`src/proxy/proxy-server.js:4431-4451,4870-4896`). Intercepted H1-over-TLS, native H2, and the H1 fallback similarly send 413 and return before their pending-request emissions (`:5212-5227,6194-6209,6641-6656`). These paths are entered when a body matcher or breakpoint makes buffering necessary.
-- Impact: the client receives a FreeKit-generated rejection that is completely absent from the Traffic view, so the user cannot diagnose why the request failed or correlate it with the active rule.
-- Expected: emit a complete 413 traffic record before returning on every protocol path, including the truncated-body metadata already available to the plain-H1 helper.
-
 ## Additional pass-6 findings
-
-### BUG-491 — Low/Medium — Losing only `ca.pem` leaves the previous trusted root unmanaged
-
-- Status: **Open**.
-- Evidence: CA initialization reads the previous certificate only when `ca.pem` exists, and replacement journaling immediately returns without those PEM bytes (`src/proxy/certificate-authority.js:45-70`). If either half of the pair is absent, startup regenerates and overwrites the surviving key but returns no replaced fingerprint (`:85-86,122-126,176-185,446-484`). Windows installs the new root and removes only fingerprints returned by initialization (`src/index.js:71-98`; `src/proxy/windows-ca-trust.js:24-60`); other platforms show re-trust guidance only when replacement state was recorded (`src/index.js:103-109`). Tests cover the inverse missing-`ca.key` case, where the certificate remains available to journal, but no missing-certificate counterpart (`test/certificates/positive-certificate-serial.test.js:87-103`).
-- Impact: after partial data loss, Windows retains an obsolete trusted FreeKit root while installing its replacement, and manually trusted browsers/devices reject the replacement with no migration warning. A separately retained old private key remains useful for as long as that unmanaged trust survives.
-- Expected: preserve the active fingerprint independently of the certificate file or recover its exact prior identity from the trust store, then always enter cleanup and migration-warning state when the CA changes.
-
-
-
-### BUG-494 — Low/Medium — cURL paste changes empty and suppressed header semantics
-
-- Status: **Open**.
-- Evidence: the parser accepts `-H`/`--header` but handles an operand only when a colon occurs after the first character; all other forms are silently ignored (`src/ui/curl-parser.js:197-211`). A valid `-H 'X-Empty;'`, cURL's explicit-empty-header syntax, is therefore dropped. Conversely, `-H 'Host:'`, which suppresses cURL's internally generated Host header, is imported as an explicit empty header instead of a suppression instruction. Parser tests cover ordinary and file-backed headers but neither form (`test/send/curl-parser.test.js:195-218,385-397`).
-- Impact: a pasted request can silently change routing, content negotiation, or authorization behavior while the UI reports a successful import.
-- Expected: preserve both cURL forms with explicit internal semantics, or reject the command with a clear exact-replay error instead of discarding or changing it.
-
-### BUG-495 — Medium — Valid array-valued Content-Type edits can crash response capture
-
-- Status: **Open**.
-- Evidence: breakpoint header validation explicitly accepts arrays (`src/proxy/proxy-server.js:10447-10458`), and mock validation also accepts arrays, including response-transform headers (`src/proxy/mock-rule-validation.js:60-80,178-185`). Breakpoint and transform application preserve those arrays (`src/proxy/proxy-server.js:3447-3488,10749-10751`). Capture then passes `headers['content-type']` directly into `_safeBodyString()`, which calls `.toLowerCase()` without scalar normalization (`:4766-4770,10334-10344`). The plain-H1 response listener is async with no rejection containment (`:4688-4780`).
-- Impact: a valid response-breakpoint edit or transform such as `"content-type": ["text/plain"]` can deliver the downstream response, lose its traffic completion, and turn the resulting `TypeError` into an unhandled rejection that may terminate the backend.
-- Expected: normalize through the shared header-value helpers before body formatting and contain capture-formatting failures so traffic metadata cannot crash the proxy.
 
 ### BUG-496 — Low — IPv6-literal mock webhooks cannot be delivered
 

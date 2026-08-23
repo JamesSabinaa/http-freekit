@@ -44,6 +44,22 @@ export function classifyProxyBindHost(value) {
   return { kind: 'specific', host, family };
 }
 
+export function getLocalProxyHost(proxyBindHost) {
+  const bind = classifyProxyBindHost(proxyBindHost);
+  if (bind.kind === 'specific' || bind.kind === 'loopback') return bind.host;
+  if (bind.kind === 'wildcard' && bind.family === 6) return '::1';
+  return '127.0.0.1';
+}
+
+export function formatProxyAuthority(host, port) {
+  const normalizedHost = classifyProxyBindHost(host).host || '127.0.0.1';
+  return `${net.isIP(normalizedHost) === 6 ? `[${normalizedHost}]` : normalizedHost}:${port}`;
+}
+
+export function formatProxyUrl(host, port) {
+  return `http://${formatProxyAuthority(host, port)}`;
+}
+
 export async function resolveProxyBindAddress(value, lookup = dnsLookup) {
   const bind = classifyProxyBindHost(value);
   if (bind.kind === 'unknown') {

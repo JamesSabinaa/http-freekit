@@ -34,6 +34,17 @@ function createRenderer(fetch) {
     console,
     document: { getElementById: id => elements[id] || null },
     fetch,
+    fetchManagementJson: async (...args) => {
+      try {
+        const response = await fetch(...args);
+        return { response, data: await response.json().catch(() => ({})) };
+      } catch (error) {
+        if (error.response && Object.hasOwn(error, 'payload')) {
+          return { response: error.response, data: error.payload };
+        }
+        throw error;
+      }
+    },
     toast: (message, type) => toasts.push({ message, type })
   };
   vm.createContext(context);
@@ -179,6 +190,29 @@ test('a degraded toggle failure refreshes the authoritative status immediately',
   assert.equal(renderer.elements.mcpStatus.textContent, 'Degraded');
   assert.equal(renderer.elements.mcpStatus.title, 'stdio close failed');
   assert.equal(renderer.elements.mcpEnabledToggle.checked, true);
+  assert.deepEqual(renderer.toasts, [{ message: 'Error: MCP cleanup failed', type: 'error' }]);
+});
+
+test('a typed management error preserves degraded authoritative MCP state', async () => {
+  let statusRequests = 0;
+  const renderer = createRenderer(async (_url, options = {}) => {
+    if (options.method === 'POST') {
+      const error = new Error('MCP cleanup failed');
+      error.response = { ok: false, status: 503 };
+      error.payload = { error: error.message, degraded: true, enabled: true };
+      throw error;
+    }
+    statusRequests++;
+    return rendererResponse(statusRequests === 1
+      ? { enabled: true }
+      : { enabled: true, degraded: true, degradedReason: 'stdio cleanup failed' });
+  });
+
+  await renderer.context.loadMcpStatus();
+  await renderer.context.toggleMcp(false);
+
+  assert.equal(renderer.elements.mcpEnabledToggle.checked, true);
+  assert.equal(renderer.elements.mcpStatus.textContent, 'Degraded');
   assert.deepEqual(renderer.toasts, [{ message: 'Error: MCP cleanup failed', type: 'error' }]);
 });
 

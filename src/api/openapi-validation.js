@@ -13,10 +13,10 @@ function canonicalizeApiHostname(hostname) {
     .replace(/\.$/, '');
 }
 
-export function getApiSpecBaseHost(baseUrl) {
+function parseApiSpecBaseUrl(baseUrl) {
   if (typeof baseUrl !== 'string') return null;
   const trimmed = baseUrl.trim();
-  if (!trimmed) return '';
+  if (!trimmed) return { hostname: '', pathname: '' };
   if (/^[/?#]/.test(trimmed) || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
 
   try {
@@ -26,10 +26,21 @@ export function getApiSpecBaseHost(baseUrl) {
     const parsed = new URL(candidate);
     if (!['http:', 'https:'].includes(parsed.protocol)) return null;
     if (!parsed.hostname || parsed.username || parsed.password) return null;
-    return canonicalizeApiHostname(parsed.hostname);
+    return {
+      hostname: canonicalizeApiHostname(parsed.hostname),
+      pathname: parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '')
+    };
   } catch {
     return null;
   }
+}
+
+export function getApiSpecBaseHost(baseUrl) {
+  return parseApiSpecBaseUrl(baseUrl)?.hostname ?? null;
+}
+
+export function getApiSpecBasePath(baseUrl) {
+  return parseApiSpecBaseUrl(baseUrl)?.pathname ?? null;
 }
 
 export function normalizeApiSpecMatchHost(host) {

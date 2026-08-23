@@ -220,6 +220,15 @@ test('malformed or untrusted journals are not adopted or used for device command
     assert.equal(await interceptor.isActive(), false);
     assert.equal(interceptor.activatedDevices.size, 0);
     await interceptor.deactivate();
+    interceptor._getConnectedDevices = async () => {
+      assert.fail('invalid recovery must stop activation before device discovery');
+    };
+    const activation = await interceptor.activate(8080, {
+      deviceId: 'device-1',
+      useHttpToolkitApp: false
+    });
+    assert.equal(activation.success, false);
+    assert.match(activation.error, /recovery journal is invalid.*resolved/i);
     assert.equal(commandCount, 0);
     assert.equal(fs.existsSync(recoveryFile), true);
   }
