@@ -214,13 +214,25 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     const enabledMatch = output.match(/^\s*ProxyEnable\s+REG_DWORD\s+(\S+)/im);
     const serverMatch = output.match(/^[ \t]*ProxyServer[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
     const overrideMatch = output.match(/^[ \t]*ProxyOverride[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
+    const autoConfigUrlMatch = output.match(/^[ \t]*AutoConfigURL[ \t]+REG_SZ(?:[ \t]+(.*))?$/im);
+    const autoDetectMatch = output.match(/^\s*AutoDetect\s+REG_DWORD\s+(\S+)/im);
     return {
       enabled: enabledMatch ? parseInt(enabledMatch[1], 0) !== 0 : false,
       server: serverMatch ? (serverMatch[1] || '').trim() : null,
       // null means the value is absent; an empty string is an existing value
       // that must be recreated exactly during restoration.
-      override: overrideMatch ? (overrideMatch[1] || '').trim() : null
+      override: overrideMatch ? (overrideMatch[1] || '').trim() : null,
+      autoConfigUrl: autoConfigUrlMatch ? (autoConfigUrlMatch[1] || '').trim() : null,
+      autoDetect: autoDetectMatch ? parseInt(autoDetectMatch[1], 0) !== 0 : null
     };
+  }
+
+  _managesWinInetAutomaticSettings(settings) {
+    return Boolean(
+      settings
+      && Object.prototype.hasOwnProperty.call(settings, 'autoConfigUrl')
+      && Object.prototype.hasOwnProperty.call(settings, 'autoDetect')
+    );
   }
 
   async _setRegistryValue(name, type, value) {
@@ -243,7 +255,9 @@ if (![FreeKitWinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0))
     } catch (err) {
       const settingsField = {
         ProxyServer: 'server',
-        ProxyOverride: 'override'
+        ProxyOverride: 'override',
+        AutoConfigURL: 'autoConfigUrl',
+        AutoDetect: 'autoDetect'
       }[name];
       if (settingsField) {
         try {
@@ -427,13 +441,58 @@ if ($null -eq $target) {
       enabled: true,
       server: recovery.proxyServer
     };
-    const fields = ['enabled', 'server'];
+    if (recovery.preserveAutomaticSettings === true) {
+      return this._manualSettingsCouldBelongToRecovery(current, recovery);
+    }
+    const managesAutomaticSettings = this._managesWinInetAutomaticSettings(owned);
+    if (managesAutomaticSettings && !this._managesWinInetAutomaticSettings(previous)) return false;
+    const activationOrder = managesAutomaticSettings
+      ? ['autoConfigUrl', 'autoDetect', 'enabled', 'server']
+      : ['enabled', 'server'];
     if (recovery.ownedSettings) {
       if (!Object.prototype.hasOwnProperty.call(previous, 'override')) return false;
-      fields.push('override');
+      activationOrder.push('override');
     }
-    return fields.every(field =>
-      current[field] === previous[field] || current[field] === owned[field]
+
+    // The journal is durable before activation starts and remains in place
+    // during rollback. A stale process can therefore leave only an exact
+    // activation prefix, or a restore prefix starting from one of those
+    // activation prefixes. Treating each field independently admits mixtures
+    // that FreeKit could never have written and risks overwriting newer proxy
+    // settings owned by another application.
+    return Array.from({ length: activationOrder.length + 1 }, (_, changedCount) => {
+      const activationState = { ...previous };
+      for (let index = 0; index < changedCount; index++) {
+        const field = activationOrder[index];
+        activationState[field] = owned[field];
+      }
+      return activationState;
+    }).some(activationState =>
+      this._settingsCouldBelongToRestoreRetry(current, recovery, activationState)
+    );
+  }
+
+  _manualSettingsCouldBelongToRecovery(current, recovery) {
+    const previous = recovery.previousSettings;
+    const owned = recovery.ownedSettings || {
+      enabled: true,
+      server: recovery.proxyServer
+    };
+    const activationOrder = ['enabled', 'server'];
+    if (recovery.ownedSettings) {
+      if (!Object.prototype.hasOwnProperty.call(previous, 'override')) return false;
+      activationOrder.push('override');
+    }
+    const manualRecovery = { ...recovery, preserveAutomaticSettings: true };
+    return Array.from({ length: activationOrder.length + 1 }, (_, changedCount) => {
+      const activationState = { ...previous };
+      for (let index = 0; index < changedCount; index++) {
+        const field = activationOrder[index];
+        activationState[field] = owned[field];
+      }
+      return activationState;
+    }).some(activationState =>
+      this._settingsCouldBelongToRestoreRetry(current, manualRecovery, activationState)
     );
   }
 
@@ -449,6 +508,11 @@ if ($null -eq $target) {
       restoreOrder.push('override');
     }
     restoreOrder.push('enabled');
+    if (this._managesWinInetAutomaticSettings(recovery.ownedSettings) &&
+        recovery.preserveAutomaticSettings !== true) {
+      if (!this._managesWinInetAutomaticSettings(previous)) return false;
+      restoreOrder.push('autoConfigUrl', 'autoDetect');
+    }
 
     // A graceful restore writes these fields in order. Only exact prefixes
     // from the state recorded when it began can be our partial work; other
@@ -460,10 +524,18 @@ if ($null -eq $target) {
     ).some(Boolean);
   }
 
-  _settingsMatchCompletedRestore(current, previous = this.previousSettings) {
+  _settingsMatchCompletedRestore(
+    current,
+    previous = this.previousSettings,
+    recovery = this.pendingRecovery
+  ) {
     if (!previous) return false;
     const fields = ['enabled', 'server'];
     if (Object.prototype.hasOwnProperty.call(previous, 'override')) fields.push('override');
+    if (this._managesWinInetAutomaticSettings(previous) &&
+        recovery?.preserveAutomaticSettings !== true) {
+      fields.push('autoConfigUrl', 'autoDetect');
+    }
     return fields.every(field => current[field] === previous[field]);
   }
 
@@ -473,7 +545,7 @@ if ($null -eq $target) {
       return false;
     }
     try {
-      const recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
+      let recovery = JSON.parse(fs.readFileSync(this.recoveryFile, 'utf8'));
       if (await this._recoveryOwnerIsActive(recovery)) {
         this.recoveryBlockedReason = `journal belongs to active FreeKit process ${recovery.owner.pid}`;
         return false;
@@ -485,13 +557,42 @@ if ($null -eq $target) {
       if (Object.prototype.hasOwnProperty.call(recovery, 'restorePhase') && !notificationPending) {
         throw new Error('Recovery file contains an invalid restore phase');
       }
+      if (Object.prototype.hasOwnProperty.call(recovery, 'preserveAutomaticSettings') &&
+          recovery.preserveAutomaticSettings !== true) {
+        throw new Error('Recovery file contains an invalid automatic-settings preservation flag');
+      }
       const currentSettings = await this._readCurrentSettings();
       // An activation journal can contain a partial registry transition. Once
       // the durable notification phase is present, however, every restore
       // write completed and only the exact restored state remains ours.
-      const settingsAreOwned = notificationPending
-        ? this._settingsMatchCompletedRestore(currentSettings, recovery.previousSettings)
+      let settingsAreOwned = notificationPending
+        ? this._settingsMatchCompletedRestore(
+          currentSettings,
+          recovery.previousSettings,
+          recovery
+        )
         : this._settingsCouldBelongToRecovery(currentSettings, recovery);
+      if (!settingsAreOwned &&
+          this._managesWinInetAutomaticSettings(recovery.ownedSettings)) {
+        const manualSettingsAreOwned = notificationPending
+          ? this._settingsMatchCompletedRestore(
+            currentSettings,
+            recovery.previousSettings,
+            { preserveAutomaticSettings: true }
+          )
+          : this._manualSettingsCouldBelongToRecovery(currentSettings, recovery);
+        if (manualSettingsAreOwned) {
+          recovery = { ...recovery, preserveAutomaticSettings: true };
+          // Commit the narrower ownership contract before any retry writes. A
+          // second crash can then restore only FreeKit's manual fields without
+          // replacing the newer automatic configuration.
+          this._persistRecoveryState(recovery);
+          settingsAreOwned = true;
+          console.log(
+            '[Interceptor] Stale WinINet automatic settings changed externally; preserving them while restoring the owned manual proxy'
+          );
+        }
+      }
       if (!settingsAreOwned) {
         this._removeRecoveryState();
         this.recoveryBlockedReason = null;
@@ -587,6 +688,19 @@ if ($null -eq $target) {
       }
     }
     await this._setRegistryValue('ProxyEnable', 'REG_DWORD', previous?.enabled ? 1 : 0);
+    if (this._managesWinInetAutomaticSettings(previous) &&
+        this.pendingRecovery?.preserveAutomaticSettings !== true) {
+      if (previous.autoConfigUrl != null) {
+        await this._setRegistryValue('AutoConfigURL', 'REG_SZ', previous.autoConfigUrl);
+      } else {
+        await this._deleteRegistryValue('AutoConfigURL');
+      }
+      if (previous.autoDetect != null) {
+        await this._setRegistryValue('AutoDetect', 'REG_DWORD', previous.autoDetect ? 1 : 0);
+      } else {
+        await this._deleteRegistryValue('AutoDetect');
+      }
+    }
     // Registry restoration is complete. If notification or journal cleanup
     // fails from here, a retry may own only this exact restored state; the
     // broader prefix matcher is reserved for interrupted registry writes.
@@ -624,12 +738,24 @@ if ($null -eq $target) {
   }
 
   _settingsBelongToActiveSession(settings) {
+    return this._manualSettingsBelongToActiveSession(settings) &&
+      this._automaticSettingsBelongToActiveSession(settings);
+  }
+
+  _manualSettingsBelongToActiveSession(settings) {
     return Boolean(
       this.activeProxyServer
       && settings?.enabled
       && settings.server === this.activeProxyServer
       && settings.override === ''
     );
+  }
+
+  _automaticSettingsBelongToActiveSession(settings) {
+    const owned = this.pendingRecovery?.ownedSettings;
+    return !this._managesWinInetAutomaticSettings(owned)
+      || (settings.autoConfigUrl === owned.autoConfigUrl
+        && settings.autoDetect === owned.autoDetect);
   }
 
   async activate(proxyPort) {
@@ -679,14 +805,19 @@ if ($null -eq $target) {
           autoConfigUrl: '',
           autoDetect: false
         };
+        const ownedWinInetSettings = {
+          enabled: true,
+          server: proxyServer,
+          override: ''
+        };
+        if (this._managesWinInetAutomaticSettings(this.previousSettings)) {
+          ownedWinInetSettings.autoConfigUrl = null;
+          ownedWinInetSettings.autoDetect = false;
+        }
         this.pendingRecovery = {
           owner,
           proxyServer,
-          ownedSettings: {
-            enabled: true,
-            server: proxyServer,
-            override: ''
-          },
+          ownedSettings: ownedWinInetSettings,
           previousSettings: this.previousSettings
         };
         this.pendingWinHttpRecovery = {
@@ -699,6 +830,10 @@ if ($null -eq $target) {
         this._persistWinHttpRecoveryState(this.pendingWinHttpRecovery, { exclusive: true });
         winHttpJournalPrepared = true;
         recoveryPrepared = true;
+        if (this._managesWinInetAutomaticSettings(this.previousSettings)) {
+          await this._deleteRegistryValue('AutoConfigURL');
+          await this._setRegistryValue('AutoDetect', 'REG_DWORD', 0);
+        }
         await this._setRegistryValue('ProxyEnable', 'REG_DWORD', 1);
         await this._setRegistryValue('ProxyServer', 'REG_SZ', proxyServer);
         await this._setRegistryValue('ProxyOverride', 'REG_SZ', '');
@@ -763,7 +898,24 @@ if ($null -eq $target) {
         this.restoreBaselineSettings
       );
     } else if (this.active) {
-      settingsAreOwned = this._settingsBelongToActiveSession(currentSettings);
+      settingsAreOwned = this._manualSettingsBelongToActiveSession(currentSettings);
+      if (settingsAreOwned && !this._automaticSettingsBelongToActiveSession(currentSettings)) {
+        if (!this.pendingRecovery) {
+          throw new Error('Cannot safely restore the owned manual proxy without its recovery journal');
+        }
+        const recovery = {
+          ...this.pendingRecovery,
+          preserveAutomaticSettings: true
+        };
+        // Commit the narrower ownership contract before touching any manual
+        // field. A crash can then retry those writes without ever overwriting
+        // the newer PAC/WPAD configuration.
+        this._persistRecoveryState(recovery);
+        this.pendingRecovery = recovery;
+        console.log(
+          '[Interceptor] WinINet automatic settings changed externally; preserving them while restoring the owned manual proxy'
+        );
+      }
     } else {
       settingsAreOwned = this.pendingRecovery
         && this._settingsCouldBelongToRecovery(currentSettings, this.pendingRecovery);

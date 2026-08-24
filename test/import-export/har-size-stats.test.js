@@ -51,7 +51,7 @@ function harEntry(requestBodySize, responseBodySize, responseDecodedSize = respo
   };
 }
 
-test('API HAR import preserves unknown body sizes and normalizes malformed sizes', async t => {
+test('API HAR import preserves valid sizes and atomically rejects malformed sizes like the renderer', async t => {
   const proxy = {
     port: 8081,
     mockRules: [],
@@ -72,8 +72,7 @@ test('API HAR import preserves unknown body sizes and normalizes malformed sizes
     log: {
       entries: [
         harEntry(-1, -1),
-        harEntry(0, 1024),
-        harEntry('Infinity', null)
+        harEntry(0, 1024)
       ]
     }
   });
@@ -85,9 +84,20 @@ test('API HAR import preserves unknown body sizes and normalizes malformed sizes
     record.responseBodyDecodedSize
   ]), [
     [-1, -1, -1],
-    [0, 1024, 1024],
-    [0, 0, 0]
+    [0, 1024, 1024]
   ]);
+
+  for (const malformed of [
+    harEntry('Infinity', 0),
+    harEntry(0, null),
+    harEntry(0, 0, null)
+  ]) {
+    const invalid = await postHar(server.address().port, {
+      log: { entries: [harEntry(0, 0), malformed] }
+    });
+    assert.equal(invalid.statusCode, 400, invalid.body);
+    assert.deepEqual(api.trafficLog.map(record => record.requestBodySize), [-1, 0]);
+  }
 });
 
 test('renderer HAR mapping applies the same body-size normalization', () => {

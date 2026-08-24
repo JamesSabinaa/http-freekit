@@ -44,13 +44,18 @@ npm run electron
 ```bash
 npm run build        # Installer(s) for the current operating system
 npm run build:win    # Windows .exe installer
-npm run build:mac    # macOS .dmg
+npm run build:mac    # macOS x64 + arm64 .dmg/.zip
 npm run build:linux  # Linux .AppImage, .deb, .rpm
 ```
 
 The default build selects the target supported by the current host. Use the
 platform-specific commands on a compatible host when building release artifacts
 for that platform.
+
+macOS packaging publishes both x64 and arm64 artifacts. The build hook downloads
+and caches the integrity-pinned Node.js 26.7 runtime for each target, stages it
+inside the matching application, and verifies the Mach-O architecture before the
+artifact is signed.
 
 ### Custom Ports
 
@@ -205,12 +210,17 @@ Multiple filters combine with AND logic. Plain text searches across all fields. 
 The Electron desktop app provides:
 
 - **Native window** with persistent size/position (1366x768 default, min 700x600)
-- **Application menu** — File (New Session, Quit), Edit (undo/redo/cut/copy/paste), View (zoom, fullscreen, devtools), Help
+- **Application menu** — File (Close/Quit), Edit (undo/redo/cut/copy/paste), View (reload, zoom, fullscreen, devtools), Help
 - **System tray** — close to tray, context menu (Show/Hide, Quit)
 - **Bundled server** — proxy starts automatically on launch, graceful shutdown on close
 - **Auto-updates** — checks on launch and every 6 hours; Windows and macOS can download an approved update in the background and install it after you choose to restart, while Linux (including AppImage, `.deb`, and `.rpm`) opens the release page for a manual download and install
 - **Cross-platform** — Windows (.exe), macOS (.dmg), Linux (.AppImage, .deb, .rpm)
 - **Secure IPC** — context isolation enabled, preload script with contextBridge API
+
+`UPDATE_URL` configures updater metadata. On Linux, a generic custom provider
+must also set `UPDATE_DOWNLOAD_URL` to a validated HTTP(S) package or release
+page; metadata such as `latest.yml` is never presented as a download page.
+GitHub feed URLs can derive their repository release page automatically.
 
 ### Open Links in Proxied Chrome
 
@@ -322,6 +332,13 @@ The proxy generates a CA certificate on first run (`data/ca.pem`). For browsers 
 1. Download the CA certificate from Settings or `GET /api/certificate`
 2. Install it in your OS or browser trust store
 3. On Windows, the certificate is automatically added to the user trust store on startup
+
+On macOS or Linux, after installing the current CA into the operating-system
+trust store, launch FreeKit with `HTTP_FREEKIT_SYSTEM_CA_TRUSTED=1` to explicitly
+acknowledge that trust. This enables interceptors such as Global Chrome that must
+use the existing browser profile without a scoped certificate bypass. Remove the
+setting if the CA is removed, and reinstall the new CA before setting it again
+after FreeKit reports a CA replacement.
 
 ## Tech Stack
 

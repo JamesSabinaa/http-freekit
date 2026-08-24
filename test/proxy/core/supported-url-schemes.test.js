@@ -11,6 +11,7 @@ import test from 'node:test';
 
 import { ApiServer } from '../../../src/api/api-server.js';
 import { CertificateAuthority } from '../../../src/proxy/certificate-authority.js';
+import { validateMockRule } from '../../../src/proxy/mock-rule-validation.js';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
 async function listen(server) {
@@ -151,27 +152,15 @@ test('plain proxy forwards absolute-form HTTPS over TLS', { timeout: 20000 }, as
   assert.equal(originRequests, 1);
 });
 
-test('mock forwards reject unsupported URL schemes before opening a socket', async t => {
-  const trap = await createSocketTrap(t);
-  const proxy = new ProxyServer(null, { port: 0 });
-  proxy.mockRules = [{
+test('mock forward validation rejects unsupported URL schemes before runtime', () => {
+  const rule = {
     enabled: true,
-    matchers: [],
+    matchers: [{ type: 'wildcard' }],
     action: {
       type: 'forward',
-      forwardTo: `ftp://127.0.0.1:${trap.port}`
+      forwardTo: 'ftp://127.0.0.1/resource'
     }
-  }];
-  await proxy.start();
-  t.after(() => proxy.stop());
+  };
 
-  const response = await requestThroughProxy(
-    proxy.server.address().port,
-    'http://original.invalid/resource'
-  );
-  await new Promise(resolve => setImmediate(resolve));
-
-  assert.equal(response.statusCode, 500);
-  assert.match(response.body, /Unsupported mock forward URL protocol: ftp:/);
-  assert.equal(trap.connections, 0);
+  assert.match(validateMockRule(rule), /HTTP or HTTPS URL/);
 });

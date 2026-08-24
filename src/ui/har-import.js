@@ -4,6 +4,142 @@ export function normalizeHarBodySize(value) {
     : 0;
 }
 
+// A binary capture at the 32 MiB per-side proxy ceiling expands to roughly
+// 85.4 MiB of base64 across one request and response. These limits leave room
+// for its HAR metadata while bounding file text, normalized objects, and each
+// management request independently.
+export const HAR_IMPORT_MAX_FILE_BYTES = 128 * 1024 * 1024;
+export const HAR_IMPORT_MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
+export const HAR_IMPORT_MAX_BATCH_BYTES = 96 * 1024 * 1024;
+export const HAR_IMPORT_MAX_RETAINED_ENTRIES = 10_000;
+export const HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH = 64;
+
+class HarImportPolicyError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'HarImportPolicyError';
+    this.code = code;
+  }
+}
+
+function formatMiB(bytes) {
+  return `${Math.floor(bytes / (1024 * 1024))} MiB`;
+}
+
+export function assertHarImportFileSize(
+  byteLength,
+  maxBytes = HAR_IMPORT_MAX_FILE_BYTES
+) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+    throw new TypeError('HAR file size must be a non-negative safe integer');
+  }
+  if (byteLength > maxBytes) {
+    throw new HarImportPolicyError(
+      `HAR file exceeds the ${formatMiB(maxBytes)} import limit`,
+      'ERR_HAR_IMPORT_FILE_TOO_LARGE'
+    );
+  }
+  return byteLength;
+}
+
+function utf8ByteLength(value) {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff &&
+        index + 1 < value.length &&
+        value.charCodeAt(index + 1) >= 0xdc00 &&
+        value.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4;
+      index++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+export function createHarImportBatches(entries, options = {}) {
+  if (!Array.isArray(entries)) throw new TypeError('HAR import entries must be an array');
+  const maxBatchBytes = options.maxBatchBytes ?? HAR_IMPORT_MAX_BATCH_BYTES;
+  const maxExpandedBytes = options.maxExpandedBytes ?? HAR_IMPORT_MAX_EXPANDED_BYTES;
+  if (!Number.isSafeInteger(maxBatchBytes) || maxBatchBytes < 16) {
+    throw new TypeError('HAR import batch limit must be a safe integer of at least 16 bytes');
+  }
+  if (!Number.isSafeInteger(maxExpandedBytes) || maxExpandedBytes < 0) {
+    throw new TypeError('HAR expanded-memory limit must be a non-negative safe integer');
+  }
+
+  // Reserve enough envelope space for the transaction metadata that the
+  // renderer sends with every batch. This makes the documented batch ceiling
+  // apply to the complete HTTP payload, not just the requests array.
+  const envelopeBytes = utf8ByteLength(JSON.stringify({
+    requests: [],
+    importTransaction: {
+      id: 'x'.repeat(HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH),
+      index: Number.MAX_SAFE_INTEGER,
+      count: Number.MAX_SAFE_INTEGER
+    }
+  }));
+  const batches = [];
+  let batch = [];
+  let batchBytes = envelopeBytes;
+  let expandedBytes = 0;
+  for (let index = 0; index < entries.length; index++) {
+    const serialized = JSON.stringify(entries[index]);
+    if (serialized === undefined) {
+      throw new TypeError(`HAR import entry ${index} is not JSON serializable`);
+    }
+    const itemBytes = utf8ByteLength(serialized);
+    // JavaScript strings occupy up to two bytes per code unit. Counting the
+    // normalized JSON shape this way gives the renderer a deterministic bound
+    // without allocating a second UTF-8 copy merely to measure it.
+    expandedBytes += serialized.length * 2;
+    if (expandedBytes > maxExpandedBytes) {
+      throw new HarImportPolicyError(
+        `Normalized HAR data exceeds the ${formatMiB(maxExpandedBytes)} expanded-memory limit`,
+        'ERR_HAR_IMPORT_EXPANDED_TOO_LARGE'
+      );
+    }
+    if (envelopeBytes + itemBytes > maxBatchBytes) {
+      throw new HarImportPolicyError(
+        `HAR entry ${index} exceeds the ${formatMiB(maxBatchBytes)} import batch limit`,
+        'ERR_HAR_IMPORT_ENTRY_TOO_LARGE'
+      );
+    }
+    const addedBytes = itemBytes + (batch.length > 0 ? 1 : 0);
+    if (batch.length > 0 && batchBytes + addedBytes > maxBatchBytes) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = envelopeBytes;
+    }
+    batch.push(entries[index]);
+    batchBytes += itemBytes + (batch.length > 1 ? 1 : 0);
+  }
+  if (batch.length > 0) batches.push(batch);
+  if (batches.length === 0) batches.push([]);
+  return { batches, expandedBytes };
+}
+
+export function createHarImportBatchPayloads(batches, transactionId) {
+  if (!Array.isArray(batches) || batches.some(batch => !Array.isArray(batch))) {
+    throw new TypeError('HAR import batches must be an array of request arrays');
+  }
+  if (typeof transactionId !== 'string' ||
+      !/^[A-Za-z0-9_-]+$/.test(transactionId) ||
+      transactionId.length > HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH) {
+    throw new TypeError(
+      `HAR import transaction ID must use 1-${HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH} ` +
+      'letters, numbers, underscores, or hyphens'
+    );
+  }
+  const count = batches.length;
+  return batches.map((requests, index) => ({
+    requests,
+    importTransaction: { id: transactionId, index, count }
+  }));
+}
+
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
@@ -279,5 +415,38 @@ export function normalizeHarEntries(har, options = {}) {
   const log = assertHarObject(har.log, 'log');
   if (!Array.isArray(log.entries)) throw new Error('log.entries must be an array');
   const createId = options.createId || (() => crypto.randomUUID());
-  return log.entries.map((entry, index) => normalizeHarEntry(entry, index, createId));
+  const retainLimit = options.retainLimit === undefined
+    ? log.entries.length
+    : options.retainLimit;
+  if (!Number.isSafeInteger(retainLimit) || retainLimit < 0) {
+    throw new TypeError('HAR retain limit must be a non-negative safe integer');
+  }
+  const firstRetainedIndex = Math.max(0, log.entries.length - retainLimit);
+  const normalized = [];
+  log.entries.forEach((entry, index) => {
+    const request = normalizeHarEntry(entry, index, createId);
+    if (index >= firstRetainedIndex) normalized.push(request);
+  });
+  return normalized;
+}
+
+export function prepareHarImport(har, options = {}) {
+  const retainLimit = options.retainLimit ?? HAR_IMPORT_MAX_RETAINED_ENTRIES;
+  const entries = normalizeHarEntries(har, {
+    createId: options.createId,
+    retainLimit
+  });
+  const { batches, expandedBytes } = createHarImportBatches(entries, options);
+  const transactionId = options.transactionId ?? crypto.randomUUID();
+  const payloads = createHarImportBatchPayloads(batches, transactionId);
+  return {
+    entries,
+    batches,
+    payloads,
+    transactionId,
+    expandedBytes,
+    totalEntries: har.log.entries.length,
+    retainedEntries: entries.length,
+    droppedEntries: har.log.entries.length - entries.length
+  };
 }

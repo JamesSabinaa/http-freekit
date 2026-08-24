@@ -1,4 +1,5 @@
-import { trafficToHar } from '../har-converter.js';
+import { trafficToBoundedHar } from '../har-converter.js';
+import { TRAFFIC_IMPORT_TRANSACTION_ERROR_CODE } from '../traffic-import-transactions.js';
 import { matchesTrafficStatus, parseTrafficStatusFilter } from '../../traffic/status-filter.js';
 
 const TRAFFIC_SESSION_HEADER = 'x-http-freekit-traffic-session';
@@ -192,10 +193,17 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.get('/api/traffic/export.har', (req, res) => {
-    const har = trafficToHar(api._getHarExportTraffic(), { maskSensitive: false });
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
-    res.json(har);
+    try {
+      const har = trafficToBoundedHar(api._getHarExportTraffic(), {
+        maskSensitive: false,
+        maxBytes: api.harExportMaxBytes
+      });
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
+      res.json(har);
+    } catch (error) {
+      res.status(500).json({ error: `Failed to create bounded HAR export: ${error.message}` });
+    }
   });
 
   router.get('/api/traffic/search', (req, res) => {
@@ -215,7 +223,7 @@ export function registerTrafficRoutes(router, api) {
     let results = api._getTrafficWithoutDefaultExclusions();
 
     if (method) results = results.filter(request =>
-      request.method?.toUpperCase() === method.toUpperCase()
+      request.method === method
     );
     if (statusFilter) {
       results = results.filter(request => matchesTrafficStatus(request.statusCode, statusFilter));
@@ -300,17 +308,58 @@ export function registerTrafficRoutes(router, api) {
   });
 
   router.post('/api/traffic/import', (req, res) => {
+    const transaction = req.body?.importTransaction;
     try {
       const { requests } = req.body;
       const validationError = api._getTrafficImportValidationError(requests);
       if (validationError) {
-        return res.status(400).json({ error: `Invalid import format: ${validationError}` });
+        if (transaction !== undefined) {
+          api._trafficImportTransactions.abort(transaction?.id);
+        }
+        return res.status(400).json({
+          error: `Invalid import format: ${validationError}` +
+            (transaction === undefined ? '' : '; import transaction was discarded'),
+          ...(transaction === undefined
+            ? {}
+            : { code: TRAFFIC_IMPORT_TRANSACTION_ERROR_CODE })
+        });
       }
-      const retainedRequests = api._appendImportedTraffic(requests);
-      api._broadcastImportedTraffic(retainedRequests, requests.length);
-      res.json({ success: true, imported: requests.length });
+
+      let imported = requests;
+      let completedTransaction = null;
+      if (transaction !== undefined) {
+        completedTransaction = api._trafficImportTransactions.stage(requests, transaction);
+        if (!completedTransaction.complete) {
+          return res.status(202).json({ success: true, ...completedTransaction });
+        }
+        imported = completedTransaction.requests;
+        const combinedValidationError = api._getTrafficImportValidationError(imported);
+        if (combinedValidationError) {
+          return res.status(400).json({
+            error: `Invalid import format: ${combinedValidationError}; ` +
+              'import transaction was discarded',
+            code: TRAFFIC_IMPORT_TRANSACTION_ERROR_CODE
+          });
+        }
+      }
+
+      const retainedRequests = api._appendImportedTraffic(imported);
+      api._broadcastImportedTraffic(retainedRequests, imported.length);
+      res.json({
+        success: true,
+        imported: imported.length,
+        ...(completedTransaction ? {
+          complete: true,
+          transactionId: completedTransaction.transactionId,
+          batchCount: completedTransaction.batchCount
+        } : {})
+      });
     } catch (error) {
-      res.status(400).json({ error: error.message });
+      if (transaction !== undefined) api._trafficImportTransactions.abort(transaction?.id);
+      res.status(400).json({
+        error: error.message,
+        ...(error?.code ? { code: error.code } : {})
+      });
     }
   });
 }

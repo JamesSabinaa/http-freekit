@@ -78,6 +78,7 @@ test('non-Windows startup defers near-expiry CA replacement until explicitly sch
     const deferredInfo = await deferred.initialize({ autoRenewExpiring: false });
 
     assert.equal(fs.readFileSync(deferred.caCertPath, 'utf8'), oldCertificate);
+    assert.equal(deferredInfo.generatedCa, false);
     assert.equal(deferredInfo.automaticRenewalDeferred, true);
     assert.equal(deferredInfo.renewalRequired, true);
     assert.equal(deferred.getCertInfo().certificateAutomaticRenewalEnabled, false);
@@ -97,6 +98,7 @@ test('non-Windows startup defers near-expiry CA replacement until explicitly sch
     const replacementCertificate = fs.readFileSync(renewed.caCertPath, 'utf8');
 
     assert.notEqual(replacementCertificate, oldCertificate);
+    assert.equal(renewedInfo.generatedCa, true);
     assert.deepEqual(renewedInfo.replacedCertificateFingerprints, [oldFingerprint]);
     assert.equal(renewedInfo.renewalScheduled, false);
     assert.equal(fs.existsSync(renewed.caRenewalStatePath), false);
@@ -155,6 +157,28 @@ test('near-expiry CA replacement remains automatic when trust migration is enabl
   assert.notEqual(fs.readFileSync(ca.caCertPath, 'utf8'), oldCertificate);
   assert.equal(ca.getCertInfo().certificateAutomaticRenewalEnabled, true);
   assert.equal(ca.getCertInfo().certificateRenewalRequired, false);
+});
+
+test('an expired persisted CA is replaced even when near-expiry renewal is deferred', async t => {
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-ca-expired-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const oldCertificate = createPersistedCa(
+    dataDir,
+    new Date(Date.now() - 60 * 1000)
+  );
+  const oldFingerprint = new crypto.X509Certificate(oldCertificate)
+    .fingerprint.replace(/:/g, '').toUpperCase();
+  const ca = new CertificateAuthority(dataDir);
+  ca._generateKeyPair = async () => pki.rsa.generateKeyPair({ bits: 1024 });
+
+  const info = await ca.initialize({ autoRenewExpiring: false });
+
+  assert.notEqual(fs.readFileSync(ca.caCertPath, 'utf8'), oldCertificate);
+  assert.deepEqual(info.replacedCertificateFingerprints, [oldFingerprint]);
+  assert.equal(info.automaticRenewalDeferred, false);
+  assert.ok(ca.caCert.validity.notAfter.getTime() > Date.now());
 });
 
 test('post-rename marker hardening failures remain visibly scheduled', async t => {

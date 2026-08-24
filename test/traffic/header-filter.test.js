@@ -56,6 +56,8 @@ test('header names are case-insensitive and present empty values remain discover
 
 test('header filters split on only the first equals sign and retain AND semantics', () => {
   assert.equal(matches(request, 'header:set-cookie=session=abc=='), true);
-  assert.equal(matches(request, 'method:post header:set-cookie=session=abc=='), true);
-  assert.equal(matches(request, 'method:get header:set-cookie=session=abc=='), false);
+  assert.equal(matches(request, 'method:POST header:set-cookie=session=abc=='), true);
+  assert.equal(matches(request, 'method:post header:set-cookie=session=abc=='), false);
+  assert.equal(matches({ ...request, method: 'gEt' }, 'method:gEt'), true);
+  assert.equal(matches({ ...request, method: 'gEt' }, 'method:GET'), false);
 });

@@ -43,6 +43,9 @@ function loadHeaderRows(headers) {
         return null;
       }
     },
+    replaceGeneratedHtmlPreservingFocus(container, html) {
+      container.innerHTML = html;
+    },
     esc: value => String(value),
     escapeHtmlAttribute: value => String(value)
       .replaceAll('&', '&amp;')
@@ -147,7 +150,7 @@ test('cURL import keeps repeated headers ordered through editor loading', () => 
   );
 });
 
-test('resend expands captured header arrays into repeated editor rows', () => {
+test('resend preserves one Host and Accept-Encoding while dropping hop and framing headers', () => {
   const resendStart = rendererSource.indexOf('function resendSelectedRequest(');
   const resendEnd = rendererSource.indexOf('// Track collapsed state', resendStart);
   const allocatorStart = rendererSource.indexOf('function parseSendTabId(');
@@ -163,7 +166,13 @@ test('resend expands captured header arrays into repeated editor rows', () => {
       method: 'GET',
       url: 'https://example.test/',
       requestHeaders: {
-        Host: 'example.test',
+        Host: ['bad\r\nInjected: yes', 'virtual.example.test:8443'],
+        hOSt: 'also-ignored.example.test',
+        'Accept-Encoding': 'br, gzip',
+        Connection: 'Host, Accept-Encoding, X-Hop, keep-alive',
+        'X-Hop': 'drop me',
+        'Content-Length': '123',
+        'Transfer-Encoding': 'chunked',
         'X-Test': ['one', 'two'],
         'X-Single': 'only'
       },
@@ -174,6 +183,7 @@ test('resend expands captured header arrays into repeated editor rows', () => {
     activeSendTab: 'tab-1',
     saveSendTabState() {},
     document: { querySelector: () => null },
+    URL,
     loadSendTabState: tab => { loadedTab = tab; },
     renderSendTabs() {},
     toast() {}
@@ -188,6 +198,8 @@ test('resend expands captured header arrays into repeated editor rows', () => {
   `, context);
 
   assert.deepEqual(JSON.parse(JSON.stringify(loadedTab.headers)), [
+    { key: 'Host', value: 'virtual.example.test:8443', enabled: true },
+    { key: 'Accept-Encoding', value: 'br, gzip', enabled: true },
     { key: 'X-Test', value: 'one', enabled: true },
     { key: 'X-Test', value: 'two', enabled: true },
     { key: 'X-Single', value: 'only', enabled: true }

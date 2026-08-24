@@ -70,6 +70,15 @@ function trafficFixtures() {
       host: 'beta.test',
       path: '/health',
       source: 'proxy'
+    },
+    {
+      id: 'extension-get',
+      method: 'gEt',
+      statusCode: 200,
+      url: 'https://extension.test/items',
+      host: 'extension.test',
+      path: '/items',
+      source: 'proxy'
     }
   ];
 }
@@ -172,9 +181,19 @@ test('traffic routes preserve valid filtering, pagination, and search behavior',
 
   const searchResponse = await requestJson(
     port,
-    '/api/traffic/search?method=get&status=2xx&host=alpha&path=%2Fitems&source=proxy'
+    '/api/traffic/search?method=GET&status=2xx&host=alpha&path=%2Fitems&source=proxy'
   );
   assert.equal(searchResponse.statusCode, 200);
   assert.equal(searchResponse.body.total, 1);
   assert.deepEqual(searchResponse.body.requests.map(request => request.id), ['alpha-get']);
+
+  const extensionResponse = await requestJson(port, '/api/traffic/search?method=gEt');
+  assert.equal(extensionResponse.statusCode, 200);
+  assert.deepEqual(
+    extensionResponse.body.requests.map(request => request.id),
+    ['extension-get']
+  );
+  const foldedResponse = await requestJson(port, '/api/traffic/search?method=get');
+  assert.equal(foldedResponse.statusCode, 200);
+  assert.equal(foldedResponse.body.total, 0);
 });

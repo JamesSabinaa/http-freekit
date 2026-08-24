@@ -20,16 +20,40 @@ function fakeLauncher(pid = 100) {
   return proc;
 }
 
+function configurePosixHandshake(interceptor, pid, name) {
+  const ownershipMarkerFile = path.join(
+    os.tmpdir(),
+    `http-freekit-terminal-handshake-${name}`,
+    'ownership.marker'
+  );
+  interceptor._createPosixHandshake = () => ({
+    directory: null,
+    reportFile: `/tmp/${name}.json`,
+    acknowledgementFile: `/tmp/${name}.ack`,
+    nonce: `${name}-nonce`,
+    ownershipMarkerFile
+  });
+  interceptor._waitForPosixShellReport = async () => pid;
+  interceptor._acknowledgePosixShell = async () => {};
+  interceptor._cleanupTerminalHandshake = () => {};
+  return ownershipMarkerFile;
+}
+
 test('macOS terminal activation tracks the interactive shell after osascript exits', async () => {
   const interceptor = new FreshTerminalInterceptor();
   interceptor._platform = () => 'darwin';
-  interceptor._createPidFilePath = () => '/tmp/freekit-shell.pid';
-  interceptor._waitForShellPid = async () => 4321;
+  const ownershipMarkerFile = configurePosixHandshake(interceptor, 4321, 'freekit-shell');
   let sessionRunning = true;
   interceptor._inspectSessionIdentity = async pid => ({
     ...(sessionRunning ? {
       state: 'running',
-      identity: { pid, startTime: '100', executable: '/bin/zsh' }
+      identity: {
+        pid,
+        startTime: '100',
+        executable: '/bin/zsh',
+        bootId: '11111111-1111-4111-8111-111111111111',
+        ownershipMarkerFile
+      }
     } : { state: 'absent' })
   });
   const launcher = fakeLauncher();
@@ -48,8 +72,10 @@ test('macOS terminal activation tracks the interactive shell after osascript exi
   const result = await interceptor.activate(8080);
   assert.equal(result.pid, 4321);
   assert.equal(launch.command, 'osascript');
-  assert.match(launch.args[1], /printf '%s' \\"\$\$\\"/);
-  assert.match(launch.args[1], /freekit-shell\.pid/);
+  assert.match(launch.args[1], /nonce/);
+  assert.match(launch.args[1], /freekit-shell\.json/);
+  assert.match(launch.args[1], /ownership\.marker/);
+  assert.doesNotMatch(launch.args[1], /exec \\\"\$\\\{SHELL:-\/bin\/sh\\\}\\\" -l/);
 
   launcher.exitCode = 0;
   launcher.emit('exit', 0);
@@ -63,8 +89,7 @@ test('macOS terminal activation tracks the interactive shell after osascript exi
 test('Linux terminal commands wait for and identify their interactive shell', async () => {
   const interceptor = new FreshTerminalInterceptor();
   interceptor._platform = () => 'linux';
-  interceptor._createPidFilePath = () => '/tmp/freekit-linux-shell.pid';
-  interceptor._waitForShellPid = async () => 9876;
+  configurePosixHandshake(interceptor, 9876, 'freekit-linux-shell');
   interceptor._inspectSessionIdentity = async pid => ({
     state: 'running',
     identity: { pid, startTime: '200', executable: '/bin/bash' }
@@ -80,7 +105,7 @@ test('Linux terminal commands wait for and identify their interactive shell', as
   assert.equal(result.pid, 9876);
   assert.equal(launch.command, 'gnome-terminal');
   assert.deepEqual(launch.args.slice(0, 4), ['--wait', '--', 'sh', '-c']);
-  assert.match(launch.args[4], /printf '%s' "\$\$"/);
+  assert.match(launch.args[4], /"nonce":/);
   assert.match(launch.args[4], /exec "\$\{SHELL:-\/bin\/sh\}" -l/);
 });
 

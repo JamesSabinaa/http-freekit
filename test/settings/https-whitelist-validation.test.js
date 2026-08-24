@@ -97,6 +97,9 @@ function malformedDirectCandidates(accessState) {
     inherited,
     accessor,
     descriptorTrap,
+    ['*.example.test'],
+    ['https://example.test'],
+    ['example.test:443'],
     Array(MAX_HTTPS_WHITELIST_HOSTS + 1).fill('too-many.test'),
     ['x'.repeat(MAX_HTTPS_WHITELIST_PATTERN_LENGTH + 1)]
   ];
@@ -104,7 +107,7 @@ function malformedDirectCandidates(accessState) {
 
 test('direct HTTPS whitelist updates reject exotic candidates before runtime mutation', () => {
   const proxy = new ProxyServer(null);
-  const callerOwned = ['*.Example.Test.', '[::1]', 'exact.test'];
+  const callerOwned = ['Pinned.Example.Test.', '[::1]', 'exact.test'];
   proxy.setHttpsWhitelist(callerOwned);
   callerOwned[2] = 'mutated-after-install.test';
   const previous = proxy.httpsWhitelist;
@@ -124,17 +127,16 @@ test('direct HTTPS whitelist updates reject exotic candidates before runtime mut
   assert.equal(accessState.invoked, false);
   assert.equal(resets, 0);
   assert.equal(Object.isFrozen(proxy.httpsWhitelist), true);
+  assert.equal(proxy._isHttpsWhitelisted('pinned.example.test'), true);
   assert.equal(proxy._isHttpsWhitelisted('api.example.test'), false);
-  assert.equal(proxy._isHttpsWhitelisted('*.example.test'), true);
-  assert.equal(proxy._isHttpsWhitelisted('example.test'), false);
   assert.equal(proxy._isHttpsWhitelisted('::1'), true);
   assert.equal(proxy._isHttpsWhitelisted('exact.test'), true);
   assert.equal(proxy._isHttpsWhitelisted('mutated-after-install.test'), false);
 
   proxy.httpsWhitelist = { some: 'corrupt direct state' };
-  assert.doesNotThrow(() => proxy._isHttpsWhitelisted('*.example.test'));
+  assert.doesNotThrow(() => proxy._isHttpsWhitelisted('pinned.example.test'));
   assert.equal(proxy._isHttpsWhitelisted('api.example.test'), false);
-  assert.equal(proxy._isHttpsWhitelisted('*.example.test'), true);
+  assert.equal(proxy._isHttpsWhitelisted('pinned.example.test'), true);
   assert.equal(proxy._isHttpsWhitelisted({ toString: null }), false);
 });
 
@@ -152,7 +154,11 @@ test('HTTPS whitelist API rejects malformed arrays without mutating or writing s
     { hosts: ['valid.test', 9] },
     { hosts: [null] },
     { hosts: ['   '] },
-    { hosts: ['line\nbreak.test'] }
+    { hosts: ['line\nbreak.test'] },
+    { hosts: ['*.example.test'] },
+    { hosts: ['https://example.test'] },
+    { hosts: ['example.test:443'] },
+    { hosts: ['user@example.test'] }
   ]) {
     const response = await requestJson(port, 'POST', '/api/https-whitelist', body);
     assert.equal(response.statusCode, 400);
@@ -169,10 +175,10 @@ test('HTTPS whitelist API rejects malformed arrays without mutating or writing s
   assert.deepEqual(fs.readFileSync(settings.filePath), beforeBytes);
 
   const success = await requestJson(port, 'POST', '/api/https-whitelist', {
-    hosts: ['*.Example.Test.', '[::1]', ' exact.test ']
+    hosts: ['Pinned.Example.Test.', '[::1]', ' exact.test ']
   });
   assert.equal(success.statusCode, 200);
-  assert.deepEqual(proxy.httpsWhitelist, ['*.Example.Test.', '[::1]', 'exact.test']);
+  assert.deepEqual(proxy.httpsWhitelist, ['Pinned.Example.Test.', '[::1]', 'exact.test']);
   assert.deepEqual(settings.get('httpsWhitelist'), proxy.httpsWhitelist);
   assert.deepEqual(
     JSON.parse(fs.readFileSync(settings.filePath, 'utf8')).httpsWhitelist,
@@ -238,11 +244,11 @@ test('startup ignores invalid saved HTTPS whitelists without runtime or persiste
   }
   assert.equal(accessState.invoked, false);
 
-  settings.set('httpsWhitelist', ['*.valid.test', '[::1]']);
+  settings.set('httpsWhitelist', ['valid.test', '[::1]']);
   assert.equal(restoreHttpsWhitelistSetting(proxy, settings), true);
-  assert.deepEqual(proxy.httpsWhitelist, ['*.valid.test', '[::1]']);
+  assert.deepEqual(proxy.httpsWhitelist, ['valid.test', '[::1]']);
   assert.equal(proxy._isHttpsWhitelisted('api.valid.test'), false);
-  assert.equal(proxy._isHttpsWhitelisted('*.valid.test'), true);
+  assert.equal(proxy._isHttpsWhitelisted('valid.test'), true);
   assert.equal(proxy._isHttpsWhitelisted('::1'), true);
 });
 

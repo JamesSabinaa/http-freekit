@@ -71,6 +71,7 @@ function createHarness(selectedIndex) {
   };
   vm.createContext(context);
   vm.runInContext(`
+    let trafficDetailSelectionGeneration = 0;
     ${wsParentKeySource}
     ${trimTrafficRowsSource}
     ${addRequestSource}

@@ -20,8 +20,9 @@
       DEFAULT_TRAFFIC_LIST_ID,
       createTrafficListVisibilityMatcher
     } = window.FreeKitTrafficLists;
-    const { normalizeHarEntries } = window.FreeKitHarImport;
+    const { assertHarImportFileSize, prepareHarImport } = window.FreeKitHarImport;
     const { parseCurlCommand } = window.FreeKitCurlParser;
+    const { normalizeSendUrl } = window.FreeKitSendUrl;
     const { generateExportSnippet } = window.FreeKitRequestExport;
     let trafficLists = [{
       id: DEFAULT_TRAFFIC_LIST_ID,
@@ -47,6 +48,7 @@
     let autoScroll = true;
     let requestCounter = 0;
     let filterDebounceTimer = null;
+    let activeMcpTrafficFilters = null;
 
     function safeLocalStorageGet(key, fallback = null) {
       try {
@@ -192,9 +194,10 @@
     let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '', bodyEncoding: 'utf8', bodyType: 'raw', bodyFormat: 'text', urlEncodedFields: [], multipartFields: [], multipartBoundary: '', response: null }];
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
-    let currentSendAbort = null;
+    const sendAbortControllers = new Map();
     /** @type {object|null} Active Monaco editor for the Send page request body */
     let sendBodyEditor = null;
+    let sendBodyProgrammaticUpdateDepth = 0;
     let sendUrlEncodedFields = [];
     let sendMultipartFields = [];
     let sendMultipartBoundary = '';
@@ -208,6 +211,44 @@
       event.preventDefault();
       if (event.repeat) return;
       event.currentTarget.click();
+    }
+
+    const GENERATED_FOCUSABLE_SELECTOR =
+      'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    function replaceGeneratedHtmlPreservingFocus(container, html) {
+      if (!container) return;
+      const activeElement = document.activeElement;
+      const focusWasInside = !!activeElement && container.contains(activeElement);
+      const previousControls = focusWasInside
+        ? Array.from(container.querySelectorAll(GENERATED_FOCUSABLE_SELECTOR))
+        : [];
+      const previousIndex = previousControls.indexOf(activeElement);
+      const focusKey = focusWasInside ? activeElement.dataset?.focusKey : null;
+
+      container.innerHTML = html;
+      if (!focusWasInside) return;
+
+      const currentControls = Array.from(container.querySelectorAll(GENERATED_FOCUSABLE_SELECTOR));
+      const keyedControl = focusKey
+        ? currentControls.find(control => control.dataset?.focusKey === focusKey)
+        : null;
+      const fallbackIndex = Math.max(0, Math.min(previousIndex, currentControls.length - 1));
+      const nextControl = keyedControl || currentControls[fallbackIndex];
+      if (nextControl?.focus) nextControl.focus();
+    }
+
+    function addGeneratedControlAccessibleNames(html, context) {
+      let controlIndex = 0;
+      return html.replace(/<(input|select|textarea)\b([^>]*)>/gi, (tagHtml, tagName, attributes) => {
+        if (/\baria-label\s*=|\baria-labelledby\s*=/i.test(attributes)) return tagHtml;
+        controlIndex++;
+        const hintMatch = /\b(?:placeholder|title)="([^"]+)"/i.exec(attributes) ||
+          /\b(?:placeholder|title)='([^']+)'/i.exec(attributes);
+        const hint = hintMatch?.[1]?.replace(/&[^;]+;/g, ' ').replace(/\s+/g, ' ').trim();
+        const name = hint ? `${context}: ${hint}` : `${context} ${tagName.toLowerCase()} ${controlIndex}`;
+        return `<${tagName}${attributes} aria-label="${escapeHtmlAttribute(name)}">`;
+      });
     }
 
     const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
@@ -554,9 +595,11 @@
       }
       applyFilter();
 
-      resolvePendingTrafficView();
-
-      if (selectedRequest) showDetail(selectedRequest);
+      const resolvedPendingView = resolvePendingTrafficView();
+      if (!resolvedPendingView) {
+        const currentSelection = getSelectedTrafficRequest();
+        if (currentSelection) void renderSelectedTrafficDetail(currentSelection);
+      }
     }
 
     const appliedTrafficClearIds = new Set();
@@ -990,9 +1033,7 @@
         }
       }
       if (selectedRequestId !== null && !selectedRequest) closeDetail();
-      else if (selectedRequest?._deferredTrafficDetail === true) {
-        void hydrateDeferredTrafficRequest(selectedRequest);
-      } else if (selectedRequest) showDetail(selectedRequest);
+      else if (selectedRequest) void renderSelectedTrafficDetail(selectedRequest);
       return true;
     }
 
@@ -1362,6 +1403,7 @@
           break;
         case 'mcp-filter':
           // MCP tool applied a filter — update the search input and re-filter
+          activeMcpTrafficFilters = buildMcpTrafficFilters(msg.filters);
           const searchInput = document.getElementById('searchInput');
           if (searchInput) {
             searchInput.value = msg.filter || '';
@@ -1503,6 +1545,7 @@
 
     function applyFilter() {
       const raw = document.getElementById('searchInput').value.trim();
+      const filters = activeMcpTrafficFilters || (raw ? parseFilters(raw) : []);
 
       // Rebuild wsFramesByParent index (handles clears, imports, etc.)
       wsFramesByParent = Object.create(null);
@@ -1514,9 +1557,12 @@
         }
       });
 
-      // Filter base list (exclude ws-frame — they appear as sub-rows)
+      // Filter base list (ws-frame records appear as sub-rows of their connection).
+      // A frame match keeps its parent visible so payload searches retain context,
+      // while only matching frames are inserted under an expanded connection.
       let baseList;
-      if (!raw) {
+      let visibleFramesByParent = wsFramesByParent;
+      if (filters.length === 0) {
         baseList = requests.filter(r =>
           r.protocol !== 'ws-frame' &&
           (!hideTunnelRequests || !isTunnelRequest(r)) &&
@@ -1524,13 +1570,25 @@
           !isDefaultExcludedRequest(r)
         );
       } else {
-        const filters = parseFilters(raw);
+        visibleFramesByParent = Object.create(null);
+        // MCP searches operate on exchanges, not frame records. Ordinary UI
+        // searches retain the existing frame-payload grouping behavior.
+        if (!activeMcpTrafficFilters) {
+          for (const frame of requests) {
+            if (frame.protocol !== 'ws-frame' || !frame.parentId ||
+                !matchesAllFilters(frame, filters)) continue;
+            const parentKey = wsFrameParentKey(frame);
+            if (!visibleFramesByParent[parentKey]) visibleFramesByParent[parentKey] = [];
+            visibleFramesByParent[parentKey].push(frame);
+          }
+        }
         baseList = requests.filter(r =>
           r.protocol !== 'ws-frame' &&
           (!hideTunnelRequests || !isTunnelRequest(r)) &&
           (!filterSafeFonts || !isSafeFontRequest(r)) &&
           !isDefaultExcludedRequest(r) &&
-          matchesAllFilters(r, filters)
+          (matchesAllFilters(r, filters) ||
+            (visibleFramesByParent[wsConnectionKey(r)] || []).length > 0)
         );
       }
 
@@ -1551,7 +1609,7 @@
         filteredRequests.push(r);
         const parentKey = wsConnectionKey(r);
         if (isWebSocketConnection(r) && wsExpandedConnections.has(parentKey)) {
-          const frames = wsFramesByParent[parentKey] || [];
+          const frames = visibleFramesByParent[parentKey] || [];
           filteredRequests.push(...frames);
         }
       }
@@ -1577,6 +1635,25 @@
         }
       }
       return filters;
+    }
+
+    function buildMcpTrafficFilters(spec) {
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return null;
+      const filters = [];
+      if (typeof spec.method === 'string' && spec.method) {
+        filters.push({ type: 'method', value: spec.method });
+      }
+      if ((typeof spec.status === 'string' || typeof spec.status === 'number') &&
+          String(spec.status)) {
+        filters.push({ type: 'status', value: String(spec.status) });
+      }
+      if (typeof spec.host === 'string' && spec.host) {
+        filters.push({ type: 'host', value: spec.host });
+      }
+      if (typeof spec.query === 'string' && spec.query) {
+        filters.push({ type: 'mcp-query', value: spec.query });
+      }
+      return filters.length ? filters : null;
     }
 
     function plainSearchValueIncludes(value, searchText) {
@@ -1623,7 +1700,7 @@
       const val = filter.value.toLowerCase();
       switch (filter.type) {
         case 'method':
-          return req.method?.toLowerCase() === val;
+          return req.method === filter.value;
         case 'status': {
           if (val.endsWith('xx')) {
             const base = parseInt(val[0]) * 100;
@@ -1650,6 +1727,14 @@
           return [...(requestValues || []), ...(responseValues || [])]
             .some(value => value.toLowerCase().includes(hVal));
         }
+        case 'mcp-query':
+          return plainSearchValueIncludes(req.url, val) ||
+            plainSearchValueIncludes(req.host, val) ||
+            plainSearchValueIncludes(req.path, val) ||
+            plainSearchValueIncludes(req.requestBody, val) ||
+            plainSearchValueIncludes(req.responseBody, val) ||
+            String(req.statusCode).includes(val) ||
+            plainSearchValueIncludes(req.method, val);
         case 'text':
         default:
           // Search across all fields
@@ -1705,6 +1790,7 @@
     }
 
     function applyFilterHint(prefix) {
+      activeMcpTrafficFilters = null;
       const input = document.getElementById('searchInput');
       const words = input.value.split(/\s+/);
       words[words.length - 1] = prefix + ':';
@@ -1722,6 +1808,7 @@
     }
 
     function clearSearchFilter() {
+      activeMcpTrafficFilters = null;
       const input = document.getElementById('searchInput');
       if (input) { input.value = ''; input.focus(); }
       document.getElementById('searchClearBtn').style.display = 'none';
@@ -1821,12 +1908,27 @@
           req.remote?.port,
           443
         );
+        const tunnelHasError = Boolean(req.error || req.errorCode || req.errorPhase);
+        const tunnelStatus = req.statusCode === null || req.statusCode === undefined
+          ? (tunnelHasError ? 0 : 200)
+          : req.statusCode;
+        const tunnelFailed = tunnelHasError || tunnelStatus === 0 || tunnelStatus >= 400;
+        const tunnelStatusClass = tunnelStatus === 0 ? 'status-err' :
+          tunnelStatus < 200 ? 'status-1xx' :
+          tunnelStatus < 300 ? 'status-2xx' :
+          tunnelStatus < 400 ? 'status-3xx' :
+          tunnelStatus < 500 ? 'status-4xx' : 'status-5xx';
+        const tunnelStatusLabel = tunnelStatus === 0 ? 'ERR' : tunnelStatus;
+        const tunnelMarkerColor = tunnelFailed ? '#ce3939' : '#888';
+        const tunnelTitle = tunnelFailed
+          ? (req.error || req.statusMessage || 'Tunnel failed')
+          : 'Tunnel to ' + tunnelEndpoint;
         return `<tr class="tunnel-row ${selected}" id="${rowId}" role="row" aria-rowindex="${ariaRowIndex}" aria-selected="${rowSelected}" ${identityAttributes} onclick="${selectHandler}">
-          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:#888;"></div></td>
+          <td role="gridcell" style="padding:0;width:5px;"><div class="row-marker" style="color:${tunnelMarkerColor};"></div></td>
           <td role="gridcell"><span class="method-badge method-CONNECT">TUNNEL</span></td>
-          <td role="gridcell"><span class="status-badge status-2xx">200</span></td>
+          <td role="gridcell"><span class="status-badge ${tunnelStatusClass}">${tunnelStatusLabel}</span></td>
           <td role="gridcell" class="source-cell"><span class="source-icon source-tunnel" title="Tunnel">${sourceIcon}</span></td>
-          <td role="gridcell" colspan="2" style="text-align:center;" title="${escapeHtmlAttribute('Tunnel to ' + tunnelEndpoint)}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
+          <td role="gridcell" colspan="2" style="text-align:center;" title="${escapeHtmlAttribute(tunnelTitle)}">${esc(req.host || '-')} — ${bytesSent} / ${bytesRecv}</td>
         </tr>`;
       }
 
@@ -1867,7 +1969,8 @@
         const isExpanded = wsExpandedConnections.has(parentKey);
         const expandIcon = isExpanded ? '&#9660;' : '&#9654;';
         if (frameCount > 0) {
-          wsFrameBadge = `<span class="ws-expand-toggle" ${identityAttributes} onclick="event.stopPropagation();toggleWsExpand(this.dataset.id,this.dataset.lifecycleId)" title="${isExpanded ? 'Collapse' : 'Expand'} ${frameCount} frames">${expandIcon}</span><span class="ws-frame-count">${frameCount}</span>`;
+          const frameAction = isExpanded ? 'Collapse' : 'Expand';
+          wsFrameBadge = `<button type="button" class="ws-expand-toggle" ${identityAttributes} onclick="event.stopPropagation();toggleWsExpand(this.dataset.id,this.dataset.lifecycleId)" aria-expanded="${isExpanded}" aria-label="${frameAction} ${frameCount} WebSocket frames" title="${frameAction} ${frameCount} frames">${expandIcon}</button><span class="ws-frame-count">${frameCount}</span>`;
         }
       }
 
@@ -2042,21 +2145,47 @@
       vsForceRender = true;
       renderVirtualRows();
 
-      if (req._deferredTrafficDetail === true) {
-        const panel = document.getElementById('detailPanel');
-        const emptyEl = document.getElementById('detailEmptyState');
-        const activeEl = document.getElementById('detailActive');
-        if (panel) panel._request = null;
-        if (emptyEl) emptyEl.style.display = 'flex';
-        if (activeEl) activeEl.style.display = 'none';
-        void hydrateDeferredTrafficRequest(req);
-        return;
-      }
-
-      showDetail(req);
+      void renderSelectedTrafficDetail(req);
     }
 
     const deferredTrafficHydrations = new Map();
+    let trafficDetailSelectionGeneration = 0;
+
+    function hideTrafficDetailForHydration() {
+      const panel = document.getElementById('detailPanel');
+      const emptyEl = document.getElementById('detailEmptyState');
+      const activeEl = document.getElementById('detailActive');
+      if (panel) panel._request = null;
+      if (emptyEl) emptyEl.style.display = 'flex';
+      if (activeEl) activeEl.style.display = 'none';
+    }
+
+    async function renderSelectedTrafficDetail(req) {
+      const selectionGeneration = ++trafficDetailSelectionGeneration;
+      const currentRequest = currentTrafficGenerationRequest(req) ||
+        (requests.includes(req) ? req : null);
+      if (!currentRequest || !isSelectedTrafficRequest(currentRequest)) return null;
+
+      if (currentRequest._deferredTrafficDetail !== true) {
+        showDetail(currentRequest);
+        return currentRequest;
+      }
+
+      hideTrafficDetailForHydration();
+      const hydratedRequest = await hydrateDeferredTrafficRequest(currentRequest);
+      if (!hydratedRequest || selectionGeneration !== trafficDetailSelectionGeneration) return null;
+      const latestSelection = getSelectedTrafficRequest();
+      if (!latestSelection || latestSelection._deferredTrafficDetail === true ||
+          !trafficRequestMatchesIdentity(
+            latestSelection,
+            hydratedRequest.id,
+            normalizeTrafficLifecycleId(hydratedRequest.trafficLifecycleId)
+          )) {
+        return null;
+      }
+      showDetail(latestSelection);
+      return latestSelection;
+    }
 
     function resolveDeferredTrafficRequest(
       req,
@@ -2145,7 +2274,6 @@
           );
         }
         applyFilter();
-        if (wasSelected) showDetail(mergedRequest);
         return mergedRequest;
       })();
       generationHydrations.set(hydrationKey, hydration);
@@ -2217,6 +2345,7 @@
     }
 
     function closeDetail(renderSelection = true) {
+      trafficDetailSelectionGeneration++;
       const panel = document.getElementById('detailPanel');
       const emptyEl = document.getElementById('detailEmptyState');
       const activeEl = document.getElementById('detailActive');
@@ -2225,6 +2354,8 @@
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
       selectedRequestLifecycleId = null;
+      _detailRenderedRequestIdentity = null;
+      _transformPerspective = 'transformed';
       updateTrafficActiveDescendant(null);
       // Re-render to remove selection highlight
       if (renderSelection) {
@@ -2673,6 +2804,149 @@
       );
     }
 
+    const RESEND_HOP_AND_FRAMING_HEADERS = new Set([
+      'connection', 'content-length', 'keep-alive', 'proxy-authenticate',
+      'proxy-authorization', 'proxy-connection', 'te', 'trailer',
+      'transfer-encoding', 'upgrade'
+    ]);
+
+    function resendHeaderValues(value) {
+      return Array.isArray(value) ? value : [value];
+    }
+
+    function isValidResendHostHeaderValue(value) {
+      if (typeof value !== 'string' && typeof value !== 'number') return false;
+      const host = String(value).trim();
+      if (!host || /[^\x21-\x7e]/.test(host)) return false;
+      try {
+        const parsed = new URL('http://' + host);
+        return Boolean(parsed.hostname) && !parsed.username && !parsed.password &&
+          parsed.pathname === '/' && !parsed.search && !parsed.hash;
+      } catch {
+        return false;
+      }
+    }
+
+    const rendererStorageCorruptions = new Map();
+    let rendererStorageQuarantineCounter = 0;
+
+    function registerRendererStorageCorruption(key, rawValue, group, label, reason) {
+      if (typeof key !== 'string' || typeof rawValue !== 'string') return null;
+      const existing = rendererStorageCorruptions.get(key);
+      if (existing?.rawValue === rawValue) return existing;
+      const corruption = {
+        key,
+        rawValue,
+        group,
+        label,
+        reason: reason || 'invalid JSON or structure'
+      };
+      rendererStorageCorruptions.set(key, corruption);
+      const message = `${label} is corrupt (${corruption.reason}). Its raw value was left unchanged, ` +
+        'and related saves are blocked until you explicitly quarantine and reset it.';
+      console.error('[Storage]', message);
+      if (typeof toast === 'function') toast(message, 'error');
+      return corruption;
+    }
+
+    function rendererStorageCorruptionsForGroup(group) {
+      return Array.from(rendererStorageCorruptions.values())
+        .filter(corruption => corruption.group === group);
+    }
+
+    function clearRendererStorageCorruption(key) {
+      rendererStorageCorruptions.delete(key);
+    }
+
+    function hasRendererStorageCorruption(group) {
+      return rendererStorageCorruptionsForGroup(group).length > 0;
+    }
+
+    function quarantineRendererStorageCorruptionGroup(group, actionLabel) {
+      const corruptions = rendererStorageCorruptionsForGroup(group);
+      if (corruptions.length === 0) return true;
+      const labels = corruptions.map(corruption => corruption.label).join(', ');
+      const approved = typeof globalThis.confirm === 'function' && globalThis.confirm(
+        `${labels} cannot be used safely. ${actionLabel} is blocked.\n\n` +
+        'Choose OK to copy the exact corrupt value(s) to local recovery keys and reset them, ' +
+        'or Cancel to keep everything unchanged.'
+      );
+      if (!approved) {
+        if (typeof toast === 'function') {
+          toast(`${actionLabel} was canceled; corrupt stored data remains unchanged.`, 'error');
+        }
+        return false;
+      }
+
+      // A different renderer or manual recovery may have replaced the value
+      // since it was diagnosed. Never delete or overwrite that newer value
+      // under an approval that described different raw bytes.
+      for (const corruption of corruptions) {
+        if (safeLocalStorageGet(corruption.key) !== corruption.rawValue) {
+          if (typeof toast === 'function') {
+            toast(
+              `${actionLabel} is still blocked because ${corruption.label} changed during recovery. ` +
+              'Reload the current stored value and try again.',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+
+      const quarantined = [];
+      for (const corruption of corruptions) {
+        const quarantineKey = 'http-freekit-corrupt-backup:' +
+          encodeURIComponent(corruption.key) + ':' + Date.now().toString(36) + '-' +
+          (++rendererStorageQuarantineCounter).toString(36);
+        if (!safeLocalStorageSet(quarantineKey, corruption.rawValue, false)) {
+          if (typeof toast === 'function') {
+            toast(
+              `${actionLabel} is still blocked because the corrupt ${corruption.label} could not be quarantined.`,
+              'error'
+            );
+          }
+          return false;
+        }
+        quarantined.push({ corruption, quarantineKey });
+      }
+
+      for (const { corruption } of quarantined) {
+        if (!safeLocalStorageRemove(corruption.key, false)) {
+          if (typeof toast === 'function') {
+            toast(
+              `${actionLabel} is still blocked because the original corrupt ${corruption.label} could not be reset.`,
+              'error'
+            );
+          }
+          return false;
+        }
+        rendererStorageCorruptions.delete(corruption.key);
+      }
+      if (typeof toast === 'function') {
+        toast(
+          `Corrupt stored data was quarantined under ${quarantined.length} local recovery ` +
+          `key${quarantined.length === 1 ? '' : 's'}.`,
+          'success'
+        );
+      }
+      return true;
+    }
+
+    function capturedConnectionHeaderNames(headers) {
+      const names = new Set();
+      for (const [name, value] of Object.entries(headers || {})) {
+        if (name.toLowerCase() !== 'connection') continue;
+        for (const item of resendHeaderValues(value)) {
+          for (const token of String(item).split(',')) {
+            const normalized = token.trim().toLowerCase();
+            if (/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(normalized)) names.add(normalized);
+          }
+        }
+      }
+      return names;
+    }
+
     function resendResolvedRequest(req) {
       const requestMethod = req.method === undefined ? 'GET' : req.method;
       if (typeof requestMethod !== 'string' || requestMethod.length === 0 ||
@@ -2705,13 +2979,28 @@
       // Build headers list for the new tab
       const newHeaders = [];
       if (req.requestHeaders && Object.keys(req.requestHeaders).length > 0) {
-        const skip = ['host', 'proxy-connection', 'content-length', 'connection', 'accept-encoding'];
-        if (semanticReplay) skip.push('content-encoding');
+        const skip = new Set([
+          ...RESEND_HOP_AND_FRAMING_HEADERS,
+          ...capturedConnectionHeaderNames(req.requestHeaders)
+        ]);
+        skip.delete('host');
+        skip.delete('accept-encoding');
+        if (semanticReplay) skip.add('content-encoding');
+        let retainedHost = false;
         for (const [k, v] of Object.entries(req.requestHeaders)) {
-          if (!skip.includes(k.toLowerCase())) {
-            const values = Array.isArray(v) ? v : [v];
-            values.forEach(value => newHeaders.push({ key: k, value: String(value), enabled: true }));
+          const lowerName = k.toLowerCase();
+          if (skip.has(lowerName)) continue;
+          const values = resendHeaderValues(v);
+          if (lowerName === 'host') {
+            if (retainedHost) continue;
+            const validHost = values.find(isValidResendHostHeaderValue);
+            if (validHost !== undefined) {
+              newHeaders.push({ key: k, value: String(validHost).trim(), enabled: true });
+              retainedHost = true;
+            }
+            continue;
           }
+          values.forEach(value => newHeaders.push({ key: k, value: String(value), enabled: true }));
         }
       }
 
@@ -2778,6 +3067,45 @@
 
     // Track collapsed state per card so chevron icon updates
     const _cardCollapsed = {};
+    let _detailCardDisclosureScope = 0;
+
+    function getDetailCardDisclosureLabel(card, expanded) {
+      const heading = card.querySelector('.detail-card-heading')?.textContent?.trim() || 'details';
+      return `${expanded ? 'Collapse' : 'Expand'} ${heading}`;
+    }
+
+    function initializeDetailCardDisclosures(root) {
+      if (!root?.querySelectorAll) return;
+      const scope = ++_detailCardDisclosureScope;
+      root.querySelectorAll('.detail-card').forEach((card, index) => {
+        const header = card.querySelector('.detail-card-header');
+        const body = card.querySelector('.detail-card-body');
+        if (!header || !body) return;
+
+        if (!body.id) body.id = `detail-card-body-${scope}-${index}`;
+        let disclosure = header.querySelector('.collapse-chevron');
+        if (!disclosure || disclosure.tagName !== 'BUTTON') {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'collapse-chevron';
+          if (disclosure) disclosure.replaceWith(button);
+          else header.appendChild(button);
+          disclosure = button;
+        }
+
+        const expanded = !card.classList.contains('collapsed');
+        card.setAttribute('aria-expanded', String(expanded));
+        disclosure.type = 'button';
+        disclosure.innerHTML = expanded ? '&#9650;' : '&#9660;';
+        disclosure.setAttribute('aria-controls', body.id);
+        disclosure.setAttribute('aria-expanded', String(expanded));
+        disclosure.setAttribute('aria-label', getDetailCardDisclosureLabel(card, expanded));
+        disclosure.onclick = event => {
+          event.stopPropagation();
+          toggleCardCollapse(card);
+        };
+      });
+    }
 
     function toggleCardCollapse(cardOrId) {
       const el = typeof cardOrId === 'string' ? document.getElementById(cardOrId) : cardOrId;
@@ -2786,7 +3114,12 @@
       if (el.id) _cardCollapsed[el.id] = isCollapsed;
       el.setAttribute('aria-expanded', String(!isCollapsed));
       const chevron = el.querySelector('.collapse-chevron');
-      if (chevron) chevron.innerHTML = isCollapsed ? '&#9660;' : '&#9650;';
+      if (chevron) {
+        const expanded = !isCollapsed;
+        chevron.innerHTML = expanded ? '&#9650;' : '&#9660;';
+        chevron.setAttribute('aria-expanded', String(expanded));
+        chevron.setAttribute('aria-label', getDetailCardDisclosureLabel(el, expanded));
+      }
     }
 
     // Delegate clicks on the full header bar, excluding controls within it
@@ -2880,7 +3213,7 @@
       'x-xss-protection': 'Legacy header that enabled the browser\'s built-in XSS filter. Mostly superseded by CSP.',
     };
 
-    const _headerCollapsed = {};
+    const _headerCollapsed = Object.create(null);
 
     function toggleHeaderRow(headerId) {
       // _headerCollapsed starts undefined (falsy) = collapsed. Toggle to open.
@@ -2889,7 +3222,13 @@
       const descEl = document.getElementById(headerId + '-desc');
       const iconEl = document.getElementById(headerId + '-icon');
       if (descEl) descEl.style.display = _headerCollapsed[headerId] ? 'block' : 'none';
-      if (iconEl) iconEl.textContent = _headerCollapsed[headerId] ? '\u2212' : '+';
+      if (iconEl) {
+        const expanded = _headerCollapsed[headerId];
+        const headerName = iconEl.dataset.headerName || 'header';
+        iconEl.textContent = expanded ? '\u2212' : '+';
+        iconEl.setAttribute('aria-expanded', String(expanded));
+        iconEl.setAttribute('aria-label', `${expanded ? 'Hide' : 'Show'} documentation for ${headerName}`);
+      }
     }
 
     // Track collapsed state for URL breakdown
@@ -2897,6 +3236,8 @@
 
     // Track transform perspective for requests modified by mock rules
     let _transformPerspective = 'transformed';
+    let _detailRenderedRequestIdentity = null;
+    let _detailHeaderScope = 0;
 
     function switchTransformPerspective(value) {
       _transformPerspective = value;
@@ -2934,9 +3275,23 @@
     function toggleUrlBreakdown() {
       _urlBreakdownOpen = !_urlBreakdownOpen;
       const el = document.getElementById('url-breakdown');
+      const disclosure = document.getElementById('url-breakdown-toggle');
       const icon = document.getElementById('url-breakdown-icon');
       if (el) el.style.display = _urlBreakdownOpen ? 'grid' : 'none';
       if (icon) icon.textContent = _urlBreakdownOpen ? '\u2212' : '+';
+      if (disclosure) {
+        disclosure.setAttribute('aria-expanded', String(_urlBreakdownOpen));
+        disclosure.setAttribute('aria-label', `${_urlBreakdownOpen ? 'Hide' : 'Show'} URL breakdown`);
+      }
+    }
+
+    function getResponseStatusPillBackground(statusCode, options = {}) {
+      if (options.breakpoint) return 'var(--status-pill-4xx)';
+      if (options.error) return 'var(--status-pill-5xx)';
+      const numericStatus = Number(statusCode);
+      if (!Number.isFinite(numericStatus) || numericStatus <= 0) return 'var(--status-pill-1xx)';
+      const family = Math.min(5, Math.max(1, Math.floor(numericStatus / 100)));
+      return `var(--status-pill-${family}xx)`;
     }
 
     function renderDetailCards(req) {
@@ -2963,6 +3318,16 @@
       }
 
       const content = document.getElementById('detailContent');
+      const detailRequestIdentity = JSON.stringify([
+        String(req?.id ?? ''),
+        String(req?.trafficLifecycleId ?? '')
+      ]);
+      if (_detailRenderedRequestIdentity !== detailRequestIdentity) {
+        _detailRenderedRequestIdentity = detailRequestIdentity;
+        _detailHeaderScope++;
+        _transformPerspective = 'transformed';
+        for (const key of Object.keys(_headerCollapsed)) delete _headerCollapsed[key];
+      }
       const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
       const statusBreakpoint = req.breakpointActive === true;
       const statusPending = req.statusCode === null || req.statusCode === undefined;
@@ -2972,12 +3337,14 @@
         req.statusCode < 300 ? '#4caf7d' :
         req.statusCode < 400 ? '#5a80cc' :
         req.statusCode < 500 ? '#ff8c38' : '#ce3939';
+      const statusPillBackground = getResponseStatusPillBackground(req.statusCode, {
+        breakpoint: statusBreakpoint,
+        error: !!req.error || req.statusCode === 0
+      });
       const remoteEndpoint = formatRemoteEndpoint(req.remote?.address, req.remote?.port);
 
       // Reset collapse state for new request
       _urlBreakdownOpen = false;
-      // Reset transform perspective only when viewing a new request (not when switching perspective)
-      if (!req.originalRequest) _transformPerspective = 'transformed';
 
       // Dispose any active body Monaco editors before replacing content
       disposeBodyEditor('reqBody-monaco');
@@ -2985,7 +3352,11 @@
       disposeBodyEditor('wsFramePayload-monaco');
 
       // Store headers for context menu lookup
-      window._detailHeaders = { request: req.requestHeaders || {}, response: req.responseHeaders || {} };
+      window._detailHeaders = {
+        request: req.requestHeaders || {},
+        response: req.responseHeaders || {},
+        trailers: req.trailers || {}
+      };
 
       let html = '';
 
@@ -3149,6 +3520,7 @@
         }
 
         content.innerHTML = html;
+        initializeDetailCardDisclosures(content);
 
         // Initialize Monaco for text frame payload
         if (isTextFrame && req.requestBody && req.requestBody.length > 0) {
@@ -3198,7 +3570,7 @@
         html += `<div class="detail-card dir-left" style="border-left-color:#4caf7d;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-              <span class="detail-pill" style="background:#4caf7d;color:#fff;">${req.statusCode || 101}</span>
+              <span class="detail-pill" style="background:${getResponseStatusPillBackground(req.statusCode || 101)};color:#fff;">${req.statusCode || 101}</span>
               <span class="detail-card-heading">Messages</span>
               <span class="collapse-chevron">&#9650;</span>
             </span>
@@ -3240,14 +3612,15 @@
                   const byteStr = formatSize(f.requestBodySize);
                   const timeStr = new Date(f.timestamp).toLocaleTimeString();
                   const isClose = f.opcode === 8;
-                  return `<div class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" ${trafficRowIdentityAttributes(f)} onclick="selectRequest(this.dataset.id, true, this.dataset.lifecycleId)" title="Click to view details">
+                  const messageLabel = `View WebSocket frame ${i + 1}, ${f.direction === 'client' ? 'client to server' : 'server to client'}, ${f.opcodeName || 'data'}`;
+                  return `<button type="button" class="ws-msg-row ${dirCls}${isClose ? ' ws-msg-close' : ''}" ${trafficRowIdentityAttributes(f)} onclick="selectRequest(this.dataset.id, true, this.dataset.lifecycleId)" aria-label="${escapeHtmlAttribute(messageLabel)}" title="Click to view details">
                     <span class="ws-msg-index">#${i + 1}</span>
                     <span class="ws-msg-dir">${dirArrow}</span>
                     <span class="ws-msg-opcode">${opLabel}</span>
                     <span class="ws-msg-preview">${preview || '<em>empty</em>'}</span>
                     <span class="ws-msg-size">${byteStr}</span>
                     <span class="ws-msg-time">${timeStr}</span>
-                  </div>`;
+                  </button>`;
                 }).join('')}
               </div>
             </div>
@@ -3255,6 +3628,7 @@
         }
 
         content.innerHTML = html;
+        initializeDetailCardDisclosures(content);
         return;
       }
 
@@ -3280,7 +3654,7 @@
         html += `<div class="detail-card dir-right" style="border-right-color:#ce3939;">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-              <span class="detail-pill" style="background:#ce3939;color:#fff;">TLS Error</span>
+              <span class="detail-pill" style="background:var(--status-pill-5xx);color:#fff;">TLS Error</span>
               <span class="detail-card-heading">Details</span>
               <span class="collapse-chevron">&#9650;</span>
             </span>
@@ -3297,6 +3671,7 @@
         </div>`;
 
         content.innerHTML = html;
+        initializeDetailCardDisclosures(content);
         return;
       }
 
@@ -3314,15 +3689,28 @@
           req.remote?.address || req.host || '-',
           portStr
         );
+        const tunnelHasError = Boolean(req.error || req.errorCode || req.errorPhase);
+        const tunnelStatus = req.statusCode === null || req.statusCode === undefined
+          ? (tunnelHasError ? 0 : 200)
+          : req.statusCode;
+        const tunnelFailed = tunnelHasError || tunnelStatus === 0 || tunnelStatus >= 400;
+        const tunnelColor = tunnelFailed ? '#ce3939' : '#888';
+        const tunnelHeading = tunnelFailed ? 'Tunnel Failed' : 'Raw Tunnel';
+        const tunnelStatusLabel = tunnelStatus === 0 ? 'ERR' : String(tunnelStatus);
+        const tunnelStatusMessage = req.statusMessage ||
+          (tunnelFailed ? 'Tunnel Failed' : 'Tunnel Established');
+        const tunnelDescription = tunnelFailed
+          ? esc(req.error || req.responseBody || tunnelStatusMessage)
+          : `CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received`;
 
-        html += `<div class="detail-card" style="border-left:4px solid #888;background:rgba(136,136,136,0.07);">
+        html += `<div class="detail-card" style="border-left:4px solid ${tunnelColor};background:${tunnelFailed ? '#ce393911' : 'rgba(136,136,136,0.07)'};">
           <div class="detail-card-body" style="padding:16px 20px;">
             <div style="display:flex;align-items:center;gap:12px;">
-              <span style="font-size:20px;color:#888;">${SOURCE_ICONS.tunnel}</span>
+              <span style="font-size:20px;color:${tunnelColor};">${SOURCE_ICONS.tunnel}</span>
               <div style="flex:1;">
-                <div style="font-weight:bold;color:var(--text-main);margin-bottom:4px;">Raw Tunnel</div>
+                <div style="font-weight:bold;color:${tunnelFailed ? tunnelColor : 'var(--text-main)'};margin-bottom:4px;">${tunnelHeading}</div>
                 <div style="font-size:13px;color:var(--text-main);margin-bottom:4px;">${esc(tunnelEndpoint)}</div>
-                <div style="font-size:12px;color:var(--text-lowlight);">CONNECT tunnel — ${bytesSent} sent, ${bytesRecv} received</div>
+                <div style="font-size:12px;color:var(--text-lowlight);">${tunnelDescription}</div>
               </div>
             </div>
           </div>
@@ -3331,11 +3719,20 @@
         const tlsRow = req.tls
           ? `<div class="detail-summary-item"><div class="detail-summary-label">TLS</div><div class="detail-summary-value">${esc(req.tls.version || '-')} / ${esc(req.tls.cipher || '-')}</div></div>`
           : '';
+        const tunnelErrorRow = req.error
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">Error</div><div class="detail-summary-value" style="font-size:11px;word-break:break-all;color:#ce3939;">${esc(req.error)}</div></div>`
+          : '';
+        const tunnelErrorCodeRow = req.errorCode
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">Error Code</div><div class="detail-summary-value" style="font-family:monospace;font-size:12px;color:#ce3939;">${esc(req.errorCode)}</div></div>`
+          : '';
+        const tunnelErrorPhaseRow = req.errorPhase
+          ? `<div class="detail-summary-item"><div class="detail-summary-label">Error Phase</div><div class="detail-summary-value">${esc(req.errorPhase)}</div></div>`
+          : '';
 
-        html += `<div class="detail-card dir-right" style="border-right-color:#888;">
+        html += `<div class="detail-card dir-right" style="border-right-color:${tunnelColor};">
           <div class="detail-card-header">
             <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-              <span class="detail-pill" style="background:#888;color:#fff;">Tunnel</span>
+              <span class="detail-pill" style="background:${getResponseStatusPillBackground(tunnelStatus, { error: tunnelHasError || tunnelStatus === 0 })};color:#fff;">${esc(tunnelStatusLabel)}</span>
               <span class="detail-card-heading">Details</span>
               <span class="collapse-chevron">&#9650;</span>
             </span>
@@ -3344,6 +3741,11 @@
             <div class="detail-summary">
               <div class="detail-summary-item"><div class="detail-summary-label">Hostname</div><div class="detail-summary-value">${esc(req.host || '-')}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Port</div><div class="detail-summary-value">${esc(String(portStr))}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Status</div><div class="detail-summary-value">${esc(tunnelStatusLabel)}</div></div>
+              <div class="detail-summary-item"><div class="detail-summary-label">Status Message</div><div class="detail-summary-value">${esc(tunnelStatusMessage)}</div></div>
+              ${tunnelErrorRow}
+              ${tunnelErrorCodeRow}
+              ${tunnelErrorPhaseRow}
               <div class="detail-summary-item"><div class="detail-summary-label">Bytes Sent</div><div class="detail-summary-value">${bytesSent}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Bytes Received</div><div class="detail-summary-value">${bytesRecv}</div></div>
               <div class="detail-summary-item"><div class="detail-summary-label">Duration</div><div class="detail-summary-value">${durationStr}</div></div>
@@ -3354,6 +3756,7 @@
         </div>`;
 
         content.innerHTML = html;
+        initializeDetailCardDisclosures(content);
         return;
       }
 
@@ -3408,7 +3811,7 @@
                 <div style="font-weight:600;font-size:13px;color:var(--pop-color);">Request Modified</div>
                 <div style="font-size:11px;color:var(--text-lowlight);">by ${esc(req.transformedBy || 'Mock Rule')}</div>
               </div>
-              <select class="body-view-select transform-perspective-select" onchange="switchTransformPerspective(this.value)">
+              <select class="body-view-select transform-perspective-select" aria-label="Request transform perspective" onchange="switchTransformPerspective(this.value)">
                 <option value="transformed"${_transformPerspective === 'transformed' ? ' selected' : ''}>Show transformed content</option>
                 <option value="original"${_transformPerspective === 'original' ? ' selected' : ''}>Show original content</option>
                 <option value="client"${_transformPerspective === 'client' ? ' selected' : ''}>Client perspective</option>
@@ -3450,10 +3853,10 @@
           ${renderBodyCaptureWarning(effReq, 'request')}
           <div class="detail-card-section">
             <div class="section-label">URL</div>
-            <div class="url-summary" onclick="toggleUrlBreakdown()">
-              <span class="url-toggle" id="url-breakdown-icon">+</span>
+            <button type="button" class="url-summary" id="url-breakdown-toggle" onclick="toggleUrlBreakdown()" aria-expanded="false" aria-controls="url-breakdown" aria-label="Show URL breakdown">
+              <span class="url-toggle" id="url-breakdown-icon" aria-hidden="true">+</span>
               <span class="url-text">${esc(effReq.url)}</span>
-            </div>
+            </button>
             ${renderUrlBreakdown(effReq)}
           </div>
           <div class="detail-card-section">
@@ -3473,10 +3876,10 @@
         html += `<div class="detail-card dir-right" id="card-req-body" aria-expanded="true" style="border-right-color:${effMethodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-            <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
+            <select class="body-view-select" aria-label="Request body view" onclick="event.stopPropagation()" onchange="switchBodyView('reqBody', this.value, 'request')">
               ${reqBodyModes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('')}
             </select>
-            <select class="body-view-select protobuf-type-select" id="reqBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('reqBody', this.value, 'request')" style="display:none;"></select>
+            <select class="body-view-select protobuf-type-select" id="reqBody-schema" aria-label="Request body Protobuf type" onclick="event.stopPropagation()" onchange="setProtobufBodyType('reqBody', this.value, 'request')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
             <span class="detail-card-heading">Request Body</span>
             <span class="collapse-chevron">&#9650;</span>
@@ -3506,7 +3909,7 @@
         <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="detail-pill pill-muted" style="font-size:11px;">${esc(responseHttpVersion)}</span>
-            <span class="detail-pill" style="background:${statusColor};color:#fff;">${responseStatus}</span>
+            <span class="detail-pill" style="background:${statusPillBackground};color:#fff;">${responseStatus}</span>
             <span class="detail-card-heading">Response</span>
             <span class="collapse-chevron">&#9650;</span>
           </span>
@@ -3533,10 +3936,10 @@
         html += `<div class="detail-card dir-left" id="card-resp-body" aria-expanded="true" style="border-left-color:${statusColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-            <select class="body-view-select" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
+            <select class="body-view-select" aria-label="Response body view" onclick="event.stopPropagation()" onchange="switchBodyView('resBody', this.value, 'response')">
               ${resBodyModes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('')}
             </select>
-            <select class="body-view-select protobuf-type-select" id="resBody-schema" onclick="event.stopPropagation()" onchange="setProtobufBodyType('resBody', this.value, 'response')" style="display:none;"></select>
+            <select class="body-view-select protobuf-type-select" id="resBody-schema" aria-label="Response body Protobuf type" onclick="event.stopPropagation()" onchange="setProtobufBodyType('resBody', this.value, 'response')" style="display:none;"></select>
             <span class="detail-pill pill-muted">${formatSize(req.responseBodySize)}</span>
             <span class="detail-card-heading">Response Body</span>
             <span class="collapse-chevron">&#9650;</span>
@@ -3570,7 +3973,7 @@
       if (req.error) {
         html += `<div class="detail-card dir-left" id="card-error" aria-expanded="true" style="border-left-color:#ce3939;">
           <div class="detail-card-header">
-            <span class="detail-pill" style="background:#ce3939;color:#fff;">Error</span>
+            <span class="detail-pill" style="background:var(--status-pill-5xx);color:#fff;">Error</span>
             <span class="detail-card-heading">Error</span>
           </div>
           <div class="detail-card-body">
@@ -3725,7 +4128,7 @@
       // Export Card (collapsed by default)
       html += `<div class="detail-card collapsed" id="card-export" aria-expanded="false">
         <div class="detail-card-header">
-          <select id="exportFormat" onchange="updateExportSnippet()" onclick="event.stopPropagation()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:3px 8px;font-size:11px;cursor:pointer;">
+          <select id="exportFormat" aria-label="Export format" onchange="updateExportSnippet()" onclick="event.stopPropagation()" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:3px 8px;font-size:11px;cursor:pointer;">
             <option value="curl">cURL</option>
             <option value="python">Python (requests)</option>
             <option value="javascript-fetch">JavaScript (fetch)</option>
@@ -3750,6 +4153,7 @@
       </div>`;
 
       content.innerHTML = html;
+      initializeDetailCardDisclosures(content);
 
       // Initialize the request body viewer from the currently selected transform perspective
       if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
@@ -4000,14 +4404,18 @@
       const sorted = Object.entries(headers).sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()));
       return `<div class="headers-grid"${sectionAttr}>${
         sorted.map(([k, v], i) => {
-          const val = Array.isArray(v) ? v.join(', ') : String(v);
-          const hid = 'hdr-' + k.replace(/[^a-zA-Z0-9]/g, '_') + '-' + i;
+          const val = Array.isArray(v) ? v.join(', ') : String(v ?? '');
+          const hid = 'hdr-' + _detailHeaderScope + '-' +
+            String(section || 'generic').replace(/[^a-zA-Z0-9]/g, '_') + '-' +
+            k.replace(/[^a-zA-Z0-9]/g, '_') + '-' + i;
           const ctxMenu = section ? ` role="button" tabindex="0" aria-haspopup="menu" data-context-header-key="${escapeHtmlAttribute(k)}" data-context-section="${escapeHtmlAttribute(section)}" oncontextmenu="showHeaderContextMenu(event, this.dataset.contextHeaderKey, this.dataset.contextSection)"` : '';
           const desc = HEADER_DOCS[k.toLowerCase()] || '';
+          const expanded = !!_headerCollapsed[hid];
           const descHtml = desc
             ? '<p style="color:var(--text-lowlight);font-size:12px;line-height:1.5;padding:8px 0;">' + esc(desc) + '</p>'
             : '<p style="color:var(--text-watermark);font-size:12px;font-style:italic;">No documentation available for this header.</p>';
-          return `<span class="header-toggle" id="${hid}-icon" onclick="toggleHeaderRow('${hid}')">+</span><span class="header-name"${ctxMenu}>${esc(k)}: </span><span class="header-value"${ctxMenu}>${esc(val)}</span><div class="header-desc" id="${hid}-desc">${descHtml}</div>`;
+          const headerAction = expanded ? 'Hide' : 'Show';
+          return `<button type="button" class="header-toggle" id="${hid}-icon" data-header-name="${escapeHtmlAttribute(k)}" onclick="toggleHeaderRow('${hid}')" aria-expanded="${expanded}" aria-controls="${hid}-desc" aria-label="${headerAction} documentation for ${escapeHtmlAttribute(k)}">${expanded ? '−' : '+'}</button><span class="header-name"${ctxMenu}>${esc(k)}: </span><span class="header-value"${ctxMenu}>${esc(val)}</span><div class="header-desc" id="${hid}-desc"${expanded ? ' style="display:block;"' : ''}>${descHtml}</div>`;
         }).join('')
       }</div>`;
     }
@@ -4189,8 +4597,44 @@
      */
     const activeBodyEditors = {};
     const standaloneBodyViewers = {};
-    const bodySchemaTypeOverrides = {};
+    const bodySchemaTypeOverrides = Object.create(null);
     const PROTOBUF_SCHEMA_STORAGE_KEY = 'http-freekit-protobuf-schemas';
+
+    function normalizeStoredProtobufSchemaFiles(value) {
+      if (!Array.isArray(value)) return null;
+      const files = [];
+      for (const file of value) {
+        if (!file || typeof file !== 'object' || Array.isArray(file) ||
+            typeof file.name !== 'string' || !file.name ||
+            typeof file.content !== 'string') {
+          return null;
+        }
+        files.push({ name: file.name, content: file.content });
+      }
+      return files;
+    }
+
+    function bodySchemaTypeOverrideKey(elementId, context = {}) {
+      const request = context.request;
+      const requestIdentity = context.viewerIdentity !== undefined && context.viewerIdentity !== null
+        ? 'viewer:' + String(context.viewerIdentity)
+        : request
+        ? JSON.stringify([
+            String(request.id ?? ''),
+            String(request.trafficLifecycleId ?? ''),
+            String(request.timestamp ?? ''),
+            String(request.url ?? '')
+          ])
+        : 'standalone';
+      const perspective = context.section === 'request' && request?.originalRequest
+        ? _transformPerspective
+        : '';
+      return JSON.stringify([elementId, requestIdentity, context.section || '', perspective]);
+    }
+
+    function getBodySchemaTypeOverride(elementId, context = {}) {
+      return bodySchemaTypeOverrides[bodySchemaTypeOverrideKey(elementId, context)] || null;
+    }
 
     // Format body in a specific view mode
     // Wrap formatted HTML string in line-numbered spans
@@ -4236,12 +4680,34 @@
     }
 
     function loadProtobufSchemas() {
-      try {
-        const saved = safeLocalStorageGet(PROTOBUF_SCHEMA_STORAGE_KEY);
-        protobufSchemaFiles = saved ? JSON.parse(saved) : [];
-        if (!Array.isArray(protobufSchemaFiles)) protobufSchemaFiles = [];
-      } catch {
-        protobufSchemaFiles = [];
+      const saved = safeLocalStorageGet(PROTOBUF_SCHEMA_STORAGE_KEY);
+      protobufSchemaFiles = [];
+      if (saved === null) {
+        clearRendererStorageCorruption(PROTOBUF_SCHEMA_STORAGE_KEY);
+      } else {
+        try {
+          const files = normalizeStoredProtobufSchemaFiles(JSON.parse(saved));
+          if (files) {
+            protobufSchemaFiles = files;
+            clearRendererStorageCorruption(PROTOBUF_SCHEMA_STORAGE_KEY);
+          } else {
+            registerRendererStorageCorruption(
+              PROTOBUF_SCHEMA_STORAGE_KEY,
+              saved,
+              'protobuf',
+              'Stored Protobuf schemas',
+              'expected an array of schema name/content objects'
+            );
+          }
+        } catch (error) {
+          registerRendererStorageCorruption(
+            PROTOBUF_SCHEMA_STORAGE_KEY,
+            saved,
+            'protobuf',
+            'Stored Protobuf schemas',
+            error.message || 'invalid JSON'
+          );
+        }
       }
       rebuildProtobufRoot();
     }
@@ -4251,6 +4717,9 @@
       // storage or the live decoder. Parsing may partially populate its Root
       // before throwing, so it must always happen in an isolated candidate.
       const nextRoot = buildProtobufRoot(nextSchemaFiles);
+      if (!quarantineRendererStorageCorruptionGroup('protobuf', 'Importing Protobuf schemas')) {
+        return false;
+      }
       if (!safeLocalStorageSet(
         PROTOBUF_SCHEMA_STORAGE_KEY,
         JSON.stringify(nextSchemaFiles),
@@ -4287,7 +4756,9 @@
           for (const file of imported) byName.set(file.name, file);
           if (!saveProtobufSchemas(Array.from(byName.values()))) {
             toast(
-              'Schema import failed: local storage is unavailable. Check storage permissions or free up space.',
+              hasRendererStorageCorruption('protobuf')
+                ? 'Schema import blocked: corrupt stored schemas remain unchanged until recovery is approved.'
+                : 'Schema import failed: local storage is unavailable. Check storage permissions or free up space.',
               'error'
             );
             return;
@@ -4302,6 +4773,7 @@
     }
 
     function clearProtobufSchemas() {
+      if (!quarantineRendererStorageCorruptionGroup('protobuf', 'Clearing Protobuf schemas')) return;
       if (!safeLocalStorageRemove(PROTOBUF_SCHEMA_STORAGE_KEY, false)) {
         toast(
           'Could not clear protobuf schemas: local storage is unavailable. Check storage permissions or free up space.',
@@ -4332,7 +4804,7 @@
       const inferred = mode === 'grpc'
         ? inferGrpcMessageType(context)
         : inferProtobufMessageType({ ...context, manualTypeName: null });
-      const selected = bodySchemaTypeOverrides[elementId] || inferred?.fullName || '';
+      const selected = getBodySchemaTypeOverride(elementId, context) || inferred?.fullName || '';
       const autoLabel = inferred?.fullName ? 'Auto: ' + inferred.fullName.replace(/^\./, '') : 'Auto';
       select.innerHTML = '<option value="">' + esc(autoLabel) + '</option>' +
         typeOptions.map(typeName => '<option value="' + escapeHtmlAttribute(typeName) + '">' + esc(typeName.replace(/^\./, '')) + '</option>').join('');
@@ -4341,20 +4813,28 @@
     }
 
     function setProtobufBodyType(elementId, typeName, section) {
+      const standalone = standaloneBodyViewers[elementId];
+      const selectedRequest = document.getElementById('detailPanel')?._request;
+      const effectiveRequest = selectedRequest && section === 'request'
+        ? getEffectiveRequest(selectedRequest)
+        : selectedRequest;
+      const overrideContext = standalone?.context || {
+        request: effectiveRequest,
+        section
+      };
+      const overrideKey = bodySchemaTypeOverrideKey(elementId, overrideContext);
       if (typeName) {
-        bodySchemaTypeOverrides[elementId] = typeName;
+        bodySchemaTypeOverrides[overrideKey] = typeName;
       } else {
-        delete bodySchemaTypeOverrides[elementId];
+        delete bodySchemaTypeOverrides[overrideKey];
       }
 
-      const standalone = standaloneBodyViewers[elementId];
       if (standalone) {
-        standalone.context = { ...(standalone.context || {}), manualTypeName: bodySchemaTypeOverrides[elementId] || null };
         renderBodyViewer(elementId, standalone.body, standalone.contentType, standalone.mode || 'protobuf', standalone.context);
         return;
       }
 
-      const req = document.getElementById('detailPanel')?._request;
+      const req = selectedRequest;
       if (!req) return;
       const effectiveReq = section === 'request' ? getEffectiveRequest(req) : req;
       const body = section === 'request' ? effectiveReq.requestBody : req.responseBody;
@@ -4365,8 +4845,7 @@
       const mode = wrapper?.dataset.viewMode || (getBodyViewModes(body, ct)[0]?.value || 'protobuf');
       renderBodyViewer(elementId, body, ct, mode, {
         request: effectiveReq,
-        section,
-        manualTypeName: bodySchemaTypeOverrides[elementId] || null
+        section
       });
     }
 
@@ -4459,12 +4938,96 @@
       return headerValue(headers, headerName).toLowerCase().trim();
     }
 
+    const GRPC_DECOMPRESSION_MAX_BYTES = 4 * 1024 * 1024;
+    const GRPC_DECOMPRESSION_MAX_RATIO = 100;
+    const GRPC_DECOMPRESSION_RATIO_GRACE_BYTES = 64 * 1024;
+    const GRPC_DECOMPRESSION_CHUNK_BYTES = 32 * 1024;
+
+    function joinGrpcDecompressionChunks(chunks, length) {
+      const result = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return result;
+    }
+
     function decompressGrpcMessage(bytes, encoding) {
-      if (!encoding || encoding === 'identity') return bytes;
-      if (!window.pako) throw new Error('pako is not loaded');
-      if (encoding === 'gzip') return window.pako.ungzip(bytes);
-      if (encoding === 'deflate') return window.pako.inflate(bytes);
-      throw new Error('unsupported grpc-encoding: ' + encoding);
+      const compressedBytes = bytes?.length || 0;
+      if (!encoding || encoding === 'identity') {
+        return {
+          bytes,
+          truncated: false,
+          compressedBytes,
+          expandedBytes: compressedBytes,
+          limitBytes: GRPC_DECOMPRESSION_MAX_BYTES
+        };
+      }
+      if (!window.pako?.Inflate) throw new Error('streaming pako decompression is not available');
+      if (encoding !== 'gzip' && encoding !== 'deflate') {
+        throw new Error('unsupported grpc-encoding: ' + encoding);
+      }
+
+      const ratioLimit = Math.max(
+        GRPC_DECOMPRESSION_RATIO_GRACE_BYTES,
+        compressedBytes * GRPC_DECOMPRESSION_MAX_RATIO
+      );
+      const limitBytes = Math.min(GRPC_DECOMPRESSION_MAX_BYTES, ratioLimit);
+      const outputChunks = [];
+      let expandedBytes = 0;
+      let expandedBytesAtLeast = 0;
+      const limitError = new Error('gRPC decompression limit exceeded');
+      limitError.code = 'ERR_GRPC_DECOMPRESSION_LIMIT';
+      const inflator = new window.pako.Inflate({
+        windowBits: encoding === 'gzip' ? 31 : 15,
+        chunkSize: GRPC_DECOMPRESSION_CHUNK_BYTES
+      });
+      inflator.onData = chunk => {
+        expandedBytesAtLeast = expandedBytes + chunk.length;
+        const remaining = limitBytes - expandedBytes;
+        if (remaining > 0) {
+          const accepted = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+          outputChunks.push(new Uint8Array(accepted));
+          expandedBytes += accepted.length;
+        }
+        if (chunk.length > remaining) throw limitError;
+      };
+
+      try {
+        for (let offset = 0; offset < compressedBytes; offset += GRPC_DECOMPRESSION_CHUNK_BYTES) {
+          const end = Math.min(offset + GRPC_DECOMPRESSION_CHUNK_BYTES, compressedBytes);
+          inflator.push(bytes.subarray(offset, end), end === compressedBytes);
+          if (inflator.err) throw new Error(inflator.msg || 'compressed gRPC message is invalid');
+        }
+        if (compressedBytes === 0) inflator.push(bytes, true);
+        if (inflator.err) throw new Error(inflator.msg || 'compressed gRPC message is invalid');
+      } catch (error) {
+        if (error !== limitError && error?.code !== limitError.code) throw error;
+        outputChunks.length = 0;
+        return {
+          bytes: null,
+          truncated: true,
+          compressedBytes,
+          expandedBytes,
+          expandedBytesAtLeast: Math.max(expandedBytesAtLeast, expandedBytes + 1),
+          limitBytes,
+          maxBytes: GRPC_DECOMPRESSION_MAX_BYTES,
+          maxRatio: GRPC_DECOMPRESSION_MAX_RATIO,
+          ratioGraceBytes: GRPC_DECOMPRESSION_RATIO_GRACE_BYTES
+        };
+      }
+
+      return {
+        bytes: joinGrpcDecompressionChunks(outputChunks, expandedBytes),
+        truncated: false,
+        compressedBytes,
+        expandedBytes,
+        limitBytes,
+        maxBytes: GRPC_DECOMPRESSION_MAX_BYTES,
+        maxRatio: GRPC_DECOMPRESSION_MAX_RATIO,
+        ratioGraceBytes: GRPC_DECOMPRESSION_RATIO_GRACE_BYTES
+      };
     }
 
     function bodyToBytes(body, context = {}) {
@@ -4657,8 +5220,19 @@
         chunks.push(`message ${++index}: ${decodeType?.fullName || 'protobuf'} compressed=${compressed}${compressed && grpcEncoding ? ' encoding=' + grpcEncoding : ''} size=${size}`);
         if (compressed) {
           try {
-            message = decompressGrpcMessage(message, grpcEncoding);
-            chunks.push('  decompressed-size=' + message.length);
+            const decompressed = decompressGrpcMessage(message, grpcEncoding);
+            if (decompressed.truncated) {
+              chunks.push('  decompression-truncated=true');
+              chunks.push(
+                `  expanded-size>=${decompressed.expandedBytesAtLeast} limit=${decompressed.limitBytes}` +
+                ` (absolute-max=${decompressed.maxBytes}, ratio-max=${decompressed.maxRatio}:1` +
+                ` after ${decompressed.ratioGraceBytes}-byte grace)`
+              );
+              chunks.push('  compressed hex: ' + bytesToHexPreview(message));
+              continue;
+            }
+            message = decompressed.bytes;
+            chunks.push('  decompressed-size=' + decompressed.expandedBytes);
           } catch (err) {
             chunks.push('  unable to decompress gRPC message: ' + err.message);
             chunks.push('  hex: ' + bytesToHexPreview(message));
@@ -5038,7 +5612,10 @@
       const wrapper = document.getElementById(elementId);
       if (!wrapper) return;
       const ct = contentType || '';
-      const renderContext = { ...context, manualTypeName: bodySchemaTypeOverrides[elementId] || context.manualTypeName || null };
+      const renderContext = {
+        ...context,
+        manualTypeName: getBodySchemaTypeOverride(elementId, context)
+      };
       wrapper.dataset.viewMode = mode;
 
       const monacoId = elementId + '-monaco';
@@ -5324,13 +5901,32 @@
     }
 
     // ============ INTERCEPTORS ============
+    let interceptorStateGeneration = 0;
+    let interceptorLoadController = null;
+
     async function loadInterceptors() {
+      const generation = ++interceptorStateGeneration;
+      interceptorLoadController?.abort();
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      interceptorLoadController = controller;
       try {
-        const res = await fetch(`${API_BASE}/api/interceptors`);
+        const res = await fetch(
+          `${API_BASE}/api/interceptors`,
+          controller ? { signal: controller.signal } : undefined
+        );
         const data = await res.json();
+        if (generation !== interceptorStateGeneration) return false;
+        if (!Array.isArray(data.interceptors)) {
+          throw new Error('Interceptor list returned an invalid response');
+        }
         renderInterceptors(data.interceptors);
+        return true;
       } catch (err) {
+        if (generation !== interceptorStateGeneration || err?.name === 'AbortError') return false;
         console.error('Failed to load interceptors:', err);
+        return false;
+      } finally {
+        if (interceptorLoadController === controller) interceptorLoadController = null;
       }
     }
 
@@ -5523,10 +6119,10 @@
       }
 
       const showCounts = statuses.length > 1;
-      return `<div class="intercept-pill-group">${statuses.map(status => {
+      return `<span class="intercept-pill-group">${statuses.map(status => {
         const suffix = showCounts || status.count > 1 ? ` · ${status.count}` : '';
         return `<span class="intercept-pill ${status.className}">${status.label}${suffix}</span>`;
-      }).join('')}</div>`;
+      }).join('')}</span>`;
     }
 
     function isConnectedInterceptorSource(interceptor) {
@@ -5581,6 +6177,9 @@
     }
 
     function handleInterceptorStatusEvent(event) {
+      interceptorStateGeneration++;
+      interceptorLoadController?.abort();
+      interceptorLoadController = null;
       if (!event?.id) {
         loadInterceptors();
         return;
@@ -5604,16 +6203,6 @@
       }
       renderConnectedSources(allInterceptors);
       filterInterceptors();
-    }
-
-    function activateInterceptorCardOnKeyboard(event) {
-      const isSpace = event.key === ' ';
-      if ((!isSpace && event.key !== 'Enter') || event.defaultPrevented ||
-          event.target !== event.currentTarget) return;
-      if (isSpace) event.preventDefault();
-      if (event.repeat) return;
-      if (!isSpace) event.preventDefault();
-      event.currentTarget.click();
     }
 
     function filterInterceptors() {
@@ -5681,7 +6270,7 @@
           }
         }
         if (i.experimental && !i.active) {
-          pillHtml = '<div style="margin-top:auto;padding-top:10px;"><span class="intercept-pill pill-experimental">Experimental</span></div>';
+          pillHtml = '<span class="intercept-pill-wrap"><span class="intercept-pill pill-experimental">Experimental</span></span>';
         }
 
         const card = document.createElement('div');
@@ -5689,47 +6278,57 @@
         card.className = `intercept-card${isDisabled ? ' disabled' : ''}${isExpanded ? ' expanded' : ''}`;
         card.dataset.interceptorId = i.id;
         card.style.order = index;
-        if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
-          card.setAttribute('aria-expanded', String(isExpanded));
-        }
-        if (i.activable) {
-          card.setAttribute('tabindex', '0');
-          card.setAttribute('role', 'button');
-          if (EXPANDABLE_INTERCEPTORS.has(i.id)) {
-            card.onclick = () => handleExpandableCardClick(i.id, i.active);
-          } else if (i.active && i.focusable === true) {
-            card.onclick = () => focusInterceptor(i.id, i.name);
-          } else {
-            card.onclick = () => toggleInterceptor(i.id, i.active);
-          }
-          card.onkeydown = activateInterceptorCardOnKeyboard;
-        } else if (BROWSER_DOWNLOAD_URLS[i.id]) {
-          // Not installed — offer to download
+        const isDownloadAction = !i.activable && !!BROWSER_DOWNLOAD_URLS[i.id];
+        const hasPrimaryAction = i.activable || isDownloadAction;
+        if (isDownloadAction) {
           card.classList.remove('disabled');
-          card.setAttribute('tabindex', '0');
-          card.setAttribute('role', 'button');
-          card.style.cursor = 'pointer';
-          card.onclick = () => downloadBrowser(i.id, i.name);
-          card.onkeydown = activateInterceptorCardOnKeyboard;
         }
 
         const isLoading = interceptorsInProgress.has(i.id);
+        const expandable = EXPANDABLE_INTERCEPTORS.has(i.id);
+        const configId = `interceptConfig-${i.id}`;
+        const primaryLabel = expandable
+          ? `${isExpanded ? 'Collapse' : 'Configure'} ${i.name}`
+          : isDownloadAction
+          ? `Download ${i.name}`
+          : i.active && i.focusable === true
+          ? `Focus ${i.name}`
+          : `${i.active ? 'Stop' : 'Start'} intercepting ${i.name}`;
+        const primaryTag = hasPrimaryAction ? 'button' : 'div';
+        const primaryAttributes = hasPrimaryAction
+          ? ` type="button" aria-label="${escapeHtmlAttribute(primaryLabel)}"${expandable ? ` aria-expanded="${isExpanded}" aria-controls="${escapeHtmlAttribute(configId)}"` : ''}`
+          : '';
 
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
-          (isExpanded ? `<button class="intercept-card-close" onclick="event.stopPropagation(); collapseInterceptorCard();" title="Close" aria-label="Close"><i class="ph ph-x"></i></button>` : '') +
-          (i.active && !isExpanded ? `<button class="intercept-card-stop" onclick="event.stopPropagation(); deactivateInterceptor('${i.id}');" title="Stop intercepting ${esc(i.name)}" aria-label="Stop intercepting ${esc(i.name)}"><i class="ph ph-x"></i></button>` : '') +
-          `<h1>${esc(i.name)}</h1>` +
-          desc.map(d => `<p>${esc(d)}</p>`).join('') +
-          (pillHtml ? pillHtml : '') +
-          (isExpanded ? `<div class="intercept-card-config" id="interceptConfig-${i.id}"></div>` : '') +
+          (isExpanded ? `<button type="button" class="intercept-card-close" onclick="collapseInterceptorCard();" title="Close ${escapeHtmlAttribute(i.name)} configuration" aria-label="Close ${escapeHtmlAttribute(i.name)} configuration"><i class="ph ph-x"></i></button>` : '') +
+          (i.active && !isExpanded ? `<button type="button" class="intercept-card-stop" onclick="deactivateInterceptor('${i.id}');" title="Stop intercepting ${escapeHtmlAttribute(i.name)}" aria-label="Stop intercepting ${escapeHtmlAttribute(i.name)}"><i class="ph ph-x"></i></button>` : '') +
+          `<${primaryTag} class="intercept-card-primary"${primaryAttributes}>` +
+          `<span class="intercept-card-title">${esc(i.name)}</span>` +
+          desc.map(d => `<span class="intercept-card-description">${esc(d)}</span>`).join('') +
+          (pillHtml || '') +
+          `</${primaryTag}>` +
+          (expandable ? `<div class="intercept-card-config" id="${escapeHtmlAttribute(configId)}"${isExpanded ? '' : ' hidden'}></div>` : '') +
           (isLoading ? '<div class="intercept-loading-overlay"><div class="intercept-spinner"></div></div>' : '');
+
+        const primaryAction = card.querySelector('button.intercept-card-primary');
+        if (primaryAction) {
+          if (expandable) {
+            primaryAction.onclick = () => handleExpandableCardClick(i.id, i.active);
+          } else if (isDownloadAction) {
+            primaryAction.onclick = () => downloadBrowser(i.id, i.name);
+          } else if (i.active && i.focusable === true) {
+            primaryAction.onclick = () => focusInterceptor(i.id, i.name);
+          } else {
+            primaryAction.onclick = () => toggleInterceptor(i.id, i.active);
+          }
+        }
 
         grid.appendChild(card);
 
         // Render config content if expanded
         if (isExpanded) {
-          const configContainer = document.getElementById(`interceptConfig-${i.id}`);
+          const configContainer = document.getElementById(configId);
           if (configContainer) {
             renderInterceptorConfig(i.id, configContainer);
           }
@@ -5741,18 +6340,17 @@
       const manualCard = document.createElement('div');
       manualCard.className = 'intercept-card';
       manualCard.style.order = filtered.length;
-      manualCard.setAttribute('tabindex', '0');
-      manualCard.setAttribute('role', 'button');
-      manualCard.onclick = () => {
+      manualCard.innerHTML =
+        `<div class="intercept-card-bg-icon">${MANUAL_SETUP_ICON}</div>` +
+        `<button type="button" class="intercept-card-primary" aria-label="Show manual proxy setup instructions">` +
+        `<span class="intercept-card-title">Anything</span>` +
+        `<span class="intercept-card-description">Manually configure any HTTP client using the proxy settings.</span>` +
+        `<span class="intercept-pill pill-proxy-port">Proxy port: ${esc(String(proxyPort))}</span>` +
+        `</button>`;
+      manualCard.querySelector('.intercept-card-primary').onclick = () => {
         interceptorSelectionGeneration++;
         toast(`Proxy: 127.0.0.1:${proxyPort} - Configure any HTTP client to use this proxy`, 'success');
       };
-      manualCard.onkeydown = activateInterceptorCardOnKeyboard;
-      manualCard.innerHTML =
-        `<div class="intercept-card-bg-icon">${MANUAL_SETUP_ICON}</div>` +
-        `<h1>Anything</h1>` +
-        `<p>Manually configure any HTTP client using the proxy settings.</p>` +
-        `<span class="intercept-pill pill-proxy-port">Proxy port: ${esc(String(proxyPort))}</span>`;
       grid.appendChild(manualCard);
     }
 
@@ -5922,7 +6520,7 @@
       const runCmd = meta?.instructions?.run || `docker run -e HTTP_PROXY=${proxyUrl} -e HTTPS_PROXY=${proxyUrl} -e http_proxy=${proxyUrl} -e https_proxy=${proxyUrl} -e NO_PROXY= -e no_proxy= -e NODE_USE_ENV_PROXY=1 <image>`;
       const composeCmd = meta?.instructions?.compose || `environment:\n  - HTTP_PROXY=${proxyUrl}\n  - HTTPS_PROXY=${proxyUrl}\n  - http_proxy=${proxyUrl}\n  - https_proxy=${proxyUrl}\n  - NO_PROXY=\n  - no_proxy=\n  - NODE_USE_ENV_PROXY=1`;
       const caBundleDescription = meta?.caBundleDescription
-        || 'Activate Docker interception to generate a read-only combined public-roots-plus-FreeKit CA bundle mount. This proxy-only fallback does not change TLS verification.';
+        || 'Activate Docker interception to mount the raw FreeKit CA at /etc/http-freekit/http-freekit-ca.pem and add it to Node trust with NODE_EXTRA_CA_CERTS. Other trust stores remain unchanged; this proxy-only fallback does not change TLS verification.';
 
       container.innerHTML = `
         <p style="color:var(--text-watermark);font-size:12px;margin:0 0 10px;">${esc(meta?.nodeProxyNote || NODE_ENV_PROXY_SUPPORT_NOTE)}</p>
@@ -6007,10 +6605,7 @@
         terminalCmdSet('NO_PROXY', ''),
         terminalCmdSet('no_proxy', ''),
         terminalCmdSet('NODE_USE_ENV_PROXY', '1'),
-        terminalCmdSet('SSL_CERT_FILE', certPath),
-        terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath),
-        terminalCmdSet('REQUESTS_CA_BUNDLE', certPath),
-        terminalCmdSet('CURL_CA_BUNDLE', certPath)
+        ...(certPath ? [terminalCmdSet('NODE_EXTRA_CA_CERTS', certPath)] : [])
       ];
       const cmdUsesLiteralHelpers = [proxyUrl, certPath]
         .some(terminalCmdNeedsLiteralHelpers);
@@ -6024,10 +6619,7 @@
           `NO_PROXY=${quoteTerminalBashValue('')}`,
           `no_proxy=${quoteTerminalBashValue('')}`,
           `NODE_USE_ENV_PROXY=${quoteTerminalBashValue('1')}`,
-          `SSL_CERT_FILE=${quoteTerminalBashValue(certPath)}`,
-          `NODE_EXTRA_CA_CERTS=${quoteTerminalBashValue(certPath)}`,
-          `REQUESTS_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`,
-          `CURL_CA_BUNDLE=${quoteTerminalBashValue(certPath)}`
+          ...(certPath ? [`NODE_EXTRA_CA_CERTS=${quoteTerminalBashValue(certPath)}`] : [])
         ].join(' '),
         powershell: [
           'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue',
@@ -6038,10 +6630,7 @@
           `$env:NO_PROXY=${quoteTerminalPowerShellValue('')}`,
           `$env:no_proxy=${quoteTerminalPowerShellValue('')}`,
           `$env:NODE_USE_ENV_PROXY=${quoteTerminalPowerShellValue('1')}`,
-          `$env:SSL_CERT_FILE=${quoteTerminalPowerShellValue(certPath)}`,
-          `$env:NODE_EXTRA_CA_CERTS=${quoteTerminalPowerShellValue(certPath)}`,
-          `$env:REQUESTS_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`,
-          `$env:CURL_CA_BUNDLE=${quoteTerminalPowerShellValue(certPath)}`
+          ...(certPath ? [`$env:NODE_EXTRA_CA_CERTS=${quoteTerminalPowerShellValue(certPath)}`] : [])
         ].join('; '),
         cmd: [
           ...(cmdUsesLiteralHelpers ? terminalCmdHelperSetup() : []),
@@ -6806,17 +7395,22 @@
     let mockCollectionMutationCount = 0;
     let mockRenamingRuleId = null;
     let mockRulesLoadGeneration = 0;
+    let breakpointRulesLoadGeneration = 0;
     let mockRevertInProgress = false;
     let mockResetInProgress = false;
 
     async function loadBreakpointRules() {
+      const operation = ++breakpointRulesLoadGeneration;
       try {
         const res = await fetch(API_BASE + '/api/breakpoints');
         const data = await res.json();
+        if (operation !== breakpointRulesLoadGeneration) return false;
         breakpointRules = data.rules || [];
         renderMockRules();
+        return true;
       } catch (e) {
-        console.error('[Error]', e.message);
+        if (operation === breakpointRulesLoadGeneration) console.error('[Error]', e.message);
+        return false;
       }
     }
 
@@ -7402,33 +7996,38 @@
       const serverMutationDisabled = mockSaveInProgress || mockRevertInProgress ||
         mockResetInProgress || mockCollectionMutationCount > 0;
       const serverMutationDisabledAttr = serverMutationDisabled ? ' disabled' : '';
+      const detailsId = 'mockRuleDetails_' + rule.id.replace(/[^a-zA-Z0-9_-]/g, '');
 
       let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
 
-      html += '<div class="mock-rule-summary" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)">';
-      html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
-      html += '<div class="mock-rule-icon" style="background:' + color + ';"></div>';
-      html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
+      html += '<div class="mock-rule-summary">';
       const isRenaming = mockRenamingRuleId === rule.id;
+      html += isRenaming
+        ? '<div class="mock-rule-disclosure mock-rule-disclosure-static">'
+        : '<button type="button" class="mock-rule-disclosure" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" aria-expanded="' + (isExpanded || isEditing) + '" aria-controls="' + escapeHtmlAttribute(detailsId) + '" aria-label="' + (isExpanded || isEditing ? 'Collapse rule details' : 'Show rule details') + '">';
+      html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
+      html += '<span class="mock-rule-icon" style="background:' + color + ';"></span>';
+      html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';
       if (isRenaming) {
         const inputVal = escapeHtmlAttribute(rule.title || '');
         const placeholderVal = escapeHtmlAttribute(summary.matchStr);
-        html += '<span class="mock-rule-desc" onclick="event.stopPropagation()">';
-        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" onkeydown="handleRenameKeydown(event, this.closest(\'.mock-rule-card\').dataset.ruleId)" onblur="confirmInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" onclick="event.stopPropagation()" />';
+        html += '<span class="mock-rule-desc">';
+        html += '<input id="mock-rename-input" class="mock-rename-input" type="text" value="' + inputVal + '" placeholder="' + placeholderVal + '" aria-label="Rule name" onkeydown="handleRenameKeydown(event, this.closest(\'.mock-rule-card\').dataset.ruleId)" onblur="confirmInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" />';
       } else if (summary.title) {
-        html += '<span class="mock-rule-desc" onclick="event.stopPropagation(); startInlineRename(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="Click to rename"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
+        html += '<span class="mock-rule-desc"><span class="mock-rule-title">' + esc(summary.title) + '</span>';
       } else {
         html += '<span class="mock-rule-desc">' + summary.matchStr;
       }
       html += '<span class="mock-arrow">\u2192</span>' + summary.actionStr;
       html += '</span>';
+      html += isRenaming ? '</div>' : '</button>';
 
-      html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
+      html += '<div class="mock-rule-actions">';
 
       // 1. Collapse/Expand (chevron)
       const chevron = isExpanded || isEditing ? '&#9650;' : '&#9660;';
       const collapseTitle = isExpanded || isEditing ? 'Collapse rule' : 'Show rule details';
-      html += '<button class="mock-toggle-btn" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="' + collapseTitle + '" aria-label="' + collapseTitle + '">';
+      html += '<button type="button" class="mock-toggle-btn" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" title="' + collapseTitle + '" aria-label="' + collapseTitle + '" aria-expanded="' + (isExpanded || isEditing) + '" aria-controls="' + escapeHtmlAttribute(detailsId) + '">';
       html += '<span style="font-size:10px;">' + chevron + '</span>';
       html += '</button>';
 
@@ -7480,11 +8079,10 @@
       html += '</div>';
       html += '</div>';
 
-      if (isEditing && mockEditDraft) {
-        html += renderMockRuleEditor(mockEditDraft, rule.id);
-      } else if (isExpanded) {
-        html += renderMockRuleDetail(nr);
-      }
+      html += '<div class="mock-rule-details" id="' + escapeHtmlAttribute(detailsId) + '"' + (isExpanded || isEditing ? '' : ' hidden') + '>';
+      if (isEditing && mockEditDraft) html += renderMockRuleEditor(mockEditDraft, rule.id);
+      else if (isExpanded) html += renderMockRuleDetail(nr);
+      html += '</div>';
 
       html += '</div>';
       return html;
@@ -7495,16 +8093,19 @@
       const isDraft = mockDraftRules.has(group.id);
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
+      const groupItemsId = 'mockGroupItems_' + group.id.replace(/[^a-zA-Z0-9_-]/g, '');
       let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + escapeHtmlAttribute(group.id) + '" aria-expanded="' + !isCollapsed + '" ondragover="mockGroupDragOver(event, this.dataset.groupId)" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, this.dataset.groupId)">';
 
       // Group header
-      html += '<div class="mock-group-header" onclick="toggleMockGroup(this.closest(\'.mock-group\').dataset.groupId)">';
+      html += '<div class="mock-group-header">';
+      html += '<button type="button" class="mock-group-disclosure" onclick="toggleMockGroup(this.closest(\'.mock-group\').dataset.groupId)" aria-expanded="' + !isCollapsed + '" aria-controls="' + escapeHtmlAttribute(groupItemsId) + '" aria-label="' + (isCollapsed ? 'Expand' : 'Collapse') + ' group ' + escapeHtmlAttribute(group.title || 'Untitled Group') + '">';
       html += '<span style="font-size:10px;margin-right:4px;">' + (isCollapsed ? '&#9654;' : '&#9660;') + '</span>';
       html += '<i class="ph ph-folder" style="font-size:14px;flex-shrink:0;opacity:0.5;"></i>';
       html += '<span class="mock-group-title">' + esc(group.title || 'Untitled Group') + '</span>';
       html += '<span style="color:var(--text-watermark);font-size:11px;margin-left:4px;">(' + (group.items || []).length + ' rule' + ((group.items || []).length !== 1 ? 's' : '') + ')</span>';
+      html += '</button>';
 
-      html += '<div class="mock-rule-actions" onclick="event.stopPropagation()">';
+      html += '<div class="mock-rule-actions">';
 
       // Enable/Disable group
       const grpToggleLabel = group.enabled !== false ? 'Disable group' : 'Enable group';
@@ -7527,18 +8128,14 @@
       html += '</div>';
       html += '</div>';
 
-      // Group items
-      if (!isCollapsed) {
-        if ((group.items || []).length === 0) {
-          html += '<div class="mock-group-empty">No rules in this group. Drag a rule here.</div>';
-        } else {
-          html += '<div class="mock-group-items">';
-          for (const rule of (group.items || [])) {
-            html += renderMockRuleRow(rule);
-          }
-          html += '</div>';
-        }
+      // Group items remain in the DOM so aria-controls always references a sibling region.
+      html += '<div class="mock-group-items" id="' + escapeHtmlAttribute(groupItemsId) + '"' + (isCollapsed ? ' hidden' : '') + '>';
+      if ((group.items || []).length === 0) {
+        html += '<div class="mock-group-empty">No rules in this group. Drag a rule here.</div>';
+      } else {
+        for (const rule of (group.items || [])) html += renderMockRuleRow(rule);
       }
+      html += '</div>';
 
       html += '</div>';
       return html;
@@ -7662,6 +8259,7 @@
       if (!rule) return;
       const enabled = rule.enabled === false;
       return _queueMockCollectionMutation(async () => {
+        breakpointRulesLoadGeneration++;
         try {
           const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), {
             method: 'PATCH',
@@ -7681,6 +8279,7 @@
     async function deleteBreakpointRule(ruleId) {
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
       return _queueMockCollectionMutation(async () => {
+        breakpointRulesLoadGeneration++;
         try {
           const res = await fetch(API_BASE + '/api/breakpoints/' + encodeURIComponent(ruleId), { method: 'DELETE' });
           const data = await res.json().catch(() => ({}));
@@ -7853,7 +8452,7 @@
 
       html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">';
       html += '<span style="font-size:11px;color:var(--text-watermark);">Priority:</span>';
-      html += '<select class="mock-priority-select" onchange="mockEditDraft.priority=this.value">';
+      html += '<select class="mock-priority-select" aria-label="Rule priority" onchange="mockEditDraft.priority=this.value">';
       html += '<option value="normal"' + (draft.priority !== 'high' ? ' selected' : '') + '>Normal</option>';
       html += '<option value="high"' + (draft.priority === 'high' ? ' selected' : '') + '>High</option>';
       html += '</select>';
@@ -7888,7 +8487,7 @@
       // Group action types: common first, then advanced
       const _primaryActions = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
       const _advancedActions = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
-      html += '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
+      html += '<select style="width:100%;margin-bottom:8px;" data-focus-key="mock-action-type" aria-label="Rule action" onchange="changeMockActionType(this.value, \'' + eid + '\')">';
       html += '<optgroup label="Common">';
       for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions.includes(a.value))) {
         html += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (draft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
@@ -7932,11 +8531,7 @@
           html += '<span style="color:var(--text-lowlight);font-size:12px;padding:4px 8px;">Matches any request</span>';
           break;
         case 'method':
-          html += '<select onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
-          for (const meth of ['*', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
-            html += '<option value="' + escapeHtmlAttribute(meth) + '"' + (matcher.value === meth ? ' selected' : '') + '>' + esc(meth === '*' ? 'ANY' : meth) + '</option>';
-          }
-          html += '</select>';
+          html += '<input type="text" list="sendMethodOptions" autocomplete="off" autocapitalize="off" spellcheck="false" title="Enter * or any valid HTTP method token" placeholder="* (any method)" value="' + escapeHtmlAttribute(matcher.value || '') + '" onchange="updateMockMatcher(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'path':
           html += '<select class="mock-matcher-extra" onchange="updateMockMatcher(' + idx + ', \'matchType\', this.value, \'' + eid + '\')">';
@@ -8010,11 +8605,11 @@
           break;
       }
 
-      html += '<button class="mock-remove-btn" onclick="removeMockMatcher(' + idx + ', \'' + eid + '\')" title="Remove condition">';
+      html += '<button type="button" class="mock-remove-btn" onclick="removeMockMatcher(' + idx + ', \'' + eid + '\')" title="Remove condition" aria-label="Remove condition ' + (idx + 1) + '">';
       html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
-      return html;
+      return addGeneratedControlAccessibleNames(html, 'Condition ' + (idx + 1));
     }
 
     function renderMockActionFields(action, eid) {
@@ -8031,12 +8626,12 @@
           html += '<label style="font-size:11px;color:var(--text-watermark);display:block;margin-bottom:4px;">Response Headers</label>';
           html += '<div id="mockRespHeaders_' + eid + '">';
           const headers = action.headers || {};
-          const hdrEntries = Object.entries(headers);
-          hdrEntries.forEach(([k, v], hi) => {
+          const hdrEntries = mockHeaderEditorRows(headers);
+          hdrEntries.forEach(({ name: k, value: v }, hi) => {
             html += '<div class="mock-header-row">';
             html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-            html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<button type="button" class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')" aria-label="Remove response header ' + (hi + 1) + '">';
             html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
           });
@@ -8069,12 +8664,7 @@
 
           // 1. Method
           html += '<div class="mock-transform-row">';
-          html += '<select class="mock-transform-select" onchange="mockEditDraft.action.methodMode=this.value;rerenderMockActionConfig(\'' + eid + '\')">';
-          html += '<option value="original"' + (action.methodMode === 'original' || !action.methodMode ? ' selected' : '') + '>Use the original request method</option>';
-          ['GET','POST','PUT','DELETE','PATCH','HEAD','OPTIONS'].forEach(m => {
-            html += '<option value="' + escapeHtmlAttribute(m) + '"' + (action.methodMode === m ? ' selected' : '') + '>Replace method with ' + esc(m) + '</option>';
-          });
-          html += '</select></div>';
+          html += '<input type="text" class="mock-transform-select" list="sendMethodOptions" autocomplete="off" autocapitalize="off" spellcheck="false" title="Enter original or any valid HTTP method token" placeholder="original (keep request method)" value="' + escapeHtmlAttribute(action.methodMode || 'original') + '" onchange="mockEditDraft.action.methodMode=this.value"></div>';
 
           // 2. URL
           html += '<div class="mock-transform-row">';
@@ -8097,12 +8687,12 @@
           if (action.headersMode === 'update' || action.headersMode === 'replace') {
             html += '<div style="margin-top:6px;">';
             html += '<div id="mockReqHeaders_' + eid + '">';
-            const hdrEntries = Object.entries(action.headers || {});
-            hdrEntries.forEach(([k, v], hi) => {
+            const hdrEntries = mockHeaderEditorRows(action.headers || {});
+            hdrEntries.forEach(({ name: k, value: v }, hi) => {
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
+              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockTransformHeader(\'req\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+              html += '<button type="button" class="mock-remove-btn" onclick="removeMockTransformHeader(\'req\',' + hi + ', \'' + eid + '\')" aria-label="Remove request transform header ' + (hi + 1) + '"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'req\',\'' + eid + '\')">+ Add header</button>';
@@ -8158,12 +8748,12 @@
           if (action.resHeadersMode === 'update' || action.resHeadersMode === 'replace') {
             html += '<div style="margin-top:6px;">';
             html += '<div id="mockResHeaders_' + eid + '">';
-            const resHdrEntries = Object.entries(action.resHeaders || {});
-            resHdrEntries.forEach(([k, v], hi) => {
+            const resHdrEntries = mockHeaderEditorRows(action.resHeaders || {});
+            resHdrEntries.forEach(({ name: k, value: v }, hi) => {
               html += '<div class="mock-header-row">';
               html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-              html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
+              html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockTransformHeader(\'res\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+              html += '<button type="button" class="mock-remove-btn" onclick="removeMockTransformHeader(\'res\',' + hi + ', \'' + eid + '\')" aria-label="Remove response transform header ' + (hi + 1) + '"><i class="ph ph-x" style="font-size:12px;"></i></button></div>';
             });
             html += '</div>';
             html += '<button class="mock-add-matcher-btn" onclick="addMockTransformHeader(\'res\',\'' + eid + '\')">+ Add header</button>';
@@ -8239,12 +8829,12 @@
           html += '<div style="margin-bottom:8px;">';
           html += '<label style="font-size:11px;color:var(--text-watermark);display:block;margin-bottom:4px;">Custom Headers (optional)</label>';
           html += '<div id="mockWebhookHeaders_' + eid + '">';
-          const whEntries = Object.entries(action.webhookHeaders || {});
-          whEntries.forEach(([k, v], hi) => {
+          const whEntries = mockHeaderEditorRows(action.webhookHeaders || {});
+          whEntries.forEach(({ name: k, value: v }, hi) => {
             html += '<div class="mock-header-row">';
             html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-            html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
+            html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+            html += '<button type="button" class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')" aria-label="Remove webhook header ' + (hi + 1) + '">';
             html += '<i class="ph ph-x" style="font-size:12px;"></i>';
             html += '</button></div>';
           });
@@ -8254,7 +8844,7 @@
           html += '<p style="color:var(--text-lowlight);font-size:12px;margin:0;">A copy of the matching request will be POSTed to this URL. The original client receives a 200 OK response immediately.</p>';
           break;
       }
-      return html;
+      return addGeneratedControlAccessibleNames(html, action.type.replace(/-/g, ' ') + ' action');
     }
 
     function preserveOpenMockEdit(nextRuleId) {
@@ -8393,7 +8983,7 @@
       mockEditDraft.matchers.forEach((m, idx) => {
         html += renderMockMatcherRow(m, idx, eid);
       });
-      container.innerHTML = html;
+      replaceGeneratedHtmlPreservingFocus(container, html);
     }
 
     // ============ PRE-STEP CHAINING ============
@@ -8421,19 +9011,15 @@
           html += '<input type="text" placeholder="https://new-host.com/path" value="' + escapeHtmlAttribute(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
         case 'rewrite-method':
-          html += '<select onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
-          for (const m of ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
-            html += '<option value="' + escapeHtmlAttribute(m) + '"' + (step.value === m ? ' selected' : '') + '>' + esc(m) + '</option>';
-          }
-          html += '</select>';
+          html += '<input type="text" list="sendMethodOptions" autocomplete="off" autocapitalize="off" spellcheck="false" title="Enter any valid HTTP method token" placeholder="GET" value="' + escapeHtmlAttribute(step.value || '') + '" onchange="updateMockPreStep(' + idx + ', \'value\', this.value, \'' + eid + '\')">';
           break;
       }
 
-      html += '<button class="mock-remove-btn" onclick="removeMockPreStep(' + idx + ', \'' + eid + '\')" title="Remove step">';
+      html += '<button type="button" class="mock-remove-btn" onclick="removeMockPreStep(' + idx + ', \'' + eid + '\')" title="Remove step" aria-label="Remove pre-step ' + (idx + 1) + '">';
       html += '<i class="ph ph-x" style="font-size:14px;"></i>';
       html += '</button>';
       html += '</div>';
-      return html;
+      return addGeneratedControlAccessibleNames(html, 'Pre-step ' + (idx + 1));
     }
 
     function addMockPreStep(eid) {
@@ -8483,7 +9069,7 @@
       preSteps.forEach((step, idx) => {
         html += renderMockPreStepRow(step, idx, eid);
       });
-      container.innerHTML = html;
+      replaceGeneratedHtmlPreservingFocus(container, html);
     }
 
     function changeMockActionType(newType, eid) {
@@ -8548,7 +9134,7 @@
       if (configEl) {
         const _primaryActions2 = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
         const _advancedActions2 = ['close', 'reset', 'timeout', 'breakpoint-request', 'breakpoint-response', 'breakpoint-request-response', 'webhook', 'transform-response'];
-        let selectHtml = '<select style="width:100%;margin-bottom:8px;" onchange="changeMockActionType(this.value, \'' + eid + '\')">'; 
+        let selectHtml = '<select style="width:100%;margin-bottom:8px;" data-focus-key="mock-action-type" aria-label="Rule action" onchange="changeMockActionType(this.value, \'' + eid + '\')">';
         selectHtml += '<optgroup label="Common">';
         for (const at of MOCK_ACTION_TYPES.filter(a => _primaryActions2.includes(a.value))) {
           selectHtml += '<option value="' + escapeHtmlAttribute(at.value) + '"' + (mockEditDraft.action.type === at.value ? ' selected' : '') + '>' + esc(at.label) + '</option>';
@@ -8560,7 +9146,10 @@
         }
         selectHtml += '</optgroup>';
         selectHtml += '</select>';
-        configEl.innerHTML = selectHtml + renderMockActionFields(mockEditDraft.action, eid);
+        replaceGeneratedHtmlPreservingFocus(
+          configEl,
+          selectHtml + renderMockActionFields(mockEditDraft.action, eid)
+        );
       }
     }
 
@@ -8577,24 +9166,50 @@
       return key;
     }
 
+    function mockHeaderEditorRows(headers) {
+      return Object.entries(headers || {}).flatMap(([name, storedValue]) => {
+        const values = Array.isArray(storedValue)
+          ? (storedValue.length ? storedValue : [''])
+          : [storedValue];
+        return values.map(value => ({ name, value }));
+      });
+    }
+
+    function mockHeadersFromEditorRows(rows) {
+      const headers = Object.create(null);
+      for (const row of rows) {
+        if (Object.hasOwn(headers, row.name)) {
+          const existing = headers[row.name];
+          if (Array.isArray(existing)) existing.push(row.value);
+          else headers[row.name] = [existing, row.value];
+        } else {
+          headers[row.name] = row.value;
+        }
+      }
+      return headers;
+    }
+
+    function updateMockHeaderEditorRow(headers, idx, which, value) {
+      const rows = mockHeaderEditorRows(headers);
+      if (idx < 0 || idx >= rows.length) return null;
+      if (which === 'key') rows[idx].name = value;
+      else rows[idx].value = value;
+      return mockHeadersFromEditorRows(rows);
+    }
+
+    function removeMockHeaderEditorRow(headers, idx) {
+      const rows = mockHeaderEditorRows(headers);
+      if (idx < 0 || idx >= rows.length) return null;
+      rows.splice(idx, 1);
+      return mockHeadersFromEditorRows(rows);
+    }
+
     function updateMockRespHeader(idx, which, value, eid) {
       if (!mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.headers || {});
-      if (idx < 0 || idx >= entries.length) return;
-      if (which === 'key') {
-        const val = entries[idx][1];
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v], i) => {
-          if (i === idx) newHeaders[value] = val;
-          else newHeaders[k] = v;
-        });
-        mockEditDraft.action.headers = newHeaders;
-      } else {
-        entries[idx][1] = value;
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v]) => { newHeaders[k] = v; });
-        mockEditDraft.action.headers = newHeaders;
-      }
+      const headers = updateMockHeaderEditorRow(
+        mockEditDraft.action.headers || {}, idx, which, value
+      );
+      if (headers) mockEditDraft.action.headers = headers;
     }
 
     function addMockRespHeader(eid) {
@@ -8607,50 +9222,37 @@
 
     function removeMockRespHeader(idx, eid) {
       if (!mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.headers || {});
-      if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = Object.create(null);
-      entries.forEach(([k, v], i) => {
-        if (i !== idx) newHeaders[k] = v;
-      });
-      mockEditDraft.action.headers = newHeaders;
+      const headers = removeMockHeaderEditorRow(mockEditDraft.action.headers || {}, idx);
+      if (!headers) return;
+      mockEditDraft.action.headers = headers;
       rerenderMockRespHeaders(eid);
     }
 
     function rerenderMockRespHeaders(eid) {
       const container = document.getElementById('mockRespHeaders_' + eid);
       if (!container || !mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.headers || {});
+      const entries = mockHeaderEditorRows(mockEditDraft.action.headers || {});
       let html = '';
-      entries.forEach(([k, v], hi) => {
+      entries.forEach(({ name: k, value: v }, hi) => {
         html += '<div class="mock-header-row">';
         html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockRespHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-        html += '<button class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockRespHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<button type="button" class="mock-remove-btn" onclick="removeMockRespHeader(' + hi + ', \'' + eid + '\')" aria-label="Remove response header ' + (hi + 1) + '">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
-      container.innerHTML = html;
+      replaceGeneratedHtmlPreservingFocus(
+        container,
+        addGeneratedControlAccessibleNames(html, 'Response header')
+      );
     }
 
     function updateMockWebhookHeader(idx, which, value, eid) {
       if (!mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
-      if (idx < 0 || idx >= entries.length) return;
-      if (which === 'key') {
-        const val = entries[idx][1];
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v], i) => {
-          if (i === idx) newHeaders[value] = val;
-          else newHeaders[k] = v;
-        });
-        mockEditDraft.action.webhookHeaders = newHeaders;
-      } else {
-        entries[idx][1] = value;
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v]) => { newHeaders[k] = v; });
-        mockEditDraft.action.webhookHeaders = newHeaders;
-      }
+      const headers = updateMockHeaderEditorRow(
+        mockEditDraft.action.webhookHeaders || {}, idx, which, value
+      );
+      if (headers) mockEditDraft.action.webhookHeaders = headers;
     }
 
     function addMockWebhookHeader(eid) {
@@ -8665,30 +9267,29 @@
 
     function removeMockWebhookHeader(idx, eid) {
       if (!mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
-      if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = Object.create(null);
-      entries.forEach(([k, v], i) => {
-        if (i !== idx) newHeaders[k] = v;
-      });
-      mockEditDraft.action.webhookHeaders = newHeaders;
+      const headers = removeMockHeaderEditorRow(mockEditDraft.action.webhookHeaders || {}, idx);
+      if (!headers) return;
+      mockEditDraft.action.webhookHeaders = headers;
       rerenderMockWebhookHeaders(eid);
     }
 
     function rerenderMockWebhookHeaders(eid) {
       const container = document.getElementById('mockWebhookHeaders_' + eid);
       if (!container || !mockEditDraft) return;
-      const entries = Object.entries(mockEditDraft.action.webhookHeaders || {});
+      const entries = mockHeaderEditorRows(mockEditDraft.action.webhookHeaders || {});
       let html = '';
-      entries.forEach(([k, v], hi) => {
+      entries.forEach(({ name: k, value: v }, hi) => {
         html += '<div class="mock-header-row">';
         html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockWebhookHeader(' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-        html += '<button class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockWebhookHeader(' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<button type="button" class="mock-remove-btn" onclick="removeMockWebhookHeader(' + hi + ', \'' + eid + '\')" aria-label="Remove webhook header ' + (hi + 1) + '">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
-      container.innerHTML = html;
+      replaceGeneratedHtmlPreservingFocus(
+        container,
+        addGeneratedControlAccessibleNames(html, 'Webhook header')
+      );
     }
 
     function mockRuleDraftComparable(rule) {
@@ -9234,10 +9835,32 @@
       if (!group) return;
       const itemCount = (group.items || []).length;
       if (itemCount > 0 && !confirm('Delete group "' + (group.title || 'Untitled Group') + '" and its ' + itemCount + ' rule(s)?')) return;
+      const deletedIds = new Set([
+        groupId,
+        ...(group.items || []).map(rule => rule?.id).filter(Boolean)
+      ]);
       return _queueMockCollectionMutation(async () => {
+        breakpointRulesLoadGeneration++;
         try {
-          await fetch(API_BASE + '/api/mock-rules/' + encodeURIComponent(groupId), { method: 'DELETE' });
+          const response = await fetch(API_BASE + '/api/mock-rules/' + encodeURIComponent(groupId), { method: 'DELETE' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || data?.success === false || data?.error) {
+            throw new Error(data?.error || `Could not delete group (${response.status})`);
+          }
+
+          for (const deletedId of deletedIds) {
+            mockDraftRules.delete(deletedId);
+            mockNewDraftIds.delete(deletedId);
+            mockExpandedRules.delete(deletedId);
+          }
+          if (deletedIds.has(mockEditingRule)) {
+            mockEditingRule = null;
+            mockEditDraft = null;
+            mockEditDirty = false;
+          }
+          if (deletedIds.has(mockRenamingRuleId)) mockRenamingRuleId = null;
           toast('Group deleted', 'success');
+          updateMockSaveButtons();
           await loadMockRules();
         } catch (err) { toast('Error: ' + err.message, 'error'); }
       });
@@ -9295,16 +9918,58 @@
     }
 
     // ============ RULE IMPORT / EXPORT ============
+    const RULE_RESTORE_ROUTE_MAX_BYTES = 50 * 1024 * 1024;
+    const RULE_RESTORE_EXPORT_MAX_BYTES = 49 * 1024 * 1024;
+
+    function utf8JsonByteLength(value) {
+      return new TextEncoder().encode(JSON.stringify(value)).length;
+    }
+
+    function ruleRestoreEnvelopeByteLength(mockRuleCollection, breakpointRuleCollection) {
+      const replaceEnvelope = {
+        mockRules: mockRuleCollection,
+        breakpointRules: breakpointRuleCollection
+      };
+      const appendEnvelope = { ...replaceEnvelope, mode: 'append' };
+      return Math.max(
+        utf8JsonByteLength(replaceEnvelope),
+        utf8JsonByteLength(appendEnvelope)
+      );
+    }
+
     function exportMockRules() {
       if (mockRules.length === 0 && breakpointRules.length === 0) {
         toast('No rules to export', 'error');
         return;
       }
-      const blob = new Blob([JSON.stringify({
+      const backup = {
         version: 2,
         mockRules,
         breakpointRules
-      }, null, 2)], { type: 'application/json' });
+      };
+      const restoreBytes = ruleRestoreEnvelopeByteLength(mockRules, breakpointRules);
+      if (restoreBytes > RULE_RESTORE_EXPORT_MAX_BYTES) {
+        const restoreMiB = Math.ceil(restoreBytes / (1024 * 1024));
+        toast(
+          `Rules were not exported because restoring them would require about ${restoreMiB} MiB, ` +
+          `above the safe 49 MiB backup limit for the ${RULE_RESTORE_ROUTE_MAX_BYTES / (1024 * 1024)} MiB management route. ` +
+          'Delete or shorten large rules, then export again.',
+          'error'
+        );
+        return;
+      }
+      const backupJson = JSON.stringify(backup, null, 2);
+      const blob = new Blob([backupJson], { type: 'application/json' });
+      if (blob.size > RULE_RESTORE_ROUTE_MAX_BYTES) {
+        const backupMiB = Math.ceil(blob.size / (1024 * 1024));
+        toast(
+          `Rules were not exported because the formatted backup would require about ${backupMiB} MiB, ` +
+          `above the safe ${RULE_RESTORE_ROUTE_MAX_BYTES / (1024 * 1024)} MiB import limit. ` +
+          'Delete or shorten large rules, then export again.',
+          'error'
+        );
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -9326,6 +9991,7 @@
           const importedRuleCount = data.mockRules.length + data.breakpointRules.length;
           const shouldReplace = existingRuleCount > 0 &&
             confirm('Replace existing rules? Click OK to replace, Cancel to append.');
+          breakpointRulesLoadGeneration++;
           const response = await fetch(API_BASE + '/api/rules', {
             method: 'PUT',
             headers: {'Content-Type':'application/json'},
@@ -9349,7 +10015,6 @@
           }
           toast((shouldReplace ? 'Replaced with ' : 'Imported ') + importedRuleCount + ' rules', 'success');
           await loadMockRules();
-          await loadBreakpointRules();
           return;
         }
 
@@ -9388,6 +10053,11 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
+          if (Number.isFinite(file.size) && file.size > RULE_RESTORE_ROUTE_MAX_BYTES) {
+            throw new Error(
+              `Rule backup exceeds the ${RULE_RESTORE_ROUTE_MAX_BYTES / (1024 * 1024)} MiB safe import limit`
+            );
+          }
           const text = await file.text();
           const data = JSON.parse(text);
           if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
@@ -9407,22 +10077,10 @@
     function updateMockTransformHeader(kind, idx, which, value, eid) {
       if (!mockEditDraft) return;
       const prop = _getTransformHeadersProp(kind);
-      const entries = Object.entries(mockEditDraft.action[prop] || {});
-      if (idx < 0 || idx >= entries.length) return;
-      if (which === 'key') {
-        const val = entries[idx][1];
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v], i) => {
-          if (i === idx) newHeaders[value] = val;
-          else newHeaders[k] = v;
-        });
-        mockEditDraft.action[prop] = newHeaders;
-      } else {
-        entries[idx][1] = value;
-        const newHeaders = Object.create(null);
-        entries.forEach(([k, v]) => { newHeaders[k] = v; });
-        mockEditDraft.action[prop] = newHeaders;
-      }
+      const headers = updateMockHeaderEditorRow(
+        mockEditDraft.action[prop] || {}, idx, which, value
+      );
+      if (headers) mockEditDraft.action[prop] = headers;
     }
 
     function addMockTransformHeader(kind, eid) {
@@ -9437,13 +10095,9 @@
     function removeMockTransformHeader(kind, idx, eid) {
       if (!mockEditDraft) return;
       const prop = _getTransformHeadersProp(kind);
-      const entries = Object.entries(mockEditDraft.action[prop] || {});
-      if (idx < 0 || idx >= entries.length) return;
-      const newHeaders = Object.create(null);
-      entries.forEach(([k, v], i) => {
-        if (i !== idx) newHeaders[k] = v;
-      });
-      mockEditDraft.action[prop] = newHeaders;
+      const headers = removeMockHeaderEditorRow(mockEditDraft.action[prop] || {}, idx);
+      if (!headers) return;
+      mockEditDraft.action[prop] = headers;
       rerenderMockTransformHeaders(kind, eid);
     }
 
@@ -9452,17 +10106,23 @@
       const container = document.getElementById(containerId + eid);
       if (!container || !mockEditDraft) return;
       const prop = _getTransformHeadersProp(kind);
-      const entries = Object.entries(mockEditDraft.action[prop] || {});
+      const entries = mockHeaderEditorRows(mockEditDraft.action[prop] || {});
       let html = '';
-      entries.forEach(([k, v], hi) => {
+      entries.forEach(({ name: k, value: v }, hi) => {
         html += '<div class="mock-header-row">';
         html += '<input type="text" placeholder="Header name" value="' + escapeHtmlAttribute(k) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'key\', this.value, \'' + eid + '\')">';
-        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v) + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
-        html += '<button class="mock-remove-btn" onclick="removeMockTransformHeader(\'' + kind + '\',' + hi + ', \'' + eid + '\')">';
+        html += '<input type="text" placeholder="Value" value="' + escapeHtmlAttribute(v ?? '') + '" onchange="updateMockTransformHeader(\'' + kind + '\',' + hi + ', \'val\', this.value, \'' + eid + '\')">';
+        html += '<button type="button" class="mock-remove-btn" onclick="removeMockTransformHeader(\'' + kind + '\',' + hi + ', \'' + eid + '\')" aria-label="Remove ' + (kind === 'req' ? 'request' : 'response') + ' transform header ' + (hi + 1) + '">';
         html += '<i class="ph ph-x" style="font-size:12px;"></i>';
         html += '</button></div>';
       });
-      container.innerHTML = html;
+      replaceGeneratedHtmlPreservingFocus(
+        container,
+        addGeneratedControlAccessibleNames(
+          html,
+          kind === 'req' ? 'Request transform header' : 'Response transform header'
+        )
+      );
     }
 
     function rerenderMockActionConfig(eid) {
@@ -9521,10 +10181,11 @@
       if (!content) return;
       content.style.display = expanded ? 'block' : 'none';
       if (arrow) arrow.style.transform = expanded ? 'rotate(0deg)' : 'rotate(-90deg)';
-      // Update aria-expanded on the card header
+      // Update aria-expanded on the dedicated disclosure button.
       const header = content.previousElementSibling;
       if (header && header.classList.contains('card-header')) {
-        header.setAttribute('aria-expanded', String(expanded));
+        const disclosure = header.querySelector('.send-card-disclosure');
+        if (disclosure) disclosure.setAttribute('aria-expanded', String(expanded));
       }
     }
 
@@ -9567,13 +10228,32 @@
     function setSendBodyValue(value) {
       const normalizedValue = value || '';
       const fallback = document.getElementById('sendBody-fallback');
-      if (fallback) {
-        fallback.value = normalizedValue;
-        fallback.dataset.bodyInitialized = 'true';
+      sendBodyProgrammaticUpdateDepth++;
+      try {
+        if (fallback) {
+          fallback.value = normalizedValue;
+          fallback.dataset.bodyInitialized = 'true';
+        }
+        if (sendBodyEditor) {
+          sendBodyEditor.setValue(normalizedValue);
+        }
+      } finally {
+        sendBodyProgrammaticUpdateDepth--;
       }
-      if (sendBodyEditor) {
-        sendBodyEditor.setValue(normalizedValue);
-      }
+    }
+
+    function markActiveSendBodyEdited() {
+      if (sendBodyProgrammaticUpdateDepth > 0) return false;
+      const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
+      if (!tab || getSendBodyType() !== 'raw' || tab.bodyEncoding !== 'base64') return false;
+      tab.bodyEncoding = 'utf8';
+      toast('Binary request body was edited and will now be sent as UTF-8 text.', 'success');
+      return true;
+    }
+
+    function handleSendBodyUserInput() {
+      markActiveSendBodyEdited();
+      scheduleSendExportUpdate();
     }
 
     function handleSendBodyFallbackKeydown(event) {
@@ -9642,7 +10322,7 @@
 
         editor.onDidChangeModelContent(() => {
           fallback.value = editor.getValue();
-          scheduleSendExportUpdate();
+          handleSendBodyUserInput();
         });
 
         registerSendEditorShortcuts(editor);
@@ -9679,22 +10359,31 @@
 
     function formatSendBody() {
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
-      const value = getSendBodyValue().trim();
+      const currentValue = getSendBodyValue();
+      const value = currentValue.trim();
       if (!value) return;
 
       try {
         if (format === 'json') {
           const parsed = JSON.parse(value);
-          setSendBodyValue(JSON.stringify(parsed, null, 2));
+          const formatted = JSON.stringify(parsed, null, 2);
+          setSendBodyValue(formatted);
+          if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
-          setSendBodyValue(beautifyMarkup(value));
+          const formatted = beautifyMarkup(value);
+          setSendBodyValue(formatted);
+          if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
         } else if (format === 'javascript') {
-          setSendBodyValue(beautifyJs(value));
+          const formatted = beautifyJs(value);
+          setSendBodyValue(formatted);
+          if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
         } else if (format === 'css') {
-          setSendBodyValue(beautifyCss(value));
+          const formatted = beautifyCss(value);
+          setSendBodyValue(formatted);
+          if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
         } else {
           // Try Monaco's built-in formatter for other languages
@@ -9787,14 +10476,15 @@
       const fields = getActiveSendFormFields();
 
       if (fields.length === 0) {
-        container.innerHTML = '<div style="padding:8px 0;color:var(--text-watermark);font-size:12px;">No form fields. Click Add field.</div>';
+        replaceGeneratedHtmlPreservingFocus(container, '<div style="padding:8px 0;color:var(--text-watermark);font-size:12px;">No form fields. Click Add field.</div>');
         return;
       }
 
-      container.innerHTML = fields.map((field, index) => {
+      const html = fields.map((field, index) => {
+        const fieldNumber = index + 1;
         const enabled = field.enabled !== false;
         const typeSelect = bodyType === 'multipart'
-          ? `<select onchange="updateSendFormFieldType(${index}, this.value)" aria-label="Field type">
+          ? `<select onchange="updateSendFormFieldType(${index}, this.value)" data-focus-key="send-form-${index}-type" aria-label="Form field ${fieldNumber} type">
               <option value="text"${field.type !== 'file' ? ' selected' : ''}>Text</option>
               <option value="file"${field.type === 'file' ? ' selected' : ''}>File</option>
             </select>`
@@ -9804,19 +10494,20 @@
           : null;
         const valueEditor = filePresentation
           ? `<span class="send-file-picker">
-              <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input class="send-file-input" type="file" onchange="updateSendFormFile(${index}, this.files[0])"></label>
+              <label class="send-file-picker-label">${esc(filePresentation.buttonLabel)}<input class="send-file-input" type="file" data-focus-key="send-form-${index}-file" aria-label="Choose file for form field ${fieldNumber}" onchange="updateSendFormFile(${index}, this.files[0])"></label>
               <span class="send-file-name${filePresentation.missing ? ' send-file-name-missing' : ''}" title="${escapeHtmlAttribute(filePresentation.title)}" aria-live="polite">${esc(filePresentation.displayName)}</span>
             </span>`
-          : `<input type="text" value="${escapeHtmlAttribute(field.value || '')}" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
+          : `<input type="text" value="${escapeHtmlAttribute(field.value || '')}" data-focus-key="send-form-${index}-value" aria-label="Form field ${fieldNumber} value" oninput="updateSendFormField(${index}, 'value', this.value)" placeholder="Value">`;
 
         return `<div class="send-form-row">
-          <input type="checkbox" ${enabled ? 'checked' : ''} onchange="updateSendFormField(${index}, 'enabled', this.checked)" title="Enable/disable field">
-          <input type="text" value="${escapeHtmlAttribute(field.key || '')}" oninput="updateSendFormField(${index}, 'key', this.value)" placeholder="Field name">
+          <input type="checkbox" ${enabled ? 'checked' : ''} data-focus-key="send-form-${index}-enabled" aria-label="Enable form field ${fieldNumber}" onchange="updateSendFormField(${index}, 'enabled', this.checked)" title="Enable/disable field">
+          <input type="text" value="${escapeHtmlAttribute(field.key || '')}" data-focus-key="send-form-${index}-name" aria-label="Form field ${fieldNumber} name" oninput="updateSendFormField(${index}, 'key', this.value)" placeholder="Field name">
           ${typeSelect}
           ${valueEditor}
-          <button class="btn" onclick="removeSendFormField(${index})" style="padding:2px 6px;font-size:12px;color:#ce3939;" title="Remove field">&times;</button>
+          <button type="button" class="btn" data-focus-key="send-form-${index}-remove" onclick="removeSendFormField(${index})" style="padding:2px 6px;font-size:12px;color:#ce3939;" title="Remove field" aria-label="Remove form field ${fieldNumber}">&times;</button>
         </div>`;
       }).join('');
+      replaceGeneratedHtmlPreservingFocus(container, html);
     }
 
     function addSendFormField() {
@@ -9932,6 +10623,97 @@
       return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     }
 
+    const SEND_MANAGEMENT_JSON_MAX_BYTES = 50 * 1024 * 1024;
+
+    function utf8StringByteLength(value) {
+      const text = String(value);
+      let bytes = 0;
+      for (let index = 0; index < text.length; index++) {
+        const code = text.charCodeAt(index);
+        if (code < 0x80) bytes++;
+        else if (code < 0x800) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff &&
+            index + 1 < text.length &&
+            text.charCodeAt(index + 1) >= 0xdc00 &&
+            text.charCodeAt(index + 1) <= 0xdfff) {
+          bytes += 4;
+          index++;
+        } else bytes += 3;
+      }
+      return bytes;
+    }
+
+    function formatWholeMiB(byteLength) {
+      const bytes = typeof byteLength === 'bigint' ? byteLength : BigInt(byteLength);
+      const mebibyte = 1024n * 1024n;
+      return String((bytes + mebibyte - 1n) / mebibyte) + ' MiB';
+    }
+
+    function assertSendManagementRequestSize(serializedRequest) {
+      const byteLength = utf8StringByteLength(serializedRequest);
+      if (byteLength > SEND_MANAGEMENT_JSON_MAX_BYTES) {
+        throw new Error(
+          `Send request is ${formatWholeMiB(byteLength)} after JSON encoding, above the 50 MiB ` +
+          'management limit. Reduce the body or headers and try again.'
+        );
+      }
+      return byteLength;
+    }
+
+    function multipartBodyByteLength(fields, boundary) {
+      let total = 0n;
+      const appendText = text => { total += BigInt(utf8StringByteLength(text)); };
+      for (const field of fields) {
+        if (field.enabled === false || !field.key) continue;
+        const safeName = quoteMultipartDispositionValue(field.key, 'Multipart field name');
+        appendText(`--${boundary}\r\n`);
+        if (field.type === 'file') {
+          if (!field.file) throw new Error(`Choose a file for multipart field "${field.key}"`);
+          const safeFilename = quoteMultipartDispositionValue(field.file.name, 'Multipart file name');
+          const contentType = String(field.file.type || 'application/octet-stream');
+          if (/[\0-\x1f\x7f]/.test(contentType)) {
+            throw new Error('Multipart file content type cannot contain control characters');
+          }
+          if (!Number.isSafeInteger(field.file.size) || field.file.size < 0) {
+            throw new Error(`Cannot determine the size of multipart file "${field.file.name || field.key}" before reading it.`);
+          }
+          appendText(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`);
+          appendText(`Content-Type: ${contentType}\r\n\r\n`);
+          total += BigInt(field.file.size);
+          appendText('\r\n');
+        } else {
+          appendText(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n`);
+          appendText(field.value || '');
+          appendText('\r\n');
+        }
+      }
+      appendText(`--${boundary}--\r\n`);
+      return total;
+    }
+
+    function preflightMultipartSendRequest(fields, boundary, headers, requestContext = {}) {
+      const multipartBytes = multipartBodyByteLength(fields, boundary);
+      const base64Bytes = 4n * ((multipartBytes + 2n) / 3n);
+      const emptyEnvelope = JSON.stringify({
+        url: String(requestContext.url ?? ''),
+        method: String(requestContext.method ?? ''),
+        headers,
+        body: '',
+        bodyEncoding: 'base64'
+      });
+      const requestBytes = BigInt(utf8StringByteLength(emptyEnvelope)) + base64Bytes;
+      if (requestBytes > BigInt(SEND_MANAGEMENT_JSON_MAX_BYTES)) {
+        throw new Error(
+          `Multipart request would be ${formatWholeMiB(requestBytes)} after base64 and JSON encoding, ` +
+          'above the 50 MiB management limit. Choose smaller files or remove multipart fields.'
+        );
+      }
+      return {
+        multipartBytes: Number(multipartBytes),
+        requestBytes: Number(requestBytes)
+      };
+    }
+
     async function serializeMultipartFields(fields, boundary, signal) {
       const encoder = new TextEncoder();
       const chunks = [];
@@ -9990,18 +10772,20 @@
       const container = document.getElementById('sendHeaderRows');
       if (!container) return;
 
+      let html;
       if (sendHeadersList.length === 0) {
-        container.innerHTML = '<div style="padding:8px 0;color:var(--text-watermark);font-size:12px;">No headers. Click + to add one.</div>';
+        html = '<div style="padding:8px 0;color:var(--text-watermark);font-size:12px;">No headers. Click + to add one.</div>';
       } else {
-        container.innerHTML = sendHeadersList.map((h, i) =>
+        html = sendHeadersList.map((h, i) =>
           `<div class="send-header-row" style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
-            <input type="checkbox" ${h.enabled !== false ? 'checked' : ''} onchange="toggleSendHeaderEnabled(${i}, this.checked)" title="Enable/disable this header" style="cursor:pointer;">
-            <input type="text" value="${escapeHtmlAttribute(h.key)}" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
-            <input type="text" value="${escapeHtmlAttribute(h.value)}" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
-            <button class="btn" onclick="removeSendHeader(${i})" style="padding:2px 6px;font-size:12px;color:#ce3939;flex-shrink:0;" title="Remove header">&times;</button>
+            <input type="checkbox" ${h.enabled !== false ? 'checked' : ''} data-focus-key="send-header-${i}-enabled" aria-label="Enable request header ${i + 1}" onchange="toggleSendHeaderEnabled(${i}, this.checked)" title="Enable/disable this header" style="cursor:pointer;">
+            <input type="text" value="${escapeHtmlAttribute(h.key)}" data-focus-key="send-header-${i}-name" aria-label="Request header ${i + 1} name" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
+            <input type="text" value="${escapeHtmlAttribute(h.value)}" data-focus-key="send-header-${i}-value" aria-label="Request header ${i + 1} value" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
+            <button type="button" class="btn" data-focus-key="send-header-${i}-remove" onclick="removeSendHeader(${i})" style="padding:2px 6px;font-size:12px;color:#ce3939;flex-shrink:0;" title="Remove header" aria-label="Remove request header ${i + 1}">&times;</button>
           </div>`
         ).join('');
       }
+      replaceGeneratedHtmlPreservingFocus(container, html);
       syncSendHeadersToHidden();
     }
 
@@ -10178,20 +10962,22 @@
       if (typeof toast === 'function') toast(message, 'error');
     }
 
-    function reportRejectedStoredSendWorkspace() {
-      if (typeof toast === 'function') {
-        toast('Stored Send tabs were ignored because a request method is invalid.', 'error');
-      }
-    }
-
     const SEND_TABS_LEGACY_KEY = 'http-freekit-send-tabs';
-    const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
-    const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace';
-    const SEND_TAB_JOURNAL_PREFIX = 'http-freekit-send-journal-v1:';
+    const SEND_TABS_V2_WORKSPACE_KEY = 'http-freekit-send-workspace-v2';
+    const SEND_TABS_WORKSPACE_KEY = 'http-freekit-send-workspace-v3';
+    const SEND_TABS_LOCK_NAME = 'http-freekit-send-workspace-v3';
+    const SEND_TAB_V1_JOURNAL_PREFIX = 'http-freekit-send-journal-v1:';
+    const SEND_TAB_JOURNAL_PREFIX = 'http-freekit-send-journal-v2:';
+    const SEND_MAX_RETIRED_JOURNAL_TOKENS = 1024;
     let sendTabPersistenceQueue = Promise.resolve();
     let sendTabJournalCounter = 0;
     let sendTabJournalTimestamp = 0;
+    let sendPersistenceTokenCounter = 0;
     const pendingSendTabJournals = new Map();
+    const sendTabMetadata = new Map();
+    const sendCommittedTabState = new Map();
+    let sendActiveEditorBase = null;
+    const sendPersistenceWriterId = createSendPersistenceToken('writer');
 
     function normalizeSendHeaderRows(headers) {
       const rows = [];
@@ -10220,9 +11006,45 @@
         const numericId = Number(match[1]);
         return Number.isSafeInteger(numericId) ? numericId : null;
       }
-      return /^tab-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)
+      return (/^tab-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) ||
+          /^tab-(?:local|conflict|legacyfork)-[A-Za-z0-9][A-Za-z0-9_-]{7,150}$/.test(id))
         ? 0
         : null;
+    }
+
+    function isSendPersistenceToken(value) {
+      return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{7,191}$/.test(value);
+    }
+
+    function createSendPersistenceToken(prefix) {
+      let entropy = '';
+      try {
+        entropy = globalThis.crypto?.randomUUID?.() || '';
+      } catch {}
+      if (typeof entropy !== 'string' || !/^[A-Za-z0-9-]{8,128}$/.test(entropy)) {
+        entropy = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+      }
+      let counter;
+      if (typeof sendPersistenceTokenCounter !== 'undefined') {
+        counter = ++sendPersistenceTokenCounter;
+      } else {
+        createSendPersistenceToken.fallbackCounter =
+          (createSendPersistenceToken.fallbackCounter || 0) + 1;
+        counter = createSendPersistenceToken.fallbackCounter;
+      }
+      return `${prefix}-${entropy}-${counter.toString(36)}`;
+    }
+
+    function deterministicSendMigrationToken(prefix, value) {
+      const text = String(value);
+      let first = 0x811c9dc5;
+      let second = 0x9e3779b9;
+      for (let index = 0; index < text.length; index++) {
+        const code = text.charCodeAt(index);
+        first = Math.imul(first ^ code, 0x01000193) >>> 0;
+        second = Math.imul(second ^ (code + index), 0x85ebca6b) >>> 0;
+      }
+      return `${prefix}-m-${first.toString(16).padStart(8, '0')}${second.toString(16).padStart(8, '0')}-${text.length.toString(36)}`;
     }
 
     function normalizeSendTab(tab, fallbackId, { includeFiles = true, includeResponse = true } = {}) {
@@ -10253,7 +11075,7 @@
     }
 
     function normalizeStoredSendTabs(tabs) {
-      if (!Array.isArray(tabs)) return [];
+      if (!Array.isArray(tabs)) return null;
       const reservedIds = new Set(tabs
         .filter(tab => tab && typeof tab === 'object' && !Array.isArray(tab))
         .map(tab => parseSendTabId(tab.id) !== null ? tab.id : null)
@@ -10263,7 +11085,7 @@
 
       const normalizedTabs = [];
       for (const tab of tabs) {
-        if (!tab || typeof tab !== 'object' || Array.isArray(tab)) continue;
+        if (!tab || typeof tab !== 'object' || Array.isArray(tab)) return null;
         let id = parseSendTabId(tab.id) !== null && !usedIds.has(tab.id) ? tab.id : null;
         if (!id) {
           do { id = `tab-${generatedId++}`; } while (reservedIds.has(id) || usedIds.has(id));
@@ -10279,15 +11101,14 @@
       return normalizedTabs;
     }
 
-    function allocateSendTabId() {
+    function allocateSendTabId(additionalReservedIds = new Set()) {
       const usedIds = new Set(sendTabs.map(tab => tab.id));
-      // A remote tab or permanent tombstone may not have reached this renderer's
-      // in-memory snapshot yet. Never allocate an identity already present in
-      // the shared workspace, because a tombstoned upsert is intentionally ignored.
+      for (const id of additionalReservedIds) usedIds.add(id);
+      // New v3 identities are opaque and never derive from the set of numeric
+      // legacy IDs, so compaction needs no permanent tombstone history.
       try {
         const storedWorkspace = readStoredSendWorkspace();
         storedWorkspace.tabs.forEach(tab => usedIds.add(tab.id));
-        storedWorkspace.deletedTabIds.forEach(id => usedIds.add(id));
       } catch {}
       const randomUUID = globalThis.crypto?.randomUUID;
       if (typeof randomUUID === 'function') {
@@ -10296,22 +11117,11 @@
           if (!usedIds.has(id)) return id;
         }
       }
-
-      let candidate = Number.isSafeInteger(sendTabCounter) && sendTabCounter >= 0
-        ? sendTabCounter + 1
-        : 1;
-      if (!Number.isSafeInteger(candidate)) candidate = 1;
-
-      for (let attempts = 0; attempts <= usedIds.size; attempts++) {
-        const id = `tab-${candidate}`;
-        if (!usedIds.has(id)) {
-          sendTabCounter = candidate;
-          return id;
-        }
-        candidate++;
-        if (!Number.isSafeInteger(candidate)) candidate = 1;
+      for (let attempts = 0; attempts < 32; attempts++) {
+        const id = `tab-${createSendPersistenceToken('local')}`;
+        if (!usedIds.has(id)) return id;
       }
-      throw new Error('Could not allocate a unique Send tab ID');
+      throw new Error('Could not allocate a fresh Send tab identity');
     }
 
     function createEmptySendTab() {
@@ -10341,71 +11151,219 @@
       return normalized;
     }
 
-    function normalizeStoredSendWorkspace(workspace) {
-      if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace) || workspace.version !== 2) {
-        return null;
-      }
-      const deletedTabIds = Array.from(new Set(
-        (Array.isArray(workspace.deletedTabIds) ? workspace.deletedTabIds : [])
-          .filter(id => parseSendTabId(id) !== null)
-      ));
-      const deletedIds = new Set(deletedTabIds);
-      const tabs = normalizeStoredSendTabs(workspace.tabs);
-      if (!tabs) return null;
+    function sendTabFingerprint(tab) {
+      const serialized = serializeSendTab(tab);
+      return serialized ? JSON.stringify(serialized) : null;
+    }
+
+    function sendTabHasSelectedFiles(tab) {
+      return ['urlEncodedFields', 'multipartFields'].some(fieldName =>
+        Array.isArray(tab?.[fieldName]) && tab[fieldName].some(field =>
+          field?.file && typeof field.file === 'object'
+        )
+      );
+    }
+
+    function createSendWorkspace(tabs = [], tabMetadata = new Map(), options = {}) {
       return {
-        version: 2,
-        tabs: tabs.filter(tab => !deletedIds.has(tab.id)),
-        deletedTabIds
+        version: 3,
+        tabs,
+        tabMetadata,
+        retiredJournalTokens: Array.from(options.retiredJournalTokens || []),
+        legacyJournalsMigrated: options.legacyJournalsMigrated !== false
       };
     }
 
-    // Each renderer writes only its tab-level changes. The cross-window lock
-    // serializes read/merge/write operations, and permanent tombstones make
-    // deletion win over any later write from a stale renderer.
-    function readStoredSendWorkspace(reportInvalid = false) {
-      const savedWorkspace = safeLocalStorageGet(SEND_TABS_WORKSPACE_KEY);
-      if (savedWorkspace) {
-        try {
-          const workspace = normalizeStoredSendWorkspace(JSON.parse(savedWorkspace));
-          if (workspace) return workspace;
-          if (reportInvalid) reportRejectedStoredSendWorkspace();
-        } catch {}
-      }
-
-      const savedLegacyTabs = safeLocalStorageGet(SEND_TABS_LEGACY_KEY);
-      if (savedLegacyTabs) {
-        try {
-          const tabs = normalizeStoredSendTabs(JSON.parse(savedLegacyTabs));
-          if (tabs) return { version: 2, tabs, deletedTabIds: [] };
-          if (reportInvalid) reportRejectedStoredSendWorkspace();
-        } catch {}
-      }
-      return { version: 2, tabs: [], deletedTabIds: [] };
+    function serializeStoredSendWorkspace(workspace) {
+      return {
+        version: 3,
+        tabs: workspace.tabs.map(tab => {
+          const metadata = workspace.tabMetadata.get(tab.id);
+          return { tab: serializeSendTab(tab), generation: metadata.generation, revision: metadata.revision };
+        }),
+        ...(workspace.retiredJournalTokens.length > 0
+          ? { retiredJournalTokens: workspace.retiredJournalTokens }
+          : {}),
+        ...(workspace.legacyJournalsMigrated === false
+          ? { legacyJournalsMigrated: false }
+          : {})
+      };
     }
 
-    function mergeStoredSendWorkspace(workspace, upserts = [], deletedTabIds = []) {
-      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace);
-      if (!normalizedWorkspace) return null;
-      const serializedUpserts = [];
-      for (const candidate of upserts) {
-        const tab = serializeSendTab(candidate);
-        if (!tab) return null;
-        serializedUpserts.push(tab);
+    function normalizeStoredSendWorkspace(workspace) {
+      if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace) ||
+          workspace.version !== 3 || !Array.isArray(workspace.tabs)) {
+        return null;
       }
-      const deletedIds = new Set(normalizedWorkspace.deletedTabIds);
-      for (const id of deletedTabIds) {
-        if (parseSendTabId(id) !== null) deletedIds.add(id);
-      }
-
-      const tabs = normalizedWorkspace.tabs.filter(tab => !deletedIds.has(tab.id));
-      for (const tab of serializedUpserts) {
-        if (deletedIds.has(tab.id)) continue;
-        const existingIndex = tabs.findIndex(existing => existing.id === tab.id);
-        if (existingIndex === -1) tabs.push(tab);
-        else tabs[existingIndex] = tab;
+      const retiredJournalTokens = workspace.retiredJournalTokens === undefined
+        ? []
+        : workspace.retiredJournalTokens;
+      if (!Array.isArray(retiredJournalTokens) ||
+          retiredJournalTokens.length > SEND_MAX_RETIRED_JOURNAL_TOKENS ||
+          retiredJournalTokens.some(token => !isSendPersistenceToken(token)) ||
+          new Set(retiredJournalTokens).size !== retiredJournalTokens.length ||
+          (workspace.legacyJournalsMigrated !== undefined &&
+            typeof workspace.legacyJournalsMigrated !== 'boolean')) {
+        return null;
       }
 
-      return { version: 2, tabs, deletedTabIds: Array.from(deletedIds) };
+      const tabs = [];
+      const tabMetadata = new Map();
+      const generations = new Set();
+      const revisions = new Set();
+      for (const entry of workspace.tabs) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+            !isSendPersistenceToken(entry.generation) ||
+            !isSendPersistenceToken(entry.revision)) return null;
+        const tab = normalizeSendTab(entry.tab, entry.tab?.id, {
+          includeFiles: false,
+          includeResponse: false
+        });
+        if (!tab || parseSendTabId(entry.tab?.id) === null || tab.id !== entry.tab.id ||
+            tabMetadata.has(tab.id) || generations.has(entry.generation) ||
+            revisions.has(entry.revision)) return null;
+        delete tab.response;
+        tabs.push(tab);
+        tabMetadata.set(tab.id, { generation: entry.generation, revision: entry.revision });
+        generations.add(entry.generation);
+        revisions.add(entry.revision);
+      }
+      return createSendWorkspace(tabs, tabMetadata, {
+        retiredJournalTokens,
+        legacyJournalsMigrated: workspace.legacyJournalsMigrated !== false
+      });
+    }
+
+    function normalizeStoredSendWorkspaceV2(workspace) {
+      if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace) ||
+          workspace.version !== 2 || !Array.isArray(workspace.tabs) ||
+          (workspace.deletedTabIds !== undefined && !Array.isArray(workspace.deletedTabIds))) {
+        return null;
+      }
+      if ((workspace.deletedTabIds || []).some(id => parseSendTabId(id) === null)) return null;
+      const deletedIds = new Set(workspace.deletedTabIds || []);
+      const tabs = normalizeStoredSendTabs(workspace.tabs);
+      return tabs ? tabs.filter(tab => !deletedIds.has(tab.id)) : null;
+    }
+
+    function migrateSendTabsToWorkspaceV3(tabs, legacyJournalsMigrated) {
+      const metadata = new Map();
+      for (const tab of tabs) {
+        const generation = deterministicSendMigrationToken('generation', tab.id);
+        metadata.set(tab.id, {
+          generation,
+          revision: deterministicSendMigrationToken('revision', generation + '\n' + sendTabFingerprint(tab))
+        });
+      }
+      return createSendWorkspace(tabs, metadata, { legacyJournalsMigrated });
+    }
+
+    function reportSendWorkspaceCorruption(key, rawValue, label, reason) {
+      registerRendererStorageCorruption(key, rawValue, 'send', label, reason);
+      return createSendWorkspace();
+    }
+
+    // v3 is a new key as well as a new schema. Once it exists, writes from an
+    // older live renderer to the v2/legacy keys are intentionally ignored.
+    function readStoredSendWorkspace() {
+      const savedWorkspace = safeLocalStorageGet(SEND_TABS_WORKSPACE_KEY);
+      if (savedWorkspace !== null) {
+        try {
+          const workspace = normalizeStoredSendWorkspace(JSON.parse(savedWorkspace));
+          if (!workspace) {
+            return reportSendWorkspaceCorruption(
+              SEND_TABS_WORKSPACE_KEY,
+              savedWorkspace,
+              'Stored Send workspace',
+              'invalid version 3 workspace structure'
+            );
+          }
+          clearRendererStorageCorruption(SEND_TABS_WORKSPACE_KEY);
+          clearRendererStorageCorruption(SEND_TABS_V2_WORKSPACE_KEY);
+          clearRendererStorageCorruption(SEND_TABS_LEGACY_KEY);
+          return workspace;
+        } catch (error) {
+          return reportSendWorkspaceCorruption(
+            SEND_TABS_WORKSPACE_KEY,
+            savedWorkspace,
+            'Stored Send workspace',
+            error.message || 'invalid JSON'
+          );
+        }
+      }
+      clearRendererStorageCorruption(SEND_TABS_WORKSPACE_KEY);
+
+      const savedV2Workspace = safeLocalStorageGet(SEND_TABS_V2_WORKSPACE_KEY);
+      let tabs = null;
+      let sourceKey = null;
+      if (savedV2Workspace !== null) {
+        sourceKey = SEND_TABS_V2_WORKSPACE_KEY;
+        try {
+          tabs = normalizeStoredSendWorkspaceV2(JSON.parse(savedV2Workspace));
+        } catch (error) {
+          return reportSendWorkspaceCorruption(
+            sourceKey,
+            savedV2Workspace,
+            'Stored Send version 2 workspace',
+            error.message || 'invalid JSON'
+          );
+        }
+        if (!tabs) {
+          return reportSendWorkspaceCorruption(
+            sourceKey,
+            savedV2Workspace,
+            'Stored Send version 2 workspace',
+            'invalid version 2 workspace structure'
+          );
+        }
+      } else {
+        clearRendererStorageCorruption(SEND_TABS_V2_WORKSPACE_KEY);
+        const savedLegacyTabs = safeLocalStorageGet(SEND_TABS_LEGACY_KEY);
+        if (savedLegacyTabs !== null) {
+          sourceKey = SEND_TABS_LEGACY_KEY;
+          try {
+            tabs = normalizeStoredSendTabs(JSON.parse(savedLegacyTabs));
+          } catch (error) {
+            return reportSendWorkspaceCorruption(
+              sourceKey,
+              savedLegacyTabs,
+              'Legacy Send tabs',
+              error.message || 'invalid JSON'
+            );
+          }
+          if (!tabs) {
+            return reportSendWorkspaceCorruption(
+              sourceKey,
+              savedLegacyTabs,
+              'Legacy Send tabs',
+              'invalid tab structure'
+            );
+          }
+        } else clearRendererStorageCorruption(SEND_TABS_LEGACY_KEY);
+      }
+
+      const workspace = migrateSendTabsToWorkspaceV3(tabs || [], sourceKey === null);
+      if (!hasRendererStorageCorruption('send')) {
+        safeLocalStorageSet(
+          SEND_TABS_WORKSPACE_KEY,
+          JSON.stringify(serializeStoredSendWorkspace(workspace)),
+          false
+        );
+      }
+      return workspace;
+    }
+
+    function cloneSendWorkspace(workspace) {
+      return createSendWorkspace(
+        workspace.tabs.map(tab => ({ ...tab, headers: tab.headers.slice(),
+          urlEncodedFields: cloneSendFormFields(tab.urlEncodedFields, false),
+          multipartFields: cloneSendFormFields(tab.multipartFields, false) })),
+        new Map(Array.from(workspace.tabMetadata, ([id, metadata]) => [id, { ...metadata }])),
+        {
+          retiredJournalTokens: workspace.retiredJournalTokens,
+          legacyJournalsMigrated: workspace.legacyJournalsMigrated
+        }
+      );
     }
 
     function withSendTabStorageLock(callback) {
@@ -10417,59 +11375,146 @@
 
     function compareSendTabJournals(first, second) {
       return first.journal.createdAt - second.journal.createdAt ||
+        first.journal.writerId.localeCompare(second.journal.writerId) ||
+        first.journal.writerSequence - second.journal.writerSequence ||
         first.journal.token.localeCompare(second.journal.token);
+    }
+
+    function pendingSendJournalsForTab(id) {
+      return Array.from(pendingSendTabJournals.values())
+        .filter(entry => entry.journal.id === id &&
+          entry.journal.writerId === sendPersistenceWriterId)
+        .sort(compareSendTabJournals);
     }
 
     function createSendTabJournal(id, tab, deleted = false) {
       if (parseSendTabId(id) === null) return null;
-      let entropy = '';
-      try {
-        entropy = globalThis.crypto?.randomUUID?.() || '';
-      } catch {}
-      if (typeof entropy !== 'string' || !/^[a-z0-9-]{1,80}$/i.test(entropy)) {
-        entropy = Math.random().toString(36).slice(2);
+      const serializedTab = deleted ? null : serializeSendTab(tab);
+      if (!deleted && (!serializedTab || serializedTab.id !== id)) return null;
+
+      const previousPending = pendingSendJournalsForTab(id).at(-1)?.journal;
+      const committed = sendTabMetadata.get(id);
+      let generation = previousPending?.generation || committed?.generation || null;
+      let baseRevision = previousPending?.token || committed?.revision || null;
+      let operation;
+      if (deleted) {
+        if (!generation || !baseRevision || previousPending?.operation === 'delete') return null;
+        operation = 'delete';
+      } else if (!generation) {
+        generation = createSendPersistenceToken('generation');
+        baseRevision = null;
+        operation = 'create';
+      } else {
+        operation = 'update';
       }
-      const token = `${entropy}-${(++sendTabJournalCounter).toString(36)}`;
+
       const clock = globalThis.performance;
       const highResolutionNow = Number.isFinite(clock?.timeOrigin) && typeof clock?.now === 'function'
         ? clock.timeOrigin + clock.now()
         : Date.now();
       const createdAt = Math.max(highResolutionNow, sendTabJournalTimestamp + 0.001);
       sendTabJournalTimestamp = createdAt;
-      if (deleted) return { version: 1, token, createdAt, id, deleted: true };
-      const serializedTab = serializeSendTab(tab);
-      if (!serializedTab || serializedTab.id !== id) return null;
-      return { version: 1, token, createdAt, id, deleted: false, tab: serializedTab };
+      const token = createSendPersistenceToken('revision');
+      const journal = {
+        version: 2,
+        token,
+        writerId: sendPersistenceWriterId,
+        writerSequence: ++sendTabJournalCounter,
+        createdAt,
+        operation,
+        id,
+        generation,
+        baseRevision
+      };
+      if (deleted && previousPending?.operation === 'update') {
+        journal.conflictId = previousPending.conflictId;
+        journal.conflictGeneration = previousPending.conflictGeneration;
+      }
+      if (!deleted) {
+        journal.tab = serializedTab;
+        if (operation === 'update') {
+          journal.conflictId = previousPending?.conflictId ||
+            `tab-${createSendPersistenceToken('conflict')}`;
+          journal.conflictGeneration = previousPending?.conflictGeneration ||
+            createSendPersistenceToken('generation');
+        }
+      }
+      return journal;
     }
 
     function normalizeStoredSendTabJournal(candidate) {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
-          candidate.version !== 1 || parseSendTabId(candidate.id) === null ||
-          typeof candidate.token !== 'string' ||
-          !/^[a-z0-9-]{1,128}$/i.test(candidate.token) ||
+          candidate.version !== 2 || !isSendPersistenceToken(candidate.token) ||
+          !isSendPersistenceToken(candidate.writerId) ||
+          !Number.isSafeInteger(candidate.writerSequence) || candidate.writerSequence <= 0 ||
           !Number.isFinite(candidate.createdAt) || candidate.createdAt < 0 ||
-          typeof candidate.deleted !== 'boolean') {
-        return null;
-      }
-      if (candidate.deleted) {
-        return {
-          version: 1,
+          !['create', 'update', 'delete'].includes(candidate.operation) ||
+          parseSendTabId(candidate.id) === null ||
+          !isSendPersistenceToken(candidate.generation)) return null;
+
+      const expectsNoBase = candidate.operation === 'create';
+      if ((expectsNoBase && candidate.baseRevision !== null) ||
+          (!expectsNoBase && !isSendPersistenceToken(candidate.baseRevision))) return null;
+      if (candidate.operation === 'delete') {
+        const normalizedDelete = {
+          version: 2,
           token: candidate.token,
+          writerId: candidate.writerId,
+          writerSequence: candidate.writerSequence,
           createdAt: candidate.createdAt,
+          operation: 'delete',
           id: candidate.id,
-          deleted: true
+          generation: candidate.generation,
+          baseRevision: candidate.baseRevision
         };
+        const hasConflictId = candidate.conflictId !== undefined;
+        const hasConflictGeneration = candidate.conflictGeneration !== undefined;
+        if (hasConflictId !== hasConflictGeneration) return null;
+        if (hasConflictId) {
+          if (parseSendTabId(candidate.conflictId) === null ||
+              !isSendPersistenceToken(candidate.conflictGeneration) ||
+              candidate.conflictId === candidate.id ||
+              candidate.conflictGeneration === candidate.generation) return null;
+          normalizedDelete.conflictId = candidate.conflictId;
+          normalizedDelete.conflictGeneration = candidate.conflictGeneration;
+        }
+        return normalizedDelete;
       }
+
       const tab = serializeSendTab(candidate.tab);
       if (!tab || tab.id !== candidate.id) return null;
-      return {
-        version: 1,
+      const normalized = {
+        version: 2,
         token: candidate.token,
+        writerId: candidate.writerId,
+        writerSequence: candidate.writerSequence,
         createdAt: candidate.createdAt,
+        operation: candidate.operation,
         id: candidate.id,
-        deleted: false,
+        generation: candidate.generation,
+        baseRevision: candidate.baseRevision,
         tab
       };
+      if (candidate.operation === 'update') {
+        if (parseSendTabId(candidate.conflictId) === null ||
+            !isSendPersistenceToken(candidate.conflictGeneration) ||
+            candidate.conflictId === candidate.id ||
+            candidate.conflictGeneration === candidate.generation) return null;
+        normalized.conflictId = candidate.conflictId;
+        normalized.conflictGeneration = candidate.conflictGeneration;
+      }
+      return normalized;
+    }
+
+    function normalizeStoredSendTabJournalV1(candidate) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+          candidate.version !== 1 || parseSendTabId(candidate.id) === null ||
+          typeof candidate.token !== 'string' || !/^[a-z0-9-]{1,128}$/i.test(candidate.token) ||
+          !Number.isFinite(candidate.createdAt) || candidate.createdAt < 0 ||
+          typeof candidate.deleted !== 'boolean') return null;
+      if (candidate.deleted) return { ...candidate, deleted: true };
+      const tab = serializeSendTab(candidate.tab);
+      return tab && tab.id === candidate.id ? { ...candidate, deleted: false, tab } : null;
     }
 
     function getSendTabJournalKey(journal) {
@@ -10477,125 +11522,554 @@
         encodeURIComponent(journal.token);
     }
 
-    function readStoredSendTabJournals() {
+    function readSendJournalEntries(prefix, normalizeJournal, getExpectedKey, label) {
       const storage = globalThis.window?.localStorage;
       if (!storage) return [];
       let keys;
       try {
         keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
-          .filter(key => typeof key === 'string' && key.startsWith(SEND_TAB_JOURNAL_PREFIX));
+          .filter(key => typeof key === 'string' && key.startsWith(prefix));
       } catch {
         return [];
+      }
+      const currentKeys = new Set(keys);
+      for (const corruption of rendererStorageCorruptionsForGroup('send')) {
+        if (corruption.key.startsWith(prefix) && !currentKeys.has(corruption.key)) {
+          clearRendererStorageCorruption(corruption.key);
+        }
       }
 
       const entries = [];
       for (const key of keys) {
         const saved = safeLocalStorageGet(key);
-        if (!saved) continue;
-        let journal = null;
-        try {
-          journal = normalizeStoredSendTabJournal(JSON.parse(saved));
-        } catch {}
-        if (!journal || key !== getSendTabJournalKey(journal)) {
-          if (typeof safeLocalStorageRemove === 'function') safeLocalStorageRemove(key, false);
+        if (saved === null) {
+          clearRendererStorageCorruption(key);
           continue;
         }
+        let journal = null;
+        try {
+          journal = normalizeJournal(JSON.parse(saved));
+        } catch (error) {
+          registerRendererStorageCorruption(
+            key, saved, 'send', label, error.message || 'invalid JSON'
+          );
+          continue;
+        }
+        if (!journal || key !== getExpectedKey(journal)) {
+          registerRendererStorageCorruption(
+            key,
+            saved,
+            'send',
+            label,
+            !journal ? 'invalid journal structure' : 'journal key does not match its contents'
+          );
+          continue;
+        }
+        clearRendererStorageCorruption(key);
         entries.push({ key, journal, stored: true });
       }
       return entries;
     }
 
+    function readStoredSendTabJournals() {
+      return readSendJournalEntries(
+        SEND_TAB_JOURNAL_PREFIX,
+        normalizeStoredSendTabJournal,
+        getSendTabJournalKey,
+        'Stored Send recovery journal'
+      );
+    }
+
+    function getLegacySendTabJournalKey(journal) {
+      return SEND_TAB_V1_JOURNAL_PREFIX + encodeURIComponent(journal.id) + ':' +
+        encodeURIComponent(journal.token);
+    }
+
+    function readStoredSendTabJournalsV1() {
+      return readSendJournalEntries(
+        SEND_TAB_V1_JOURNAL_PREFIX,
+        normalizeStoredSendTabJournalV1,
+        getLegacySendTabJournalKey,
+        'Legacy Send recovery journal'
+      );
+    }
+
+    function scanSendStorageCorruption() {
+      const workspace = readStoredSendWorkspace();
+      readStoredSendTabJournals();
+      // If no v3 workspace exists, every v1 journal is still part of the
+      // migration input—even when the v2 workspace was too corrupt to expose
+      // its migration flag. Diagnose it now so one approved quarantine resets
+      // the complete legacy state.
+      if (safeLocalStorageGet(SEND_TABS_WORKSPACE_KEY) === null ||
+          workspace.legacyJournalsMigrated === false) {
+        readStoredSendTabJournalsV1();
+      }
+      return hasRendererStorageCorruption('send');
+    }
+
     function stageSendTabJournal(journal) {
       if (!journal) return null;
-      const entry = {
-        key: getSendTabJournalKey(journal),
-        journal,
-        stored: false
-      };
-      pendingSendTabJournals.set(journal.id, entry);
+      const entry = { key: getSendTabJournalKey(journal), journal, stored: false };
+      pendingSendTabJournals.set(entry.key, entry);
       entry.stored = safeLocalStorageSet(entry.key, JSON.stringify(journal));
       return entry;
     }
 
-    function latestSendTabJournals(entries) {
+    function latestLegacySendTabJournals(entries) {
       const latest = new Map();
       for (const entry of entries) {
         const current = latest.get(entry.journal.id);
-        // Tab IDs are never reused. Once any renderer records a deletion,
-        // later writes from a stale renderer must not resurrect that identity.
         const deletionWins = entry.journal.deleted && !current?.journal.deleted;
-        const sameOperationTypeIsNewer = current &&
-          entry.journal.deleted === current.journal.deleted &&
-          compareSendTabJournals(current, entry) < 0;
-        if (!current || deletionWins || sameOperationTypeIsNewer) {
-          latest.set(entry.journal.id, entry);
-        }
+        const newerSameKind = current && entry.journal.deleted === current.journal.deleted &&
+          (entry.journal.createdAt > current.journal.createdAt ||
+            (entry.journal.createdAt === current.journal.createdAt &&
+              entry.journal.token.localeCompare(current.journal.token) > 0));
+        if (!current || deletionWins || newerSameKind) latest.set(entry.journal.id, entry);
       }
-      return latest;
+      return Array.from(latest.values());
     }
 
-    function overlaySendTabJournals(workspace, entries) {
-      const latest = latestSendTabJournals(entries);
-      const upserts = [];
-      const deletions = [];
-      for (const entry of latest.values()) {
-        if (entry.journal.deleted) deletions.push(entry.journal.id);
-        else upserts.push(entry.journal.tab);
+    function overlayLegacySendTabJournals(workspace, entries) {
+      const next = cloneSendWorkspace(workspace);
+      for (const entry of latestLegacySendTabJournals(entries)) {
+        const journal = entry.journal;
+        const index = next.tabs.findIndex(tab => tab.id === journal.id);
+        const metadata = next.tabMetadata.get(journal.id);
+        const legacyGeneration = deterministicSendMigrationToken('generation', journal.id);
+        if (journal.deleted) {
+          if (index !== -1 && metadata?.generation === legacyGeneration) {
+            next.tabs.splice(index, 1);
+            next.tabMetadata.delete(journal.id);
+          }
+          continue;
+        }
+        if (index !== -1 && metadata?.generation === legacyGeneration) {
+          next.tabs[index] = journal.tab;
+          next.tabMetadata.set(journal.id, {
+            generation: legacyGeneration,
+            revision: deterministicSendMigrationToken('revision', entry.key)
+          });
+          continue;
+        }
+        const forkId = `tab-${deterministicSendMigrationToken('legacyfork', entry.key)}`;
+        if (next.tabMetadata.has(forkId)) continue;
+        next.tabs.push({ ...journal.tab, id: forkId });
+        next.tabMetadata.set(forkId, {
+          generation: deterministicSendMigrationToken('generation', forkId),
+          revision: deterministicSendMigrationToken('revision', entry.key)
+        });
       }
-      return mergeStoredSendWorkspace(workspace, upserts, deletions);
+      next.legacyJournalsMigrated = true;
+      return next;
     }
 
-    function removeCommittedSendTabJournals(entries) {
-      const ordered = entries.slice().sort(compareSendTabJournals);
-      for (const entry of ordered) {
-        // Remove oldest-first. If cleanup fails, retaining the newest entry keeps
-        // restore ordering authoritative instead of exposing an older survivor.
-        if (!safeLocalStorageRemove(entry.key, false)) return false;
-      }
-      return true;
+    function creationResultMatches(journal, id, metadata) {
+      return (journal.operation !== 'delete' && journal.id === id &&
+          journal.generation === metadata.generation && journal.token === metadata.revision) ||
+        (journal.operation === 'update' && journal.conflictId === id &&
+          journal.conflictGeneration === metadata.generation && journal.token === metadata.revision);
     }
 
-    function enqueueSendTabJournalPersistence(operationEntries) {
-      const operationIds = new Set(operationEntries.map(entry => entry.journal.id));
-      const persist = () => withSendTabStorageLock(() => {
-        const storedEntries = readStoredSendTabJournals()
-          .filter(entry => operationIds.has(entry.journal.id));
-        const entriesById = new Map();
-        for (const entry of storedEntries) {
-          if (!entriesById.has(entry.journal.id)) entriesById.set(entry.journal.id, []);
-          entriesById.get(entry.journal.id).push(entry);
-        }
-        for (const operationEntry of operationEntries) {
-          if (operationEntry.stored || entriesById.has(operationEntry.journal.id)) continue;
-          entriesById.set(operationEntry.journal.id, [operationEntry]);
-        }
+    function appliedCreationJournalChain(id, metadata, entries) {
+      const entriesByToken = new Map(entries.map(entry => [entry.journal.token, entry]));
+      let resultMetadata = { ...metadata };
+      const appliedChain = [];
+      const seenTokens = new Set();
+      while (resultMetadata.revision && !seenTokens.has(resultMetadata.revision)) {
+        seenTokens.add(resultMetadata.revision);
+        const entry = entriesByToken.get(resultMetadata.revision);
+        if (!entry || !creationResultMatches(entry.journal, id, resultMetadata)) break;
+        appliedChain.push(entry);
+        resultMetadata = {
+          generation: metadata.generation,
+          revision: entry.journal.baseRevision
+        };
+      }
+      return appliedChain;
+    }
 
-        const effectiveEntries = latestSendTabJournals(
-          Array.from(entriesById.values()).flat()
-        );
-        const upserts = [];
-        const deletions = [];
-        for (const entry of effectiveEntries.values()) {
-          if (entry.journal.deleted) deletions.push(entry.journal.id);
-          else upserts.push(entry.journal.tab);
+    function retireSendJournalTokens(workspace, tokens) {
+      const retired = new Set(workspace.retiredJournalTokens);
+      for (const token of tokens) retired.add(token);
+      if (retired.size > SEND_MAX_RETIRED_JOURNAL_TOKENS) {
+        throw new Error('Send recovery metadata is full; retry after storage access is restored');
+      }
+      workspace.retiredJournalTokens = Array.from(retired);
+    }
+
+    function retireCreationJournalsBeforeDelete(workspace, id, metadata, entries) {
+      // Persist the deletion and these replay barriers atomically before any
+      // journal is removed. Cleanup and compaction happen only after the
+      // workspace write succeeds in applyAndCommitSendJournals().
+      retireSendJournalTokens(
+        workspace,
+        appliedCreationJournalChain(id, metadata, entries).map(entry => entry.journal.token)
+      );
+    }
+
+    function retireSupersededCreationJournals(workspace, entries) {
+      const supersededTokens = [];
+      for (const [id, metadata] of workspace.tabMetadata) {
+        const chain = appliedCreationJournalChain(id, metadata, entries);
+        supersededTokens.push(...chain.slice(1).map(entry => entry.journal.token));
+      }
+      retireSendJournalTokens(workspace, supersededTokens);
+    }
+
+    function sendRevisionAliasMatches(aliases, token, id, generation, revision) {
+      const alias = aliases.get(token);
+      return alias?.id === id && alias.generation === generation && alias.revision === revision;
+    }
+
+    function applySendTabJournal(workspace, entry, allEntries, {
+      prepareDelete = false,
+      revisionAliases = new Map()
+    } = {}) {
+      const journal = entry.journal;
+      const index = workspace.tabs.findIndex(tab => tab.id === journal.id);
+      const metadata = workspace.tabMetadata.get(journal.id);
+      if (workspace.retiredJournalTokens.includes(journal.token)) {
+        if (journal.operation !== 'delete' && index !== -1 &&
+            metadata?.generation === journal.generation &&
+            sendTabFingerprint(workspace.tabs[index]) === sendTabFingerprint(journal.tab)) {
+          revisionAliases.set(journal.token, {
+            id: journal.id,
+            generation: journal.generation,
+            revision: metadata.revision
+          });
         }
-        const workspace = mergeStoredSendWorkspace(readStoredSendWorkspace(), upserts, deletions);
-        const saved = safeLocalStorageSet(SEND_TABS_WORKSPACE_KEY, JSON.stringify(workspace));
-        if (saved) {
-          for (const id of operationIds) {
-            const storedForId = entriesById.get(id)?.filter(entry => entry.stored) || [];
-            if (storedForId.length > 0) removeCommittedSendTabJournals(storedForId);
-            const pendingEntry = pendingSendTabJournals.get(id);
-            const resolvedKeys = new Set([
-              ...storedForId.map(entry => entry.key),
-              ...operationEntries.filter(entry => entry.journal.id === id).map(entry => entry.key)
-            ]);
-            if (pendingEntry && resolvedKeys.has(pendingEntry.key)) {
-              pendingSendTabJournals.delete(id);
-            }
+        return { entry, state: 'retired' };
+      }
+
+      if (journal.operation === 'delete') {
+        const originalMatches = index !== -1 && metadata?.generation === journal.generation &&
+          (metadata.revision === journal.baseRevision || sendRevisionAliasMatches(
+              revisionAliases,
+              journal.baseRevision,
+              journal.id,
+              journal.generation,
+              metadata.revision
+            ));
+        let deleteId = journal.id;
+        let deleteIndex = index;
+        let deleteMetadata = metadata;
+        let state = 'deleted';
+        if (!originalMatches) {
+          const conflictIndex = journal.conflictId
+            ? workspace.tabs.findIndex(tab => tab.id === journal.conflictId)
+            : -1;
+          const conflictMetadata = journal.conflictId
+            ? workspace.tabMetadata.get(journal.conflictId)
+            : null;
+          const conflictMatches = conflictIndex !== -1 &&
+            conflictMetadata?.generation === journal.conflictGeneration &&
+            (conflictMetadata.revision === journal.baseRevision || sendRevisionAliasMatches(
+              revisionAliases,
+              journal.baseRevision,
+              journal.conflictId,
+              journal.conflictGeneration,
+              conflictMetadata.revision
+            ));
+          if (!conflictMatches) {
+            return index === -1 && !journal.conflictId
+              ? { entry, state: 'already-deleted' }
+              : { entry, state: 'stale-delete' };
+          }
+          deleteId = journal.conflictId;
+          deleteIndex = conflictIndex;
+          deleteMetadata = conflictMetadata;
+          state = 'deleted-fork';
+        }
+        if (prepareDelete) {
+          retireCreationJournalsBeforeDelete(workspace, deleteId, deleteMetadata, allEntries);
+        }
+        workspace.tabs.splice(deleteIndex, 1);
+        workspace.tabMetadata.delete(deleteId);
+        return { entry, state, id: deleteId };
+      }
+
+      const journalFingerprint = sendTabFingerprint(journal.tab);
+      if (index !== -1 && metadata?.generation === journal.generation &&
+          metadata.revision === journal.token) {
+        return { entry, state: 'already-applied' };
+      }
+      const exactCreate = journal.operation === 'create' && index === -1;
+      const exactUpdate = journal.operation === 'update' && index !== -1 &&
+        metadata?.generation === journal.generation &&
+        (metadata.revision === journal.baseRevision || sendRevisionAliasMatches(
+          revisionAliases,
+          journal.baseRevision,
+          journal.id,
+          journal.generation,
+          metadata.revision
+        ));
+      if (exactCreate || exactUpdate) {
+        if (exactCreate) workspace.tabs.push(journal.tab);
+        else workspace.tabs[index] = journal.tab;
+        workspace.tabMetadata.set(journal.id, {
+          generation: journal.generation,
+          revision: journal.token
+        });
+        return { entry, state: exactCreate ? 'created' : 'updated', id: journal.id };
+      }
+      if (index !== -1 && metadata?.generation === journal.generation &&
+          sendTabFingerprint(workspace.tabs[index]) === journalFingerprint) {
+        // A stale concurrent write with the same content is acknowledged but
+        // must not supersede the current writer's revision. Exact-base no-op
+        // updates take the branch above so later same-writer journals can chain
+        // from their token without a false conflict.
+        revisionAliases.set(journal.token, {
+          id: journal.id,
+          generation: journal.generation,
+          revision: metadata.revision
+        });
+        return { entry, state: 'identical', id: journal.id };
+      }
+
+      // A stale update never overwrites or resurrects the original identity.
+      // Its preallocated fork makes repeated crash recovery idempotent.
+      if (journal.operation === 'update') {
+        const conflictIndex = workspace.tabs.findIndex(tab => tab.id === journal.conflictId);
+        const conflictMetadata = workspace.tabMetadata.get(journal.conflictId);
+        if (conflictIndex !== -1 &&
+            conflictMetadata?.generation === journal.conflictGeneration &&
+            conflictMetadata.revision === journal.token) {
+          return { entry, state: 'already-forked', id: journal.conflictId };
+        }
+        if (conflictIndex !== -1 &&
+            conflictMetadata?.generation === journal.conflictGeneration &&
+            conflictMetadata.revision === journal.baseRevision) {
+          const fork = { ...journal.tab, id: journal.conflictId };
+          workspace.tabs[conflictIndex] = fork;
+          workspace.tabMetadata.set(journal.conflictId, {
+            generation: journal.conflictGeneration,
+            revision: journal.token
+          });
+          return { entry, state: 'fork-updated', id: journal.conflictId, fork };
+        }
+        if (conflictIndex !== -1 || conflictMetadata) {
+          return { entry, state: 'blocked-conflict-id' };
+        }
+        const fork = { ...journal.tab, id: journal.conflictId };
+        workspace.tabs.push(fork);
+        workspace.tabMetadata.set(journal.conflictId, {
+          generation: journal.conflictGeneration,
+          revision: journal.token
+        });
+        return { entry, state: 'forked', id: journal.conflictId, fork };
+      }
+
+      // A colliding create identity is never reused. Leave the journal for a
+      // later retry instead of overwriting an unrelated incarnation.
+      return { entry, state: 'blocked-conflict-id' };
+    }
+
+    function projectSendTabJournals(workspace, entries) {
+      const projected = cloneSendWorkspace(workspace);
+      const results = [];
+      const revisionAliases = new Map();
+      const uniqueEntries = Array.from(new Map(entries.map(entry => [entry.key, entry])).values())
+        .sort(compareSendTabJournals);
+      for (const entry of uniqueEntries) {
+        results.push(applySendTabJournal(projected, entry, uniqueEntries, { revisionAliases }));
+      }
+      return { workspace: projected, results };
+    }
+
+    function compactRetiredJournalTokens(workspace, entries) {
+      const durableTokens = new Set(entries
+        .filter(entry => entry.stored)
+        .map(entry => entry.journal.token));
+      for (const entry of pendingSendTabJournals.values()) {
+        if (entry.stored) durableTokens.add(entry.journal.token);
+      }
+      workspace.retiredJournalTokens = workspace.retiredJournalTokens
+        .filter(token => durableTokens.has(token));
+    }
+
+    function saveSendWorkspace(workspace) {
+      return safeLocalStorageSet(
+        SEND_TABS_WORKSPACE_KEY,
+        JSON.stringify(serializeStoredSendWorkspace(workspace))
+      );
+    }
+
+    function migrateLegacySendPersistence(workspace) {
+      if (workspace.legacyJournalsMigrated !== false) return workspace;
+      const legacyEntries = readStoredSendTabJournalsV1();
+      if (hasRendererStorageCorruption('send')) return null;
+      const migrated = overlayLegacySendTabJournals(workspace, legacyEntries);
+      if (!saveSendWorkspace(migrated)) return null;
+      for (const entry of legacyEntries) safeLocalStorageRemove(entry.key, false);
+      safeLocalStorageRemove(SEND_TABS_V2_WORKSPACE_KEY, false);
+      safeLocalStorageRemove(SEND_TABS_LEGACY_KEY, false);
+      return migrated;
+    }
+
+    function applyAndCommitSendJournals(workspace, entries) {
+      const next = cloneSendWorkspace(workspace);
+      const uniqueEntries = Array.from(new Map(entries.map(entry => [entry.key, entry])).values())
+        .sort(compareSendTabJournals);
+      const durablyRetiredTokens = new Set(workspace.retiredJournalTokens);
+      const committedCreationTokens = new Set();
+      for (const [id, metadata] of workspace.tabMetadata) {
+        for (const entry of appliedCreationJournalChain(id, metadata, uniqueEntries)) {
+          committedCreationTokens.add(entry.journal.token);
+        }
+      }
+      const requiredRetiredBaseTokens = new Set(uniqueEntries
+        .filter(entry => !committedCreationTokens.has(entry.journal.token))
+        .map(entry => entry.journal.baseRevision)
+        .filter(Boolean));
+      const precleanedRetiredKeys = new Set();
+      for (const entry of uniqueEntries) {
+        if (!durablyRetiredTokens.has(entry.journal.token) ||
+            requiredRetiredBaseTokens.has(entry.journal.token)) continue;
+        precleanedRetiredKeys.add(entry.key);
+        // These replay barriers came from the previously committed workspace,
+        // so their journals can be removed before this transaction needs room
+        // for any new barriers. Journals retired by this transaction are still
+        // kept until its workspace write succeeds below.
+        if (!entry.stored || safeLocalStorageRemove(entry.key, false)) {
+          pendingSendTabJournals.delete(entry.key);
+          entry.stored = false;
+        }
+      }
+      compactRetiredJournalTokens(next, uniqueEntries);
+      // Cleanup failures can retain an older journal after a newer descendant
+      // is already committed. Barrier those known ancestors before replay so
+      // they cannot be misclassified as concurrent stale drafts.
+      retireSupersededCreationJournals(next, uniqueEntries);
+      const results = [];
+      const revisionAliases = new Map();
+      for (const entry of uniqueEntries) {
+        results.push(precleanedRetiredKeys.has(entry.key)
+          ? { entry, state: 'retired' }
+          : applySendTabJournal(next, entry, uniqueEntries, {
+              prepareDelete: true,
+              revisionAliases
+            }));
+      }
+      if (results.some(result => result.state === 'blocked-conflict-id')) {
+        if (typeof toast === 'function') {
+          toast('A Send tab conflict could not be preserved safely; retry the save.', 'error');
+        }
+        return null;
+      }
+      retireSupersededCreationJournals(next, uniqueEntries);
+      retireSendJournalTokens(
+        next,
+        results
+          .filter(result => [
+            'identical',
+            'stale-delete',
+            'forked',
+            'fork-updated',
+            'already-forked',
+            'deleted-fork'
+          ].includes(result.state))
+          .map(result => result.entry.journal.token)
+      );
+      if (!saveSendWorkspace(next)) return null;
+
+      for (const result of results) {
+        const { entry } = result;
+        const removed = !entry.stored || safeLocalStorageRemove(entry.key, false);
+        if (removed || next.retiredJournalTokens.includes(entry.journal.token)) {
+          pendingSendTabJournals.delete(entry.key);
+        }
+        if (removed) entry.stored = false;
+      }
+      const beforeCompaction = next.retiredJournalTokens.length;
+      compactRetiredJournalTokens(next, uniqueEntries);
+      if (next.retiredJournalTokens.length !== beforeCompaction) saveSendWorkspace(next);
+      return { workspace: next, results };
+    }
+
+    function synchronizeCommittedSendWorkspace(workspace, results = []) {
+      sendTabMetadata.clear();
+      sendCommittedTabState.clear();
+      for (const tab of workspace.tabs) {
+        const metadata = workspace.tabMetadata.get(tab.id);
+        sendTabMetadata.set(tab.id, { ...metadata });
+        sendCommittedTabState.set(tab.id, {
+          ...metadata,
+          fingerprint: sendTabFingerprint(tab)
+        });
+      }
+
+      const latestForkResult = new Map();
+      for (const result of results) {
+        if (['forked', 'fork-updated'].includes(result.state) &&
+            result.entry.journal.writerId === sendPersistenceWriterId) {
+          latestForkResult.set(result.id, result);
+        }
+      }
+      for (const result of results) {
+        const journal = result.entry.journal;
+        if (journal.writerId !== sendPersistenceWriterId) continue;
+        if (['forked', 'fork-updated'].includes(result.state)) {
+          if (latestForkResult.get(result.id) !== result) continue;
+          const originalIndex = sendTabs.findIndex(tab => tab.id === journal.id);
+          const liveOriginal = originalIndex === -1 ? null : sendTabs[originalIndex];
+          const storedOriginal = workspace.tabs.find(tab => tab.id === journal.id);
+          const storedFork = workspace.tabs.find(tab => tab.id === result.id);
+          if (originalIndex !== -1) {
+            if (storedOriginal) {
+              // The local transient state belongs exclusively to the conflict
+              // fork. Merging it into the remotely committed original would
+              // attach a selected File to both logical requests.
+              sendTabs[originalIndex] = storedOriginal;
+            } else sendTabs.splice(originalIndex, 1);
+          }
+          if (storedFork && !sendTabs.some(tab => tab.id === storedFork.id)) {
+            sendTabs.push(preserveSendTabTransientState(storedFork, liveOriginal));
+          }
+          if (activeSendTab === journal.id && storedFork) {
+            activeSendTab = storedFork.id;
+            safeLocalStorageSet('http-freekit-send-active', activeSendTab);
+            loadSendTabState(sendTabs.find(tab => tab.id === storedFork.id) || storedFork);
+          }
+          renderSendTabs();
+          if (typeof toast === 'function') {
+            toast('Another window changed this Send tab. Your draft was preserved in a new tab.', 'warning');
+          }
+        } else if (result.state === 'stale-delete') {
+          const stored = workspace.tabs.find(tab => tab.id === journal.id);
+          if (stored && !sendTabs.some(tab => tab.id === stored.id)) sendTabs.push(stored);
+          renderSendTabs();
+          if (typeof toast === 'function') {
+            toast('Another window updated this Send tab, so the stale close was not applied.', 'warning');
           }
         }
-        return workspace;
+      }
+      sendActiveEditorBase = sendCommittedTabState.get(activeSendTab) || sendActiveEditorBase;
+    }
+
+    function enqueueSendTabJournalPersistence(operationEntries = []) {
+      const persist = () => withSendTabStorageLock(() => {
+        let workspace = readStoredSendWorkspace();
+        if (hasRendererStorageCorruption('send')) {
+          if (typeof toast === 'function') {
+            toast('Send tab save is blocked because corrupt stored Send data is unresolved.', 'error');
+          }
+          return null;
+        }
+        workspace = migrateLegacySendPersistence(workspace);
+        if (!workspace || hasRendererStorageCorruption('send')) return null;
+
+        const entriesByKey = new Map(readStoredSendTabJournals()
+          .map(entry => [entry.key, entry]));
+        for (const entry of pendingSendTabJournals.values()) {
+          if (!entriesByKey.has(entry.key)) entriesByKey.set(entry.key, entry);
+        }
+        for (const entry of operationEntries) {
+          if (!entriesByKey.has(entry.key)) entriesByKey.set(entry.key, entry);
+        }
+        const outcome = applyAndCommitSendJournals(workspace, Array.from(entriesByKey.values()));
+        if (outcome) synchronizeCommittedSendWorkspace(outcome.workspace, outcome.results);
+        return outcome?.workspace || null;
       });
       const pending = sendTabPersistenceQueue.then(persist, persist);
       sendTabPersistenceQueue = pending.catch(() => {});
@@ -10605,18 +12079,20 @@
     function persistSendTabs() {
       const tabsToUpsert = arguments[0] ?? [];
       const deletedTabIds = arguments[1] ?? [];
+      scanSendStorageCorruption();
+      if (!quarantineRendererStorageCorruptionGroup('send', 'Saving Send tabs')) {
+        return Promise.resolve(null);
+      }
       const deletions = new Set((Array.isArray(deletedTabIds) ? deletedTabIds : [])
         .filter(id => parseSendTabId(id) !== null));
       const candidates = Array.isArray(tabsToUpsert) ? tabsToUpsert : [];
       const serializedCandidates = candidates.map(serializeSendTab);
-      // Do not persist a valid subset when any requested upsert has an invalid
-      // method: the journal operation is all-or-nothing.
       if (serializedCandidates.some(tab => !tab)) {
         return Promise.resolve(readStoredSendWorkspace());
       }
-      const upserts = serializedCandidates.filter(tab => !deletions.has(tab.id));
       const operationEntries = [];
-      for (const tab of upserts) {
+      for (const tab of serializedCandidates) {
+        if (deletions.has(tab.id)) continue;
         const entry = stageSendTabJournal(createSendTabJournal(tab.id, tab));
         if (entry) operationEntries.push(entry);
       }
@@ -10642,14 +12118,60 @@
       return merged;
     }
 
-    function applyStoredSendWorkspace(workspace) {
-      const normalizedWorkspace = normalizeStoredSendWorkspace(workspace);
-      if (!normalizedWorkspace) return;
+    function asNormalizedSendWorkspace(workspace) {
+      if (workspace?.version === 3 && workspace.tabMetadata instanceof Map) {
+        return cloneSendWorkspace(workspace);
+      }
+      return normalizeStoredSendWorkspace(workspace);
+    }
+
+    function applyStoredSendWorkspace(
+      workspace,
+      { reloadActive = false, skipActiveTransientFileConflict = false } = {}
+    ) {
+      const normalizedWorkspace = asNormalizedSendWorkspace(workspace);
+      if (!normalizedWorkspace) return false;
       const previousActiveId = activeSendTab;
       const liveTabs = new Map(sendTabs.map(tab => [tab.id, tab]));
-      sendTabs = normalizedWorkspace.tabs.map(tab =>
-        preserveSendTabTransientState(tab, liveTabs.get(tab.id))
-      );
+      const previousMetadata = new Map(sendTabMetadata);
+      const transientFileForks = [];
+      const reservedForkIds = new Set();
+      const preserveTransientFileConflict = (liveTab) => {
+        if (!liveTab || !sendTabHasSelectedFiles(liveTab) ||
+            (skipActiveTransientFileConflict && liveTab.id === activeSendTab)) {
+          return;
+        }
+        const forkId = allocateSendTabId(reservedForkIds);
+        reservedForkIds.add(forkId);
+        const fork = normalizeSendTab({ ...liveTab, id: forkId }, forkId);
+        if (fork) transientFileForks.push(fork);
+      };
+      sendTabs = normalizedWorkspace.tabs.map(tab => {
+        const liveTab = liveTabs.get(tab.id);
+        const oldMetadata = previousMetadata.get(tab.id);
+        const newMetadata = normalizedWorkspace.tabMetadata.get(tab.id);
+        if (liveTab && hasPendingSendJournal(tab.id, oldMetadata?.generation || null)) {
+          return liveTab;
+        }
+        const sameGeneration = oldMetadata?.generation === newMetadata?.generation;
+        const sameFingerprint = sendTabFingerprint(liveTab) === sendTabFingerprint(tab);
+        const hasSelectedFiles = sendTabHasSelectedFiles(liveTab);
+        if (liveTab && hasSelectedFiles && (!sameGeneration || !sameFingerprint)) {
+          preserveTransientFileConflict(liveTab);
+          return tab;
+        }
+        return sameGeneration
+          ? preserveSendTabTransientState(tab, liveTab)
+          : tab;
+      });
+      for (const [id, liveTab] of liveTabs) {
+        if (!sendTabs.some(tab => tab.id === id)) {
+          if (hasPendingSendJournal(id)) sendTabs.push(liveTab);
+          else preserveTransientFileConflict(liveTab);
+        }
+      }
+      sendTabs.push(...transientFileForks);
+      synchronizeCommittedSendWorkspace(normalizedWorkspace);
       if (sendTabs.length === 0) sendTabs = [createEmptySendTab()];
       sendTabCounter = sendTabs.reduce(
         (max, tab) => Math.max(max, parseSendTabId(tab.id) || 0),
@@ -10659,46 +12181,156 @@
       if (!sendTabs.some(tab => tab.id === activeSendTab)) {
         activeSendTab = sendTabs[0].id;
         loadSendTabState(sendTabs[0]);
+      } else if (reloadActive) {
+        loadSendTabState(sendTabs.find(tab => tab.id === activeSendTab));
       }
       renderSendTabs();
       if (previousActiveId !== activeSendTab) {
         safeLocalStorageSet('http-freekit-send-active', activeSendTab);
       }
-    }
-
-    function handleSendTabStorageEvent(event) {
-      if (event.key !== SEND_TABS_WORKSPACE_KEY || !event.newValue) return;
-      try {
-        const workspace = overlaySendTabJournals(
-          JSON.parse(event.newValue),
-          readStoredSendTabJournals()
-        );
-        if (!workspace) {
-          reportRejectedStoredSendWorkspace();
-          return;
+      if (transientFileForks.length > 0) {
+        persistSendTabs(transientFileForks);
+        if (typeof toast === 'function') {
+          toast(
+            `Another window changed ${transientFileForks.length === 1 ? 'a Send tab' : `${transientFileForks.length} Send tabs`}. ` +
+              `Selected ${transientFileForks.length === 1 ? 'file was' : 'files were'} preserved in new tabs.`,
+            'warning'
+          );
         }
-        applyStoredSendWorkspace(workspace);
-      } catch {}
+      }
+      return true;
     }
 
-    function captureActiveSendTabState() {
-      const tab = sendTabs.find(t => t.id === activeSendTab);
+    function hasPendingSendJournal(id, generation = null) {
+      return Array.from(pendingSendTabJournals.values()).some(entry =>
+        entry.journal.id === id &&
+        (generation === null || entry.journal.generation === generation)
+      );
+    }
+
+    function snapshotActiveSendTabState() {
+      const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
       if (!tab) return null;
       const methodInput = document.getElementById('sendMethod');
       const method = normalizeSendMethod(methodInput?.value);
       if (method === null) return null;
-      tab.method = method;
-      tab.url = document.getElementById('sendUrl')?.value || '';
-      tab.headers = sendHeadersList.slice();
-      tab.body = getSendBodyValue();
-      tab.bodyType = getSendBodyType();
-      tab.bodyEncoding = tab.bodyType === 'raw' && tab.bodyEncoding === 'base64'
-        ? 'base64'
-        : 'utf8';
-      tab.bodyFormat = document.getElementById('sendBodyFormat')?.value || 'text';
-      tab.urlEncodedFields = cloneSendFormFields(sendUrlEncodedFields);
-      tab.multipartFields = cloneSendFormFields(sendMultipartFields);
-      tab.multipartBoundary = sendMultipartBoundary;
+      const bodyType = getSendBodyType();
+      return {
+        ...tab,
+        method,
+        url: document.getElementById('sendUrl')?.value || '',
+        headers: sendHeadersList.slice(),
+        body: getSendBodyValue(),
+        bodyType,
+        bodyEncoding: bodyType === 'raw' && tab.bodyEncoding === 'base64' ? 'base64' : 'utf8',
+        bodyFormat: document.getElementById('sendBodyFormat')?.value || 'text',
+        urlEncodedFields: cloneSendFormFields(sendUrlEncodedFields),
+        multipartFields: cloneSendFormFields(sendMultipartFields),
+        multipartBoundary: sendMultipartBoundary
+      };
+    }
+
+    function preserveDirtyActiveSendDraft(remoteWorkspace, draft) {
+      const originalId = draft.id;
+      applyStoredSendWorkspace(remoteWorkspace, {
+        reloadActive: true,
+        skipActiveTransientFileConflict: true
+      });
+      const fork = { ...draft, id: allocateSendTabId(), response: draft.response || null };
+      sendTabs.push(fork);
+      activeSendTab = fork.id;
+      safeLocalStorageSet('http-freekit-send-active', activeSendTab);
+      loadSendTabState(fork);
+      renderSendTabs();
+      persistSendTabs([fork]);
+      if (typeof toast === 'function') {
+        toast(
+          `Another window changed Send tab ${originalId}. Your draft was preserved in a new tab.`,
+          'warning'
+        );
+      }
+    }
+
+    function handleSendTabStorageEvent(event) {
+      if (event.key !== SEND_TABS_WORKSPACE_KEY) return;
+      if (event.newValue === null) {
+        clearRendererStorageCorruption(SEND_TABS_WORKSPACE_KEY);
+        return;
+      }
+      try {
+        const workspace = normalizeStoredSendWorkspace(JSON.parse(event.newValue));
+        if (!workspace) {
+          registerRendererStorageCorruption(
+            SEND_TABS_WORKSPACE_KEY,
+            event.newValue,
+            'send',
+            'Stored Send workspace',
+            'invalid workspace structure'
+          );
+          return;
+        }
+        clearRendererStorageCorruption(SEND_TABS_WORKSPACE_KEY);
+        const localMetadata = sendTabMetadata.get(activeSendTab);
+        const remoteMetadata = workspace.tabMetadata.get(activeSendTab);
+        const sameIncarnation = localMetadata?.generation === remoteMetadata?.generation;
+        const remoteChanged = Boolean(localMetadata) &&
+          (!sameIncarnation || localMetadata.revision !== remoteMetadata?.revision);
+        if (!remoteChanged) {
+          // A brand-new local tab may not be in the remote snapshot yet. Keep
+          // it until its create journal commits; otherwise reconcile untouched
+          // tabs without replacing the active editor controls.
+          if (!localMetadata && hasPendingSendJournal(activeSendTab)) return;
+          applyStoredSendWorkspace(workspace);
+          return;
+        }
+
+        const draft = snapshotActiveSendTabState();
+        const draftFingerprint = sendTabFingerprint(draft);
+        const remoteTab = workspace.tabs.find(tab => tab.id === activeSendTab);
+        const remoteFingerprint = sendTabFingerprint(remoteTab);
+        const base = sendActiveEditorBase;
+        const pending = hasPendingSendJournal(activeSendTab, localMetadata.generation);
+        // File objects cannot be represented in the persisted fingerprint. Treat
+        // every live selection as transient draft state so a remote deletion or
+        // replacement cannot silently discard it, even when its remembered name
+        // and MIME type are unchanged.
+        const hasSelectedFiles = sendTabHasSelectedFiles(draft);
+        const dirty = pending || !base || draftFingerprint !== base.fingerprint ||
+          hasSelectedFiles;
+        const matchingRemoteCanRetainTransientFiles = remoteTab &&
+          draftFingerprint === remoteFingerprint && (!hasSelectedFiles || sameIncarnation);
+        if (!dirty || matchingRemoteCanRetainTransientFiles) {
+          applyStoredSendWorkspace(workspace, { reloadActive: true });
+          if (pending) enqueueSendTabJournalPersistence();
+          return;
+        }
+
+        if (pending) {
+          const latest = pendingSendJournalsForTab(activeSendTab).at(-1)?.journal;
+          if (!latest || sendTabFingerprint(latest.tab) !== draftFingerprint) {
+            const entry = stageSendTabJournal(createSendTabJournal(activeSendTab, draft));
+            if (entry) enqueueSendTabJournalPersistence([entry]);
+          } else enqueueSendTabJournalPersistence();
+          return;
+        }
+        preserveDirtyActiveSendDraft(workspace, draft);
+      } catch (error) {
+        registerRendererStorageCorruption(
+          SEND_TABS_WORKSPACE_KEY,
+          event.newValue,
+          'send',
+          'Stored Send workspace',
+          error.message || 'invalid JSON'
+        );
+      }
+    }
+
+    function captureActiveSendTabState() {
+      const snapshot = snapshotActiveSendTabState();
+      if (!snapshot) return null;
+      const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
+      if (!tab) return null;
+      Object.assign(tab, snapshot);
       return tab;
     }
 
@@ -10712,6 +12344,15 @@
     }
 
     function persistActiveSendTabBeforeUnload(event) {
+      scanSendStorageCorruption();
+      if (hasRendererStorageCorruption('send')) {
+        if (typeof toast === 'function') {
+          toast('Navigation was blocked because corrupt stored Send data must be recovered or reset first.', 'error');
+        }
+        event?.preventDefault?.();
+        if (event) event.returnValue = '';
+        return false;
+      }
       const tab = serializeSendTab(captureActiveSendTabState());
       if (!tab) {
         reportInvalidSendMethod();
@@ -10740,26 +12381,45 @@
 
     function restoreSendTabs() {
       try {
+        let workspace = readStoredSendWorkspace();
+        const needsLegacyMigration = workspace.legacyJournalsMigrated === false;
+        const legacyJournalEntries = needsLegacyMigration
+          ? readStoredSendTabJournalsV1()
+          : [];
+        if (workspace.legacyJournalsMigrated === false &&
+            !hasRendererStorageCorruption('send')) {
+          workspace = overlayLegacySendTabJournals(workspace, legacyJournalEntries);
+        }
         const journalEntries = readStoredSendTabJournals();
-        const workspace = overlaySendTabJournals(readStoredSendWorkspace(true), journalEntries);
+        const projected = projectSendTabJournals(workspace, journalEntries).workspace;
+        const storageCorrupt = hasRendererStorageCorruption('send');
         let replacementTab = null;
-        if (workspace.tabs.length > 0) {
-          sendTabs = workspace.tabs;
+        if (projected.tabs.length > 0) {
+          applyStoredSendWorkspace(projected);
         } else if (journalEntries.length > 0) {
           sendTabs = [];
           replacementTab = createEmptySendTab();
           sendTabs = [replacementTab];
         }
-        if (workspace.tabs.length > 0 || journalEntries.length > 0) {
+        if (projected.tabs.length > 0 || journalEntries.length > 0) {
           sendTabCounter = sendTabs.reduce((max, tab) => Math.max(max, parseSendTabId(tab.id) || 0), 0);
           const savedActive = safeLocalStorageGet('http-freekit-send-active');
           activeSendTab = savedActive && sendTabs.some(tab => tab.id === savedActive)
             ? savedActive
             : sendTabs[0].id;
         }
-        if (journalEntries.length > 0) enqueueSendTabJournalPersistence(journalEntries);
-        if (replacementTab) persistSendTabs([replacementTab]);
-      } catch {}
+        if (!storageCorrupt &&
+            (journalEntries.length > 0 || legacyJournalEntries.length > 0 ||
+              needsLegacyMigration)) {
+          enqueueSendTabJournalPersistence(journalEntries);
+        }
+        if (!storageCorrupt && replacementTab) persistSendTabs([replacementTab]);
+      } catch (error) {
+        console.error('[Storage] Could not restore Send tabs:', error);
+        if (typeof toast === 'function') {
+          toast('Stored Send tabs could not be restored and were left unchanged.', 'error');
+        }
+      }
     }
 
     function loadSendTabState(tab) {
@@ -10795,6 +12455,11 @@
         let responsePath = '';
         try { responsePath = new URL(tab.response.url || tab.url || '').pathname; } catch {}
         const responseContext = {
+          viewerIdentity: tab.response.viewerIdentity || JSON.stringify([
+            tab.id,
+            String(tab.response.trafficId ?? ''),
+            String(tab.response.url || tab.url || '')
+          ]),
           request: {
             id: tab.response.trafficId,
             method: tab.response.method || tab.method || 'GET',
@@ -10833,6 +12498,21 @@
         const viewLink = document.getElementById('sendViewInTraffic');
         if (viewLink) viewLink.style.display = 'none';
       }
+      if (typeof sendAbortControllers !== 'undefined' && typeof setSendLoading === 'function') {
+        setSendLoading(sendAbortControllers.has(tab.id), tab.id);
+      }
+      if (typeof sendCommittedTabState !== 'undefined' &&
+          typeof sendActiveEditorBase !== 'undefined' &&
+          typeof sendTabFingerprint === 'function') {
+        const committed = sendCommittedTabState.get(tab.id);
+        sendActiveEditorBase = committed
+          ? { ...committed }
+          : {
+              generation: null,
+              revision: null,
+              fingerprint: sendTabFingerprint(tab)
+            };
+      }
       return true;
     }
 
@@ -10864,6 +12544,13 @@
         toast('Cannot import cURL command: request method must be a valid HTTP token.', 'error');
         return null;
       }
+      let normalizedUrl;
+      try {
+        normalizedUrl = normalizeSendUrl(parsed?.url).href;
+      } catch (error) {
+        toast('Cannot import cURL command: ' + error.message, 'error');
+        return null;
+      }
 
       // A pasted command describes the whole request, not a patch over the
       // current editor. Build the complete replacement before publishing it so
@@ -10873,7 +12560,7 @@
       const replacement = {
         id: sendTabs[tabIndex].id,
         method: parsedMethod,
-        url: parsed.url || '',
+        url: normalizedUrl,
         headers: normalizeSendHeaderRows(parsed.headers),
         body: parsed.hasData ? String(parsed.body ?? '') : '',
         bodyEncoding: 'utf8',
@@ -10964,7 +12651,8 @@
       }
     }
 
-    function setSendLoading(loading) {
+    function setSendLoading(loading, tabId = activeSendTab) {
+      if (tabId !== activeSendTab) return;
       const btn = document.getElementById('sendBtn');
       const arrow = document.getElementById('sendBtnArrow');
       const spinner = document.getElementById('sendBtnSpinner');
@@ -11001,7 +12689,7 @@
         .join('\n');
     }
 
-    async function prepareSendRequestPayload(headers, signal) {
+    async function prepareSendRequestPayload(headers, signal, requestContext = {}) {
       if (signal) throwIfSendAborted(signal);
       const bodyType = getSendBodyType();
       if (bodyType === 'urlencoded') {
@@ -11012,6 +12700,7 @@
       }
 
       if (bodyType === 'multipart') {
+        const multipartFields = sendMultipartFields;
         const contentTypeKey = findHeaderKey(headers, 'Content-Type');
         const contentType = contentTypeKey ? String(headers[contentTypeKey]) : '';
         const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
@@ -11024,12 +12713,13 @@
           headers[contentTypeKey] = `${contentType}; boundary=${boundary}`;
         }
 
-        const bytes = await serializeMultipartFields(sendMultipartFields, boundary, signal);
+        preflightMultipartSendRequest(multipartFields, boundary, headers, requestContext);
+        const bytes = await serializeMultipartFields(multipartFields, boundary, signal);
         if (signal) throwIfSendAborted(signal);
         return {
           body: bytesToBase64(bytes, signal),
           bodyEncoding: 'base64',
-          displayBody: getMultipartDisplayBody(sendMultipartFields),
+          displayBody: getMultipartDisplayBody(multipartFields),
           byteLength: bytes.length
         };
       }
@@ -11055,12 +12745,13 @@
     }
 
     async function sendRequest() {
-      if (currentSendAbort) return;
-
       const initiatingTabId = activeSendTab;
+      if (sendAbortControllers.has(initiatingTabId)) return;
+
       const methodInput = document.getElementById('sendMethod');
       const method = methodInput?.value;
-      const url = document.getElementById('sendUrl').value.trim();
+      const urlInput = document.getElementById('sendUrl');
+      const rawUrl = urlInput?.value?.trim() || '';
       const headersStr = document.getElementById('sendHeaders').value.trim();
 
       if (typeof method !== 'string' || method.length === 0 ||
@@ -11074,22 +12765,43 @@
       }
       methodInput.setCustomValidity?.('');
       methodInput.removeAttribute?.('aria-invalid');
-      if (!url) { toast('URL is required', 'error'); return; }
+      let parsedUrl;
+      try {
+        parsedUrl = normalizeSendUrl(rawUrl);
+      } catch (error) {
+        const message = error?.message || 'URL must be a valid absolute HTTP or HTTPS URL.';
+        urlInput?.setCustomValidity?.(message);
+        urlInput?.setAttribute?.('aria-invalid', 'true');
+        urlInput?.focus?.();
+        toast(message, 'error');
+        return;
+      }
+      urlInput?.setCustomValidity?.('');
+      urlInput?.removeAttribute?.('aria-invalid');
+      const url = parsedUrl.href;
 
       let headers = {};
       if (headersStr) {
         try { headers = JSON.parse(headersStr); } catch { toast('Invalid headers JSON', 'error'); return; }
       }
 
-      setSendLoading(true);
       const sendAbort = new AbortController();
-      currentSendAbort = sendAbort;
+      sendAbortControllers.set(initiatingTabId, sendAbort);
+      setSendLoading(true, initiatingTabId);
       try {
-        const payload = await prepareSendRequestPayload(headers, sendAbort.signal);
+        const payload = await prepareSendRequestPayload(headers, sendAbort.signal, { url, method });
+        const serializedRequest = JSON.stringify({
+          url,
+          method,
+          headers,
+          body: payload.body,
+          bodyEncoding: payload.bodyEncoding
+        });
+        assertSendManagementRequestSize(serializedRequest);
         const res = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, method, headers, body: payload.body, bodyEncoding: payload.bodyEncoding }),
+          body: serializedRequest,
           signal: sendAbort.signal
         });
         const data = await res.json();
@@ -11104,6 +12816,11 @@
 
         const responseTab = sendTabs.find(tab => tab.id === initiatingTabId);
         if (!responseTab) return;
+        const responseViewerIdentity = JSON.stringify([
+          initiatingTabId,
+          String(data.trafficId ?? ''),
+          String(Date.now())
+        ]);
         responseTab.response = {
           statusCode: data.statusCode,
           statusMessage: data.statusMessage || '',
@@ -11117,7 +12834,8 @@
           duration,
           url,
           method,
-          trafficId: data.trafficId
+          trafficId: data.trafficId,
+          viewerIdentity: responseViewerIdentity
         };
         renderSendTabs();
 
@@ -11137,8 +12855,8 @@
           id: data.trafficId,
           protocol: url.startsWith('https') ? 'https' : 'http',
           method, url,
-          host: new URL(url).hostname,
-          path: new URL(url).pathname + new URL(url).search,
+          host: parsedUrl.hostname,
+          path: parsedUrl.pathname + parsedUrl.search,
           requestHeaders: headers,
           requestBody: payload.displayBody,
           requestBodyEncoding: payload.bodyEncoding,
@@ -11153,7 +12871,11 @@
           timestamp: Date.now(),
           source: 'Send'
         };
-        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, { request: responseRequest, section: 'response' });
+        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, {
+          viewerIdentity: responseViewerIdentity,
+          request: responseRequest,
+          section: 'response'
+        });
 
         // Show "View in traffic" link
         const viewLink = document.getElementById('sendViewInTraffic');
@@ -11171,16 +12893,17 @@
         if (err.name === 'AbortError') return; // handled by abortSendRequest
         toast(`Error: ${err.message}`, 'error');
       } finally {
-        if (currentSendAbort === sendAbort) {
-          currentSendAbort = null;
-          setSendLoading(false);
+        if (sendAbortControllers.get(initiatingTabId) === sendAbort) {
+          sendAbortControllers.delete(initiatingTabId);
+          setSendLoading(false, initiatingTabId);
         }
       }
     }
 
     function abortSendRequest() {
-      if (currentSendAbort && !currentSendAbort.signal.aborted) {
-        currentSendAbort.abort();
+      const sendAbort = sendAbortControllers.get(activeSendTab);
+      if (sendAbort && !sendAbort.signal.aborted) {
+        sendAbort.abort();
         toast('Request aborted', 'success');
         return true;
       }
@@ -11189,7 +12912,7 @@
 
     function handleSendEscapeShortcut(event) {
       const sendPanelActive = document.getElementById('panel-send')?.classList.contains('active') === true;
-      if (!sendPanelActive || !currentSendAbort) return false;
+      if (!sendPanelActive || !sendAbortControllers.has(activeSendTab)) return false;
 
       event?.preventDefault?.();
       // Keep consuming Escape while the aborted fetch settles. abortSendRequest itself
@@ -11821,7 +13544,7 @@
       // Re-render to update selection
       vsForceRender = true;
       renderVirtualRows();
-      showDetail(req);
+      void renderSelectedTrafficDetail(req);
     }
 
     // ============ WS FRAME EXPAND/COLLAPSE ============
@@ -11854,18 +13577,47 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
+          assertHarImportFileSize(file.size);
           const text = await file.text();
           const har = JSON.parse(text);
-          const imported = normalizeHarEntries(har);
-          const response = await fetch(API_BASE + '/api/traffic/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requests: imported })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok || result.success !== true) {
-            throw new Error(result.error || `Traffic import returned HTTP ${response.status}`);
+          const prepared = prepareHarImport(har);
+          let finalResult = null;
+          for (let index = 0; index < prepared.payloads.length; index++) {
+            const payload = prepared.payloads[index];
+            const response = await fetch(API_BASE + '/api/traffic/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const result = await response.json().catch(() => ({}));
+            const isFinal = index === prepared.payloads.length - 1;
+            const expectedStatus = isFinal ? 200 : 202;
+            if (!response.ok || response.status !== expectedStatus || result.success !== true) {
+              const transactionDetail = result.code === 'ERR_TRAFFIC_IMPORT_TRANSACTION'
+                ? ' The atomic import transaction was discarded; no traffic was imported.'
+                : '';
+              throw new Error(
+                (result.error || `Traffic import batch ${index + 1}/${prepared.payloads.length} returned HTTP ${response.status}`) +
+                transactionDetail
+              );
+            }
+            if (result.transactionId !== prepared.transactionId ||
+                result.complete !== isFinal) {
+              throw new Error(
+                `Traffic import batch ${index + 1}/${prepared.payloads.length} returned an invalid transaction acknowledgement. ` +
+                'No partial import was made visible.'
+              );
+            }
+            finalResult = result;
           }
+          if (finalResult?.imported !== prepared.retainedEntries) {
+            throw new Error('Traffic import completed with an unexpected retained-entry count.');
+          }
+          toast(
+            `Imported ${prepared.retainedEntries} HAR entr${prepared.retainedEntries === 1 ? 'y' : 'ies'}; ` +
+            `${prepared.droppedEntries} older entr${prepared.droppedEntries === 1 ? 'y was' : 'ies were'} dropped by the retention limit.`,
+            'success'
+          );
         } catch (err) {
           toast('Failed to import HAR: ' + err.message, 'error');
         }
@@ -11997,6 +13749,61 @@
       }
     }
 
+    function defaultUpstreamProxyPort(type) {
+      if (type === 'https') return 443;
+      if (type.startsWith('socks')) return 1080;
+      return 8080;
+    }
+
+    function formatUpstreamProxyEndpoint(host, port) {
+      const rawHost = String(host || '');
+      const displayHost = rawHost.includes(':') &&
+        !(rawHost.startsWith('[') && rawHost.endsWith(']'))
+        ? `[${rawHost}]`
+        : rawHost;
+      return `${displayHost}:${port}`;
+    }
+
+    function parseUpstreamProxyDetails(details, type) {
+      const atIdx = details.lastIndexOf('@');
+      const auth = atIdx > 0 ? details.substring(0, atIdx) : null;
+      const hostPort = atIdx > 0 ? details.substring(atIdx + 1) : details;
+      let host = hostPort;
+      let port = defaultUpstreamProxyPort(type);
+      let explicitPort = null;
+
+      if (hostPort.startsWith('[')) {
+        const bracketed = /^\[([^\]]+)\](?::([^:]*))?$/.exec(hostPort);
+        if (!bracketed) {
+          throw new Error('Use [IPv6]:port for an IPv6 proxy with an explicit port');
+        }
+        host = `[${bracketed[1]}]`;
+        explicitPort = bracketed[2] ?? null;
+      } else {
+        const colonCount = (hostPort.match(/:/g) || []).length;
+        if (colonCount === 1) {
+          const colonIdx = hostPort.indexOf(':');
+          host = hostPort.substring(0, colonIdx);
+          explicitPort = hostPort.substring(colonIdx + 1);
+        }
+        // More than one unbracketed colon is a bare IPv6 address. An explicit
+        // IPv6 port must use brackets so the split is unambiguous.
+      }
+
+      if (!host) throw new Error('Enter a proxy hostname or IP address');
+      if (explicitPort !== null) {
+        if (!/^\d+$/.test(explicitPort)) {
+          throw new Error('Proxy port must contain decimal digits only');
+        }
+        port = Number(explicitPort);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          throw new Error('Proxy port must be between 1 and 65535');
+        }
+      }
+
+      return { host, port, auth };
+    }
+
     async function saveUpstreamProxy() {
       const type = document.getElementById('upstreamType').value;
       const statusEl = document.getElementById('upstreamStatus');
@@ -12025,24 +13832,8 @@
         .filter(Boolean);
       if (!details) { toast('Enter proxy details first', 'error'); return; }
 
-      // Parse host:port and optional auth from the details string
-      let host, port, auth;
-      const atIdx = details.lastIndexOf('@');
-      let hostPort = details;
-      if (atIdx > 0) {
-        auth = details.substring(0, atIdx);
-        hostPort = details.substring(atIdx + 1);
-      }
-      const colonIdx = hostPort.lastIndexOf(':');
-      if (colonIdx > 0) {
-        host = hostPort.substring(0, colonIdx);
-        port = parseInt(hostPort.substring(colonIdx + 1));
-      } else {
-        host = hostPort;
-        port = type === 'https' ? 443 : type.startsWith('socks') ? 1080 : 8080;
-      }
-
       try {
+        const { host, port, auth } = parseUpstreamProxyDetails(details, type);
         const res = await fetch(API_BASE + '/api/upstream-proxy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -12050,7 +13841,7 @@
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${host}:${port}`, 'var(--status-2xx)');
+        setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${formatUpstreamProxyEndpoint(host, port)}`, 'var(--status-2xx)');
         toast('Upstream proxy configured', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
     }
@@ -12075,7 +13866,7 @@
       updateUpstreamFields();
 
       if (detailsEl) {
-        let details = proxy.host + ':' + proxy.port;
+        let details = formatUpstreamProxyEndpoint(proxy.host, proxy.port);
         if (proxy.auth) details = proxy.auth + '@' + details;
         detailsEl.value = details;
       }
@@ -12084,7 +13875,7 @@
         const providerText = provider ? ' from ' + provider : '';
         setSettingsStatus(
           statusEl,
-          `Active: ${(proxy.type || 'HTTP').toUpperCase()} proxy at ${proxy.host}:${proxy.port}${providerText}`,
+          `Active: ${(proxy.type || 'HTTP').toUpperCase()} proxy at ${formatUpstreamProxyEndpoint(proxy.host, proxy.port)}${providerText}`,
           'var(--status-2xx)'
         );
       }
@@ -12333,15 +14124,101 @@
       }
     }
 
+    const settingsOperationStates = new Map();
+
+    function getSettingsOperationState(key) {
+      let state = settingsOperationStates.get(key);
+      if (!state) {
+        state = {
+          generation: 0,
+          mutationsInFlight: 0,
+          reloadAfterMutations: false,
+          loadController: null
+        };
+        settingsOperationStates.set(key, state);
+      }
+      return state;
+    }
+
+    function beginSettingsLoad(key) {
+      const state = getSettingsOperationState(key);
+      if (state.mutationsInFlight > 0) return null;
+      state.loadController?.abort();
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const operation = { key, generation: ++state.generation, controller, mutation: false };
+      state.loadController = controller;
+      return operation;
+    }
+
+    function beginSettingsMutation(key) {
+      const state = getSettingsOperationState(key);
+      state.loadController?.abort();
+      state.loadController = null;
+      if (state.mutationsInFlight > 0) state.reloadAfterMutations = true;
+      state.mutationsInFlight++;
+      return { key, generation: ++state.generation, controller: null, mutation: true };
+    }
+
+    function isCurrentSettingsOperation(operation) {
+      return Boolean(operation) &&
+        getSettingsOperationState(operation.key).generation === operation.generation;
+    }
+
+    function finishSettingsOperation(operation) {
+      if (!operation) return false;
+      const state = getSettingsOperationState(operation.key);
+      if (operation.mutation) {
+        state.mutationsInFlight = Math.max(0, state.mutationsInFlight - 1);
+        if (state.mutationsInFlight === 0 && state.reloadAfterMutations) {
+          state.reloadAfterMutations = false;
+          return true;
+        }
+      } else if (state.loadController === operation.controller) {
+        state.loadController = null;
+      }
+      return false;
+    }
+
+    function finishSettingsMutation(operation, reload) {
+      if (finishSettingsOperation(operation) && typeof reload === 'function') void reload();
+    }
+
+    function settingsLoadOptions(operation) {
+      return operation?.controller ? { signal: operation.controller.signal } : {};
+    }
+
+    function settingsOperationWasAborted(error) {
+      return error?.name === 'AbortError';
+    }
+
+    async function readSettingsMutationResponse(response, fallbackError) {
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || fallbackError + ` (HTTP ${response.status})`);
+      }
+      if (!data || data.success !== true) {
+        throw new Error(data?.error || fallbackError + ' returned an invalid response');
+      }
+      return data;
+    }
+
     // ============ TLS PASSTHROUGH ============
     async function loadTlsPassthrough() {
+      const operation = beginSettingsLoad('tls-passthrough');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/tls-passthrough');
+        const res = await fetch(API_BASE + '/api/tls-passthrough', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         renderTlsPassthrough(data.hosts || []);
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
@@ -12358,7 +14235,7 @@
       list.innerHTML = hosts.map((h, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
           <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(h)}</span>
-          <button class="btn btn-danger" onclick="removeTlsPassthrough(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
+          <button type="button" class="btn btn-danger" onclick="removeTlsPassthrough(${i})" aria-label="Remove TLS passthrough host ${escapeHtmlAttribute(h)}" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
     }
@@ -12367,92 +14244,154 @@
       const input = document.getElementById('tlsPassthroughInput');
       const host = input.value.trim();
       if (!host) return;
+      const operation = beginSettingsMutation('tls-passthrough');
       try {
         const response = await fetch(API_BASE + '/api/tls-passthrough/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ host })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not add host');
+        const data = await readSettingsMutationResponse(response, 'Could not add host');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.hosts)) throw new Error('Could not add host returned an invalid host list');
         input.value = '';
-        loadTlsPassthrough();
+        renderTlsPassthrough(data.hosts);
         toast('Added ' + host, 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadTlsPassthrough);
+      }
     }
 
     async function removeTlsPassthrough(index) {
       const host = renderedTlsPassthroughHosts[index];
       if (host === undefined) return;
+      const operation = beginSettingsMutation('tls-passthrough');
       try {
         const response = await fetch(API_BASE + '/api/tls-passthrough/items', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ host })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove host');
-        loadTlsPassthrough();
+        const data = await readSettingsMutationResponse(response, 'Could not remove host');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.hosts)) throw new Error('Could not remove host returned an invalid host list');
+        renderTlsPassthrough(data.hosts);
         toast('Removed', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadTlsPassthrough);
+      }
     }
 
     // ============ HTTP/2 CONFIG ============
     async function loadHttp2Config() {
+      const operation = beginSettingsLoad('http2');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/http2');
+        const res = await fetch(API_BASE + '/api/http2', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         const sel = document.getElementById('http2Mode');
         if (sel) sel.value = data.mode || 'all';
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
     async function saveHttp2Config() {
       const mode = document.getElementById('http2Mode')?.value || 'all';
+      const operation = beginSettingsMutation('http2');
       try {
-        await fetch(API_BASE + '/api/http2', {
+        const response = await fetch(API_BASE + '/api/http2', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mode })
         });
+        const data = await readSettingsMutationResponse(response, 'Could not save HTTP/2 setting');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!['all', 'h2-only', 'disabled'].includes(data.mode)) {
+          throw new Error('HTTP/2 save returned an invalid mode');
+        }
+        const select = document.getElementById('http2Mode');
+        if (select) select.value = data.mode;
         toast('HTTP/2 setting saved', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadHttp2Config);
+      }
     }
 
     // ============ TLS FINGERPRINT ============
     async function loadTlsFingerprint() {
+      const operation = beginSettingsLoad('tls-fingerprint');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/tls-fingerprint');
+        const res = await fetch(API_BASE + '/api/tls-fingerprint', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         const sel = document.getElementById('tlsFingerprint');
         if (sel) sel.value = data.fingerprint || 'passthrough';
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
     async function saveTlsFingerprint() {
       const fingerprint = document.getElementById('tlsFingerprint')?.value || 'passthrough';
+      const operation = beginSettingsMutation('tls-fingerprint');
       try {
-        await fetch(API_BASE + '/api/tls-fingerprint', {
+        const response = await fetch(API_BASE + '/api/tls-fingerprint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fingerprint })
         });
+        const data = await readSettingsMutationResponse(response, 'Could not save TLS fingerprint');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (typeof data.fingerprint !== 'string' || !data.fingerprint) {
+          throw new Error('TLS fingerprint save returned an invalid preset');
+        }
+        const select = document.getElementById('tlsFingerprint');
+        if (select) select.value = data.fingerprint;
         toast('TLS fingerprint saved: ' + fingerprint, 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadTlsFingerprint);
+      }
     }
 
     // ============ CLIENT CERTIFICATES ============
     async function loadClientCerts() {
+      const operation = beginSettingsLoad('client-certificates');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/client-certificates');
+        const res = await fetch(API_BASE + '/api/client-certificates', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         renderClientCerts(data.certificates || []);
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
@@ -12469,7 +14408,7 @@
       el.innerHTML = certs.map((c, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
           <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(c.host)} &rarr; ${esc(c.pfxPath)}</span>
-          <button class="btn btn-danger" onclick="removeClientCert(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
+          <button type="button" class="btn btn-danger" onclick="removeClientCert(${i})" aria-label="Remove client certificate for ${escapeHtmlAttribute(c.host)} at ${escapeHtmlAttribute(c.pfxPath)}" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
     }
@@ -12523,6 +14462,7 @@
       const passphraseInput = document.getElementById('clientCertPassphrase');
       const passphrase = passphraseInput?.value ?? '';
       if (!host || !path) { toast('Both host and path required', 'error'); return; }
+      const operation = beginSettingsMutation('client-certificates');
       try {
         const response = await fetch(API_BASE + '/api/client-certificates/items', {
           method: 'POST',
@@ -12533,39 +14473,64 @@
             ...(passphrase === '' ? {} : { passphrase })
           })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not add certificate');
+        const data = await readSettingsMutationResponse(response, 'Could not add certificate');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.certificates)) {
+          throw new Error('Could not add certificate returned an invalid certificate list');
+        }
         document.getElementById('clientCertHost').value = '';
         document.getElementById('clientCertPath').value = '';
         if (passphraseInput) passphraseInput.value = '';
-        loadClientCerts();
+        renderClientCerts(data.certificates);
         toast('Client certificate added', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadClientCerts);
+      }
     }
 
     async function removeClientCert(idx) {
       const certificate = renderedClientCertificates[idx];
       if (!certificate) return;
+      const operation = beginSettingsMutation('client-certificates');
       try {
         const response = await fetch(API_BASE + '/api/client-certificates/items', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(certificate)
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove certificate');
-        loadClientCerts();
+        const data = await readSettingsMutationResponse(response, 'Could not remove certificate');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.certificates)) {
+          throw new Error('Could not remove certificate returned an invalid certificate list');
+        }
+        renderClientCerts(data.certificates);
         toast('Removed', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadClientCerts);
+      }
     }
 
     // ============ TRUSTED CAs ============
     async function loadTrustedCAs() {
+      const operation = beginSettingsLoad('trusted-cas');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/trusted-cas');
+        const res = await fetch(API_BASE + '/api/trusted-cas', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         renderTrustedCAs(data.cas || []);
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
@@ -12582,7 +14547,7 @@
       el.innerHTML = cas.map((c, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
           <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(c)}</span>
-          <button class="btn btn-danger" onclick="removeTrustedCA(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
+          <button type="button" class="btn btn-danger" onclick="removeTrustedCA(${i})" aria-label="Remove trusted CA ${escapeHtmlAttribute(c)}" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
     }
@@ -12591,43 +14556,65 @@
       const input = document.getElementById('trustedCAPath');
       const path = input?.value?.trim();
       if (!path) { toast('Path required', 'error'); return; }
+      const operation = beginSettingsMutation('trusted-cas');
       try {
         const response = await fetch(API_BASE + '/api/trusted-cas/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ca: path })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not add CA');
+        const data = await readSettingsMutationResponse(response, 'Could not add CA');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.cas)) throw new Error('Could not add CA returned an invalid CA list');
         input.value = '';
-        loadTrustedCAs();
+        renderTrustedCAs(data.cas);
         toast('Trusted CA added', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadTrustedCAs);
+      }
     }
 
     async function removeTrustedCA(idx) {
       const ca = renderedTrustedCAs[idx];
       if (ca === undefined) return;
+      const operation = beginSettingsMutation('trusted-cas');
       try {
         const response = await fetch(API_BASE + '/api/trusted-cas/items', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ca })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove CA');
-        loadTrustedCAs();
+        const data = await readSettingsMutationResponse(response, 'Could not remove CA');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.cas)) throw new Error('Could not remove CA returned an invalid CA list');
+        renderTrustedCAs(data.cas);
         toast('Removed', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadTrustedCAs);
+      }
     }
 
     // ============ HTTPS WHITELIST ============
     async function loadHttpsWhitelist() {
+      const operation = beginSettingsLoad('https-whitelist');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/https-whitelist');
+        const res = await fetch(API_BASE + '/api/https-whitelist', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         renderHttpsWhitelist(data.hosts || []);
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
@@ -12644,7 +14631,7 @@
       el.innerHTML = hosts.map((h, i) =>
         `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
           <span style="font-family:var(--font-mono);font-size:12px;flex:1;">${esc(h)}</span>
-          <button class="btn btn-danger" onclick="removeHttpsWhitelist(${i})" style="padding:2px 6px;font-size:10px;">&times;</button>
+          <button type="button" class="btn btn-danger" onclick="removeHttpsWhitelist(${i})" aria-label="Remove HTTPS whitelist host ${escapeHtmlAttribute(h)}" style="padding:2px 6px;font-size:10px;">&times;</button>
         </div>`
       ).join('');
     }
@@ -12653,42 +14640,59 @@
       const input = document.getElementById('httpsWhitelistHost');
       const host = input?.value?.trim();
       if (!host) { toast('Hostname required', 'error'); return; }
+      const operation = beginSettingsMutation('https-whitelist');
       try {
         const response = await fetch(API_BASE + '/api/https-whitelist/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ host })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not add host');
+        const data = await readSettingsMutationResponse(response, 'Could not add host');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.hosts)) throw new Error('Could not add host returned an invalid host list');
         input.value = '';
-        loadHttpsWhitelist();
+        renderHttpsWhitelist(data.hosts);
         toast('Host added to whitelist', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadHttpsWhitelist);
+      }
     }
 
     async function removeHttpsWhitelist(idx) {
       const host = renderedHttpsWhitelistHosts[idx];
       if (host === undefined) return;
+      const operation = beginSettingsMutation('https-whitelist');
       try {
         const response = await fetch(API_BASE + '/api/https-whitelist/items', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ host })
         });
-        if (!response.ok) throw new Error((await response.json()).error || 'Could not remove host');
-        loadHttpsWhitelist();
+        const data = await readSettingsMutationResponse(response, 'Could not remove host');
+        if (!isCurrentSettingsOperation(operation)) return;
+        if (!Array.isArray(data.hosts)) throw new Error('Could not remove host returned an invalid host list');
+        renderHttpsWhitelist(data.hosts);
         toast('Removed', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
+      } catch (err) {
+        if (isCurrentSettingsOperation(operation)) toast('Error: ' + err.message, 'error');
+      } finally {
+        finishSettingsMutation(operation, loadHttpsWhitelist);
+      }
     }
 
     // ============ MCP SERVER ============
     let mcpAuthoritativeEnabled = null;
     let mcpToggleInFlight = null;
+    let mcpStatusLoadGeneration = 0;
 
     async function loadMcpStatus() {
+      const generation = ++mcpStatusLoadGeneration;
       try {
         const res = await fetch(API_BASE + '/api/mcp/status');
         const data = await res.json();
+        if (generation !== mcpStatusLoadGeneration) return false;
         if (typeof data.enabled !== 'boolean') throw new Error('MCP status returned an invalid response');
         mcpAuthoritativeEnabled = data.enabled;
         const statusEl = document.getElementById('mcpStatus');
@@ -12711,9 +14715,12 @@
             ? JSON.stringify({ mcpServers: { 'http-freekit': data.claudeDesktopConfig } }, null, 2)
             : 'Launch configuration is unavailable in this runtime.';
         }
+        return true;
       } catch (e) {
+        if (generation !== mcpStatusLoadGeneration) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
       }
     }
 
@@ -12731,6 +14738,9 @@
       const previousEnabled = typeof mcpAuthoritativeEnabled === 'boolean'
         ? mcpAuthoritativeEnabled
         : !requestedEnabled;
+      // A status request started before this mutation is no longer
+      // authoritative, even while the POST itself is still in flight.
+      mcpStatusLoadGeneration++;
       mcpToggleInFlight = { enabled: requestedEnabled };
       if (toggleEl) {
         toggleEl.checked = requestedEnabled;
@@ -12768,17 +14778,28 @@
 
     // ============ API SPECS ============
     async function loadApiSpecs() {
+      const operation = beginSettingsLoad('api-specs');
+      if (!operation) return false;
       try {
-        const res = await fetch(API_BASE + '/api/specs');
+        const res = await fetch(API_BASE + '/api/specs', settingsLoadOptions(operation));
         const data = await res.json();
+        if (!isCurrentSettingsOperation(operation)) return false;
         renderApiSpecs(data.specs || []);
+        return true;
       } catch (e) {
+        if (!isCurrentSettingsOperation(operation) || settingsOperationWasAborted(e)) return false;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
+        return false;
+      } finally {
+        finishSettingsOperation(operation);
       }
     }
 
+    let renderedApiSpecs = [];
+
     function renderApiSpecs(specs) {
+      renderedApiSpecs = specs.map(spec => ({ ...spec }));
       const el = document.getElementById('apiSpecsList');
       if (!el) return;
       if (!specs.length) {
@@ -12839,6 +14860,7 @@
       input.onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        let operation = null;
         try {
           if (Number.isFinite(file.size) && file.size > MAX_API_SPEC_FILE_BYTES) {
             throw new Error('API specification files must not exceed 10 MiB');
@@ -12851,22 +14873,34 @@
             spec.servers?.[0]?.url || spec.host || '');
           if (baseUrl === null) return;
 
+          operation = beginSettingsMutation('api-specs');
           const response = await fetch(API_BASE + '/api/specs', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ title, baseUrl, spec })
           });
-          await readApiSpecUploadResponse(response);
+          const result = await readApiSpecUploadResponse(response);
+          if (!isCurrentSettingsOperation(operation)) return;
+          if (!result.spec || typeof result.spec.id !== 'string' || !result.spec.id) {
+            throw new Error('API spec upload returned invalid spec metadata');
+          }
+          const nextSpecs = renderedApiSpecs.filter(item => item.id !== result.spec.id);
+          nextSpecs.push(result.spec);
+          renderApiSpecs(nextSpecs);
           toast('API spec loaded: ' + title, 'success');
-          loadApiSpecs();
         } catch (err) {
-          toast('Failed to load spec: ' + err.message, 'error');
+          if (!operation || isCurrentSettingsOperation(operation)) {
+            toast('Failed to load spec: ' + err.message, 'error');
+          }
+        } finally {
+          if (operation) finishSettingsMutation(operation, loadApiSpecs);
         }
       };
       input.click();
     }
 
     async function removeApiSpec(id) {
+      const operation = beginSettingsMutation('api-specs');
       try {
         const response = await fetch(
           API_BASE + '/api/specs/' + encodeURIComponent(String(id)),
@@ -12886,10 +14920,15 @@
         if (result?.success !== true) {
           throw new Error(result?.error || 'Server did not confirm API spec deletion');
         }
-        await loadApiSpecs();
+        if (!isCurrentSettingsOperation(operation)) return;
+        renderApiSpecs(renderedApiSpecs.filter(spec => spec.id !== id));
         toast('Spec removed', 'success');
       } catch (err) {
-        toast('Failed to remove spec: ' + (err?.message || String(err)), 'error');
+        if (isCurrentSettingsOperation(operation)) {
+          toast('Failed to remove spec: ' + (err?.message || String(err)), 'error');
+        }
+      } finally {
+        finishSettingsMutation(operation, loadApiSpecs);
       }
     }
 
@@ -13578,13 +15617,18 @@
     }
 
     // Store current detail headers for safe lookup (avoids quote-escaping issues in inline handlers)
-    window._detailHeaders = { request: {}, response: {} };
+    window._detailHeaders = { request: {}, response: {}, trailers: {} };
 
     function showHeaderContextMenu(e, headerKey, section, menuInvoker) {
       e.preventDefault();
       e.stopPropagation();
-      const headers = section === 'request' ? window._detailHeaders.request : window._detailHeaders.response;
-      const value = headers ? (Array.isArray(headers[headerKey]) ? headers[headerKey].join(', ') : String(headers[headerKey] || '')) : '';
+      const headers = Object.hasOwn(window._detailHeaders || {}, section)
+        ? window._detailHeaders[section]
+        : null;
+      const rawValue = headers && Object.hasOwn(headers, headerKey) ? headers[headerKey] : '';
+      const value = Array.isArray(rawValue)
+        ? rawValue.map(item => String(item ?? '')).join(', ')
+        : String(rawValue ?? '');
       const invoker = menuInvoker || e.currentTarget || e.target;
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
@@ -13597,7 +15641,7 @@
 
     // ============ HELPERS ============
     function esc(str) {
-      if (!str) return '';
+      if (str === null || str === undefined) return '';
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
@@ -13747,7 +15791,7 @@
       } else if (field === 'method') {
         const value = prompt('Request method:', draft.method || 'GET');
         if (value === null) return;
-        draft.method = value.trim().toUpperCase() || draft.method;
+        draft.method = value.trim() || draft.method;
         draft._dirty.method = true;
       } else if (field === 'url') {
         const value = prompt('Request URL:', draft.url || '');
@@ -13853,6 +15897,7 @@
       if (mockSaveInProgress || mockRevertInProgress || mockResetInProgress || mockCollectionMutationCount > 0) return;
 
       return _queueMockCollectionMutation(async () => {
+        breakpointRulesLoadGeneration++;
         const res = await fetch(API_BASE + '/api/breakpoints', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
@@ -14080,6 +16125,7 @@
 
     // Search input
     document.getElementById('searchInput').addEventListener('input', () => {
+      activeMcpTrafficFilters = null;
       debouncedApplyFilter();
       showFilterHint();
       updateSearchClearBtn();
@@ -14636,6 +16682,7 @@
     // Restore send tabs from localStorage
     restoreSendTabs();
     initializeSendTabs();
+    document.getElementById('sendBody-fallback')?.addEventListener('input', handleSendBodyUserInput);
     document.addEventListener('input', markOpenMockEditDirty);
     document.addEventListener('change', markOpenMockEditDirty);
     window.addEventListener('storage', handleSendTabStorageEvent);
@@ -14673,6 +16720,9 @@
 
     // The custom theme <style> element injected into <head>
     var _customThemeStyleEl = null;
+    var THEME_SELECTION_STORAGE_KEY = 'http-freekit-theme';
+    var CUSTOM_THEME_STORAGE_KEY = 'http-freekit-custom-theme';
+    var VALID_THEME_SELECTIONS = ['dark', 'light', 'auto', 'custom'];
 
     // Known CSS variable names that a custom theme file can override
     var _themeOverridableVars = [
@@ -14724,6 +16774,56 @@
         }
       }
       return sanitized;
+    }
+
+    function readStoredCustomTheme() {
+      var raw = safeLocalStorageGet(CUSTOM_THEME_STORAGE_KEY);
+      if (raw === null) {
+        clearRendererStorageCorruption(CUSTOM_THEME_STORAGE_KEY);
+        return null;
+      }
+      try {
+        var parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('expected a JSON object');
+        }
+        var sanitized = sanitizeCustomThemeData(parsed);
+        if (Object.keys(sanitized).length === 0 ||
+            Object.keys(sanitized).length !== Object.keys(parsed).length) {
+          throw new Error('contains unrecognized or unsafe theme values');
+        }
+        clearRendererStorageCorruption(CUSTOM_THEME_STORAGE_KEY);
+        return sanitized;
+      } catch (error) {
+        registerRendererStorageCorruption(
+          CUSTOM_THEME_STORAGE_KEY,
+          raw,
+          'theme',
+          'Stored custom theme',
+          error.message || 'invalid JSON'
+        );
+        return null;
+      }
+    }
+
+    function readStoredThemeSelection() {
+      var raw = safeLocalStorageGet(THEME_SELECTION_STORAGE_KEY);
+      if (raw === null) {
+        clearRendererStorageCorruption(THEME_SELECTION_STORAGE_KEY);
+        return 'dark';
+      }
+      if (VALID_THEME_SELECTIONS.indexOf(raw) !== -1) {
+        clearRendererStorageCorruption(THEME_SELECTION_STORAGE_KEY);
+        return raw;
+      }
+      registerRendererStorageCorruption(
+        THEME_SELECTION_STORAGE_KEY,
+        raw,
+        'theme',
+        'Stored theme selection',
+        'expected dark, light, auto, or custom'
+      );
+      return 'dark';
     }
 
     /**
@@ -14840,11 +16940,12 @@
             toast('No recognized CSS variable overrides found in theme file', 'error');
             return;
           }
+          if (!quarantineRendererStorageCorruptionGroup('theme', 'Saving the custom theme')) return;
           // Persist both values before applying the theme in memory. If the
           // second write fails, restore the previous custom theme best-effort.
-          var previousCustomTheme = safeLocalStorageGet('http-freekit-custom-theme');
+          var previousCustomTheme = safeLocalStorageGet(CUSTOM_THEME_STORAGE_KEY);
           if (!safeLocalStorageSet(
-            'http-freekit-custom-theme',
+            CUSTOM_THEME_STORAGE_KEY,
             JSON.stringify(sanitizedTheme),
             false
           )) {
@@ -14854,11 +16955,11 @@
             );
             return;
           }
-          if (!safeLocalStorageSet('http-freekit-theme', 'custom', false)) {
+          if (!safeLocalStorageSet(THEME_SELECTION_STORAGE_KEY, 'custom', false)) {
             if (previousCustomTheme === null) {
-              safeLocalStorageRemove('http-freekit-custom-theme', false);
+              safeLocalStorageRemove(CUSTOM_THEME_STORAGE_KEY, false);
             } else {
-              safeLocalStorageSet('http-freekit-custom-theme', previousCustomTheme, false);
+              safeLocalStorageSet(CUSTOM_THEME_STORAGE_KEY, previousCustomTheme, false);
             }
             toast(
               'Custom theme was not saved: local storage is unavailable. Check storage permissions or free up space.',
@@ -14883,10 +16984,11 @@
      * Remove the current custom theme and revert to dark.
      */
     function removeCustomTheme() {
-      var previousTheme = safeLocalStorageGet('http-freekit-theme', 'dark');
-      if (!safeLocalStorageSet('http-freekit-theme', 'dark', false) ||
-          !safeLocalStorageRemove('http-freekit-custom-theme', false)) {
-        safeLocalStorageSet('http-freekit-theme', previousTheme, false);
+      if (!quarantineRendererStorageCorruptionGroup('theme', 'Removing the custom theme')) return;
+      var previousTheme = safeLocalStorageGet(THEME_SELECTION_STORAGE_KEY, 'dark');
+      if (!safeLocalStorageSet(THEME_SELECTION_STORAGE_KEY, 'dark', false) ||
+          !safeLocalStorageRemove(CUSTOM_THEME_STORAGE_KEY, false)) {
+        safeLocalStorageSet(THEME_SELECTION_STORAGE_KEY, previousTheme, false);
         toast(
           'Custom theme was not removed: local storage is unavailable. Check storage permissions or free up space.',
           'error'
@@ -14913,20 +17015,24 @@
       if (!section) return;
       section.style.display = (theme === 'custom') ? 'block' : 'none';
       if (theme === 'custom') {
-        var saved = safeLocalStorageGet('http-freekit-custom-theme');
-        if (saved) {
-          try {
-            var data = JSON.parse(saved);
-            renderCustomThemeSwatches(data);
-            var removeBtn = document.getElementById('removeCustomThemeBtn');
-            if (removeBtn) removeBtn.style.display = '';
-          } catch (e) { /* ignore */ }
+        var data = readStoredCustomTheme();
+        if (data) {
+          renderCustomThemeSwatches(data);
+          var removeBtn = document.getElementById('removeCustomThemeBtn');
+          if (removeBtn) removeBtn.style.display = '';
         }
       }
     }
 
     function setTheme(theme, persist = true) {
-      if (persist) safeLocalStorageSet('http-freekit-theme', theme);
+      if (VALID_THEME_SELECTIONS.indexOf(theme) === -1) {
+        toast('Theme selection is invalid; choose Dark, Light, System, or Custom.', 'error');
+        return false;
+      }
+      if (persist) {
+        if (!quarantineRendererStorageCorruptionGroup('theme', 'Changing the theme')) return false;
+        if (!safeLocalStorageSet(THEME_SELECTION_STORAGE_KEY, theme)) return false;
+      }
       var resolved = theme;
       if (theme === 'auto') {
         resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -14934,10 +17040,8 @@
       if (theme === 'custom') {
         resolved = 'custom';
         // Ensure custom theme CSS is injected
-        var savedCustom = safeLocalStorageGet('http-freekit-custom-theme');
-        if (savedCustom) {
-          try { applyCustomThemeData(JSON.parse(savedCustom)); } catch (e) { /* ignore */ }
-        }
+        var savedCustom = readStoredCustomTheme();
+        if (savedCustom) applyCustomThemeData(savedCustom);
       } else {
         // Remove custom theme style when switching away
         if (_customThemeStyleEl) {
@@ -14954,12 +17058,14 @@
 
       // Sync Monaco editor theme
       setMonacoTheme(resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
+      return true;
     }
 
     function loadTheme() {
-      var saved = safeLocalStorageGet('http-freekit-theme', 'dark');
+      var savedCustom = readStoredCustomTheme();
+      var saved = readStoredThemeSelection();
       // If custom was saved but no theme data exists, fall back to dark
-      if (saved === 'custom' && !safeLocalStorageGet('http-freekit-custom-theme')) {
+      if (saved === 'custom' && !savedCustom) {
         saved = 'dark';
       }
       setTheme(saved, false);
@@ -14967,7 +17073,7 @@
 
     // Re-apply theme when OS color scheme changes (for "auto" mode)
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function() {
-      var saved = safeLocalStorageGet('http-freekit-theme', 'dark');
+      var saved = readStoredThemeSelection();
       if (saved === 'auto') setTheme('auto', false);
     });
 
@@ -14983,6 +17089,11 @@
       let lastUpdaterEventId = 0;
       let lastDownloadedUpdateEventId = 0;
       let installUpdateRequestPending = false;
+      const updateCheckRow = document.getElementById('updateCheckRow');
+
+      function setUpdateCheckAvailable(available) {
+        if (updateCheckRow) updateCheckRow.style.display = available ? '' : 'none';
+      }
 
       function setInstallUpdateActionPending(pending, label) {
         installUpdateRequestPending = pending;
@@ -14994,6 +17105,7 @@
 
       function handleUpdaterStatus(data) {
         if (!data || typeof data.status !== 'string') return;
+        setUpdateCheckAvailable(data.status !== 'unavailable' && data.available !== false);
         const eventId = Number.isSafeInteger(data.eventId) && data.eventId > 0
           ? data.eventId
           : null;
@@ -15050,6 +17162,10 @@
           case 'error':
             setInstallUpdateActionPending(false);
             if (data.manual) toast('Update check failed: ' + (data.error || 'unknown error'), 'error');
+            break;
+          case 'unavailable':
+            setInstallUpdateActionPending(false);
+            toast('Update checks unavailable: ' + (data.error || 'unsupported desktop build'), 'error');
             break;
         }
       }
@@ -15144,9 +17260,6 @@
         window.electronApi.checkForUpdates();
       };
 
-      // Show the "Check for Updates" button in Settings
-      var updateRow = document.getElementById('updateCheckRow');
-      if (updateRow) updateRow.style.display = '';
     })();
 
     // cURL paste detection on Send URL input
@@ -15160,7 +17273,8 @@
           return;
         }
         if (parsed) {
-          replaceActiveSendTabFromCurl(parsed);
+          const replacement = replaceActiveSendTabFromCurl(parsed);
+          if (!replacement) return;
           renderSendTabs();
           scheduleSendExportUpdate();
           toast('cURL command parsed!', 'success');

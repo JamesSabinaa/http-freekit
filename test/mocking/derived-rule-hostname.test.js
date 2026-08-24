@@ -137,6 +137,7 @@ async function deriveRendererRules(request) {
   };
   vm.createContext(context);
   vm.runInContext(`
+    let breakpointRulesLoadGeneration = 0;
     ${createMockSource}
     ${createBreakpointSource}
     globalThis.createMockFromRequestForTest = createMockFromRequest;

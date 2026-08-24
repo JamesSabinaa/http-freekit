@@ -919,6 +919,7 @@ function createRenderer(fetch) {
       };
     },
     toast: (message, type) => toasts.push({ message, type }),
+    document: { getElementById: () => null },
     renderTraffic: () => { renders++; },
     showDetail: request => {
       const { trafficGeneration: _trafficGeneration, ...snapshot } = request;
@@ -927,6 +928,13 @@ function createRenderer(fetch) {
     hydrateDeferredTrafficRequest: request => {
       const { trafficGeneration: _trafficGeneration, ...snapshot } = request;
       hydratedDetails.push(structuredClone(snapshot));
+    },
+    renderSelectedTrafficDetail: request => {
+      if (request?._deferredTrafficDetail === true) {
+        return context.hydrateDeferredTrafficRequest(request);
+      }
+      context.showDetail(request);
+      return Promise.resolve(request);
     },
     updatePinIcon: pinned => pinIcons.push(pinned),
     applyFilter: () => {},
@@ -1711,7 +1719,7 @@ test('exact deferred hydration preserves pin mutations received while loading', 
   };
   renderer.context.setRequests([deferredRequest]);
 
-  const hydration = renderer.context.hydrateDeferredTrafficRequest(deferredRequest);
+  const hydration = renderer.context.renderSelectedTrafficDetail(deferredRequest);
   renderer.context.applyTrafficPinned('shared', 'old', false, 10);
   pending.resolve(rendererResponse({
     id: 'shared',

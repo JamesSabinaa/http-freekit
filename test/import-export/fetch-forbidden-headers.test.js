@@ -41,8 +41,11 @@ test('Fetch exports omit automatically rebuilt forbidden headers without disabli
       Host: 'example.test',
       'Proxy-Connection': 'keep-alive'
     }, bodyType), 'javascript-fetch');
+    assert.match(snippet, /^\/\/ BROWSER-CONTROLLED HEADERS OMITTED: Host/m);
     assert.match(snippet, /await fetch\(/);
-    assert.doesNotMatch(snippet, /Host|Proxy-Connection|EXACT REPLAY UNAVAILABLE/i);
+    assert.doesNotMatch(snippet, /["']Host["']\s*:/i);
+    assert.doesNotMatch(snippet, /["']Proxy-Connection["']\s*:/i);
+    assert.doesNotMatch(snippet, /EXACT REPLAY UNAVAILABLE/i);
   }
 
   const multipart = generateExportSnippet(request({

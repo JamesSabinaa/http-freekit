@@ -29,6 +29,9 @@ const NAME_MATCHER_TYPES = new Set([
 ]);
 const OPTIONAL_VALUE_MATCHER_TYPES = new Set(['wildcard']);
 const EMPTY_VALUE_MATCHER_TYPES = new Set(['raw-body-exact', 'exact-query']);
+const REGEX_MATCHER_TYPES = new Set(['regex-path', 'regex-url', 'regex-body']);
+const PATH_MATCH_TYPES = new Set(['prefix', 'exact', 'regex']);
+const SUPPORTED_PROTOCOL_MATCHERS = new Set(['http', 'https']);
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MOCK_ACTION_TYPES = new Set([
@@ -88,6 +91,63 @@ function validateHeaders(headers, label) {
   return null;
 }
 
+function validateHttpDestination(value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return `${label} must be a non-empty URL`;
+  }
+  let destination;
+  try {
+    destination = new URL(value);
+  } catch {
+    return `${label} must be a valid absolute HTTP or HTTPS URL`;
+  }
+  if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
+    return `${label} must be a valid absolute HTTP or HTTPS URL`;
+  }
+  if (destination.username || destination.password) {
+    return `${label} must not include URL credentials`;
+  }
+  if (destination.port === '0') {
+    return `${label} must use a port from 1 through 65535`;
+  }
+  return null;
+}
+
+function validateHttpRewrite(value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return `${label} must be a non-empty HTTP(S) URL or relative URL`;
+  }
+  let destination;
+  try {
+    destination = new URL(value, 'http://mock-request.invalid/');
+  } catch {
+    return `${label} must be a valid HTTP(S) URL or relative URL`;
+  }
+  if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
+    return `${label} must resolve to an HTTP or HTTPS URL`;
+  }
+  if (destination.username || destination.password) {
+    return `${label} must not include URL credentials`;
+  }
+  if (destination.port === '0') {
+    return `${label} must use a port from 1 through 65535`;
+  }
+  return null;
+}
+
+function validateJsonMergeBody(value, label) {
+  if (typeof value !== 'string' && !Buffer.isBuffer(value)) {
+    return `${label} must be a JSON object`;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : value);
+  } catch {
+    return `${label} must contain valid JSON`;
+  }
+  return isObject(parsed) ? null : `${label} must contain a JSON object`;
+}
+
 function validateOptionalStatus(container, property, label) {
   if (!hasOwn(container, property) || container[property] === undefined) return null;
   const status = container[property];
@@ -138,6 +198,9 @@ function validatePreStep(step) {
       ? null
       : 'rewrite-method pre-step value must be a valid HTTP method';
   }
+  if (step.type === 'rewrite-url') {
+    return validateHttpRewrite(step.value, 'rewrite-url pre-step value');
+  }
   return typeof step.value === 'string' && step.value.trim()
     ? null
     : `${step.type} pre-step value must be a non-empty string`;
@@ -173,6 +236,10 @@ function validateTransformAction(action) {
   if (action.urlMode === 'modify' && (typeof action.urlReplace !== 'string' || !action.urlReplace.trim())) {
     return 'Mock transform urlReplace must be a non-empty string when modifying the URL';
   }
+  if (action.urlMode === 'modify') {
+    const rewriteError = validateHttpRewrite(action.urlReplace, 'Mock transform urlReplace');
+    if (rewriteError) return rewriteError;
+  }
   if (action.bodyMode === 'match-replace'
     && (typeof action.bodyMatchPattern !== 'string' || !action.bodyMatchPattern)) {
     return 'Mock transform bodyMatchPattern is required for match-replace';
@@ -196,6 +263,15 @@ function validateTransformAction(action) {
   ]) {
     const error = validateOptionalStringArray(action, property, label);
     if (error) return error;
+  }
+  for (const [modeProperty, bodyProperty, label] of [
+    ['bodyMode', 'body', 'Mock transform request JSON merge body'],
+    ['resBodyMode', 'resBody', 'Mock transform response JSON merge body']
+  ]) {
+    if (action[modeProperty] === 'json-merge') {
+      const error = validateJsonMergeBody(action[bodyProperty], label);
+      if (error) return error;
+    }
   }
   for (const [property, label] of [
     ['body', 'Mock transform request body'],
@@ -253,14 +329,11 @@ function validateAction(action) {
     return validateOptionalStatus(action, 'status', 'Mock file response status');
   }
   if (action.type === 'forward') {
-    return typeof action.forwardTo === 'string' && action.forwardTo.trim()
-      ? null
-      : 'Mock forward target must be a non-empty string';
+    return validateHttpDestination(action.forwardTo, 'Mock forward target');
   }
   if (action.type === 'webhook') {
-    if (typeof action.webhookUrl !== 'string' || !action.webhookUrl.trim()) {
-      return 'Mock webhook URL must be a non-empty string';
-    }
+    const destinationError = validateHttpDestination(action.webhookUrl, 'Mock webhook URL');
+    if (destinationError) return destinationError;
     if (action.webhookHeaders !== undefined) {
       return validateHeaders(action.webhookHeaders, 'Mock webhook headers');
     }
@@ -295,6 +368,13 @@ function validateAction(action) {
     if (removedError) return removedError;
     const bodyError = validateOptionalBody(action, 'body', 'Legacy response transform body');
     if (bodyError) return bodyError;
+    if (action.bodyMode === 'json-merge') {
+      const mergeError = validateJsonMergeBody(
+        action.body,
+        'Legacy response transform JSON merge body'
+      );
+      if (mergeError) return mergeError;
+    }
     return validateOptionalStatus(action, 'statusOverride', 'Legacy response transform status');
   }
   return null;
@@ -311,22 +391,66 @@ function validateLegacyResponse(response) {
   return validateOptionalBody(response, 'body', 'Legacy mock response body');
 }
 
-export function isCompleteMockMatcher(matcher) {
-  if (!isObject(matcher) || !MOCK_MATCHER_TYPES.has(matcher.type)) return false;
+export function validateMockMatcher(matcher) {
+  if (!isObject(matcher)) return 'matcher must be an object';
+  if (!MOCK_MATCHER_TYPES.has(matcher.type)) return 'matcher type must be supported';
   if (matcher.type === 'method') {
-    return typeof matcher.value === 'string' && HTTP_TOKEN_PATTERN.test(matcher.value);
+    return typeof matcher.value === 'string' && HTTP_TOKEN_PATTERN.test(matcher.value)
+      ? null
+      : 'method value must be a valid HTTP method';
   }
   if (NAME_MATCHER_TYPES.has(matcher.type)) {
     return typeof matcher.name === 'string' && matcher.name.trim().length > 0
-      && (matcher.value === undefined || typeof matcher.value === 'string');
+      && (matcher.value === undefined || typeof matcher.value === 'string')
+      ? null
+      : `${matcher.type} matcher requires a name and an optional string value`;
   }
   if (OPTIONAL_VALUE_MATCHER_TYPES.has(matcher.type)) {
-    return matcher.value === undefined || typeof matcher.value === 'string';
+    return matcher.value === undefined || typeof matcher.value === 'string'
+      ? null
+      : `${matcher.type} matcher value must be a string`;
   }
   if (EMPTY_VALUE_MATCHER_TYPES.has(matcher.type)) {
-    return typeof matcher.value === 'string';
+    if (typeof matcher.value !== 'string') return `${matcher.type} matcher value must be a string`;
+  } else if (typeof matcher.value !== 'string' || matcher.value.trim().length === 0) {
+    return `${matcher.type} matcher value must be a non-empty string`;
   }
-  return typeof matcher.value === 'string' && matcher.value.trim().length > 0;
+
+  if (matcher.type === 'path') {
+    if (matcher.matchType !== undefined && !PATH_MATCH_TYPES.has(matcher.matchType)) {
+      return 'path matchType must be prefix, exact, or regex';
+    }
+    if (matcher.matchType === 'regex') {
+      try { new RegExp(matcher.value); } catch (error) {
+        return `path regex value must be valid: ${error.message}`;
+      }
+    }
+  }
+  if (REGEX_MATCHER_TYPES.has(matcher.type)) {
+    try { new RegExp(matcher.value); } catch (error) {
+      return `${matcher.type} value must be a valid regular expression: ${error.message}`;
+    }
+  }
+  if (matcher.type === 'json-body-exact' || matcher.type === 'json-body-includes') {
+    try { JSON.parse(matcher.value); } catch (error) {
+      return `${matcher.type} value must contain valid JSON: ${error.message}`;
+    }
+  }
+  if (matcher.type === 'port') {
+    if (!/^[1-9]\d{0,4}$/.test(matcher.value)
+        || Number(matcher.value) > 65_535) {
+      return 'port matcher value must be a decimal port from 1 through 65535';
+    }
+  }
+  if (matcher.type === 'protocol'
+      && !SUPPORTED_PROTOCOL_MATCHERS.has(matcher.value.toLowerCase())) {
+    return 'protocol matcher value must be http or https';
+  }
+  return null;
+}
+
+export function isCompleteMockMatcher(matcher) {
+  return validateMockMatcher(matcher) === null;
 }
 
 export function validateMockRule(rule, {
@@ -363,8 +487,9 @@ export function validateMockRule(rule, {
     if (!allowEmptyMatchers && rule.matchers.length === 0) {
       return 'At least one complete matcher is required';
     }
-    if (!rule.matchers.every(isCompleteMockMatcher)) {
-      return 'Every mock rule matcher must be complete';
+    for (let index = 0; index < rule.matchers.length; index++) {
+      const matcherError = validateMockMatcher(rule.matchers[index]);
+      if (matcherError) return `Mock rule matcher ${index + 1}: ${matcherError}`;
     }
     return validateAction(rule.action);
   }

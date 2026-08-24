@@ -19,6 +19,10 @@ const { createTray, destroyTray } = require('./tray.cjs');
 const { initAutoUpdater, stopAutoUpdater, cancelUpdateInstall } = require('./updater.cjs');
 const { PROTOCOL_SCHEME, parseOpenDeepLink, findDeepLinkArg } = require('./deep-link.cjs');
 const { isHarTarget, loadHarTarget } = require('./har-deep-link.cjs');
+const {
+  getProtocolRegistrationWarning,
+  registerDefaultProtocolClient
+} = require('./protocol-registration.cjs');
 const { isAllowedRendererUrl, isSafeExternalUrl } = require('./security.cjs');
 const {
   resolveBundledNodeExecutable,
@@ -200,10 +204,26 @@ async function startServer() {
 }
 
 function registerProtocolHandler() {
-  if (process.defaultApp && process.argv[1]) {
-    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
-  } else {
-    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
+  return registerDefaultProtocolClient({
+    app,
+    scheme: PROTOCOL_SCHEME,
+    defaultApp: process.defaultApp,
+    execPath: process.execPath,
+    argv: process.argv,
+    resolvePath: path.resolve
+  });
+}
+
+function reportProtocolRegistrationFailure(result) {
+  if (result.registered) return;
+  const warning = getProtocolRegistrationWarning(result, PROTOCOL_SCHEME);
+  console.warn(`[Electron] ${warning.message} ${warning.detail.replace(/\s+/g, ' ')}`);
+  try {
+    Promise.resolve(dialog.showMessageBox(mainWindow, warning)).catch(error => {
+      console.warn('[Electron] Could not display protocol registration warning:', error.message);
+    });
+  } catch (error) {
+    console.warn('[Electron] Could not display protocol registration warning:', error.message);
   }
 }
 
@@ -384,8 +404,8 @@ function flushPendingDeepLinks({ revealWindowOnFailure = false } = {}) {
 
 /**
  * Gracefully shut down the server process.
- * The child reports completed cleanup over IPC. A single overall deadline
- * keeps desktop exit bounded if cleanup hangs.
+ * The child reports bounded cleanup progress and completion over IPC. The
+ * desktop force-kills only when the current operation actually stalls.
  */
 function shutdownServer() {
   if (!serverProcess) return Promise.resolve();
@@ -396,6 +416,32 @@ function shutdownServer() {
     apiPort,
     authToken
   });
+}
+
+function restoreWindowAfterFailedQuit(error) {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  else showMainWindow();
+  // Quit cleanup already tears down these window-bound services. Recreate
+  // them so the user can retry shutdown after addressing the cleanup error.
+  destroyTray();
+  createTray(mainWindow);
+  initAutoUpdater(mainWindow, {
+    validateSender,
+    prepareForInstall: async () => {
+      updateInstallQuitStarted = false;
+      updateInstallPrepared = await prepareRendererForQuit(mainWindow);
+      return updateInstallPrepared;
+    },
+    onInstallPreparationFailed: () => {
+      updateInstallPrepared = false;
+      updateInstallQuitStarted = false;
+    }
+  });
+  dialog.showErrorBox(
+    'HTTP FreeKit — Shutdown Incomplete',
+    `Some managed interception state could not be restored. ` +
+      `HTTP FreeKit is still running so you can retry Quit.\n\n${error?.message || String(error)}`
+  );
 }
 
 function createWindow({ showOnReady = true } = {}) {
@@ -672,20 +718,24 @@ if (hasSingleInstanceLock) app.on('before-quit', (event) => {
     quitCleanupPromise = null;
     isShuttingDown = false;
     relaunchRequested = false;
-    console.error('[Electron] Quit preparation failed:', err.message);
-    showMainWindow();
+    if (updateInstallPrepared) cancelUpdateInstall();
+    updateInstallPrepared = false;
+    updateInstallQuitStarted = false;
+    console.error('[Electron] Quit cleanup failed:', err.message);
+    restoreWindowAfterFailedQuit(err);
   });
 });
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   try {
     desktopPreferences = new DesktopPreferences(app.getPath('userData'));
-    registerProtocolHandler();
+    const protocolRegistration = registerProtocolHandler();
     await startServer();
 
     const startupDeepLink = findDeepLinkArg(process.argv);
     const launchedFromDeepLink = !!startupDeepLink || pendingDeepLinks.length > 0;
     createWindow({ showOnReady: !launchedFromDeepLink });
+    reportProtocolRegistrationFailure(protocolRegistration);
     if (startupDeepLink) {
       handleDeepLink(startupDeepLink, { revealWindowOnFailure: launchedFromDeepLink });
     }

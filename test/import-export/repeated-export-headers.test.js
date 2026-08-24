@@ -71,7 +71,7 @@ test('captured array headers flatten into filtered scalar pairs in source order'
     requestHeaders: {
       'A-First': 'before',
       'X-Repeat': repeatedValues,
-      Host: ['ignored-host-1', 'ignored-host-2'],
+      Host: ['virtual.example.test:9443', 'ignored-second-host.test'],
       'Proxy-Connection': ['ignored-proxy-1', 'ignored-proxy-2'],
       'Z-Last': 'after'
     }
@@ -81,6 +81,7 @@ test('captured array headers flatten into filtered scalar pairs in source order'
     ['A-First', 'before'],
     ['X-Repeat', repeatedValues[0]],
     ['X-Repeat', repeatedValues[1]],
+    ['Host', 'virtual.example.test:9443'],
     ['Z-Last', 'after']
   ]);
   assert.ok(headers.every(([, value]) => !Array.isArray(value)));
@@ -145,16 +146,24 @@ for (const bodyType of ['raw', 'urlencoded', 'multipart']) {
   });
 }
 
-test('excluded repeated headers do not cause refusals or leak into snippets', () => {
+test('Host keeps one valid value while excluded repeated headers do not leak', () => {
   for (const format of formats) {
     const raw = generateExportSnippet(requestFor('raw', {
-      Host: ['ignored-host-1', 'ignored-host-2'],
+      Host: ['virtual.example.test:9443', 'ignored-second-host.test'],
       'Proxy-Connection': ['ignored-proxy-1', 'ignored-proxy-2'],
       'X-Scalar': 'kept'
     }), format);
     assert.doesNotMatch(raw, /EXACT REPLAY UNAVAILABLE/, format);
-    assert.equal(raw.includes('ignored-host'), false, format);
+    assert.equal(raw.includes('ignored-second-host.test'), false, format);
     assert.equal(raw.includes('ignored-proxy'), false, format);
+    if (format === 'javascript-fetch') {
+      assert.match(raw, /BROWSER-CONTROLLED HEADERS OMITTED: Host/);
+      assert.equal(raw.includes('virtual.example.test:9443'), false);
+    } else if (format === 'go') {
+      assert.ok(raw.includes('req.Host = "virtual.example.test:9443"'));
+    } else {
+      assert.ok(raw.includes(headerMarker(format, 'Host', 'virtual.example.test:9443')), format);
+    }
 
     const multipart = generateExportSnippet(requestFor('multipart', {
       'Content-Type': [
@@ -322,6 +331,7 @@ test('a generated Node snippet sends repeated headers as separate ordered wire l
     url: `http://127.0.0.1:${port}/raw-headers`,
     bodyType: 'raw',
     requestHeaders: {
+      Host: 'virtual.example.test:9443',
       'X-Test': ['first value', 'second, separate value'],
       Cookie: ['first=cookie', 'second=cookie'],
       'Z-After': 'last',
@@ -340,6 +350,9 @@ test('a generated Node snippet sends repeated headers as separate ordered wire l
   assert.deepEqual(lines.filter(line => line.startsWith('Cookie:')), [
     'Cookie: first=cookie',
     'Cookie: second=cookie'
+  ]);
+  assert.deepEqual(lines.filter(line => line.startsWith('Host:')), [
+    'Host: virtual.example.test:9443'
   ]);
   assert.ok(lines.indexOf('X-Test: first value') < lines.indexOf('X-Test: second, separate value'));
   assert.ok(lines.indexOf('X-Test: second, separate value') < lines.indexOf('Z-After: last'));

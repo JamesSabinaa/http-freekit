@@ -169,3 +169,50 @@ test('multipart matcher accepts quoted boundaries and reordered disposition para
     embeddedBoundaryRequest
   ), false);
 });
+
+test('query and URL-encoded form matchers inspect every repeated value', () => {
+  assert.equal(matches(
+    { type: 'query', name: 'tag', value: 'match' },
+    { url: 'https://example.test/?tag=first&tag=match' }
+  ), true);
+  assert.equal(matches(
+    { type: 'query', name: 'tag', value: 'missing' },
+    { url: 'https://example.test/?tag=first&tag=match' }
+  ), false);
+  assert.equal(matches(
+    { type: 'form-data', name: 'tag', value: 'match' },
+    { body: 'tag=first&tag=match' }
+  ), true);
+  assert.equal(matches(
+    { type: 'form-data', name: 'tag', value: 'missing' },
+    { body: 'tag=first&tag=match' }
+  ), false);
+});
+
+test('method matchers, legacy rules, and streaming checks preserve token case', () => {
+  const proxy = new ProxyServer(null);
+  assert.equal(proxy._evaluateMatcher(
+    { type: 'method', value: 'GET' }, 'gEt', 'https://example.test/', {}, ''
+  ), false);
+  assert.equal(proxy._evaluateMatcher(
+    { type: 'method', value: 'gEt' }, 'gEt', 'https://example.test/', {}, ''
+  ), true);
+  assert.equal(proxy._evaluateMatcher(
+    { type: 'method', value: '*' }, 'gEt', 'https://example.test/', {}, ''
+  ), true);
+
+  proxy.mockRules = [{
+    enabled: true,
+    method: 'GET',
+    urlPattern: '/case',
+    response: { status: 200 }
+  }];
+  assert.equal(proxy._findMockRule('gEt', 'https://example.test/case', {}, ''), undefined);
+  assert.equal(proxy._canStreamWithoutRequestBuffering(
+    'gEt', 'https://example.test/case', {}
+  ), true);
+  assert.equal(proxy._findMockRule('GET', 'https://example.test/case', {}, ''), proxy.mockRules[0]);
+  assert.equal(proxy._canStreamWithoutRequestBuffering(
+    'GET', 'https://example.test/case', {}
+  ), false);
+});

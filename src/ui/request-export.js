@@ -74,13 +74,52 @@ export function getExportHeaders(req, omitContentType = false) {
   const semanticReplay = req.requestBodyContentDecoded === true;
   Object.entries(req.requestHeaders || {}).forEach(([key, value]) => {
     const lowerKey = key.toLowerCase();
-    if (lowerKey === 'host' || lowerKey === 'proxy-connection' ||
+    if (lowerKey === 'proxy-connection' ||
         (omitContentType && lowerKey === 'content-type') ||
         (semanticReplay && (lowerKey === 'content-encoding' || lowerKey === 'content-length'))) return;
     const values = Array.isArray(value) ? value : [value];
+    if (lowerKey === 'host') {
+      const validHost = values.find(item => isValidExportHost(item));
+      if (validHost !== undefined && !headers.some(([name]) => name.toLowerCase() === 'host')) {
+        headers.push([key, validHost]);
+      }
+      return;
+    }
     values.forEach(item => headers.push([key, item]));
   });
   return headers;
+}
+
+function isValidExportHost(value) {
+  const host = String(value ?? '');
+  if (!host || /[\0-\x20\x7f]/.test(host)) return false;
+  try {
+    const parsed = new URL(`http://${host}/`);
+    return parsed.host.length > 0
+      && parsed.username === ''
+      && parsed.password === ''
+      && parsed.pathname === '/'
+      && parsed.search === ''
+      && parsed.hash === '';
+  } catch {
+    return false;
+  }
+}
+
+function hasExportHeader(headers, name) {
+  const lowerName = name.toLowerCase();
+  return headers.some(([key]) => key.toLowerCase() === lowerName);
+}
+
+function nodeDefaultHostEntry(headers) {
+  return hasExportHeader(headers, 'host') ? [] : [`${JSON.stringify('Host')}, target.host`];
+}
+
+function renderGoExportHeader(key, value) {
+  if (key.toLowerCase() === 'host') {
+    return `\treq.Host = ${JSON.stringify(String(value))}\n`;
+  }
+  return `\treq.Header.Add(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`;
 }
 
 function getMultipartExportHeaders(req) {
@@ -154,6 +193,14 @@ function renderNodeExportHeaders(headers, additionalEntries = []) {
   const entries = headers.map(([key, value]) => `${JSON.stringify(key)}, ${JSON.stringify(String(value))}`);
   entries.push(...additionalEntries);
   return `[\n${entries.map(entry => `    ${entry}`).join(',\n')}\n  ]`;
+}
+
+function renderNodeExactMethodRepair(method) {
+  const exactMethod = JSON.stringify(method);
+  return `request.method = ${exactMethod};\n` +
+    `if (request._header) request._header = ${exactMethod} + request._header.slice(request._header.indexOf(' '));\n` +
+    `request.useChunkedEncodingByDefault = !['GET', 'HEAD', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'].includes(${exactMethod});\n` +
+    `if (${exactMethod} === 'CONNECT') request.once('finish', () => { request.method = 'POST'; });\n`;
 }
 
 function isValidExportBase64(value) {
@@ -247,7 +294,7 @@ function generateMultipartExportSnippet(req, format) {
     return generateFetchBodyUnavailableSnippet(method);
   }
 
-  if (['javascript-node', 'powershell', 'wget', 'php'].includes(format)) {
+  if (['javascript-node', 'powershell', 'wget', 'php', 'go'].includes(format)) {
     const unsafeField = fields.find((field) => {
       if (!isSafeMultipartDispositionValue(field.key)) return true;
       if (field.type !== 'file') return false;
@@ -337,7 +384,14 @@ function generateMultipartExportSnippet(req, format) {
     fields.forEach((field) => {
       if (field.type === 'file') {
         const filename = field.file?.name || field.fileName || 'file';
-        code += `formData.append(${JSON.stringify(field.key)}, selectedFiles[${fileIndex++}], ${JSON.stringify(filename)});\n`;
+        const contentType = field.file?.type || field.fileType;
+        const index = fileIndex++;
+        if (contentType) {
+          code += `const replayFile${index} = selectedFiles[${index}].slice(0, selectedFiles[${index}].size, ${JSON.stringify(contentType)});\n`;
+          code += `formData.append(${JSON.stringify(field.key)}, replayFile${index}, ${JSON.stringify(filename)});\n`;
+        } else {
+          code += `formData.append(${JSON.stringify(field.key)}, selectedFiles[${index}], ${JSON.stringify(filename)});\n`;
+        }
       } else {
         code += `formData.append(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')});\n`;
       }
@@ -372,12 +426,14 @@ function generateMultipartExportSnippet(req, format) {
     });
     code += `append('--' + boundary + '--\\r\\n');\nconst body = Buffer.concat(chunks);\nconst target = new URL(${JSON.stringify(preparedRequest.url)});\n`;
     const nodeHeaders = renderNodeExportHeaders(preparedRequest.headers, [
-      `${JSON.stringify('Host')}, target.host`,
+      ...nodeDefaultHostEntry(preparedRequest.headers),
       `${JSON.stringify('Content-Type')}, 'multipart/form-data; boundary=' + boundary`,
       `${JSON.stringify('Content-Length')}, String(body.length)`
     ]);
     code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  port: target.port || undefined,\n  path: target.pathname + target.search,\n  headers: ${nodeHeaders}\n};\n\n`;
-    code += `const request = (target.protocol === 'https:' ? https : http).request(options, response => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\nrequest.write(body);\nrequest.end();`;
+    code += `const request = (target.protocol === 'https:' ? https : http).request(options, response => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
+    code += renderNodeExactMethodRepair(method);
+    code += `request.write(body);\nrequest.end();`;
     return code;
   }
 
@@ -475,21 +531,27 @@ function generateMultipartExportSnippet(req, format) {
   if (format === 'go') {
     const hasFiles = fields.some(field => field.type === 'file');
     let code = 'package main\n\nimport (\n\t"bytes"\n\t"fmt"\n\t"mime/multipart"\n\t"net/http"\n';
-    if (hasFiles) code += '\t"io"\n\t"os"\n';
+    if (hasFiles) code += '\t"io"\n\t"net/textproto"\n\t"os"\n';
     code += ')\n\nfunc main() {\n\tvar body bytes.Buffer\n\twriter := multipart.NewWriter(&body)\n';
     let fileIndex = 0;
     fields.forEach((field) => {
       if (field.type === 'file') {
         const filename = field.file?.name || field.fileName || 'file';
+        const safeName = multipartQuotedString(field.key);
+        const safeFilename = multipartQuotedString(filename);
+        const contentType = field.file?.type || field.fileType || 'application/octet-stream';
         const index = fileIndex++;
         code += `\tfile${index}, _ := os.Open(${JSON.stringify(filename)})\n\tdefer file${index}.Close()\n`;
-        code += `\tpart${index}, _ := writer.CreateFormFile(${JSON.stringify(field.key)}, ${JSON.stringify(filename)})\n\tio.Copy(part${index}, file${index})\n`;
+        code += `\theader${index} := make(textproto.MIMEHeader)\n`;
+        code += `\theader${index}.Set("Content-Disposition", ${JSON.stringify(`form-data; name="${safeName}"; filename="${safeFilename}"`)})\n`;
+        code += `\theader${index}.Set("Content-Type", ${JSON.stringify(contentType)})\n`;
+        code += `\tpart${index}, _ := writer.CreatePart(header${index})\n\tio.Copy(part${index}, file${index})\n`;
       } else {
         code += `\twriter.WriteField(${JSON.stringify(field.key)}, ${JSON.stringify(field.value || '')})\n`;
       }
     });
     code += `\twriter.Close()\n\n\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, &body)\n`;
-    headers.forEach(([key, value]) => { code += `\treq.Header.Add(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`; });
+    headers.forEach(([key, value]) => { code += renderGoExportHeader(key, value); });
     code += '\treq.Header.Set("Content-Type", writer.FormDataContentType())\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tfmt.Println(resp.StatusCode)\n}';
     return code;
   }
@@ -590,11 +652,13 @@ function generateExportSnippetCore(req, format) {
       code += `const target = new URL(${JSON.stringify(preparedRequest.url)});\n`;
       code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  path: target.pathname + target.search,\n  port: target.port || undefined`;
       if (preparedRequest.headers.length) {
-        code += `,\n  headers: ${renderNodeExportHeaders(preparedRequest.headers, [
-          `${JSON.stringify('Host')}, target.host`
-        ])}`;
+        code += `,\n  headers: ${renderNodeExportHeaders(
+          preparedRequest.headers,
+          nodeDefaultHostEntry(preparedRequest.headers)
+        )}`;
       }
       code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
+      code += renderNodeExactMethodRepair(method);
       if (hasBody) {
         code += isBinaryBody
           ? `request.write(Buffer.from(${JSON.stringify(body)}, 'base64'));\n`
@@ -664,9 +728,7 @@ function generateExportSnippetCore(req, format) {
       } else {
         code += `\treq, _ := http.NewRequest(${JSON.stringify(method)}, ${JSON.stringify(url)}, nil)\n`;
       }
-      for (const [key, value] of headers) {
-        code += `\treq.Header.Add(${JSON.stringify(key)}, ${JSON.stringify(String(value))})\n`;
-      }
+      for (const [key, value] of headers) code += renderGoExportHeader(key, value);
       code += `\n\tresp, _ := http.DefaultClient.Do(req)\n\tdefer resp.Body.Close()\n\tdata, _ := io.ReadAll(resp.Body)\n\tfmt.Println(resp.StatusCode, string(data))\n}`;
       return code;
     }

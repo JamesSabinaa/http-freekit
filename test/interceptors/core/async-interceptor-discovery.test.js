@@ -67,7 +67,9 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
   assert.deepEqual(await discovery, {
     enabled: true,
     server: '127.0.0.1:8080',
-    override: null
+    override: null,
+    autoConfigUrl: null,
+    autoDetect: null
   });
 });
 

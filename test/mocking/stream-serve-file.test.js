@@ -8,9 +8,9 @@ import test from 'node:test';
 
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 
-function requestThroughProxy(port, target) {
+function requestThroughProxy(port, target, method = 'GET') {
   return new Promise((resolve, reject) => {
-    const request = http.request({ hostname: '127.0.0.1', port, path: target }, response => {
+    const request = http.request({ hostname: '127.0.0.1', port, path: target, method }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => resolve({
@@ -64,6 +64,42 @@ test('serve-file streams its response and records small file content', async t =
   assert.equal(record.responseBody, 'streamed mock response');
   assert.equal(record.responseBodySize, response.body.length);
   assert.equal(record.responseBodyTruncated, false);
+});
+
+test('serve-file suppresses forbidden response bodies and capture bytes', async t => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'http-freekit-bodyless-file-'));
+  const filePath = path.join(tempDir, 'response.txt');
+  await fs.writeFile(filePath, 'must not be delivered');
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+
+  const captured = [];
+  const proxy = new ProxyServer(null, { port: 0, onRequest: request => captured.push(request) });
+  for (const [pathname, status] of [['/head-file', 200], ['/no-content-file', 204]]) {
+    proxy.addMockRule({
+      matchers: [{ type: 'path', matchType: 'exact', value: pathname }],
+      action: { type: 'serve-file', filePath, contentType: 'text/plain', status }
+    });
+  }
+  await proxy.start();
+  t.after(() => proxy.stop());
+
+  for (const [pathname, method, status] of [
+    ['/head-file', 'HEAD', 200],
+    ['/no-content-file', 'GET', 204]
+  ]) {
+    const response = await requestThroughProxy(
+      proxy.server.address().port,
+      `http://unreachable.invalid${pathname}`,
+      method
+    );
+    assert.equal(response.statusCode, status);
+    assert.equal(response.body.length, 0);
+    const record = await waitFor(() => captured.find(request =>
+      request.path === pathname && request.statusMessage === 'Mocked (file)'
+    ));
+    assert.equal(record.responseBody, '');
+    assert.equal(record.responseBodySize, 0);
+  }
 });
 
 test('serve-file capture preserves the configured media type for binary content', async t => {

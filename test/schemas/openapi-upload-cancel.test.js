@@ -13,6 +13,7 @@ const uploadSource = source.slice(uploadStart, uploadEnd);
 function createHarness({ promptValue, response } = {}) {
   const fetches = [];
   const toasts = [];
+  const renders = [];
   let reloads = 0;
   let clicks = 0;
   const input = {
@@ -32,11 +33,23 @@ function createHarness({ promptValue, response } = {}) {
     prompt: () => promptValue,
     fetch: async (url, options) => {
       fetches.push({ url, options });
+      const submitted = JSON.parse(options.body);
       return response || {
         ok: true,
         status: 200,
-        json: async () => ({ success: true })
+        json: async () => ({
+          success: true,
+          spec: { id: 'spec-default', title: submitted.title, baseUrl: submitted.baseUrl }
+        })
       };
+    },
+    renderedApiSpecs: [],
+    beginSettingsMutation: key => ({ key }),
+    isCurrentSettingsOperation: () => true,
+    finishSettingsMutation() {},
+    renderApiSpecs: specs => {
+      context.renderedApiSpecs = specs.map(spec => ({ ...spec }));
+      renders.push(context.renderedApiSpecs);
     },
     toast: (message, type) => toasts.push({ message, type }),
     loadApiSpecs: () => { reloads++; }
@@ -59,6 +72,7 @@ function createHarness({ promptValue, response } = {}) {
     fetches,
     input,
     select,
+    renders,
     toasts,
     get reloads() { return reloads; }
   };
@@ -90,10 +104,15 @@ test('submitting an intentionally empty base URL preserves the empty string', as
   assert.deepEqual(harness.toasts, [
     { message: 'API spec loaded: Pet API', type: 'success' }
   ]);
-  assert.equal(harness.reloads, 1);
+  assert.equal(harness.reloads, 0);
+  assert.deepEqual(harness.renders, [[{
+    id: 'spec-default',
+    title: 'Pet API',
+    baseUrl: ''
+  }]]);
 });
 
-test('a successful OpenAPI response reports success and reloads the list', async () => {
+test('a successful OpenAPI response reports success and applies returned metadata', async () => {
   const harness = createHarness({
     promptValue: 'https://api.example.test',
     response: {
@@ -109,7 +128,8 @@ test('a successful OpenAPI response reports success and reloads the list', async
   assert.deepEqual(harness.toasts, [
     { message: 'API spec loaded: Pet API', type: 'success' }
   ]);
-  assert.equal(harness.reloads, 1);
+  assert.equal(harness.reloads, 0);
+  assert.deepEqual(harness.renders, [[{ id: 'spec-1' }]]);
 });
 
 test('a failed OpenAPI response reports its error without success or reload', async () => {

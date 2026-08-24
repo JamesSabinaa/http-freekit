@@ -11,8 +11,8 @@ test('Electron menu leaves renderer-owned shortcuts unregistered', () => {
   assert.doesNotMatch(menuSource, /role:\s*['"]close['"]/);
 });
 
-test('reload, new session, and close remain available as menu clicks', () => {
-  assert.match(menuSource, /label:\s*['"]New Session['"][\s\S]*webContents\.reload/);
+test('reload and close remain available without a duplicate new-session command', () => {
+  assert.doesNotMatch(menuSource, /label:\s*['"]New Session['"]/);
   assert.match(menuSource, /label:\s*['"]Reload['"][\s\S]*webContents\.reload/);
   assert.match(menuSource, /label:\s*['"]Close Window['"][\s\S]*mainWindow\?\.close/);
 });

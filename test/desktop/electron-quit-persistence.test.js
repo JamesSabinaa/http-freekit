@@ -91,10 +91,10 @@ test('successful renderer persistence closes its window before backend cleanup',
     'prepare-renderer',
     'mark-shutdown',
     'destroy-window',
-    'relaunch',
     'stop-updater',
     'destroy-tray',
-    'shutdown-server'
+    'shutdown-server',
+    'relaunch'
   ]);
 });
 
@@ -196,6 +196,30 @@ test('renderer execution failures fail open into ordered backend cleanup', async
   ]);
   assert.match(errors[0], /continuing cleanup: renderer unavailable/);
   assert.equal(mainWindow.isDestroyed(), true);
+});
+
+test('backend cleanup failure rejects Quit instead of reporting completion', async () => {
+  const calls = [];
+  const errors = [];
+  const mainWindow = createWindow(async () => true, calls);
+
+  await assert.rejects(runQuitCleanup({
+    mainWindow,
+    onPrepared: () => calls.push('mark-shutdown'),
+    stopAutoUpdater: () => calls.push('stop-updater'),
+    destroyTray: () => calls.push('destroy-tray'),
+    shutdownServer: async () => { throw new Error('cleanup remains pending'); },
+    logger: { error: (...args) => errors.push(args.join(' ')) }
+  }), /cleanup remains pending/);
+
+  assert.equal(mainWindow.isDestroyed(), true);
+  assert.deepEqual(calls, [
+    'mark-shutdown',
+    'destroy-window',
+    'stop-updater',
+    'destroy-tray'
+  ]);
+  assert.match(errors[0], /Server shutdown failed: cleanup remains pending/);
 });
 
 test('a missing renderer preparation helper fails open without becoming an explicit veto', async () => {

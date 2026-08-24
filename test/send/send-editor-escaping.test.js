@@ -148,6 +148,10 @@ function assertNoInjectedMarkup(container) {
   assert.equal(container.elements.some(element => element.attributes.has('onerror')), false);
 }
 
+function replaceGeneratedHtmlPreservingFocus(container, html) {
+  container.innerHTML = html;
+}
+
 function renderHeaderRows(rows) {
   const container = new MarkupContainer();
   const hidden = { value: '' };
@@ -160,7 +164,8 @@ function renderHeaderRows(rows) {
         return null;
       }
     },
-    esc: escapeText
+    esc: escapeText,
+    replaceGeneratedHtmlPreservingFocus
   };
   vm.createContext(context);
   vm.runInContext(`
@@ -184,7 +189,8 @@ function renderHeaderObject(headers) {
         return null;
       }
     },
-    esc: escapeText
+    esc: escapeText,
+    replaceGeneratedHtmlPreservingFocus
   };
   vm.createContext(context);
   vm.runInContext(`
@@ -206,7 +212,8 @@ function renderFormFields(fields, bodyType) {
     },
     esc: escapeText,
     getSendBodyType: () => context.__bodyType,
-    getActiveSendFormFields: () => context.__fields
+    getActiveSendFormFields: () => context.__fields,
+    replaceGeneratedHtmlPreservingFocus
   };
   vm.createContext(context);
   vm.runInContext(`

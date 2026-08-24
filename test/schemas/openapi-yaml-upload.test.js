@@ -16,6 +16,7 @@ function createHarness({ parser = jsyaml } = {}) {
   const fetches = [];
   const prompts = [];
   const toasts = [];
+  const renders = [];
   let reloads = 0;
   let reads = 0;
   const input = { click() {}, onchange: null };
@@ -29,11 +30,23 @@ function createHarness({ parser = jsyaml } = {}) {
     },
     fetch: async (url, options) => {
       fetches.push({ url, options });
+      const submitted = JSON.parse(options.body);
       return {
         ok: true,
         status: 200,
-        json: async () => ({ success: true })
+        json: async () => ({
+          success: true,
+          spec: { id: 'spec-default', title: submitted.title, baseUrl: submitted.baseUrl }
+        })
       };
+    },
+    renderedApiSpecs: [],
+    beginSettingsMutation: key => ({ key }),
+    isCurrentSettingsOperation: () => true,
+    finishSettingsMutation() {},
+    renderApiSpecs: specs => {
+      context.renderedApiSpecs = specs.map(spec => ({ ...spec }));
+      renders.push(context.renderedApiSpecs);
     },
     toast: (message, type) => toasts.push({ message, type }),
     loadApiSpecs: () => { reloads++; }
@@ -61,6 +74,7 @@ function createHarness({ parser = jsyaml } = {}) {
     fetches,
     input,
     prompts,
+    renders,
     get reads() { return reads; },
     select,
     toasts,
@@ -91,7 +105,12 @@ paths:
   assert.deepEqual(harness.toasts, [
     { message: 'API spec loaded: Pet YAML API', type: 'success' }
   ]);
-  assert.equal(harness.reloads, 1);
+  assert.equal(harness.reloads, 0);
+  assert.deepEqual(harness.renders, [[{
+    id: 'spec-default',
+    title: 'Pet YAML API',
+    baseUrl: 'https://pets.example.test'
+  }]]);
 });
 
 test('the short .yml extension is parsed as YAML', async () => {

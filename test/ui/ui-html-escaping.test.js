@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = fs.readFileSync(path.join(repoRoot, 'src/ui/app.js'), 'utf8');
+const generatedNameHelperStart = source.indexOf('function addGeneratedControlAccessibleNames(');
+const generatedNameHelperEnd = source.indexOf('const API_BASE', generatedNameHelperStart);
+assert.ok(generatedNameHelperStart >= 0 && generatedNameHelperEnd > generatedNameHelperStart);
+const generatedNameHelper = source.slice(generatedNameHelperStart, generatedNameHelperEnd);
 
 function functionSource(name, nextName) {
   const start = source.indexOf(`function ${name}(`);
@@ -236,7 +240,12 @@ test('imported header names stay in one context-menu data field', () => {
       .replaceAll('>', '&gt;')
   };
   vm.createContext(context);
-  vm.runInContext(`${headerRenderer}; globalThis.renderHeadersForTest = renderHeadersGrid;`, context);
+  vm.runInContext(`
+    let _detailHeaderScope = 0;
+    const _headerCollapsed = Object.create(null);
+    ${headerRenderer};
+    globalThis.renderHeadersForTest = renderHeadersGrid;
+  `, context);
 
   const key = 'x-"quoted"-&-<header>';
   const value = 'value "quoted" & <visible>';
@@ -401,14 +410,16 @@ test('mock and breakpoint method summaries escape text and class attributes', ()
   assert.ok(renameInput);
   assert.equal(quotedAttribute(renameInput, 'value'), persistedTitle);
   assert.deepEqual(openingTagAttributeNames(renameInput), [
-    'id', 'class', 'type', 'value', 'placeholder', 'onkeydown', 'onblur', 'onclick'
+    'id', 'class', 'type', 'value', 'placeholder', 'aria-label', 'onkeydown', 'onblur'
   ]);
+  assert.equal(quotedAttribute(renameInput, 'aria-label'), 'Rule name');
 });
 
 test('persisted matcher, action, and pre-step text round-trips through editor fields', () => {
   const matcherRenderer = functionSource('renderMockMatcherRow', 'renderMockActionFields');
   const actionRenderer = functionSource('renderMockActionFields', 'preserveOpenMockEdit');
   const preStepRenderer = functionSource('renderMockPreStepRow', 'addMockPreStep');
+  const headerRowHelpers = functionSource('mockHeaderEditorRows', 'updateMockRespHeader');
   const context = {
     MOCK_MATCHER_GROUPS: [{
       group: 'Request "fields" & <matchers>',
@@ -434,7 +445,9 @@ test('persisted matcher, action, and pre-step text round-trips through editor fi
   };
   vm.createContext(context);
   vm.runInContext(`
+    ${generatedNameHelper}
     ${matcherRenderer}
+    ${headerRowHelpers}
     ${actionRenderer}
     ${preStepRenderer}
     globalThis.renderMatcherForTest = renderMockMatcherRow;
@@ -475,6 +488,29 @@ test('persisted matcher, action, and pre-step text round-trips through editor fi
     actionTextInputs.map(tag => quotedAttribute(tag, 'value')),
     [actionHeader, actionValue]
   );
+  const repeatedActionHtml = context.renderActionForTest({
+    type: 'fixed-response',
+    status: 200,
+    headers: { 'Set-Cookie': ['first=1', 'second=2'] },
+    body: ''
+  }, 'rule');
+  assert.deepEqual(
+    openingTags(repeatedActionHtml, 'input')
+      .filter(tag => quotedAttribute(tag, 'type') === 'text')
+      .map(tag => quotedAttribute(tag, 'value')),
+    ['Set-Cookie', 'first=1', 'Set-Cookie', 'second=2']
+  );
+  const repeatedTransformHtml = context.renderActionForTest({
+    type: 'transform-request',
+    resHeadersMode: 'update',
+    resHeaders: { Warning: ['199 first', '299 second'] }
+  }, 'rule');
+  assert.deepEqual(
+    openingTags(repeatedTransformHtml, 'input')
+      .filter(tag => ['Header name', 'Value'].includes(quotedAttribute(tag, 'placeholder')))
+      .map(tag => quotedAttribute(tag, 'value')),
+    ['Warning', '199 first', 'Warning', '299 second']
+  );
   const textareaBody = actionHtml.match(/<textarea\b[^>]*>([\s\S]*?)<\/textarea>/)?.[1];
   assert.equal(decodeHtml(textareaBody), actionBody);
 
@@ -513,11 +549,65 @@ test('persisted matcher, action, and pre-step text round-trips through editor fi
   const stepOptions = openingTags(stepHtml, 'option');
   assert.equal(quotedAttribute(stepOptions[1], 'value'), 'unused" & <step>');
 
+  const customMatcherHtml = context.renderMatcherForTest({
+    type: 'method', value: 'M-SEARCH'
+  }, 2, 'rule');
+  const customMatcherInput = openingTags(customMatcherHtml, 'input')[0];
+  assert.equal(quotedAttribute(customMatcherInput, 'value'), 'M-SEARCH');
+  assert.equal(quotedAttribute(customMatcherInput, 'list'), 'sendMethodOptions');
+  assert.match(quotedAttribute(customMatcherInput, 'onchange'), /updateMockMatcher\(2, 'value', this\.value/);
+
+  const customTransformHtml = context.renderActionForTest({
+    type: 'transform-request', methodMode: 'CUSTOM+METHOD'
+  }, 'rule');
+  const customTransformInput = openingTags(customTransformHtml, 'input')
+    .find(tag => quotedAttribute(tag, 'title') === 'Enter original or any valid HTTP method token');
+  assert.ok(customTransformInput);
+  assert.equal(quotedAttribute(customTransformInput, 'value'), 'CUSTOM+METHOD');
+  assert.match(quotedAttribute(customTransformInput, 'onchange'), /methodMode=this\.value/);
+
+  const originalTransformHtml = context.renderActionForTest({
+    type: 'transform-request'
+  }, 'rule');
+  const originalTransformInput = openingTags(originalTransformHtml, 'input')
+    .find(tag => quotedAttribute(tag, 'title') === 'Enter original or any valid HTTP method token');
+  assert.equal(quotedAttribute(originalTransformInput, 'value'), 'original');
+
+  const customMethodStepHtml = context.renderPreStepForTest({
+    type: 'rewrite-method', value: 'M-SEARCH'
+  }, 3, 'rule');
+  const customMethodStepInput = openingTags(customMethodStepHtml, 'input')[0];
+  assert.equal(quotedAttribute(customMethodStepInput, 'value'), 'M-SEARCH');
+  assert.equal(quotedAttribute(customMethodStepInput, 'list'), 'sendMethodOptions');
+  assert.match(quotedAttribute(customMethodStepInput, 'onchange'), /updateMockPreStep\(3, 'value', this\.value/);
+
   for (const renderer of [matcherRenderer, actionRenderer, preStepRenderer]) {
     assert.doesNotMatch(renderer, /value="' \+ esc\(/);
   }
   assert.match(matcherRenderer, /<textarea[^\n]*' \+ esc\(matcher\.value \|\| ''\) \+ '<\/textarea>/);
   assert.match(actionRenderer, /<textarea[^\n]*' \+ esc\(action\.body \|\| ''\) \+ '<\/textarea>/);
+});
+
+test('mock rule details preserve numeric-zero header values', () => {
+  const detailRenderer = functionSource('renderMockRuleDetail', 'renderMockRuleEditor');
+  const context = {
+    esc: value => value === null || value === undefined ? '' : String(value),
+    formatBody: value => String(value ?? '')
+  };
+  vm.createContext(context);
+  vm.runInContext(`${detailRenderer}; globalThis.renderDetail = renderMockRuleDetail;`, context);
+
+  const fixed = context.renderDetail({
+    matchers: [], preSteps: [],
+    action: { type: 'fixed-response', status: 200, headers: { 'X-Zero': 0 } }
+  });
+  assert.match(fixed, /X-Zero: 0/);
+
+  const webhook = context.renderDetail({
+    matchers: [], preSteps: [],
+    action: { type: 'webhook', webhookUrl: 'https:\/\/hook.test', webhookHeaders: { 'X-Zero': 0 } }
+  });
+  assert.match(webhook, /X-Zero: 0/);
 });
 
 test('newly created mock lookup compares data values instead of building a selector from the ID', () => {

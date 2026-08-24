@@ -188,6 +188,7 @@ test('body viewers keep populated fallback content through Monaco failure', asyn
     async function createMonacoEditor() { return null; }
     function isMonacoEditorCurrent() { return false; }
     function disposeMonacoEditor() {}
+    function getBodySchemaTypeOverride() { return ''; }
     function updateProtobufTypeSelect() {}
     function isMonacoViewMode() { return true; }
     function formatBodyAs(body, _contentType, mode) { return mode + ':' + body; }
@@ -285,6 +286,9 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
   vm.createContext(context);
   vm.runInContext(`
     let sendBodyEditor = null;
+    let sendBodyProgrammaticUpdateDepth = 0;
+    let sendTabs = [];
+    let activeSendTab = 'tab-1';
     let monacoApi = null;
     function disposeMonacoEditor() {}
     function sendFormatToMonacoLanguage() { return 'json'; }
@@ -301,7 +305,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
     function setDefaultHeader(headers, name, value) { headers[name] = value; }
     function formatToContentType() { return 'application/json'; }
     ${between('function getSendBodyValue()', 'function createMultipartBoundary()')}
-    ${between('async function prepareSendRequestPayload(headers, signal)', 'async function sendRequest()')}
+    ${between('async function prepareSendRequestPayload(headers, signal, requestContext = {})', 'async function sendRequest()')}
     globalThis.toasts = [];
     globalThis.sends = 0;
     globalThis.harness = {

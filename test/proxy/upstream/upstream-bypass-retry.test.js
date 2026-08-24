@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { ApiServer } from '../../../src/api/api-server.js';
@@ -33,6 +34,28 @@ function requestThroughProxy(proxyPort, url) {
       }));
     });
     request.once('error', reject);
+  });
+}
+
+function readSocketHeaders(socket) {
+  return new Promise((resolve, reject) => {
+    let received = Buffer.alloc(0);
+    const onData = chunk => {
+      received = Buffer.concat([received, chunk]);
+      if (received.indexOf('\r\n\r\n') === -1) return;
+      cleanup();
+      resolve(received.toString('latin1'));
+    };
+    const onError = error => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      socket.removeListener('data', onData);
+      socket.removeListener('error', onError);
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
   });
 }
 
@@ -218,4 +241,114 @@ test('a transient proxied failure rotates and retries with the new provider', as
   assert.equal(secondProviderHits, 1);
   assert.equal(rotations, 1);
   assert.equal(api.trafficLog.at(-1).usedUpstreamProxy, true);
+});
+
+test('a proxied WebSocket 410 rotates before the client handshake fails', async t => {
+  let firstProviderHits = 0;
+  let secondProviderHits = 0;
+  let rotations = 0;
+  const firstProvider = http.createServer();
+  firstProvider.on('upgrade', (_request, socket) => {
+    firstProviderHits++;
+    socket.end(
+      'HTTP/1.1 410 Gone\r\n' +
+      'Content-Length: 4\r\n' +
+      'Connection: close\r\n\r\n' +
+      'gone'
+    );
+  });
+  const firstProviderPort = await listen(firstProvider);
+  const secondProvider = http.createServer();
+  secondProvider.on('upgrade', (_request, socket) => {
+    secondProviderHits++;
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Connection: Upgrade\r\n' +
+      'Upgrade: websocket\r\n' +
+      'Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n'
+    );
+    setImmediate(() => socket.end());
+  });
+  const secondProviderPort = await listen(secondProvider);
+  const { proxy, api } = await startProxy(firstProviderPort);
+  api._rotateBottingToolsProxy = async () => {
+    rotations++;
+    proxy.setUpstreamProxy({ host: '127.0.0.1', port: secondProviderPort, type: 'http' });
+    return { applied: true, provider: 'test-provider', upstreamProxy: proxy.upstreamProxy };
+  };
+  t.after(async () => {
+    await proxy.stop();
+    await close(secondProvider);
+    await close(firstProvider);
+  });
+
+  const socket = net.connect(proxy.server.address().port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write(
+    'GET http://websocket.example.test/socket HTTP/1.1\r\n' +
+    'Host: websocket.example.test\r\n' +
+    'Connection: Upgrade\r\n' +
+    'Upgrade: websocket\r\n' +
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+    'Sec-WebSocket-Version: 13\r\n\r\n'
+  );
+
+  assert.match(await readSocketHeaders(socket), /^HTTP\/1\.1 101 Switching Protocols/);
+  assert.equal(firstProviderHits, 1);
+  assert.equal(secondProviderHits, 1);
+  assert.equal(rotations, 1);
+  socket.destroy();
+});
+
+test('a proxied passthrough CONNECT 410 rotates with typed status context', async t => {
+  let firstProviderHits = 0;
+  let secondProviderHits = 0;
+  let rotations = 0;
+  const firstProvider = http.createServer();
+  firstProvider.on('connect', (_request, socket) => {
+    firstProviderHits++;
+    socket.end('HTTP/1.1 410 Gone\r\nConnection: close\r\n\r\n');
+  });
+  const firstProviderPort = await listen(firstProvider);
+  const secondProvider = http.createServer();
+  secondProvider.on('connect', (_request, socket) => {
+    secondProviderHits++;
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    setImmediate(() => socket.end());
+  });
+  const secondProviderPort = await listen(secondProvider);
+  const { proxy, api } = await startProxy(firstProviderPort);
+  proxy.setTlsPassthrough(['rotate-tunnel.example']);
+  api._rotateBottingToolsProxy = async () => {
+    rotations++;
+    proxy.setUpstreamProxy({ host: '127.0.0.1', port: secondProviderPort, type: 'http' });
+    return { applied: true, provider: 'test-provider', upstreamProxy: proxy.upstreamProxy };
+  };
+  t.after(async () => {
+    await proxy.stop();
+    await close(secondProvider);
+    await close(firstProvider);
+  });
+
+  const socket = net.connect(proxy.server.address().port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write(
+    'CONNECT rotate-tunnel.example:443 HTTP/1.1\r\n' +
+    'Host: rotate-tunnel.example:443\r\n\r\n'
+  );
+
+  assert.match(await readSocketHeaders(socket), /^HTTP\/1\.1 200 Connection Established/);
+  assert.equal(firstProviderHits, 1);
+  assert.equal(secondProviderHits, 1);
+  assert.equal(rotations, 1);
+  assert.equal(api._getAutoRotateProxyReason({ upstreamStatusCode: 410 }), '410 Gone');
+  socket.destroy();
 });

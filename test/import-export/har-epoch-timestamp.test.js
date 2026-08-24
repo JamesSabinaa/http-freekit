@@ -46,9 +46,7 @@ function harEntry(startedDateTime, id) {
   };
 }
 
-test('HAR import preserves epoch and pre-epoch timestamps and consistently falls back for invalid dates', async t => {
-  const fallbackTimestamp = Date.UTC(2035, 3, 5, 6, 7, 8);
-  t.mock.method(Date, 'now', () => fallbackTimestamp);
+test('API HAR import matches renderer timestamp validation atomically', async t => {
   const proxy = {};
   const api = new ApiServer(proxy, null, null);
   const server = http.createServer(api.app);
@@ -63,17 +61,27 @@ test('HAR import preserves epoch and pre-epoch timestamps and consistently falls
     log: {
       entries: [
         harEntry('1970-01-01T00:00:00.000Z', 'epoch'),
-        harEntry('1969-12-31T23:59:59.000Z', 'pre-epoch'),
-        harEntry('not-a-date', 'invalid'),
-        harEntry(undefined, 'missing')
+        harEntry('1969-12-31T23:59:59.000Z', 'pre-epoch')
       ]
     }
   });
 
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.imported, 4);
+  assert.equal(response.body.imported, 2);
   assert.deepEqual(
     api.trafficLog.map(entry => entry.timestamp),
-    [0, -1000, fallbackTimestamp, fallbackTimestamp]
+    [0, -1000]
   );
+
+  for (const invalidEntry of [
+    harEntry('not-a-date', 'invalid'),
+    harEntry(undefined, 'missing')
+  ]) {
+    const invalid = await postJson(server.address().port, {
+      log: { entries: [harEntry('2026-01-01T00:00:00.000Z', 'valid-first'), invalidEntry] }
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.body.error, /startedDateTime must be a (?:valid )?date/);
+    assert.deepEqual(api.trafficLog.map(entry => entry.timestamp), [0, -1000]);
+  }
 });

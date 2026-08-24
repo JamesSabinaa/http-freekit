@@ -4,6 +4,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { normalizeSendUrl } from '../../src/ui/send-url.js';
+
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const markup = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
 const sendStart = source.indexOf('async function sendRequest()');
@@ -39,6 +41,7 @@ function createHarness() {
   const context = {
     AbortController,
     API_BASE: 'http://127.0.0.1:8080',
+    normalizeSendUrl,
     URL,
     document: {
       getElementById: id => elements[id] || null,
@@ -50,6 +53,7 @@ function createHarness() {
       displayBody: '',
       byteLength: 0
     }),
+    assertSendManagementRequestSize() {},
     fetch: async () => response.promise,
     setSendLoading: value => state.loading.push(value),
     toast: error => assert.fail(`unexpected toast: ${error}`),
@@ -64,7 +68,7 @@ function createHarness() {
   };
   vm.createContext(context);
   vm.runInContext(`
-    let currentSendAbort = null;
+    const sendAbortControllers = new Map();
     let activeSendTab = 'tab-1';
     let sendTabs = [
       { id: 'tab-1', response: null },

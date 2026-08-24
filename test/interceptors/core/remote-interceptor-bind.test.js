@@ -125,7 +125,7 @@ test('specific bind hosts reach local browser, terminal, Electron, and JVM confi
 test('Docker rejects unreachable gateway instructions and honors explicit remote binding', async () => {
   const loopback = new DockerInterceptor({ proxyBindHost: '127.0.0.1' });
   loopback._platform = () => 'win32';
-  loopback._getCombinedCaBundlePath = () => assert.fail('unreachable activation must stop before CA setup');
+  loopback._getFreeKitCaPath = () => assert.fail('unreachable activation must stop before CA setup');
 
   const rejected = await loopback.activate(8080);
 
@@ -136,7 +136,7 @@ test('Docker rejects unreachable gateway instructions and honors explicit remote
 
   const remote = new DockerInterceptor({ proxyBindHost: '0.0.0.0' });
   remote._platform = () => 'win32';
-  remote._getCombinedCaBundlePath = () => '/tmp/freekit-ca-bundle.pem';
+  remote._getFreeKitCaPath = () => '/tmp/freekit-ca-bundle.pem';
   const activated = await remote.activate(8080);
 
   assert.equal(activated.success, true);

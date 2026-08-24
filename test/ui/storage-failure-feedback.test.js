@@ -43,6 +43,9 @@ function protobufContext({ setResult = true, removeResult = true } = {}) {
     safeLocalStorageGet: () => null,
     safeLocalStorageSet: () => setResult,
     safeLocalStorageRemove: () => removeResult,
+    quarantineRendererStorageCorruptionGroup: () => true,
+    hasRendererStorageCorruption: () => false,
+    registerRendererStorageCorruption() {},
     toast: (message, type) => toasts.push({ message, type }),
     renderDetailCards() {},
     renderBodyViewer() {},
@@ -88,7 +91,10 @@ function themeContext(storage) {
     renderCustomThemeSwatches: value => calls.push(['render', value]),
     setTheme: (value, persist) => calls.push(['theme', value, persist]),
     toast: (message, type) => toasts.push({ message, type }),
-    _customThemeStyleEl: null
+    _customThemeStyleEl: null,
+    THEME_SELECTION_STORAGE_KEY: 'http-freekit-theme',
+    CUSTOM_THEME_STORAGE_KEY: 'http-freekit-custom-theme',
+    quarantineRendererStorageCorruptionGroup: () => true
   };
   const start = source.indexOf('function uploadCustomTheme');
   const end = source.indexOf('function updateCustomThemeSection', start);

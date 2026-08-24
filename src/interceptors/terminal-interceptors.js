@@ -9,6 +9,7 @@ import {
 } from './node-environment-proxy.js';
 import {
   inspectProcessIdentity,
+  normalizeBootId,
   normalizeProcessIdentity,
   parseLinuxProcessStart,
   sameProcessIdentity
@@ -29,7 +30,7 @@ const LINUX_TERMINAL_LAUNCHERS = [
     buildArgs: shellCommand => ['--separate', '--nofork', '-e', 'sh', '-c', shellCommand]
   }
 ];
-const TERMINAL_SESSION_OWNERSHIP_VERSION = 1;
+const TERMINAL_SESSION_OWNERSHIP_VERSION = 3;
 const MAX_TERMINAL_OWNERSHIP_BYTES = 64 * 1024;
 const MAX_TERMINAL_SESSIONS = 32;
 const MAX_TERMINAL_HANDSHAKE_BYTES = 4096;
@@ -125,27 +126,35 @@ function cmdLiteralHelperCleanup() {
 
 function getTerminalCaPath(ca) {
   if (!ca) return '';
+  if (typeof ca.getCertInfo === 'function') {
+    const certInfo = ca.getCertInfo();
+    if (typeof certInfo?.certificatePath === 'string') return certInfo.certificatePath;
+  }
+  if (typeof ca.caCertPath === 'string') return ca.caCertPath;
+  // Compatibility for lightweight integrations that have not yet exposed the
+  // raw certificate path. Production CertificateAuthority instances take the
+  // raw-certificate branch above, never the generated Node-root bundle.
   if (typeof ca.getTerminalCaBundlePath === 'function') {
     return ca.getTerminalCaBundlePath();
   }
-  const certInfo = ca.getCertInfo();
-  return certInfo.terminalCaBundlePath || certInfo.certificatePath || '';
+  return '';
 }
 
 function buildTerminalEnvironment(proxyUrl, certPath) {
-  return {
+  const environment = {
     HTTP_PROXY: proxyUrl,
     HTTPS_PROXY: proxyUrl,
     http_proxy: proxyUrl,
     https_proxy: proxyUrl,
     NO_PROXY: '',
     no_proxy: '',
-    NODE_USE_ENV_PROXY: NODE_USE_ENV_PROXY_VALUE,
-    SSL_CERT_FILE: certPath,
-    NODE_EXTRA_CA_CERTS: certPath,
-    REQUESTS_CA_BUNDLE: certPath,
-    CURL_CA_BUNDLE: certPath
+    NODE_USE_ENV_PROXY: NODE_USE_ENV_PROXY_VALUE
   };
+  // Node supports an additive CA file. The other common trust variables are
+  // intentionally left untouched because they replace platform/tool roots.
+  // Omitting this too when no CA is available preserves an inherited value.
+  if (certPath) environment.NODE_EXTRA_CA_CERTS = certPath;
+  return environment;
 }
 
 export function buildExistingTerminalInstructions(proxyUrl, certPath) {
@@ -186,6 +195,7 @@ export class FreshTerminalInterceptor {
     this.gracefulExitTimeoutMs = 2000;
     this.forceExitTimeoutMs = 2000;
     this.sessionExitPollIntervalMs = 50;
+    this.posixBootIdPromise = null;
     this.platformOverride = options.platform || null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'fresh-terminal-session-ownership.json')
@@ -306,11 +316,7 @@ export class FreshTerminalInterceptor {
     });
   }
 
-  _createPidFilePath() {
-    return path.join(os.tmpdir(), `http-freekit-terminal-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.pid`);
-  }
-
-  _createWindowsHandshake() {
+  _createTerminalHandshake() {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-terminal-handshake-'));
     try { fs.chmodSync(directory, 0o700); } catch {}
     return Object.freeze({
@@ -321,12 +327,36 @@ export class FreshTerminalInterceptor {
     });
   }
 
-  _cleanupWindowsHandshake(handshake) {
+  _createWindowsHandshake() {
+    return this._createTerminalHandshake();
+  }
+
+  _createPosixHandshake() {
+    const handshake = this._createTerminalHandshake();
+    const ownershipMarkerFile = path.join(handshake.directory, 'ownership.marker');
+    try {
+      fs.writeFileSync(ownershipMarkerFile, '', { flag: 'wx', mode: 0o600 });
+      return Object.freeze({ ...handshake, ownershipMarkerFile });
+    } catch (error) {
+      this._cleanupTerminalHandshake(handshake);
+      throw error;
+    }
+  }
+
+  _cleanupTerminalHandshake(handshake, { preserveOwnershipMarker = false } = {}) {
     if (!handshake) return;
     const temporaryRoot = path.resolve(os.tmpdir());
     const directory = handshake.directory ? path.resolve(handshake.directory) : null;
     if (directory && path.dirname(directory) === temporaryRoot &&
         path.basename(directory).startsWith('http-freekit-terminal-handshake-')) {
+      if (preserveOwnershipMarker && handshake.ownershipMarkerFile) {
+        for (const filePath of [handshake.reportFile, handshake.acknowledgementFile]) {
+          try { fs.unlinkSync(filePath); } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+          }
+        }
+        return;
+      }
       fs.rmSync(directory, { recursive: true, force: true });
       return;
     }
@@ -336,17 +366,62 @@ export class FreshTerminalInterceptor {
     }
   }
 
-  async _waitForShellPid(pidFile, timeoutMs = 3000, signal = null) {
+  _cleanupWindowsHandshake(handshake) {
+    this._cleanupTerminalHandshake(handshake);
+  }
+
+  _readTerminalHandshakeReport(reportFile) {
+    const pathStats = fs.lstatSync(reportFile);
+    if (!pathStats.isFile() || pathStats.nlink !== 1 || pathStats.size <= 0 ||
+        pathStats.size > MAX_TERMINAL_HANDSHAKE_BYTES) {
+      throw new Error('Terminal shell identity report is not a bounded regular file');
+    }
+    const noFollow = fs.constants.O_NOFOLLOW || 0;
+    const descriptor = fs.openSync(reportFile, fs.constants.O_RDONLY | noFollow);
+    try {
+      const stats = fs.fstatSync(descriptor);
+      if (!stats.isFile() || stats.nlink !== 1 || stats.size !== pathStats.size ||
+          stats.dev !== pathStats.dev || stats.ino !== pathStats.ino) {
+        throw new Error('Terminal shell identity report changed before it was read');
+      }
+      const buffer = Buffer.alloc(stats.size + 1);
+      let bytesRead = 0;
+      while (bytesRead < buffer.length) {
+        const count = fs.readSync(
+          descriptor,
+          buffer,
+          bytesRead,
+          buffer.length - bytesRead,
+          bytesRead
+        );
+        if (count === 0) break;
+        bytesRead += count;
+      }
+      if (bytesRead !== stats.size) {
+        throw new Error('Terminal shell identity report changed while it was being read');
+      }
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+
+  async _waitForPosixShellReport(handshake, timeoutMs = 3000, signal = null) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (signal?.aborted) throw new Error('Terminal shell PID wait was cancelled');
+      if (signal?.aborted) throw new Error('Terminal shell identity wait was cancelled');
       try {
-        const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
-        if (Number.isInteger(pid) && pid > 0) return pid;
+        const report = JSON.parse(this._readTerminalHandshakeReport(handshake.reportFile));
+        const reportKeys = Object.keys(report || {}).sort();
+        if (reportKeys.length !== 2 || reportKeys[0] !== 'nonce' || reportKeys[1] !== 'pid' ||
+            report.nonce !== handshake.nonce || !Number.isSafeInteger(report.pid) || report.pid <= 0) {
+          throw new Error('Terminal shell identity report has an invalid schema or nonce');
+        }
+        return report.pid;
       } catch {}
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await this._sleep(50);
     }
-    throw new Error('Terminal shell did not report its process ID');
+    throw new Error('Terminal shell did not report a nonce-bound process ID');
   }
 
   async _waitForWindowsShellReport(reportFile, timeoutMs = 3000, signal = null) {
@@ -354,12 +429,7 @@ export class FreshTerminalInterceptor {
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error('Terminal shell identity wait was cancelled');
       try {
-        const stat = fs.lstatSync(reportFile);
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0 ||
-            stat.size > MAX_TERMINAL_HANDSHAKE_BYTES) {
-          throw new Error('Terminal shell identity report is not a bounded regular file');
-        }
-        const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+        const report = JSON.parse(this._readTerminalHandshakeReport(reportFile));
         const reportKeys = Object.keys(report || {}).sort();
         if (reportKeys.length !== 3 ||
             reportKeys[0] !== 'executable' || reportKeys[1] !== 'pid' ||
@@ -387,6 +457,20 @@ export class FreshTerminalInterceptor {
     throw new Error('Terminal shell did not acknowledge its verified identity');
   }
 
+  async _acknowledgePosixShell(handshake, timeoutMs = 3000) {
+    fs.writeFileSync(handshake.acknowledgementFile, handshake.nonce, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!fs.existsSync(handshake.acknowledgementFile)) return;
+      await this._sleep(50);
+    }
+    throw new Error('Terminal shell did not acknowledge its persisted ownership');
+  }
+
   _identityInspectionTimeoutMs() {
     return this._platform() === 'win32' ? 5000 : 1000;
   }
@@ -395,6 +479,7 @@ export class FreshTerminalInterceptor {
     return new Promise((resolve, reject) => {
       execFile(command, args, options, (err, stdout, stderr) => {
         if (err) {
+          err.stdout = stdout;
           err.stderr = stderr;
           reject(err);
         } else {
@@ -405,15 +490,48 @@ export class FreshTerminalInterceptor {
   }
 
   _normalizeSessionIdentity(identity, expectedPid = identity?.pid, platform = this._platform()) {
-    return normalizeProcessIdentity(identity, expectedPid, { platform });
+    const normalized = normalizeProcessIdentity(identity, expectedPid, { platform });
+    return Object.freeze({
+      ...normalized,
+      ...(platform !== 'win32' && identity?.bootId !== undefined
+        ? { bootId: normalizeBootId(identity.bootId) }
+        : {}),
+      ...(platform === 'darwin' && identity?.ownershipMarkerFile !== undefined
+        ? { ownershipMarkerFile: this._normalizeOwnershipMarkerFile(identity.ownershipMarkerFile) }
+        : {})
+    });
+  }
+
+  _normalizeOwnershipMarkerFile(markerFile) {
+    if (typeof markerFile !== 'string' || markerFile.length > 4096 || /[\0\r\n]/.test(markerFile)) {
+      throw new Error('Fresh Terminal ownership marker path is invalid');
+    }
+    const normalized = path.resolve(markerFile);
+    const directory = path.dirname(normalized);
+    if (path.basename(normalized) !== 'ownership.marker' ||
+        path.dirname(directory) !== path.resolve(os.tmpdir()) ||
+        !path.basename(directory).startsWith('http-freekit-terminal-handshake-')) {
+      throw new Error('Fresh Terminal ownership marker is outside its private directory');
+    }
+    return normalized;
   }
 
   _sessionJournalEntry(identity, platform = this._platform()) {
     const normalized = this._normalizeSessionIdentity(identity, identity?.pid, platform);
+    if (platform !== 'win32' && !normalized.bootId) {
+      throw new Error('Fresh Terminal POSIX ownership is missing its boot identity');
+    }
+    if (platform === 'darwin' && !normalized.ownershipMarkerFile) {
+      throw new Error('Fresh Terminal macOS ownership is missing its open-file marker');
+    }
     return {
       pid: normalized.pid,
       startTime: normalized.startTime,
       executable: normalized.executable,
+      ...(platform !== 'win32' ? { bootId: normalized.bootId } : {}),
+      ...(platform === 'darwin'
+        ? { ownershipMarkerFile: normalized.ownershipMarkerFile }
+        : {}),
       platform
     };
   }
@@ -436,7 +554,11 @@ export class FreshTerminalInterceptor {
         throw new Error('Fresh Terminal ownership journal has an invalid session');
       }
       const entryKeys = Object.keys(rawEntry).sort();
-      const expectedKeys = ['executable', 'pid', 'platform', 'startTime'];
+      const expectedKeys = rawEntry.platform === 'darwin'
+        ? ['bootId', 'executable', 'ownershipMarkerFile', 'pid', 'platform', 'startTime']
+        : rawEntry.platform === 'linux'
+          ? ['bootId', 'executable', 'pid', 'platform', 'startTime']
+          : ['executable', 'pid', 'platform', 'startTime'];
       if (entryKeys.length !== expectedKeys.length ||
           entryKeys.some((key, index) => key !== expectedKeys[index]) ||
           !['darwin', 'linux', 'win32'].includes(rawEntry.platform) ||
@@ -564,23 +686,107 @@ export class FreshTerminalInterceptor {
     });
   }
 
-  async _inspectSessionIdentity(pid) {
+  async _getPosixBootId(platform = this._platform()) {
+    if (!this.posixBootIdPromise) {
+      this.posixBootIdPromise = (async () => {
+        if (platform === 'linux') {
+          return normalizeBootId(
+            await fs.promises.readFile('/proc/sys/kernel/random/boot_id', 'utf8')
+          );
+        }
+        if (platform === 'darwin') {
+          const result = await this._execFile(
+            '/usr/sbin/sysctl',
+            ['-n', 'kern.bootsessionuuid'],
+            {
+              encoding: 'utf8',
+              timeout: this._identityInspectionTimeoutMs(),
+              maxBuffer: 16 * 1024,
+              windowsHide: true,
+              env: { ...this._environment(), LC_ALL: 'C' }
+            }
+          );
+          return normalizeBootId(result?.stdout ?? result);
+        }
+        throw new Error('POSIX boot identity is unavailable on this platform');
+      })();
+    }
+    try {
+      return await this.posixBootIdPromise;
+    } catch (error) {
+      this.posixBootIdPromise = null;
+      throw error;
+    }
+  }
+
+  async _inspectSessionIdentity(
+    pid,
+    ownershipMarkerFile = this.sessions.get(pid)?.ownershipMarkerFile,
+    expectedIdentity = this.sessions.get(pid)
+  ) {
     const platform = this._platform();
-    return inspectProcessIdentity(pid, {
+    const observation = await inspectProcessIdentity(pid, {
       platform,
       environment: this._environment(),
       execFile: (...args) => this._execFile(...args),
       timeoutMs: this._identityInspectionTimeoutMs(),
+      includeBootId: platform !== 'win32',
+      getBootId: platform === 'win32' ? undefined : () => this._getPosixBootId(platform),
       absentMessage: 'Terminal process is absent',
       includeInvalidPidError: false,
       parseStart: (stat, processId) => this._parseLinuxProcessStart(stat, processId),
       normalizeIdentity: identity => this._normalizeSessionIdentity(identity, pid, platform)
     });
+    if (platform !== 'darwin' || observation.state !== 'running' || !ownershipMarkerFile) {
+      return observation;
+    }
+    if (expectedIdentity && (
+      expectedIdentity.pid !== observation.identity.pid ||
+      expectedIdentity.startTime !== observation.identity.startTime ||
+      expectedIdentity.bootId !== observation.identity.bootId
+    )) {
+      return observation;
+    }
+    try {
+      const normalizedMarker = this._normalizeOwnershipMarkerFile(ownershipMarkerFile);
+      if (!await this._isOwnershipMarkerOpen(pid, normalizedMarker)) return observation;
+      return {
+        state: 'running',
+        identity: this._normalizeSessionIdentity({
+          ...observation.identity,
+          ownershipMarkerFile: normalizedMarker
+        }, pid, platform)
+      };
+    } catch (error) {
+      return { state: 'unknown', error };
+    }
   }
 
-  async _observeSessionIdentity(pid) {
+  async _isOwnershipMarkerOpen(pid, markerFile) {
+    let result;
     try {
-      return await this._inspectSessionIdentity(pid);
+      result = await this._execFile(
+        '/usr/sbin/lsof',
+        ['-a', '-p', String(pid), '-Fpfn', markerFile],
+        {
+          encoding: 'utf8',
+          timeout: this._identityInspectionTimeoutMs(),
+          maxBuffer: 64 * 1024,
+          windowsHide: true,
+          env: { ...this._environment(), LC_ALL: 'C' }
+        }
+      );
+    } catch (error) {
+      if (error?.code === 1) return false;
+      throw error;
+    }
+    const fields = String(result?.stdout ?? result).split(/\r?\n/);
+    return fields.includes(`p${pid}`) && fields.some(field => /^f\S+/.test(field));
+  }
+
+  async _observeSessionIdentity(pid, ownershipMarkerFile) {
+    try {
+      return await this._inspectSessionIdentity(pid, ownershipMarkerFile);
     } catch (error) {
       return { state: 'unknown', error };
     }
@@ -605,6 +811,36 @@ export class FreshTerminalInterceptor {
   }
 
   _isSameSessionIdentity(left, right) {
+    const platform = this._platform();
+    if (platform === 'darwin' && (left?.ownershipMarkerFile || right?.ownershipMarkerFile)) {
+      // Terminal.app's shell keeps this private file open across exec. A reused
+      // PID cannot acquire that kernel-held ownership marker accidentally.
+      return Boolean(
+        left?.ownershipMarkerFile && right?.ownershipMarkerFile &&
+        left.ownershipMarkerFile === right.ownershipMarkerFile &&
+        left?.bootId && right?.bootId && left.bootId === right.bootId &&
+        left.pid === right.pid && left.startTime === right.startTime
+      );
+    }
+    if (platform === 'linux') {
+      // A Linux launcher reports its identity before exec'ing the user's login
+      // shell. PID and process-start identity survive exec, while the boot ID
+      // scopes them across restarts. The executable is expected to change.
+      if (left?.bootId || right?.bootId) {
+        return Boolean(
+          left?.bootId && right?.bootId &&
+          left.bootId === right.bootId &&
+          left.pid === right.pid &&
+          left.startTime === right.startTime
+        );
+      }
+    }
+    if (platform === 'darwin' && (left?.bootId || right?.bootId)) {
+      return Boolean(
+        left?.bootId && right?.bootId && left.bootId === right.bootId &&
+        sameProcessIdentity(left, right)
+      );
+    }
     return sameProcessIdentity(left, right);
   }
 
@@ -617,10 +853,11 @@ export class FreshTerminalInterceptor {
     return 'unknown';
   }
 
-  async _adoptSession(pid, reportedIdentity = null, expectedExecutable = null) {
-    const observation = await this._observeSessionIdentity(pid);
+  async _adoptSession(pid, reportedIdentity = null, expectedExecutable = null, ownershipMarkerFile = null) {
+    const observation = await this._observeSessionIdentity(pid, ownershipMarkerFile);
     const identity = observation?.state === 'running' ? observation.identity : null;
     if (!this._hasCompleteSessionIdentity(identity) || identity.pid !== pid) return null;
+    if (ownershipMarkerFile && !identity.ownershipMarkerFile) return null;
     if (reportedIdentity && !this._isSameSessionIdentity(reportedIdentity, identity)) return null;
     if (expectedExecutable && path.win32.basename(identity.executable).toLowerCase() !== expectedExecutable) {
       return null;
@@ -688,6 +925,7 @@ export class FreshTerminalInterceptor {
 
   _finishSessionCleanup(identity) {
     try {
+      this._cleanupOwnershipMarker(identity);
       this._removeTrackedSession(identity);
       return { stopped: true };
     } catch (error) {
@@ -888,14 +1126,35 @@ export class FreshTerminalInterceptor {
     });
   }
 
-  _buildPosixShellCommand(proxyUrl, certPath, pidFile) {
-    return [
-      `printf '%s' "$$" > ${shellQuote(pidFile)}`,
+  _buildPosixShellCommand(proxyUrl, certPath, handshake, {
+    relaunchLoginShell = true,
+    ownershipMarkerFile = null
+  } = {}) {
+    const reportPrefix = `{"nonce":"${handshake.nonce}","pid":`;
+    const commands = [
+      ...(ownershipMarkerFile ? [`exec 9<${shellQuote(ownershipMarkerFile)}`] : []),
+      'umask 077',
+      'set -C',
+      `printf '%s%s%s\\n' ${shellQuote(reportPrefix)} "$$" '}' > ${shellQuote(handshake.reportFile)} || exit 1`,
+      'set +C',
+      'freeKitAcknowledged=0',
+      'freeKitAttempt=0',
+      `while [ "$freeKitAttempt" -lt 60 ]; do ` +
+        `if [ -f ${shellQuote(handshake.acknowledgementFile)} ]; then ` +
+          `freeKitAcknowledgement=$(cat ${shellQuote(handshake.acknowledgementFile)} 2>/dev/null) || exit 1; ` +
+          `if [ "$freeKitAcknowledgement" = ${shellQuote(handshake.nonce)} ]; then ` +
+            `rm -f ${shellQuote(handshake.acknowledgementFile)} ${shellQuote(handshake.reportFile)} || exit 1; ` +
+            'freeKitAcknowledged=1; break; ' +
+          'fi; exit 1; ' +
+        'fi; freeKitAttempt=$((freeKitAttempt + 1)); sleep 0.05; ' +
+      'done',
+      '[ "$freeKitAcknowledged" -eq 1 ] || exit 1',
       ...Object.entries(buildTerminalEnvironment(proxyUrl, certPath))
         .map(([name, value]) => `export ${name}=${shellQuote(value)}`),
-      `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`,
-      'exec "${SHELL:-/bin/sh}" -l'
-    ].join('; ');
+      `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`
+    ];
+    if (relaunchLoginShell) commands.push('exec "${SHELL:-/bin/sh}" -l');
+    return commands.join('; ');
   }
 
   _buildWindowsPowerShellCommand(proxyUrl, handshake) {
@@ -936,21 +1195,31 @@ export class FreshTerminalInterceptor {
     ].join('\n');
   }
 
-  async _launchTrackedPosixTerminal(command, args, env, pidFile) {
-    const proc = await this._spawnDetached(command, args, { detached: true, stdio: 'ignore', env });
+  async _launchTrackedPosixTerminal(command, args, env, handshake) {
+    let proc;
     try {
+      proc = await this._spawnDetached(command, args, { detached: true, stdio: 'ignore', env });
       const shellPid = await this._confirmLauncherStartup(
         proc,
-        signal => this._waitForShellPid(pidFile, 3000, signal)
+        signal => this._waitForPosixShellReport(handshake, 3000, signal)
       );
       proc.unref();
       return { proc, shellPid };
     } catch (err) {
-      try { proc.kill(); } catch {}
+      try { proc?.kill(); } catch {}
+      try {
+        this._cleanupTerminalHandshake(handshake);
+      } catch (error) {
+        console.warn('[Interceptor] Failed to remove POSIX terminal handshake:', error.message);
+      }
       throw err;
-    } finally {
-      try { fs.unlinkSync(pidFile); } catch {}
     }
+  }
+
+  _cleanupOwnershipMarker(identity) {
+    if (!identity?.ownershipMarkerFile) return;
+    const markerFile = this._normalizeOwnershipMarkerFile(identity.ownershipMarkerFile);
+    fs.rmSync(path.dirname(markerFile), { recursive: true, force: true });
   }
 
   async isActivable() {
@@ -972,16 +1241,20 @@ export class FreshTerminalInterceptor {
     const certPath = getTerminalCaPath(this.ca);
     const proxyUrl = formatProxyUrl(this.proxyHost, proxyPort);
 
+    const baseEnvironment = {
+      ...this._environment()
+    };
+    delete baseEnvironment.NODE_TLS_REJECT_UNAUTHORIZED;
     const env = {
-      ...this._environment(),
+      ...baseEnvironment,
       ...buildTerminalEnvironment(proxyUrl, certPath)
     };
-    delete env.NODE_TLS_REJECT_UNAUTHORIZED;
 
     let proc;
     const platform = this._platform();
     let shellPid = null;
     let sessionIdentity = null;
+    let posixHandshake = null;
 
     if (platform === 'win32') {
       // Open Windows Terminal or PowerShell. Windows Terminal's launcher
@@ -1066,24 +1339,35 @@ export class FreshTerminalInterceptor {
       }
     } else if (platform === 'darwin') {
       // macOS: open Terminal.app
-      const pidFile = this._createPidFilePath();
-      const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, pidFile);
+      posixHandshake = this._createPosixHandshake();
+      const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, posixHandshake, {
+        // Terminal.app's `do script` already runs inside the durable login
+        // shell. Its private open-file marker survives any later explicit exec.
+        relaunchLoginShell: false,
+        ownershipMarkerFile: posixHandshake.ownershipMarkerFile
+      });
       const escapedCommand = shellCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const script = `tell application "Terminal" to do script "${escapedCommand}"`;
-      ({ proc, shellPid } = await this._launchTrackedPosixTerminal('osascript', ['-e', script], env, pidFile));
+      ({ proc, shellPid } = await this._launchTrackedPosixTerminal(
+        'osascript',
+        ['-e', script],
+        baseEnvironment,
+        posixHandshake
+      ));
     } else {
       // Linux: try common terminals
       for (const terminal of this._linuxTerminalLaunchers()) {
-        const pidFile = this._createPidFilePath();
-        const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, pidFile);
+        const candidateHandshake = this._createPosixHandshake();
+        const shellCommand = this._buildPosixShellCommand(proxyUrl, certPath, candidateHandshake);
         const args = terminal.buildArgs(shellCommand);
         try {
           ({ proc, shellPid } = await this._launchTrackedPosixTerminal(
             terminal.command,
             args,
-            env,
-            pidFile
+            baseEnvironment,
+            candidateHandshake
           ));
+          posixHandshake = candidateHandshake;
           break;
         } catch {
           continue;
@@ -1095,9 +1379,17 @@ export class FreshTerminalInterceptor {
       throw new Error('No supported terminal found');
     }
 
-    if (!sessionIdentity && shellPid) sessionIdentity = await this._adoptSession(shellPid);
+    try {
+    if (!sessionIdentity && shellPid) {
+      sessionIdentity = await this._adoptSession(
+        shellPid,
+        null,
+        null,
+        platform === 'darwin' ? posixHandshake?.ownershipMarkerFile : null
+      );
+    }
     this._trackLauncherProcess(proc, sessionIdentity?.pid || shellPid);
-    if (this.recoveryFile && !sessionIdentity) {
+    if (!sessionIdentity) {
       const processResult = await this._stopLauncherProcess(proc);
       this.active = this.sessions.size > 0 || this.processes.some(isProcessRunning);
       const detail = 'the reported shell process identity could not be verified';
@@ -1118,6 +1410,7 @@ export class FreshTerminalInterceptor {
     if (sessionIdentity) {
       try {
         this._addTrackedSession(sessionIdentity);
+        if (posixHandshake) await this._acknowledgePosixShell(posixHandshake);
       } catch (error) {
         // The exact live identity is still safe to own in memory. Cleanup below
         // either confirms it gone or leaves this state available to Stop.
@@ -1174,6 +1467,20 @@ export class FreshTerminalInterceptor {
 
     console.log(`[Interceptor] Fresh terminal opened with proxy ${proxyUrl}`);
     return { success: true, pid: sessionIdentity?.pid || proc.pid };
+    } finally {
+      if (posixHandshake) {
+        try {
+          const tracked = sessionIdentity && this.sessions.get(sessionIdentity.pid);
+          this._cleanupTerminalHandshake(posixHandshake, {
+            preserveOwnershipMarker: platform === 'darwin' &&
+              Boolean(tracked?.ownershipMarkerFile) &&
+              tracked.ownershipMarkerFile === sessionIdentity.ownershipMarkerFile
+          });
+        } catch (error) {
+          console.warn('[Interceptor] Failed to remove POSIX terminal handshake:', error.message);
+        }
+      }
+    }
   }
 
   async deactivate() {

@@ -103,7 +103,7 @@ test('a malformed entry rejects a multi-entry HAR without mutating traffic', asy
   ]));
 
   assert.equal(response.statusCode, 400);
-  assert.match(response.body.error, /requests\[1\]\.method must be a string/);
+  assert.match(response.body.error, /log\.entries\[1\]\.request\.method must be a string/);
   assert.deepEqual(api.trafficLog, [existing]);
   assert.equal(broadcastCount, 0);
 });
@@ -140,6 +140,39 @@ test('unsupported HAR URL schemes reject the entire server import', async t => {
   }
 });
 
+test('REST and deep-link HAR imports atomically reject invalid request URLs', async t => {
+  const { api, port } = await createApi(t);
+  const existing = {
+    id: 'existing',
+    timestamp: 0,
+    method: 'GET',
+    url: 'https://existing.test/'
+  };
+  api.trafficLog.push(existing);
+  let broadcastCount = 0;
+  api._broadcast = () => { broadcastCount += 1; };
+
+  const invalidUrls = [
+    [null, /request\.url must be a string/],
+    [42, /request\.url must be a string/],
+    [{ unsafe: true }, /request\.url must be a string/],
+    ['', /request\.url must not be empty/],
+    ['/relative/request', /request\.url must be a valid absolute URL/],
+    ['http://[::1', /request\.url must be a valid absolute URL/]
+  ];
+
+  for (const [url, expectedError] of invalidUrls) {
+    const response = await postBody(port, har([
+      harEntry({ request: { url: 'https://valid-first.test/' } }),
+      harEntry({ request: { url } })
+    ]));
+    assert.equal(response.statusCode, 400, JSON.stringify(url));
+    assert.match(response.body.error, expectedError, JSON.stringify(url));
+    assert.deepEqual(api.trafficLog, [existing], JSON.stringify(url));
+    assert.equal(broadcastCount, 0, JSON.stringify(url));
+  }
+});
+
 test('HAR import rejects non-string request and response HTTP versions atomically', async t => {
   const { api, port } = await createApi(t);
   for (const [side, value] of [
@@ -151,7 +184,7 @@ test('HAR import rejects non-string request and response HTTP versions atomicall
       harEntry({ [side]: { httpVersion: value } })
     ]));
     assert.equal(response.statusCode, 400, side);
-    assert.match(response.body.error, new RegExp(`${side}HttpVersion must be a string`), side);
+    assert.match(response.body.error, new RegExp(`${side}\\.httpVersion must be a string`), side);
     assert.deepEqual(api.trafficLog, [], side);
   }
 });
@@ -163,15 +196,15 @@ test('HAR import rejects non-finite and out-of-range mapped numbers', async t =>
 
   const nonFinite = await postBody(port, nonFiniteJson);
   assert.equal(nonFinite.statusCode, 400);
-  assert.match(nonFinite.body.error, /duration must be a finite number/);
+  assert.match(nonFinite.body.error, /time must be a finite number/);
 
   const negativeDuration = await postBody(port, har([harEntry({ time: -1 })]));
   assert.equal(negativeDuration.statusCode, 400);
-  assert.match(negativeDuration.body.error, /duration must be non-negative/);
+  assert.match(negativeDuration.body.error, /time must be non-negative/);
 
   const invalidStatus = await postBody(port, har([harEntry({ response: { status: 1000 } })]));
   assert.equal(invalidStatus.statusCode, 400);
-  assert.match(invalidStatus.body.error, /statusCode must be 0 or an integer from 100 to 999/);
+  assert.match(invalidStatus.body.error, /response\.status must be 0 or an integer from 100 to 999/);
   assert.deepEqual(api.trafficLog, []);
 });
 

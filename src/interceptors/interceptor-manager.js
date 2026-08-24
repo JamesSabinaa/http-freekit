@@ -13,6 +13,23 @@ import { cleanupStaleBrowserProfiles } from './browser-lifecycle.js';
 
 export const INTERCEPTOR_MANAGER_CLOSING_ERROR_CODE = 'INTERCEPTOR_MANAGER_CLOSING';
 export const INTERCEPTOR_MANAGER_CLOSING_ERROR_MESSAGE = 'Interceptor manager is shutting down';
+export const DEFAULT_SHUTDOWN_CLEANUP_ATTEMPTS = 2;
+export const DEFAULT_SHUTDOWN_OPERATION_TIMEOUT_MS = 120_000;
+export const MAX_SHUTDOWN_OPERATION_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+export const SHUTDOWN_PROGRESS_GRACE_MS = 5_000;
+
+function withTimeout(operation, timeoutMs, interceptorName) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(
+        `${interceptorName} cleanup did not finish within ${timeoutMs}ms`
+      ));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
+}
 
 export class InterceptorManager {
   constructor(ca, options = {}) {
@@ -317,23 +334,69 @@ export class InterceptorManager {
     });
   }
 
-  async deactivateAll() {
+  async deactivateAll({
+    maxAttempts = DEFAULT_SHUTDOWN_CLEANUP_ATTEMPTS,
+    operationTimeoutMs = DEFAULT_SHUTDOWN_OPERATION_TIMEOUT_MS,
+    onProgress = null
+  } = {}) {
     this.beginShutdown();
     await this.initialize();
-    for (const interceptor of this.interceptors.values()) {
-      try {
-        await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});
-        const needsDeactivation = typeof interceptor.needsDeactivation === 'function'
-          ? await interceptor.needsDeactivation()
-          : await interceptor.isActive();
-        if (needsDeactivation) {
-          // Shutdown owns this admission. It bypasses only the external
-          // closing gate and retains the ordinary per-ID lock and status flow.
-          await this._deactivateInterceptor(interceptor, {}, { allowWhileClosing: true });
+    const attempts = Math.max(1, Number.isSafeInteger(maxAttempts) ? maxAttempts : 1);
+    const timeoutMs = Math.max(1, Number.isSafeInteger(operationTimeoutMs)
+      ? operationTimeoutMs
+      : DEFAULT_SHUTDOWN_OPERATION_TIMEOUT_MS);
+    let pending = [...this.interceptors.values()];
+    let failures = [];
+
+    for (let attempt = 1; attempt <= attempts && pending.length > 0; attempt++) {
+      failures = [];
+      for (const interceptor of pending) {
+        try {
+          const requestedTimeoutMs = typeof interceptor.getShutdownTimeoutMs === 'function'
+            ? interceptor.getShutdownTimeoutMs(timeoutMs)
+            : timeoutMs;
+          const interceptorTimeoutMs = Number.isSafeInteger(requestedTimeoutMs) && requestedTimeoutMs > 0
+            ? Math.min(requestedTimeoutMs, MAX_SHUTDOWN_OPERATION_TIMEOUT_MS)
+            : timeoutMs;
+          onProgress?.({
+            interceptorId: interceptor.id,
+            interceptorName: interceptor.name,
+            attempt,
+            maxAttempts: attempts,
+            operationTimeoutMs: interceptorTimeoutMs,
+            timeoutMs: Math.min(
+              interceptorTimeoutMs + SHUTDOWN_PROGRESS_GRACE_MS,
+              MAX_SHUTDOWN_OPERATION_TIMEOUT_MS + SHUTDOWN_PROGRESS_GRACE_MS
+            )
+          });
+          await withTimeout((async () => {
+            await this.operationsInProgress?.get(interceptor.id)?.catch(() => {});
+            const needsDeactivation = typeof interceptor.needsDeactivation === 'function'
+              ? await interceptor.needsDeactivation()
+              : await interceptor.isActive();
+            if (needsDeactivation) {
+              // Shutdown owns this admission. It bypasses only the external
+              // closing gate and retains the ordinary per-ID lock and status flow.
+              await this._deactivateInterceptor(interceptor, {}, { allowWhileClosing: true });
+            }
+          })(), interceptorTimeoutMs, interceptor.name);
+        } catch (error) {
+          console.error(
+            `[Interceptor] Error deactivating ${interceptor.name} ` +
+            `(attempt ${attempt}/${attempts}):`,
+            error.message
+          );
+          failures.push({ interceptor, error });
         }
-      } catch (err) {
-        console.error(`[Interceptor] Error deactivating ${interceptor.name}:`, err.message);
       }
+      pending = failures.map(failure => failure.interceptor);
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map(failure => failure.error),
+        `Failed to deactivate ${failures.map(failure => failure.interceptor.name).join(', ')}`
+      );
     }
   }
 }

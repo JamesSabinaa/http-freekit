@@ -24,6 +24,11 @@ function createRestoreHarness(currentRequests, selectedRequestId, selectedReques
     applyFilter: () => { filterCalls++; },
     closeDetail: () => { closeCalls++; },
     resolvePendingTrafficView: () => {},
+    renderSelectedTrafficDetail: request => {
+      detailPanel._request = request;
+      pinStates.push(!!request.pinned);
+      rendered.push(request);
+    },
     showDetail: request => {
       detailPanel._request = request;
       pinStates.push(!!request.pinned);

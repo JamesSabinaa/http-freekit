@@ -6,6 +6,8 @@ import { ElectronInterceptor } from '../../../src/interceptors/electron-intercep
 function fakeChild(pid = 1234) {
   const child = new EventEmitter();
   child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
   child.killed = false;
   child.kill = () => {
     child.killed = true;
@@ -38,6 +40,7 @@ test('Electron activation rejects an asynchronous spawn failure', async () => {
 
 test('Electron activation does not resolve before the spawn event', async () => {
   const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     getSpkiFingerprint: () => 'test-spki',
     getTerminalCaBundlePath: () => process.execPath
@@ -61,8 +64,37 @@ test('Electron activation does not resolve before the spawn event', async () => 
   assert.equal(interceptor.process, child);
 });
 
+test('Electron activation rejects a child that exits during the stability window', async () => {
+  const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 25;
+  interceptor.ca = {
+    getSpkiFingerprint: () => 'test-spki',
+    getTerminalCaBundlePath: () => process.execPath
+  };
+  const child = fakeChild();
+  interceptor._spawn = () => child;
+  let settled = false;
+
+  const activation = interceptor.activate(8080, { appPath: 'single-instance-app' });
+  activation.then(
+    () => { settled = true; },
+    () => { settled = true; }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+  await assert.rejects(activation, /exited during startup/);
+  assert.equal(interceptor.active, false);
+  assert.equal(interceptor.process, null);
+});
+
 test('overlapping Electron activation is rejected while spawn is pending', async () => {
   const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     getSpkiFingerprint: () => 'test-spki',
     getTerminalCaBundlePath: () => process.execPath

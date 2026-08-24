@@ -38,6 +38,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
     sortDirection: 'desc',
     hideTunnelRequests: false,
     filterSafeFonts: false,
+    activeMcpTrafficFilters: null,
     document: {
       getElementById(id) {
         if (id === 'searchInput') return { value: '' };
@@ -50,6 +51,7 @@ function createHarness(initialRequests = [], selectedRequestId = null) {
       context.selectedRequestLifecycleId = null;
     },
     showDetail(value) { shown.push(value); },
+    renderSelectedTrafficDetail(value) { shown.push(value); },
     resolvePendingTrafficView() {},
     renderTraffic() {
       filterCalls++;

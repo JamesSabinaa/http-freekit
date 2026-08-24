@@ -84,11 +84,6 @@ async function runQuitCleanup({
   }
 
   try {
-    relaunch?.();
-  } catch (error) {
-    logger.error('[Electron] Could not schedule application relaunch:', error.message);
-  }
-  try {
     stopAutoUpdater?.();
   } catch (error) {
     logger.error('[Electron] Auto-updater shutdown failed:', error.message);
@@ -102,6 +97,12 @@ async function runQuitCleanup({
     await shutdownServer?.();
   } catch (error) {
     logger.error('[Electron] Server shutdown failed:', error.message);
+    throw error;
+  }
+  try {
+    relaunch?.();
+  } catch (error) {
+    logger.error('[Electron] Could not schedule application relaunch:', error.message);
   }
   return true;
 }

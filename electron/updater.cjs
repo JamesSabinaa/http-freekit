@@ -7,7 +7,8 @@ const { shouldForceLinuxUpdateChecks } = require('./update-platform.cjs');
  *
  * - Windows/macOS: downloads and installs updates via electron-updater (NSIS / DMG).
  * - Linux: checks GitHub releases and notifies the renderer to show a download link.
- * - Update feed URL is configurable via the UPDATE_URL environment variable.
+ * - Update metadata and human download URLs are configured independently via
+ *   UPDATE_URL and UPDATE_DOWNLOAD_URL.
  *
  * The module communicates with the renderer through IPC events prefixed with
  * 'updater-'. The renderer listens on the 'updater-status' channel for
@@ -29,12 +30,14 @@ let currentStatus = { status: 'idle' };
 let downloadedUpdateStatus = null;
 let statusEventId = 0;
 let configuredFeedUrl = null;
+let configuredDownloadUrl = null;
 let activeInstallRequest = null;
 let installerHandoffMayEmit = false;
 let staleOperationDrain = null;
 const inFlightUpstreamOperations = new Set();
 let updaterLifecycle = 0;
 let updaterRunning = false;
+let updaterUnavailableReason = null;
 let registeredUpdaterEvents = [];
 const UPDATER_IPC_CHANNELS = [
   'updater-check-now',
@@ -156,9 +159,11 @@ function getLinuxDownloadUrl(info = {}) {
   const releaseNotesUrl = getWebUrl(info.releaseNotes);
   if (releaseNotesUrl) return releaseNotesUrl.href;
 
+  if (configuredDownloadUrl) return configuredDownloadUrl;
+
   const configuredSource = getWebUrl(configuredFeedUrl);
   if (configuredSource) {
-    return getGitHubDownloadUrl(configuredSource.parsed) || configuredSource.href;
+    return getGitHubDownloadUrl(configuredSource.parsed);
   }
 
   return DEFAULT_LINUX_DOWNLOAD_URL;
@@ -255,6 +260,17 @@ function queueManualCheck(lifecycle) {
 function checkForUpdates(manual = false, lifecycle = updaterLifecycle) {
   if (!isCurrentUpdaterLifecycle(lifecycle)) return Promise.resolve(null);
   const requestedManual = manual === true;
+  if (updaterUnavailableReason) {
+    if (requestedManual) {
+      sendStatus({
+        status: 'unavailable',
+        error: updaterUnavailableReason,
+        available: false,
+        manual: true
+      }, lifecycle);
+    }
+    return Promise.resolve(null);
+  }
   if (activeCheck && activeCheck.lifecycle !== lifecycle) activeCheck = null;
   if (activeCheck) {
     if (activeCheck.promiseSettled) {
@@ -340,20 +356,23 @@ async function promptForUpdate(info, options = {}, lifecycle = updaterLifecycle)
   try {
     if (process.platform === 'linux') {
       const url = options.url || getLinuxDownloadUrl(info);
+      const downloadPageAvailable = Boolean(url);
       const result = await dialog.showMessageBox(promptWindow, {
         type: 'info',
         title: 'Update Available',
         message: `HTTP FreeKit ${version} is available`,
-        detail: `You are running ${app.getVersion()}.\n\nDownload the latest Linux package from the release page.`,
-        buttons: ['Open Download Page', 'Later'],
+        detail: downloadPageAvailable
+          ? `You are running ${app.getVersion()}.\n\nDownload the latest Linux package from the release page.`
+          : `You are running ${app.getVersion()}.\n\nNo Linux download page is configured for this update feed. Set UPDATE_DOWNLOAD_URL to a trusted package or release page.`,
+        buttons: downloadPageAvailable ? ['Open Download Page', 'Later'] : ['OK'],
         defaultId: 0,
-        cancelId: 1
+        cancelId: downloadPageAvailable ? 1 : 0
       });
       if (!isCurrentUpdaterLifecycle(lifecycle) || activeUpdatePrompt !== prompt) return;
       if (activeInstallRequest?.lifecycle === lifecycle) return;
-      if (result.response === 0) {
+      if (downloadPageAvailable && result.response === 0) {
         await shell.openExternal(url);
-      } else {
+      } else if (downloadPageAvailable) {
         sendStatus({ status: 'update-dismissed', version, manual }, lifecycle);
       }
       return;
@@ -437,7 +456,20 @@ function initAutoUpdater(win, options = {}) {
   // updater's deprecated getFeedURL() API when building Linux download links.
   const configuredSource = getWebUrl(process.env.UPDATE_URL);
   configuredFeedUrl = configuredSource?.href || null;
-  if (configuredFeedUrl) {
+  configuredDownloadUrl = getWebUrl(process.env.UPDATE_DOWNLOAD_URL)?.href || null;
+  const explicitFeedConfigured = Object.prototype.hasOwnProperty.call(process.env, 'UPDATE_URL');
+  const explicitDownloadConfigured = Object.prototype.hasOwnProperty.call(
+    process.env,
+    'UPDATE_DOWNLOAD_URL'
+  );
+  updaterUnavailableReason = !app.isPackaged
+    ? 'Update checks require a packaged HTTP FreeKit desktop build.'
+    : explicitFeedConfigured && !configuredFeedUrl
+      ? 'UPDATE_URL must be a non-empty HTTP(S) URL; update checks are disabled.'
+      : process.platform === 'linux' && explicitDownloadConfigured && !configuredDownloadUrl
+        ? 'UPDATE_DOWNLOAD_URL must be a non-empty HTTP(S) URL; update checks are disabled.'
+        : null;
+  if (!updaterUnavailableReason && configuredFeedUrl) {
     autoUpdater.setFeedURL(configuredFeedUrl);
   }
 
@@ -546,6 +578,9 @@ function initAutoUpdater(win, options = {}) {
   ipcMain.handle('updater-install', async (event) => {
     if (!validateIpcSender(event)) return null;
     if (!isCurrentUpdaterLifecycle(lifecycle)) return null;
+    if (updaterUnavailableReason) {
+      return { started: false, inProgress: false, unavailable: true };
+    }
     if (activeInstallRequest) return { started: false, inProgress: true };
 
     const request = {
@@ -593,6 +628,18 @@ function initAutoUpdater(win, options = {}) {
 
   // --- Schedule checks ---
 
+  if (updaterUnavailableReason) {
+    sendStatus({
+      status: 'unavailable',
+      error: updaterUnavailableReason,
+      available: false,
+      manual: false
+    }, lifecycle);
+    return true;
+  }
+
+  sendStatus({ status: 'idle', available: true, manual: false }, lifecycle);
+
   // Check on launch (with a short delay to let the window settle)
   startupCheckTimer = setTimeout(() => {
     if (!isCurrentUpdaterLifecycle(lifecycle)) return;
@@ -632,6 +679,8 @@ function stopAutoUpdater() {
   activeUpdatePrompt = null;
   lastPromptedUpdate = null;
   configuredFeedUrl = null;
+  configuredDownloadUrl = null;
+  updaterUnavailableReason = null;
   removeUpdaterEventHandlers();
   removeUpdaterIpcHandlers();
 }

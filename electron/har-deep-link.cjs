@@ -4,22 +4,28 @@ const { BlockList, isIP } = require('net');
 const { fileURLToPath } = require('url');
 const { Agent, fetch: undiciFetch } = require('undici');
 
-const MAX_HAR_BYTES = 50 * 1024 * 1024;
+// Keep this CommonJS desktop boundary aligned with HAR_IMPORT_MAX_FILE_BYTES
+// from src/ui/har-import.js. A maximum binary request plus response capture is
+// about 85.4 MiB after base64 encoding, so the former 50 MiB limit could not
+// reopen a HAR that FreeKit itself exported.
+const MAX_HAR_BYTES = 128 * 1024 * 1024;
 const HAR_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_HAR_REDIRECTS = 5;
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 const blockedHarAddresses = new BlockList();
 for (const [address, prefix] of [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
   ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24],
-  ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
+  ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
   ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]
 ]) {
   blockedHarAddresses.addSubnet(address, prefix, 'ipv4');
 }
 for (const [address, prefix] of [
-  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10],
-  ['2001:db8::', 32], ['ff00::', 8]
+  ['::', 96], ['::ffff:0:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+  ['100::', 64], ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
+  ['3fff::', 20], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]
 ]) {
   blockedHarAddresses.addSubnet(address, prefix, 'ipv6');
 }
@@ -31,6 +37,33 @@ function isHarTarget(value) {
   } catch {
     return false;
   }
+}
+
+function isLocalHarFileTarget(value, platform = process.platform) {
+  let target;
+  try {
+    target = value instanceof URL ? value : new URL(value);
+  } catch {
+    return false;
+  }
+  if (target.protocol !== 'file:' || !isHarTarget(target) || target.hostname) return false;
+
+  let pathname;
+  try {
+    pathname = decodeURIComponent(target.pathname).replace(/\\/g, '/');
+  } catch {
+    return false;
+  }
+  // An empty authority plus a double-leading path is another spelling of a
+  // Windows UNC path. Reject it on every platform so a saved link cannot
+  // become remote merely by being opened on Windows later.
+  if (pathname.startsWith('//')) return false;
+  if (platform !== 'win32') return pathname.startsWith('/');
+
+  // Windows imports must be ordinary drive-local paths. This excludes the
+  // \\?\ and \\.\ device namespaces as well as root-relative device paths.
+  if (!/^\/[A-Za-z]:\//.test(pathname)) return false;
+  return !pathname.slice(4).split('/').some(segment => WINDOWS_DEVICE_NAME.test(segment));
 }
 
 function assertWithinLimit(byteLength, maxBytes) {
@@ -56,7 +89,32 @@ async function readLocalHar(target, maxBytes) {
   }
 }
 
-async function assertPublicHarDestination(target, lookupImpl) {
+function abortError() {
+  const error = new Error('HAR download was aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function awaitWithAbort(value, signal) {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, result) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      callback(result);
+    };
+    const onAbort = () => finish(reject, abortError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(value).then(
+      result => finish(resolve, result),
+      error => finish(reject, error)
+    );
+  });
+}
+
+async function assertPublicHarDestination(target, lookupImpl, signal) {
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     throw new Error('Remote HAR redirects must use HTTP or HTTPS');
   }
@@ -75,8 +133,12 @@ async function assertPublicHarDestination(target, lookupImpl) {
   } else {
     let result;
     try {
-      result = await lookupImpl(hostname, { all: true, verbatim: true });
+      result = await awaitWithAbort(
+        lookupImpl(hostname, { all: true, verbatim: true }),
+        signal
+      );
     } catch (error) {
+      if (error.name === 'AbortError') throw error;
       throw new Error(`Could not resolve remote HAR host ${hostname}: ${error.message}`);
     }
     addresses = Array.isArray(result) ? result : [result];
@@ -146,7 +208,11 @@ async function downloadHar(target, {
   try {
     let currentTarget = target;
     for (let redirects = 0; ; redirects++) {
-      const addresses = await assertPublicHarDestination(currentTarget, lookupImpl);
+      const addresses = await assertPublicHarDestination(
+        currentTarget,
+        lookupImpl,
+        controller.signal
+      );
       const dispatcher = dispatcherFactory(createPinnedLookup(addresses));
       let response;
       try {
@@ -201,7 +267,12 @@ async function loadHarTarget(value, options = {}) {
   if (!isHarTarget(target)) throw new Error('The target URL does not point to a .har file');
 
   const maxBytes = options.maxBytes ?? MAX_HAR_BYTES;
-  if (target.protocol === 'file:') return readLocalHar(target, maxBytes);
+  if (target.protocol === 'file:') {
+    if (!isLocalHarFileTarget(target, options.platform ?? process.platform)) {
+      throw new Error('Local HAR file URLs must use a local absolute path and cannot use UNC or device paths');
+    }
+    return readLocalHar(target, maxBytes);
+  }
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     throw new Error('HAR targets must use HTTP, HTTPS, or file URLs');
   }
@@ -221,5 +292,6 @@ module.exports = {
   MAX_HAR_REDIRECTS,
   MAX_HAR_BYTES,
   isHarTarget,
+  isLocalHarFileTarget,
   loadHarTarget
 };

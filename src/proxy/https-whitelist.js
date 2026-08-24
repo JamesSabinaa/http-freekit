@@ -1,3 +1,5 @@
+import net from 'node:net';
+
 export const MAX_HTTPS_WHITELIST_HOSTS = 500;
 export const MAX_HTTPS_WHITELIST_PATTERN_LENGTH = 1024;
 
@@ -20,6 +22,43 @@ export function normalizeTlsHostname(value) {
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '');
+}
+
+export function normalizeExactTlsHostname(value) {
+  if (typeof value !== 'string') return '';
+  const candidate = value.trim().replace(/\.$/, '');
+  if (!candidate || /[\r\n\0\s/\\@?#*]/.test(candidate)) return '';
+
+  const bracketed = candidate.match(/^\[([^\]]+)\]$/);
+  if (bracketed) return net.isIP(bracketed[1]) ? bracketed[1].toLowerCase() : '';
+  if (candidate.includes('[') || candidate.includes(']')) return '';
+  if (net.isIP(candidate)) return candidate.toLowerCase();
+  if (candidate.includes(':')) return '';
+
+  try {
+    const parsed = new URL(`https://${candidate}/`);
+    if (parsed.username || parsed.password || parsed.port || parsed.pathname !== '/'
+      || parsed.search || parsed.hash) return '';
+    return parsed.hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function normalizeTlsHostnamePattern(value, {
+  allowSubdomainWildcard = false,
+  allowGlobalWildcard = false
+} = {}) {
+  if (typeof value !== 'string') return '';
+  const candidate = value.trim();
+  if (candidate === '*') return allowGlobalWildcard ? '*' : '';
+  if (candidate.startsWith('*.')) {
+    if (!allowSubdomainWildcard) return '';
+    const suffix = normalizeExactTlsHostname(candidate.slice(2));
+    return suffix && !net.isIP(suffix) ? `*.${suffix}` : '';
+  }
+  if (candidate.includes('*')) return '';
+  return normalizeExactTlsHostname(candidate);
 }
 
 function ownDataDescriptor(value, property) {
@@ -77,8 +116,8 @@ export function normalizeHttpsWhitelist(hosts) {
     if (/[\r\n\0]/.test(pattern)) {
       invalid(`HTTPS whitelist entry ${index} contains invalid control characters`);
     }
-    if (!normalizeTlsHostname(pattern)) {
-      invalid(`HTTPS whitelist entry ${index} is not a valid host pattern`);
+    if (!normalizeExactTlsHostname(pattern)) {
+      invalid(`HTTPS whitelist entry ${index} must be an exact hostname or IP address`);
     }
     normalized.push(pattern);
   }

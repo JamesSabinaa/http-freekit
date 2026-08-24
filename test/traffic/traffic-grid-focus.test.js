@@ -149,6 +149,7 @@ function createVirtualGridHarness() {
     history: { replaceState() {} },
     buildTrafficViewHash: id => `#/view/${id}`,
     showDetail() {},
+    renderSelectedTrafficDetail() {},
     normalizeTrafficLifecycleId: value => value || null,
     isSelectedTrafficRequest: request =>
       request.id === context.selectedRequestId &&
@@ -396,6 +397,7 @@ test('Ctrl+[ focuses the grid owner, and mouse selection does not force focus', 
     scrollRowIntoView() {},
     renderVirtualRows() {},
     showDetail() {},
+    currentTrafficGenerationRequest: request => request,
     closeDetail() {}
   };
   vm.createContext(mouseContext);
@@ -422,6 +424,7 @@ test('mouse and breakpoint selection target the exact duplicate-ID lifecycle', (
     scrollRowIntoView() {},
     renderVirtualRows() {},
     showDetail: request => shown.push(request),
+    currentTrafficGenerationRequest: request => request,
     closeDetail: () => {
       closeCalls++;
       context.selectedRequestId = null;

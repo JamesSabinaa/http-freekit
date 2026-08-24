@@ -42,7 +42,7 @@ async function generatedDockerInstructions(proxyUrl) {
   const interceptor = new DockerInterceptor();
   interceptor._platform = () => 'linux';
   interceptor._getDockerHost = async () => new URL(proxyUrl).hostname;
-  interceptor._getCombinedCaBundlePath = () => '/tmp/FreeKit CA bundle.pem';
+  interceptor._getFreeKitCaPath = () => '/tmp/FreeKit CA bundle.pem';
   const result = await interceptor.activate(new URL(proxyUrl).port);
   return result.metadata.instructions;
 }
@@ -101,12 +101,12 @@ test('Docker run, Compose, and renderer fallback emit the exact lowercase proxy 
   assert.deepEqual(select(compose, PROXY_NAMES), expectedProxyEnvironment);
   assert.deepEqual(run, compose);
   assert.equal(run.NODE_USE_ENV_PROXY, '1');
-  assert.equal(run.SSL_CERT_FILE, '/etc/http-freekit/ca-bundle.pem');
-  assert.equal(run.REQUESTS_CA_BUNDLE, '/etc/http-freekit/ca-bundle.pem');
-  assert.equal(run.CURL_CA_BUNDLE, '/etc/http-freekit/ca-bundle.pem');
-  assert.equal(run.NODE_EXTRA_CA_CERTS, '/etc/http-freekit/ca-bundle.pem');
-  assert.match(instructions.run, /--mount 'type=bind,"source=\/tmp\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/ca-bundle\.pem,readonly'/);
-  assert.match(instructions.compose, /"\/tmp\/FreeKit CA bundle\.pem:\/etc\/http-freekit\/ca-bundle\.pem:ro"/);
+  assert.equal(run.NODE_EXTRA_CA_CERTS, '/etc/http-freekit/http-freekit-ca.pem');
+  for (const name of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE']) {
+    assert.equal(Object.hasOwn(run, name), false, name);
+  }
+  assert.match(instructions.run, /--mount 'type=bind,"source=\/tmp\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/http-freekit-ca\.pem,readonly'/);
+  assert.match(instructions.compose, /"\/tmp\/FreeKit CA bundle\.pem:\/etc\/http-freekit\/http-freekit-ca\.pem:ro"/);
 
   const fallback = rendererFallback(8297);
   const fallbackRunText = fallback.match(/<h3>Docker Run<\/h3>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';
@@ -124,7 +124,7 @@ test('Docker instructions bracket an IPv6 bridge gateway in every proxy URL', as
   const interceptor = new DockerInterceptor();
   interceptor._platform = () => 'linux';
   interceptor._getDockerHost = async () => 'fd00::1';
-  interceptor._getCombinedCaBundlePath = () => '/tmp/FreeKit CA bundle.pem';
+  interceptor._getFreeKitCaPath = () => '/tmp/FreeKit CA bundle.pem';
 
   const result = await interceptor.activate(8297);
   const expectedProxyUrl = 'http://[fd00::1]:8297';

@@ -11,10 +11,7 @@ import {
 const proxyUrl = 'http://127.0.0.1:8080';
 const literalCertPath = String.raw`C:\%WINDIR%\!WINDIR!\caret^\amp&\pipe|\lt<gt>\(group)\ca.pem`;
 const trustVariables = [
-  'SSL_CERT_FILE',
-  'NODE_EXTRA_CA_CERTS',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE'
+  'NODE_EXTRA_CA_CERTS'
 ];
 const helperNames = [
   '__HTTP_FREEKIT_CMD_LITERAL_PERCENT_4F91D2A7__',
@@ -39,11 +36,11 @@ function rendererFallbackBuilder() {
 test('CMD instructions defer literal expansion characters without changing other shells', () => {
   const instructions = buildExistingTerminalInstructions(proxyUrl, literalCertPath);
 
-  assert.ok(instructions.bash.includes(`SSL_CERT_FILE='${literalCertPath}'`));
-  assert.ok(instructions.powershell.includes(`$env:SSL_CERT_FILE='${literalCertPath}'`));
+  assert.ok(instructions.bash.includes(`NODE_EXTRA_CA_CERTS='${literalCertPath}'`));
+  assert.ok(instructions.powershell.includes(`$env:NODE_EXTRA_CA_CERTS='${literalCertPath}'`));
   assert.doesNotMatch(instructions.cmd, /%WINDIR%|!WINDIR!/);
   assert.ok(instructions.cmd.includes(
-    String.raw`call set ^"SSL_CERT_FILE=C:\^%__HTTP_FREEKIT_CMD_LITERAL_PERCENT_4F91D2A7__^%WINDIR`
+    String.raw`call set ^"NODE_EXTRA_CA_CERTS=C:\^%__HTTP_FREEKIT_CMD_LITERAL_PERCENT_4F91D2A7__^%WINDIR`
   ));
   assert.ok(instructions.cmd.includes(
     String.raw`caret^%__HTTP_FREEKIT_CMD_LITERAL_CARET_4F91D2A7__^%`
@@ -64,7 +61,7 @@ test('CMD instructions retain the simple SET form for ordinary paths', () => {
   const certPath = String.raw`C:\Program Files\HTTP FreeKit\terminal-ca-bundle.pem`;
   const instructions = buildExistingTerminalInstructions(proxyUrl, certPath);
 
-  assert.match(instructions.cmd, /set "SSL_CERT_FILE=C:\\Program Files\\HTTP FreeKit\\terminal-ca-bundle\.pem"/);
+  assert.match(instructions.cmd, /set "NODE_EXTRA_CA_CERTS=C:\\Program Files\\HTTP FreeKit\\terminal-ca-bundle\.pem"/);
   assert.doesNotMatch(instructions.cmd, /call set|CMD_LITERAL/);
 });
 

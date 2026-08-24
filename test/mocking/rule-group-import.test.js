@@ -176,6 +176,7 @@ function createImportRenderer({ existingRules, importedRules, replace = false, f
     mockRevertInProgress: false,
     mockResetInProgress: false,
     mockCollectionMutationCount: 0,
+    RULE_RESTORE_ROUTE_MAX_BYTES: 50 * 1024 * 1024,
     _queueMockCollectionMutation: mutation => mutation(),
     document: {
       createElement(tagName) {

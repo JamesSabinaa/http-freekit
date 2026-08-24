@@ -408,6 +408,7 @@ function createRenderer(fetch) {
     }
     function applyFilter() { filterCalls++; }
     function showDetail() {}
+    function renderSelectedTrafficDetail() {}
     function hydrateDeferredTrafficRequest() {}
     function closeDetail() {
       selectedRequestId = null;

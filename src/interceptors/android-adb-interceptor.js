@@ -1994,6 +1994,12 @@ export class AndroidAdbInterceptor {
     };
   }
 
+  getShutdownTimeoutMs(defaultTimeoutMs = 120_000) {
+    // Device cleanup is serial and a companion VPN can legitimately consume
+    // five bounded status reads plus app and reverse-tunnel commands.
+    return Math.max(defaultTimeoutMs, 15_000 + (this.activatedDevices.size * 90_000));
+  }
+
   async deactivate(options = {}) {
     const { deviceId } = options;
 

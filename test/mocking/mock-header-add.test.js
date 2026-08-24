@@ -37,6 +37,13 @@ function createHarness(action) {
       addMockRespHeader,
       addMockWebhookHeader,
       addMockTransformHeader,
+      updateMockRespHeader,
+      updateMockWebhookHeader,
+      updateMockTransformHeader,
+      removeMockRespHeader,
+      removeMockWebhookHeader,
+      removeMockTransformHeader,
+      rows: mockHeaderEditorRows,
       getDraft: () => mockEditDraft
     };
   `, context);
@@ -99,4 +106,54 @@ test('the allocator ignores inherited names and considers only own header keys',
     value: ''
   });
   assert.equal(api.nextMockHeaderName(headers), 'X-Custom-2');
+});
+
+test('repeated fixed and transform headers remain distinct editable values', () => {
+  const api = createHarness({
+    headers: { 'Set-Cookie': ['first=1', 'second=2'] },
+    resHeaders: { Warning: ['199 first', '299 second'] },
+    webhookHeaders: { 'X-Hook': ['one', 'two'] }
+  });
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.rows(api.getDraft().action.headers))),
+    [
+      { name: 'Set-Cookie', value: 'first=1' },
+      { name: 'Set-Cookie', value: 'second=2' }
+    ]
+  );
+
+  api.updateMockRespHeader(1, 'val', 'second=updated', 'fixed');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.headers)),
+    { 'Set-Cookie': ['first=1', 'second=updated'] }
+  );
+
+  api.updateMockTransformHeader('res', 0, 'val', '199 updated', 'transform');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.resHeaders)),
+    { Warning: ['199 updated', '299 second'] }
+  );
+
+  api.updateMockWebhookHeader(1, 'val', 'two updated', 'webhook');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.webhookHeaders)),
+    { 'X-Hook': ['one', 'two updated'] }
+  );
+
+  api.removeMockRespHeader(0, 'fixed');
+  api.removeMockTransformHeader('res', 1, 'transform');
+  api.removeMockWebhookHeader(0, 'webhook');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.headers)),
+    { 'Set-Cookie': 'second=updated' }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.resHeaders)),
+    { Warning: '199 updated' }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getDraft().action.webhookHeaders)),
+    { 'X-Hook': 'two updated' }
+  );
 });

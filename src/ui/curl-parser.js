@@ -1,3 +1,5 @@
+import { normalizeCurlDestination } from './send-url.js';
+
 function encodeCurlComponent(value) {
   let encoded = '';
   for (const byte of new TextEncoder().encode(value)) {
@@ -122,8 +124,7 @@ export function parseCurlCommand(curlStr) {
   let hasExplicitMethod = false;
   let hasUrl = false;
 
-  // Normalize: remove line continuations and extra whitespace
-  let cmd = curlStr.replace(/\\\s*\n/g, ' ').trim();
+  let cmd = curlStr.trim();
 
   // Check if it starts with curl
   if (!/^curl(?=\s)/i.test(cmd)) return null;
@@ -138,6 +139,14 @@ export function parseCurlCommand(curlStr) {
     if (escaped) { current += ch; escaped = false; tokenStarted = true; continue; }
     if (ch === '\\' && !inSingle) {
       const next = cmd[i + 1];
+      if (next === '\n') {
+        i++;
+        continue;
+      }
+      if (next === '\r' && cmd[i + 2] === '\n') {
+        i += 2;
+        continue;
+      }
       if (inDouble && next && !['\\', '"', '$', '`'].includes(next)) {
         current += ch;
         tokenStarted = true;
@@ -269,7 +278,11 @@ export function parseCurlCommand(curlStr) {
     if (!token) {
       return { error: 'The cURL destination URL cannot be empty' };
     }
-    result.url = token;
+    try {
+      result.url = normalizeCurlDestination(token);
+    } catch (error) {
+      return { error: `Cannot import cURL destination: ${error.message}` };
+    }
     hasUrl = true;
   }
   if (dataParts.length && !findCurlHeaderKey(result.headers, 'Content-Type')) {

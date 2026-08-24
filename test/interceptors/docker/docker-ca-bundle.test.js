@@ -3,18 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import tls from 'node:tls';
 import vm from 'node:vm';
 
 import { DockerInterceptor } from '../../../src/interceptors/docker-interceptor.js';
 import { CertificateAuthority } from '../../../src/proxy/certificate-authority.js';
 
 const rendererSource = fs.readFileSync(new URL('../../../src/ui/app.js', import.meta.url), 'utf8');
-const TRUST_VARIABLES = [
+const REPLACING_TRUST_VARIABLES = [
   'SSL_CERT_FILE',
   'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  'NODE_EXTRA_CA_CERTS'
+  'CURL_CA_BUNDLE'
 ];
 const PROXY_VARIABLES = [
   'HTTP_PROXY',
@@ -62,11 +60,7 @@ function renderDockerConfig(metadata) {
   return container.innerHTML;
 }
 
-function normalizePem(pem) {
-  return `${String(pem).trim()}\n`;
-}
-
-test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle', async t => {
+test('Docker mounts only the FreeKit CA and preserves image-specific trust roots', async t => {
   t.mock.method(console, 'log', () => {});
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http freekit docker ca-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -82,19 +76,18 @@ test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle
   const { run, compose } = result.metadata.instructions;
   const runEnv = runEnvironment(run);
   const composeEnv = composeEnvironment(compose);
-  const bundlePath = ca.getTerminalCaBundlePath();
-  const containerBundlePath = '/etc/http-freekit/ca-bundle.pem';
-  const bundle = fs.readFileSync(bundlePath, 'utf8');
+  const caPath = ca.caCertPath;
+  const containerCaPath = '/etc/http-freekit/http-freekit-ca.pem';
   const freeKitCa = fs.readFileSync(ca.caCertPath, 'utf8');
-  const certificates = bundle.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\n/g);
 
-  assert.equal(result.metadata.caPath, bundlePath);
-  assert.equal(result.metadata.caBundlePath, bundlePath);
-  assert.equal(result.metadata.containerCaBundlePath, containerBundlePath);
-  assert.match(result.metadata.caBundleDescription, /combines public trust roots with the HTTP FreeKit CA/);
-  assert.match(result.metadata.caBundleDescription, /verification remain enabled/);
-  assert.ok(run.includes(`--mount 'type=bind,"source=${bundlePath}",target=${containerBundlePath},readonly'`));
-  assert.ok(compose.includes(JSON.stringify(`${bundlePath}:${containerBundlePath}:ro`)));
+  assert.equal(result.metadata.caPath, caPath);
+  assert.equal(result.metadata.caBundlePath, caPath);
+  assert.equal(result.metadata.containerCaPath, containerCaPath);
+  assert.equal(result.metadata.containerCaBundlePath, containerCaPath);
+  assert.match(result.metadata.caBundleDescription, /added to Node trust with NODE_EXTRA_CA_CERTS/);
+  assert.match(result.metadata.caBundleDescription, /trust stores remain unchanged/);
+  assert.ok(run.includes(`--mount 'type=bind,"source=${caPath}",target=${containerCaPath},readonly'`));
+  assert.ok(compose.includes(JSON.stringify(`${caPath}:${containerCaPath}:ro`)));
 
   assert.deepEqual(runEnv, composeEnv);
   assert.deepEqual(select(runEnv, PROXY_VARIABLES), {
@@ -105,25 +98,24 @@ test('Docker run and Compose mount the complete public-roots-plus-FreeKit bundle
     NO_PROXY: '',
     no_proxy: ''
   });
-  for (const variable of TRUST_VARIABLES) assert.equal(runEnv[variable], containerBundlePath);
+  assert.equal(runEnv.NODE_EXTRA_CA_CERTS, containerCaPath);
+  for (const variable of REPLACING_TRUST_VARIABLES) {
+    assert.equal(Object.hasOwn(runEnv, variable), false, variable);
+  }
   assert.equal(runEnv.NODE_USE_ENV_PROXY, '1');
   assert.doesNotMatch(run, /NODE_TLS_REJECT_UNAUTHORIZED|--insecure|-k(?:\s|$)/);
   assert.doesNotMatch(compose, /NODE_TLS_REJECT_UNAUTHORIZED|--insecure/);
 
-  assert.equal(certificates.length, tls.rootCertificates.length + 1);
-  assert.deepEqual(certificates.slice(0, -1), tls.rootCertificates.map(normalizePem));
-  assert.equal(certificates.at(-1), normalizePem(freeKitCa));
-  assert.ok(bundle.includes(tls.rootCertificates[0].trim()), 'a known public root remains trusted');
-  assert.ok(bundle.includes(freeKitCa.trim()), 'the FreeKit CA is appended');
-  assert.doesNotThrow(() => tls.createSecureContext({ ca: bundle }));
+  assert.match(freeKitCa, /-----BEGIN CERTIFICATE-----/);
+  assert.notEqual(ca.getTerminalCaBundlePath(), caPath);
 
   const rendered = renderDockerConfig(result.metadata);
-  assert.ok(rendered.includes('public trust roots with the HTTP FreeKit CA'));
-  assert.ok(rendered.includes('ca-bundle.pem'));
+  assert.ok(rendered.includes('trust stores remain unchanged'));
+  assert.ok(rendered.includes('http-freekit-ca.pem'));
   assert.doesNotMatch(rendered, /NODE_TLS_REJECT_UNAUTHORIZED/);
 });
 
-test('Docker activation rejects unavailable or empty combined bundles before becoming active', async t => {
+test('Docker activation rejects unavailable or empty FreeKit CA files before becoming active', async t => {
   t.mock.method(console, 'log', () => {});
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-docker-empty-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -131,9 +123,9 @@ test('Docker activation rejects unavailable or empty combined bundles before bec
   fs.writeFileSync(emptyBundle, '   \n');
 
   for (const [name, ca, errorPattern] of [
-    ['missing service', null, /bundle is not configured/],
-    ['missing file', { getTerminalCaBundlePath: () => path.join(dataDir, 'missing.pem') }, /bundle is unavailable/],
-    ['empty file', { getTerminalCaBundlePath: () => emptyBundle }, /bundle is empty/]
+    ['missing service', null, /certificate path is not configured/],
+    ['missing file', { getCertInfo: () => ({ certificatePath: path.join(dataDir, 'missing.pem') }) }, /certificate is unavailable/],
+    ['empty file', { getCertInfo: () => ({ certificatePath: emptyBundle }) }, /certificate is empty/]
   ]) {
     await t.test(name, async () => {
       const interceptor = new DockerInterceptor();
@@ -147,9 +139,11 @@ test('Docker activation rejects unavailable or empty combined bundles before bec
 
 test('renderer proxy-only fallback never disables TLS or claims a generated CA mount', () => {
   const rendered = renderDockerConfig(null);
-  assert.match(rendered, /Activate Docker interception to generate a read-only combined public-roots-plus-FreeKit CA bundle mount/);
+  assert.match(rendered, /mount the raw FreeKit CA at \/etc\/http-freekit\/http-freekit-ca\.pem/);
+  assert.match(rendered, /add it to Node trust with NODE_EXTRA_CA_CERTS/);
   assert.match(rendered, /proxy-only fallback does not change TLS verification/);
-  assert.doesNotMatch(rendered, /NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|NODE_EXTRA_CA_CERTS/);
+  assert.doesNotMatch(rendered, /NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE/);
+  assert.doesNotMatch(rendered, /-e NODE_EXTRA_CA_CERTS|  - NODE_EXTRA_CA_CERTS/);
   assert.match(rendered, /HTTP_PROXY=http:\/\/172\.17\.0\.1:8310/);
   assert.match(rendered, /http_proxy=http:\/\/172\.17\.0\.1:8310/);
   assert.match(rendered, /NODE_USE_ENV_PROXY=1/);

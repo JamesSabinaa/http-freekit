@@ -38,7 +38,7 @@ function captureRequest(request) {
   });
 }
 
-function sendChunkedThroughProxy(proxyPort, targetUrl) {
+function sendChunkedThroughProxy(proxyPort, targetUrl, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const request = http.request({
       hostname: '127.0.0.1',
@@ -48,7 +48,8 @@ function sendChunkedThroughProxy(proxyPort, targetUrl) {
       headers: {
         connection: 'close',
         'Transfer-Encoding': 'chunked',
-        Trailer: 'X-Checksum'
+        Trailer: 'X-Checksum',
+        ...extraHeaders
       }
     }, response => {
       const chunks = [];
@@ -98,6 +99,7 @@ async function sendTlsChunked(proxyPort, hostname, targetPort) {
     `Host: ${hostname}:${targetPort}\r\n` +
     'Connection: close\r\n' +
     'TrAnSfEr-EnCoDiNg: chunked\r\n' +
+    'CoNtEnT-EnCoDiNg: gzip\r\n' +
     'Trailer: X-Checksum\r\n\r\n' +
     '8\r\noriginal\r\n0\r\nX-Checksum: original checksum\r\n\r\n'
   );
@@ -152,6 +154,7 @@ function assertEditedRequest(observed) {
   assert.equal(observed.headers['transfer-encoding'], undefined);
   assert.equal(observed.headers.trailer, undefined);
   assert.equal(observed.headers['content-length'], String(Buffer.byteLength(EDITED_BODY)));
+  assert.equal(observed.headers['content-encoding'], undefined);
   assert.equal(observed.body, EDITED_BODY);
   assert.deepEqual(observed.trailers, {});
 }
@@ -173,7 +176,8 @@ test('plain H1 breakpoint body edits replace chunked framing with Content-Length
 
   const response = await sendChunkedThroughProxy(
     proxy.server.address().port,
-    `http://127.0.0.1:${originPort}/original`
+    `http://127.0.0.1:${originPort}/original`,
+    { 'Content-Encoding': 'gzip' }
   );
 
   assert.equal(response.statusCode, 200);
@@ -185,6 +189,7 @@ test('response body edits discard stale chunked response trailers', async t => {
   const origin = http.createServer((_request, response) => {
     response.writeHead(200, {
       'content-type': 'text/plain',
+      'content-encoding': 'gzip',
       'transfer-encoding': 'chunked',
       trailer: 'X-Checksum'
     });
@@ -217,6 +222,7 @@ test('response body edits discard stale chunked response trailers', async t => {
   assert.equal(response.headers['transfer-encoding'], undefined);
   assert.equal(response.headers.trailer, undefined);
   assert.equal(response.headers['content-length'], String(Buffer.byteLength(EDITED_BODY)));
+  assert.equal(response.headers['content-encoding'], undefined);
   assert.equal(response.body, EDITED_BODY);
   assert.deepEqual(response.trailers, {});
 });

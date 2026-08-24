@@ -54,7 +54,7 @@ function createTimerHarness() {
   };
 }
 
-function loadUpdater() {
+function loadUpdater({ isPackaged = true } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
   const module = { exports: {} };
@@ -70,8 +70,9 @@ function loadUpdater() {
   autoUpdater.quitAndInstall = () => {};
 
   const ipcHandlers = new Map();
+  const statuses = [];
   const electron = {
-    app: { getVersion: () => '1.0.0', isPackaged: true },
+    app: { getVersion: () => '1.0.0', isPackaged },
     dialog: { showMessageBox: () => Promise.resolve({ response: 1 }) },
     ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
     shell: { openExternal: () => Promise.resolve() }
@@ -107,7 +108,7 @@ function loadUpdater() {
 
   const mainWindow = {
     isDestroyed: () => false,
-    webContents: { send: () => {} }
+    webContents: { send: (_channel, status) => statuses.push(status) }
   };
   const init = () => module.exports.initAutoUpdater(mainWindow, {
     validateSender: () => true
@@ -116,10 +117,27 @@ function loadUpdater() {
   return {
     ...module.exports,
     init,
+    checkNow: () => ipcHandlers.get('updater-check-now')({}),
+    getStatus: () => ipcHandlers.get('updater-get-status')({}),
+    statuses,
     timers,
     updateChecks: () => updateChecks
   };
 }
+
+test('unpackaged desktop builds expose an unavailable state without scheduling inert checks', async () => {
+  const harness = loadUpdater({ isPackaged: false });
+  harness.init();
+
+  assert.equal(harness.timers.timeouts.length, 0);
+  assert.equal(harness.timers.intervals.length, 0);
+  assert.equal(harness.getStatus().status, 'unavailable');
+  assert.match(harness.getStatus().error, /require a packaged HTTP FreeKit desktop build/);
+  await harness.checkNow();
+  assert.equal(harness.updateChecks(), 0);
+  assert.equal(harness.statuses.at(-1).manual, true);
+  harness.stopAutoUpdater();
+});
 
 test('stopping before the startup timer prevents the delayed update check', () => {
   const harness = loadUpdater();

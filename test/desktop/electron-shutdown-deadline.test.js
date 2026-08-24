@@ -8,8 +8,11 @@ import shutdownModule from '../../electron/server-shutdown.cjs';
 
 const {
   DEFAULT_EXIT_AFTER_CLEANUP_MS,
+  DEFAULT_FORCE_KILL_CONFIRMATION_MS,
   DEFAULT_SHUTDOWN_DEADLINE_MS,
   SHUTDOWN_COMPLETE_MESSAGE,
+  SHUTDOWN_FAILED_MESSAGE,
+  SHUTDOWN_PROGRESS_MESSAGE,
   shutdownServerProcess
 } = shutdownModule;
 
@@ -109,8 +112,16 @@ test('resistant browser cleanup can finish before later proxy restorations witho
   assert.deepEqual(result, { reason: 'exit', cleanupComplete: true });
 });
 
-test('a hung cleanup is force-killed only when the deliberate overall deadline expires', async () => {
+test('a hung cleanup resolves only after deadline SIGKILL is confirmed by exit', async () => {
   const proc = new FakeChildProcess();
+  proc.kill = signal => {
+    proc.killSignals.push(signal);
+    queueMicrotask(() => {
+      proc.signalCode = signal;
+      proc.emit('exit', null, signal);
+    });
+    return true;
+  };
   const timers = createTimerHarness();
   const shutdown = shutdownServerProcess({
     proc,
@@ -130,8 +141,16 @@ test('a hung cleanup is force-killed only when the deliberate overall deadline e
   assert.deepEqual(proc.killSignals, ['SIGKILL']);
 });
 
-test('a backend that reports completed cleanup but stalls is safe to force-kill', async () => {
+test('a backend that reports completed cleanup resolves after its forced exit', async () => {
   const proc = new FakeChildProcess();
+  proc.kill = signal => {
+    proc.killSignals.push(signal);
+    queueMicrotask(() => {
+      proc.signalCode = signal;
+      proc.emit('exit', null, signal);
+    });
+    return true;
+  };
   const timers = createTimerHarness();
   const shutdown = shutdownServerProcess({
     proc,
@@ -156,6 +175,80 @@ test('a backend that reports completed cleanup but stalls is safe to force-kill'
   assert.deepEqual(proc.killSignals, ['SIGKILL']);
 });
 
+test('shutdown progress replaces the total deadline with a bounded operation stall deadline', async () => {
+  const proc = new FakeChildProcess();
+  const timers = createTimerHarness();
+  const shutdown = shutdownServerProcess({
+    proc,
+    apiPort: 8123,
+    authToken: 'test-token',
+    request: createRequest(),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+
+  proc.emit('message', { type: SHUTDOWN_PROGRESS_MESSAGE, timeoutMs: 120_000 });
+  assert.equal(timers.timers[0].cleared, true);
+  assert.equal(timers.timers[1].delay, 120_000);
+
+  proc.exit();
+  assert.deepEqual(await shutdown, { reason: 'exit', cleanupComplete: false });
+});
+
+test('failed cleanup is surfaced without killing a retryable backend', async () => {
+  const proc = new FakeChildProcess();
+  const timers = createTimerHarness();
+  const shutdown = shutdownServerProcess({
+    proc,
+    apiPort: 8123,
+    authToken: 'test-token',
+    request: createRequest(),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  });
+  const rejection = assert.rejects(shutdown, /System Proxy cleanup failed/);
+
+  proc.emit('message', {
+    type: SHUTDOWN_FAILED_MESSAGE,
+    error: 'System Proxy cleanup failed'
+  });
+
+  await rejection;
+  assert.deepEqual(proc.killSignals, []);
+  assert.equal(timers.timers[0].cleared, true);
+});
+
+test('failed or unconfirmed SIGKILL never reports desktop shutdown completion', async () => {
+  for (const killResult of [false, true]) {
+    const proc = new FakeChildProcess();
+    proc.kill = signal => {
+      proc.killSignals.push(signal);
+      return killResult;
+    };
+    const timers = createTimerHarness();
+    const shutdown = shutdownServerProcess({
+      proc,
+      apiPort: 8123,
+      authToken: 'test-token',
+      request: createRequest(),
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn
+    });
+    const rejection = assert.rejects(
+      shutdown,
+      killResult ? /exit was not confirmed/ : /SIGKILL was not delivered/
+    );
+
+    timers.timers[0].callback();
+    if (killResult) {
+      assert.equal(timers.timers[1].delay, DEFAULT_FORCE_KILL_CONFIRMATION_MS);
+      timers.timers[1].callback();
+    }
+    await rejection;
+    assert.deepEqual(proc.killSignals, ['SIGKILL']);
+  }
+});
+
 test('desktop child wiring exposes IPC and reports completion after graceful cleanup', () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const mainSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.cjs'), 'utf8');
@@ -166,6 +259,6 @@ test('desktop child wiring exposes IPC and reports completion after graceful cle
   assert.ok(backendSource.includes(`type: '${SHUTDOWN_COMPLETE_MESSAGE}'`));
   assert.match(
     backendSource,
-    /await interceptors\.deactivateAll\(\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\);[\s\S]*?await notifyDesktopShutdownComplete\(\);[\s\S]*?process\.exit\(finalExitCode\)/
+    /await interceptors\.deactivateAll\(\{ onProgress: notifyDesktopShutdownProgress \}\);[\s\S]*?await proxy\.stop\(\);[\s\S]*?await api\.stop\(\);[\s\S]*?await notifyDesktopShutdownComplete\(\);[\s\S]*?process\.exit\(finalExitCode\)/
   );
 });

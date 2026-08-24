@@ -185,7 +185,7 @@ test('PowerShell and PHP multipart snippets serialize duplicate fields as ordere
 });
 
 test('unsafe hand-built multipart metadata is rejected instead of injected', () => {
-  for (const format of ['javascript-node', 'powershell', 'wget', 'php']) {
+  for (const format of ['javascript-node', 'powershell', 'wget', 'php', 'go']) {
     for (const unsafeField of [
       { key: 'unsafe\r\nX-Injected: yes', value: 'value' },
       { key: 'file', type: 'file', fileName: 'safe.bin', fileType: 'text/plain\r\nX-Injected: yes' }
@@ -253,6 +253,21 @@ test('Python multipart snippets preserve interleaved text and file part order', 
   ], 'Python');
 });
 
+test('Go multipart snippets build file parts with the captured MIME type', () => {
+  const request = multipartRequest('https://example.test/multipart', 'payload "quoted".bin');
+  request.formFields[1].fileType = 'application/vnd.freekit.capture';
+
+  const snippet = generateExportSnippet(request, 'go');
+
+  assert.match(snippet, /"net\/textproto"/);
+  assert.ok(snippet.includes(
+    `header0.Set("Content-Disposition", ${JSON.stringify('form-data; name="upload"; filename="payload \\"quoted\\".bin"')})`
+  ));
+  assert.match(snippet, /header0\.Set\("Content-Type", "application\/vnd\.freekit\.capture"\)/);
+  assert.match(snippet, /writer\.CreatePart\(header0\)/);
+  assert.doesNotMatch(snippet, /CreateFormFile/);
+});
+
 test('generated PowerShell multipart requests preserve duplicate order and binary files', async t => {
   const executables = powerShellExecutables();
   if (!executables.length) {
@@ -291,6 +306,30 @@ test('generated Node multipart requests preserve quoted names and binary files',
     return runScript(process.execPath, [scriptPath], { cwd: tempDir });
   });
   assertCapturedParts(captured, fileName);
+});
+
+test('generated Go multipart requests preserve captured file MIME types when Go is available', async t => {
+  const version = spawnSync('go', ['version'], { encoding: 'utf8', windowsHide: true });
+  if (version.error?.code === 'ENOENT' || version.status !== 0) {
+    t.skip('Go is unavailable');
+    return;
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freekit-multipart-go-'));
+  const fileName = path.join(tempDir, 'payload.bin');
+  const scriptPath = path.join(tempDir, 'request.go');
+  fs.writeFileSync(fileName, fileBytes);
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const captured = await captureRequest(async url => {
+    const request = multipartRequest(url, fileName);
+    request.formFields[1].fileType = 'application/vnd.freekit.capture';
+    fs.writeFileSync(scriptPath, generateExportSnippet(request, 'go'));
+    return runScript('go', ['run', scriptPath], { cwd: tempDir });
+  });
+  const parts = parseMultipart(captured);
+  assert.match(parts[1].headers, /^Content-Type: application\/vnd\.freekit\.capture$/im);
+  assert.deepEqual(parts[1].value, fileBytes);
 });
 
 test('generated PHP multipart requests preserve duplicate order and binary files when PHP is available', async t => {

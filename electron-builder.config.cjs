@@ -1,3 +1,7 @@
+const {
+  stagePackagedMacNodeArchitecture
+} = require('./scripts/mac-node-architecture.cjs');
+
 /**
  * electron-builder configuration for HTTP FreeKit.
  * @type {import('electron-builder').Configuration}
@@ -62,6 +66,7 @@ module.exports = {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     perMachine: false,
+    include: 'build/installer.nsh',
     installerIcon: 'build/icon.ico',
     uninstallerIcon: 'build/icon.ico',
     shortcutName: 'HTTP FreeKit'
@@ -118,5 +123,10 @@ module.exports = {
   asarUnpack: [
     'src/**/*',
     'node_modules/**/*'
-  ]
+  ],
+
+  // The direct `node` dependency installs for the build host. Replace it in
+  // every macOS app with the integrity-pinned runtime for that target before
+  // electron-builder signs and publishes the x64/arm64 artifacts.
+  afterPack: stagePackagedMacNodeArchitecture
 };

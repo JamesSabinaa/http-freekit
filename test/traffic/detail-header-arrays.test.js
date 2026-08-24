@@ -64,6 +64,9 @@ function renderDetail(request) {
     URL,
     URLSearchParams,
     _transformPerspective: 'transformed',
+    _detailRenderedRequestIdentity: null,
+    _detailHeaderScope: 0,
+    _headerCollapsed: Object.create(null),
     _urlBreakdownOpen: false,
     console,
     disposeBodyEditor: () => {},
@@ -85,6 +88,16 @@ function renderDetail(request) {
       bodyViewerCalls.push({ elementId, body, contentType, mode });
     },
     renderUrlBreakdown: () => '',
+    getResponseStatusPillBackground: (statusCode, options = {}) => {
+      if (options.breakpoint) return 'var(--status-pill-4xx)';
+      if (options.error) return 'var(--status-pill-5xx)';
+      const numeric = Number(statusCode);
+      const family = Number.isFinite(numeric) && numeric > 0
+        ? Math.min(5, Math.max(1, Math.floor(numeric / 100)))
+        : 1;
+      return `var(--status-pill-${family}xx)`;
+    },
+    initializeDetailCardDisclosures: () => {},
     window: {}
   };
 
@@ -101,7 +114,15 @@ function renderDetail(request) {
   `, context);
   context.renderDetailCardsForTest(request);
 
-  return { html: detailContent.innerHTML, bodyViewerCalls };
+  return {
+    html: detailContent.innerHTML,
+    bodyViewerCalls,
+    context,
+    render(nextRequest) {
+      context.renderDetailCardsForTest(nextRequest);
+      return detailContent.innerHTML;
+    }
+  };
 }
 
 function renderTrafficRow(request) {
@@ -316,10 +337,10 @@ test('WebSocket details specialize only successful upgrade handshakes', () => {
       if (failure.statusCode === null || failure.statusCode === undefined) {
         assert.match(failed, />Pending</);
         assert.doesNotMatch(failed, /ERR Pending|Pending Pending/);
-        assert.match(failed, /background:#888;color:#fff;">Pending/);
+        assert.match(failed, /background:var\(--status-pill-1xx\);color:#fff;">Pending/);
       }
       if (failure.statusCode === 0) {
-        assert.match(failed, /background:#ce3939;color:#fff;">ERR/);
+        assert.match(failed, /background:var\(--status-pill-5xx\);color:#fff;">ERR/);
       }
       if (failure.error) {
         assert.match(failed, /id="card-error"/);
@@ -361,10 +382,10 @@ test('paused breakpoint details use an amber Paused response status', () => {
     })).html;
 
     assert.match(html, new RegExp(`>${breakpointPhase === 'response' ? 'Response' : 'Request'} Paused at Breakpoint<`));
-    assert.match(html, /background:#f1971f;color:#fff;">Paused/);
+    assert.match(html, /background:var\(--status-pill-4xx\);color:#fff;">Paused/);
     assert.match(html, /border-left-color:#f1971f/);
     assert.doesNotMatch(html, />ERR</);
-    assert.doesNotMatch(html, /background:#ce3939;color:#fff;">/);
+    assert.doesNotMatch(html, /background:var\(--status-pill-5xx\);color:#fff;">/);
   }
 });
 
@@ -385,7 +406,7 @@ test('terminal breakpoint details show the failure without a Resume action', () 
     const row = renderTrafficRow(request);
 
     assert.doesNotMatch(html, /Paused at Breakpoint|resumeBreakpointRequest|>Paused</);
-    assert.match(html, /background:#ce3939;color:#fff;">ERR/);
+    assert.match(html, /background:var\(--status-pill-5xx\);color:#fff;">ERR/);
     if (terminal.error) assert.match(html, /downstream failed/);
     else assert.match(html, new RegExp(terminal.statusMessage));
     assert.match(row, /status-badge status-err">ERR/);
@@ -477,4 +498,93 @@ test('tunnel rows and details preserve explicit ports and format IPv6 endpoints'
     assert.doesNotMatch(row, /2001:db8::5:443/);
     assert.doesNotMatch(detail, /2001:db8::5:443/);
   }
+});
+
+test('failed tunnel rows and details expose captured status and diagnostics', () => {
+  const request = baseRequest({}, {
+    protocol: 'tunnel',
+    method: 'CONNECT',
+    host: 'unreachable.example',
+    statusCode: 502,
+    statusMessage: 'Bad Gateway',
+    error: 'connect failed <script>alert(1)</script>',
+    errorCode: 'ECONNREFUSED<&',
+    errorPhase: 'upstream-connect<phase>',
+    remote: { address: '192.0.2.9', port: 8443 }
+  });
+
+  const row = renderTrafficRow(request);
+  assert.match(row, /status-badge status-5xx">502</);
+  assert.match(row, /row-marker" style="color:#ce3939/);
+  assert.doesNotMatch(row, /status-2xx">200/);
+  assert.doesNotMatch(row, /<script>/);
+
+  const detail = renderDetail(request).html;
+  assert.match(detail, />Tunnel Failed</);
+  assert.match(detail, /background:var\(--status-pill-5xx\);color:#fff;">502</);
+  assert.match(detail, />Status Message<[^>]*>.*Bad Gateway/s);
+  assert.match(detail, />Error Code<[^>]*>.*ECONNREFUSED&lt;&amp;/s);
+  assert.match(detail, />Error Phase<[^>]*>.*upstream-connect&lt;phase&gt;/s);
+  assert.match(detail, /connect failed &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(detail, /<script>alert\(1\)<\/script>/);
+
+  const missingStatusFailure = { ...request, statusCode: undefined };
+  assert.match(renderTrafficRow(missingStatusFailure), /status-badge status-err">ERR</);
+  assert.match(renderDetail(missingStatusFailure).html, /background:var\(--status-pill-5xx\);color:#fff;">ERR</);
+});
+
+test('transform perspective resets for a different request but survives same-request rerenders', () => {
+  const firstRequest = baseRequest({}, {
+    id: 'transform-one',
+    originalRequest: {
+      method: 'POST',
+      url: 'https://original-one.test/path',
+      headers: {},
+      body: 'original one'
+    }
+  });
+  const secondRequest = baseRequest({}, {
+    id: 'transform-two',
+    originalRequest: {
+      method: 'PUT',
+      url: 'https://original-two.test/path',
+      headers: {},
+      body: 'original two'
+    }
+  });
+  const renderer = renderDetail(firstRequest);
+
+  renderer.context._transformPerspective = 'original';
+  const sameRequestHtml = renderer.render(firstRequest);
+  assert.match(sameRequestHtml, /value="original" selected/);
+
+  const nextRequestHtml = renderer.render(secondRequest);
+  assert.match(nextRequestHtml, /value="transformed" selected/);
+  assert.doesNotMatch(nextRequestHtml, /value="original" selected/);
+});
+
+test('header disclosure IDs are section-scoped and stale state is reset per request', () => {
+  const firstRequest = baseRequest({ 'Content-Type': 'response/type' }, {
+    id: 'headers-one',
+    requestHeaders: { 'Content-Type': 'request/type' },
+    trailers: { 'Content-Type': 'trailer/type' }
+  });
+  const renderer = renderDetail(firstRequest);
+  const ids = [...renderer.html.matchAll(/id="(hdr-[^"]+)-(?:icon|desc)"/g)]
+    .map(match => match[1]);
+  const uniqueIds = new Set(ids);
+  assert.equal(ids.length, 6);
+  assert.equal(uniqueIds.size, 3);
+  assert.ok([...uniqueIds].some(id => id.includes('-request-')));
+  assert.ok([...uniqueIds].some(id => id.includes('-response-')));
+  assert.ok([...uniqueIds].some(id => id.includes('-trailers-')));
+
+  const requestDisclosureId = [...uniqueIds].find(id => id.includes('-request-'));
+  renderer.context._headerCollapsed[requestDisclosureId] = true;
+  assert.match(renderer.render(firstRequest), new RegExp(`${requestDisclosureId}-icon"[^>]*>\u2212<`));
+
+  const secondRequest = { ...firstRequest, id: 'headers-two' };
+  const secondHtml = renderer.render(secondRequest);
+  assert.doesNotMatch(secondHtml, />\u2212<\/span>/);
+  assert.equal(Object.keys(renderer.context._headerCollapsed).length, 0);
 });

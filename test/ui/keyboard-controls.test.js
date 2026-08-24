@@ -34,13 +34,13 @@ test('all sortable and collapsible headers are focusable keyboard controls', () 
     assert.match(header, /onkeydown="activateOnKeyboard\(event\)"/);
   }
 
-  const sendHeaders = [...html.matchAll(/<div class="card-header"[^>]*role="button"[^>]*aria-controls="send(?:Headers|Body|Export)Body"[^>]*>/g)].map(match => match[0]);
-  assert.equal(sendHeaders.length, 3);
-  for (const header of sendHeaders) {
-    assert.match(header, /tabindex="0"/);
-    assert.match(header, /aria-expanded="(?:true|false)"/);
-    assert.match(header, /onkeydown="activateOnKeyboard\(event\)"/);
+  const sendDisclosures = [...html.matchAll(/<button type="button" class="send-card-disclosure"[^>]*aria-controls="send(?:Headers|Body|Export)Body"[^>]*>/g)].map(match => match[0]);
+  assert.equal(sendDisclosures.length, 3);
+  for (const disclosure of sendDisclosures) {
+    assert.match(disclosure, /aria-expanded="(?:true|false)"/);
+    assert.match(disclosure, /onclick="toggleSendCard\('/);
   }
+  assert.doesNotMatch(html, /<div class="card-header[^>]*role="button"/);
 });
 
 test('keyboard activation clicks once and ignores repeats and nested controls', () => {
@@ -74,9 +74,12 @@ test('keyboard activation clicks once and ignores repeats and nested controls', 
 
 test('Send card visibility and aria-expanded stay synchronized', () => {
   const attributes = new Map();
+  const disclosure = {
+    setAttribute: (name, value) => attributes.set(name, value)
+  };
   const header = {
     classList: { contains: value => value === 'card-header' },
-    setAttribute: (name, value) => attributes.set(name, value)
+    querySelector: selector => selector === '.send-card-disclosure' ? disclosure : null
   };
   const content = { style: { display: 'block' }, previousElementSibling: header };
   const arrow = { style: {} };

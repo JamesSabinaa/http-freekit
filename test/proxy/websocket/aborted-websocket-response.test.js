@@ -127,6 +127,38 @@ test('chunked WebSocket rejections are re-framed with their trailers', async () 
   assert.equal(updates[0].trailers['x-checksum'], 'complete');
 });
 
+test('oversized rejected WebSocket responses publish truncation metadata', async () => {
+  const updates = [];
+  const proxy = new ProxyServer(null, {
+    maxBufferedBodyBytes: 4,
+    onRequest: update => updates.push(update)
+  });
+  const response = new PassThrough();
+  response.statusCode = 403;
+  response.statusMessage = 'Forbidden';
+  response.headers = { 'Content-Type': 'text/plain' };
+  response.rawHeaders = ['Content-Type', 'text/plain'];
+  response.socket = null;
+
+  const downstream = new PassThrough();
+  downstream.resume();
+  const finished = once(downstream, 'finish');
+
+  proxy._forwardRejectedUpgradeResponse(response, downstream, {
+    id: 'oversized-rejection',
+    protocol: 'ws'
+  }, Date.now());
+  response.end('denied');
+  await finished;
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].responseBody, '[Response body omitted after exceeding 4 bytes]');
+  assert.equal(updates[0].responseBodySize, 6);
+  assert.equal(updates[0].responseBodyTruncated, true);
+  assert.equal(updates[0].responseBodyCapturedSize, 0);
+  assert.equal(updates[0].responseBodyDecodedSize, 6);
+});
+
 test('an aborted rejected WebSocket response forwards its partial body and closes the client', async t => {
   const origin = net.createServer(socket => {
     socket.once('data', () => {

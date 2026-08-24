@@ -18,10 +18,7 @@ const expectedEnvironment = {
   NO_PROXY: '',
   no_proxy: '',
   NODE_USE_ENV_PROXY: '1',
-  SSL_CERT_FILE: certPath,
-  NODE_EXTRA_CA_CERTS: certPath,
-  REQUESTS_CA_BUNDLE: certPath,
-  CURL_CA_BUNDLE: certPath
+  NODE_EXTRA_CA_CERTS: certPath
 };
 
 function fakeLauncher(pid) {
@@ -71,22 +68,32 @@ test('Fresh Terminal overrides inherited bypass variables on every platform', as
       PATH: '/usr/bin:/bin',
       NO_PROXY: '*',
       no_proxy: 'localhost,example.test',
+      SSL_CERT_FILE: '/target/openssl.pem',
+      REQUESTS_CA_BUNDLE: '/target/requests.pem',
+      CURL_CA_BUNDLE: '/target/curl.pem',
       PRESERVED_VALUE: 'yes'
     });
-    interceptor._createPidFilePath = () => `/tmp/http-freekit-${platform}.pid`;
     const sessionPid = 9250 + index;
     let sessionRunning = true;
-    interceptor._waitForShellPid = async () => sessionPid;
+    interceptor._createPosixHandshake = () => ({
+      directory: null,
+      reportFile: `/tmp/http-freekit-${platform}.json`,
+      acknowledgementFile: `/tmp/http-freekit-${platform}.ack`,
+      nonce: `no-proxy-${platform}`
+    });
+    interceptor._waitForPosixShellReport = async () => sessionPid;
+    interceptor._acknowledgePosixShell = async () => {};
+    interceptor._cleanupTerminalHandshake = () => {};
+    const identity = {
+      pid: sessionPid,
+      startTime: String(sessionPid),
+      executable: platform === 'win32' ? 'c:\\windows\\powershell.exe' : '/bin/sh'
+    };
+    interceptor._inspectSessionIdentity = async () => sessionRunning
+      ? { state: 'running', identity }
+      : { state: 'absent' };
     if (platform === 'win32') {
-      const identity = {
-        pid: sessionPid,
-        startTime: String(sessionPid),
-        executable: 'c:\\windows\\powershell.exe'
-      };
       interceptor._waitForWindowsShellReport = async () => identity;
-      interceptor._inspectSessionIdentity = async () => sessionRunning
-        ? { state: 'running', identity }
-        : { state: 'absent' };
       interceptor._acknowledgeWindowsShell = async () => {};
     }
     interceptor._killSession = () => { sessionRunning = false; };
@@ -97,18 +104,30 @@ test('Fresh Terminal overrides inherited bypass variables on every platform', as
 
     await interceptor.activate(8080);
 
-    assert.equal(launch.options.env.NO_PROXY, '', platform);
-    assert.equal(launch.options.env.no_proxy, '', platform);
-    assert.equal(launch.options.env.PRESERVED_VALUE, 'yes', platform);
-    assert.deepEqual(
-      Object.fromEntries(Object.keys(expectedEnvironment).map(name => [name, launch.options.env[name]])),
-      expectedEnvironment,
+    assert.equal(launch.options.env.NO_PROXY, platform === 'win32' ? '' : '*', platform);
+    assert.equal(
+      launch.options.env.no_proxy,
+      platform === 'win32' ? '' : 'localhost,example.test',
       platform
     );
-    if (platform !== 'win32') {
+    assert.equal(launch.options.env.PRESERVED_VALUE, 'yes', platform);
+    assert.equal(launch.options.env.SSL_CERT_FILE, '/target/openssl.pem', platform);
+    assert.equal(launch.options.env.REQUESTS_CA_BUNDLE, '/target/requests.pem', platform);
+    assert.equal(launch.options.env.CURL_CA_BUNDLE, '/target/curl.pem', platform);
+    if (platform === 'win32') {
+      assert.deepEqual(
+        Object.fromEntries(Object.keys(expectedEnvironment).map(name => [name, launch.options.env[name]])),
+        expectedEnvironment,
+        platform
+      );
+    } else {
+      for (const name of Object.keys(expectedEnvironment).filter(name => !['NO_PROXY', 'no_proxy'].includes(name))) {
+        assert.equal(launch.options.env[name], undefined, `${platform} defers ${name}`);
+      }
       const commandText = launch.args.join(' ');
       assert.match(commandText, /export NO_PROXY=''/, platform);
       assert.match(commandText, /export no_proxy=''/, platform);
+      assert.doesNotMatch(commandText, /export (?:SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)=/, platform);
     }
 
     await interceptor.deactivate();

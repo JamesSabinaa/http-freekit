@@ -8,7 +8,12 @@ function fakeChild(pid) {
   const child = new EventEmitter();
   child.pid = pid;
   child.killed = false;
-  child.kill = () => { child.killed = true; };
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => {
+    child.killed = true;
+    return true;
+  };
   return child;
 }
 

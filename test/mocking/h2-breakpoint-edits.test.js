@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http2 from 'node:http2';
-import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,8 +33,11 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   const ca = new CertificateAuthority(dataDir);
   await ca.initialize();
   const originCert = await ca.generateCertForHost('127.0.0.1');
-  const origin = https.createServer({ key: originCert.key, cert: originCert.cert }, (req, res) => {
-    res.end(`${req.method} ${req.url} ${req.headers.host}`);
+  const origin = http2.createSecureServer({ key: originCert.key, cert: originCert.cert });
+  origin.on('stream', (stream, headers) => {
+    const body = `${headers[':method']} ${headers[':path']} ${headers[':authority']}`;
+    stream.respond({ ':status': 200, 'content-length': String(Buffer.byteLength(body)) });
+    stream.end(body);
   });
   const originPort = await listen(origin);
 
@@ -48,7 +50,7 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
       if (event.type !== 'breakpoint-hit') return;
       setImmediate(() => {
         proxy.resumeBreakpoint(event.requestId, {
-          method: 'POST',
+          method: 'pOsT',
           url: `https://127.0.0.1:${originPort}/edited?yes=1`
         });
       });
@@ -88,7 +90,7 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   await once(request, 'end');
 
   const editedAuthority = `127.0.0.1:${originPort}`;
-  assert.equal(Buffer.concat(chunks).toString('utf8'), `POST /edited?yes=1 ${editedAuthority}`);
+  assert.equal(Buffer.concat(chunks).toString('utf8'), `pOsT /edited?yes=1 ${editedAuthority}`);
   assert.equal(captures.at(-1).url, `https://${editedAuthority}/edited?yes=1`);
   assert.equal(captures.at(-1).host, editedAuthority);
 });

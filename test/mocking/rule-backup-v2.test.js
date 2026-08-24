@@ -81,7 +81,7 @@ function savedSettings(settings) {
 }
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const exportStart = rendererSource.indexOf('function exportMockRules()');
+const exportStart = rendererSource.indexOf('const RULE_RESTORE_ROUTE_MAX_BYTES');
 const importStart = rendererSource.indexOf('function importMockRules()', exportStart);
 const importEnd = rendererSource.indexOf('// ============ TRANSFORM HEADER HELPERS', importStart);
 assert.notEqual(exportStart, -1);
@@ -90,7 +90,9 @@ assert.notEqual(importEnd, -1);
 const exportSource = rendererSource.slice(exportStart, importStart);
 const importSource = rendererSource.slice(importStart, importEnd);
 
-async function exportRules(mockRules, breakpointRules, pendingBreakpoints = []) {
+async function exportRules(mockRules, breakpointRules, pendingBreakpoints = [], {
+  BlobImpl = Blob
+} = {}) {
   const toasts = [];
   let exportedBlob;
   let clicks = 0;
@@ -98,9 +100,10 @@ async function exportRules(mockRules, breakpointRules, pendingBreakpoints = []) 
     mockRules,
     breakpointRules,
     pendingBreakpoints,
-    Blob,
+    Blob: BlobImpl,
     Date,
     JSON,
+    TextEncoder,
     URL: {
       createObjectURL(blob) {
         exportedBlob = blob;
@@ -126,17 +129,30 @@ async function exportRules(mockRules, breakpointRules, pendingBreakpoints = []) 
   };
 }
 
-function createImportRenderer({ fileData, mockRules = [], breakpointRules = [], replace = false }) {
+function createImportRenderer({
+  fileData,
+  fileSize,
+  mockRules = [],
+  breakpointRules = [],
+  replace = false
+}) {
   const requests = [];
   const toasts = [];
   let completion;
   let confirmCalls = 0;
   let mockReloads = 0;
   let breakpointReloads = 0;
+  let fileReads = 0;
   const input = {
     click() {
       completion = input.onchange({
-        target: { files: [{ text: async () => JSON.stringify(fileData) }] }
+        target: { files: [{
+          ...(fileSize === undefined ? {} : { size: fileSize }),
+          text: async () => {
+            fileReads += 1;
+            return JSON.stringify(fileData);
+          }
+        }] }
       });
     }
   };
@@ -152,6 +168,8 @@ function createImportRenderer({ fileData, mockRules = [], breakpointRules = [], 
     mockRevertInProgress: false,
     mockResetInProgress: false,
     mockCollectionMutationCount: 0,
+    RULE_RESTORE_ROUTE_MAX_BYTES: 50 * 1024 * 1024,
+    breakpointRulesLoadGeneration: 0,
     _queueMockCollectionMutation: mutation => mutation(),
     document: {
       createElement(tagName) {
@@ -200,12 +218,27 @@ function createImportRenderer({ fileData, mockRules = [], breakpointRules = [], 
     get confirmCalls() { return confirmCalls; },
     get mockReloads() { return mockReloads; },
     get breakpointReloads() { return breakpointReloads; },
+    get fileReads() { return fileReads; },
     async importRules() {
       context.importMockRules();
       await completion;
     }
   };
 }
+
+test('oversized rule backups are rejected before reading or submitting the file', async () => {
+  const renderer = createImportRenderer({
+    fileData: { version: 2, mockRules: [], breakpointRules: [] },
+    fileSize: 50 * 1024 * 1024 + 1
+  });
+
+  await renderer.importRules();
+
+  assert.equal(renderer.fileReads, 0);
+  assert.equal(renderer.requests.length, 0);
+  assert.match(renderer.toasts.at(-1).message, /exceeds the 50 MiB safe import limit/i);
+  assert.equal(renderer.toasts.at(-1).type, 'error');
+});
 
 test('version 2 exports support breakpoint-only and mixed backups without pending requests', async t => {
   await t.test('breakpoint-only', async () => {
@@ -234,6 +267,44 @@ test('version 2 exports support breakpoint-only and mixed backups without pendin
   });
 });
 
+test('renderer refuses a rule backup whose exact append restore envelope exceeds the safe route ceiling', async () => {
+  const oversized = mockRule('oversized');
+  oversized.action.body = 'x'.repeat(49 * 1024 * 1024);
+
+  const exported = await exportRules([oversized], []);
+
+  assert.equal(exported.clicks, 0);
+  assert.equal(exported.data, null);
+  assert.equal(exported.toasts.length, 1);
+  assert.equal(exported.toasts[0].type, 'error');
+  assert.match(exported.toasts[0].message, /not exported/i);
+  assert.match(exported.toasts[0].message, /49 MiB backup limit/);
+  assert.match(exported.toasts[0].message, /Delete or shorten large rules/);
+});
+
+test('renderer refuses an actual formatted backup blob above its own import ceiling', async () => {
+  class OversizedFormattedBackupBlob {
+    constructor(parts) {
+      assert.match(parts[0], /\n/);
+      this.size = 50 * 1024 * 1024 + 1;
+    }
+  }
+
+  const exported = await exportRules(
+    [mockRule('small-rule')],
+    [],
+    [],
+    { BlobImpl: OversizedFormattedBackupBlob }
+  );
+
+  assert.equal(exported.clicks, 0);
+  assert.equal(exported.data, null);
+  assert.equal(exported.toasts.length, 1);
+  assert.equal(exported.toasts[0].type, 'error');
+  assert.match(exported.toasts[0].message, /formatted backup/i);
+  assert.match(exported.toasts[0].message, /50 MiB import limit/);
+});
+
 test('version 2 renderer import considers breakpoint-only state and sends both collections together', async () => {
   const importedMock = mockRule('imported-mock');
   const importedBreakpoint = breakpointRule('imported-breakpoint');
@@ -260,7 +331,8 @@ test('version 2 renderer import considers breakpoint-only state and sends both c
     }
   }]);
   assert.equal(renderer.mockReloads, 1);
-  assert.equal(renderer.breakpointReloads, 1);
+  // loadMockRules is the aggregate production loader and refreshes breakpoints internally.
+  assert.equal(renderer.breakpointReloads, 0);
   assert.equal(renderer.mockDraftRules.size, 1);
   assert.deepEqual(renderer.toasts, [{ message: 'Imported 2 rules', type: 'success' }]);
 });

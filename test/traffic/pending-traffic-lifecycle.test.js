@@ -232,7 +232,6 @@ test('intercepted HTTPS H1 terminal mock outcomes all replace the pending row',
         action: { type: 'forward', forwardTo: `http://127.0.0.1:${forwardPort}` },
         status: 207
       },
-      { name: 'forward setup failure', action: { type: 'forward', forwardTo: 'ftp://bad.test' }, status: 500 },
       {
         name: 'file success',
         action: { type: 'serve-file', filePath, contentType: 'text/plain', status: 206 },

@@ -135,3 +135,33 @@ test('Fetch multipart export preserves scalar-only and ordinary single-file requ
   ]);
   assert.equal(singleRun.state.fetchCalls.length, 1);
 });
+
+test('Fetch multipart export applies the captured MIME type to the selected file bytes', async () => {
+  const sliceCalls = [];
+  const replayBlob = { id: 'captured-type blob', type: 'application/vnd.freekit.capture' };
+  const selectedFile = {
+    size: 37,
+    type: 'text/plain',
+    slice(start, end, type) {
+      sliceCalls.push([start, end, type]);
+      return replayBlob;
+    }
+  };
+  const request = multipartRequest([
+    {
+      key: 'upload',
+      type: 'file',
+      fileName: 'capture.bin',
+      fileType: 'application/vnd.freekit.capture'
+    }
+  ]);
+
+  const { completion, state } = executeFetchSnippet(request, [selectedFile]);
+  await completion;
+
+  assert.deepEqual(sliceCalls, [[0, 37, 'application/vnd.freekit.capture']]);
+  assert.deepEqual(state.appendCalls, [
+    ['upload', replayBlob, 'capture.bin']
+  ]);
+  assert.equal(state.fetchCalls.length, 1);
+});

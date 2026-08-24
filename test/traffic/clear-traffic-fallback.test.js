@@ -158,6 +158,11 @@ function createRenderer(fetch) {
     }
     function showDetail() {}
     function hydrateDeferredTrafficRequest() {}
+    function renderSelectedTrafficDetail(request) {
+      return request?._deferredTrafficDetail === true
+        ? hydrateDeferredTrafficRequest(request)
+        : showDetail(request);
+    }
     ${rendererSource.slice(mergeStart, mergeEnd)}
     ${rendererSource.slice(stateStart, stateEnd)}
     ${rendererSource.slice(actionStart, actionEnd)}

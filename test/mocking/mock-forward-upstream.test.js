@@ -192,6 +192,12 @@ function assertForwardedResponse(response, requestPath) {
   assert.equal(response.body, `destination:${requestPath}`);
 }
 
+function headerValue(headers, name) {
+  const entry = Object.entries(headers || {})
+    .find(([candidate]) => candidate.toLowerCase() === name.toLowerCase());
+  return entry?.[1];
+}
+
 test('mock forwards use the configured upstream across H1, intercepted HTTPS, and H2', { timeout: 60000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-mock-forward-proxy-'));
   const ca = new CertificateAuthority(dataDir);
@@ -290,10 +296,21 @@ test('mock forwards use the configured upstream across H1, intercepted HTTPS, an
     assert.equal(request.headers['x-mock-request'], 'added');
     assert.equal(request.headers.host, `127.0.0.1:${destinationPort}`);
   }
-  assert.deepEqual(
-    events.filter(event => event.source === 'mock').map(event => event.protocol),
-    ['http', 'https', 'h2', 'https']
-  );
+  const forwardedEvents = events.filter(event => event.source === 'mock');
+  assert.deepEqual(forwardedEvents.map(event => event.protocol), ['http', 'https', 'h2', 'https']);
+  assert.ok(forwardedEvents.every(event => event.mockResponseSource === 'upstream'));
+  for (const event of forwardedEvents) {
+    assert.equal(headerValue(event.requestHeaders, 'host'), `127.0.0.1:${destinationPort}`);
+    assert.equal(headerValue(event.requestHeaders, 'x-mock-request'), 'added');
+    assert.equal(headerValue(event.requestHeaders, 'proxy-authorization'), undefined);
+    assert.equal(headerValue(event.requestHeaders, 'x-forwarded-for'), undefined);
+    assert.ok(event.originalRequest);
+    assert.notEqual(
+      headerValue(event.originalRequest.headers, 'host'),
+      `127.0.0.1:${destinationPort}`
+    );
+    assert.match(String(headerValue(event.originalRequest.headers, 'x-forwarded-for')), /^203\.0\.113\./);
+  }
 
   proxy.setUpstreamProxy({
     host: '127.0.0.1',

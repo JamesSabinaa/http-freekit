@@ -7,7 +7,9 @@ import test from 'node:test';
 
 import {
   cleanupStaleBrowserProfiles,
-  createManagedBrowserProfile
+  createManagedBrowserProfile,
+  MAX_PROFILE_MARKER_BYTES,
+  MAX_STALE_PROFILE_CANDIDATES
 } from '../../../src/interceptors/browser-lifecycle.js';
 
 const PROFILE_MARKER = '.http-freekit-profile.json';
@@ -55,6 +57,9 @@ test('startup cleanup preserves every profile lookalike without a valid regular 
     createdAt: new Date().toISOString()
   }));
 
+  const oversizedMarker = createLookalike(tempRoot, 'http-freekit-edge-oversized-marker');
+  fs.writeFileSync(markerPath(oversizedMarker), Buffer.alloc(MAX_PROFILE_MARKER_BYTES + 1));
+
   const nonRegularMarker = createLookalike(tempRoot, 'http-freekit-chrome-marker-directory');
   fs.mkdirSync(markerPath(nonRegularMarker));
 
@@ -75,15 +80,38 @@ test('startup cleanup preserves every profile lookalike without a valid regular 
 
   assert.deepEqual(result.removed, [staleOwned]);
   assert.equal(fs.existsSync(staleOwned), false);
-  for (const profileDir of [markerless, malformedJson, malformedFields, nonRegularMarker, symlinkMarker]) {
+  for (const profileDir of [
+    markerless,
+    malformedJson,
+    malformedFields,
+    oversizedMarker,
+    nonRegularMarker,
+    symlinkMarker
+  ]) {
     assert.equal(fs.existsSync(profileDir), true, path.basename(profileDir));
     assert.equal(fs.readFileSync(path.join(profileDir, 'keep.txt'), 'utf8'), 'must survive startup cleanup');
   }
   assert.match(failureFor(result, markerless), /missing .*ownership marker/);
   assert.match(failureFor(result, malformedJson), /could not parse .*ownership marker/);
   assert.match(failureFor(result, malformedFields), /invalid ownerPid/);
+  assert.match(failureFor(result, oversizedMarker), /exceeds the .*byte limit/);
   assert.match(failureFor(result, nonRegularMarker), /not a regular file/);
   assert.match(failureFor(result, symlinkMarker), /ownership marker is a symbolic link/);
+});
+
+test('startup cleanup inspects only a bounded number of managed-looking candidates', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-marker-count-test-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const profiles = Array.from({ length: MAX_STALE_PROFILE_CANDIDATES + 1 }, (_, index) =>
+    createLookalike(tempRoot, `http-freekit-chrome-candidate-${String(index).padStart(4, '0')}`)
+  );
+
+  const result = cleanupStaleBrowserProfiles({ tempDir: tempRoot, processSnapshot: [] });
+  const candidateFailures = result.failed.filter(item => item.path !== tempRoot);
+
+  assert.equal(candidateFailures.length, MAX_STALE_PROFILE_CANDIDATES);
+  assert.match(failureFor(result, tempRoot), /limited to .* managed browser profile candidates/);
+  assert.equal(profiles.every(profileDir => fs.existsSync(profileDir)), true);
 });
 
 test('startup cleanup considers only exact direct children of the selected temp root', async t => {

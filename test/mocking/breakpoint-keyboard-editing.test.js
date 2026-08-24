@@ -14,6 +14,10 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 const headerLookupSource = sourceBetween('function findHeaderValues(', 'function matchesFilter(');
+const statusPillSource = sourceBetween(
+  'function getResponseStatusPillBackground(',
+  'function renderDetailCards('
+);
 const detailSource = sourceBetween('function renderDetailCards(', 'function autoSizeExportEditor(');
 const remoteEndpointSource = sourceBetween('function formatRemoteEndpoint(', 'function buildRowHtml(');
 const headerGridSource = sourceBetween('function renderHeadersGrid(', '// Keep old renderHeaders as alias');
@@ -68,6 +72,9 @@ function renderPausedDetail(phase, identity = {}) {
     URL,
     URLSearchParams,
     _transformPerspective: 'transformed',
+    _detailRenderedRequestIdentity: null,
+    _detailHeaderScope: 0,
+    _headerCollapsed: Object.create(null),
     _urlBreakdownOpen: false,
     console,
     disposeBodyEditor: () => {},
@@ -91,6 +98,7 @@ function renderPausedDetail(phase, identity = {}) {
       _dirty: {}
     },
     getEffectiveRequest: value => value,
+    initializeDetailCardDisclosures: () => {},
     renderBodyViewer: () => {},
     renderUrlBreakdown: () => '',
     window: {}
@@ -103,6 +111,7 @@ function renderPausedDetail(phase, identity = {}) {
     ${bodyModeSource}
     ${webSocketConnectionSource}
     ${remoteEndpointSource}
+    ${statusPillSource}
     ${detailSource}
     globalThis.renderDetailCardsForTest = renderDetailCards;
   `, context);
@@ -317,7 +326,7 @@ test('Enter and Space edit every breakpoint field once and restore focus after r
     ['paused-response', 'status', 'Enter', '204', draft => assert.equal(draft.status, 204)],
     ['paused-response', 'headers', ' ', '{"x-response":"changed"}', draft => assert.equal(draft.headers['x-response'], 'changed')],
     ['paused-response', 'body', 'Enter', '  response body  ', draft => assert.equal(draft.body, '  response body  ')],
-    ['paused-request', 'method', ' ', 'patch', draft => assert.equal(draft.method, 'PATCH')],
+    ['paused-request', 'method', ' ', 'patch', draft => assert.equal(draft.method, 'patch')],
     ['paused-request', 'url', 'Enter', ' https://changed.test/path ', draft => assert.equal(draft.url, 'https://changed.test/path')],
     ['paused-request', 'headers', ' ', '{"x-request":"changed"}', draft => assert.equal(draft.headers['x-request'], 'changed')],
     ['paused-request', 'body', 'Enter', '  request body  ', draft => assert.equal(draft.body, '  request body  ')]

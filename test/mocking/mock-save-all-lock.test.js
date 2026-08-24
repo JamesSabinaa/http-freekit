@@ -207,6 +207,7 @@ function createBreakpointImportHarness() {
   let fileInput = null;
   const context = {
     calls,
+    RULE_RESTORE_ROUTE_MAX_BYTES: 50 * 1024 * 1024,
     confirm: () => false,
     document: {
       createElement: () => {
@@ -231,6 +232,7 @@ function createBreakpointImportHarness() {
     let mockResetInProgress = false;
     let mockCollectionMutationCount = 0;
     let mockReorderQueue = Promise.resolve();
+    let breakpointRulesLoadGeneration = 0;
     function toast() {}
     function updateMockSaveButtons() {}
     async function loadMockRules() { calls.loadMocks++; }

@@ -42,13 +42,6 @@ function buildAppMenu(mainWindow) {
   const fileMenu = {
     label: 'File',
     submenu: [
-      {
-        label: 'New Session',
-        click: () => {
-          if (mainWindow) mainWindow.webContents.reload();
-        }
-      },
-      { type: 'separator' },
       isMac
         ? { label: 'Close Window', click: () => mainWindow?.close() }
         : { role: 'quit', label: 'Quit', accelerator: 'Ctrl+Q' }

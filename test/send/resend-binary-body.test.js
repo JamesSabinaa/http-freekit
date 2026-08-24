@@ -32,6 +32,10 @@ const prepareSource = sourceBetween(
   'async function prepareSendRequestPayload(',
   'async function sendRequest()'
 );
+const bodyEditingSource = sourceBetween(
+  'function getSendBodyValue()',
+  'function handleSendBodyFallbackKeydown('
+);
 const currentExportSource = sourceBetween(
   'function getCurrentSendExportRequest(',
   'function scheduleSendExportUpdate('
@@ -275,6 +279,67 @@ test('captured and HAR-imported binary bodies remain byte-exact through Resend p
     assert.match(snippet, /Buffer\.from\("AP9B", 'base64'\)/);
     assert.equal(snippet.includes(tab.body), false);
   }
+});
+
+test('programmatic binary body loads stay base64 while a genuine edit transitions to UTF-8', async () => {
+  const tab = {
+    id: 'tab-binary-edit',
+    body: 'data:application/octet-stream;base64,AP9B',
+    bodyEncoding: 'base64',
+    bodyType: 'raw',
+    bodyFormat: 'text'
+  };
+  const fallback = { value: '', dataset: {} };
+  const toasts = [];
+  const context = {
+    __tab: tab,
+    __fallback: fallback,
+    document: { getElementById: id => id === 'sendBody-fallback' ? fallback : null }
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let sendTabs = [globalThis.__tab];
+    let activeSendTab = globalThis.__tab.id;
+    let sendBodyProgrammaticUpdateDepth = 0;
+    let sendBodyEditor = {
+      setValue(value) {
+        globalThis.__fallback.value = value;
+        handleSendBodyUserInput();
+      },
+      getValue() { return globalThis.__fallback.value; }
+    };
+    function getSendBodyType() { return 'raw'; }
+    function scheduleSendExportUpdate() {}
+    function toast(message, type) { globalThis.__toasts.push({ message, type }); }
+    ${bodyEditingSource}
+    globalThis.__toasts = [];
+    globalThis.bodyEditApi = {
+      programmatic: setSendBodyValue,
+      edit(value) {
+        globalThis.__fallback.value = value;
+        handleSendBodyUserInput();
+      }
+    };
+  `, Object.assign(context, { __toasts: toasts }));
+
+  context.bodyEditApi.programmatic(tab.body);
+  assert.equal(tab.bodyEncoding, 'base64');
+  assert.equal(context.__toasts.length, 0);
+
+  context.bodyEditApi.edit('deliberately edited text \u2713');
+  assert.equal(tab.bodyEncoding, 'utf8');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__toasts)), [{
+    message: 'Binary request body was edited and will now be sent as UTF-8 text.',
+    type: 'success'
+  }]);
+
+  context.bodyEditApi.edit('second edit');
+  assert.equal(context.__toasts.length, 1);
+  tab.body = fallback.value;
+  const { payload } = await prepareTab(tab);
+  assert.equal(payload.body, 'second edit');
+  assert.equal(payload.bodyEncoding, 'utf8');
+  assert.equal(payload.byteLength, Buffer.byteLength('second edit'));
 });
 
 test('malformed and truncated binary captures fail closed before creating a Send tab', async () => {

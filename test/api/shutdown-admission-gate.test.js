@@ -231,7 +231,7 @@ test('shutdown uses its internal Stop admission for cleanup-only ownership', asy
   assert.equal(interceptor.cleanupPending, false);
 });
 
-test('repeated shutdown retries failures without reopening or duplicating successful status', async t => {
+test('shutdown retries retained failures in one bounded call without reopening admissions', async t => {
   t.mock.method(console, 'error', () => {});
   const interceptor = statefulInterceptor('retry', { active: true });
   const events = [];
@@ -249,10 +249,6 @@ test('repeated shutdown retries failures without reopening or duplicating succes
   manager.onStatusChange = event => events.push(event);
 
   await manager.deactivateAll();
-  assert.equal(interceptor.active, true);
-  assert.equal(manager.closing, true);
-
-  await manager.deactivateAll();
   await manager.deactivateAll();
 
   assert.equal(attempts, 2);
@@ -263,6 +259,51 @@ test('repeated shutdown retries failures without reopening or duplicating succes
     [false, 'inactive']
   ]);
   await assert.rejects(manager.deactivate('retry'), assertClosingError);
+});
+
+test('shutdown aggregates unresolved cleanup failures after retrying every owner', async t => {
+  t.mock.method(console, 'error', () => {});
+  const first = statefulInterceptor('first', { active: true });
+  const second = statefulInterceptor('second', { active: true });
+  const attempts = [];
+  const progress = [];
+  first.deactivate = async () => {
+    attempts.push('first');
+    throw new Error('first remains owned');
+  };
+  first.getShutdownTimeoutMs = defaultTimeoutMs => defaultTimeoutMs + 1000;
+  second.deactivate = async () => {
+    attempts.push('second');
+    second.active = false;
+  };
+  const manager = createManager([first, second]);
+
+  await assert.rejects(
+    manager.deactivateAll({
+      operationTimeoutMs: 4321,
+      onProgress: event => progress.push(event)
+    }),
+    error => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /Test first/);
+      assert.deepEqual(error.errors.map(item => item.message), ['first remains owned']);
+      return true;
+    }
+  );
+
+  assert.deepEqual(attempts, ['first', 'second', 'first']);
+  assert.deepEqual(progress.map(event => [
+    event.interceptorId,
+    event.attempt,
+    event.operationTimeoutMs,
+    event.timeoutMs
+  ]), [
+    ['first', 1, 5321, 10321],
+    ['second', 1, 4321, 9321],
+    ['first', 2, 5321, 10321]
+  ]);
+  assert.equal(first.active, true);
+  assert.equal(second.active, false);
 });
 
 function requestJson(port, pathname) {

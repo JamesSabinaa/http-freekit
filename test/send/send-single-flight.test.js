@@ -4,6 +4,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { normalizeSendUrl } from '../../src/ui/send-url.js';
+
 function createSendHarness() {
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
   const start = source.indexOf('async function sendRequest()');
@@ -21,10 +23,12 @@ function createSendHarness() {
   const context = {
     AbortController,
     API_BASE: 'http://127.0.0.1:8080',
+    normalizeSendUrl,
     activeSendTab: 'tab-1',
-    currentSendAbort: null,
+    sendAbortControllers: new Map(),
     document: { getElementById: id => elements[id] },
     prepareSendRequestPayload: async () => ({ body: '', bodyEncoding: 'utf8' }),
+    assertSendManagementRequestSize() {},
     setSendLoading: loading => loadingStates.push(loading),
     toast: (...args) => toasts.push(args),
     fetch: (url, options) => {
@@ -48,7 +52,8 @@ function createSendHarness() {
     ${source.slice(start, end)}
     globalThis.callSendRequest = sendRequest;
     globalThis.callAbortSendRequest = abortSendRequest;
-    globalThis.getCurrentSendAbort = () => currentSendAbort;
+    globalThis.getCurrentSendAbort = (tabId = activeSendTab) => sendAbortControllers.get(tabId) || null;
+    globalThis.setActiveSendTab = tabId => { activeSendTab = tabId; };
   `, context);
 
   return { context, fetchCalls, loadingStates, toasts };
@@ -73,6 +78,30 @@ test('Send remains single-flight across programmatic and keyboard-style invocati
   await Promise.all([first, duringAbort]);
   assert.equal(context.getCurrentSendAbort(), null);
   assert.deepEqual(loadingStates, [true, false]);
+});
+
+test('different Send tabs own independent requests and abort controllers', async () => {
+  const { context, fetchCalls } = createSendHarness();
+
+  const first = context.callSendRequest();
+  context.setActiveSendTab('tab-2');
+  const second = context.callSendRequest();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fetchCalls.length, 2);
+  const firstController = context.getCurrentSendAbort('tab-1');
+  const secondController = context.getCurrentSendAbort('tab-2');
+  assert.notEqual(firstController, secondController);
+
+  context.callAbortSendRequest();
+  assert.equal(secondController.signal.aborted, true);
+  assert.equal(firstController.signal.aborted, false);
+
+  context.setActiveSendTab('tab-1');
+  context.callAbortSendRequest();
+  await Promise.all([first, second]);
+  assert.equal(context.getCurrentSendAbort('tab-1'), null);
+  assert.equal(context.getCurrentSendAbort('tab-2'), null);
 });
 
 test('Abort keeps ownership until settlement and reports only the first abort', async () => {

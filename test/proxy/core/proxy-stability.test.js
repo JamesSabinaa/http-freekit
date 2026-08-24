@@ -214,16 +214,14 @@ test('a matching passthrough rule prevents lower mock rules from winning', () =>
     matchers: [{ type: 'wildcard' }],
     action: { type: 'fixed-response', status: 200 }
   };
-  proxy.mockRules = [
-    {
-      enabled: true,
-      matchers: [{ type: 'path', matchType: 'exact', value: '/allowed' }],
-      action: { type: 'passthrough' }
-    },
-    fallbackRule
-  ];
+  const passthroughRule = {
+    enabled: true,
+    matchers: [{ type: 'path', matchType: 'exact', value: '/allowed' }],
+    action: { type: 'passthrough' }
+  };
+  proxy.mockRules = [passthroughRule, fallbackRule];
 
-  assert.equal(proxy._findMockRule('GET', 'http://example.test/allowed', {}, ''), undefined);
+  assert.equal(proxy._findMockRule('GET', 'http://example.test/allowed', {}, ''), passthroughRule);
   assert.equal(proxy._findMockRule('GET', 'http://example.test/blocked', {}, ''), fallbackRule);
 });
 

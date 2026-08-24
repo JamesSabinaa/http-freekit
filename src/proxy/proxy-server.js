@@ -37,8 +37,17 @@ import {
   parsePerMessageDeflate
 } from './ws-permessage-deflate.js';
 import { normalizeNoProxyEntries, normalizeUpstreamProxyConfig } from './upstream-proxy-config.js';
-import { isCompleteMockMatcher, validateMockRule } from './mock-rule-validation.js';
-import { normalizeHttpsWhitelist, normalizeTlsHostname } from './https-whitelist.js';
+import {
+  isCompleteMockMatcher,
+  validateMockMatcher,
+  validateMockRule
+} from './mock-rule-validation.js';
+import {
+  normalizeExactTlsHostname,
+  normalizeHttpsWhitelist,
+  normalizeTlsHostname,
+  normalizeTlsHostnamePattern
+} from './https-whitelist.js';
 import {
   MAX_TLS_MATERIAL_ENTRIES,
   TlsMaterialConfigError
@@ -47,6 +56,7 @@ import {
   validateTlsFingerprint
 } from './tls-fingerprint-config.js';
 import { validateHttp2Mode } from './http2-config.js';
+import { normalizeIncomingResponseHeaders } from '../api/incoming-response-headers.js';
 import {
   compileOpenApiPathPattern,
   getApiSpecBaseHost,
@@ -95,6 +105,44 @@ const HOP_BY_HOP_HEADER_NAMES = new Set([
   'transfer-encoding',
   'upgrade',
   'http2-settings'
+]);
+// Node rejects arrays for this HTTP/2 single-value set. Other arrays are
+// accepted and must remain arrays so repeated field boundaries reach the wire.
+const HTTP2_SINGLE_VALUE_HEADER_NAMES = new Set([
+  'access-control-allow-credentials',
+  'access-control-max-age',
+  'access-control-request-method',
+  'age',
+  'authorization',
+  'content-encoding',
+  'content-language',
+  'content-length',
+  'content-location',
+  'content-md5',
+  'content-range',
+  'content-type',
+  'date',
+  'dnt',
+  'etag',
+  'expires',
+  'from',
+  'host',
+  'if-match',
+  'if-modified-since',
+  'if-none-match',
+  'if-range',
+  'if-unmodified-since',
+  'last-modified',
+  'location',
+  'max-forwards',
+  'proxy-authorization',
+  'range',
+  'referer',
+  'retry-after',
+  'tk',
+  'upgrade-insecure-requests',
+  'user-agent',
+  'x-content-type-options'
 ]);
 const BREAKPOINT_CLIENT_DISCONNECTED = Symbol('breakpoint-client-disconnected');
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
@@ -520,7 +568,7 @@ export class ProxyServer {
   async _shouldRetryAfterUpstreamResponse(proxyRes, context = {}) {
     if (!context.usedUpstreamProxy || context.attempt > 0) return false;
     if (proxyRes?.statusCode !== 410) return false;
-    if (!this._canSafelyReplayRequest(context.method)) return false;
+    if (context.safeToReplay !== true && !this._canSafelyReplayRequest(context.method)) return false;
     if (context.proxyGeneration !== undefined &&
         context.proxyGeneration !== this._upstreamProxyGeneration) return true;
     try {
@@ -574,7 +622,7 @@ export class ProxyServer {
 
   async _shouldRetryAfterUpstreamError(err, context = {}) {
     if (!context.usedUpstreamProxy || context.attempt > 0) return false;
-    if (!this._canSafelyReplayRequest(context.method)) return false;
+    if (context.safeToReplay !== true && !this._canSafelyReplayRequest(context.method)) return false;
     if (!this._isRetryableUpstreamError(err)) return false;
 
     const failedGeneration = context.proxyGeneration;
@@ -738,6 +786,7 @@ export class ProxyServer {
         const useUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
         const requestHeaders = this._stripUpstreamHeaders(headers);
         this._setTargetHostHeader(requestHeaders, forwardUrl.host);
+        const destinationRequestHeaders = createHeaderMap(Object.entries(requestHeaders));
         const options = {
           hostname: targetHostname,
           port: targetPort,
@@ -806,7 +855,7 @@ export class ProxyServer {
                 return;
               }
 
-              const responseHeaders = this._incomingMessageHeaders(response);
+              const responseHeaders = this._incomingResponseHeaders(response);
               if (response.statusCode !== 407) delete responseHeaders['proxy-authenticate'];
               delete responseHeaders['proxy-authorization'];
               delete responseHeaders['proxy-connection'];
@@ -816,6 +865,7 @@ export class ProxyServer {
                 headers: responseHeaders,
                 body: responseBuffer,
                 trailers: this._incomingMessageTrailers(response),
+                requestHeaders: destinationRequestHeaders,
                 usedUpstreamProxy: useUpstreamProxy,
                 remote: { address: request.socket?.remoteAddress, port: request.socket?.remotePort }
               }));
@@ -870,6 +920,9 @@ export class ProxyServer {
     const controller = new AbortController();
     let completed = false;
     let abortOnCleanClose = false;
+    let terminalClaimed = false;
+    let terminalDeferrals = 0;
+    const terminalDeferralWaiters = new Set();
 
     const cleanup = () => {
       target?.removeListener?.('close', onClose);
@@ -909,12 +962,108 @@ export class ProxyServer {
         abortOnCleanClose = true;
         if (target?.destroyed || target?.closed) abort();
       },
+      claimTerminal() {
+        if (terminalClaimed) return false;
+        terminalClaimed = true;
+        return true;
+      },
+      deferTerminal() {
+        terminalDeferrals++;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          terminalDeferrals--;
+          if (terminalDeferrals === 0) {
+            for (const resolve of terminalDeferralWaiters) resolve();
+            terminalDeferralWaiters.clear();
+          }
+        };
+      },
+      waitForTerminalDeferrals() {
+        if (terminalDeferrals === 0) return Promise.resolve();
+        return new Promise(resolve => terminalDeferralWaiters.add(resolve));
+      },
       complete() {
-        if (completed) return;
+        if (completed) return true;
+        if (controller.signal.aborted) return false;
+        if (http2Stream
+          ? (target?.aborted || target?.destroyed || target?.closed)
+          : target?.destroyed) {
+          abort();
+          return false;
+        }
         completed = true;
         cleanup();
+        return true;
       }
     };
+  }
+
+  _terminalizeBufferedDownstream(downstream, getRecord, trafficLifecycleId) {
+    let terminalized = false;
+    const terminalize = () => {
+      if (terminalized) return;
+      terminalized = true;
+      const initialRecord = getRecord();
+      const pendingAtAbort = this._selectPendingTrafficLogDecision(
+        initialRecord,
+        trafficLifecycleId
+      ) !== null;
+
+      // Breakpoint disconnect listeners run on the same close event and already
+      // own their pending lifecycle. Let those settle first, then fill any
+      // lifecycle that is still outstanding (or append the plain-H1 terminal).
+      void downstream.waitForTerminalDeferrals?.().then(() => {
+        const latestRecord = getRecord();
+        const pendingSelection = this._selectPendingTrafficLogDecision(
+          latestRecord,
+          trafficLifecycleId
+        );
+        if (pendingAtAbort && pendingSelection === null) return;
+        if (downstream.claimTerminal && !downstream.claimTerminal()) return;
+        const pendingDecision = pendingSelection?.decision;
+        const retainedRecord = pendingDecision && typeof pendingDecision === 'object'
+          ? pendingDecision.record
+          : null;
+        const error = downstream.signal.reason instanceof Error
+          ? downstream.signal.reason
+          : this._createDownstreamAbortError();
+        const timestamp = Number.isFinite(latestRecord.timestamp)
+          ? latestRecord.timestamp
+          : Date.now();
+        const terminalRecord = {
+          ...(retainedRecord || {}),
+          ...latestRecord,
+          statusCode: 0,
+          statusMessage: 'Client Disconnected',
+          responseHeaders: {},
+          responseBody: '',
+          responseBodySize: 0,
+          duration: Math.max(0, Date.now() - timestamp),
+          error: error.message,
+          errorCode: error.code || 'ERR_DOWNSTREAM_ABORTED',
+          errorPhase: 'downstream'
+        };
+        if (pendingSelection !== null) {
+          this._emitRequestUpdate(terminalRecord, trafficLifecycleId);
+        } else {
+          this._emitRequest(terminalRecord, trafficLifecycleId);
+        }
+      });
+    };
+
+    downstream.signal.addEventListener('abort', terminalize, { once: true });
+    if (downstream.aborted) terminalize();
+    return downstream;
+  }
+
+  _claimDownstreamCapture(downstream, data) {
+    if (!downstream?.aborted) return true;
+    if (data?.statusMessage !== 'Client Disconnected') return false;
+    return typeof downstream.claimTerminal === 'function'
+      ? downstream.claimTerminal()
+      : true;
   }
 
   _holdMockTimeout(downstream, data, { pendingEmitted, trafficLifecycleId } = {}) {
@@ -1039,6 +1188,13 @@ export class ProxyServer {
     headers['content-length'] = String(length);
   }
 
+  _setDecodedBodyContentLength(headers, length) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-encoding') delete headers[key];
+    }
+    this._setContentLength(headers, length);
+  }
+
   _createBodyCollector(limit = this.maxBufferedBodyBytes) {
     return { chunks: [], length: 0, limit, exceeded: false };
   }
@@ -1081,6 +1237,14 @@ export class ProxyServer {
   }
 
   _safeRequestBodyString(buffer, headers = {}) {
+    return this._safeBodyString(
+      buffer,
+      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-type')[0]
+    );
+  }
+
+  _safeResponseBodyString(buffer, headers = {}) {
     return this._safeBodyString(
       buffer,
       getHeaderValues(headers, 'content-encoding')[0],
@@ -1145,12 +1309,15 @@ export class ProxyServer {
         const decision = this._matcherSetBeforeBody(rule.matchers, method, url, headers);
         if (decision === 'miss') continue;
         if (decision === 'pending-body') return false;
-        if (rule.action.type === 'passthrough') break;
+        if (rule.action.type === 'passthrough') {
+          if (Array.isArray(rule.preSteps) && rule.preSteps.length > 0) return false;
+          break;
+        }
         return false;
       }
 
       const methodMatches = typeof rule.method !== 'string' || rule.method === '*'
-        || rule.method.toUpperCase() === String(method || '').toUpperCase();
+        || rule.method === String(method || '');
       let urlMatches = false;
       if (rule.urlPattern instanceof RegExp) {
         urlMatches = testRegExpPreservingLastIndex(rule.urlPattern, String(url || ''));
@@ -1186,10 +1353,19 @@ export class ProxyServer {
     startTime,
     captureProtocol,
     tlsDetails = null,
-    clientHelloTls = null
+    clientHelloTls = null,
+    bufferedRequestBody = null,
+    bufferedRequestTrailers = {},
+    trafficLifecycleId = uuidv4(),
+    pendingEmitted = false,
+    requestProvenance = {}
   }) {
+    const hasBufferedRequestBody = Buffer.isBuffer(bufferedRequestBody);
+    const bufferedRequestBytes = hasBufferedRequestBody ? bufferedRequestBody : null;
     const method = clientReq.method;
-    clientReq.headers = this._incomingMessageHeaders(clientReq);
+    if (!hasBufferedRequestBody) {
+      clientReq.headers = this._incomingMessageHeaders(clientReq);
+    }
     const requestHeaders = createHeaderMap(Object.entries(clientReq.headers));
     const upstreamHeaders = this._stripUpstreamHeaders(
       this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers)
@@ -1210,17 +1386,17 @@ export class ProxyServer {
     const responseBody = this._createBodyCollector();
     const downstream = this._trackDownstreamCancellation(clientRes);
     const source = this._detectSource(requestHeaders);
-    let requestBodySize = 0;
+    let requestBodySize = hasBufferedRequestBody ? bufferedRequestBytes.length : 0;
     let responseBodySize = 0;
     let requestBodyIncomplete = false;
-    let requestEnded = false;
-    let requestTrailers = {};
+    let requestEnded = hasBufferedRequestBody;
+    let requestTrailers = hasBufferedRequestBody
+      ? this._cleanTrailers(bufferedRequestTrailers)
+      : {};
     let activeRequest = null;
     let activeResponse = null;
     let activeProtocol = null;
     let h2FallbackStarted = false;
-    let pendingEmitted = false;
-    const trafficLifecycleId = uuidv4();
     let finalized = false;
     let responseEnded = false;
     let responseResult = null;
@@ -1229,6 +1405,11 @@ export class ProxyServer {
     let upstreamFailureTimer = null;
     let connectStart = Date.now();
     let h2IdleTimer = null;
+
+    if (hasBufferedRequestBody) this._appendBodyChunk(requestBody, bufferedRequestBytes);
+    const requestBytes = () => hasBufferedRequestBody
+      ? bufferedRequestBytes
+      : this._concatBody(requestBody);
 
     const captureRequestChunk = (chunk) => {
       requestBodySize += chunk.length;
@@ -1287,7 +1468,8 @@ export class ProxyServer {
         timestamp: startTime,
         source,
         tls: tlsDetails,
-        remote: null
+        remote: null,
+        ...requestProvenance
       };
     };
     const emitPending = () => {
@@ -1341,7 +1523,7 @@ export class ProxyServer {
         statusMessage: result.statusMessage,
         responseHeaders: result.responseHeaders || {},
         responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
-        responseBodySize,
+        responseBodySize: result.responseBodySize ?? responseBodySize,
         ...(result.responseBodyTruncated === true ? {
           responseBodyTruncated: true,
           responseBodyCapturedSize: result.responseBodyCapturedSize,
@@ -1436,19 +1618,25 @@ export class ProxyServer {
         return;
       }
 
+      const syntheticResponse = this._syntheticErrorResponse(
+        method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+      );
       try {
         if (!clientRes.headersSent) {
-          clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
-          clientRes.end(`Proxy Error: ${error.message}`);
+          this._sendH1Response(
+            clientRes,
+            syntheticResponse.statusCode,
+            syntheticResponse.headers,
+            syntheticResponse.body
+          );
         } else if (!clientRes.destroyed) {
           clientRes.destroy(error);
         }
       } catch { /* downstream already closed */ }
       finalize({
-        statusCode: 502,
-        statusMessage: 'Bad Gateway',
-        responseHeaders: {},
-        responseBody: `Proxy Error: ${error.message}`,
+        statusCode: syntheticResponse.statusCode,
+        statusMessage: syntheticResponse.statusMessage,
+        ...syntheticResponse.capture,
         error,
         request,
         proxyGeneration: context.proxyGeneration,
@@ -1483,7 +1671,7 @@ export class ProxyServer {
       }
 
       activeResponse = proxyRes;
-      const incomingResponseHeaders = this._incomingMessageHeaders(proxyRes);
+      const incomingResponseHeaders = this._incomingResponseHeaders(proxyRes);
       const responseHeaders = this._stripHopByHopHeaders(incomingResponseHeaders, {
         preserveProxyAuthenticate: proxyRes.statusCode === 407
       });
@@ -1585,7 +1773,7 @@ export class ProxyServer {
       request.once('error', error => { void handleFailure(error, request, context); });
 
       if (replay || requestEnded) {
-        this._endH1Request(request, this._concatBody(requestBody), requestTrailers);
+        this._endH1Request(request, requestBytes(), requestTrailers);
       } else {
         clientReq.resume();
       }
@@ -1742,64 +1930,69 @@ export class ProxyServer {
         void handleFailure(error, request, context);
       });
 
-      if (requestEnded) request.end();
+      if (requestEnded) {
+        if (hasBufferedRequestBody && bufferedRequestBytes.length > 0) request.end(requestBytes());
+        else request.end();
+      }
       else clientReq.resume();
       resetH2IdleTimer(request);
     };
 
-    const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
-      captureQueuedRequestChunks();
-      requestBodyIncomplete = true;
-      const error = new Error('Client disconnected before completing the request body');
-      error.code = 'ERR_REQUEST_BODY_ABORTED';
-      error.upstreamPhase = 'request-body';
-      activeRequest?.destroy(error);
-      if (responseEnded && responseResult) {
-        // An origin may reject an upload early (for example with 413) and
-        // complete a valid response before the client closes its unfinished
-        // request. Preserve that response while recording the partial upload.
-        finalize(responseResult);
-      } else {
-        finalize({
-          statusCode: 0,
-          statusMessage: 'Client Upload Aborted',
-          responseHeaders: {},
-          responseBody: '',
-          error
-        });
-      }
-    });
-    clientReq.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
-    clientReq.on('data', chunk => {
-      captureRequestChunk(chunk);
-      resetH2IdleTimer();
-      if (!activeRequest || activeRequest.destroyed || activeRequest.writableEnded) return;
-      if (!activeRequest.write(chunk)) {
-        clientReq.pause();
-        const request = activeRequest;
-        request.once('drain', () => {
-          if (activeRequest === request && !finalized) clientReq.resume();
-        });
-      }
-    });
-    clientReq.once('end', () => {
-      if (!requestBodyCompletion.complete()) return;
-      requestEnded = true;
-      requestTrailers = this._incomingMessageTrailers(clientReq);
-      if (activeRequest && !activeRequest.destroyed && !activeRequest.writableEnded) {
-        finishUpload(activeRequest);
-      }
-      emitCompletedUpload();
-      if (pendingUpstreamFailure) {
-        if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
-        upstreamFailureTimer = null;
-        const failure = pendingUpstreamFailure;
-        pendingUpstreamFailure = null;
-        void handleFailure(failure.error, failure.request, failure.context, false);
-        return;
-      }
-      maybeFinalize();
-    });
+    if (!hasBufferedRequestBody) {
+      const requestBodyCompletion = this._trackRequestBodyCompletion(clientReq, () => {
+        captureQueuedRequestChunks();
+        requestBodyIncomplete = true;
+        const error = new Error('Client disconnected before completing the request body');
+        error.code = 'ERR_REQUEST_BODY_ABORTED';
+        error.upstreamPhase = 'request-body';
+        activeRequest?.destroy(error);
+        if (responseEnded && responseResult) {
+          // An origin may reject an upload early (for example with 413) and
+          // complete a valid response before the client closes its unfinished
+          // request. Preserve that response while recording the partial upload.
+          finalize(responseResult);
+        } else {
+          finalize({
+            statusCode: 0,
+            statusMessage: 'Client Upload Aborted',
+            responseHeaders: {},
+            responseBody: '',
+            error
+          });
+        }
+      });
+      clientReq.on('trailers', trailers => { requestTrailers = this._cleanTrailers(trailers); });
+      clientReq.on('data', chunk => {
+        captureRequestChunk(chunk);
+        resetH2IdleTimer();
+        if (!activeRequest || activeRequest.destroyed || activeRequest.writableEnded) return;
+        if (!activeRequest.write(chunk)) {
+          clientReq.pause();
+          const request = activeRequest;
+          request.once('drain', () => {
+            if (activeRequest === request && !finalized) clientReq.resume();
+          });
+        }
+      });
+      clientReq.once('end', () => {
+        if (!requestBodyCompletion.complete()) return;
+        requestEnded = true;
+        requestTrailers = this._incomingMessageTrailers(clientReq);
+        if (activeRequest && !activeRequest.destroyed && !activeRequest.writableEnded) {
+          finishUpload(activeRequest);
+        }
+        emitCompletedUpload();
+        if (pendingUpstreamFailure) {
+          if (upstreamFailureTimer) clearTimeout(upstreamFailureTimer);
+          upstreamFailureTimer = null;
+          const failure = pendingUpstreamFailure;
+          pendingUpstreamFailure = null;
+          void handleFailure(failure.error, failure.request, failure.context, false);
+          return;
+        }
+        maybeFinalize();
+      });
+    }
     downstream.signal.addEventListener('abort', () => {
       activeResponse?.destroy();
       activeRequest?.destroy();
@@ -1823,7 +2016,7 @@ export class ProxyServer {
     // Streaming requests can wait indefinitely for response headers. Publish
     // the lifecycle before connecting upstream so it is visible while pending.
     emitPending();
-    clientReq.pause();
+    if (!hasBufferedRequestBody) clientReq.pause();
     const selectUpstream = async () => {
       if (targetUrl.protocol === 'https:'
           && !this._shouldUseUpstreamProxy(targetHostname, targetPort)) {
@@ -1856,7 +2049,12 @@ export class ProxyServer {
     tlsDetails = null,
     clientHelloTls = null,
     clientHttp2Profile = null,
-    pseudoHeaderOrder = null
+    pseudoHeaderOrder = null,
+    bufferedRequestBody = null,
+    bufferedRequestTrailers = {},
+    trafficLifecycleId = uuidv4(),
+    pendingEmitted = false,
+    requestProvenance = {}
   }) {
     const targetUrl = new URL(fullUrl);
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
@@ -1867,19 +2065,21 @@ export class ProxyServer {
     const requestBody = this._createBodyCollector();
     const responseBody = this._createBodyCollector();
     const source = this._detectSource(requestHeaders);
-    let requestBodySize = 0;
+    const hasBufferedRequestBody = Buffer.isBuffer(bufferedRequestBody);
+    const bufferedRequestBytes = hasBufferedRequestBody ? bufferedRequestBody : null;
+    let requestBodySize = hasBufferedRequestBody ? bufferedRequestBytes.length : 0;
     let responseBodySize = 0;
     let requestBodyIncomplete = false;
-    let requestTrailers = {};
+    let requestTrailers = hasBufferedRequestBody
+      ? this._cleanTrailers(bufferedRequestTrailers)
+      : {};
     let responseTrailers = {};
-    let requestEnded = false;
+    let requestEnded = hasBufferedRequestBody;
     let responseEnded = false;
     let responseResult = null;
     let responseMetadata = null;
     let activeRequest = null;
     let activeProtocol = null;
-    let pendingEmitted = false;
-    const trafficLifecycleId = uuidv4();
     let finalized = false;
     let connectStart = Date.now();
     let h2FallbackStarted = false;
@@ -1891,6 +2091,11 @@ export class ProxyServer {
       signal: null,
       complete() {}
     };
+
+    if (hasBufferedRequestBody) this._appendBodyChunk(requestBody, bufferedRequestBytes);
+    const requestBytes = () => hasBufferedRequestBody
+      ? bufferedRequestBytes
+      : this._concatBody(requestBody);
 
     const captureRequestChunk = (chunk) => {
       requestBodySize += chunk.length;
@@ -1947,7 +2152,8 @@ export class ProxyServer {
         timestamp: startTime,
         source,
         tls: tlsDetails,
-        remote: null
+        remote: null,
+        ...requestProvenance
       };
     };
     const emitPending = () => {
@@ -1997,7 +2203,7 @@ export class ProxyServer {
         statusMessage: result.statusMessage || '',
         responseHeaders: result.responseHeaders || {},
         responseBody: result.responseBody ?? responseCapture(result.responseHeaders),
-        responseBodySize,
+        responseBodySize: result.responseBodySize ?? responseBodySize,
         ...(result.responseBodyTruncated === true ? {
           responseBodyTruncated: true,
           responseBodyCapturedSize: result.responseBodyCapturedSize,
@@ -2039,15 +2245,18 @@ export class ProxyServer {
       if (!requestEnded) requestBodyIncomplete = true;
       responseEnded = true;
       requestEnded = true;
+      const syntheticResponse = responseMetadata ? null : this._syntheticErrorResponse(
+        method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+      );
       const responseFields = responseMetadata
         ? responseWasIncomplete
           ? incompleteResponseCapture(responseMetadata.responseHeaders)
           : { responseBody: responseCapture(responseMetadata.responseHeaders) }
-        : { responseBody: `Proxy Error: ${error.message}` };
+        : syntheticResponse.capture;
       finalize({
-        statusCode: metadata.statusCode || 502,
-        statusMessage: metadata.statusMessage || 'Bad Gateway',
-        responseHeaders: metadata.responseHeaders || {},
+        statusCode: metadata.statusCode || syntheticResponse?.statusCode || 502,
+        statusMessage: metadata.statusMessage || syntheticResponse?.statusMessage || 'Bad Gateway',
+        responseHeaders: metadata.responseHeaders || syntheticResponse?.headers || {},
         ...responseFields,
         trailers: responseTrailers,
         remote: metadata.remote,
@@ -2061,13 +2270,14 @@ export class ProxyServer {
       try {
         if (!stream.destroyed && !stream.closed) {
           if (!stream.headersSent) {
-            const message = `Proxy Error: ${error.message}`;
-            stream.respond({
-              ':status': 502,
-              'content-type': 'text/plain',
-              'content-length': String(Buffer.byteLength(message))
-            });
-            stream.end(message);
+            const wireResponse = syntheticResponse || this._syntheticErrorResponse(
+              method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+            );
+            const responseHeaders = this._toH2ResponseHeaders(
+              wireResponse.statusCode,
+              wireResponse.headers
+            );
+            this._sendH2Response(stream, responseHeaders, wireResponse.body);
           } else {
             stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
           }
@@ -2118,11 +2328,13 @@ export class ProxyServer {
         statusCode: responseMetadata?.statusCode || 0,
         statusMessage: 'Client Upload Aborted',
         responseHeaders: responseMetadata?.responseHeaders || {},
-        ...(responseMetadata ? {} : { responseBody: '' })
+        ...(responseMetadata ? {} : { responseBody: '', responseBodySize: 0 })
       });
     };
 
-    const requestBodyCompletion = this._trackRequestBodyCompletion(stream, incompleteUpload);
+    const requestBodyCompletion = hasBufferedRequestBody
+      ? null
+      : this._trackRequestBodyCompletion(stream, incompleteUpload);
     downstream = this._trackDownstreamCancellation(stream, { http2Stream: true });
 
     const finishActiveUpload = () => {
@@ -2300,7 +2512,7 @@ export class ProxyServer {
           upstreamResponse: proxyRes,
           statusCode: proxyRes.statusCode,
           statusMessage: proxyRes.statusMessage,
-          responseHeaders: this._stripHopByHopHeaders(this._incomingMessageHeaders(proxyRes), {
+          responseHeaders: this._stripHopByHopHeaders(this._incomingResponseHeaders(proxyRes), {
             preserveProxyAuthenticate: proxyRes.statusCode === 407
           }),
           remote: {
@@ -2335,7 +2547,7 @@ export class ProxyServer {
       });
       resetIdleTimer();
       if (replay || requestEnded) {
-        this._endH1Request(request, this._concatBody(requestBody), requestTrailers);
+        this._endH1Request(request, requestBytes(), requestTrailers);
       } else {
         stream.resume();
       }
@@ -2432,11 +2644,14 @@ export class ProxyServer {
         failOrDefer(error, request);
       });
       resetIdleTimer();
-      if (requestEnded) request.end();
+      if (requestEnded) {
+        if (hasBufferedRequestBody && bufferedRequestBytes.length > 0) request.end(requestBytes());
+        else request.end();
+      }
       else stream.resume();
     };
 
-    attachRequestRelay();
+    if (!hasBufferedRequestBody) attachRequestRelay();
     downstream.signal.addEventListener('abort', () => {
       if (finalized) return;
       const error = this._createDownstreamAbortError();
@@ -2553,6 +2768,17 @@ export class ProxyServer {
       if (downstream?.aborted) throw downstream.signal.reason;
       onReady(stats);
       responseStarted = true;
+      if (options.suppressBody) {
+        source.destroy();
+        destination.end();
+        return {
+          content: Buffer.alloc(0),
+          size: 0,
+          originalSize: stats.size,
+          truncated: false,
+          responseStarted
+        };
+      }
       if (downstream) await pipeline(source, capture, destination, { signal: downstream.signal });
       else await pipeline(source, capture, destination);
       return progress();
@@ -2572,7 +2798,7 @@ export class ProxyServer {
     }
   }
 
-  _mockFileFailure(filePath, fileStatus, mime, error) {
+  _mockFileFailure(filePath, fileStatus, mime, error, method = 'GET') {
     const progress = error?.mockFileProgress;
     if (error?.code === 'ERR_DOWNSTREAM_ABORTED') {
       const responseStarted = progress?.responseStarted === true;
@@ -2618,13 +2844,15 @@ export class ProxyServer {
       };
     }
 
+    const wireResponse = this._syntheticErrorResponse(
+      method, 500, 'File Error', `File not found: ${filePath}`
+    );
     return {
       responseStarted: false,
-      statusCode: 500,
-      statusMessage: 'File Error',
-      responseHeaders: { 'Content-Type': 'text/plain' },
-      responseBody: 'File not found: ' + filePath,
-      responseBodySize: 0,
+      statusCode: wireResponse.statusCode,
+      statusMessage: wireResponse.statusMessage,
+      ...wireResponse.capture,
+      wireResponse,
       error: error.message,
       errorCode: error.code || null
     };
@@ -2863,14 +3091,22 @@ export class ProxyServer {
   }
 
   setTlsPassthrough(hostnames) {
-    this.tlsPassthrough = Array.isArray(hostnames)
-      ? [...new Set(hostnames.map(host => this._normalizeTlsHostname(host)).filter(Boolean))]
-      : [];
+    if (!Array.isArray(hostnames)) throw new TypeError('TLS passthrough hosts must be an array');
+    const normalized = hostnames.map((host, index) => {
+      const pattern = normalizeTlsHostnamePattern(host, { allowSubdomainWildcard: true });
+      if (!pattern) {
+        throw new TypeError(
+          `TLS passthrough host ${index} must be a hostname, IP address, or leading *. wildcard`
+        );
+      }
+      return pattern;
+    });
+    this.tlsPassthrough = [...new Set(normalized)];
     console.log(`[Proxy] TLS passthrough: ${this.tlsPassthrough.length} hosts`);
   }
 
   _isTlsPassthrough(hostname) {
-    const target = this._normalizeTlsHostname(hostname);
+    const target = normalizeExactTlsHostname(hostname);
     return this.tlsPassthrough.some(pattern =>
       pattern === target || (pattern.startsWith('*.') && target.endsWith(pattern.slice(1)))
     );
@@ -2883,9 +3119,7 @@ export class ProxyServer {
   }
 
   _getClientCertificateHostKey(value) {
-    const configuredHost = typeof value === 'string' ? value.trim() : '';
-    if (!configuredHost || (configuredHost.includes('*') && configuredHost !== '*')) return '';
-    return this._normalizeTlsHostname(configuredHost);
+    return normalizeTlsHostnamePattern(value, { allowGlobalWildcard: true });
   }
 
   _canonicalizeClientCertificates(certs) {
@@ -3126,7 +3360,7 @@ export class ProxyServer {
 
   setHttpsWhitelist(hosts) {
     const nextWhitelist = Object.freeze(normalizeHttpsWhitelist(hosts));
-    const matchPatterns = Object.freeze(nextWhitelist.map(host => this._normalizeTlsHostname(host)));
+    const matchPatterns = Object.freeze(nextWhitelist.map(host => normalizeExactTlsHostname(host)));
     this.httpsWhitelist = nextWhitelist;
     this._validatedHttpsWhitelist = matchPatterns;
     this._invalidateTlsConnectionState();
@@ -3140,12 +3374,12 @@ export class ProxyServer {
   }
 
   _isHttpsWhitelisted(hostname) {
-    const target = this._normalizeTlsHostname(hostname);
+    const target = normalizeExactTlsHostname(hostname);
     return target.length > 0 && this._validatedHttpsWhitelist.includes(target);
   }
 
   _getClientCertificateOptions(hostname) {
-    const target = this._normalizeTlsHostname(hostname);
+    const target = normalizeExactTlsHostname(hostname);
     if (!target) return {};
     const match = this._clientCertificateOptions.find(config => config.host === target) ||
       this._clientCertificateOptions.find(config => config.host === '*');
@@ -3236,6 +3470,10 @@ export class ProxyServer {
 
   _incomingMessageHeaders(message) {
     return this._headersWithRawFallback(message?.rawHeaders, message?.headers);
+  }
+
+  _incomingResponseHeaders(message) {
+    return normalizeIncomingResponseHeaders(message);
   }
 
   _incomingMessageTrailers(message) {
@@ -3336,6 +3574,185 @@ export class ProxyServer {
     } catch {
       return null;
     }
+  }
+
+  _snapshotMockRequest({ method, url, headers, body }) {
+    const targetUrl = url instanceof URL ? url : new URL(url);
+    const requestHeaders = createHeaderMap(Object.entries(headers || {}));
+    const requestBody = Buffer.isBuffer(body) ? body : Buffer.from(body || '');
+    return {
+      method,
+      url: targetUrl.href,
+      headers: requestHeaders,
+      body: this._safeRequestBodyString(requestBody, requestHeaders)
+    };
+  }
+
+  _mockRequestProvenance(mockRule, originalRequest, changed, existing = {}) {
+    if (!changed) return existing;
+    return {
+      originalRequest: existing.originalRequest || originalRequest,
+      transformedBy: existing.transformedBy
+        || mockRule?.title || mockRule?.id || 'Mock Rule'
+    };
+  }
+
+  _mockForwardRequestCapture(mockRule, request, destinationHeaders, existing = {}) {
+    const originalRequest = this._snapshotMockRequest(request);
+    const requestHeaders = createHeaderMap(Object.entries(destinationHeaders || {}));
+    const changed = JSON.stringify(originalRequest.headers) !== JSON.stringify(requestHeaders);
+    return {
+      requestHeaders,
+      ...this._mockRequestProvenance(mockRule, originalRequest, changed, existing)
+    };
+  }
+
+  async _applyMockPreSteps(mockRule, request, waitContext = null) {
+    const originalRequest = this._snapshotMockRequest(request);
+    let method = request.method;
+    let url = request.url instanceof URL ? new URL(request.url.href) : new URL(request.url);
+    let headers = createHeaderMap(Object.entries(request.headers || {}));
+
+    for (const step of Array.isArray(mockRule?.preSteps) ? mockRule.preSteps : []) {
+      switch (step.type) {
+        case 'delay':
+          if (step.ms > 0 && !await this._waitForMockDelay(step.ms, waitContext)) {
+            this._finishMockWaitContexts(waitContext);
+            return { cancelled: true };
+          }
+          break;
+        case 'add-header':
+          headers = this._applyMockHeaderTransform(headers, 'update', {
+            [step.name]: step.value ?? ''
+          });
+          break;
+        case 'remove-header':
+          headers = this._applyMockHeaderTransform(headers, 'update', {}, [step.name]);
+          break;
+        case 'rewrite-url': {
+          const rewritten = this._resolveRewriteUrl(url, step.value);
+          if (rewritten) {
+            url = rewritten;
+            this._setTargetHostHeader(headers, url.host);
+          }
+          break;
+        }
+        case 'rewrite-method':
+          method = step.value;
+          break;
+      }
+    }
+
+    const changed = originalRequest.method !== method
+      || originalRequest.url !== url.href
+      || JSON.stringify(originalRequest.headers) !== JSON.stringify(headers);
+    return {
+      cancelled: false,
+      method,
+      url,
+      headers,
+      changed,
+      ...this._mockRequestProvenance(mockRule, originalRequest, changed)
+    };
+  }
+
+  _isMockResponseBodyForbidden(method, statusCode) {
+    return String(method || '').toUpperCase() === 'HEAD'
+      || statusCode === 204
+      || statusCode === 304;
+  }
+
+  _normalizeMockResponse(method, response) {
+    const statusCode = Number(response.statusCode);
+    const headers = createHeaderMap(Object.entries(response.headers || {}));
+    const body = Buffer.isBuffer(response.body)
+      ? response.body
+      : Buffer.from(String(response.body ?? ''));
+    if (!this._isMockResponseBodyForbidden(method, statusCode)) {
+      return { ...response, statusCode, headers, body };
+    }
+
+    for (const name of Object.keys(headers)) {
+      const lower = name.toLowerCase();
+      if (lower === 'transfer-encoding' || lower === 'trailer'
+          || (statusCode === 204 && lower === 'content-length')) {
+        delete headers[name];
+      }
+    }
+    return {
+      ...response,
+      statusCode,
+      headers,
+      body: Buffer.alloc(0),
+      trailers: {}
+    };
+  }
+
+  _syntheticErrorResponse(method, statusCode, statusMessage, message) {
+    const body = Buffer.from(String(message));
+    const response = this._normalizeMockResponse(method, {
+      statusCode,
+      statusMessage,
+      headers: { 'content-type': 'text/plain' },
+      body
+    });
+    this._setContentLength(response.headers, response.body.length);
+    return {
+      ...response,
+      statusMessage,
+      capture: {
+        responseHeaders: response.headers,
+        responseBody: this._safeResponseBodyString(response.body, response.headers),
+        responseBodySize: response.body.length
+      }
+    };
+  }
+
+  _closeMockTransport(target, { http2Stream = false } = {}) {
+    if (http2Stream) {
+      if (target?.destroyed || target?.closed) return false;
+      if (typeof target.close === 'function') {
+        target.close(http2.constants.NGHTTP2_NO_ERROR);
+      } else {
+        target?.destroy?.();
+      }
+      return true;
+    }
+
+    const socket = target?.socket || target;
+    if (socket?.destroyed || socket?.writableEnded) return false;
+    if (typeof socket?.end === 'function') socket.end();
+    else if (typeof target?.end === 'function') target.end();
+    else return false;
+    return true;
+  }
+
+  _resetMockTransport(target, { http2Stream = false } = {}) {
+    if (http2Stream) {
+      if (target?.destroyed || target?.closed) return false;
+      if (typeof target.close === 'function') {
+        target.close(http2.constants.NGHTTP2_CANCEL);
+      } else {
+        target?.destroy?.(undefined, http2.constants.NGHTTP2_CANCEL);
+      }
+      return true;
+    }
+
+    const socket = target?.socket || target;
+    if (socket?.destroyed) return false;
+    if (typeof socket?.resetAndDestroy === 'function') {
+      try {
+        socket.resetAndDestroy();
+      } catch (error) {
+        if (error?.code !== 'ERR_INVALID_HANDLE_TYPE' || typeof socket.destroy !== 'function') {
+          throw error;
+        }
+        socket.destroy();
+      }
+    } else if (typeof socket?.destroy === 'function') socket.destroy();
+    else if (typeof target?.destroy === 'function') target.destroy();
+    else return false;
+    return true;
   }
 
   _applyMockHeaderTransform(headers, mode, replacements, removals = []) {
@@ -3491,12 +3908,16 @@ export class ProxyServer {
       this._setContentLength(headers, bodyResult.body.length);
     }
     const numericStatus = Number(requestedStatus);
+    const statusCode = statusMode === 'replace' && Number.isInteger(numericStatus)
+      && numericStatus >= 200 && numericStatus <= 599
+      ? numericStatus
+      : response.statusCode;
     return {
       ...response,
-      statusCode: statusMode === 'replace' && Number.isInteger(numericStatus)
-        && numericStatus >= 200 && numericStatus <= 599
-        ? numericStatus
-        : response.statusCode,
+      statusCode,
+      statusMessage: statusCode === response.statusCode
+        ? response.statusMessage
+        : (http.STATUS_CODES[statusCode] || ''),
       headers,
       body: bodyResult.body,
       trailers: bodyResult.changed ? {} : response.trailers
@@ -3512,7 +3933,7 @@ export class ProxyServer {
       const lower = name.toLowerCase();
       Object.defineProperty(converted, lower, {
         value: Array.isArray(value)
-          ? (lower === 'set-cookie' ? value : value.join(', '))
+          ? (HTTP2_SINGLE_VALUE_HEADER_NAMES.has(lower) ? value.join(', ') : value)
           : value,
         writable: true,
         enumerable: true,
@@ -3520,6 +3941,13 @@ export class ProxyServer {
       });
     }
     return converted;
+  }
+
+  _mockActionTransformsResponse(action) {
+    if (action?.type === 'transform-response') return true;
+    if (action?.type !== 'transform-request') return false;
+    return [action.resStatusMode, action.resHeadersMode, action.resBodyMode]
+      .some(mode => typeof mode === 'string' && mode !== 'none');
   }
 
   _captureHeadersFromH2Response(headers) {
@@ -3548,23 +3976,38 @@ export class ProxyServer {
     return preparation;
   }
 
-  _waitForMockDelay(milliseconds, webhookPreparation = null) {
-    if (!webhookPreparation) {
+  _mockWaitContexts(waitContext) {
+    return (Array.isArray(waitContext) ? waitContext : [waitContext]).filter(Boolean);
+  }
+
+  _finishMockWaitContexts(waitContext) {
+    for (const context of this._mockWaitContexts(waitContext)) context.finish?.();
+  }
+
+  _waitForMockDelay(milliseconds, waitContext = null) {
+    const contexts = this._mockWaitContexts(waitContext);
+    if (contexts.length === 0) {
       return new Promise(resolve => setTimeout(() => resolve(true), milliseconds));
     }
-    if (!webhookPreparation.isCurrent()) return Promise.resolve(false);
+    const isCurrent = () => contexts.every(context =>
+      (typeof context.isCurrent !== 'function' || context.isCurrent())
+      && !(context.controller?.signal || context.signal)?.aborted
+    );
+    if (!isCurrent()) return Promise.resolve(false);
     return new Promise(resolve => {
-      const signal = webhookPreparation.controller.signal;
+      const signals = [...new Set(contexts
+        .map(context => context.controller?.signal || context.signal)
+        .filter(Boolean))];
       let timer = null;
       const finish = value => {
         if (timer) clearTimeout(timer);
-        signal.removeEventListener('abort', handleAbort);
+        for (const signal of signals) signal.removeEventListener('abort', handleAbort);
         resolve(value);
       };
       const handleAbort = () => finish(false);
-      signal.addEventListener('abort', handleAbort, { once: true });
-      timer = setTimeout(() => finish(webhookPreparation.isCurrent()), milliseconds);
-      if (signal.aborted) finish(false);
+      for (const signal of signals) signal.addEventListener('abort', handleAbort, { once: true });
+      timer = setTimeout(() => finish(isCurrent()), milliseconds);
+      if (!isCurrent()) finish(false);
     });
   }
 
@@ -3591,8 +4034,17 @@ export class ProxyServer {
       }
       const isHttps = webhookTarget.protocol === 'https:';
       const lib = isHttps ? https : http;
+      const contentEncodings = getHeaderValues(requestHeaders, 'content-encoding');
       const webhookHeaders = {
-        'content-type': requestHeaders['content-type'] || 'application/octet-stream',
+        'content-type': getHeaderValues(requestHeaders, 'content-type')[0]
+          || 'application/octet-stream',
+        ...(contentEncodings.length > 0
+          ? {
+              'content-encoding': contentEncodings.length === 1
+                ? contentEncodings[0]
+                : contentEncodings
+            }
+          : {}),
         'x-forwarded-method': method,
         'x-forwarded-url': targetUrl.href,
         'x-forwarded-host': targetUrl.hostname,
@@ -3806,7 +4258,7 @@ export class ProxyServer {
     startTime,
     onFinalized = () => {}
   ) {
-    const responseHeaders = this._incomingMessageHeaders(proxyRes);
+    const responseHeaders = this._incomingResponseHeaders(proxyRes);
     const transferCodings = getHeaderValues(responseHeaders, 'transfer-encoding')
       .flatMap(value => String(value).split(','))
       .map(value => value.trim().toLowerCase())
@@ -3820,16 +4272,18 @@ export class ProxyServer {
       if (finalized) return;
       finalized = true;
       socket.removeListener('close', onDownstreamClose);
-      const body = this._concatBody(responseBody);
       const trailers = this._incomingMessageTrailers(proxyRes);
       this._emitRequestUpdate({
         ...requestRecord,
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
         responseHeaders,
-        responseBody: responseBody.exceeded
-          ? `[Response body omitted after exceeding ${responseBody.limit} bytes]`
-          : this._safeBodyString(body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+        responseBody: this._streamedCaptureBody(
+          responseBody,
+          responseBodySize,
+          'Response',
+          responseHeaders
+        ),
         responseBodySize,
         trailers: Object.keys(trailers).length > 0 ? trailers : null,
         duration: Date.now() - startTime,
@@ -3947,43 +4401,47 @@ export class ProxyServer {
     const secureOrigin = context.secure === true ||
       targetUrl.protocol === 'https:' || targetUrl.protocol === 'wss:';
     const targetPort = parseInt(targetUrl.port, 10) || (secureOrigin ? 443 : 80);
-    const options = {
-      hostname: targetUrl.hostname,
-      port: targetPort,
-      path: targetUrl.pathname + targetUrl.search,
-      headers: this._rawHeadersToObject(req.rawHeaders),
-      method: 'GET'
-    };
-    this._setTargetHostHeader(options.headers, targetUrl.host);
-    let requestLib = secureOrigin ? https : http;
-    if (secureOrigin) {
-      Object.assign(
-        options,
-        this._getUpstreamTlsOptions(targetUrl.hostname, context.clientHelloTls)
-      );
-    }
-    const proxyGeneration = this._upstreamProxyGeneration;
-    const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
-    if (useUpstreamProxy && secureOrigin) {
-      options.agent = this._getUpstreamAgent(context.clientHelloTls);
-    } else if (useUpstreamProxy && this._isSocksProxy()) {
-      options.createConnection = (connectOptions, oncreate) => {
-        this._connectViaSocks(targetUrl.hostname, targetPort)
-          .then(upstreamSocket => oncreate(null, upstreamSocket))
-          .catch(err => oncreate(err));
+    const buildHandshakeRoute = () => {
+      const options = {
+        hostname: targetUrl.hostname,
+        port: targetPort,
+        path: targetUrl.pathname + targetUrl.search,
+        headers: this._rawHeadersToObject(req.rawHeaders),
+        method: 'GET'
       };
-    } else if (useUpstreamProxy) {
-      options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
-      options.port = this.upstreamProxy.port;
-      options.path = targetUrl.href;
-      if (this.upstreamProxy.auth) {
-        options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+      this._setTargetHostHeader(options.headers, targetUrl.host);
+      let requestLib = secureOrigin ? https : http;
+      if (secureOrigin) {
+        Object.assign(
+          options,
+          this._getUpstreamTlsOptions(targetUrl.hostname, context.clientHelloTls)
+        );
       }
-      requestLib = this.upstreamProxy.type === 'https' ? https : http;
-      if (requestLib === https) {
-        Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+      const proxyGeneration = this._upstreamProxyGeneration;
+      const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
+      if (useUpstreamProxy && secureOrigin) {
+        options.agent = this._getUpstreamAgent(context.clientHelloTls);
+      } else if (useUpstreamProxy && this._isSocksProxy()) {
+        options.createConnection = (connectOptions, oncreate) => {
+          this._connectViaSocks(targetUrl.hostname, targetPort)
+            .then(upstreamSocket => oncreate(null, upstreamSocket))
+            .catch(err => oncreate(err));
+        };
+      } else if (useUpstreamProxy) {
+        options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
+        options.port = this.upstreamProxy.port;
+        options.path = targetUrl.href;
+        if (this.upstreamProxy.auth) {
+          options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
+        }
+        requestLib = this.upstreamProxy.type === 'https' ? https : http;
+        if (requestLib === https) {
+          Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
+        }
       }
-    }
+      return { options, requestLib, proxyGeneration, useUpstreamProxy };
+    };
+    const initialRoute = buildHandshakeRoute();
 
     const captureProtocol = secureOrigin ? 'wss' : 'ws';
     const captureUrl = targetUrl.href.replace(/^https?/, captureProtocol);
@@ -4000,8 +4458,8 @@ export class ProxyServer {
       requestBodySize: 0,
       timestamp: startTime,
       source: this._detectSource(req.headers),
-      upstreamProxyGeneration: proxyGeneration,
-      usedUpstreamProxy: useUpstreamProxy,
+      upstreamProxyGeneration: initialRoute.proxyGeneration,
+      usedUpstreamProxy: initialRoute.useUpstreamProxy,
       tls: context.tlsDetails || null,
       remote: null
     };
@@ -4042,32 +4500,7 @@ export class ProxyServer {
     socket.once('close', onDownstreamClose);
     if (socket.destroyed) queueMicrotask(onDownstreamClose);
 
-    try {
-      proxyReq = this._requestWithExactMethod(requestLib, options);
-    } catch (err) {
-      socket.removeListener('close', onDownstreamClose);
-      handshakeState = 'error';
-      this._emitRequestUpdate({
-        ...requestRecord,
-        statusCode: 502,
-        statusMessage: 'Bad Gateway',
-        responseHeaders: {},
-        responseBody: `Proxy Error: ${err.message}`,
-        responseBodySize: 0,
-        duration: Date.now() - startTime,
-        error: err.message,
-        errorCode: this._getUpstreamErrorCode(err),
-        errorPhase: this._getUpstreamErrorPhase(err)
-      });
-      settleLifecycle();
-      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-      return;
-    }
-    this._configureUpstreamRequest(proxyReq);
-    proxyReq.once('close', () => {
-      if (handshakeState === 'downstream-closed') settleLifecycle();
-    });
-    proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    const onUpgrade = (proxyRes, proxySocket, proxyHead) => {
       if (handshakeState !== 'pending' || socket.destroyed) {
         proxySocket.destroy();
         settleLifecycle();
@@ -4076,7 +4509,7 @@ export class ProxyServer {
       handshakeState = 'upgraded';
       socket.removeListener('close', onDownstreamClose);
       const remote = { address: proxySocket.remoteAddress, port: proxySocket.remotePort };
-      const responseHeaders = this._incomingMessageHeaders(proxyRes);
+      const responseHeaders = this._incomingResponseHeaders(proxyRes);
 
       // Resolve the pending parent before parsing any buffered WebSocket frames.
       // This guarantees that every frame references an existing, inspectable
@@ -4126,13 +4559,49 @@ export class ProxyServer {
         const state = {
           disabled: false,
           pendingBytes: 0,
-          pendingMessages: 0
+          pendingMessages: 0,
+          omittedBytes: 0,
+          omittedMessages: 0,
+          omittedByteCountExact: true,
+          omittedMessageCountExact: true,
+          omissionReasons: new Set()
         };
+        const addBounded = (current, added) => Math.min(
+          Number.MAX_SAFE_INTEGER,
+          current + Math.max(0, Number.isSafeInteger(added) ? added : 0)
+        );
+        state.omitFrame = (frame, reason) => {
+          state.omittedMessages = addBounded(state.omittedMessages, 1);
+          state.omittedBytes = addBounded(state.omittedBytes, frame.payload.length);
+          state.omissionReasons.add(reason);
+        };
+        state.disable = (error, omittedBytes) => {
+          state.disabled = true;
+          state.omittedMessages = addBounded(state.omittedMessages, 1);
+          state.omittedBytes = addBounded(state.omittedBytes, omittedBytes);
+          state.omittedByteCountExact = false;
+          state.omittedMessageCountExact = false;
+          state.omissionReasons.add(error?.code || 'ERR_WS_CAPTURE_PARSE');
+        };
+        state.omitDisabledBytes = (omittedBytes) => {
+          state.omittedBytes = addBounded(state.omittedBytes, omittedBytes);
+        };
+        state.omissionSummary = () => ({
+          messages: state.omittedMessages,
+          bytes: state.omittedBytes,
+          byteCountExact: state.omittedByteCountExact,
+          messageCountExact: state.omittedMessageCountExact,
+          reasons: [...state.omissionReasons]
+        });
         state.enqueue = (frame) => {
           if (frame.opcode === WS_OPCODE.TEXT || frame.opcode === WS_OPCODE.BINARY) {
             onApplicationMessage();
           }
-          if (state.disabled) return;
+          if (state.disabled) {
+            state.omitFrame(frame, 'ERR_WS_CAPTURE_DISABLED');
+            state.omittedMessageCountExact = false;
+            return;
+          }
 
           const requiresAsyncCapture = pendingCaptures > 0 || (frame.compressed && decoder);
           if (!requiresAsyncCapture) {
@@ -4145,7 +4614,8 @@ export class ProxyServer {
           }
           if (state.pendingMessages >= MAX_PENDING_WS_CAPTURE_MESSAGES ||
               state.pendingBytes + frame.payload.length > this.maxWsCapturedMessageBytes) {
-            state.disabled = true;
+            ++frameSequence;
+            state.omitFrame(frame, 'ERR_WS_CAPTURE_QUEUE_OVERLOAD');
             return;
           }
 
@@ -4189,14 +4659,16 @@ export class ProxyServer {
         proxyHead,
         (chunk) => {
           clientBytes += chunk.length;
-          if (!clientCapture.disabled) {
-            try { clientParser.push(chunk); } catch { /* forward even if parse fails */ }
+          if (clientCapture.disabled) clientCapture.omitDisabledBytes(chunk.length);
+          else try { clientParser.push(chunk); } catch (error) {
+            clientCapture.disable(error, chunk.length);
           }
         },
         (chunk) => {
           serverBytes += chunk.length;
-          if (!serverCapture.disabled) {
-            try { serverParser.push(chunk); } catch { /* forward even if parse fails */ }
+          if (serverCapture.disabled) serverCapture.omitDisabledBytes(chunk.length);
+          else try { serverParser.push(chunk); } catch (error) {
+            serverCapture.disable(error, chunk.length);
           }
         }
       );
@@ -4208,15 +4680,36 @@ export class ProxyServer {
         const duration = Date.now() - startTime;
         void captureTail
           .then(() => {
+            const clientOmissions = clientCapture.omissionSummary();
+            const serverOmissions = serverCapture.omissionSummary();
+            const clientTruncated = clientOmissions.messages > 0 || clientOmissions.bytes > 0;
+            const serverTruncated = serverOmissions.messages > 0 || serverOmissions.bytes > 0;
             this._emitRequestUpdate({
               ...requestRecord,
               requestBody: `WebSocket: ${clientMessages} sent, ${serverMessages} received`,
               requestBodySize: clientBytes,
+              ...(clientTruncated ? {
+                requestBodyTruncated: true,
+                requestBodyCapturedSize: Math.max(0, clientBytes - clientOmissions.bytes),
+                requestBodyDecodedSize: clientBytes
+              } : {}),
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage || 'Switching Protocols',
               responseHeaders,
               responseBody: `${clientMessages + serverMessages} messages (${clientBytes + serverBytes} bytes)`,
               responseBodySize: serverBytes,
+              ...(serverTruncated ? {
+                responseBodyTruncated: true,
+                responseBodyCapturedSize: Math.max(0, serverBytes - serverOmissions.bytes),
+                responseBodyDecodedSize: serverBytes
+              } : {}),
+              ...((clientTruncated || serverTruncated) ? {
+                webSocketCaptureTruncated: true,
+                webSocketCaptureOmissions: {
+                  client: clientOmissions,
+                  server: serverOmissions
+                }
+              } : {}),
               duration,
               remote
             });
@@ -4239,14 +4732,30 @@ export class ProxyServer {
         if (!cleanedUp && !proxySocket.destroyed) proxySocket.destroy();
         cleanup();
       });
-    });
+    };
 
     // A server may reject an upgrade with a normal HTTP response (for example
     // 401 or 404). In that case Node emits `response`, not `upgrade`.
-    proxyReq.on('response', (proxyRes) => {
+    const onResponse = async (proxyRes, attemptReq, retryContext) => {
+      if (attemptReq !== proxyReq) {
+        proxyRes.destroy();
+        return;
+      }
       if (handshakeState !== 'pending' || socket.destroyed) {
         proxyRes.destroy();
         settleLifecycle();
+        return;
+      }
+      proxyRes.pause();
+      const shouldRetry = await this._shouldRetryAfterUpstreamResponse(proxyRes, retryContext);
+      if (shouldRetry && handshakeState === 'pending' && !socket.destroyed
+          && attemptReq === proxyReq) {
+        proxyRes.resume();
+        sendHandshake(retryContext.attempt + 1);
+        return;
+      }
+      if (attemptReq !== proxyReq || handshakeState !== 'pending' || socket.destroyed) {
+        proxyRes.destroy();
         return;
       }
       handshakeState = 'response';
@@ -4258,30 +4767,87 @@ export class ProxyServer {
         startTime,
         settleLifecycle
       );
-    });
+      proxyRes.resume();
+    };
 
-    proxyReq.on('error', (err) => {
+    const onError = async (err, attemptReq, retryContext) => {
+      if (attemptReq && attemptReq !== proxyReq) return;
       if (handshakeState !== 'pending') return;
+      const shouldRetry = await this._shouldRetryAfterUpstreamError(err, retryContext);
+      if (shouldRetry && handshakeState === 'pending' && !socket.destroyed
+          && (!attemptReq || attemptReq === proxyReq)) {
+        sendHandshake(retryContext.attempt + 1);
+        return;
+      }
+      if ((attemptReq && attemptReq !== proxyReq) || handshakeState !== 'pending') return;
       handshakeState = 'error';
       socket.removeListener('close', onDownstreamClose);
       console.error('[Proxy] WebSocket upstream error:', err.message);
+      const syntheticResponse = this._syntheticErrorResponse(
+        'GET', 502, 'Bad Gateway', `Proxy Error: ${err.message}`
+      );
       this._emitRequestUpdate({
         ...requestRecord,
-        statusCode: 502,
-        statusMessage: 'Bad Gateway',
-        responseHeaders: {},
-        responseBody: `Proxy Error: ${err.message}`,
-        responseBodySize: 0,
+        statusCode: syntheticResponse.statusCode,
+        statusMessage: syntheticResponse.statusMessage,
+        ...syntheticResponse.capture,
         duration: Date.now() - startTime,
         error: err.message,
         errorCode: this._getUpstreamErrorCode(err),
         errorPhase: this._getUpstreamErrorPhase(err)
       });
       settleLifecycle();
-      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-    });
+      const responseHead = [
+        `HTTP/1.1 ${syntheticResponse.statusCode} ${syntheticResponse.statusMessage}`,
+        ...Object.entries(syntheticResponse.headers).flatMap(([name, storedValues]) =>
+          (Array.isArray(storedValues) ? storedValues : [storedValues])
+            .map(value => `${name}: ${value}`)
+        ),
+        '', ''
+      ].join('\r\n');
+      socket.end(Buffer.concat([
+        Buffer.from(responseHead, 'latin1'),
+        syntheticResponse.body
+      ]));
+    };
 
-    proxyReq.end();
+    const sendHandshake = (attempt = 0) => {
+      if (handshakeState !== 'pending' || socket.destroyed) return;
+      const route = buildHandshakeRoute();
+      requestRecord.upstreamProxyGeneration = route.proxyGeneration;
+      requestRecord.usedUpstreamProxy = route.useUpstreamProxy;
+      const retryContext = {
+        attempt,
+        proxyGeneration: route.proxyGeneration,
+        usedUpstreamProxy: route.useUpstreamProxy,
+        method: 'GET',
+        safeToReplay: true,
+        url: captureUrl,
+        host: targetUrl.hostname
+      };
+      let attemptReq;
+      try {
+        attemptReq = this._requestWithExactMethod(route.requestLib, route.options);
+      } catch (err) {
+        void onError(err, null, retryContext);
+        return;
+      }
+      proxyReq = attemptReq;
+      this._configureUpstreamRequest(attemptReq);
+      attemptReq.once('close', () => {
+        if (handshakeState === 'downstream-closed') settleLifecycle();
+      });
+      attemptReq.once('upgrade', onUpgrade);
+      attemptReq.once('response', proxyRes => {
+        void onResponse(proxyRes, attemptReq, retryContext);
+      });
+      attemptReq.once('error', err => {
+        void onError(err, attemptReq, retryContext);
+      });
+      attemptReq.end();
+    };
+
+    sendHandshake();
   }
 
   /**
@@ -4529,6 +5095,44 @@ export class ProxyServer {
 
       // Check mock rules
       const mockRule = this._findMockRule(clientReq.method, targetUrl.href, matcherHeaders, matcherBody);
+      let requestProvenance = {};
+      this._terminalizeBufferedDownstream(downstream, () => ({
+        id: requestId,
+        protocol: targetUrl.protocol === 'https:' ? 'https' : 'http',
+        method: clientReq.method,
+        url: targetUrl.href,
+        host: targetUrl.hostname,
+        path: targetUrl.pathname + targetUrl.search,
+        requestHeaders: clientReq.headers,
+        requestBody: this._safeRequestBodyString(body, clientReq.headers),
+        requestBodySize: body.length,
+        timestamp: startTime,
+        source: mockRule && mockRule.action?.type !== 'passthrough' ? 'mock' : 'proxy',
+        tls: null,
+        remote: null,
+        ...requestProvenance
+      }), trafficLifecycleId);
+      const webhookPreparation = mockRule?.action?.type === 'webhook' && mockRule.action.webhookUrl
+        ? this._beginWebhookPreparation()
+        : null;
+      if (mockRule) {
+        const preStepResult = await this._applyMockPreSteps(mockRule, {
+          method: clientReq.method,
+          url: targetUrl,
+          headers: clientReq.headers,
+          body
+        }, [webhookPreparation, downstream]);
+        if (preStepResult.cancelled) return;
+        clientReq.method = preStepResult.method;
+        targetUrl = preStepResult.url;
+        clientReq.headers = preStepResult.headers;
+        transformedRequestHeaders ||= preStepResult.changed;
+        requestProvenance = this._mockRequestProvenance(
+          mockRule,
+          preStepResult.originalRequest,
+          preStepResult.changed
+        );
+      }
       const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
       const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
         ? mockRule.action
@@ -4547,17 +5151,30 @@ export class ProxyServer {
           timestamp: startTime,
           source: 'mock',
           tls: null,
-          remote: null
+          remote: null,
+          ...requestProvenance
         });
         return;
       }
-      if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
+      if (mockRule && mockRule.action?.type !== 'passthrough'
+          && !mockBreakpointPhase && !mockTransformAction) {
         await this._serveMockResponse(
-          requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, { downstream }
+          requestId, clientReq, clientRes, targetUrl, body, mockRule, startTime, {
+            downstream,
+            webhookPreparation,
+            preStepsApplied: true,
+            ...requestProvenance
+          }
         );
         return;
       }
       if (mockTransformAction?.type === 'transform-request') {
+        const transformOriginal = this._snapshotMockRequest({
+          method: clientReq.method,
+          url: targetUrl,
+          headers: clientReq.headers,
+          body
+        });
         const transformed = this._applyMockRequestTransform(mockTransformAction, {
           method: clientReq.method,
           url: targetUrl,
@@ -4571,6 +5188,12 @@ export class ProxyServer {
         breakpointBodyModified ||= transformed.bodyChanged;
         transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
         matcherBody = this._requestBodyForMatching(body, clientReq.headers);
+        requestProvenance = this._mockRequestProvenance(
+          mockRule,
+          transformOriginal,
+          transformed.changed,
+          requestProvenance
+        );
       }
 
       // Check breakpoint rules
@@ -4628,7 +5251,7 @@ export class ProxyServer {
         }
         if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
           body = Buffer.from(String(modifications.body || ''));
-          this._setContentLength(clientReq.headers, body.length);
+          this._setDecodedBodyContentLength(clientReq.headers, body.length);
           breakpointBodyModified = true;
         }
         this._setTargetHostHeader(clientReq.headers, targetUrl.host);
@@ -4654,13 +5277,33 @@ export class ProxyServer {
       const targetPort = parseInt(targetUrl.port, 10) || (isTargetHttps ? 443 : 80);
       const captureProtocol = isTargetHttps ? 'https' : 'http';
 
+      if (!responseBreakpoint && !this._mockActionTransformsResponse(mockTransformAction)) {
+        downstream.complete();
+        this._streamH1Exchange({
+          clientReq,
+          clientRes,
+          targetUrl,
+          requestId,
+          startTime,
+          captureProtocol,
+          bufferedRequestBody: body,
+          bufferedRequestTrailers: breakpointBodyModified
+            ? {}
+            : this._incomingMessageTrailers(clientReq),
+          trafficLifecycleId,
+          pendingEmitted,
+          requestProvenance
+        });
+        return;
+      }
+
       const buildOptions = (useUpstreamProxy) => {
         const headers = this._stripUpstreamHeaders({
           ...(transformedRequestHeaders ? {} : this._rawHeadersToObject(clientReq.rawHeaders)),
           ...clientReq.headers
         });
         this._setTargetHostHeader(headers, targetUrl.host);
-        if (breakpointBodyModified) this._setContentLength(headers, body.length);
+        if (breakpointBodyModified) this._setDecodedBodyContentLength(headers, body.length);
 
         if (isTargetHttps) {
           return {
@@ -4770,7 +5413,7 @@ export class ProxyServer {
             }
 
             const trailers = this._incomingMessageTrailers(proxyRes);
-            const resHeaders = this._incomingMessageHeaders(proxyRes);
+            const resHeaders = this._incomingResponseHeaders(proxyRes);
             if (proxyRes.statusCode !== 407) delete resHeaders['proxy-authenticate'];
             delete resHeaders['proxy-authorization'];
             delete resHeaders['proxy-connection'];
@@ -4805,7 +5448,10 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
-            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+            finalResponse = this._normalizeMockResponse(
+              clientReq.method,
+              this._applyMockResponseTransform(mockTransformAction, finalResponse)
+            );
             const duration = Date.now() - startTime;
             const timing = {
               total: Date.now() - startTime,
@@ -4833,10 +5479,9 @@ export class ProxyServer {
               statusCode: finalResponse.statusCode,
               statusMessage: finalResponse.statusMessage,
               responseHeaders: finalResponse.headers,
-              responseBody: this._safeBodyString(
+              responseBody: this._safeResponseBodyString(
                 finalResponse.body,
-                finalResponse.headers['content-encoding'],
-                finalResponse.headers['content-type']
+                finalResponse.headers
               ),
               responseBodySize: finalResponse.body.length,
               duration,
@@ -4846,7 +5491,8 @@ export class ProxyServer {
               usedUpstreamProxy: useUpstreamProxy,
               tls: null,
               remote,
-              trailers: Object.keys(finalResponse.trailers || {}).length > 0 ? finalResponse.trailers : null
+              trailers: Object.keys(finalResponse.trailers || {}).length > 0 ? finalResponse.trailers : null,
+              ...requestProvenance
             }, trafficLifecycleId);
           });
         });
@@ -4870,11 +5516,18 @@ export class ProxyServer {
             return;
           }
 
+          const syntheticResponse = this._syntheticErrorResponse(
+            clientReq.method, 502, 'Bad Gateway', `Proxy Error: ${err.message}`
+          );
           downstream.complete();
           const duration = Date.now() - startTime;
           try {
-            clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
-            clientRes.end(`Proxy Error: ${err.message}`);
+            this._sendH1Response(
+              clientRes,
+              syntheticResponse.statusCode,
+              syntheticResponse.headers,
+              syntheticResponse.body
+            );
           } catch { /* client gone */ }
 
           this._emitRequestUpdate({
@@ -4887,11 +5540,9 @@ export class ProxyServer {
             requestHeaders: clientReq.headers,
             requestBody: this._safeRequestBodyString(body, clientReq.headers),
             requestBodySize: body.length,
-            statusCode: 502,
-            statusMessage: 'Bad Gateway',
-            responseHeaders: {},
-            responseBody: `Proxy Error: ${err.message}`,
-            responseBodySize: 0,
+            statusCode: syntheticResponse.statusCode,
+            statusMessage: syntheticResponse.statusMessage,
+            ...syntheticResponse.capture,
             duration,
             timestamp: startTime,
             error: err.message,
@@ -4902,7 +5553,8 @@ export class ProxyServer {
             usedUpstreamProxy: proxyReq._usedUpstreamProxy === true,
             source: 'proxy',
             tls: null,
-            remote: null
+            remote: null,
+            ...requestProvenance
           }, trafficLifecycleId);
         });
 
@@ -5005,6 +5657,73 @@ export class ProxyServer {
     return false;
   }
 
+  _trackProvisionalRawTunnel({
+    socket,
+    hostname,
+    targetPort,
+    urlHostname,
+    getTlsDetails = () => null
+  }) {
+    const id = uuidv4();
+    const startTime = Date.now();
+    const initialBytesWritten = Number.isSafeInteger(socket?.bytesWritten)
+      ? socket.bytesWritten
+      : 0;
+    let bytesIn = 0;
+    let recognizedHttp = false;
+    let settled = false;
+
+    const onData = chunk => { bytesIn += chunk.length; };
+    const cleanup = () => {
+      socket?.removeListener?.('data', onData);
+      socket?.removeListener?.('close', finalize);
+    };
+    const finalize = () => {
+      if (settled) return false;
+      settled = true;
+      cleanup();
+      if (recognizedHttp) return false;
+      const finalBytesWritten = Number.isSafeInteger(socket?.bytesWritten)
+        ? socket.bytesWritten
+        : initialBytesWritten;
+      const bytesOut = Math.max(0, finalBytesWritten - initialBytesWritten);
+      this._emitRequest({
+        id,
+        protocol: 'tunnel',
+        method: 'CONNECT',
+        url: `tunnel://${urlHostname}:${targetPort}`,
+        host: hostname,
+        path: '/',
+        requestHeaders: {},
+        requestBody: '',
+        requestBodySize: bytesIn,
+        statusCode: 200,
+        statusMessage: 'Raw Tunnel',
+        responseHeaders: {},
+        responseBody: '',
+        responseBodySize: bytesOut,
+        duration: Date.now() - startTime,
+        timestamp: startTime,
+        source: 'tunnel',
+        tls: getTlsDetails(),
+        remote: { address: hostname, port: targetPort }
+      });
+      return true;
+    };
+    const recognizeHttp = () => {
+      if (settled) return false;
+      recognizedHttp = true;
+      settled = true;
+      cleanup();
+      return true;
+    };
+
+    socket?.on?.('data', onData);
+    socket?.once?.('close', finalize);
+    if (socket?.destroyed) queueMicrotask(finalize);
+    return { finalize, recognizeHttp };
+  }
+
   // Handle CONNECT method for HTTPS tunneling + MITM
   async _handleConnect(req, clientSocket, head) {
     let connectTarget;
@@ -5049,6 +5768,8 @@ export class ProxyServer {
             error: errorMessage,
             errorCode: error.code || null,
             errorPhase: this._getUpstreamErrorPhase(error),
+            upstreamStatusCode: error.upstreamStatusCode,
+            upstreamStatusMessage: error.upstreamStatusMessage,
             upstreamProxyGeneration: error.upstreamProxyGeneration,
             usedUpstreamProxy: error.usedUpstreamProxy === true
           } : {})
@@ -5060,7 +5781,30 @@ export class ProxyServer {
       };
 
       let target = null;
-      this._connectTcp(hostname, targetPort).then((connectedTarget) => {
+      const connectPassthroughTarget = async (attempt = 0) => {
+        try {
+          return await this._connectTcp(hostname, targetPort);
+        } catch (error) {
+          const retryContext = {
+            attempt,
+            proxyGeneration: error.upstreamProxyGeneration,
+            usedUpstreamProxy: error.usedUpstreamProxy === true,
+            method: 'CONNECT',
+            safeToReplay: true,
+            url: `tunnel://${urlHostname}:${targetPort}`,
+            host: hostname
+          };
+          const shouldRetry = error.upstreamStatusCode !== undefined
+            ? await this._shouldRetryAfterUpstreamResponse({
+                statusCode: error.upstreamStatusCode,
+                statusMessage: error.upstreamStatusMessage
+              }, retryContext)
+            : await this._shouldRetryAfterUpstreamError(error, retryContext);
+          if (shouldRetry) return connectPassthroughTarget(attempt + 1);
+          throw error;
+        }
+      };
+      connectPassthroughTarget().then((connectedTarget) => {
         if (clientClosed || clientSocket.destroyed) {
           connectedTarget.destroy();
           return;
@@ -5200,31 +5944,13 @@ export class ProxyServer {
     if (tlsSocket.getProtocol?.()) captureTlsDetails();
     else tlsSocket.once('secure', captureTlsDetails);
 
-    // Track whether any HTTP request is received on this connection
-    let httpRequestReceived = false;
-    const tunnelStartTime = Date.now();
-    let tunnelBytesIn = 0;
-    let tunnelBytesOut = 0;
-    let tunnelEmitted = false;
-
-    const tunnelTimer = setTimeout(() => {
-      if (!httpRequestReceived && !tunnelEmitted) {
-        tunnelEmitted = true;
-        this._emitRequest({
-          id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
-          url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
-          requestHeaders: {}, requestBody: '', requestBodySize: tunnelBytesIn,
-          statusCode: 200, statusMessage: 'Raw Tunnel',
-          responseHeaders: {}, responseBody: '', responseBodySize: tunnelBytesOut,
-          duration: Date.now() - tunnelStartTime, timestamp: tunnelStartTime,
-          source: 'tunnel', tls: tlsDetails,
-          remote: { address: hostname, port: targetPort }
-        });
-      }
-    }, 5000);
-
-    tlsSocket.on('data', chunk => { tunnelBytesIn += chunk.length; });
-    tlsSocket.on('close', () => clearTimeout(tunnelTimer));
+    const rawTunnel = this._trackProvisionalRawTunnel({
+      socket: tlsSocket,
+      hostname,
+      targetPort,
+      urlHostname,
+      getTlsDetails: () => tlsDetails
+    });
 
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
@@ -5235,8 +5961,7 @@ export class ProxyServer {
       let hostname = tunnelHostname;
       let targetPort = tunnelTargetPort;
       captureTlsDetails();
-      httpRequestReceived = true;
-      clearTimeout(tunnelTimer);
+      rawTunnel.recognizeHttp();
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
@@ -5324,12 +6049,58 @@ export class ProxyServer {
           requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
+        let requestProvenance = {};
+        this._terminalizeBufferedDownstream(downstream, () => ({
+          id: requestId,
+          protocol: 'https',
+          method: req.method,
+          url: fullUrl,
+          host: hostname,
+          path: req.url,
+          requestHeaders: req.headers,
+          requestBody: this._safeRequestBodyString(body, req.headers),
+          requestBodySize: body.length,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null,
+          ...requestProvenance
+        }), trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
-          : data => this._emitRequest(data, trafficLifecycleId);
+          ? data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequestUpdate({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false
+          : data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequest({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false;
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
+        const webhookPreparation = mockRule?.action?.type === 'webhook' && mockRule.action.webhookUrl
+          ? this._beginWebhookPreparation()
+          : null;
+        if (mockRule) {
+          const preStepResult = await this._applyMockPreSteps(mockRule, {
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          }, [webhookPreparation, downstream]);
+          if (preStepResult.cancelled) return;
+          req.method = preStepResult.method;
+          fullUrl = preStepResult.url.href;
+          hostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
+          targetPort = parseInt(preStepResult.url.port, 10)
+            || (preStepResult.url.protocol === 'https:' ? 443 : 80);
+          req.url = preStepResult.url.pathname + preStepResult.url.search;
+          req.headers = preStepResult.headers;
+          transformedRequestHeaders ||= preStepResult.changed;
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            preStepResult.originalRequest,
+            preStepResult.changed
+          );
+        }
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
@@ -5339,11 +6110,13 @@ export class ProxyServer {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null,
+            ...requestProvenance
           }, { pendingEmitted, trafficLifecycleId });
           return;
         }
-        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
+        if (mockRule && mockRule.action?.type !== 'passthrough'
+            && !mockBreakpointPhase && !mockTransformAction) {
           const action = mockRule.action || {
             type: 'fixed-response',
             status: mockRule.response?.status || 200,
@@ -5359,72 +6132,30 @@ export class ProxyServer {
                 tls: tlsDetails,
                 updatePending: pendingEmitted,
                 trafficLifecycleId,
-                downstream
+                downstream,
+                webhookPreparation,
+                preStepsApplied: true,
+                ...requestProvenance
               }
             );
             return;
           }
 
-          // Capture original request data before pre-steps modify it
-          const origMethod = req.method;
-          const origUrl = fullUrl;
-          const origHeaders = { ...req.headers };
-
-          // Execute pre-steps (step chaining) before the terminal action
-          const preSteps = mockRule.preSteps || [];
-          for (const step of preSteps) {
-            switch (step.type) {
-              case 'delay':
-                if (step.ms > 0) {
-                  await new Promise(r => setTimeout(r, step.ms));
-                }
-                break;
-              case 'add-header':
-                if (step.name) {
-                  req.headers[step.name.toLowerCase()] = step.value ?? '';
-                }
-                break;
-              case 'remove-header':
-                if (step.name) {
-                  delete req.headers[step.name.toLowerCase()];
-                }
-                break;
-              case 'rewrite-url':
-                if (step.value) {
-                  const rewrittenUrl = this._resolveRewriteUrl(fullUrl, step.value);
-                  if (rewrittenUrl) {
-                    fullUrl = rewrittenUrl.href;
-                    hostname = this._normalizeConnectionHostname(rewrittenUrl.hostname);
-                    targetPort = parseInt(rewrittenUrl.port, 10) || (rewrittenUrl.protocol === 'https:' ? 443 : 80);
-                    req.url = rewrittenUrl.pathname + rewrittenUrl.search;
-                    this._setTargetHostHeader(req.headers, rewrittenUrl.host);
-                  }
-                }
-                break;
-              case 'rewrite-method':
-                if (step.value) {
-                  req.method = step.value;
-                }
-                break;
-            }
-          }
-
-          // Detect if pre-steps transformed the request
-          const transformed = origMethod !== req.method ||
-            origUrl !== fullUrl ||
-            JSON.stringify(origHeaders) !== JSON.stringify(req.headers);
-          const originalRequest = transformed ? {
-            method: origMethod, url: origUrl, headers: origHeaders,
-            body: this._safeRequestBodyString(body, origHeaders)
-          } : null;
-          const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+          const originalRequest = requestProvenance.originalRequest || null;
+          const transformedBy = requestProvenance.transformedBy || null;
+          if (downstream.aborted) return;
 
           // Close connection
           if (action.type === 'close') {
             if (action.delay && action.delay > 0) {
-              await this._waitForMockDelay(action.delay);
+              if (!await this._waitForMockDelay(
+                action.delay,
+                [webhookPreparation, downstream]
+              )) return;
             }
-            res.destroy();
+            if (downstream.aborted) return;
+            downstream.complete();
+            this._closeMockTransport(res);
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
@@ -5440,7 +6171,8 @@ export class ProxyServer {
 
           // Reset connection (RST)
           if (action.type === 'reset') {
-            res.socket?.destroy();
+            downstream.complete();
+            this._resetMockTransport(res);
             emitCapturedRequest({
               id: requestId, protocol: 'https', method: req.method, url: fullUrl,
               host: hostname, path: req.url, requestHeaders: req.headers,
@@ -5456,8 +6188,12 @@ export class ProxyServer {
 
           // Apply delay
           if (action.delay && action.delay > 0) {
-            await new Promise(r => setTimeout(r, action.delay));
+            if (!await this._waitForMockDelay(
+              action.delay,
+              [webhookPreparation, downstream]
+            )) return;
           }
+          if (downstream.aborted) return;
 
           // Forward action
           if (action.type === 'forward' && action.forwardTo) {
@@ -5473,17 +6209,25 @@ export class ProxyServer {
                 }
               }
             } catch (err) {
+              const syntheticResponse = this._syntheticErrorResponse(
+                req.method, 500, 'Mock Error', `Forward setup error: ${err.message}`
+              );
               downstream.complete();
               try {
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end(`Forward setup error: ${err.message}`);
+                this._sendH1Response(
+                  res,
+                  syntheticResponse.statusCode,
+                  syntheticResponse.headers,
+                  syntheticResponse.body
+                );
               } catch (e) { /* client gone */ }
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-                statusCode: 500, statusMessage: 'Mock Error', responseHeaders: {},
-                responseBody: `Forward setup error: ${err.message}`, responseBodySize: 0,
+                statusCode: syntheticResponse.statusCode,
+                statusMessage: syntheticResponse.statusMessage,
+                ...syntheticResponse.capture,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                 error: err.message, tls: tlsDetails, remote: null,
                 originalRequest, transformedBy
@@ -5510,37 +6254,51 @@ export class ProxyServer {
                 }
               }
               const trailers = this._cleanTrailers(fwdRes.trailers);
+              const forwardRequestCapture = this._mockForwardRequestCapture(
+                mockRule,
+                { method: req.method, url: fullUrl, headers: req.headers, body },
+                fwdRes.requestHeaders,
+                requestProvenance
+              );
               downstream.complete();
               try {
                 this._sendH1Response(res, fwdRes.statusCode, resHeaders, fwdRes.body, fwdRes.trailers);
               } catch (e) { /* client gone */ }
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
-                host: hostname, path: req.url, requestHeaders: req.headers,
+                host: hostname, path: req.url,
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
                 responseHeaders: resHeaders,
-                responseBody: this._safeBodyString(fwdRes.body, fwdRes.headers['content-encoding'], fwdRes.headers['content-type']),
+                responseBody: this._safeResponseBodyString(fwdRes.body, resHeaders),
                 responseBodySize: fwdRes.body.length, duration: Date.now() - startTime,
-                timestamp: startTime, source: 'mock',
+                timestamp: startTime, source: 'mock', mockResponseSource: 'upstream',
                 usedUpstreamProxy: fwdRes.usedUpstreamProxy,
                 tls: tlsDetails, remote: fwdRes.remote,
                 trailers: Object.keys(trailers).length > 0 ? trailers : null,
-                originalRequest, transformedBy
+                ...forwardRequestCapture
               });
             } catch (err) {
               if (downstream.aborted) return;
+              const syntheticResponse = this._syntheticErrorResponse(
+                req.method, 502, 'Bad Gateway', `Forward Error: ${err.message}`
+              );
               downstream.complete();
               try {
-                res.writeHead(502, { 'Content-Type': 'text/plain' });
-                res.end(`Forward Error: ${err.message}`);
+                this._sendH1Response(
+                  res,
+                  syntheticResponse.statusCode,
+                  syntheticResponse.headers,
+                  syntheticResponse.body
+                );
               } catch (e) { /* client gone */ }
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-                statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-                responseBody: `Forward Error: ${err.message}`, responseBodySize: 0,
+                statusCode: syntheticResponse.statusCode,
+                statusMessage: syntheticResponse.statusMessage,
+                ...syntheticResponse.capture,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                 error: err.message,
                 errorCode: this._getUpstreamErrorCode(err),
@@ -5559,17 +6317,25 @@ export class ProxyServer {
           if (action.type === 'serve-file') {
             const filePath = action.filePath;
             if (!filePath) {
+              const syntheticResponse = this._syntheticErrorResponse(
+                req.method, 500, 'Mock Error', 'Mock error: no filePath configured'
+              );
+              downstream.complete();
               try {
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end('Mock error: no filePath configured');
+                this._sendH1Response(
+                  res,
+                  syntheticResponse.statusCode,
+                  syntheticResponse.headers,
+                  syntheticResponse.body
+                );
               } catch (e) { /* client gone */ }
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-                statusCode: 500, statusMessage: 'Mock Error',
-                responseHeaders: { 'Content-Type': 'text/plain' },
-                responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
+                statusCode: syntheticResponse.statusCode,
+                statusMessage: syntheticResponse.statusMessage,
+                ...syntheticResponse.capture,
                 duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
                 tls: tlsDetails, remote: null,
                 originalRequest, transformedBy
@@ -5578,16 +6344,25 @@ export class ProxyServer {
             }
             const mime = action.contentType || 'application/octet-stream';
             const fileStatus = action.status || 200;
+            const fileResponse = this._normalizeMockResponse(req.method, {
+              statusCode: fileStatus,
+              headers: { 'Content-Type': mime },
+              body: Buffer.alloc(0)
+            });
+            const releaseFileTerminal = downstream.deferTerminal();
             try {
               const file = await this._streamMockFile(filePath, res, () => {
-                res.writeHead(fileStatus, { 'Content-Type': mime });
-              }, { downstream });
+                res.writeHead(fileResponse.statusCode, fileResponse.headers);
+              }, {
+                downstream,
+                suppressBody: this._isMockResponseBodyForbidden(req.method, fileStatus)
+              });
               emitCapturedRequest({
                 id: requestId, protocol: 'https', method: req.method, url: fullUrl,
                 host: hostname, path: req.url, requestHeaders: req.headers,
                 requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
                 statusCode: fileStatus, statusMessage: 'Mocked (file)',
-                responseHeaders: { 'Content-Type': mime },
+                responseHeaders: fileResponse.headers,
                 responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
                 responseBodySize: file.size,
                 responseBodyTruncated: file.truncated,
@@ -5600,11 +6375,17 @@ export class ProxyServer {
                 originalRequest, transformedBy
               });
             } catch (err) {
-              const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
+              const failure = this._mockFileFailure(
+                filePath, fileStatus, mime, err, req.method
+              );
               try {
                 if (failure.statusCode === 500 && !res.headersSent && !res.destroyed) {
-                  res.writeHead(500, { 'Content-Type': 'text/plain' });
-                  res.end('File not found: ' + filePath);
+                  this._sendH1Response(
+                    res,
+                    failure.wireResponse.statusCode,
+                    failure.wireResponse.headers,
+                    failure.wireResponse.body
+                  );
                 } else if (!res.destroyed) {
                   res.destroy(err);
                 }
@@ -5626,6 +6407,8 @@ export class ProxyServer {
                 tls: tlsDetails, remote: null,
                 originalRequest, transformedBy
               });
+            } finally {
+              releaseFileTerminal();
             }
             return;
           }
@@ -5676,7 +6459,7 @@ export class ProxyServer {
             if (modifications.headers) req.headers = { ...modifications.headers };
             if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
               body = Buffer.from(String(modifications.body || ''));
-              this._setContentLength(req.headers, body.length);
+              this._setDecodedBodyContentLength(req.headers, body.length);
               breakpointBodyModified = true;
             }
             this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
@@ -5758,14 +6541,26 @@ export class ProxyServer {
               mockHeaders[k.toLowerCase()] = v;
             }
           }
-          res.writeHead(mockStatus, mockHeaders);
-          res.end(mockBody);
+          const mockResponse = this._normalizeMockResponse(req.method, {
+            statusCode: mockStatus,
+            headers: mockHeaders,
+            body: mockBody
+          });
+          this._sendH1Response(
+            res,
+            mockResponse.statusCode,
+            mockResponse.headers,
+            mockResponse.body,
+            mockResponse.trailers
+          );
           emitCapturedRequest({
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-            statusCode: mockStatus, statusMessage: 'Mocked', responseHeaders: mockHeaders,
-            responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
+            statusCode: mockResponse.statusCode, statusMessage: 'Mocked',
+            responseHeaders: mockResponse.headers,
+            responseBody: this._safeResponseBodyString(mockResponse.body, mockResponse.headers),
+            responseBodySize: mockResponse.body.length,
             duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
             tls: tlsDetails, remote: null,
             originalRequest, transformedBy
@@ -5774,6 +6569,12 @@ export class ProxyServer {
         }
 
         if (mockTransformAction?.type === 'transform-request') {
+          const transformOriginal = this._snapshotMockRequest({
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          });
           const transformed = this._applyMockRequestTransform(mockTransformAction, {
             method: req.method,
             url: fullUrl,
@@ -5792,6 +6593,12 @@ export class ProxyServer {
           breakpointBodyModified ||= transformed.bodyChanged;
           transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
           matcherBody = this._requestBodyForMatching(body, req.headers);
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            transformOriginal,
+            transformed.changed,
+            requestProvenance
+          );
         }
 
         // Check breakpoint rules
@@ -5854,9 +6661,33 @@ export class ProxyServer {
           }
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
-            this._setContentLength(req.headers, body.length);
+            this._setDecodedBodyContentLength(req.headers, body.length);
             breakpointBodyModified = true;
           }
+        }
+
+        if (!responseBreakpoint && !this._mockActionTransformsResponse(mockTransformAction)) {
+          downstream.complete();
+          const targetUrl = new URL(fullUrl);
+          this._setTargetHostHeader(req.headers, targetUrl.host);
+          this._streamH1Exchange({
+            clientReq: req,
+            clientRes: res,
+            targetUrl,
+            requestId,
+            startTime,
+            captureProtocol: targetUrl.protocol.slice(0, -1),
+            tlsDetails,
+            clientHelloTls: tlsSocket._clientHelloTls,
+            bufferedRequestBody: body,
+            bufferedRequestTrailers: breakpointBodyModified
+              ? {}
+              : this._incomingMessageTrailers(req),
+            trafficLifecycleId,
+            pendingEmitted,
+            requestProvenance
+          });
+          return;
         }
 
         // Forward to real server — preserve raw header case to avoid bot detection
@@ -5871,7 +6702,7 @@ export class ProxyServer {
           ...req.headers
         });
         this._setTargetHostHeader(proxyHeaders, upstreamUrl.host);
-        if (breakpointBodyModified) this._setContentLength(proxyHeaders, body.length);
+        if (breakpointBodyModified) this._setDecodedBodyContentLength(proxyHeaders, body.length);
 
         let upstreamProtocol = isUpstreamHttps ? 'https' : 'http';
 
@@ -5884,7 +6715,7 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
+            responseBody: this._safeResponseBodyString(resBody, responseHeaders),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
             usedUpstreamProxy,
             tls: tlsDetails, remote,
@@ -5892,14 +6723,15 @@ export class ProxyServer {
           });
         };
 
-        const emitError = (err, request) => {
+        const emitError = (err, request, syntheticResponse) => {
           const duration = Date.now() - startTime;
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
+            statusCode: syntheticResponse.statusCode,
+            statusMessage: syntheticResponse.statusMessage,
+            ...syntheticResponse.capture,
             duration, timestamp: startTime, error: err.message,
             errorCode: this._getUpstreamErrorCode(err),
             errorPhase: this._getUpstreamErrorPhase(err),
@@ -5950,7 +6782,10 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
-              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+              finalResponse = this._normalizeMockResponse(
+                req.method,
+                this._applyMockResponseTransform(mockTransformAction, finalResponse)
+              );
               downstream.complete();
               try {
                 this._sendH1Response(
@@ -5972,11 +6807,18 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (this._settleNonReplayableH2Failure(
               req.method, h2RequestAttempted, err, downstream, error => {
+                const syntheticResponse = this._syntheticErrorResponse(
+                  req.method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+                );
                 try {
-                  res.writeHead(502, { 'Content-Type': 'text/plain' });
-                  res.end(`Proxy Error: ${error.message}`);
+                  this._sendH1Response(
+                    res,
+                    syntheticResponse.statusCode,
+                    syntheticResponse.headers,
+                    syntheticResponse.body
+                  );
                 } catch (e) { /* client gone */ }
-                emitError(error, null);
+                emitError(error, null, syntheticResponse);
               }
             )) return;
             // H2 request failed — fall back to h1.1
@@ -6011,7 +6853,7 @@ export class ProxyServer {
             }
 
             const trailers = this._incomingMessageTrailers(proxyRes);
-            const responseHeaders = this._incomingMessageHeaders(proxyRes);
+            const responseHeaders = this._incomingResponseHeaders(proxyRes);
             const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
             let finalResponse = {
               statusCode: proxyRes.statusCode,
@@ -6030,7 +6872,10 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
-            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+            finalResponse = this._normalizeMockResponse(
+              req.method,
+              this._applyMockResponseTransform(mockTransformAction, finalResponse)
+            );
             downstream.complete();
             try {
               this._sendH1Response(
@@ -6051,12 +6896,19 @@ export class ProxyServer {
 
         const handleError = (err, request) => {
           if (downstream.aborted) return;
+          const syntheticResponse = this._syntheticErrorResponse(
+            req.method, 502, 'Bad Gateway', `Proxy Error: ${err.message}`
+          );
           downstream.complete();
           try {
-            res.writeHead(502, { 'Content-Type': 'text/plain' });
-            res.end(`Proxy Error: ${err.message}`);
+            this._sendH1Response(
+              res,
+              syntheticResponse.statusCode,
+              syntheticResponse.headers,
+              syntheticResponse.body
+            );
           } catch (e) { /* client gone */ }
-          emitError(err, request);
+          emitError(err, request, syntheticResponse);
         };
 
         let proxyReq;
@@ -6107,8 +6959,7 @@ export class ProxyServer {
 
     virtualServer.on('upgrade', (req, socket, head) => {
       captureTlsDetails();
-      httpRequestReceived = true;
-      clearTimeout(tunnelTimer);
+      rawTunnel.recognizeHttp();
       this._handleHttpUpgrade(req, socket, head, {
         secure: true,
         hostname,
@@ -6165,28 +7016,7 @@ export class ProxyServer {
     let tlsSocket = socket;
     let tlsDetails = null;
 
-    // Track whether any HTTP request is received on this connection
-    let httpRequestReceived = false;
-    const tunnelStartTime = Date.now();
-    let tunnelEmitted = false;
-
-    const tunnelTimer = setTimeout(() => {
-      if (!httpRequestReceived && !tunnelEmitted) {
-        tunnelEmitted = true;
-        this._emitRequest({
-          id: uuidv4(), protocol: 'tunnel', method: 'CONNECT',
-          url: `tunnel://${urlHostname}:${targetPort}`, host: hostname, path: '/',
-          requestHeaders: {}, requestBody: '', requestBodySize: 0,
-          statusCode: 200, statusMessage: 'Raw Tunnel',
-          responseHeaders: {}, responseBody: '', responseBodySize: 0,
-          duration: Date.now() - tunnelStartTime, timestamp: tunnelStartTime,
-          source: 'tunnel', tls: tlsDetails,
-          remote: { address: hostname, port: targetPort }
-        });
-      }
-    }, 5000);
-
-    socket.on('close', () => clearTimeout(tunnelTimer));
+    let rawTunnel = null;
 
     // Let the HTTP/2 secure server own TLS & ALPN. It can then dispatch both
     // HTTP/2 streams and HTTP/1.1 fallback requests on the injected socket.
@@ -6200,14 +7030,20 @@ export class ProxyServer {
         cipher: secureSocket.getCipher()?.name || null,
         version: secureSocket.getProtocol?.() || 'TLSv1.2'
       };
+      rawTunnel = this._trackProvisionalRawTunnel({
+        socket: secureSocket,
+        hostname,
+        targetPort,
+        urlHostname,
+        getTlsDetails: () => tlsDetails
+      });
       const parsed = socket._captured;
       if (parsed) secureSocket._clientHelloTls = parsed;
     });
 
     // HTTP/2 streams — each stream is a separate request
     h2Server.on('stream', (stream, headers) => {
-      httpRequestReceived = true;
-      clearTimeout(tunnelTimer);
+      rawTunnel?.recognizeHttp();
       const pseudoHeaderOrder = Object.keys(headers).filter(name => name.startsWith(':'));
       const clientHttp2Profile = stream.session._clientHttp2Profile || {
         settings: { ...stream.session.remoteSettings },
@@ -6343,12 +7179,58 @@ export class ProxyServer {
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
+        let requestProvenance = {};
+        this._terminalizeBufferedDownstream(downstream, () => ({
+          id: requestId,
+          protocol: 'h2',
+          method,
+          url: fullUrl,
+          host: authority,
+          path,
+          requestHeaders: reqHeaders,
+          requestBody: this._safeRequestBodyString(body, reqHeaders),
+          requestBodySize: body.length,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null,
+          ...requestProvenance
+        }), trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
-          : data => this._emitRequest(data, trafficLifecycleId);
+          ? data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequestUpdate({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false
+          : data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequest({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false;
 
         // Check mock rules
         const mockRule = this._findMockRule(method, fullUrl, reqHeaders, matcherBody);
+        const webhookPreparation = mockRule?.action?.type === 'webhook' && mockRule.action.webhookUrl
+          ? this._beginWebhookPreparation()
+          : null;
+        if (mockRule) {
+          const preStepResult = await this._applyMockPreSteps(mockRule, {
+            method,
+            url: fullUrl,
+            headers: reqHeaders,
+            body
+          }, [webhookPreparation, downstream]);
+          if (preStepResult.cancelled) return;
+          method = preStepResult.method;
+          fullUrl = preStepResult.url.href;
+          authority = preStepResult.url.host;
+          path = preStepResult.url.pathname + preStepResult.url.search;
+          upstreamHostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
+          upstreamPort = parseInt(preStepResult.url.port, 10)
+            || (preStepResult.url.protocol === 'https:' ? 443 : 80);
+          reqHeaders = preStepResult.headers;
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            preStepResult.originalRequest,
+            preStepResult.changed
+          );
+        }
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
@@ -6358,20 +7240,28 @@ export class ProxyServer {
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null,
+            ...requestProvenance
           }, { pendingEmitted, trafficLifecycleId });
           return;
         }
-        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
+        if (mockRule && mockRule.action?.type !== 'passthrough'
+            && !mockBreakpointPhase && !mockTransformAction) {
           await this._handleH2MockResponse(stream, mockRule, {
             requestId, method, fullUrl, authority, path, reqHeaders, body,
             requestTrailers, startTime, tlsDetails, downstream, pendingEmitted,
-            trafficLifecycleId
+            trafficLifecycleId, webhookPreparation, preStepsApplied: true, ...requestProvenance
           });
           return;
         }
 
         if (mockTransformAction?.type === 'transform-request') {
+          const transformOriginal = this._snapshotMockRequest({
+            method,
+            url: fullUrl,
+            headers: reqHeaders,
+            body
+          });
           const transformed = this._applyMockRequestTransform(mockTransformAction, {
             method,
             url: fullUrl,
@@ -6390,6 +7280,12 @@ export class ProxyServer {
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
           matcherBody = this._requestBodyForMatching(body, reqHeaders);
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            transformOriginal,
+            transformed.changed,
+            requestProvenance
+          );
         }
 
         // Check breakpoint rules
@@ -6440,21 +7336,47 @@ export class ProxyServer {
             } catch { /* keep original */ }
           }
           if (modifications.method) {
-            method = String(modifications.method).trim().toUpperCase() || method;
+            method = String(modifications.method).trim() || method;
           }
           if (modifications.headers) reqHeaders = { ...modifications.headers };
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
-            this._setContentLength(reqHeaders, body.length);
+            this._setDecodedBodyContentLength(reqHeaders, body.length);
             breakpointBodyModified = true;
           }
+        }
+
+        if (!responseBreakpoint && !this._mockActionTransformsResponse(mockTransformAction)) {
+          downstream.complete();
+          this._streamH2Exchange({
+            stream,
+            method,
+            fullUrl,
+            authority,
+            path,
+            requestHeaders: reqHeaders,
+            requestId,
+            startTime,
+            tlsDetails,
+            clientHelloTls: tlsSocket?._clientHelloTls,
+            clientHttp2Profile,
+            pseudoHeaderOrder,
+            bufferedRequestBody: body,
+            bufferedRequestTrailers: breakpointBodyModified ? {} : requestTrailers,
+            trafficLifecycleId,
+            pendingEmitted,
+            requestProvenance
+          });
+          return;
         }
 
         // Forward to upstream server — try HTTP/2 first, then fall back to HTTPS/1.1
         if (breakpointBodyModified) requestTrailers = {};
         this._setTargetHostHeader(reqHeaders, authority);
         const upstreamHeaders = this._stripUpstreamHeaders(reqHeaders);
-        if (breakpointBodyModified) this._setContentLength(upstreamHeaders, body.length);
+        if (breakpointBodyModified) {
+          this._setDecodedBodyContentLength(upstreamHeaders, body.length);
+        }
         this._setTargetHostHeader(upstreamHeaders, authority);
 
         const source = this._detectSource(reqHeaders);
@@ -6470,21 +7392,22 @@ export class ProxyServer {
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
+            responseBody: this._safeResponseBodyString(resBody, responseHeaders),
             responseBodySize: resBody.length, duration, timestamp: startTime,
             source, usedUpstreamProxy, tls: tlsDetails, remote,
             trailers: Object.keys(trailers || {}).length > 0 ? trailers : null
           });
         };
 
-        const emitH2Error = (err, request) => {
+        const emitH2Error = (err, request, syntheticResponse) => {
           const duration = Date.now() - startTime;
           emitCapturedRequest({
             id: requestId, protocol: 'h2', method, url: fullUrl,
             host: authority, path, requestHeaders: reqHeaders,
             requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: 'Proxy Error: ' + err.message, responseBodySize: 0,
+            statusCode: syntheticResponse.statusCode,
+            statusMessage: syntheticResponse.statusMessage,
+            ...syntheticResponse.capture,
             duration, timestamp: startTime, error: err.message,
             errorCode: this._getUpstreamErrorCode(err),
             errorPhase: this._getUpstreamErrorPhase(err),
@@ -6537,7 +7460,10 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
-              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+              finalResponse = this._normalizeMockResponse(
+                method,
+                this._applyMockResponseTransform(mockTransformAction, finalResponse)
+              );
               const h2ResponseHeaders = this._toH2ResponseHeaders(
                 finalResponse.statusCode, finalResponse.headers
               );
@@ -6562,13 +7488,22 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (this._settleNonReplayableH2Failure(
               method, h2RequestAttempted, err, downstream, error => {
+                const syntheticResponse = this._syntheticErrorResponse(
+                  method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+                );
                 try {
                   if (!stream.destroyed && !stream.closed) {
-                    stream.respond({ ':status': 502 });
-                    stream.end('Proxy Error: ' + error.message);
+                    this._sendH2Response(
+                      stream,
+                      this._toH2ResponseHeaders(
+                        syntheticResponse.statusCode,
+                        syntheticResponse.headers
+                      ),
+                      syntheticResponse.body
+                    );
                   }
                 } catch (e) { /* stream already closed */ }
-                emitH2Error(error, null);
+                emitH2Error(error, null, syntheticResponse);
               }
             )) return;
             // H2 request failed — fall back to h1.1
@@ -6604,7 +7539,7 @@ export class ProxyServer {
             let finalResponse = {
               statusCode: proxyRes.statusCode,
               statusMessage: proxyRes.statusMessage,
-              headers: this._incomingMessageHeaders(proxyRes),
+              headers: this._incomingResponseHeaders(proxyRes),
               body: resBody,
               trailers: this._incomingMessageTrailers(proxyRes)
             };
@@ -6613,12 +7548,15 @@ export class ProxyServer {
                 requestId, trafficLifecycleId, protocol: 'h2', method, url: fullUrl, host: authority, path,
                 requestHeaders: reqHeaders, requestBody: body,
                 statusCode: proxyRes.statusCode, statusMessage: proxyRes.statusMessage,
-                responseHeaders: this._incomingMessageHeaders(proxyRes), responseBody: resBody,
+                responseHeaders: this._incomingResponseHeaders(proxyRes), responseBody: resBody,
                 trailers: this._incomingMessageTrailers(proxyRes), startTime, tlsDetails, remote, abortTarget: stream
               });
               if (!finalResponse || downstream.aborted) return;
             }
-            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+            finalResponse = this._normalizeMockResponse(
+              method,
+              this._applyMockResponseTransform(mockTransformAction, finalResponse)
+            );
             const responseHeaders = this._toH2ResponseHeaders(
               finalResponse.statusCode, finalResponse.headers
             );
@@ -6644,14 +7582,23 @@ export class ProxyServer {
 
         const handleError = (err, request) => {
           if (downstream.aborted) return;
+          const syntheticResponse = this._syntheticErrorResponse(
+            method, 502, 'Bad Gateway', `Proxy Error: ${err.message}`
+          );
           downstream.complete();
           try {
             if (!stream.destroyed && !stream.closed) {
-              stream.respond({ ':status': 502 });
-              stream.end('Proxy Error: ' + err.message);
+              this._sendH2Response(
+                stream,
+                this._toH2ResponseHeaders(
+                  syntheticResponse.statusCode,
+                  syntheticResponse.headers
+                ),
+                syntheticResponse.body
+              );
             }
           } catch (e) { /* stream already closed */ }
-          emitH2Error(err, request);
+          emitH2Error(err, request, syntheticResponse);
         };
 
         let proxyReq;
@@ -6716,8 +7663,7 @@ export class ProxyServer {
     h2Server.on('request', (req, res) => {
       let hostname = tunnelHostname;
       let targetPort = tunnelTargetPort;
-      httpRequestReceived = true;
-      clearTimeout(tunnelTimer);
+      rawTunnel?.recognizeHttp();
       // This fires for HTTP/1.1 requests when allowHTTP1 is true.
       // HTTP/2 requests are handled by the 'stream' event above, not this one.
       // Only handle if this is actually an HTTP/1.1 request (not an h2 stream).
@@ -6811,12 +7757,58 @@ export class ProxyServer {
           requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
           timestamp: startTime, source: 'proxy', tls: tlsDetails, remote: null
         }, trafficLifecycleId);
+        let requestProvenance = {};
+        this._terminalizeBufferedDownstream(downstream, () => ({
+          id: requestId,
+          protocol: 'https',
+          method: req.method,
+          url: fullUrl,
+          host: hostname,
+          path: req.url,
+          requestHeaders: req.headers,
+          requestBody: this._safeRequestBodyString(body, req.headers),
+          requestBodySize: body.length,
+          timestamp: startTime,
+          source: 'proxy',
+          tls: tlsDetails,
+          remote: null,
+          ...requestProvenance
+        }), trafficLifecycleId);
         const emitCapturedRequest = pendingEmitted
-          ? data => this._emitRequestUpdate(data, trafficLifecycleId)
-          : data => this._emitRequest(data, trafficLifecycleId);
+          ? data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequestUpdate({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false
+          : data => this._claimDownstreamCapture(downstream, data)
+            ? this._emitRequest({ ...requestProvenance, ...data }, trafficLifecycleId)
+            : false;
 
         // Check mock rules
         const mockRule = this._findMockRule(req.method, fullUrl, matcherHeaders, matcherBody);
+        const webhookPreparation = mockRule?.action?.type === 'webhook' && mockRule.action.webhookUrl
+          ? this._beginWebhookPreparation()
+          : null;
+        if (mockRule) {
+          const preStepResult = await this._applyMockPreSteps(mockRule, {
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          }, [webhookPreparation, downstream]);
+          if (preStepResult.cancelled) return;
+          req.method = preStepResult.method;
+          fullUrl = preStepResult.url.href;
+          hostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
+          targetPort = parseInt(preStepResult.url.port, 10)
+            || (preStepResult.url.protocol === 'https:' ? 443 : 80);
+          req.url = preStepResult.url.pathname + preStepResult.url.search;
+          req.headers = preStepResult.headers;
+          transformedRequestHeaders ||= preStepResult.changed;
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            preStepResult.originalRequest,
+            preStepResult.changed
+          );
+        }
         const mockBreakpointPhase = this._getMockBreakpointPhase(mockRule);
         const mockTransformAction = ['transform-request', 'transform-response'].includes(mockRule?.action?.type)
           ? mockRule.action
@@ -6826,19 +7818,31 @@ export class ProxyServer {
             id: requestId, protocol: 'https', method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null
+            timestamp: startTime, source: 'mock', tls: tlsDetails, remote: null,
+            ...requestProvenance
           }, { pendingEmitted, trafficLifecycleId });
           return;
         }
-        if (mockRule && !mockBreakpointPhase && !mockTransformAction) {
+        if (mockRule && mockRule.action?.type !== 'passthrough'
+            && !mockBreakpointPhase && !mockTransformAction) {
           await this._serveMockResponseH1OnH2(
             requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
-            downstream, pendingEmitted, trafficLifecycleId
+            downstream, pendingEmitted, trafficLifecycleId, {
+              webhookPreparation,
+              preStepsApplied: true,
+              ...requestProvenance
+            }
           );
           return;
         }
 
         if (mockTransformAction?.type === 'transform-request') {
+          const transformOriginal = this._snapshotMockRequest({
+            method: req.method,
+            url: fullUrl,
+            headers: req.headers,
+            body
+          });
           const transformed = this._applyMockRequestTransform(mockTransformAction, {
             method: req.method,
             url: fullUrl,
@@ -6857,6 +7861,12 @@ export class ProxyServer {
           breakpointBodyModified ||= transformed.bodyChanged;
           transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
           matcherBody = this._requestBodyForMatching(body, req.headers);
+          requestProvenance = this._mockRequestProvenance(
+            mockRule,
+            transformOriginal,
+            transformed.changed,
+            requestProvenance
+          );
         }
 
         // Check breakpoint rules
@@ -6917,9 +7927,33 @@ export class ProxyServer {
           }
           if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
             body = Buffer.from(String(modifications.body || ''));
-            this._setContentLength(req.headers, body.length);
+            this._setDecodedBodyContentLength(req.headers, body.length);
             breakpointBodyModified = true;
           }
+        }
+
+        if (!responseBreakpoint && !this._mockActionTransformsResponse(mockTransformAction)) {
+          downstream.complete();
+          const targetUrl = new URL(fullUrl);
+          this._setTargetHostHeader(req.headers, targetUrl.host);
+          this._streamH1Exchange({
+            clientReq: req,
+            clientRes: res,
+            targetUrl,
+            requestId,
+            startTime,
+            captureProtocol: targetUrl.protocol.slice(0, -1),
+            tlsDetails,
+            clientHelloTls: tlsSocket._clientHelloTls,
+            bufferedRequestBody: body,
+            bufferedRequestTrailers: breakpointBodyModified
+              ? {}
+              : this._incomingMessageTrailers(req),
+            trafficLifecycleId,
+            pendingEmitted,
+            requestProvenance
+          });
+          return;
         }
 
         // Forward to real server — try HTTP/2 upstream first for secure targets.
@@ -6942,7 +7976,7 @@ export class ProxyServer {
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
             statusCode, statusMessage, responseHeaders,
-            responseBody: this._safeBodyString(resBody, responseHeaders['content-encoding'], responseHeaders['content-type']),
+            responseBody: this._safeResponseBodyString(resBody, responseHeaders),
             responseBodySize: resBody.length, duration, timestamp: startTime, source: 'proxy',
             usedUpstreamProxy,
             tls: tlsDetails, remote,
@@ -6950,14 +7984,15 @@ export class ProxyServer {
           });
         };
 
-        const emitH1Error = (err, request) => {
+        const emitH1Error = (err, request, syntheticResponse) => {
           const duration = Date.now() - startTime;
           emitCapturedRequest({
             id: requestId, protocol: upstreamProtocol, method: req.method, url: fullUrl,
             host: hostname, path: req.url, requestHeaders: req.headers,
             requestBody: this._safeRequestBodyString(body, req.headers), requestBodySize: body.length,
-            statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-            responseBody: `Proxy Error: ${err.message}`, responseBodySize: 0,
+            statusCode: syntheticResponse.statusCode,
+            statusMessage: syntheticResponse.statusMessage,
+            ...syntheticResponse.capture,
             duration, timestamp: startTime, error: err.message,
             errorCode: this._getUpstreamErrorCode(err),
             errorPhase: this._getUpstreamErrorPhase(err),
@@ -7008,7 +8043,10 @@ export class ProxyServer {
                 });
                 if (!finalResponse || downstream.aborted) return;
               }
-              finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+              finalResponse = this._normalizeMockResponse(
+                req.method,
+                this._applyMockResponseTransform(mockTransformAction, finalResponse)
+              );
               downstream.complete();
               try {
                 this._sendH1Response(
@@ -7029,11 +8067,18 @@ export class ProxyServer {
             if (downstream.aborted) return;
             if (this._settleNonReplayableH2Failure(
               req.method, h2RequestAttempted, err, downstream, error => {
+                const syntheticResponse = this._syntheticErrorResponse(
+                  req.method, 502, 'Bad Gateway', `Proxy Error: ${error.message}`
+                );
                 try {
-                  res.writeHead(502, { 'Content-Type': 'text/plain' });
-                  res.end(`Proxy Error: ${error.message}`);
+                  this._sendH1Response(
+                    res,
+                    syntheticResponse.statusCode,
+                    syntheticResponse.headers,
+                    syntheticResponse.body
+                  );
                 } catch (e) { /* client gone */ }
-                emitH1Error(error, null);
+                emitH1Error(error, null, syntheticResponse);
               }
             )) return;
             // H2 request failed — fall back to h1.1
@@ -7047,7 +8092,7 @@ export class ProxyServer {
           ...req.headers
         });
         this._setTargetHostHeader(proxyHeaders, upstreamUrl.host);
-        if (breakpointBodyModified) this._setContentLength(proxyHeaders, body.length);
+        if (breakpointBodyModified) this._setDecodedBodyContentLength(proxyHeaders, body.length);
 
         const handleResponse = (attempt, proxyGeneration, usedUpstreamProxy) => (proxyRes) => {
           if (downstream.aborted) {
@@ -7075,7 +8120,7 @@ export class ProxyServer {
             }
 
             const trailers = this._incomingMessageTrailers(proxyRes);
-            const responseHeaders = this._incomingMessageHeaders(proxyRes);
+            const responseHeaders = this._incomingResponseHeaders(proxyRes);
             const remote = { address: proxyReq?.socket?.remoteAddress, port: proxyReq?.socket?.remotePort };
             let finalResponse = {
               statusCode: proxyRes.statusCode,
@@ -7094,7 +8139,10 @@ export class ProxyServer {
               });
               if (!finalResponse || downstream.aborted) return;
             }
-            finalResponse = this._applyMockResponseTransform(mockTransformAction, finalResponse);
+            finalResponse = this._normalizeMockResponse(
+              req.method,
+              this._applyMockResponseTransform(mockTransformAction, finalResponse)
+            );
             downstream.complete();
             try {
               this._sendH1Response(
@@ -7115,12 +8163,19 @@ export class ProxyServer {
 
         const handleError = (err, request) => {
           if (downstream.aborted) return;
+          const syntheticResponse = this._syntheticErrorResponse(
+            req.method, 502, 'Bad Gateway', `Proxy Error: ${err.message}`
+          );
           downstream.complete();
           try {
-            res.writeHead(502, { 'Content-Type': 'text/plain' });
-            res.end(`Proxy Error: ${err.message}`);
+            this._sendH1Response(
+              res,
+              syntheticResponse.statusCode,
+              syntheticResponse.headers,
+              syntheticResponse.body
+            );
           } catch (e) { /* client gone */ }
-          emitH1Error(err, request);
+          emitH1Error(err, request, syntheticResponse);
         };
 
         let proxyReq;
@@ -7175,8 +8230,7 @@ export class ProxyServer {
     });
 
     h2Server.on('upgrade', (req, socket, head) => {
-      httpRequestReceived = true;
-      clearTimeout(tunnelTimer);
+      rawTunnel?.recognizeHttp();
       this._handleHttpUpgrade(req, socket, head, {
         secure: true,
         hostname,
@@ -7242,9 +8296,17 @@ export class ProxyServer {
       requestId, requestTrailers, startTime, tlsDetails, downstream, trafficLifecycleId
     } = ctx;
     let { method, fullUrl, authority, path, reqHeaders, body } = ctx;
+    let requestProvenance = {
+      ...(ctx.originalRequest ? { originalRequest: ctx.originalRequest } : {}),
+      ...(ctx.transformedBy ? { transformedBy: ctx.transformedBy } : {})
+    };
     const emitCapturedRequest = ctx.pendingEmitted === false
-      ? data => this._emitRequest(data, trafficLifecycleId)
-      : data => this._emitRequestUpdate(data, trafficLifecycleId);
+      ? data => this._claimDownstreamCapture(downstream, data)
+        ? this._emitRequest({ ...requestProvenance, ...data }, trafficLifecycleId)
+        : false
+      : data => this._claimDownstreamCapture(downstream, data)
+        ? this._emitRequestUpdate({ ...requestProvenance, ...data }, trafficLifecycleId)
+        : false;
 
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -7253,64 +8315,52 @@ export class ProxyServer {
       body: mockRule.response?.body || '',
       delay: 0
     };
-    const webhookPreparation = action.type === 'webhook' && action.webhookUrl
-      ? this._beginWebhookPreparation()
-      : null;
+    const webhookPreparation = ctx.webhookPreparation
+      || (action.type === 'webhook' && action.webhookUrl
+        ? this._beginWebhookPreparation()
+        : null);
+    let originalRequest = ctx.originalRequest || null;
+    let transformedBy = ctx.transformedBy || null;
 
     try {
-    // Capture original request data before pre-steps modify it
-    const origMethod = method;
-    const origUrl = fullUrl;
-    const origHeaders = { ...reqHeaders };
-
-    // Execute pre-steps
-    const preSteps = mockRule.preSteps || [];
-    for (const step of preSteps) {
-      switch (step.type) {
-        case 'delay':
-          if (step.ms > 0) {
-            if (!await this._waitForMockDelay(step.ms, webhookPreparation)) return;
-          }
-          break;
-        case 'add-header':
-          if (step.name) reqHeaders[step.name.toLowerCase()] = step.value ?? '';
-          break;
-        case 'remove-header':
-          if (step.name) delete reqHeaders[step.name.toLowerCase()];
-          break;
-        case 'rewrite-url':
-          if (step.value) {
-            const rewrittenUrl = this._resolveRewriteUrl(fullUrl, step.value);
-            if (rewrittenUrl) {
-              fullUrl = rewrittenUrl.href;
-              authority = rewrittenUrl.host;
-              path = rewrittenUrl.pathname + rewrittenUrl.search;
-              this._setTargetHostHeader(reqHeaders, authority);
-            }
-          }
-          break;
-        case 'rewrite-method':
-          if (step.value) method = step.value;
-          break;
-      }
+    if (!ctx.preStepsApplied) {
+      const preStepResult = await this._applyMockPreSteps(mockRule, {
+        method,
+        url: fullUrl,
+        headers: reqHeaders,
+        body
+      }, [webhookPreparation, downstream]);
+      if (preStepResult.cancelled) return;
+      method = preStepResult.method;
+      fullUrl = preStepResult.url.href;
+      authority = preStepResult.url.host;
+      path = preStepResult.url.pathname + preStepResult.url.search;
+      reqHeaders = preStepResult.headers;
+      const provenance = this._mockRequestProvenance(
+        mockRule,
+        preStepResult.originalRequest,
+        preStepResult.changed,
+        { originalRequest, transformedBy }
+      );
+      originalRequest = provenance.originalRequest || null;
+      transformedBy = provenance.transformedBy || null;
+      requestProvenance = provenance;
     }
-
-    // Detect if pre-steps transformed the request
-    const transformed = origMethod !== method ||
-      origUrl !== fullUrl ||
-      JSON.stringify(origHeaders) !== JSON.stringify(reqHeaders);
-    const originalRequest = transformed ? {
-      method: origMethod, url: origUrl, headers: origHeaders,
-      body: this._safeRequestBodyString(body, origHeaders)
-    } : null;
-    const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+    if (downstream?.aborted) return;
 
     // Close connection
     if (action.type === 'close' && action.delay && action.delay > 0) {
-      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+      if (!await this._waitForMockDelay(
+        action.delay,
+        [webhookPreparation, downstream]
+      )) return;
     }
     if (action.type === 'close' || action.type === 'reset') {
-      try { stream.destroy(); } catch (e) { /* */ }
+      downstream?.complete();
+      try {
+        if (action.type === 'close') this._closeMockTransport(stream, { http2Stream: true });
+        else this._resetMockTransport(stream, { http2Stream: true });
+      } catch (e) { /* */ }
       emitCapturedRequest({
         id: requestId, protocol: 'h2', method, url: fullUrl,
         host: authority, path, requestHeaders: reqHeaders,
@@ -7326,7 +8376,10 @@ export class ProxyServer {
 
     // Apply delay
     if (action.delay && action.delay > 0) {
-      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+      if (!await this._waitForMockDelay(
+        action.delay,
+        [webhookPreparation, downstream]
+      )) return;
     }
 
     // Forward action
@@ -7343,19 +8396,29 @@ export class ProxyServer {
           }
         }
       } catch (err) {
+        const syntheticResponse = this._syntheticErrorResponse(
+          method, 500, 'Mock Error', `Forward setup error: ${err.message}`
+        );
         downstream?.complete();
         try {
           if (!stream.destroyed && !stream.closed) {
-            stream.respond({ ':status': 500 });
-            stream.end('Forward setup error: ' + err.message);
+            this._sendH2Response(
+              stream,
+              this._toH2ResponseHeaders(
+                syntheticResponse.statusCode,
+                syntheticResponse.headers
+              ),
+              syntheticResponse.body
+            );
           }
         } catch (e) { /* stream closed */ }
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-          statusCode: 500, statusMessage: 'Mock Error', responseHeaders: {},
-          responseBody: 'Forward setup error: ' + err.message, responseBodySize: 0,
+          statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           error: err.message, tls: tlsDetails, remote: null,
           originalRequest, transformedBy
@@ -7383,43 +8446,55 @@ export class ProxyServer {
         }
         const resHeaders = this._toH2ResponseHeaders(fwdRes.statusCode, mergedHeaders);
         const captureHeaders = this._captureHeadersFromH2Response(resHeaders);
+        const forwardRequestCapture = this._mockForwardRequestCapture(
+          mockRule,
+          { method, url: fullUrl, headers: reqHeaders, body },
+          fwdRes.requestHeaders,
+          requestProvenance
+        );
         if (stream.destroyed || stream.closed) throw this._createDownstreamAbortError();
         this._sendH2Response(stream, resHeaders, fwdRes.body, fwdRes.trailers);
         downstream?.complete();
         const trailers = this._cleanTrailers(fwdRes.trailers);
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
-          host: authority, path, requestHeaders: reqHeaders,
+          host: authority, path,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fwdRes.statusCode, statusMessage: fwdRes.statusMessage,
           responseHeaders: captureHeaders,
-          responseBody: this._safeBodyString(
-            fwdRes.body,
-            captureHeaders['content-encoding'],
-            captureHeaders['content-type']
-          ),
+          responseBody: this._safeResponseBodyString(fwdRes.body, captureHeaders),
           responseBodySize: fwdRes.body.length, duration: Date.now() - startTime,
-          timestamp: startTime, source: 'mock',
+          timestamp: startTime, source: 'mock', mockResponseSource: 'upstream',
           usedUpstreamProxy: fwdRes.usedUpstreamProxy,
           tls: tlsDetails, remote: fwdRes.remote,
           trailers: Object.keys(trailers).length > 0 ? trailers : null,
-          originalRequest, transformedBy
+          ...forwardRequestCapture
         });
       } catch (err) {
         if (downstream?.aborted) return;
+        const syntheticResponse = this._syntheticErrorResponse(
+          method, 502, 'Bad Gateway', `Forward Error: ${err.message}`
+        );
         downstream?.complete();
         try {
           if (!stream.destroyed && !stream.closed) {
-            stream.respond({ ':status': 502 });
-            stream.end('Forward Error: ' + err.message);
+            this._sendH2Response(
+              stream,
+              this._toH2ResponseHeaders(
+                syntheticResponse.statusCode,
+                syntheticResponse.headers
+              ),
+              syntheticResponse.body
+            );
           }
         } catch (e) { /* stream closed */ }
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-          statusCode: 502, statusMessage: 'Bad Gateway', responseHeaders: {},
-          responseBody: 'Forward Error: ' + err.message, responseBodySize: 0,
+          statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           error: err.message,
           errorCode: this._getUpstreamErrorCode(err),
@@ -7438,19 +8513,29 @@ export class ProxyServer {
     if (action.type === 'serve-file') {
       const filePath = action.filePath;
       if (!filePath) {
+        const syntheticResponse = this._syntheticErrorResponse(
+          method, 500, 'Mock Error', 'Mock error: no filePath configured'
+        );
+        downstream?.complete();
         try {
           if (!stream.destroyed && !stream.closed) {
-            stream.respond({ ':status': 500, 'content-type': 'text/plain' });
-            stream.end('Mock error: no filePath configured');
+            this._sendH2Response(
+              stream,
+              this._toH2ResponseHeaders(
+                syntheticResponse.statusCode,
+                syntheticResponse.headers
+              ),
+              syntheticResponse.body
+            );
           }
         } catch (e) { /* */ }
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-          statusCode: 500, statusMessage: 'Mock Error',
-          responseHeaders: { 'Content-Type': 'text/plain' },
-          responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
+          statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
@@ -7459,17 +8544,27 @@ export class ProxyServer {
       }
       const mime = action.contentType || 'application/octet-stream';
       const fileStatus = action.status || 200;
+      const fileResponse = this._normalizeMockResponse(method, {
+        statusCode: fileStatus,
+        headers: { 'Content-Type': mime },
+        body: Buffer.alloc(0)
+      });
+      const releaseFileTerminal = downstream?.deferTerminal?.() || (() => {});
       try {
         const file = await this._streamMockFile(filePath, stream, () => {
           if (stream.destroyed || stream.closed) throw new Error('Client stream closed');
-          stream.respond({ ':status': fileStatus, 'content-type': mime });
-        }, { downstream, http2Stream: true });
+          stream.respond(this._toH2ResponseHeaders(fileStatus, fileResponse.headers));
+        }, {
+          downstream,
+          http2Stream: true,
+          suppressBody: this._isMockResponseBodyForbidden(method, fileStatus)
+        });
         emitCapturedRequest({
           id: requestId, protocol: 'h2', method, url: fullUrl,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
           statusCode: fileStatus, statusMessage: 'Mocked (file)',
-          responseHeaders: { 'Content-Type': mime },
+          responseHeaders: fileResponse.headers,
           responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
@@ -7482,11 +8577,19 @@ export class ProxyServer {
           originalRequest, transformedBy
         });
       } catch (err) {
-        const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
+        const failure = this._mockFileFailure(
+          filePath, fileStatus, mime, err, method
+        );
         try {
           if (failure.statusCode === 500 && !stream.destroyed && !stream.closed && !stream.headersSent) {
-            stream.respond({ ':status': 500, 'content-type': 'text/plain' });
-            stream.end('File not found: ' + filePath);
+            this._sendH2Response(
+              stream,
+              this._toH2ResponseHeaders(
+                failure.wireResponse.statusCode,
+                failure.wireResponse.headers
+              ),
+              failure.wireResponse.body
+            );
           } else if (!stream.destroyed && !stream.closed) {
             stream.destroy(err);
           }
@@ -7508,12 +8611,15 @@ export class ProxyServer {
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
         });
+      } finally {
+        releaseFileTerminal();
       }
       return;
     }
 
     if (action.type === 'webhook' && action.webhookUrl) {
       if (!webhookPreparation.isCurrent()) return;
+      if (downstream && !downstream.complete()) return;
       const targetUrl = new URL(fullUrl);
       this._serveWebhookMock({
         action,
@@ -7535,7 +8641,7 @@ export class ProxyServer {
           id: requestId, protocol: 'h2', method, url: targetUrl.href,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-          timestamp: startTime, source: 'mock',
+          timestamp: startTime, source: 'mock', mockResponseSource: 'upstream',
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
         }
@@ -7583,13 +8689,13 @@ export class ProxyServer {
         } catch { /* keep original */ }
       }
       if (modifications.method) {
-        method = String(modifications.method).trim().toUpperCase();
+        method = String(modifications.method).trim();
         reqHeaders[':method'] = method;
       }
       if (modifications.headers) reqHeaders = { ...modifications.headers };
       if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
         body = Buffer.from(String(modifications.body || ''));
-        this._setContentLength(reqHeaders, body.length);
+        this._setDecodedBodyContentLength(reqHeaders, body.length);
       }
       // Fall through — but for h2 streams we can't easily re-proxy, so just send a generic response
     }
@@ -7629,7 +8735,13 @@ export class ProxyServer {
         ? this._stripHopByHopHeaders(modifications.headers || {})
         : { 'content-type': 'text/plain' };
       const responseBody = hasCustomResponse ? (modifications.body || '') : 'Breakpoint released';
-      if (hasCustomResponse) this._setContentLength(responseHeaders, Buffer.byteLength(responseBody));
+      if (hasCustomResponse) {
+        if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
+          this._setDecodedBodyContentLength(responseHeaders, Buffer.byteLength(responseBody));
+        } else {
+          this._setContentLength(responseHeaders, Buffer.byteLength(responseBody));
+        }
+      }
       try {
         if (!stream.destroyed && !stream.closed) {
           stream.respond(this._toH2ResponseHeaders(statusCode, responseHeaders));
@@ -7658,13 +8770,17 @@ export class ProxyServer {
         mergedHeaders[k.toLowerCase()] = v;
       }
     }
-    const mockHeaders = this._toH2ResponseHeaders(action.status || 200, mergedHeaders);
+    const mockResponse = this._normalizeMockResponse(method, {
+      statusCode: action.status || 200,
+      headers: mergedHeaders,
+      body: action.body || ''
+    });
+    const mockHeaders = this._toH2ResponseHeaders(mockResponse.statusCode, mockResponse.headers);
     const captureHeaders = this._captureHeadersFromH2Response(mockHeaders);
-    const mockBody = action.body || '';
 
     try {
       if (stream.destroyed || stream.closed) throw this._createDownstreamAbortError();
-      this._sendH2Response(stream, mockHeaders, mockBody);
+      this._sendH2Response(stream, mockHeaders, mockResponse.body, mockResponse.trailers);
       downstream?.complete();
     } catch (error) {
       downstream?.complete();
@@ -7688,9 +8804,10 @@ export class ProxyServer {
       id: requestId, protocol: 'h2', method, url: fullUrl,
       host: authority, path, requestHeaders: reqHeaders,
       requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-      statusCode: action.status || 200, statusMessage: 'Mocked',
+      statusCode: mockResponse.statusCode, statusMessage: 'Mocked',
       responseHeaders: captureHeaders,
-      responseBody: mockBody, responseBodySize: Buffer.byteLength(mockBody),
+      responseBody: this._safeResponseBodyString(mockResponse.body, captureHeaders),
+      responseBodySize: mockResponse.body.length,
       duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
       tls: tlsDetails, remote: null,
       originalRequest, transformedBy
@@ -7703,7 +8820,7 @@ export class ProxyServer {
   // Helper for HTTP/1.1 mock responses on the h2 fallback server
   async _serveMockResponseH1OnH2(
     requestId, req, res, fullUrl, hostname, targetPort, body, mockRule, startTime, tlsDetails,
-    downstream, pendingEmitted = true, trafficLifecycleId = undefined
+    downstream, pendingEmitted = true, trafficLifecycleId = undefined, mockContext = {}
   ) {
     // allowHTTP1 provides normal IncomingMessage/ServerResponse objects, so the
     // complete H1 mock engine can preserve every action and pre-step.
@@ -7713,7 +8830,8 @@ export class ProxyServer {
       tls: tlsDetails,
       updatePending: pendingEmitted,
       ...(trafficLifecycleId === undefined ? {} : { trafficLifecycleId }),
-      ...(downstream ? { downstream } : {})
+      ...(downstream ? { downstream } : {}),
+      ...mockContext
     });
   }
 
@@ -9147,7 +10265,12 @@ export class ProxyServer {
       request.once('connect', (response, socket, proxyHead) => {
         if (response.statusCode !== 200) {
           socket.destroy();
-          reject(annotateRoute(new Error(`Upstream proxy CONNECT returned HTTP ${response.statusCode}`)));
+          const error = new Error(`Upstream proxy CONNECT returned HTTP ${response.statusCode}`);
+          error.code = 'ERR_UPSTREAM_PROXY_CONNECT_RESPONSE';
+          error.upstreamPhase = 'proxy-connect';
+          error.upstreamStatusCode = response.statusCode;
+          error.upstreamStatusMessage = response.statusMessage || '';
+          reject(annotateRoute(error));
           return;
         }
         if (proxyHead.length > 0) socket.unshift(proxyHead);
@@ -9351,7 +10474,7 @@ export class ProxyServer {
 
       // Legacy format: method + urlPattern + response
       if (typeof rule.method === 'string' && rule.method !== '*'
-        && rule.method.toUpperCase() !== String(method || '').toUpperCase()) return false;
+        && rule.method !== String(method || '')) return false;
       if (rule.urlPattern instanceof RegExp) {
         return testRegExpPreservingLastIndex(rule.urlPattern, String(url || ''));
       }
@@ -9361,8 +10484,7 @@ export class ProxyServer {
       return false;
     });
 
-    // A matching passthrough rule stops evaluation while allowing normal forwarding.
-    return matchedRule?.action?.type === 'passthrough' ? undefined : matchedRule;
+    return matchedRule;
   }
 
   _evaluateMatcher(matcher, method, url, headers, body) {
@@ -9380,7 +10502,7 @@ export class ProxyServer {
       case 'wildcard':
         return true;
       case 'method':
-        return matcher.value === '*' || matcher.value.toUpperCase() === method.toUpperCase();
+        return matcher.value === '*' || matcher.value === method;
       case 'path': {
         let urlPath;
         try { urlPath = new URL(url).pathname; } catch { urlPath = url; }
@@ -9425,7 +10547,7 @@ export class ProxyServer {
           const params = new URL(url).searchParams;
           if (!matcher.name) return false;
           if (!params.has(matcher.name)) return false;
-          if (matcher.value) return params.get(matcher.name) === matcher.value;
+          if (matcher.value) return params.getAll(matcher.name).includes(matcher.value);
           return true;
         } catch { return false; }
       }
@@ -9480,10 +10602,12 @@ export class ProxyServer {
           const separatorIndex = cookie.indexOf('=');
           const name = (separatorIndex === -1 ? cookie : cookie.slice(0, separatorIndex)).trim();
           const value = separatorIndex === -1 ? undefined : cookie.slice(separatorIndex + 1).trim();
-          cookies.set(name, value);
+          const values = cookies.get(name);
+          if (values) values.push(value);
+          else cookies.set(name, [value]);
         }
         if (!matcher.name) return false;
-        if (matcher.value) return cookies.get(matcher.name) === matcher.value;
+        if (matcher.value) return cookies.get(matcher.name)?.includes(matcher.value) === true;
         return cookies.has(matcher.name);
       }
       case 'form-data': {
@@ -9491,7 +10615,7 @@ export class ProxyServer {
         if (!body || !matcher.name) return false;
         try {
           const params = new URLSearchParams(body);
-          if (matcher.value) return params.get(matcher.name) === matcher.value;
+          if (matcher.value) return params.getAll(matcher.name).includes(matcher.value);
           return params.has(matcher.name);
         } catch { return false; }
       }
@@ -9539,8 +10663,12 @@ export class ProxyServer {
     const downstream = capture.downstream || null;
     const trafficLifecycleId = capture.trafficLifecycleId;
     const emitRequest = capture.updatePending
-      ? data => this._emitRequestUpdate(data, trafficLifecycleId)
-      : data => this._emitRequest(data, trafficLifecycleId);
+      ? data => this._claimDownstreamCapture(downstream, data)
+        ? this._emitRequestUpdate(data, trafficLifecycleId)
+        : false
+      : data => this._claimDownstreamCapture(downstream, data)
+        ? this._emitRequest(data, trafficLifecycleId)
+        : false;
     // Determine action — support both new format (action) and legacy format (response)
     const action = mockRule.action || {
       type: 'fixed-response',
@@ -9549,68 +10677,46 @@ export class ProxyServer {
       body: mockRule.response?.body || '',
       delay: 0
     };
-    const webhookPreparation = action.type === 'webhook' && action.webhookUrl
-      ? this._beginWebhookPreparation()
-      : null;
+    const webhookPreparation = capture.webhookPreparation
+      || (action.type === 'webhook' && action.webhookUrl
+        ? this._beginWebhookPreparation()
+        : null);
+    let originalRequest = capture.originalRequest || null;
+    let transformedBy = capture.transformedBy || null;
 
     try {
-    // Capture original request data before pre-steps modify it
-    const origMethod = clientReq.method;
-    const origUrl = targetUrl.href;
-    const origHeaders = { ...clientReq.headers };
-
-    // Execute pre-steps (step chaining) before the terminal action
-    const preSteps = mockRule.preSteps || [];
-    for (const step of preSteps) {
-      switch (step.type) {
-        case 'delay':
-          if (step.ms > 0) {
-            if (!await this._waitForMockDelay(step.ms, webhookPreparation)) return;
-          }
-          break;
-        case 'add-header':
-          if (step.name) {
-            clientReq.headers[step.name.toLowerCase()] = step.value ?? '';
-          }
-          break;
-        case 'remove-header':
-          if (step.name) {
-            delete clientReq.headers[step.name.toLowerCase()];
-          }
-          break;
-        case 'rewrite-url':
-          if (step.value) {
-            const rewrittenUrl = this._resolveRewriteUrl(targetUrl, step.value);
-            if (rewrittenUrl) {
-              targetUrl = rewrittenUrl;
-              this._setTargetHostHeader(clientReq.headers, targetUrl.host);
-            }
-          }
-          break;
-        case 'rewrite-method':
-          if (step.value) {
-            clientReq.method = step.value;
-          }
-          break;
-      }
+    if (!capture.preStepsApplied) {
+      const preStepResult = await this._applyMockPreSteps(mockRule, {
+        method: clientReq.method,
+        url: targetUrl,
+        headers: clientReq.headers,
+        body
+      }, [webhookPreparation, downstream]);
+      if (preStepResult.cancelled) return;
+      clientReq.method = preStepResult.method;
+      targetUrl = preStepResult.url;
+      clientReq.headers = preStepResult.headers;
+      const provenance = this._mockRequestProvenance(
+        mockRule,
+        preStepResult.originalRequest,
+        preStepResult.changed,
+        { originalRequest, transformedBy }
+      );
+      originalRequest = provenance.originalRequest || null;
+      transformedBy = provenance.transformedBy || null;
     }
-
-    // Detect if pre-steps transformed the request
-    const transformed = origMethod !== clientReq.method ||
-      origUrl !== targetUrl.href ||
-      JSON.stringify(origHeaders) !== JSON.stringify(clientReq.headers);
-    const originalRequest = transformed ? {
-      method: origMethod, url: origUrl, headers: origHeaders,
-      body: this._safeRequestBodyString(body, origHeaders)
-    } : null;
-    const transformedBy = originalRequest ? (mockRule.title || mockRule.id || 'Mock Rule') : null;
+    if (downstream?.aborted) return;
 
     // Close connection action
     if (action.type === 'close') {
       if (action.delay && action.delay > 0) {
-        if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+        if (!await this._waitForMockDelay(
+          action.delay,
+          [webhookPreparation, downstream]
+        )) return;
       }
-      clientRes.destroy();
+      downstream?.complete();
+      this._closeMockTransport(clientRes);
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
@@ -9627,7 +10733,8 @@ export class ProxyServer {
 
     // Reset connection (RST)
     if (action.type === 'reset') {
-      clientRes.socket?.destroy();
+      downstream?.complete();
+      this._resetMockTransport(clientRes);
       emitRequest({
         id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
         host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
@@ -9644,7 +10751,10 @@ export class ProxyServer {
 
     // Apply delay
     if (action.delay && action.delay > 0) {
-      if (!await this._waitForMockDelay(action.delay, webhookPreparation)) return;
+      if (!await this._waitForMockDelay(
+        action.delay,
+        [webhookPreparation, downstream]
+      )) return;
     }
 
     // Forward action — proxy to a different host
@@ -9661,23 +10771,29 @@ export class ProxyServer {
           }
         }
       } catch (err) {
+        const syntheticResponse = this._syntheticErrorResponse(
+          clientReq.method, 500, 'Mock Error', `Forward setup error: ${err.message}`
+        );
         downstream?.complete();
-        clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
-        clientRes.end(`Forward setup error: ${err.message}`);
-        if (capture.updatePending) {
-          emitRequest({
-            id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
-            host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-            requestHeaders: clientReq.headers,
-            requestBody: this._safeRequestBodyString(body, clientReq.headers),
-            requestBodySize: body.length, statusCode: 500, statusMessage: 'Mock Error',
-            responseHeaders: {}, responseBody: `Forward setup error: ${err.message}`,
-            responseBodySize: 0, duration: Date.now() - startTime,
-            timestamp: startTime, source: 'mock', error: err.message,
-            tls: captureTls, remote: null,
-            originalRequest, transformedBy
-          });
-        }
+        this._sendH1Response(
+          clientRes,
+          syntheticResponse.statusCode,
+          syntheticResponse.headers,
+          syntheticResponse.body
+        );
+        emitRequest({
+          id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
+          host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
+          requestHeaders: clientReq.headers,
+          requestBody: this._safeRequestBodyString(body, clientReq.headers),
+          requestBodySize: body.length, statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
+          duration: Date.now() - startTime,
+          timestamp: startTime, source: 'mock', error: err.message,
+          tls: captureTls, remote: null,
+          originalRequest, transformedBy
+        });
         return;
       }
 
@@ -9695,6 +10811,17 @@ export class ProxyServer {
         if (downstream?.aborted) return;
         const resHeaders = createHeaderMap(Object.entries(proxyRes.headers));
         const trailers = this._cleanTrailers(proxyRes.trailers);
+        const forwardRequestCapture = this._mockForwardRequestCapture(
+          mockRule,
+          {
+            method: clientReq.method,
+            url: targetUrl,
+            headers: clientReq.headers,
+            body
+          },
+          proxyRes.requestHeaders,
+          { originalRequest, transformedBy }
+        );
         // Apply response header modifications
         if (action.addResponseHeaders) {
           for (const [k, v] of Object.entries(action.addResponseHeaders)) {
@@ -9706,31 +10833,38 @@ export class ProxyServer {
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
-          requestHeaders: clientReq.headers,
           requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: proxyRes.statusCode,
           statusMessage: proxyRes.statusMessage, responseHeaders: resHeaders,
-          responseBody: this._safeBodyString(proxyRes.body, proxyRes.headers['content-encoding'], proxyRes.headers['content-type']),
+          responseBody: this._safeResponseBodyString(proxyRes.body, resHeaders),
           responseBodySize: proxyRes.body.length, duration: Date.now() - startTime,
-          timestamp: startTime, source: 'mock',
+          timestamp: startTime, source: 'mock', mockResponseSource: 'upstream',
           usedUpstreamProxy: proxyRes.usedUpstreamProxy,
           tls: captureTls, remote: proxyRes.remote,
           trailers: Object.keys(trailers || {}).length > 0 ? trailers : null,
-          originalRequest, transformedBy
+          ...forwardRequestCapture
         });
       } catch (err) {
         if (downstream?.aborted) return;
+        const syntheticResponse = this._syntheticErrorResponse(
+          clientReq.method, 502, 'Bad Gateway', `Forward Error: ${err.message}`
+        );
         downstream?.complete();
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain' });
-        clientRes.end(`Forward Error: ${err.message}`);
+        this._sendH1Response(
+          clientRes,
+          syntheticResponse.statusCode,
+          syntheticResponse.headers,
+          syntheticResponse.body
+        );
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers,
           requestBody: this._safeRequestBodyString(body, clientReq.headers),
-          requestBodySize: body.length, statusCode: 502, statusMessage: 'Bad Gateway',
-          responseHeaders: {}, responseBody: `Forward Error: ${err.message}`,
-          responseBodySize: 0, duration: Date.now() - startTime,
+          requestBodySize: body.length, statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
+          duration: Date.now() - startTime,
           timestamp: startTime, source: 'mock', error: err.message,
           errorCode: this._getUpstreamErrorCode(err),
           errorPhase: this._getUpstreamErrorPhase(err),
@@ -9748,16 +10882,24 @@ export class ProxyServer {
     if (action.type === 'serve-file') {
       const filePath = action.filePath;
       if (!filePath) {
-        clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
-        clientRes.end('Mock error: no filePath configured');
+        const syntheticResponse = this._syntheticErrorResponse(
+          clientReq.method, 500, 'Mock Error', 'Mock error: no filePath configured'
+        );
+        downstream?.complete();
+        this._sendH1Response(
+          clientRes,
+          syntheticResponse.statusCode,
+          syntheticResponse.headers,
+          syntheticResponse.body
+        );
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers,
           requestBody: this._safeRequestBodyString(body, clientReq.headers),
-          requestBodySize: body.length, statusCode: 500, statusMessage: 'Mock Error',
-          responseHeaders: { 'Content-Type': 'text/plain' },
-          responseBody: 'Mock error: no filePath configured', responseBodySize: 0,
+          requestBodySize: body.length, statusCode: syntheticResponse.statusCode,
+          statusMessage: syntheticResponse.statusMessage,
+          ...syntheticResponse.capture,
           duration: Date.now() - startTime, timestamp: startTime, source: 'mock',
           tls: captureTls, remote: null,
           originalRequest, transformedBy
@@ -9766,17 +10908,26 @@ export class ProxyServer {
       }
       const mime = action.contentType || 'application/octet-stream';
       const fileStatus = action.status || 200;
+      const fileResponse = this._normalizeMockResponse(clientReq.method, {
+        statusCode: fileStatus,
+        headers: { 'Content-Type': mime },
+        body: Buffer.alloc(0)
+      });
+      const releaseFileTerminal = downstream?.deferTerminal?.() || (() => {});
       try {
         const file = await this._streamMockFile(filePath, clientRes, () => {
-          clientRes.writeHead(fileStatus, { 'Content-Type': mime });
-        }, { downstream });
+          clientRes.writeHead(fileResponse.statusCode, fileResponse.headers);
+        }, {
+          downstream,
+          suppressBody: this._isMockResponseBodyForbidden(clientReq.method, fileStatus)
+        });
         emitRequest({
           id: requestId, protocol: captureProtocol, method: clientReq.method, url: targetUrl.href,
           host: targetUrl.hostname, path: targetUrl.pathname + targetUrl.search,
           requestHeaders: clientReq.headers,
           requestBody: this._safeRequestBodyString(body, clientReq.headers),
           requestBodySize: body.length, statusCode: fileStatus, statusMessage: 'Mocked (file)',
-          responseHeaders: { 'Content-Type': mime },
+          responseHeaders: fileResponse.headers,
           responseBody: file.content ? this._safeBodyString(file.content, undefined, mime) : '',
           responseBodySize: file.size,
           responseBodyTruncated: file.truncated,
@@ -9789,10 +10940,16 @@ export class ProxyServer {
           originalRequest, transformedBy
         });
       } catch (err) {
-        const failure = this._mockFileFailure(filePath, fileStatus, mime, err);
+        const failure = this._mockFileFailure(
+          filePath, fileStatus, mime, err, clientReq.method
+        );
         if (failure.statusCode === 500 && !clientRes.headersSent && !clientRes.destroyed) {
-          clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
-          clientRes.end('File not found: ' + filePath);
+          this._sendH1Response(
+            clientRes,
+            failure.wireResponse.statusCode,
+            failure.wireResponse.headers,
+            failure.wireResponse.body
+          );
         } else if (!clientRes.destroyed) {
           clientRes.destroy(err);
         }
@@ -9814,6 +10971,8 @@ export class ProxyServer {
           tls: captureTls, remote: null,
           originalRequest, transformedBy
         });
+      } finally {
+        releaseFileTerminal();
       }
       return;
     }
@@ -9821,6 +10980,7 @@ export class ProxyServer {
     // Webhook — send a copy of the request to a configured URL
     if (action.type === 'webhook' && action.webhookUrl) {
       if (!webhookPreparation.isCurrent()) return;
+      if (downstream && !downstream.complete()) return;
       this._serveWebhookMock({
         action,
         body,
@@ -9891,7 +11051,7 @@ export class ProxyServer {
       if (modifications.headers) clientReq.headers = { ...modifications.headers };
       if (Object.prototype.hasOwnProperty.call(modifications, 'body')) {
         body = Buffer.from(String(modifications.body || ''));
-        this._setContentLength(clientReq.headers, body.length);
+        this._setDecodedBodyContentLength(clientReq.headers, body.length);
       }
       this._setTargetHostHeader(clientReq.headers, targetUrl.host);
       // Fall through to normal proxy behavior (don't return here)
@@ -10001,7 +11161,7 @@ export class ProxyServer {
       if (reqModifications.headers) clientReq.headers = { ...reqModifications.headers };
       if (Object.prototype.hasOwnProperty.call(reqModifications, 'body')) {
         body = Buffer.from(String(reqModifications.body || ''));
-        this._setContentLength(clientReq.headers, body.length);
+        this._setDecodedBodyContentLength(clientReq.headers, body.length);
       }
       this._setTargetHostHeader(clientReq.headers, targetUrl.host);
 
@@ -10079,8 +11239,18 @@ export class ProxyServer {
       }
     }
 
-    clientRes.writeHead(statusCode, resHeaders);
-    clientRes.end(resBody);
+    const mockResponse = this._normalizeMockResponse(clientReq.method, {
+      statusCode,
+      headers: resHeaders,
+      body: resBody
+    });
+    this._sendH1Response(
+      clientRes,
+      mockResponse.statusCode,
+      mockResponse.headers,
+      mockResponse.body,
+      mockResponse.trailers
+    );
 
     emitRequest({
       id: requestId,
@@ -10092,11 +11262,11 @@ export class ProxyServer {
       requestHeaders: clientReq.headers,
       requestBody: this._safeRequestBodyString(body, clientReq.headers),
       requestBodySize: body.length,
-      statusCode,
+      statusCode: mockResponse.statusCode,
       statusMessage: 'Mocked',
-      responseHeaders: resHeaders,
-      responseBody: resBody,
-      responseBodySize: Buffer.byteLength(resBody),
+      responseHeaders: mockResponse.headers,
+      responseBody: this._safeResponseBodyString(mockResponse.body, mockResponse.headers),
+      responseBodySize: mockResponse.body.length,
       duration: Date.now() - startTime,
       timestamp: startTime,
       source: 'mock',
@@ -10421,7 +11591,7 @@ export class ProxyServer {
   }
 
   _detectSource(headers) {
-    const ua = (headers['user-agent'] || '').toLowerCase();
+    const ua = getHeaderValues(headers, 'user-agent').join(' ').toLowerCase();
     if (ua.includes('firefox')) return 'Firefox';
     if (ua.includes('edg/') || ua.includes('edga/') || ua.includes('edgios/')) return 'Edge';
     if (ua.includes('brave')) return 'Brave';
@@ -10611,8 +11781,9 @@ export class ProxyServer {
     if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return 'Breakpoint must be an object';
     if (!patch || Object.prototype.hasOwnProperty.call(rule, 'matchers')) {
       if (!Array.isArray(rule.matchers)) return 'Breakpoint matchers must be an array';
-      if (!rule.matchers.every(isCompleteMockMatcher)) {
-        return 'Every breakpoint matcher must be complete';
+      for (let index = 0; index < rule.matchers.length; index++) {
+        const matcherError = validateMockMatcher(rule.matchers[index]);
+        if (matcherError) return `Breakpoint matcher ${index + 1}: ${matcherError}`;
       }
     }
     if (Object.prototype.hasOwnProperty.call(rule, 'enabled') && typeof rule.enabled !== 'boolean') {
@@ -10883,11 +12054,7 @@ export class ProxyServer {
       statusCode, statusMessage, responseHeaders, responseBody, trailers,
       startTime, tlsDetails, remote, abortTarget, trafficLifecycleId
     } = context;
-    const displayBody = this._safeBodyString(
-      responseBody,
-      responseHeaders?.['content-encoding'],
-      responseHeaders?.['content-type']
-    );
+    const displayBody = this._safeResponseBodyString(responseBody, responseHeaders);
     this._emitRequestUpdate({
       id: requestId,
       protocol,
@@ -10947,16 +12114,17 @@ export class ProxyServer {
       ? { ...modifications.headers }
       : { ...responseHeaders };
     if (bodyModified) {
-      for (const name of Object.keys(finalHeaders)) {
-        if (name.toLowerCase() === 'transfer-encoding') delete finalHeaders[name];
-      }
-      this._setContentLength(finalHeaders, finalBody.length);
+      this._setDecodedBodyContentLength(finalHeaders, finalBody.length);
     }
+    const finalStatusCode = Number.isInteger(requestedStatus)
+      && requestedStatus >= 200 && requestedStatus <= 599
+      ? requestedStatus
+      : statusCode;
     return {
-      statusCode: Number.isInteger(requestedStatus) && requestedStatus >= 200 && requestedStatus <= 599
-        ? requestedStatus
-        : statusCode,
-      statusMessage,
+      statusCode: finalStatusCode,
+      statusMessage: finalStatusCode === statusCode
+        ? statusMessage
+        : (http.STATUS_CODES[finalStatusCode] || ''),
       headers: finalHeaders,
       body: finalBody,
       trailers: bodyModified ? {} : trailers

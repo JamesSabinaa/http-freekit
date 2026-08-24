@@ -17,7 +17,10 @@ import { validatePortRange } from '../proxy/port-range.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
-import { normalizeHttpsWhitelist } from '../proxy/https-whitelist.js';
+import {
+  normalizeHttpsWhitelist,
+  normalizeTlsHostnamePattern
+} from '../proxy/https-whitelist.js';
 import {
   DEFAULT_EXCLUSIONS,
   normalizeDefaultExclusions
@@ -28,6 +31,18 @@ import {
   filterTrafficLists,
   normalizeTrafficLists
 } from '../traffic/traffic-lists.js';
+import {
+  HAR_IMPORT_MAX_BATCH_BYTES,
+  HAR_IMPORT_MAX_EXPANDED_BYTES,
+  HAR_IMPORT_MAX_FILE_BYTES,
+  prepareHarImport
+} from '../ui/har-import.js';
+import { normalizeSendUrl } from '../ui/send-url.js';
+import { normalizeIncomingResponseHeaders } from './incoming-response-headers.js';
+import {
+  DEFAULT_TRAFFIC_IMPORT_TRANSACTION_TIMEOUT_MS,
+  TrafficImportTransactionStore
+} from './traffic-import-transactions.js';
 
 const DEFAULT_GENERATOR_DIR = '/mnt/b/bots/generator';
 const INTERNAL_SEND_HEADER_NAME = 'x-http-freekit-internal-send-token';
@@ -42,7 +57,6 @@ const DATA_URI_MEDIA_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TRAFFIC_BASE64_DATA_URI_PATTERN =
   /^data:[^;,\r\n]+(?:;[^,\r\n]*)?;base64,([A-Za-z0-9+/=]*)$/;
-const SUPPORTED_HAR_URL_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const SUPPORTED_TRAFFIC_PROTOCOLS = new Set([
   'http', 'https', 'h2', 'ws', 'wss', 'ws-frame', 'tunnel', 'tls-error'
 ]);
@@ -128,6 +142,9 @@ function validateTlsPassthroughHosts(hosts) {
     if (host.length > 1024 || /[\r\n\0]/.test(host)) {
       return `hosts[${index}] is not a valid hostname pattern`;
     }
+    if (!normalizeTlsHostnamePattern(host, { allowSubdomainWildcard: true })) {
+      return `hosts[${index}] must be a hostname, IP address, or leading *. wildcard`;
+    }
   }
   return '';
 }
@@ -138,93 +155,6 @@ function normalizeDataUriMediaType(value) {
   return DATA_URI_MEDIA_TYPE_PATTERN.test(candidate)
     ? candidate
     : 'application/octet-stream';
-}
-
-function harHeadersToObject(headers = []) {
-  const result = Object.create(null);
-  for (const header of headers) {
-    const name = String(header?.name || '').toLowerCase();
-    if (!name) continue;
-    const value = String(header?.value ?? '');
-    if (!Object.prototype.hasOwnProperty.call(result, name)) {
-      result[name] = value;
-    } else if (Array.isArray(result[name])) {
-      result[name].push(value);
-    } else {
-      result[name] = [result[name], value];
-    }
-  }
-  return result;
-}
-
-function harBodyToTraffic(body, fallbackMimeType = 'application/octet-stream') {
-  if (!body || body.text === undefined || body.text === null) {
-    return { body: '', encoding: 'utf8' };
-  }
-  const text = String(body.text);
-  if (String(body.encoding || '').toLowerCase() !== 'base64') {
-    return { body: text, encoding: 'utf8' };
-  }
-  const mimeType = normalizeDataUriMediaType(body.mimeType || fallbackMimeType);
-  return {
-    body: `data:${mimeType};base64,${text.replace(/\s+/g, '')}`,
-    encoding: 'base64'
-  };
-}
-
-function normalizeHarBodySize(value) {
-  return typeof value === 'number' && Number.isFinite(value) && (value >= 0 || value === -1)
-    ? value
-    : 0;
-}
-
-function normalizeHarProtocol(parsedUrl, httpVersion, rawUrl) {
-  const urlProtocol = parsedUrl?.protocol?.toLowerCase();
-  if (urlProtocol === 'ws:' || urlProtocol === 'wss:') {
-    return urlProtocol.slice(0, -1);
-  }
-  if (/^HTTP\/2(?:\.\d+)?$/i.test(httpVersion || '')) return 'h2';
-  if (urlProtocol === 'https:') return 'https';
-  // Preserve the legacy classification fallback for non-standard or malformed URLs.
-  return String(rawUrl || '').toLowerCase().startsWith('https')
-    ? 'https'
-    : 'http';
-}
-
-function harTruncationToTraffic(body, fieldPath) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)
-      || !Object.prototype.hasOwnProperty.call(body, '_truncated')) return null;
-  if (typeof body._truncated !== 'boolean') {
-    throw new TypeError(`${fieldPath}._truncated must be a boolean`);
-  }
-  if (!body._truncated) return null;
-
-  const capturedSize = body._capturedSize;
-  if (!Number.isSafeInteger(capturedSize) || capturedSize < 0) {
-    throw new TypeError(`${fieldPath}._capturedSize must be a non-negative safe integer`);
-  }
-  const originalSize = body._originalSize;
-  if (!Number.isSafeInteger(originalSize) || originalSize < -1) {
-    throw new TypeError(
-      `${fieldPath}._originalSize must be a non-negative safe integer or -1`
-    );
-  }
-  if (originalSize >= 0 && capturedSize > originalSize) {
-    throw new TypeError(`${fieldPath}._capturedSize cannot exceed _originalSize`);
-  }
-  return {
-    capturedSize,
-    originalSize
-  };
-}
-
-function harContentDecodedToTraffic(body, fieldPath) {
-  if (!body || typeof body !== 'object' || Array.isArray(body) ||
-      !Object.prototype.hasOwnProperty.call(body, '_contentDecoded')) return false;
-  if (typeof body._contentDecoded !== 'boolean') {
-    throw new TypeError(`${fieldPath}._contentDecoded must be a boolean`);
-  }
-  return body._contentDecoded;
 }
 
 function publicClientCertificates(certificates) {
@@ -334,6 +264,19 @@ export class ApiServer {
     this.sendIdleTimeoutMs = options.sendIdleTimeoutMs ?? 30000;
     this.sendTotalTimeoutMs = options.sendTotalTimeoutMs ?? 60000;
     this.sendMaxResponseBytes = options.sendMaxResponseBytes ?? 32 * 1024 * 1024;
+    this.harImportMaxRequestBytes = options.harImportMaxRequestBytes ??
+      HAR_IMPORT_MAX_FILE_BYTES;
+    this.trafficImportMaxRequestBytes = options.trafficImportMaxRequestBytes ??
+      HAR_IMPORT_MAX_BATCH_BYTES;
+    this.harImportMaxExpandedBytes = options.harImportMaxExpandedBytes ??
+      HAR_IMPORT_MAX_EXPANDED_BYTES;
+    this.harExportMaxBytes = options.harExportMaxBytes ?? HAR_IMPORT_MAX_FILE_BYTES;
+    this._trafficImportTransactions = new TrafficImportTransactionStore({
+      maxExpandedBytes: this.harImportMaxExpandedBytes,
+      maxEntries: this.maxTrafficLog,
+      timeoutMs: options.trafficImportTransactionTimeoutMs ??
+        DEFAULT_TRAFFIC_IMPORT_TRANSACTION_TIMEOUT_MS
+    });
     this.shutdownTimeoutMs = Number.isSafeInteger(options.shutdownTimeoutMs) && options.shutdownTimeoutMs > 0
       ? options.shutdownTimeoutMs
       : 1000;
@@ -881,7 +824,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
   }
 
   _getAutoRotateProxyReason(data) {
-    if (data?.statusCode === 410) return '410 Gone';
+    if (data?.statusCode === 410 || data?.upstreamStatusCode === 410) return '410 Gone';
 
     const errorText = `${data?.error || ''}\n${data?.responseBody || ''}\n${data?.statusMessage || ''}`;
     if (/request timeout after 30s|upstream (?:connection|response) timeout/i.test(errorText)) {
@@ -1479,7 +1422,37 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       next();
     });
 
-    this.app.use(express.json({ limit: '50mb' }));
+    const managementJsonParser = express.json({ limit: '50mb' });
+    const harJsonParser = express.json({ limit: this.harImportMaxRequestBytes });
+    const trafficImportJsonParser = express.json({ limit: this.trafficImportMaxRequestBytes });
+    this.app.use((req, res, next) => {
+      if (req.method === 'POST' && req.path === '/api/traffic/import-har') {
+        return harJsonParser(req, res, next);
+      }
+      if (req.method === 'POST' && req.path === '/api/traffic/import') {
+        return trafficImportJsonParser(req, res, next);
+      }
+      return managementJsonParser(req, res, next);
+    });
+    this.app.use((error, req, res, next) => {
+      if (error?.type !== 'entity.too.large') return next(error);
+      const isRawHar = req.method === 'POST' && req.path === '/api/traffic/import-har';
+      const isTrafficBatch = req.method === 'POST' && req.path === '/api/traffic/import';
+      const limit = isRawHar
+        ? this.harImportMaxRequestBytes
+        : isTrafficBatch
+          ? this.trafficImportMaxRequestBytes
+          : 50 * 1024 * 1024;
+      const code = isRawHar
+        ? 'ERR_HAR_IMPORT_REQUEST_TOO_LARGE'
+        : isTrafficBatch
+          ? 'ERR_TRAFFIC_IMPORT_BATCH_TOO_LARGE'
+          : 'ERR_MANAGEMENT_BODY_TOO_LARGE';
+      res.status(413).json({
+        error: `JSON request exceeds the ${Math.floor(limit / (1024 * 1024))} MiB limit`,
+        code
+      });
+    });
   }
 
   _setupRoutes() {
@@ -1490,109 +1463,16 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     // Import HAR file
     router.post('/api/traffic/import-har', (req, res) => {
       try {
-        const har = req.body;
-        if (!har?.log?.entries) {
-          return res.status(400).json({ error: 'Invalid HAR format: missing log.entries' });
-        }
-        if (!Array.isArray(har.log.entries)) {
-          return res.status(400).json({ error: 'Invalid HAR format: log.entries must be an array' });
-        }
-
-        const importTimestamp = Date.now();
-        const imported = har.log.entries.map((entry, index) => {
-          let parsedUrl, host, pathname, search;
-          try {
-            parsedUrl = new URL(entry.request.url);
-            host = parsedUrl.hostname;
-            pathname = parsedUrl.pathname;
-            search = parsedUrl.search;
-          } catch {
-            host = '';
-            pathname = entry.request.url;
-            search = '';
-          }
-          if (parsedUrl && !SUPPORTED_HAR_URL_PROTOCOLS.has(parsedUrl.protocol.toLowerCase())) {
-            throw new TypeError(
-              `log.entries[${index}].request.url must use the http, https, ws, or wss scheme`
-            );
-          }
-          const parsedTimestamp = entry.startedDateTime === null || entry.startedDateTime === undefined
-            ? NaN
-            : new Date(entry.startedDateTime).getTime();
-          const requestBody = harBodyToTraffic(entry.request.postData);
-          const responseBody = harBodyToTraffic(entry.response?.content);
-          const requestTruncation = harTruncationToTraffic(
-            entry.request.postData,
-            'request.postData'
-          );
-          const responseTruncation = harTruncationToTraffic(
-            entry.response?.content,
-            'response.content'
-          );
-          const requestContentDecoded = harContentDecodedToTraffic(
-            entry.request.postData,
-            'request.postData'
-          );
-          const responseContentDecoded = harContentDecodedToTraffic(
-            entry.response?.content,
-            'response.content'
-          );
-          const responseBodyDecodedSize = responseTruncation?.originalSize
-            ?? (entry.response?.content?.size === undefined
-              ? undefined
-              : normalizeHarBodySize(entry.response.content.size));
-
-          return {
-            id: crypto.randomUUID(),
-            protocol: normalizeHarProtocol(
-              parsedUrl,
-              entry.request.httpVersion,
-              entry.request.url
-            ),
-            method: entry.request.method ?? 'GET',
-            url: entry.request.url || '',
-            host,
-            path: pathname + search,
-            requestHeaders: harHeadersToObject(entry.request.headers),
-            requestBody: requestBody.body,
-            requestBodyEncoding: requestBody.encoding,
-            ...(requestContentDecoded ? { requestBodyContentDecoded: true } : {}),
-            requestCookies: Array.isArray(entry.request.cookies) ? entry.request.cookies : [],
-            requestPostDataParams: Array.isArray(entry.request.postData?.params)
-              ? entry.request.postData.params
-              : undefined,
-            requestPostDataMimeType: entry.request.postData?.mimeType || '',
-            requestHttpVersion: entry.request.httpVersion === undefined
-              ? ''
-              : entry.request.httpVersion,
-            requestBodySize: normalizeHarBodySize(entry.request.bodySize),
-            ...(requestTruncation ? {
-              requestBodyTruncated: true,
-              requestBodyCapturedSize: requestTruncation.capturedSize,
-              requestBodyDecodedSize: requestTruncation.originalSize
-            } : {}),
-            statusCode: entry.response?.status || 0,
-            statusMessage: entry.response?.statusText || '',
-            responseHeaders: harHeadersToObject(entry.response?.headers),
-            responseBody: responseBody.body,
-            responseBodyEncoding: responseBody.encoding,
-            ...(responseContentDecoded ? { responseBodyContentDecoded: true } : {}),
-            responseCookies: Array.isArray(entry.response?.cookies) ? entry.response.cookies : [],
-            responseContentMimeType: entry.response?.content?.mimeType || '',
-            responseHttpVersion: entry.response?.httpVersion === undefined
-              ? ''
-              : entry.response.httpVersion,
-            responseBodySize: normalizeHarBodySize(entry.response?.bodySize),
-            ...(responseBodyDecodedSize === undefined ? {} : { responseBodyDecodedSize }),
-            ...(responseTruncation ? {
-              responseBodyTruncated: true,
-              responseBodyCapturedSize: responseTruncation.capturedSize
-            } : {}),
-            duration: entry.time || 0,
-            timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : importTimestamp,
-            source: 'import'
-          };
+        // Keep every import path (renderer, REST, and desktop deep links) on
+        // one normalization boundary. Normalization finishes before traffic is
+        // mutated, so one invalid entry rejects the complete document.
+        const prepared = prepareHarImport(req.body, {
+          createId: () => crypto.randomUUID(),
+          retainLimit: this.maxTrafficLog,
+          maxBatchBytes: this.trafficImportMaxRequestBytes,
+          maxExpandedBytes: this.harImportMaxExpandedBytes
         });
+        const imported = prepared.entries;
 
         const validationError = this._getTrafficImportValidationError(imported);
         if (validationError) {
@@ -1600,9 +1480,19 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }
         const retainedRequests = this._appendImportedTraffic(imported);
         this._broadcastImportedTraffic(retainedRequests, imported.length);
-        res.json({ success: true, imported: imported.length });
+        res.json({
+          success: true,
+          imported: prepared.totalEntries,
+          retained: prepared.retainedEntries,
+          dropped: prepared.droppedEntries
+        });
       } catch (err) {
-        res.status(400).json({ error: 'Failed to parse HAR: ' + err.message });
+        const policyFailure = typeof err?.code === 'string' &&
+          /^ERR_HAR_IMPORT_.*TOO_LARGE$/.test(err.code);
+        res.status(policyFailure ? 413 : 400).json({
+          error: 'Failed to parse HAR: ' + err.message,
+          ...(err?.code ? { code: err.code } : {})
+        });
       }
     });
 
@@ -2121,8 +2011,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
     router.post('/api/tls-passthrough/items', (req, res) => {
-      const host = String(req.body?.host || '').trim();
-      if (!host) return res.status(400).json({ error: 'host is required' });
+      const host = normalizeTlsHostnamePattern(req.body?.host, {
+        allowSubdomainWildcard: true
+      });
+      if (!host) {
+        return res.status(400).json({
+          error: 'host must be a hostname, IP address, or leading *. wildcard'
+        });
+      }
       if (!this.proxy.tlsPassthrough.includes(host)) {
         this._mutateProxySetting({
           property: 'tlsPassthrough',
@@ -2133,7 +2029,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       res.json({ success: true, hosts: this.proxy.tlsPassthrough });
     });
     router.delete('/api/tls-passthrough/items', (req, res) => {
-      const host = String(req.body?.host || '').trim();
+      const host = normalizeTlsHostnamePattern(req.body?.host, {
+        allowSubdomainWildcard: true
+      });
       const hosts = this.proxy.tlsPassthrough.filter(item => item !== host);
       if (!host || hosts.length === this.proxy.tlsPassthrough.length) {
         return res.status(404).json({ error: 'Host not found' });
@@ -2593,8 +2491,12 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       } catch (err) {
         if (err.name !== 'AbortError' && !res.destroyed) {
           const isInvalidSendPayload = err?.code === 'ERR_INVALID_SEND_BODY' ||
-            err?.code === 'ERR_INVALID_SEND_METHOD';
-          res.status(isInvalidSendPayload ? 400 : 500).json({ error: err.message });
+            err?.code === 'ERR_INVALID_SEND_METHOD' ||
+            err?.code === 'ERR_INVALID_SEND_URL';
+          res.status(isInvalidSendPayload ? 400 : 500).json({
+            error: err.message,
+            ...(err?.code ? { code: err.code } : {})
+          });
         }
       } finally {
         req.removeListener('aborted', abortOutbound);
@@ -3195,10 +3097,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     const outboundMethod = validateSendMethod(method);
     return new Promise((resolve, reject) => {
       const outboundBody = prepareOutboundSendBody(body, bodyEncoding);
-      const parsedUrl = new URL(url);
-      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        throw new Error(`Unsupported Send URL protocol: ${parsedUrl.protocol}`);
-      }
+      const parsedUrl = normalizeSendUrl(url);
       const outboundHeaders = { ...headers };
       for (const name of Object.keys(outboundHeaders)) {
         if (name.toLowerCase() === INTERNAL_SEND_HEADER_NAME) delete outboundHeaders[name];
@@ -3222,7 +3121,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           username = decodeURIComponent(parsedUrl.username);
           password = decodeURIComponent(parsedUrl.password);
         } catch {
-          throw new Error('Send URL contains invalid percent-encoding in its credentials');
+          // normalizeSendUrl validates this before any request context exists.
+          throw new TypeError('Send URL credential normalization became inconsistent');
         }
         const encodedCredentials = Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
         outboundHeaders.Authorization = `Basic ${encodedCredentials}`;
@@ -3341,13 +3241,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           res.on('end', () => {
             const responseBody = Buffer.concat(chunks);
             const bodyEncoding = isUtf8(responseBody) ? 'utf8' : 'base64';
-            const rawContentType = Object.entries(res.headers)
+            const responseHeaders = normalizeIncomingResponseHeaders(res);
+            const rawContentType = Object.entries(responseHeaders)
               .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
             const contentType = normalizeDataUriMediaType(rawContentType);
             succeed({
               statusCode: res.statusCode,
               statusMessage: res.statusMessage,
-              headers: res.headers,
+              headers: responseHeaders,
               body: bodyEncoding === 'base64'
                 ? `data:${contentType};base64,${responseBody.toString('base64')}`
                 : responseBody.toString('utf8'),
@@ -4110,6 +4011,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   stop() {
     if (this._stopPromise) return this._stopPromise;
     this._stopping = true;
+    this._trafficImportTransactions.dispose();
     this._cancelStart?.();
     const server = this.httpServer;
     const wss = this.wss;

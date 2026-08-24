@@ -163,6 +163,7 @@ test('the client-certificate form sends and clears a password input without rend
   assert.match(addSource, /const passphrase = passphraseInput\?\.value \?\? '';/);
   assert.doesNotMatch(addSource, /passphraseInput\?\.value\?\.trim/);
   assert.match(addSource, /\{ passphrase \}/);
-  assert.match(addSource, /if \(!response\.ok\)[\s\S]*passphraseInput\.value = '';/);
+  assert.match(addSource, /readSettingsMutationResponse\(response, 'Could not add certificate'\)/);
+  assert.match(addSource, /if \(passphraseInput\) passphraseInput\.value = '';/);
   assert.doesNotMatch(renderSource, /passphrase/);
 });

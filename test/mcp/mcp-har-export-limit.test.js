@@ -41,7 +41,7 @@ test('MCP HAR export remains complete JSON below the cap and preserves every fil
     request('wrong-status', { method: 'POST', host: 'api.example', statusCode: 404 })
   ]);
 
-  const result = bridge._handleExportTraffic({ method: 'post', host: 'API.', status: '2xx' });
+  const result = bridge._handleExportTraffic({ method: 'POST', host: 'API.', status: '2xx' });
 
   assert.notEqual(result.isError, true);
   assert.ok(Buffer.byteLength(result.content[0].text) <= MAX_EXPORT_BYTES);
@@ -49,6 +49,9 @@ test('MCP HAR export remains complete JSON below the cap and preserves every fil
   assert.equal(har.log.version, '1.2');
   assert.deepEqual(har.log.entries.map(entry => entry.request.url), [matching.url]);
   assert.equal(har.log.entries[0].response.content.text, matching.responseBody);
+
+  const folded = bridge._handleExportTraffic({ method: 'post' });
+  assert.deepEqual(JSON.parse(folded.content[0].text).log.entries, []);
 });
 
 test('MCP HAR export rejects one huge body before converting or serializing its entry', () => {

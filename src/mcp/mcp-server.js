@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { SocketAddress, isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -36,6 +36,9 @@ const DATA_VIEW_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
 ).get;
 const ARRAY_BUFFER_IS_VIEW = ArrayBuffer.isView;
 const guardedMcpTransports = new WeakMap();
+const loopbackAddresses = new BlockList();
+loopbackAddresses.addSubnet('127.0.0.0', 8, 'ipv4');
+loopbackAddresses.addAddress('::1', 'ipv6');
 
 function isLoopbackAuthority(authority) {
   if (typeof authority !== 'string' || !authority.trim()) return false;
@@ -56,15 +59,11 @@ function isLoopbackAuthority(authority) {
     }
   }
   hostname = hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
-  if (hostname === 'localhost') return true;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
   const ipVersion = isIP(hostname);
-  if (ipVersion === 4) return hostname.split('.')[0] === '127';
-  if (ipVersion !== 6) return false;
-  try {
-    return new SocketAddress({ address: hostname, port: 0, family: 'ipv6' }).address === '::1';
-  } catch {
-    return false;
-  }
+  if (ipVersion === 4) return loopbackAddresses.check(hostname, 'ipv4');
+  if (ipVersion === 6) return loopbackAddresses.check(hostname, 'ipv6');
+  return false;
 }
 
 function oversizedMcpResponse(requestId) {
@@ -656,8 +655,7 @@ export class McpServerBridge {
     let results = this._getHttpRequestTraffic();
 
     if (method) {
-      const m = method.toUpperCase();
-      results = results.filter(r => r.method?.toUpperCase() === m);
+      results = results.filter(r => r.method === method);
     }
     if (statusFilter) {
       results = results.filter(r => matchesTrafficStatus(r.statusCode, statusFilter));
@@ -705,7 +703,16 @@ export class McpServerBridge {
     if (host) filterParts.push('host:' + host);
     if (query) filterParts.push(query);
     const filterStr = filterParts.join(' ');
-    this._broadcastToUi({ type: 'mcp-filter', filter: filterStr });
+    this._broadcastToUi({
+      type: 'mcp-filter',
+      filter: filterStr,
+      filters: {
+        ...(method ? { method } : {}),
+        ...(statusProvided ? { status } : {}),
+        ...(host ? { host } : {}),
+        ...(query ? { query } : {})
+      }
+    });
 
     return {
       content: [{
@@ -972,7 +979,7 @@ export class McpServerBridge {
 
     for (const r of log) {
       // Skip non-HTTP events
-      if (!r.statusCode || r.source === 'mock') continue;
+      if (!r.statusCode || (r.source === 'mock' && r.mockResponseSource !== 'upstream')) continue;
       const responseHeaders = r.responseHeaders;
 
       // Missing HTTPS (excluding localhost)
@@ -1008,7 +1015,8 @@ export class McpServerBridge {
 
       // Missing security headers (on HTML responses)
       const contentTypes = headerValues(getHeaderValue(responseHeaders, 'content-type'));
-      if (contentTypes.some(value => value.includes('text/html')) && r.statusCode >= 200 && r.statusCode < 400) {
+      if (contentTypes.some(value => String(value).toLowerCase().includes('text/html')) &&
+          r.statusCode >= 200 && r.statusCode < 400) {
         for (const header of securityHeaders) {
           if (!getHeaderValue(responseHeaders, header)) {
             issues.push({ severity: 'low', category: 'Missing Security Header', url: r.url, requestId: r.id,
@@ -1052,7 +1060,7 @@ export class McpServerBridge {
     }
     let filtered = this.apiServer._getHarExportTraffic();
 
-    if (method) filtered = filtered.filter(r => r.method?.toUpperCase() === method.toUpperCase());
+    if (method) filtered = filtered.filter(r => r.method === method);
     if (host) filtered = filtered.filter(r => r.host?.toLowerCase().includes(host.toLowerCase()));
     if (statusFilter) {
       filtered = filtered.filter(r => matchesTrafficStatus(r.statusCode, statusFilter));
@@ -1183,15 +1191,37 @@ export class McpServerBridge {
       const transport = new SSEServerTransport(messageEndpoint, res);
       const server = this._buildServer();
       const sessionId = transport.sessionId;
-      this.sseSessions.set(sessionId, { transport, server });
+      const session = {
+        kind: 'sse',
+        label: `MCP SSE session ${sessionId}`,
+        transport,
+        server,
+        response: res
+      };
+      this.sseSessions.set(sessionId, session);
 
       transport.onclose = () => {
-        this.sseSessions.delete(sessionId);
+        if (this.sseSessions.get(sessionId) === session) {
+          this.sseSessions.delete(sessionId);
+        }
       };
 
-      server.connect(transport).catch(err => {
+      server.connect(transport).catch(async err => {
         console.error('[MCP] SSE connection error:', err.message);
-        this.sseSessions.delete(sessionId);
+        if (this.sseSessions.get(sessionId) === session) {
+          this.sseSessions.delete(sessionId);
+        }
+        try {
+          await this._closeCleanupResource(session);
+        } catch (cleanupError) {
+          if (!this._pendingCleanupResources.includes(session)) {
+            this._pendingCleanupResources.push(session);
+          }
+          if (!this._cleanupFailureMessages.includes(cleanupError.message)) {
+            this._cleanupFailureMessages.push(cleanupError.message);
+          }
+          console.error('[MCP] Failed SSE admission cleanup:', cleanupError.message);
+        }
       });
     });
 
@@ -1275,7 +1305,16 @@ export class McpServerBridge {
     try { server.transport.onclose?.(); } catch {}
   }
 
-  async _closeCleanupResource(resource) {
+  _closeCleanupResource(resource) {
+    if (resource.cleanupPromise) return resource.cleanupPromise;
+    const cleanupPromise = this._closeCleanupResourceNow(resource).finally(() => {
+      if (resource.cleanupPromise === cleanupPromise) resource.cleanupPromise = null;
+    });
+    resource.cleanupPromise = cleanupPromise;
+    return cleanupPromise;
+  }
+
+  async _closeCleanupResourceNow(resource) {
     const errors = [];
     if (resource.transport) {
       try {
@@ -1293,6 +1332,23 @@ export class McpServerBridge {
         errors.push(error);
       }
     }
+    if (resource.response) {
+      try {
+        if (!resource.response.writableEnded && !resource.response.destroyed) {
+          if (typeof resource.response.end === 'function') resource.response.end();
+          else if (typeof resource.response.destroy === 'function') resource.response.destroy();
+          else throw new Error('HTTP response cannot be ended or destroyed');
+        }
+        resource.response = null;
+      } catch (error) {
+        try {
+          resource.response.destroy?.(error);
+          resource.response = null;
+        } catch (destroyError) {
+          errors.push(error, destroyError);
+        }
+      }
+    }
     if (errors.length > 0) {
       throw new AggregateError(
         errors,
@@ -1305,12 +1361,9 @@ export class McpServerBridge {
     const resources = [...this._pendingCleanupResources];
     this._pendingCleanupResources = [];
     for (const [sessionId, session] of this.sseSessions) {
-      resources.push({
-        kind: 'sse',
-        label: `MCP SSE session ${sessionId}`,
-        transport: session.transport,
-        server: session.server
-      });
+      if (!session.kind) session.kind = 'sse';
+      if (!session.label) session.label = `MCP SSE session ${sessionId}`;
+      resources.push(session);
     }
     this.sseSessions.clear();
     const server = this.server;

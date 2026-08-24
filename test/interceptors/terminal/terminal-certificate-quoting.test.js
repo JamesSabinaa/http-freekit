@@ -75,7 +75,7 @@ test('renderer fallback safely represents an absent certificate path', () => {
 
   const instructions = JSON.parse(JSON.stringify(container._instructions));
   assert.deepEqual(instructions, buildExistingTerminalInstructions('http://127.0.0.1:9090', ''));
-  assert.match(instructions.bash, /NODE_EXTRA_CA_CERTS=''/);
-  assert.match(instructions.powershell, /\$env:NODE_EXTRA_CA_CERTS=''/);
-  assert.match(instructions.cmd, /set "NODE_EXTRA_CA_CERTS="/);
+  assert.doesNotMatch(instructions.bash, /NODE_EXTRA_CA_CERTS/);
+  assert.doesNotMatch(instructions.powershell, /NODE_EXTRA_CA_CERTS/);
+  assert.doesNotMatch(instructions.cmd, /NODE_EXTRA_CA_CERTS/);
 });

@@ -32,6 +32,7 @@ function createRenderer(fields) {
     },
     esc: escapeText,
     escapeHtmlAttribute: escapeAttribute,
+    replaceGeneratedHtmlPreservingFocus(container, html) { container.innerHTML = html; },
     getSendBodyType: () => 'multipart',
     getActiveSendFormFields: () => fields
   };

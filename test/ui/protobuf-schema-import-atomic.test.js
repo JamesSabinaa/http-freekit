@@ -40,6 +40,9 @@ function protobufImportContext(initialFiles, durableBytes = JSON.stringify(initi
       return true;
     },
     safeLocalStorageRemove: key => durable.delete(key),
+    quarantineRendererStorageCorruptionGroup: () => true,
+    hasRendererStorageCorruption: () => false,
+    registerRendererStorageCorruption() {},
     toast: (message, type) => toasts.push({ message, type }),
     renderDetailCards() { refreshes++; },
     renderBodyViewer() { refreshes++; },

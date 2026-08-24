@@ -129,10 +129,16 @@ test('Linux Fresh Terminal keeps watching a launcher until its shell PID is read
   const interceptor = new FreshTerminalInterceptor();
   const commands = [];
   interceptor._platform = () => 'linux';
-  interceptor._createPidFilePath = () => '/tmp/freekit-bug-164.pid';
+  let handshakeNumber = 0;
+  interceptor._createPosixHandshake = () => ({
+    directory: null,
+    reportFile: `/tmp/freekit-bug-164-${++handshakeNumber}.json`,
+    acknowledgementFile: `/tmp/freekit-bug-164-${handshakeNumber}.ack`,
+    nonce: `fallback-${handshakeNumber}`
+  });
   let shellWaits = 0;
   let failedPidWaitCancelled = false;
-  interceptor._waitForShellPid = async (pidFile, timeoutMs, signal) => {
+  interceptor._waitForPosixShellReport = async (handshake, timeoutMs, signal) => {
     const shellPid = shellWaits++ === 0 ? 4153 : 4154;
     if (shellPid === 4153) {
       await new Promise((resolve, reject) => {
@@ -161,6 +167,8 @@ test('Linux Fresh Terminal keeps watching a launcher until its shell PID is read
     commands.push(command);
     return commands.length === 1 ? failed : working;
   };
+  interceptor._acknowledgePosixShell = async () => {};
+  interceptor._cleanupTerminalHandshake = () => {};
 
   setTimeout(() => {
     failed.exitCode = 23;

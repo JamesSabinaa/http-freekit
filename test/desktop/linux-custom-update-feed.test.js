@@ -8,7 +8,7 @@ import vm from 'node:vm';
 const DEFAULT_DOWNLOAD_URL = 'https://github.com/jamessabinaa/http-freekit/releases/latest';
 const DEPRECATED_GETTER_TEXT = 'Please use autoUpdater.setFeedURL() instead';
 
-function loadUpdater({ updateUrl, dialogResponse = 0 } = {}) {
+function loadUpdater({ updateUrl, downloadUrl, dialogResponse = 0 } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
   const module = { exports: {} };
@@ -47,7 +47,9 @@ function loadUpdater({ updateUrl, dialogResponse = 0 } = {}) {
     'electron-updater': { autoUpdater },
     './update-platform.cjs': { shouldForceLinuxUpdateChecks: () => true }
   };
-  const env = updateUrl === undefined ? {} : { UPDATE_URL: updateUrl };
+  const env = {};
+  if (updateUrl !== undefined) env.UPDATE_URL = updateUrl;
+  if (downloadUrl !== undefined) env.UPDATE_DOWNLOAD_URL = downloadUrl;
   const context = vm.createContext({
     URL,
     console,
@@ -104,7 +106,7 @@ function availableStatus(harness) {
     .find(status => status.status === 'update-available-linux');
 }
 
-test('a generic custom feed drives the same manual renderer status and native prompt URL', async () => {
+test('a generic custom feed is never exposed as a Linux download page', async () => {
   const feedUrl = 'https://updates.example.test/linux/latest.yml?channel=stable#download';
   const harness = loadUpdater({ updateUrl: `  ${feedUrl}  ` });
   const sender = {};
@@ -118,17 +120,36 @@ test('a generic custom feed drives the same manual renderer status and native pr
 
   const status = availableStatus(harness);
   assert.deepEqual(harness.configuredFeeds, [feedUrl]);
-  assert.equal(status.url, feedUrl);
+  assert.equal(status.url, null);
   assert.equal(status.manual, true);
-  assert.deepEqual(harness.openedUrls, [status.url]);
+  assert.deepEqual(harness.openedUrls, []);
   assert.equal(harness.dialogCalls.length, 1);
-  assert.match(harness.dialogCalls[0][1].detail, /release page/);
-  assert.doesNotMatch(harness.dialogCalls[0][1].detail, /GitHub Releases/);
+  assert.match(harness.dialogCalls[0][1].detail, /UPDATE_DOWNLOAD_URL/);
+  assert.deepEqual(Array.from(harness.dialogCalls[0][1].buttons), ['OK']);
   assert.deepEqual(
     harness.ipcHandlers.get('updater-get-status')(sender),
     status
   );
   assert.equal(harness.feedGetterCalls(), 0);
+  harness.stop();
+});
+
+test('a separate custom Linux download URL drives status and native navigation', async () => {
+  const feedUrl = 'https://updates.example.test/linux/latest.yml';
+  const downloadUrl = 'https://downloads.example.test/http-freekit/linux';
+  const harness = loadUpdater({ updateUrl: feedUrl, downloadUrl: `  ${downloadUrl}  ` });
+
+  await harness.ipcHandlers.get('updater-check-now')({});
+  harness.autoUpdater.emit('update-available', {
+    version: '2.1.1',
+    releaseNotes: 'Ordinary release notes, not a URL'
+  });
+  await settlePromises();
+
+  assert.deepEqual(harness.configuredFeeds, [feedUrl]);
+  assert.equal(availableStatus(harness).url, downloadUrl);
+  assert.deepEqual(harness.openedUrls, [downloadUrl]);
+  assert.match(harness.dialogCalls[0][1].detail, /release page/);
   harness.stop();
 });
 
@@ -162,10 +183,11 @@ test('custom GitHub web and API feeds resolve to their own repository releases',
   }
 });
 
-test('a safe release-notes URL takes precedence and unsafe notes fall back to the custom provider', async () => {
+test('a safe release-notes URL takes precedence and unsafe notes use the configured download page', async () => {
   const feedUrl = 'https://updates.example.test/stable/latest.yml';
+  const downloadUrl = 'https://downloads.example.test/releases/latest';
   const releaseNotesUrl = 'http://downloads.example.test/releases/3.0.0?format=appimage#download';
-  const harness = loadUpdater({ updateUrl: feedUrl });
+  const harness = loadUpdater({ updateUrl: feedUrl, downloadUrl });
 
   await harness.ipcHandlers.get('updater-check-now')({});
   harness.autoUpdater.emit('update-available', {
@@ -177,15 +199,15 @@ test('a safe release-notes URL takes precedence and unsafe notes fall back to th
   assert.deepEqual(harness.openedUrls, [releaseNotesUrl]);
   harness.stop();
 
-  const unsafeHarness = loadUpdater({ updateUrl: feedUrl });
+  const unsafeHarness = loadUpdater({ updateUrl: feedUrl, downloadUrl });
   await unsafeHarness.ipcHandlers.get('updater-check-now')({});
   unsafeHarness.autoUpdater.emit('update-available', {
     version: '3.0.1',
     releaseNotes: 'javascript:alert(1)'
   });
   await settlePromises();
-  assert.equal(availableStatus(unsafeHarness).url, feedUrl);
-  assert.deepEqual(unsafeHarness.openedUrls, [feedUrl]);
+  assert.equal(availableStatus(unsafeHarness).url, downloadUrl);
+  assert.deepEqual(unsafeHarness.openedUrls, [downloadUrl]);
   unsafeHarness.stop();
 });
 
@@ -194,8 +216,12 @@ test('validated Linux URLs are serialized before reaching feed, status, and nati
   const normalizedUrl = new URL(quoteBearingUrl).href;
   assert.match(normalizedUrl, /path%22%20data-audit=%22present\?channel=stable#download$/);
 
-  await t.test('custom feed', async () => {
-    const harness = loadUpdater({ updateUrl: `  ${quoteBearingUrl}  ` });
+  await t.test('custom feed and download page', async () => {
+    const feedUrl = 'https://updates.example.test/stable/latest.yml';
+    const harness = loadUpdater({
+      updateUrl: `  ${feedUrl}  `,
+      downloadUrl: `  ${quoteBearingUrl}  `
+    });
     await harness.ipcHandlers.get('updater-check-now')({});
     harness.autoUpdater.emit('update-available', {
       version: '3.1.0',
@@ -203,7 +229,7 @@ test('validated Linux URLs are serialized before reaching feed, status, and nati
     });
     await settlePromises();
 
-    assert.deepEqual(harness.configuredFeeds, [normalizedUrl]);
+    assert.deepEqual(harness.configuredFeeds, [feedUrl]);
     assert.equal(availableStatus(harness).url, normalizedUrl);
     assert.equal(harness.ipcHandlers.get('updater-get-status')({}).url, normalizedUrl);
     assert.deepEqual(harness.openedUrls, [normalizedUrl]);
@@ -228,8 +254,8 @@ test('validated Linux URLs are serialized before reaching feed, status, and nati
   });
 });
 
-test('malformed and non-web custom sources are ignored without exposing getter text', async t => {
-  for (const updateUrl of ['not a URL', 'file:///tmp/latest.yml', 'javascript:alert(1)']) {
+test('malformed, empty, and non-web custom feeds disable checks instead of falling back', async t => {
+  for (const updateUrl of ['', 'not a URL', 'file:///tmp/latest.yml', 'javascript:alert(1)']) {
     await t.test(updateUrl, async () => {
       const harness = loadUpdater({ updateUrl });
       await harness.ipcHandlers.get('updater-check-now')({});
@@ -239,15 +265,34 @@ test('malformed and non-web custom sources are ignored without exposing getter t
       });
       await settlePromises();
 
-      const status = availableStatus(harness);
+      const status = harness.ipcHandlers.get('updater-get-status')({});
       assert.deepEqual(harness.configuredFeeds, []);
-      assert.equal(status.url, DEFAULT_DOWNLOAD_URL);
-      assert.deepEqual(harness.openedUrls, [DEFAULT_DOWNLOAD_URL]);
+      assert.equal(status.status, 'unavailable');
+      assert.equal(status.available, false);
+      assert.match(status.error, /UPDATE_URL must be a non-empty HTTP\(S\) URL/);
+      assert.deepEqual(harness.openedUrls, []);
+      assert.deepEqual(harness.dialogCalls, []);
       assert.equal(harness.feedGetterCalls(), 0);
       assert.doesNotMatch(JSON.stringify(harness.statuses), new RegExp(DEPRECATED_GETTER_TEXT));
       harness.stop();
     });
   }
+});
+
+test('an explicit invalid Linux download page disables checks', async () => {
+  const harness = loadUpdater({
+    updateUrl: 'https://updates.example.test/latest.yml',
+    downloadUrl: 'file:///tmp/package.AppImage'
+  });
+
+  await harness.ipcHandlers.get('updater-check-now')({});
+  const status = harness.ipcHandlers.get('updater-get-status')({});
+
+  assert.equal(status.status, 'unavailable');
+  assert.match(status.error, /UPDATE_DOWNLOAD_URL must be a non-empty HTTP\(S\) URL/);
+  assert.deepEqual(harness.configuredFeeds, []);
+  assert.deepEqual(harness.openedUrls, []);
+  harness.stop();
 });
 
 test('the project release page remains the default when no custom source exists', async () => {

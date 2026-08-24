@@ -22,7 +22,7 @@ test('instruction-only Docker activation reports a coherent active lifecycle', a
   const interceptor = new DockerInterceptor();
   interceptor._platform = () => 'linux';
   interceptor._getDockerHost = async () => '172.17.0.1';
-  interceptor._getCombinedCaBundlePath = () => '/tmp/freekit-ca-bundle.pem';
+  interceptor._getFreeKitCaPath = () => '/tmp/freekit-ca-bundle.pem';
 
   const result = await interceptor.activate(8080);
 

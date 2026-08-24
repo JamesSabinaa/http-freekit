@@ -59,7 +59,7 @@ function rendererHarness(initialRequests = []) {
   const restoreStart = rendererSource.indexOf('function trimTrafficRows(');
   const restoreEnd = rendererSource.indexOf('const appliedTrafficClearIds', restoreStart);
   const trafficStart = rendererSource.indexOf('function addRequest(');
-  const trafficEnd = rendererSource.indexOf('function parseFilters(', trafficStart);
+  const trafficEnd = rendererSource.indexOf('function showFilterHint(', trafficStart);
   const rowStart = rendererSource.indexOf('function formatRemoteEndpoint(');
   const rowEnd = rendererSource.indexOf('// Render the visible virtual-scroll rows', rowStart);
   const toggleStart = rendererSource.indexOf('function toggleWsExpand(');
@@ -72,6 +72,7 @@ function rendererHarness(initialRequests = []) {
   }
 
   let renders = 0;
+  const searchInput = { value: '' };
   const context = {
     requests: structuredClone(initialRequests),
     filteredRequests: [],
@@ -82,14 +83,16 @@ function rendererHarness(initialRequests = []) {
     sortDirection: 'desc',
     hideTunnelRequests: false,
     filterSafeFonts: false,
+    activeMcpTrafficFilters: null,
     document: {
       getElementById(id) {
-        if (id === 'searchInput') return { value: '' };
+        if (id === 'searchInput') return searchInput;
         return null;
       }
     },
     closeDetail: () => {},
     showDetail: () => {},
+    renderSelectedTrafficDetail: () => {},
     resolvePendingTrafficView: () => {},
     renderTraffic: () => { renders++; },
     esc: value => String(value ?? ''),
@@ -115,6 +118,7 @@ function rendererHarness(initialRequests = []) {
     globalThis.expandTrafficRequest = request => wsExpandedConnections.add(wsConnectionKey(request));
     globalThis.toggleTraffic = toggleWsExpand;
     globalThis.filterTraffic = applyFilter;
+    globalThis.setTrafficFilter = value => { document.getElementById('searchInput').value = value; };
     globalThis.filteredTrafficIds = () => filteredRequests.map(request => request.id);
     globalThis.filteredTrafficExchangeCount = () => countTrafficExchanges(filteredRequests);
     globalThis.frameIndex = () => Object.fromEntries(
@@ -528,6 +532,55 @@ test('legacy IDs cannot collide with lifecycle WebSocket frame keys', () => {
   ]);
   assert.deepEqual(Array.from(harness.context.frameIdsForRequest(correlatedParent)), [correlatedFrame.id]);
   assert.deepEqual(Array.from(harness.context.frameIdsForRequest(legacyParent)), [legacyFrame.id]);
+});
+
+test('traffic search retains WebSocket parents but inserts only matching frames', () => {
+  const firstParent = {
+    ...trafficRecord('socket-a', 'ws'),
+    trafficLifecycleId: 'lifecycle-a'
+  };
+  const firstMatch = {
+    ...trafficRecord('frame-match', 'ws-frame', firstParent.id),
+    parentTrafficLifecycleId: firstParent.trafficLifecycleId,
+    requestBody: 'unique payload needle'
+  };
+  const firstSibling = {
+    ...trafficRecord('frame-sibling', 'ws-frame', firstParent.id),
+    parentTrafficLifecycleId: firstParent.trafficLifecycleId,
+    requestBody: 'ordinary payload'
+  };
+  const secondParent = {
+    ...trafficRecord('socket-b', 'wss'),
+    trafficLifecycleId: 'lifecycle-b'
+  };
+  const secondFrame = {
+    ...trafficRecord('frame-other-parent', 'ws-frame', secondParent.id),
+    parentTrafficLifecycleId: secondParent.trafficLifecycleId,
+    requestBody: 'unrelated payload'
+  };
+  const harness = rendererHarness([
+    firstParent, firstMatch, firstSibling, secondParent, secondFrame
+  ]);
+  harness.context.expandTrafficRequest(firstParent);
+  harness.context.expandTrafficRequest(secondParent);
+
+  harness.context.setTrafficFilter('body:needle');
+  harness.context.filterTraffic();
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    firstParent.id,
+    firstMatch.id
+  ]);
+
+  harness.context.setTrafficFilter('status:101');
+  harness.context.filterTraffic();
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [
+    firstParent.id,
+    secondParent.id
+  ]);
+
+  harness.context.setTrafficFilter('needle');
+  harness.context.toggleTraffic(firstParent.id, firstParent.trafficLifecycleId);
+  assert.deepEqual(Array.from(harness.context.filteredTrafficIds()), [firstParent.id]);
 });
 
 test('secure WebSocket parents expose their frame rows and WebSocket styling', () => {

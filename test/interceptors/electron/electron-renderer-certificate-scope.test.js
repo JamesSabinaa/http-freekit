@@ -40,6 +40,7 @@ test('system-trusted Electron launch emits no certificate switches', async () =>
   let fingerprintReads = 0;
   interceptor.ca = {
     systemTrustInstalled: true,
+    getTerminalCaBundlePath: () => process.execPath,
     getSpkiFingerprint: () => {
       fingerprintReads += 1;
       return 'unused-spki';
@@ -59,10 +60,9 @@ test('system-trusted Electron launch emits no certificate switches', async () =>
   );
   assertNoBroadTlsBypasses(args);
   assert.equal(fingerprintReads, 0);
-  assert.equal(
-    manual.metadata.instructions,
-    'Launch your Electron app with:\n  your-app --proxy-server=http://127.0.0.1:8080 --proxy-bypass-list=<-loopback>'
-  );
+  assert.match(manual.metadata.instructions, /--proxy-server=http:\/\/127\.0\.0\.1:8080/);
+  assert.match(manual.metadata.instructions, /NODE_EXTRA_CA_CERTS/);
+  assert.equal(manual.metadata.environment.NODE_EXTRA_CA_CERTS, process.execPath);
 });
 
 test('untrusted Electron launch fails safely when its scoped SPKI is unavailable', async () => {

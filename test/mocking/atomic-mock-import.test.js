@@ -82,6 +82,46 @@ test('informational-status replacement imports are rejected atomically', async t
   assert.deepEqual(proxy.mockRules, before);
 });
 
+test('invalid transform and rewrite imports leave every existing mock rule intact', async t => {
+  const { proxy, port } = await createServer(t);
+  proxy.mockRules = [{
+    id: 'existing',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status: 200, body: 'retained' }
+  }];
+  const before = structuredClone(proxy.mockRules);
+
+  for (const invalidRule of [
+    {
+      enabled: true,
+      matchers: [{ type: 'wildcard' }],
+      action: { type: 'transform-request', bodyMode: 'json-merge', body: '{bad json' }
+    },
+    {
+      enabled: true,
+      matchers: [{ type: 'wildcard' }],
+      preSteps: [{ type: 'rewrite-url', value: 'ftp://example.test/' }],
+      action: { type: 'passthrough' }
+    },
+    {
+      enabled: true,
+      matchers: [{ type: 'json-body-includes', value: '{bad json' }],
+      action: { type: 'fixed-response', status: 200 }
+    }
+  ]) {
+    const result = await putJson(port, '/api/mock-rules', {
+      rules: [{
+        enabled: true,
+        matchers: [{ type: 'method', value: 'GET' }],
+        action: { type: 'fixed-response', status: 201 }
+      }, invalidRule]
+    });
+    assert.equal(result.statusCode, 400);
+    assert.deepEqual(proxy.mockRules, before);
+  }
+});
+
 test('valid replacement imports are applied in one API operation', async t => {
   const { proxy, port } = await createServer(t);
   proxy.mockRules = [{ id: 'existing', urlPattern: '/old', response: {} }];

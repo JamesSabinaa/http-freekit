@@ -23,6 +23,7 @@ class DesktopPreferences {
     this.filePath = path.join(userDataDir, DESKTOP_PREFERENCES_FILENAME);
     this.fileSystem = fileSystem;
     this.logger = logger;
+    this.loadError = null;
     this.data = this._load();
   }
 
@@ -35,6 +36,7 @@ class DesktopPreferences {
       }
       return parsed;
     } catch (error) {
+      this.loadError = error;
       this.logger.error('[Electron] Could not load desktop preferences:', error.message);
       return {};
     }
@@ -48,6 +50,12 @@ class DesktopPreferences {
   setCloseWindowBehavior(behavior) {
     if (!isCloseWindowBehavior(behavior)) {
       throw new TypeError('Close-window behavior must be "hide" or "quit"');
+    }
+    if (this.loadError) {
+      throw new Error(
+        'Desktop preferences could not be loaded; refusing to overwrite the existing file',
+        { cause: this.loadError }
+      );
     }
 
     const nextData = { ...this.data, closeWindowBehavior: behavior };

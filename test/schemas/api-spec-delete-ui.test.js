@@ -11,15 +11,24 @@ const renderStart = rendererSource.indexOf('function renderApiSpecs(');
 const renderEnd = rendererSource.indexOf('async function readApiSpecUploadResponse(', renderStart);
 assert.ok(renderStart >= 0 && renderEnd > renderStart);
 
-function harness(fetchImplementation) {
+function harness(fetchImplementation, initialSpecs = [{ id: 'spec-id', title: 'Spec' }]) {
   const fetchCalls = [];
   const toasts = [];
+  const renders = [];
   let reloads = 0;
   const context = {
     API_BASE: 'http://127.0.0.1:8001',
+    renderedApiSpecs: initialSpecs.map(spec => ({ ...spec })),
     fetch: async (...args) => {
       fetchCalls.push(args);
       return fetchImplementation(...args);
+    },
+    beginSettingsMutation: key => ({ key }),
+    isCurrentSettingsOperation: () => true,
+    finishSettingsMutation() {},
+    renderApiSpecs: specs => {
+      context.renderedApiSpecs = specs.map(spec => ({ ...spec }));
+      renders.push(context.renderedApiSpecs);
     },
     loadApiSpecs: async () => { reloads += 1; },
     toast: (message, type) => toasts.push({ message, type })
@@ -32,6 +41,8 @@ function harness(fetchImplementation) {
   return {
     remove: id => context.removeApiSpec(id),
     fetchCalls,
+    renders,
+    specs: () => context.renderedApiSpecs,
     toasts,
     reloads: () => reloads
   };
@@ -48,12 +59,15 @@ function response({ ok, status, body, jsonError }) {
   };
 }
 
-test('confirmed API-spec deletion safely targets the ID, reloads, and reports success', async () => {
+test('confirmed API-spec deletion safely targets the ID, updates the list, and reports success', async () => {
   const ui = harness(async () => response({
     ok: true,
     status: 200,
     body: { success: true }
-  }));
+  }), [
+    { id: 'spec/with ? delimiters', title: 'Remove me' },
+    { id: 'keep', title: 'Keep me' }
+  ]);
 
   await ui.remove('spec/with ? delimiters');
 
@@ -63,7 +77,9 @@ test('confirmed API-spec deletion safely targets the ID, reloads, and reports su
     'http://127.0.0.1:8001/api/specs/spec%2Fwith%20%3F%20delimiters'
   );
   assert.equal(ui.fetchCalls[0][1].method, 'DELETE');
-  assert.equal(ui.reloads(), 1);
+  assert.equal(ui.reloads(), 0);
+  assert.deepEqual(ui.specs(), [{ id: 'keep', title: 'Keep me' }]);
+  assert.equal(ui.renders.length, 1);
   assert.deepEqual(ui.toasts, [{ message: 'Spec removed', type: 'success' }]);
 });
 
@@ -77,6 +93,7 @@ test('HTTP deletion failure shows the server message and leaves the list intact'
   await ui.remove('spec-id');
 
   assert.equal(ui.reloads(), 0);
+  assert.deepEqual(ui.specs(), [{ id: 'spec-id', title: 'Spec' }]);
   assert.deepEqual(ui.toasts, [{
     message: 'Failed to remove spec: Spec storage is read-only',
     type: 'error'
@@ -92,6 +109,7 @@ test('network deletion failure is visible without reload or success', async () =
   await ui.remove('spec-id');
 
   assert.equal(ui.reloads(), 0);
+  assert.deepEqual(ui.specs(), [{ id: 'spec-id', title: 'Spec' }]);
   assert.deepEqual(ui.toasts, [{
     message: 'Failed to remove spec: connection refused',
     type: 'error'
@@ -123,6 +141,7 @@ test('malformed and explicit logical failures cannot report deletion success', a
     const ui = harness(scenario.fetch);
     await ui.remove('spec-id');
     assert.equal(ui.reloads(), 0);
+    assert.deepEqual(ui.specs(), [{ id: 'spec-id', title: 'Spec' }]);
     assert.deepEqual(ui.toasts, [{ message: scenario.message, type: 'error' }]);
     assert.equal(ui.toasts.some(toast => toast.type === 'success'), false);
   }

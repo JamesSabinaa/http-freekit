@@ -21,6 +21,37 @@ export function getWindowsCertutilPath(environment = process.env) {
   return path.win32.join(windowsRoot, 'System32', 'certutil.exe');
 }
 
+export function removeWindowsCaTrust(fingerprints, run = execFileSync) {
+  const normalizedFingerprints = [...new Set(
+    (Array.isArray(fingerprints) ? fingerprints : [fingerprints])
+      .map(normalizeSha1Fingerprint)
+      .filter(Boolean)
+  )];
+  const errors = [];
+  const remainingFingerprints = [];
+
+  for (const fingerprint of normalizedFingerprints) {
+    try {
+      run(getWindowsCertutilPath(), [
+        '-delstore',
+        '-user',
+        'Root',
+        fingerprint
+      ], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+    } catch (error) {
+      if (isMissingTrustEntry(error)) continue;
+      errors.push({ fingerprint, error });
+      remainingFingerprints.push(fingerprint);
+    }
+  }
+
+  return { fingerprints: normalizedFingerprints, errors, remainingFingerprints };
+}
+
 export function installWindowsCaTrust(certInfo, run = execFileSync) {
   const certutilPath = getWindowsCertutilPath();
   run(certutilPath, [
@@ -37,34 +68,13 @@ export function installWindowsCaTrust(certInfo, run = execFileSync) {
       : []),
     certInfo.replacedCertificateFingerprint
   ].map(normalizeSha1Fingerprint).filter(Boolean))];
-  const replacementRemovalErrors = [];
-  const remainingReplacementFingerprints = [];
-  for (const replacedFingerprint of replacementFingerprints) {
-    try {
-      run(certutilPath, [
-        '-delstore',
-        '-user',
-        'Root',
-        replacedFingerprint
-      ], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
-      });
-    } catch (error) {
-      if (isMissingTrustEntry(error)) continue;
-      // The new CA is already trusted. Retaining an obsolete exact-thumbprint
-      // entry is safer than reporting installation failure or deleting broadly.
-      replacementRemovalErrors.push({ fingerprint: replacedFingerprint, error });
-      remainingReplacementFingerprints.push(replacedFingerprint);
-    }
-  }
+  const replacementRemoval = removeWindowsCaTrust(replacementFingerprints, run);
 
   return {
     replacedFingerprint: replacementFingerprints[0] || null,
     replacementFingerprints,
-    replacementRemovalError: replacementRemovalErrors[0]?.error || null,
-    replacementRemovalErrors,
-    remainingReplacementFingerprints
+    replacementRemovalError: replacementRemoval.errors[0]?.error || null,
+    replacementRemovalErrors: replacementRemoval.errors,
+    remainingReplacementFingerprints: replacementRemoval.remainingFingerprints
   };
 }

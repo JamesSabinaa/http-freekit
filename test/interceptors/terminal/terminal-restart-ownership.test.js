@@ -9,6 +9,7 @@ import { InterceptorManager } from '../../../src/interceptors/interceptor-manage
 import { FreshTerminalInterceptor } from '../../../src/interceptors/terminal-interceptors.js';
 
 const JOURNAL_NAME = 'fresh-terminal-session-ownership.json';
+const LINUX_BOOT_ID = '11111111-1111-4111-8111-111111111111';
 
 function createDataDir(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-bug-336-'));
@@ -22,11 +23,21 @@ function executableIdentity(platform = process.platform) {
     : '/bin/zsh';
 }
 
+function ownershipMarkerFile(pid) {
+  return path.join(
+    os.tmpdir(),
+    `http-freekit-terminal-handshake-owner-${pid}`,
+    'ownership.marker'
+  );
+}
+
 function identity(pid = 8361, platform = process.platform, overrides = {}) {
   return Object.freeze({
     pid,
     startTime: '638891424000000000',
     executable: executableIdentity(platform),
+    ...(platform !== 'win32' ? { bootId: LINUX_BOOT_ID } : {}),
+    ...(platform === 'darwin' ? { ownershipMarkerFile: ownershipMarkerFile(pid) } : {}),
     ...overrides
   });
 }
@@ -37,13 +48,17 @@ function running(processIdentity) {
 
 function journalRecord(processIdentity, platform = process.platform) {
   return {
-    version: 1,
+    version: 3,
     sessions: [{
       pid: processIdentity.pid,
       startTime: processIdentity.startTime,
       executable: platform === 'win32'
         ? path.win32.normalize(processIdentity.executable).toLowerCase()
         : path.posix.normalize(processIdentity.executable),
+      ...(platform !== 'win32' ? { bootId: processIdentity.bootId } : {}),
+      ...(platform === 'darwin'
+        ? { ownershipMarkerFile: processIdentity.ownershipMarkerFile }
+        : {}),
       platform
     }]
   };
@@ -78,8 +93,15 @@ function exitLauncher(proc, signal = null) {
 
 function configurePosixLaunch(interceptor, owner, launcher) {
   interceptor.ca = { getTerminalCaBundlePath: () => process.execPath };
-  interceptor._createPidFilePath = () => path.join(os.tmpdir(), `bug-336-${owner.pid}.pid`);
-  interceptor._waitForShellPid = async () => owner.pid;
+  interceptor._createPosixHandshake = () => ({
+    directory: null,
+    reportFile: path.join(os.tmpdir(), `bug-336-${owner.pid}.json`),
+    acknowledgementFile: path.join(os.tmpdir(), `bug-336-${owner.pid}.ack`),
+    nonce: `bug-336-${owner.pid}`
+  });
+  interceptor._waitForPosixShellReport = async () => owner.pid;
+  interceptor._acknowledgePosixShell = async () => {};
+  interceptor._cleanupTerminalHandshake = () => {};
   interceptor._spawnDetached = async () => launcher;
   interceptor._inspectSessionIdentity = async pid => {
     assert.equal(pid, owner.pid);
@@ -282,6 +304,28 @@ test('dead and reused recovered PIDs are cleared without ever being signalled', 
   }
 });
 
+test('a recovered Linux PID and start-tick collision from another boot is never signalled', async t => {
+  const dataDir = createDataDir(t);
+  const owner = identity(8376, 'linux');
+  const recoveryFile = writeJournal(dataDir, owner, 'linux');
+  const interceptor = new FreshTerminalInterceptor({ dataDir, platform: 'linux' });
+  stopMonitor(interceptor);
+  interceptor._inspectSessionIdentity = async () => running({
+    ...owner,
+    executable: '/usr/bin/unrelated',
+    bootId: '22222222-2222-4222-8222-222222222222'
+  });
+  const signals = [];
+  interceptor._killSession = (...args) => signals.push(args);
+
+  await interceptor.deactivate();
+
+  assert.deepEqual(signals, []);
+  assert.equal(interceptor.sessions.size, 0);
+  assert.equal(interceptor.active, false);
+  assert.equal(fs.existsSync(recoveryFile), false);
+});
+
 test('unknown recovered identity remains retryable and never authorizes a signal', async t => {
   const dataDir = createDataDir(t);
   const owner = identity(8366, 'linux');
@@ -355,6 +399,22 @@ test('journal validation rejects unexpected, cross-platform, and duplicate sessi
       sessions: [valid.sessions[0], { ...valid.sessions[0] }]
     }),
     /duplicate process IDs/
+  );
+
+  const darwinInterceptor = new FreshTerminalInterceptor({ platform: 'darwin' });
+  const darwinOwner = identity(8377, 'darwin');
+  const darwinRecord = journalRecord(darwinOwner, 'darwin');
+  assert.deepEqual(
+    darwinInterceptor._validateSessionJournal(darwinRecord).get(darwinOwner.pid),
+    darwinOwner
+  );
+  const { ownershipMarkerFile: _omitted, ...unsafeDarwinEntry } = darwinRecord.sessions[0];
+  assert.throws(
+    () => darwinInterceptor._validateSessionJournal({
+      ...darwinRecord,
+      sessions: [unsafeDarwinEntry]
+    }),
+    /invalid session schema/
   );
 });
 
@@ -569,6 +629,76 @@ test('journal removal failure retains cleanup state until a later retry succeeds
   assert.equal(interceptor.sessions.size, 0);
   assert.equal(fs.existsSync(recoveryFile), false);
   assert.equal(events.at(-1).reason, 'exited');
+});
+
+test('macOS marker removal failure retains the durable journal for a later retry', async t => {
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = createDataDir(t);
+  const markerDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'http-freekit-terminal-handshake-cleanup-retry-')
+  );
+  const markerFile = path.join(markerDirectory, 'ownership.marker');
+  fs.writeFileSync(markerFile, '', { mode: 0o600 });
+  t.after(() => fs.rmSync(markerDirectory, { recursive: true, force: true }));
+  const owner = identity(8378, 'darwin', { ownershipMarkerFile: markerFile });
+  const recoveryFile = writeJournal(dataDir, owner, 'darwin');
+  const interceptor = new FreshTerminalInterceptor({ dataDir, platform: 'darwin' });
+  stopMonitor(interceptor);
+  interceptor._inspectSessionIdentity = async () => ({ state: 'absent' });
+
+  const originalRmSync = fs.rmSync;
+  let removalFails = true;
+  t.mock.method(fs, 'rmSync', (target, options) => {
+    if (removalFails && path.resolve(target) === path.resolve(markerDirectory)) {
+      throw new Error('marker directory removal denied');
+    }
+    return originalRmSync(target, options);
+  });
+
+  assert.equal(await interceptor.isActive(), true);
+  assert.equal(interceptor.sessions.has(owner.pid), true);
+  assert.equal(fs.existsSync(recoveryFile), true);
+  assert.equal(fs.existsSync(markerFile), true);
+
+  removalFails = false;
+  assert.equal(await interceptor.isActive(), false);
+  assert.equal(interceptor.sessions.size, 0);
+  assert.equal(fs.existsSync(recoveryFile), false);
+  assert.equal(fs.existsSync(markerDirectory), false);
+});
+
+test('macOS journal retirement remains retryable after its marker was removed', async t => {
+  t.mock.method(console, 'warn', () => {});
+  const dataDir = createDataDir(t);
+  const markerDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'http-freekit-terminal-handshake-journal-retry-')
+  );
+  const markerFile = path.join(markerDirectory, 'ownership.marker');
+  fs.writeFileSync(markerFile, '', { mode: 0o600 });
+  t.after(() => fs.rmSync(markerDirectory, { recursive: true, force: true }));
+  const owner = identity(8379, 'darwin', { ownershipMarkerFile: markerFile });
+  const recoveryFile = writeJournal(dataDir, owner, 'darwin');
+  const interceptor = new FreshTerminalInterceptor({ dataDir, platform: 'darwin' });
+  stopMonitor(interceptor);
+  interceptor._inspectSessionIdentity = async () => ({ state: 'absent' });
+  const originalWrite = interceptor._writeSessionJournal.bind(interceptor);
+  let journalRemovalFails = true;
+  interceptor._writeSessionJournal = sessions => {
+    if (journalRemovalFails && sessions.size === 0) {
+      throw new Error('journal retirement denied');
+    }
+    return originalWrite(sessions);
+  };
+
+  assert.equal(await interceptor.isActive(), true);
+  assert.equal(interceptor.sessions.has(owner.pid), true);
+  assert.equal(fs.existsSync(markerDirectory), false);
+  assert.equal(fs.existsSync(recoveryFile), true);
+
+  journalRemovalFails = false;
+  assert.equal(await interceptor.isActive(), false);
+  assert.equal(interceptor.sessions.size, 0);
+  assert.equal(fs.existsSync(recoveryFile), false);
 });
 
 test('normal launcher exit clears a conclusively gone shell journal and publishes status', async t => {

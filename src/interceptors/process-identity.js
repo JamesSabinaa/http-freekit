@@ -3,6 +3,7 @@ import path from 'path';
 
 const MAX_PROCESS_ID = 0xffffffff;
 const MAX_EXECUTABLE_IDENTITY_LENGTH = 4096;
+const LINUX_BOOT_ID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 function stdoutFrom(result) {
   if (result && typeof result === 'object' && 'stdout' in result) return result.stdout;
@@ -32,6 +33,16 @@ export function normalizeExecutableIdentity(executable, options = {}) {
   const normalized = pathFlavor.normalize(value).normalize('NFC');
   return pathFlavor === path.win32 ? normalized.toLowerCase() : normalized;
 }
+
+export function normalizeBootId(bootId) {
+  const value = String(bootId || '').trim().toLowerCase();
+  if (!LINUX_BOOT_ID_PATTERN.test(value)) {
+    throw new Error('Boot identity is missing or invalid');
+  }
+  return value;
+}
+
+export const normalizeLinuxBootId = normalizeBootId;
 
 export function normalizeProcessIdentity(identity, expectedPid, options = {}) {
   const { platform = process.platform, includePlatform = false } = options;
@@ -94,17 +105,52 @@ export function sameProcessIdentity(left, right, options = {}) {
 export async function inspectLinuxProcessIdentity(pid, options = {}) {
   const procDirectory = `/proc/${pid}`;
   const parseStart = options.parseStart || parseLinuxProcessStart;
-  const statBefore = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+  const readFile = options.readFile || fs.promises.readFile.bind(fs.promises);
+  const readlink = options.readlink || fs.promises.readlink.bind(fs.promises);
+  const bootIdPath = options.bootIdPath || '/proc/sys/kernel/random/boot_id';
+  const readBootId = options.getBootId ||
+    (() => readFile(bootIdPath, 'utf8').then(normalizeBootId));
+  const bootIdBefore = options.includeBootId
+    ? normalizeBootId(await readBootId())
+    : null;
+  const statBefore = await readFile(path.join(procDirectory, 'stat'), 'utf8');
   const startTime = parseStart(statBefore, pid);
-  const executable = await fs.promises.readlink(path.join(procDirectory, 'exe'));
-  const statAfter = await fs.promises.readFile(path.join(procDirectory, 'stat'), 'utf8');
+  const executable = await readlink(path.join(procDirectory, 'exe'));
+  const statAfter = await readFile(path.join(procDirectory, 'stat'), 'utf8');
   if (parseStart(statAfter, pid) !== startTime) {
     throw new Error('Process identity changed during inspection');
   }
-  return { pid, startTime, executable };
+  const bootIdAfter = options.includeBootId
+    ? normalizeBootId(await readBootId())
+    : null;
+  if (bootIdAfter !== bootIdBefore) {
+    throw new Error('Linux boot identity changed during process inspection');
+  }
+  return {
+    pid,
+    startTime,
+    executable,
+    ...(bootIdBefore ? { bootId: bootIdBefore } : {})
+  };
 }
 
 export async function inspectDarwinProcessIdentity(pid, options = {}) {
+  const readBootId = options.getBootId || (async () => {
+    const result = await options.execFile(
+      '/usr/sbin/sysctl',
+      ['-n', 'kern.bootsessionuuid'],
+      {
+        timeout: options.timeoutMs,
+        maxBuffer: 16 * 1024,
+        windowsHide: true,
+        env: { ...options.environment, LC_ALL: 'C' }
+      }
+    );
+    return normalizeBootId(stdoutFrom(result));
+  });
+  const bootIdBefore = options.includeBootId
+    ? normalizeBootId(await readBootId())
+    : null;
   const result = await options.execFile(
     '/bin/ps',
     ['-ww', '-p', String(pid), '-o', 'pid=', '-o', 'lstart=', '-o', 'comm='],
@@ -121,7 +167,18 @@ export async function inspectDarwinProcessIdentity(pid, options = {}) {
   if (!match || Number(match[1]) !== pid) throw new Error('macOS process metadata is invalid');
   const startTime = Date.parse(match[2]);
   if (!Number.isFinite(startTime)) throw new Error('macOS process start identity is unavailable');
-  return { pid, startTime: String(startTime), executable: match[3] };
+  const bootIdAfter = options.includeBootId
+    ? normalizeBootId(await readBootId())
+    : null;
+  if (bootIdAfter !== bootIdBefore) {
+    throw new Error('macOS boot identity changed during process inspection');
+  }
+  return {
+    pid,
+    startTime: String(startTime),
+    executable: match[3],
+    ...(bootIdBefore ? { bootId: bootIdBefore } : {})
+  };
 }
 
 async function inspectWindowsProcessIdentity(pid, options = {}) {

@@ -16,6 +16,7 @@ test('every Electron quit path is gated by child-server cleanup', () => {
   assert.match(handler, /runQuitCleanup\(\{[\s\S]*stopAutoUpdater,[\s\S]*destroyTray,[\s\S]*shutdownServer/);
   assert.match(handler, /if \(shouldQuit\) \{[\s\S]*quitCleanupComplete = true;[\s\S]*app\.quit\(\)/);
   assert.match(handler, /isShuttingDown = false;[\s\S]*relaunchRequested = false;[\s\S]*showMainWindow\(\)/);
+  assert.match(handler, /restoreWindowAfterFailedQuit\(err\)/);
 });
 
 test('renderer restart uses the cleanup-aware quit path', () => {

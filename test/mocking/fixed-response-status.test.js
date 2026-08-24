@@ -49,6 +49,7 @@ function collectH1Response(request) {
       response.on('data', chunk => chunks.push(chunk));
       response.once('end', () => resolve({
         statusCode: response.statusCode,
+        headers: response.headers,
         body: Buffer.concat(chunks).toString('utf8'),
         addedHeader: response.headers['x-added'],
         informational
@@ -59,16 +60,17 @@ function collectH1Response(request) {
   });
 }
 
-function requestPlain(proxyPort, pathname) {
+function requestPlain(proxyPort, pathname, method = 'GET') {
   return collectH1Response(http.request({
     hostname: '127.0.0.1',
     port: proxyPort,
     path: `http://final-status.test${pathname}`,
+    method,
     headers: { host: 'final-status.test', connection: 'close' }
   }));
 }
 
-async function requestInterceptedH1(proxyPort, authority, pathname) {
+async function requestInterceptedH1(proxyPort, authority, pathname, method = 'GET') {
   const socket = await connectTls(proxyPort, authority, ['http/1.1']);
   const agent = new http.Agent();
   agent.createConnection = () => socket;
@@ -77,6 +79,7 @@ async function requestInterceptedH1(proxyPort, authority, pathname) {
       hostname: 'final-status.test',
       port: 443,
       path: pathname,
+      method,
       agent,
       headers: { host: authority, connection: 'close' }
     }));
@@ -85,13 +88,13 @@ async function requestInterceptedH1(proxyPort, authority, pathname) {
   }
 }
 
-async function requestInterceptedH2(proxyPort, authority, pathname) {
+async function requestInterceptedH2(proxyPort, authority, pathname, method = 'GET') {
   const socket = await connectTls(proxyPort, authority, ['h2']);
   const client = http2.connect(`https://${authority}`, { createConnection: () => socket });
   try {
     await once(client, 'connect');
     const request = client.request({
-      ':method': 'GET',
+      ':method': method,
       ':path': pathname,
       ':authority': authority,
       ':scheme': 'https'
@@ -104,6 +107,7 @@ async function requestInterceptedH2(proxyPort, authority, pathname) {
     await once(request, 'end');
     return {
       statusCode: responseHeaders[':status'],
+      headers: responseHeaders,
       body: Buffer.concat(chunks).toString('utf8'),
       addedHeader: responseHeaders['x-added'],
       informational: []
@@ -167,28 +171,42 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
     proxy.mockRules = [
       fixedRule('invalid-informational', '/fallback', 199, 'must not run'),
       fixedRule('valid-fallback', '/fallback', 200, 'safe final response'),
-      fixedRule('valid-upper-bound', '/upper-bound', 599, 'upper bound response')
+      fixedRule('valid-upper-bound', '/upper-bound', 599, 'upper bound response'),
+      fixedRule('head-response', '/head', 200, 'must not be sent for HEAD'),
+      fixedRule('no-content', '/no-content', 204, 'must not be sent for 204'),
+      fixedRule('not-modified', '/not-modified', 304, 'must not be sent for 304')
     ];
+    for (const rule of proxy.mockRules.slice(-3)) {
+      rule.action.headers['transfer-encoding'] = 'chunked';
+      rule.action.headers['content-length'] = String(Buffer.byteLength(rule.action.body));
+    }
 
     const authority = 'final-status.test:443';
     const protocols = [
       {
         name: 'plain H1 engine',
         mode: 'disabled',
-        send: pathname => requestPlain(proxy.server.address().port, pathname)
+        send: (pathname, method) => requestPlain(proxy.server.address().port, pathname, method)
       },
       {
         name: 'intercepted HTTPS H1 engine',
         mode: 'disabled',
-        send: pathname => requestInterceptedH1(
-          proxy.server.address().port, authority, pathname
+        send: (pathname, method) => requestInterceptedH1(
+          proxy.server.address().port, authority, pathname, method
         )
       },
       {
         name: 'native H2 engine',
         mode: 'h2-only',
-        send: pathname => requestInterceptedH2(
-          proxy.server.address().port, authority, pathname
+        send: (pathname, method) => requestInterceptedH2(
+          proxy.server.address().port, authority, pathname, method
+        )
+      },
+      {
+        name: 'H1-on-H2 fallback engine',
+        mode: 'all',
+        send: (pathname, method) => requestInterceptedH1(
+          proxy.server.address().port, authority, pathname, method
         )
       }
     ];
@@ -200,6 +218,7 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
         const fallback = await protocol.send('/fallback');
         assert.deepEqual(fallback, {
           statusCode: 200,
+          headers: fallback.headers,
           body: 'safe final response',
           addedHeader: 'yes',
           informational: []
@@ -208,12 +227,32 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
         const upperBound = await protocol.send('/upper-bound');
         assert.deepEqual(upperBound, {
           statusCode: 599,
+          headers: upperBound.headers,
           body: 'upper bound response',
           addedHeader: 'yes',
           informational: []
         });
 
-        for (const rule of proxy.mockRules) {
+        for (const [pathname, method, statusCode] of [
+          ['/head', 'HEAD', 200],
+          ['/no-content', 'GET', 204],
+          ['/not-modified', 'GET', 304]
+        ]) {
+          const response = await protocol.send(pathname, method);
+          assert.equal(response.statusCode, statusCode);
+          assert.equal(response.body, '');
+          assert.equal(response.headers['transfer-encoding'], undefined);
+          if (statusCode === 204) assert.equal(response.headers['content-length'], undefined);
+          const capture = events.findLast(event =>
+            event.source === 'mock' && event.path === pathname && event.statusCode === statusCode
+          );
+          assert.ok(capture);
+          assert.equal(capture.responseBody, '');
+          assert.equal(capture.responseBodySize, 0);
+          assert.equal(capture.responseHeaders['transfer-encoding'], undefined);
+        }
+
+        for (const rule of proxy.mockRules.slice(0, 3)) {
           assert.deepEqual(rule.action.headers, { 'content-type': 'text/plain' });
         }
         if (protocol.name === 'native H2 engine') {

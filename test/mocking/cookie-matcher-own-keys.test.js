@@ -65,6 +65,9 @@ test('cookie matchers only find parsed cookie names and retain exact values', ()
   assert.equal(evaluateCookie(proxy, 'ordinary', 'value', 'ordinary=value'), true);
   assert.equal(evaluateCookie(proxy, 'ordinary', 'other', 'ordinary=value'), false);
   assert.equal(evaluateCookie(proxy, 'token', 'abc=def==', 'token=abc=def=='), true);
+  assert.equal(evaluateCookie(proxy, 'token', 'match', 'token=first; token=match'), true);
+  assert.equal(evaluateCookie(proxy, 'token', 'first', 'token=first; token=match'), true);
+  assert.equal(evaluateCookie(proxy, 'token', 'missing', 'token=first; token=match'), false);
 });
 
 test('live proxy cookie rules ignore absent prototype names and match real cookies', async t => {

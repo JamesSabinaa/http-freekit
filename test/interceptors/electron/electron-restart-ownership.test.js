@@ -66,6 +66,7 @@ function fakeChild(pid = 8333, onKill = null) {
 }
 
 function configureLaunch(interceptor, child) {
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     systemTrustInstalled: true,
     getTerminalCaBundlePath: () => process.execPath
@@ -320,7 +321,7 @@ test('an exit immediately after spawn confirmation cannot create stale ownership
 
   await assert.rejects(
     interceptor.activate(8080, { appPath: 'electron-test' }),
-    /exited before its ownership could be recorded/
+    /exited during startup/
   );
 
   assert.equal(identityLookups, 0);

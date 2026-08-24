@@ -119,6 +119,6 @@ test('accepted WebSocket upgrades preserve raw header fields and bytes before pr
   const frameIndex = events.findIndex(event => event.protocol === 'ws-frame');
   assert.ok(connectedIndex >= 0 && connectedIndex < frameIndex);
   assert.deepEqual(events[connectedIndex].responseHeaders['set-cookie'], [firstCookie, secondCookie]);
-  assert.equal(events[connectedIndex].responseHeaders['x-trace'], 'first, second');
+  assert.deepEqual(events[connectedIndex].responseHeaders['x-trace'], ['first', 'second']);
   assert.equal(events[connectedIndex].responseHeaders['x-obs-text'], 'café');
 });

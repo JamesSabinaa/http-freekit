@@ -5,6 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { parseCurlCommand } from '../../src/ui/curl-parser.js';
+import { normalizeSendUrl } from '../../src/ui/send-url.js';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const curlReplacementStart = source.indexOf('function inferCurlSendBodyFormat(');
@@ -64,6 +65,7 @@ function createCurlPasteHarness() {
     __state: null,
     console,
     parseCurlCommand,
+    normalizeSendUrl,
     window: { clipboardData: null },
     document: {
       getElementById(id) { return elements[id] || null; }
@@ -286,8 +288,7 @@ test('required option values may look like options, matching cURL argument consu
 
 test('the option terminator protects dash-prefixed URLs and multiple URLs fail explicitly', () => {
   const dashUrl = parseCurlCommand('curl -- -https://example.test/path');
-  assert.equal(dashUrl.url, '-https://example.test/path');
-  assert.equal(dashUrl.method, 'GET');
+  assert.match(dashUrl.error, /invalid hostname/);
 
   assert.match(
     parseCurlCommand('curl https://one.example https://two.example').error,
@@ -319,6 +320,47 @@ test('quoted Windows backslashes and Unicode basic auth survive parsing', () => 
 
   assert.equal(result.body, String.raw`C:\temp\file&D:\other\file`);
   assert.equal(result.headers.Authorization, 'Basic ' + Buffer.from('føø:päss', 'utf8').toString('base64'));
+});
+
+test('cURL continuations follow POSIX quoting and byte semantics', () => {
+  assert.equal(
+    parseCurlCommand('curl https://example.test --data "foo\\\nbar"').body,
+    'foobar'
+  );
+  assert.equal(
+    parseCurlCommand('curl https://example.test --data "foo\\\r\nbar"').body,
+    'foobar'
+  );
+  assert.equal(
+    parseCurlCommand("curl https://example.test --data 'foo\\\nbar'").body,
+    'foo\\\nbar'
+  );
+  assert.equal(
+    parseCurlCommand('curl https://example.test --data foo\\\nbar').body,
+    'foobar'
+  );
+  assert.equal(
+    parseCurlCommand('curl https://example.test --data "foo\\ \nbar"').body,
+    'foo\\ \nbar'
+  );
+});
+
+test('cURL destinations infer HTTP only when the scheme is omitted', () => {
+  assert.equal(
+    parseCurlCommand('curl example.test/path?q=one').url,
+    'http://example.test/path?q=one'
+  );
+  assert.equal(
+    parseCurlCommand('curl localhost:3000/health').url,
+    'http://localhost:3000/health'
+  );
+  assert.equal(
+    parseCurlCommand('curl https://example.test').url,
+    'https://example.test'
+  );
+  assert.match(parseCurlCommand('curl ftp://example.test/file').error, /Unsupported Send URL/);
+  assert.match(parseCurlCommand('curl http://example.test:0/').error, /between 1 and 65535/);
+  assert.match(parseCurlCommand('curl localhost:0/').error, /between 1 and 65535/);
 });
 
 test('cURL accepts any tokenizer whitespace after the executable name', () => {

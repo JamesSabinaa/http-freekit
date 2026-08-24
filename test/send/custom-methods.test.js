@@ -8,6 +8,7 @@ import vm from 'node:vm';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { normalizeSendUrl } from '../../src/ui/send-url.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
@@ -178,11 +179,13 @@ async function runRendererSend(method) {
     AbortController,
     API_BASE: 'http://127.0.0.1:8080',
     activeSendTab: 'tab-1',
+    normalizeSendUrl,
     document: { getElementById: id => elements[id] || null },
     prepareSendRequestPayload: async () => {
       prepared++;
       return { body: '', bodyEncoding: 'utf8' };
     },
+    assertSendManagementRequestSize() {},
     setSendLoading() {},
     toast: (...args) => toasts.push(args),
     fetch: async (url, options) => {
@@ -192,7 +195,7 @@ async function runRendererSend(method) {
   };
   vm.createContext(context);
   vm.runInContext(`
-    let currentSendAbort = null;
+    const sendAbortControllers = new Map();
     ${sendSource}
     globalThis.callSendRequest = sendRequest;
   `, context);

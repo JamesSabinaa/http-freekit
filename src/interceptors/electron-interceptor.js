@@ -2,6 +2,7 @@ import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { ensureChromiumLoopbackProxying } from './chromium-proxy-args.js';
+import { waitForSpawnStability } from './command-runner.js';
 import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
 import { formatProxyUrl, getLocalProxyHost } from './proxy-bind-reachability.js';
 import {
@@ -22,6 +23,7 @@ export class ElectronInterceptor {
     this.ca = null;
     this.process = null;
     this.activating = false;
+    this.startupConfirmationMs = 500;
     this.deactivationTimeoutMs = 3000;
     this.processExitPollIntervalMs = 50;
     this.onStatusChange = null;
@@ -146,6 +148,39 @@ export class ElectronInterceptor {
     }
     env.NODE_EXTRA_CA_CERTS = caBundlePath;
     return env;
+  }
+
+  _getManualLaunchEnvironment(proxyPort, caBundlePath) {
+    const environment = this._getLaunchEnvironment(proxyPort, caBundlePath);
+    return Object.fromEntries([
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'NO_PROXY',
+      'no_proxy',
+      'NODE_USE_ENV_PROXY',
+      'NODE_EXTRA_CA_CERTS'
+    ].map(name => [name, environment[name]]));
+  }
+
+  _manualLaunchInstructions(proxyPort, caBundlePath, launchArgs) {
+    const environment = this._getManualLaunchEnvironment(proxyPort, caBundlePath);
+    if (this._platform() === 'win32') {
+      const quote = value => `'${String(value).replace(/'/g, "''")}'`;
+      const assignments = Object.entries(environment)
+        .map(([name, value]) => `$env:${name}=${quote(value)}`);
+      const command = `& ${quote('C:\\path\\to\\your-app.exe')} ${launchArgs.map(quote).join(' ')}`;
+      return `${assignments.join('\n')}\n${command}\n\n` +
+        'NODE_USE_ENV_PROXY requires an Electron release whose embedded Node supports environment proxying.';
+    }
+
+    const quote = value => `'${String(value).replace(/'/g, `'"'"'`) }'`;
+    const assignments = Object.entries(environment)
+      .map(([name, value]) => `${name}=${quote(value)}`)
+      .join(' \\\n  ');
+    return `${assignments} \\\n  your-app ${launchArgs.map(quote).join(' ')}\n\n` +
+      'NODE_USE_ENV_PROXY requires an Electron release whose embedded Node supports environment proxying.';
   }
 
   _spawn(appPath, args, options) {
@@ -460,45 +495,35 @@ export class ElectronInterceptor {
     return appPath;
   }
 
-  _spawnConfirmed(appPath, args, options) {
-    return new Promise((resolve, reject) => {
-      let child;
-      try {
-        child = this._spawn(appPath, args, options);
-      } catch (err) {
-        reject(err);
-        return;
+  async _spawnConfirmed(appPath, args, options) {
+    const child = this._spawn(appPath, args, options);
+    const lifecycle = { exit: null, error: null };
+    let spawned = false;
+    const onSpawn = () => { spawned = true; };
+    const onExit = (code, signal) => { lifecycle.exit = { code, signal }; };
+    const onError = error => { lifecycle.error ||= error; };
+    const cleanup = () => {
+      child.removeListener('spawn', onSpawn);
+      child.removeListener('exit', onExit);
+      child.removeListener('error', onError);
+    };
+
+    child.once('spawn', onSpawn);
+    child.once('exit', onExit);
+    child.on('error', onError);
+    try {
+      await waitForSpawnStability(child, {
+        graceMs: this.startupConfirmationMs,
+        label: this.name
+      });
+      return { process: child, lifecycle, cleanup };
+    } catch (error) {
+      cleanup();
+      if (spawned && !lifecycle.exit && !this._hasExited(child)) {
+        error.launchedProcess = child;
       }
-      const lifecycle = { exit: null, error: null };
-      let spawned = false;
-      const cleanup = () => {
-        child.removeListener('spawn', onSpawn);
-        child.removeListener('exit', onExit);
-        child.removeListener('error', onError);
-      };
-      const onSpawn = () => {
-        spawned = true;
-        child.removeListener('spawn', onSpawn);
-        resolve({ process: child, lifecycle, cleanup });
-      };
-      const onError = err => {
-        if (spawned) {
-          lifecycle.error ||= err;
-          return;
-        }
-        cleanup();
-        reject(err);
-      };
-      const onExit = (code, signal) => {
-        lifecycle.exit = { code, signal };
-        if (spawned) return;
-        cleanup();
-        reject(new Error('Electron app exited before its launch was confirmed'));
-      };
-      child.once('spawn', onSpawn);
-      child.once('exit', onExit);
-      child.on('error', onError);
-    });
+      throw error;
+    }
   }
 
   _trackLaunchedProcess(launchedProcess, ownership = null) {
@@ -583,12 +608,15 @@ export class ElectronInterceptor {
 
     const appPath = options.appPath;
     if (!appPath) {
-      // Return instructions for manual setup
       const launchArgs = this._getLaunchArgs(proxyPort);
+      const caBundlePath = this._getMainProcessCaBundlePath();
+      const environment = this._getManualLaunchEnvironment(proxyPort, caBundlePath);
       return {
         success: true,
         metadata: {
-          instructions: `Launch your Electron app with:\n  your-app ${launchArgs.join(' ')}`
+          instructions: this._manualLaunchInstructions(proxyPort, caBundlePath, launchArgs),
+          environment,
+          arguments: launchArgs
         }
       };
     }
@@ -635,6 +663,7 @@ export class ElectronInterceptor {
       this._trackLaunchedProcess(launchedProcess, ownership);
       pendingLaunch.cleanup();
     } catch (err) {
+      launchedProcess ||= err.launchedProcess || null;
       const exitedBeforeTracking = Boolean(
         pendingLaunch?.lifecycle.exit || (launchedProcess && this._hasExited(launchedProcess))
       );

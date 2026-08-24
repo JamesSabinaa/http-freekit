@@ -67,6 +67,24 @@ test('malformed and unsupported preferences safely retain the hide default', t =
   );
 });
 
+test('malformed desktop preferences are preserved instead of overwritten by a save', t => {
+  const directory = createTempDirectory(t);
+  const filePath = path.join(directory, DESKTOP_PREFERENCES_FILENAME);
+  const malformed = '{ "closeWindowBehavior":';
+  fs.writeFileSync(filePath, malformed, 'utf8');
+
+  const preferences = new DesktopPreferences(directory, {
+    logger: { error() {} }
+  });
+
+  assert.equal(preferences.getCloseWindowBehavior(), DEFAULT_CLOSE_WINDOW_BEHAVIOR);
+  assert.throws(
+    () => preferences.setCloseWindowBehavior(CLOSE_WINDOW_BEHAVIORS.QUIT),
+    /refusing to overwrite the existing file/
+  );
+  assert.equal(fs.readFileSync(filePath, 'utf8'), malformed);
+});
+
 test('failed desktop preference writes do not change the live behavior', () => {
   const errors = [];
   const preferences = new DesktopPreferences('C:\\virtual-user-data', {

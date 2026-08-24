@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   inspectDarwinProcessIdentity,
+  inspectLinuxProcessIdentity,
   inspectProcessIdentity,
   normalizeExecutableIdentity,
+  normalizeLinuxBootId,
   normalizeProcessIdentity,
   parseLinuxProcessStart,
   sameProcessIdentity
@@ -64,6 +66,26 @@ test('Linux process parsing ignores parentheses inside the command name', () => 
   );
 });
 
+test('Linux inspection scopes process start ticks to a stable kernel boot ID', async () => {
+  const pid = 5124;
+  const fields = ['S', ...Array.from({ length: 18 }, (_, index) => String(index + 1)), '7654322'];
+  const stat = `${pid} (login shell) ${fields.join(' ')}`;
+  const bootId = '11111111-1111-4111-8111-111111111111';
+  const identity = await inspectLinuxProcessIdentity(pid, {
+    includeBootId: true,
+    readFile: async filePath => filePath.endsWith('boot_id') ? `${bootId}\n` : stat,
+    readlink: async () => '/usr/bin/bash'
+  });
+
+  assert.deepEqual(identity, {
+    pid,
+    startTime: '7654322',
+    executable: '/usr/bin/bash',
+    bootId
+  });
+  assert.equal(normalizeLinuxBootId(bootId.toUpperCase()), bootId);
+});
+
 test('macOS inspection accepts both shared exec result shapes', async () => {
   const output = '6123 Sun Jul 26 12:34:56 2026 /Applications/FreeKit.app/Contents/MacOS/FreeKit\n';
   for (const result of [output, { stdout: output }]) {
@@ -78,6 +100,31 @@ test('macOS inspection accepts both shared exec result shapes', async () => {
       executable: '/Applications/FreeKit.app/Contents/MacOS/FreeKit'
     });
   }
+});
+
+test('macOS inspection scopes process identity to the boot session UUID', async () => {
+  const bootId = '22222222-2222-4222-8222-222222222222';
+  let bootReads = 0;
+  const identity = await inspectDarwinProcessIdentity(6124, {
+    includeBootId: true,
+    getBootId: async () => {
+      bootReads++;
+      return bootId.toUpperCase();
+    },
+    execFile: async () => ({
+      stdout: '6124 Sun Jul 26 12:34:57 2026 /bin/sh\n'
+    }),
+    timeoutMs: 321,
+    environment: { PATH: '/usr/bin' }
+  });
+
+  assert.deepEqual(identity, {
+    pid: 6124,
+    startTime: String(Date.parse('Sun Jul 26 12:34:57 2026')),
+    executable: '/bin/sh',
+    bootId
+  });
+  assert.equal(bootReads, 2);
 });
 
 test('identity inspection preserves absent and ambiguous process states', async () => {

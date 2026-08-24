@@ -64,7 +64,10 @@ test('malformed client certificate entries are rejected without replacing active
     { host: 'api.example.test', pfxPath: '' },
     { host: 'api.example.test', pfxPath: 123 },
     { host: '*.', pfxPath: exactPath },
-    { host: '*.example.test', pfxPath: exactPath }
+    { host: '*.example.test', pfxPath: exactPath },
+    { host: 'https://example.test', pfxPath: exactPath },
+    { host: 'example.test:443', pfxPath: exactPath },
+    { host: 'user@example.test', pfxPath: exactPath }
   ]) {
     assert.throws(
       () => proxy.setClientCertificates([invalid]),

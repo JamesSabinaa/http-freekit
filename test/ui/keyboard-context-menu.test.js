@@ -238,7 +238,11 @@ function createHarness() {
   const context = {
     Array,
     document,
-    window: { innerWidth: 1000, innerHeight: 800, _detailHeaders: { request: {}, response: {} } },
+    window: {
+      innerWidth: 1000,
+      innerHeight: 800,
+      _detailHeaders: { request: {}, response: {}, trailers: {} }
+    },
     navigator: { clipboard: { writeText: value => {
       clipboardWrites.push(value);
       return { then: callback => { callback(); } };
@@ -418,6 +422,17 @@ test('header keyboard invocation targets the exact focused header and preserves 
   pointerMenu.querySelectorAll('[role="menuitem"]')[1].click();
   await Promise.resolve();
   assert.deepEqual(clipboardWrites, ['keyboard value', 'x-test']);
+
+  vm.runInContext(`
+    window._detailHeaders.response = { 'x-test': 'wrong response value' };
+    window._detailHeaders.trailers = { 'x-test': 0 };
+  `, context);
+  api.header(createEvent('contextmenu', {
+    target: header, currentTarget: header, clientX: 20, clientY: 30
+  }), 'x-test', 'trailers');
+  api.active().querySelectorAll('[role="menuitem"]')[0].click();
+  await Promise.resolve();
+  assert.deepEqual(clipboardWrites, ['keyboard value', 'x-test', '0']);
 });
 
 test('keyboard invocation excludes editable targets, editor surfaces, unselected rows, and inactive panels', () => {
@@ -481,6 +496,8 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
   vm.runInContext(`
     let selectedRequestId = 'row-1';
     let selectedRequestLifecycleId = null;
+    let _detailHeaderScope = 0;
+    const _headerCollapsed = Object.create(null);
     const HEADER_DOCS = {};
     ${webSocketConnectionSource}
     ${rowRenderer}

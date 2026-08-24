@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { DockerInterceptor } from '../../../src/interceptors/docker-interceptor.js';
 
-const CONTAINER_CA_PATH = '/etc/http-freekit/ca-bundle.pem';
+const CONTAINER_CA_PATH = '/etc/http-freekit/http-freekit-ca.pem';
 
 function expectedMountValue(source) {
   return `type=bind,"source=${source.replace(/"/g, '""')}",target=${CONTAINER_CA_PATH},readonly`;
@@ -65,7 +65,7 @@ async function generatedRunInstruction(platform, source) {
   interceptor._getDockerHost = async () => platform === 'win32'
     ? 'host.docker.internal'
     : '172.17.0.1';
-  interceptor._getCombinedCaBundlePath = () => source;
+  interceptor._getFreeKitCaPath = () => source;
   const result = await interceptor.activate(8080);
   return result.metadata.instructions.run;
 }

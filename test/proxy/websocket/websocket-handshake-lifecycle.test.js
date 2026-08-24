@@ -136,7 +136,10 @@ test('an upstream WebSocket error completes its pending traffic parent as 502', 
     () => capture.events.some(event => event._update && event.statusCode === 502),
     'Timed out waiting for the failed handshake capture'
   );
-  await waitFor(() => client.response().includes('502 Bad Gateway'), 'Timed out waiting for the 502 response');
+  await waitFor(
+    () => client.response().includes('\r\n\r\nProxy Error: '),
+    'Timed out waiting for the complete 502 response'
+  );
 
   const parents = capture.events.filter(event => event.protocol === 'ws');
   assert.equal(parents.length, 2);
@@ -145,7 +148,25 @@ test('an upstream WebSocket error completes its pending traffic parent as 502', 
   assert.equal(parents[1].id, parents[0].id);
   assert.equal(parents[1].statusCode, 502);
   assert.match(parents[1].responseBody, /^Proxy Error:/);
+  assert.equal(
+    parents[1].responseBodySize,
+    Buffer.byteLength(parents[1].responseBody)
+  );
+  assert.equal(parents[1].responseHeaders['content-type'], 'text/plain');
+  assert.equal(
+    parents[1].responseHeaders['content-length'],
+    String(parents[1].responseBodySize)
+  );
   assert.equal(parents[1].errorCode, 'ECONNREFUSED');
+
+  const [wireHead, wireBody] = client.response().split('\r\n\r\n');
+  assert.match(wireHead, /^HTTP\/1\.1 502 Bad Gateway\r\n/);
+  assert.match(wireHead, /\r\ncontent-type: text\/plain(?:\r\n|$)/i);
+  assert.match(
+    wireHead,
+    new RegExp(`\\r\\ncontent-length: ${parents[1].responseBodySize}(?:\\r\\n|$)`, 'i')
+  );
+  assert.equal(wireBody, parents[1].responseBody);
 
   const storedParents = capture.traffic.filter(event => event.protocol === 'ws');
   assert.equal(storedParents.length, 1);

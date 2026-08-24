@@ -65,6 +65,43 @@ test('breakpoint API rejects incomplete matcher fields', async t => {
   assert.deepEqual(proxy.breakpointRules, []);
 });
 
+test('breakpoint matcher syntax and options are rejected with actionable errors', async t => {
+  const { proxy, port } = await createServer(t);
+  const invalidMatchers = [
+    [{ type: 'regex-url', value: '[' }, /regular expression/],
+    [{ type: 'json-body-exact', value: '{bad' }, /valid JSON/],
+    [{ type: 'port', value: '65536' }, /1 through 65535/],
+    [{ type: 'protocol', value: 'ws' }, /http or https/],
+    [{ type: 'path', value: '/', matchType: 'exactly' }, /prefix, exact, or regex/]
+  ];
+
+  for (const [matcher, message] of invalidMatchers) {
+    const result = await requestJson(port, 'POST', '/api/breakpoints', {
+      matchers: [matcher]
+    });
+    assert.equal(result.statusCode, 400);
+    assert.match(result.body.error, message);
+  }
+  assert.deepEqual(proxy.breakpointRules, []);
+});
+
+test('breakpoint matcher updates reject invalid syntax atomically', async t => {
+  const { proxy, port } = await createServer(t);
+  const rule = proxy.addBreakpoint({
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }]
+  });
+  const before = structuredClone(rule);
+
+  const result = await requestJson(port, 'PATCH', `/api/breakpoints/${rule.id}`, {
+    matchers: [{ type: 'regex-path', value: '[' }]
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.match(result.body.error, /regular expression/);
+  assert.deepEqual(rule, before);
+});
+
 test('persisted breakpoints with incomplete matcher fields are discarded', () => {
   const proxy = new ProxyServer(null);
   const restored = proxy.loadBreakpoints([
@@ -76,6 +113,55 @@ test('persisted breakpoints with incomplete matcher fields are discarded', () =>
   assert.equal(restored.migrated, true);
   assert.equal(restored.discarded, 2);
   assert.deepEqual(restored.rules.map(rule => rule.id), ['valid']);
+});
+
+test('persisted breakpoints discard invalid matcher syntax and options', () => {
+  const proxy = new ProxyServer(null);
+  const restored = proxy.loadBreakpoints([
+    { id: 'bad-regex', matchers: [{ type: 'regex-body', value: '[' }] },
+    { id: 'bad-json', matchers: [{ type: 'json-body-includes', value: '{bad' }] },
+    { id: 'bad-port', matchers: [{ type: 'port', value: '70000' }] },
+    { id: 'bad-protocol', matchers: [{ type: 'protocol', value: 'ftp' }] },
+    { id: 'bad-path-mode', matchers: [{ type: 'path', value: '/', matchType: 'near' }] },
+    { id: 'valid', matchers: [{ type: 'port', value: '443' }] }
+  ]);
+
+  assert.equal(restored.migrated, true);
+  assert.equal(restored.discarded, 5);
+  assert.deepEqual(restored.rules.map(rule => rule.id), ['valid']);
+});
+
+test('combined rule imports reject invalid breakpoint matchers atomically', async t => {
+  const { proxy, port } = await createServer(t);
+  proxy.mockRules = [{
+    id: 'existing-mock',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status: 200 }
+  }];
+  proxy.breakpointRules = [{
+    id: 'existing-breakpoint',
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }]
+  }];
+  const beforeMocks = structuredClone(proxy.mockRules);
+  const beforeBreakpoints = structuredClone(proxy.breakpointRules);
+
+  const result = await requestJson(port, 'PUT', '/api/rules', {
+    mockRules: [{
+      enabled: true,
+      matchers: [{ type: 'method', value: 'POST' }],
+      action: { type: 'fixed-response', status: 201 }
+    }],
+    breakpointRules: [{
+      enabled: true,
+      matchers: [{ type: 'regex-path', value: '[' }]
+    }]
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.deepEqual(proxy.mockRules, beforeMocks);
+  assert.deepEqual(proxy.breakpointRules, beforeBreakpoints);
 });
 
 test('persisted malformed breakpoint state is ignored at runtime', () => {

@@ -105,26 +105,26 @@ export class DockerInterceptor {
     return host;
   }
 
-  _getCombinedCaBundlePath() {
+  _getFreeKitCaPath() {
     try {
-      if (typeof this.ca?.getTerminalCaBundlePath !== 'function') {
-        throw new Error('the combined public and FreeKit CA bundle is not configured');
+      const certInfo = typeof this.ca?.getCertInfo === 'function'
+        ? this.ca.getCertInfo()
+        : null;
+      const certificatePath = certInfo?.certificatePath || this.ca?.caCertPath;
+      if (typeof certificatePath !== 'string' || !certificatePath.trim()) {
+        throw new Error('the FreeKit CA certificate path is not configured');
       }
-      const bundlePath = this.ca.getTerminalCaBundlePath();
-      if (typeof bundlePath !== 'string' || !bundlePath.trim()) {
-        throw new Error('the combined public and FreeKit CA bundle path is empty');
-      }
-      const stats = fs.statSync(bundlePath);
+      const stats = fs.statSync(certificatePath);
       if (!stats.isFile()) {
-        throw new Error('the combined public and FreeKit CA bundle is not a file');
+        throw new Error('the FreeKit CA certificate is not a file');
       }
-      fs.accessSync(bundlePath, fs.constants.R_OK);
-      if (!fs.readFileSync(bundlePath, 'utf8').trim()) {
-        throw new Error('the combined public and FreeKit CA bundle is empty');
+      fs.accessSync(certificatePath, fs.constants.R_OK);
+      if (!fs.readFileSync(certificatePath, 'utf8').trim()) {
+        throw new Error('the FreeKit CA certificate is empty');
       }
-      return bundlePath;
+      return certificatePath;
     } catch (error) {
-      throw new Error(`Combined public and FreeKit CA bundle is unavailable for Docker HTTPS interception: ${error.message}`);
+      throw new Error(`FreeKit CA certificate is unavailable for Docker HTTPS interception: ${error.message}`);
     }
   }
 
@@ -150,21 +150,18 @@ export class DockerInterceptor {
 
     const proxyHost = net.isIP(hostIp) === 6 ? `[${hostIp}]` : hostIp;
     const proxyUrl = `http://${proxyHost}:${proxyPort}`;
-    const caBundlePath = this._getCombinedCaBundlePath();
-    const containerCaBundlePath = '/etc/http-freekit/ca-bundle.pem';
+    const caPath = this._getFreeKitCaPath();
+    const containerCaPath = '/etc/http-freekit/http-freekit-ca.pem';
     // Docker parses --mount as CSV, so quotes must surround the complete
     // source=<path> field and must still be present after shell tokenization.
     const mountValue = [
       'type=bind',
-      quoteDockerCsvField(`source=${caBundlePath}`),
-      `target=${containerCaBundlePath}`,
+      quoteDockerCsvField(`source=${caPath}`),
+      `target=${containerCaPath}`,
       'readonly'
     ].join(',');
     const trustEnvironment = [
-      `SSL_CERT_FILE=${containerCaBundlePath}`,
-      `REQUESTS_CA_BUNDLE=${containerCaBundlePath}`,
-      `CURL_CA_BUNDLE=${containerCaBundlePath}`,
-      `NODE_EXTRA_CA_CERTS=${containerCaBundlePath}`,
+      `NODE_EXTRA_CA_CERTS=${containerCaPath}`,
       `NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY_VALUE}`
     ];
     const proxyEnvironment = [
@@ -178,7 +175,7 @@ export class DockerInterceptor {
     const environment = [...proxyEnvironment, ...trustEnvironment];
     const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
     const composeEnvironment = environment.map(value => `  - ${value}`).join('\n');
-    const composeMount = JSON.stringify(`${caBundlePath}:${containerCaBundlePath}:ro`);
+    const composeMount = JSON.stringify(`${caPath}:${containerCaPath}:ro`);
     const runInstruction = this._platform() === 'win32'
       ? buildWindowsPowerShellRunInstruction(mountValue, runEnvironment)
       : `docker run --mount ${quotePosixShellArgument(mountValue)} ${runEnvironment} <image>`;
@@ -193,11 +190,11 @@ export class DockerInterceptor {
       metadata: {
         proxyUrl,
         hostIp,
-        caPath: caBundlePath,
-        caBundlePath,
-        containerCaPath: containerCaBundlePath,
-        containerCaBundlePath,
-        caBundleDescription: 'The read-only PEM bundle combines public trust roots with the HTTP FreeKit CA; TLS certificate and hostname verification remain enabled.',
+        caPath,
+        caBundlePath: caPath,
+        containerCaPath,
+        containerCaBundlePath: containerCaPath,
+        caBundleDescription: 'The read-only HTTP FreeKit CA is added to Node trust with NODE_EXTRA_CA_CERTS. Image and tool trust stores remain unchanged; install this CA into the image trust store when non-Node HTTPS clients need interception.',
         nodeProxyNote: NODE_ENV_PROXY_SUPPORT_NOTE,
         instructions: {
           run: runInstruction,

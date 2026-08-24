@@ -4,6 +4,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { normalizeSendUrl } from '../../src/ui/send-url.js';
+
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
 function between(startMarker, endMarker, fromIndex = 0) {
@@ -38,6 +40,7 @@ function createHarness({ firstRead }) {
     file: {
       name: 'held.bin',
       type: 'application/octet-stream',
+      size: 3,
       arrayBuffer() {
         state.fileReads++;
         return state.fileReads === 1
@@ -55,6 +58,7 @@ function createHarness({ firstRead }) {
   const context = {
     AbortController,
     API_BASE: 'http://127.0.0.1:8080',
+    normalizeSendUrl,
     TextEncoder,
     Uint8Array,
     URLSearchParams,
@@ -84,7 +88,7 @@ function createHarness({ firstRead }) {
     let sendUrlEncodedFields = [];
     let sendMultipartFields = globalThis.__fields;
     let sendMultipartBoundary = '';
-    let currentSendAbort = null;
+    const sendAbortControllers = new Map();
     let activeSendTab = 'tab-1';
     ${multipartSource}
     ${payloadSource}
@@ -93,8 +97,9 @@ function createHarness({ firstRead }) {
       send: sendRequest,
       abort: abortSendRequest,
       escape: handleSendEscapeShortcut,
-      current: () => currentSendAbort,
+      current: () => sendAbortControllers.get(activeSendTab) || null,
       prepare: prepareSendRequestPayload,
+      assertFinalSize: assertSendManagementRequestSize,
       setBodyType(value) { globalThis.__state.bodyType = value; },
       setRawBody(value) { globalThis.__state.rawBody = value; },
       setUrlEncodedFields(value) { sendUrlEncodedFields = value; },
@@ -198,6 +203,7 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
       file: {
         name: fileName,
         type: 'application/octet-stream',
+        size: fileBytes.byteLength,
         arrayBuffer: async () => fileBytes.buffer
       }
     }
@@ -218,8 +224,8 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
 
   for (const unsafeField of [
     { key: 'bad\r\nname', type: 'text', value: 'x', enabled: true },
-    { key: 'file', type: 'file', enabled: true, file: { name: 'bad\nname.bin', type: 'text/plain', arrayBuffer: async () => new ArrayBuffer(0) } },
-    { key: 'file', type: 'file', enabled: true, file: { name: 'safe.bin', type: 'text/plain\r\nX: y', arrayBuffer: async () => new ArrayBuffer(0) } }
+    { key: 'file', type: 'file', enabled: true, file: { name: 'bad\nname.bin', type: 'text/plain', size: 0, arrayBuffer: async () => new ArrayBuffer(0) } },
+    { key: 'file', type: 'file', enabled: true, file: { name: 'safe.bin', type: 'text/plain\r\nX: y', size: 0, arrayBuffer: async () => new ArrayBuffer(0) } }
   ]) {
     harness.api.setMultipartFields([unsafeField]);
     await assert.rejects(
@@ -248,4 +254,39 @@ test('normal multipart, URL-encoded, and raw payload bytes remain unchanged', as
   assert.equal(raw.bodyEncoding, 'utf8');
   assert.equal(raw.byteLength, Buffer.byteLength('raw \u2603 body'));
   assert.equal(rawHeaders['Content-Type'], 'text/plain');
+});
+
+test('multipart preflight counts base64, headers, and envelope before reading any file', async () => {
+  const harness = createHarness({ firstRead: Promise.resolve(new ArrayBuffer(0)) });
+  let reads = 0;
+  harness.api.setMultipartFields([{
+    key: 'upload',
+    type: 'file',
+    enabled: true,
+    file: {
+      name: 'large.bin',
+      type: 'application/octet-stream',
+      size: 37 * 1024 * 1024,
+      arrayBuffer() {
+        reads++;
+        throw new Error('oversized file must not be read');
+      }
+    }
+  }]);
+  const headers = { 'X-Large-Metadata': 'x'.repeat(1024 * 1024) };
+
+  await assert.rejects(
+    harness.api.prepare(
+      headers,
+      new AbortController().signal,
+      { url: 'https://example.test/upload', method: 'POST' }
+    ),
+    /Multipart request would be .*above the 50 MiB management limit/
+  );
+  assert.equal(reads, 0);
+
+  assert.throws(
+    () => harness.api.assertFinalSize(JSON.stringify({ body: 'x'.repeat(50 * 1024 * 1024) })),
+    /after JSON encoding, above the 50 MiB management limit/
+  );
 });

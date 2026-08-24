@@ -6,6 +6,8 @@ import { execFileAsync } from './command-runner.js';
 
 const PROFILE_MARKER = '.http-freekit-profile.json';
 const MANAGED_PROFILE_PATTERN = /^http-freekit-(?:chrome|firefox|edge|brave)-[A-Za-z0-9._-]+$/;
+export const MAX_PROFILE_MARKER_BYTES = 16 * 1024;
+export const MAX_STALE_PROFILE_CANDIDATES = 256;
 const PROCESS_START_TOLERANCE_MS = 2000;
 const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = `
 $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
@@ -284,10 +286,61 @@ function inspectProfileOwner(profileDir) {
   if (!stats.isFile()) {
     return { valid: false, reason: `${PROFILE_MARKER} ownership marker is not a regular file` };
   }
+  if (!Number.isSafeInteger(stats.size) || stats.size > MAX_PROFILE_MARKER_BYTES) {
+    return {
+      valid: false,
+      reason: `${PROFILE_MARKER} ownership marker exceeds the ${MAX_PROFILE_MARKER_BYTES}-byte limit`
+    };
+  }
+
+  let serializedMarker;
+  let markerHandle = null;
+  try {
+    const noFollow = fs.constants.O_NOFOLLOW || 0;
+    markerHandle = fs.openSync(markerPath, fs.constants.O_RDONLY | noFollow);
+    const openedStats = fs.fstatSync(markerHandle);
+    if (!openedStats.isFile() || openedStats.dev !== stats.dev || openedStats.ino !== stats.ino) {
+      throw new Error(`${PROFILE_MARKER} ownership marker changed while it was being inspected`);
+    }
+    if (!Number.isSafeInteger(openedStats.size) || openedStats.size > MAX_PROFILE_MARKER_BYTES) {
+      const error = new Error(
+        `${PROFILE_MARKER} ownership marker exceeds the ${MAX_PROFILE_MARKER_BYTES}-byte limit`
+      );
+      error.code = 'ETOOBIG';
+      throw error;
+    }
+
+    const bytes = Buffer.alloc(MAX_PROFILE_MARKER_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(markerHandle, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_PROFILE_MARKER_BYTES) {
+      const error = new Error(
+        `${PROFILE_MARKER} ownership marker exceeds the ${MAX_PROFILE_MARKER_BYTES}-byte limit`
+      );
+      error.code = 'ETOOBIG';
+      throw error;
+    }
+    serializedMarker = bytes.subarray(0, length).toString('utf8');
+  } catch (err) {
+    return {
+      valid: false,
+      reason: err.code === 'ETOOBIG'
+        ? err.message
+        : `could not read ${PROFILE_MARKER} ownership marker: ${err.message}`
+    };
+  } finally {
+    if (markerHandle !== null) {
+      try { fs.closeSync(markerHandle); } catch {}
+    }
+  }
 
   let marker;
   try {
-    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    marker = JSON.parse(serializedMarker);
   } catch (err) {
     return { valid: false, reason: `could not parse ${PROFILE_MARKER} ownership marker: ${err.message}` };
   }
@@ -606,12 +659,29 @@ export function cleanupStaleBrowserProfiles(options = {}) {
   const tempDir = path.resolve(options.tempDir || os.tmpdir());
   const result = { removed: [], skippedActive: [], recoverable: [], failed: [] };
 
-  let entries;
+  const candidates = [];
+  let candidateLimitReached = false;
+  let directory = null;
   try {
-    entries = fs.readdirSync(tempDir, { withFileTypes: true });
+    directory = fs.opendirSync(tempDir);
+    let entry;
+    while ((entry = directory.readSync()) !== null) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !MANAGED_PROFILE_PATTERN.test(entry.name)) {
+        continue;
+      }
+      if (candidates.length >= MAX_STALE_PROFILE_CANDIDATES) {
+        candidateLimitReached = true;
+        break;
+      }
+      candidates.push(entry);
+    }
   } catch (err) {
     result.failed.push({ path: tempDir, reason: err.message });
     return result;
+  } finally {
+    if (directory) {
+      try { directory.closeSync(); } catch {}
+    }
   }
 
   let processSnapshotProvider;
@@ -640,8 +710,14 @@ export function cleanupStaleBrowserProfiles(options = {}) {
     return result;
   }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !MANAGED_PROFILE_PATTERN.test(entry.name)) continue;
+  if (candidateLimitReached) {
+    result.failed.push({
+      path: tempDir,
+      reason: `Startup cleanup is limited to ${MAX_STALE_PROFILE_CANDIDATES} managed browser profile candidates; additional candidates were left untouched`
+    });
+  }
+
+  for (const entry of candidates) {
     const profileDir = path.join(tempDir, entry.name);
     const ownership = inspectProfileOwner(profileDir);
     if (!ownership.valid) {

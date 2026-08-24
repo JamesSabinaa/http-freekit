@@ -17,9 +17,8 @@ import {
   terminalCaBundlePath
 } from '../../../src/proxy/terminal-ca-bundle.js';
 
-const TRUST_VARIABLES = [
+const REPLACING_TRUST_VARIABLES = [
   'SSL_CERT_FILE',
-  'NODE_EXTRA_CA_CERTS',
   'REQUESTS_CA_BUNDLE',
   'CURL_CA_BUNDLE'
 ];
@@ -127,19 +126,27 @@ test('terminal CA bundle refresh is atomic and preserves the last complete bundl
   );
 });
 
-test('Fresh and Existing Terminal paths share the bundle without disabling TLS verification', async t => {
+test('Fresh and Existing Terminal add the raw CA without replacing target trust roots', async t => {
   t.mock.method(console, 'log', () => {});
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-terminal-ca-shared-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const bundlePath = path.join(dataDir, 'terminal-ca-bundle.pem');
   fs.writeFileSync(bundlePath, 'shared public plus FreeKit bundle', { mode: 0o600 });
+  const caPath = path.join(dataDir, 'ca.pem');
+  fs.writeFileSync(caPath, 'raw FreeKit CA', { mode: 0o600 });
   let bundleRequests = 0;
   const ca = {
     getTerminalCaBundlePath: () => {
       bundleRequests += 1;
       return bundlePath;
     },
-    getCertInfo: () => ({ certificatePath: path.join(dataDir, 'ca.pem') })
+    getCertInfo: () => ({ certificatePath: caPath })
+  };
+  const inheritedTrust = {
+    SSL_CERT_FILE: '/target/openssl-roots.pem',
+    REQUESTS_CA_BUNDLE: '/target/python-roots.pem',
+    CURL_CA_BUNDLE: '/target/curl-roots.pem',
+    NODE_EXTRA_CA_CERTS: '/target/node-extra.pem'
   };
 
   for (const [index, platform] of ['win32', 'darwin', 'linux'].entries()) {
@@ -150,22 +157,30 @@ test('Fresh and Existing Terminal paths share the bundle without disabling TLS v
     terminal._platform = () => platform;
     terminal._environment = () => ({
       PATH: '/usr/bin:/bin',
-      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0',
+      ...inheritedTrust
     });
-    terminal._createPidFilePath = () => path.join(dataDir, `${platform}.pid`);
     const sessionPid = 9370 + index;
     let sessionRunning = true;
-    terminal._waitForShellPid = async () => sessionPid;
+    terminal._createPosixHandshake = () => ({
+      directory: null,
+      reportFile: path.join(dataDir, `${platform}.json`),
+      acknowledgementFile: path.join(dataDir, `${platform}.ack`),
+      nonce: `ca-bundle-${platform}`
+    });
+    terminal._waitForPosixShellReport = async () => sessionPid;
+    terminal._acknowledgePosixShell = async () => {};
+    terminal._cleanupTerminalHandshake = () => {};
+    const identity = {
+      pid: sessionPid,
+      startTime: String(sessionPid),
+      executable: platform === 'win32' ? 'c:\\windows\\powershell.exe' : '/bin/sh'
+    };
+    terminal._inspectSessionIdentity = async () => sessionRunning
+      ? { state: 'running', identity }
+      : { state: 'absent' };
     if (platform === 'win32') {
-      const identity = {
-        pid: sessionPid,
-        startTime: String(sessionPid),
-        executable: 'c:\\windows\\powershell.exe'
-      };
       terminal._waitForWindowsShellReport = async () => identity;
-      terminal._inspectSessionIdentity = async () => sessionRunning
-        ? { state: 'running', identity }
-        : { state: 'absent' };
       terminal._acknowledgeWindowsShell = async () => {};
     }
     terminal._killSession = () => { sessionRunning = false; };
@@ -177,15 +192,21 @@ test('Fresh and Existing Terminal paths share the bundle without disabling TLS v
 
     await terminal.activate(8080);
 
-    for (const variable of TRUST_VARIABLES) {
-      assert.equal(launch.options.env[variable], bundlePath, `${platform} ${variable}`);
+    for (const variable of REPLACING_TRUST_VARIABLES) {
+      assert.equal(launch.options.env[variable], inheritedTrust[variable], `${platform} ${variable}`);
     }
+    assert.equal(
+      launch.options.env.NODE_EXTRA_CA_CERTS,
+      platform === 'win32' ? caPath : inheritedTrust.NODE_EXTRA_CA_CERTS,
+      `${platform} NODE_EXTRA_CA_CERTS`
+    );
     assert.equal('NODE_TLS_REJECT_UNAUTHORIZED' in launch.options.env, false, platform);
     if (platform !== 'win32') {
       const commandText = launch.args.join(' ').replace(/\\\\/g, '\\');
-      for (const variable of TRUST_VARIABLES) {
-        assert.ok(commandText.includes(`export ${variable}=`), `${platform} ${variable}`);
-        assert.ok(commandText.includes(bundlePath), `${platform} bundle path`);
+      assert.ok(commandText.includes('export NODE_EXTRA_CA_CERTS='), platform);
+      assert.ok(commandText.includes(caPath), `${platform} raw CA path`);
+      for (const variable of REPLACING_TRUST_VARIABLES) {
+        assert.ok(!commandText.includes(`export ${variable}=`), `${platform} ${variable}`);
       }
     }
 
@@ -196,23 +217,24 @@ test('Fresh and Existing Terminal paths share the bundle without disabling TLS v
   const existing = new ExistingTerminalInterceptor();
   existing.ca = ca;
   const result = await existing.activate(8080);
-  assert.equal(result.metadata.certPath, bundlePath);
+  assert.equal(result.metadata.certPath, caPath);
   for (const instructions of Object.values(result.metadata.instructions)) {
-    for (const variable of TRUST_VARIABLES) {
-      assert.ok(instructions.includes(variable), variable);
-      assert.ok(instructions.includes(bundlePath), bundlePath);
+    assert.ok(instructions.includes('NODE_EXTRA_CA_CERTS'));
+    assert.ok(instructions.includes(caPath), caPath);
+    for (const variable of REPLACING_TRUST_VARIABLES) {
+      assert.ok(!instructions.includes(variable), variable);
     }
     assert.doesNotMatch(instructions, /NODE_TLS_REJECT_UNAUTHORIZED=['"]?0/);
   }
   assert.match(result.metadata.instructions.bash, /^unset NODE_TLS_REJECT_UNAUTHORIZED;/);
   assert.match(result.metadata.instructions.powershell, /^Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED/);
   assert.match(result.metadata.instructions.cmd, /^set "NODE_TLS_REJECT_UNAUTHORIZED="/);
-  assert.equal(bundleRequests, 4);
+  assert.equal(bundleRequests, 0);
   await existing.deactivate();
   assert.equal(fs.existsSync(bundlePath), true);
 });
 
-test('renderer fallback instructions use the bundle and restore normal TLS verification', () => {
+test('renderer fallback adds only the FreeKit CA and restores normal TLS verification', () => {
   const source = fs.readFileSync(new URL('../../../src/ui/app.js', import.meta.url), 'utf8');
   const start = source.indexOf('function quoteTerminalBashValue(');
   const end = source.indexOf('function renderTerminalConfig(', start);
@@ -220,13 +242,14 @@ test('renderer fallback instructions use the bundle and restore normal TLS verif
   const context = {};
   vm.createContext(context);
   vm.runInContext(`${source.slice(start, end)}; globalThis.buildFallback = buildTerminalFallbackInstructions;`, context);
-  const bundlePath = '/writable/data/terminal-ca-bundle.pem';
-  const instructions = context.buildFallback('http://127.0.0.1:8080', bundlePath);
+  const caPath = '/writable/data/ca.pem';
+  const instructions = context.buildFallback('http://127.0.0.1:8080', caPath);
 
   for (const command of Object.values(instructions)) {
-    for (const variable of TRUST_VARIABLES) {
-      assert.ok(command.includes(variable), variable);
-      assert.ok(command.includes(bundlePath), bundlePath);
+    assert.ok(command.includes('NODE_EXTRA_CA_CERTS'));
+    assert.ok(command.includes(caPath), caPath);
+    for (const variable of REPLACING_TRUST_VARIABLES) {
+      assert.ok(!command.includes(variable), variable);
     }
     assert.doesNotMatch(command, /NODE_TLS_REJECT_UNAUTHORIZED=['"]?0/);
   }

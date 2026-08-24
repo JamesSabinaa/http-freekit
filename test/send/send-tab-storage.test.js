@@ -5,6 +5,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
+const corruptionStart = source.indexOf('const rendererStorageCorruptions = new Map();');
+const corruptionEnd = source.indexOf('function capturedConnectionHeaderNames(', corruptionStart);
+const corruptionHelpers = source.slice(corruptionStart, corruptionEnd);
 const helpersStart = source.indexOf('function cloneSendFormFields');
 const helpersEnd = source.indexOf('function createEmptySendTab', helpersStart);
 const restoreEnd = source.indexOf('function loadSendTabState', helpersEnd);
@@ -29,13 +32,18 @@ function restoreTabs(savedTabs, savedActive = null, addTab = false) {
       if (key === 'http-freekit-send-tabs') return savedTabs;
       if (key === 'http-freekit-send-active') return savedActive;
       return null;
-    }
+    },
+    safeLocalStorageSet() { return true; },
+    safeLocalStorageRemove() { return true; },
+    renderSendTabs() {},
+    loadSendTabState() {}
   };
   vm.createContext(context);
   vm.runInContext(`
     let sendTabs = [{ id: 'tab-1', method: 'GET', url: '', headers: [], body: '' }];
     let activeSendTab = 'tab-1';
     let sendTabCounter = 1;
+    ${corruptionHelpers}
     ${source.slice(helpersStart, restoreEnd)}
     restoreSendTabs();
     const createdTab = __addTab ? createEmptySendTab() : null;
@@ -44,10 +52,9 @@ function restoreTabs(savedTabs, savedActive = null, addTab = false) {
   return JSON.parse(JSON.stringify(context.__result));
 }
 
-test('stored Send tabs normalize malformed collections without discarding valid fields', () => {
+test('stored Send tabs normalize supported nested fields but reject a malformed collection member', () => {
   const context = loadNormalizationContext();
   const normalized = JSON.parse(JSON.stringify(context.normalizeStoredSendTabs([
-    null,
     {
       id: 'tab-7',
       method: 'POST',
@@ -90,6 +97,10 @@ test('stored Send tabs normalize malformed collections without discarding valid 
   assert.equal(normalized[1].bodyEncoding, 'utf8');
   assert.equal(normalized[1].bodyType, 'raw');
   assert.deepEqual(normalized[2].headers, [{ key: '42', value: '', enabled: true }]);
+  assert.equal(context.normalizeStoredSendTabs([
+    { id: 'tab-1', method: 'GET' },
+    null
+  ]), null);
 });
 
 test('restore repairs the reported object-shaped headers and preserves active selection', () => {
@@ -130,7 +141,7 @@ test('stored custom methods remain exact while explicit invalid methods reject t
   ]);
   assert.equal(rejected.toasts.length, 1);
   assert.equal(rejected.toasts[0].type, 'error');
-  assert.match(rejected.toasts[0].message, /method is invalid/i);
+  assert.match(rejected.toasts[0].message, /corrupt.*raw value was left unchanged/i);
 });
 
 test('live tab normalization retains selected multipart files and response state', () => {
@@ -201,7 +212,7 @@ test('unsafe and duplicate IDs normalize to finite unique IDs and cannot poison 
   assert.equal(new Set(ids).size, ids.length);
   ids.forEach(id => assert.match(id, /^tab-[1-9]\d*$/));
   assert.equal(Number.isSafeInteger(result.sendTabCounter), true);
-  assert.match(result.createdTab.id, /^tab-[1-9]\d*$/);
+  assert.match(result.createdTab.id, /^tab-(?:local|[0-9a-f]{8}-)/i);
   assert.equal(ids.includes(result.createdTab.id), false);
   assert.equal(result.activeSendTab, result.sendTabs[0].id);
 });

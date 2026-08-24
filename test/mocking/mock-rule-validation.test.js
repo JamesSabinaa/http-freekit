@@ -63,6 +63,11 @@ test('persisted mock rules discard malformed leaves at every group depth', () =>
     validRule('top-level'),
     { id: 'bad-array', enabled: true, matchers: {}, action: { type: 'fixed-response' } },
     { id: 'bad-field', enabled: true, matchers: [{ type: 'host', value: 42 }], action: { type: 'fixed-response' } },
+    { id: 'bad-regex', enabled: true, matchers: [{ type: 'regex-url', value: '[' }], action: { type: 'fixed-response' } },
+    { id: 'bad-json', enabled: true, matchers: [{ type: 'json-body-exact', value: '{bad' }], action: { type: 'fixed-response' } },
+    { id: 'bad-port', enabled: true, matchers: [{ type: 'port', value: '70000' }], action: { type: 'fixed-response' } },
+    { id: 'bad-protocol', enabled: true, matchers: [{ type: 'protocol', value: 'ftp' }], action: { type: 'fixed-response' } },
+    { id: 'bad-path-mode', enabled: true, matchers: [{ type: 'path', value: '/', matchType: 'near' }], action: { type: 'fixed-response' } },
     {
       id: 'group',
       type: 'group',
@@ -217,10 +222,26 @@ test('validator rejects malformed execution fields before rules reach runtime ha
     { ...base, action: { type: 'transform-request', methodMode: 'GET\r\nX-Evil: yes' } },
     { ...base, action: { type: 'transform-request', headersMode: 'invalid' } },
     { ...base, action: { type: 'transform-request', urlMode: 'modify', urlReplace: '' } },
+    { ...base, action: { type: 'transform-request', urlMode: 'modify', urlReplace: 'ftp://example.test/' } },
+    { ...base, action: { type: 'transform-request', bodyMode: 'json-merge', body: '{bad json' } },
+    { ...base, action: { type: 'transform-request', bodyMode: 'json-merge', body: '[]' } },
+    { ...base, action: { type: 'transform-response', bodyMode: 'json-merge', body: 'null' } },
+    { ...base, preSteps: [{ type: 'rewrite-url', value: 'http://[invalid' }], action: { type: 'fixed-response' } },
+    { ...base, preSteps: [{ type: 'rewrite-url', value: 'ftp://example.test/' }], action: { type: 'fixed-response' } },
     { ...base, action: { type: 'transform-request', removeHeaders: [42] } },
     { ...base, action: { type: 'transform-request', resStatusOverride: '201' } },
     { ...base, action: { type: 'transform-request', resStatusMode: 'replace' } },
     { ...base, action: { type: 'transform-response', bodyMode: 'invalid' } },
+    { ...base, matchers: [{ type: 'regex-path', value: '[' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'regex-url', value: '(unterminated' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'regex-body', value: '*bad' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'json-body-exact', value: '{bad' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'json-body-includes', value: '[1,' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'port', value: '0' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'port', value: '70000' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'protocol', value: 'ftp' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'path', value: '/', matchType: 'exactly' }], action: { type: 'fixed-response' } },
+    { ...base, matchers: [{ type: 'path', value: '[', matchType: 'regex' }], action: { type: 'fixed-response' } },
     { ...base, action: { type: 'serve-file' } },
     { ...base, action: { type: 'forward', forwardTo: '' } },
     { ...base, action: { type: 'webhook' } },
@@ -229,6 +250,33 @@ test('validator rejects malformed execution fields before rules reach runtime ha
 
   for (const rule of malformedRules) {
     assert.equal(typeof validateMockRule(rule), 'string');
+  }
+
+  assert.equal(validateMockRule({
+    ...base,
+    preSteps: [{ type: 'rewrite-url', value: '/relative-target' }],
+    action: {
+      type: 'transform-request',
+      urlMode: 'modify',
+      urlReplace: 'https://example.test/target',
+      bodyMode: 'json-merge',
+      body: '{"added":true}'
+    }
+  }), null);
+
+  for (const matcher of [
+    { type: 'regex-path', value: '^/valid(?:/.*)?$' },
+    { type: 'json-body-exact', value: 'null' },
+    { type: 'json-body-includes', value: '{"valid":true}' },
+    { type: 'port', value: '65535' },
+    { type: 'protocol', value: 'HTTPS' },
+    { type: 'path', value: '^/valid$', matchType: 'regex' }
+  ]) {
+    assert.equal(validateMockRule({
+      ...base,
+      matchers: [matcher],
+      action: { type: 'fixed-response' }
+    }), null, matcher.type);
   }
 });
 
@@ -256,6 +304,58 @@ test('mock delays stay within the supported Node timer range', () => {
     for (const rule of rulesForDelay(delay)) {
       assert.match(validateMockRule(rule), /from 0 through 2147483647/, String(delay));
     }
+  }
+});
+
+test('forward and webhook actions require usable credential-free HTTP destinations', () => {
+  const ruleFor = action => ({
+    enabled: true,
+    matchers: [{ type: 'method', value: 'GET' }],
+    action
+  });
+
+  for (const [type, property] of [
+    ['forward', 'forwardTo'],
+    ['webhook', 'webhookUrl']
+  ]) {
+    for (const destination of [
+      'http://example.test/path?query=yes',
+      'https://[::1]:8443/destination'
+    ]) {
+      assert.equal(validateMockRule(ruleFor({
+        type,
+        [property]: destination
+      })), null, `${type}: ${destination}`);
+    }
+
+    for (const destination of [
+      'not a URL',
+      'ftp://example.test/path',
+      'http://example.test:0/path',
+      'http://user:secret@example.test/path'
+    ]) {
+      assert.match(validateMockRule(ruleFor({
+        type,
+        [property]: destination
+      })), /HTTP or HTTPS URL|port from 1|credentials/, `${type}: ${destination}`);
+    }
+  }
+});
+
+test('mock APIs reject invalid destinations before mutating rules', async t => {
+  const { proxy, port } = await createApi(t);
+
+  for (const action of [
+    { type: 'forward', forwardTo: 'ftp://example.test/path' },
+    { type: 'forward', forwardTo: 'http://example.test:0/path' },
+    { type: 'webhook', webhookUrl: 'http://user:secret@example.test/hook' }
+  ]) {
+    const result = await requestJson(port, 'POST', '/api/mock-rules', {
+      matchers: [],
+      action
+    });
+    assert.equal(result.statusCode, 400);
+    assert.deepEqual(proxy.mockRules, []);
   }
 });
 
@@ -343,6 +443,14 @@ test('mock APIs reject malformed group children and invalid updates atomically',
   });
 
   assert.equal(updateResult.statusCode, 400);
+  assert.deepEqual(rule, before);
+
+  const matcherUpdate = await requestJson(port, 'PUT', `/api/mock-rules/${rule.id}`, {
+    matchers: [{ type: 'port', value: '65536' }]
+  });
+
+  assert.equal(matcherUpdate.statusCode, 400);
+  assert.match(matcherUpdate.body.error, /1 through 65535/);
   assert.deepEqual(rule, before);
 });
 

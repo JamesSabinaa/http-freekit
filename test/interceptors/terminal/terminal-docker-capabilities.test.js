@@ -76,7 +76,7 @@ test('Fresh Terminal configures its host shell while Docker emits container-reac
   await terminal.activate(8080);
 
   const docker = new DockerInterceptor();
-  docker._getCombinedCaBundlePath = () => 'C:\\FreeKit\\ca-bundle.pem';
+  docker._getFreeKitCaPath = () => 'C:\\FreeKit\\ca-bundle.pem';
   docker._platform = () => 'win32';
   docker._exec = () => assert.fail('Docker Desktop should use its container host gateway');
   const dockerResult = await docker.activate(8080);

@@ -3,6 +3,7 @@ const BOOTSTRAP_DEPENDENCIES = [
   '/shared/traffic/traffic-lists.js',
   '/har-import.js',
   '/curl-parser.js',
+  '/send-url.js',
   '/request-export.js'
 ];
 
@@ -19,7 +20,7 @@ export async function bootstrapApplication({
   logger = console
 } = {}) {
   try {
-    const [defaultExclusions, trafficLists, harImport, curlParser, requestExport] =
+    const [defaultExclusions, trafficLists, harImport, curlParser, sendUrl, requestExport] =
       await Promise.all(BOOTSTRAP_DEPENDENCIES.map(specifier => importModule(specifier)));
 
     targetWindow.FreeKitTrafficLists = Object.freeze({
@@ -28,10 +29,23 @@ export async function bootstrapApplication({
       createTrafficListVisibilityMatcher: trafficLists.createTrafficListVisibilityMatcher
     });
     targetWindow.FreeKitHarImport = Object.freeze({
-      normalizeHarEntries: harImport.normalizeHarEntries
+      normalizeHarEntries: harImport.normalizeHarEntries,
+      prepareHarImport: harImport.prepareHarImport,
+      assertHarImportFileSize: harImport.assertHarImportFileSize,
+      createHarImportBatchPayloads: harImport.createHarImportBatchPayloads,
+      HAR_IMPORT_MAX_FILE_BYTES: harImport.HAR_IMPORT_MAX_FILE_BYTES,
+      HAR_IMPORT_MAX_EXPANDED_BYTES: harImport.HAR_IMPORT_MAX_EXPANDED_BYTES,
+      HAR_IMPORT_MAX_BATCH_BYTES: harImport.HAR_IMPORT_MAX_BATCH_BYTES,
+      HAR_IMPORT_MAX_RETAINED_ENTRIES: harImport.HAR_IMPORT_MAX_RETAINED_ENTRIES,
+      HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH:
+        harImport.HAR_IMPORT_TRANSACTION_ID_MAX_LENGTH
     });
     targetWindow.FreeKitCurlParser = Object.freeze({
       parseCurlCommand: curlParser.parseCurlCommand
+    });
+    targetWindow.FreeKitSendUrl = Object.freeze({
+      normalizeSendUrl: sendUrl.normalizeSendUrl,
+      INVALID_SEND_URL_CODE: sendUrl.INVALID_SEND_URL_CODE
     });
     targetWindow.FreeKitRequestExport = Object.freeze({
       generateExportSnippet: requestExport.generateExportSnippet

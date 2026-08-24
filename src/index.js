@@ -27,6 +27,7 @@ import { restoreSavedRuleSettings } from './startup-rule-restoration.js';
 import { restoreSavedApiSpecs } from './startup-api-spec-restoration.js';
 import { resolveProxyBindAddress } from './interceptors/proxy-bind-reachability.js';
 import { reportDesktopApiPortInUse } from './desktop-startup-ipc.js';
+import { applyManualSystemCaTrustAcknowledgement } from './proxy/manual-system-ca-trust.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,7 +103,18 @@ async function initializeApplication(apiPort) {
       console.log('[Boot] Could not install CA cert in trust store (non-critical):', err.message);
     }
   } else {
-    ca.systemTrustInstalled = false;
+    const manualTrust = applyManualSystemCaTrustAcknowledgement({
+      ca,
+      initialization: certInfo,
+      platform: process.platform,
+      environment: process.env
+    });
+    if (manualTrust.trusted) {
+      console.warn(
+        '[Boot] Treating the current FreeKit CA as system-trusted because ' +
+        'HTTP_FREEKIT_SYSTEM_CA_TRUSTED=1 was explicitly set'
+      );
+    }
     if (ca.getCertInfo().certificateReplacementPending) {
       console.warn(
         `[Boot] The CA was regenerated; manually reinstall ${certInfo.certPath} in external trust stores`
@@ -148,7 +160,13 @@ async function initializeApplication(apiPort) {
   // Restore saved proxy settings
   restoreUpstreamProxySetting(proxy, settings);
   const savedTlsPassthrough = settings.get('tlsPassthrough');
-  if (savedTlsPassthrough) proxy.setTlsPassthrough(savedTlsPassthrough);
+  if (savedTlsPassthrough) {
+    try {
+      proxy.setTlsPassthrough(savedTlsPassthrough);
+    } catch (error) {
+      console.error(`[Boot] Ignoring invalid saved TLS passthrough hosts: ${error.message}`);
+    }
+  }
   restoreSavedHttp2Setting(proxy, settings);
   restoreSavedTlsMaterialSettings(proxy, settings);
   restoreHttpsWhitelistSetting(proxy, settings);
@@ -255,7 +273,7 @@ async function initializeApplication(apiPort) {
 
   // Graceful shutdown
   let shutdownPromise = null;
-  const notifyDesktopShutdownComplete = () => {
+  const notifyDesktopShutdown = (message) => {
     if (typeof process.send !== 'function' || !process.connected) return Promise.resolve();
 
     return new Promise(resolve => {
@@ -268,11 +286,24 @@ async function initializeApplication(apiPort) {
       };
       const timeout = setTimeout(finish, 250);
       try {
-        process.send({ type: 'http-freekit:shutdown-complete' }, finish);
+        process.send(message, finish);
       } catch {
         finish();
       }
     });
+  };
+  const notifyDesktopShutdownComplete = () => notifyDesktopShutdown({
+    type: 'http-freekit:shutdown-complete'
+  });
+  const notifyDesktopShutdownFailed = error => notifyDesktopShutdown({
+    type: 'http-freekit:shutdown-failed',
+    error: error?.message || String(error)
+  });
+  const notifyDesktopShutdownProgress = progress => {
+    if (typeof process.send !== 'function' || !process.connected) return;
+    try {
+      process.send({ type: 'http-freekit:shutdown-progress', ...progress }, () => {});
+    } catch {}
   };
   const shutdown = (exitCode = 0) => {
     const finalExitCode = Number.isInteger(exitCode) ? exitCode : 0;
@@ -282,13 +313,17 @@ async function initializeApplication(apiPort) {
         console.log('\n[Shutdown] Stopping servers...');
         removeOwnMcpRuntimeDescriptor();
         await mcpBridge.stop({ bestEffort: true });
-        await interceptors.deactivateAll();
+        await interceptors.deactivateAll({ onProgress: notifyDesktopShutdownProgress });
         await proxy.stop();
         await api.stop();
         console.log('[Shutdown] Goodbye!');
         await notifyDesktopShutdownComplete();
         process.exit(finalExitCode);
-      })();
+      })().catch(async error => {
+        await notifyDesktopShutdownFailed(error);
+        shutdownPromise = null;
+        throw error;
+      });
     }
     return shutdownPromise;
   };

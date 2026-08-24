@@ -5,7 +5,12 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { trafficToHar } from '../../src/api/har-converter.js';
-import { normalizeHarEntries } from '../../src/ui/har-import.js';
+import {
+  assertHarImportFileSize,
+  HAR_IMPORT_MAX_FILE_BYTES,
+  normalizeHarEntries,
+  prepareHarImport
+} from '../../src/ui/har-import.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
@@ -52,27 +57,41 @@ function har(entries) {
   return { log: { version: '1.2', entries } };
 }
 
-function createRendererHarness() {
+function createRendererHarness(options = {}) {
   const added = [];
   const inputs = [];
   const toasts = [];
   const fetches = [];
+  const staged = [];
+  const fetchOverride = options.fetch;
   let nextId = 0;
   const context = {
     URL,
     API_BASE: '',
     addRequest: request => added.push(request),
-    normalizeHarEntries: document => normalizeHarEntries(document, {
-      createId: () => `renderer-har-${++nextId}`
-    }),
+    assertHarImportFileSize,
+    prepareHarImport: options.prepareHarImport || (document => prepareHarImport(document, {
+      createId: () => `renderer-har-${++nextId}`,
+      transactionId: 'renderer-har-transaction'
+    })),
     fetch: async (url, options) => {
       fetches.push({ url, options });
-      const requests = JSON.parse(options.body).requests;
-      added.push(...requests);
+      const payload = JSON.parse(options.body);
+      if (typeof fetchOverride === 'function') {
+        return fetchOverride({ url, options, payload, fetches, added, staged });
+      }
+      staged.push(...payload.requests);
+      const isFinal = payload.importTransaction.index === payload.importTransaction.count - 1;
+      if (isFinal) added.push(...staged);
       return {
         ok: true,
-        status: 200,
-        json: async () => ({ success: true, imported: requests.length })
+        status: isFinal ? 200 : 202,
+        json: async () => ({
+          success: true,
+          complete: isFinal,
+          transactionId: payload.importTransaction.id,
+          ...(isFinal ? { imported: staged.length } : {})
+        })
       };
     },
     document: {
@@ -102,6 +121,11 @@ function createRendererHarness() {
     context,
     fetches,
     toasts,
+    async importFile(file) {
+      context.importHarForTest();
+      const input = inputs.at(-1);
+      await input.onchange({ target: { files: [file] } });
+    },
     async importDocument(documentOrText) {
       context.importHarForTest();
       const input = inputs.at(-1);
@@ -109,11 +133,129 @@ function createRendererHarness() {
         ? documentOrText
         : JSON.stringify(documentOrText);
       await input.onchange({
-        target: { files: [{ text: async () => text }] }
+        target: { files: [{ size: Buffer.byteLength(text), text: async () => text }] }
       });
     }
   };
 }
+
+function importResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body
+  };
+}
+
+test('renderer rejects oversized HAR metadata before reading file text', async () => {
+  let textReads = 0;
+  const harness = createRendererHarness();
+
+  await harness.importFile({
+    size: HAR_IMPORT_MAX_FILE_BYTES + 1,
+    async text() {
+      textReads++;
+      return JSON.stringify(har([validEntry()]));
+    }
+  });
+
+  assert.equal(textReads, 0);
+  assert.equal(harness.fetches.length, 0);
+  assert.equal(harness.toasts.at(-1).type, 'error');
+  assert.match(harness.toasts.at(-1).message, /128 MiB import limit/);
+});
+
+test('renderer posts HAR transaction batches sequentially and reports retention', async () => {
+  let releaseFirstBatch;
+  const firstBatchGate = new Promise(resolve => { releaseFirstBatch = resolve; });
+  const visible = [];
+  const prepared = {
+    transactionId: 'tx-sequential',
+    retainedEntries: 2,
+    droppedEntries: 3,
+    payloads: [
+      { requests: [{ id: 'first' }], importTransaction: { id: 'tx-sequential', index: 0, count: 2 } },
+      { requests: [{ id: 'second' }], importTransaction: { id: 'tx-sequential', index: 1, count: 2 } }
+    ]
+  };
+  const harness = createRendererHarness({
+    prepareHarImport: () => prepared,
+    async fetch({ payload }) {
+      if (payload.importTransaction.index === 0) {
+        await firstBatchGate;
+        return importResponse(202, {
+          success: true,
+          complete: false,
+          transactionId: 'tx-sequential'
+        });
+      }
+      visible.push(...prepared.payloads.flatMap(batch => batch.requests));
+      return importResponse(200, {
+        success: true,
+        complete: true,
+        transactionId: 'tx-sequential',
+        imported: 2
+      });
+    }
+  });
+
+  const importing = harness.importFile({ size: 2, text: async () => '{}' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.fetches.length, 1);
+  assert.equal(visible.length, 0);
+
+  releaseFirstBatch();
+  await importing;
+  assert.equal(harness.fetches.length, 2);
+  assert.deepEqual(
+    harness.fetches.map(call => JSON.parse(call.options.body).importTransaction.index),
+    [0, 1]
+  );
+  assert.deepEqual(visible.map(entry => entry.id), ['first', 'second']);
+  assert.deepEqual(harness.toasts, [{
+    message: 'Imported 2 HAR entries; 3 older entries were dropped by the retention limit.',
+    type: 'success'
+  }]);
+});
+
+test('renderer surfaces a failed HAR transaction and never reports partial visibility', async () => {
+  const visible = [];
+  const prepared = {
+    transactionId: 'tx-rejected',
+    retainedEntries: 2,
+    droppedEntries: 0,
+    payloads: [
+      { requests: [{ id: 'first' }], importTransaction: { id: 'tx-rejected', index: 0, count: 2 } },
+      { requests: [{ id: 'second' }], importTransaction: { id: 'tx-rejected', index: 1, count: 2 } }
+    ]
+  };
+  const harness = createRendererHarness({
+    prepareHarImport: () => prepared,
+    async fetch({ payload }) {
+      if (payload.importTransaction.index === 0) {
+        return importResponse(202, {
+          success: true,
+          complete: false,
+          transactionId: 'tx-rejected'
+        });
+      }
+      return importResponse(413, {
+        success: false,
+        code: 'ERR_TRAFFIC_IMPORT_TRANSACTION',
+        error: 'HTTP 413: transaction batch exceeds the management limit'
+      });
+    }
+  });
+
+  await harness.importFile({ size: 2, text: async () => '{}' });
+
+  assert.equal(harness.fetches.length, 2);
+  assert.equal(visible.length, 0);
+  assert.equal(harness.toasts.length, 1);
+  assert.equal(harness.toasts[0].type, 'error');
+  assert.match(harness.toasts[0].message, /HTTP 413/);
+  assert.match(harness.toasts[0].message, /atomic import transaction was discarded; no traffic was imported/i);
+});
 
 test('renderer HAR import rejects malformed primitives and unsafe mapped field types', async () => {
   const cases = [
@@ -308,7 +450,10 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   await harness.importDocument(har([rich, unknownSizes]));
 
   assert.equal(harness.added.length, 2);
-  assert.deepEqual(harness.toasts, []);
+  assert.deepEqual(harness.toasts, [{
+    message: 'Imported 2 HAR entries; 0 older entries were dropped by the retention limit.',
+    type: 'success'
+  }]);
   assert.equal(harness.fetches.length, 1);
   assert.equal(harness.fetches[0].url, '/api/traffic/import');
   const imported = harness.added[0];
@@ -342,8 +487,9 @@ test('valid rich HAR import preserves duplicates, base64 bodies, sizes, and safe
   assert.equal(reexported.response.content.text, 'BAUG');
   assert.equal(reexported.response.content.encoding, 'base64');
 
-  assert.doesNotThrow(() => harness.context.matchesRawFilterForTest(imported, 'method:post'));
-  assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:post'), true);
+  assert.doesNotThrow(() => harness.context.matchesRawFilterForTest(imported, 'method:POST'));
+  assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:POST'), true);
+  assert.equal(harness.context.matchesRawFilterForTest(imported, 'method:post'), false);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'rich-token'), true);
   assert.equal(harness.context.matchesRawFilterForTest(imported, 'header:x-repeated=two'), true);
 });

@@ -6,10 +6,13 @@ import { ElectronInterceptor } from '../../../src/interceptors/electron-intercep
 test('Electron interception passes Chromium proxy switches as process arguments', async () => {
   const child = new EventEmitter();
   child.pid = 1234;
+  child.exitCode = null;
+  child.signalCode = null;
   child.killed = false;
 
   let spawned;
   const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     systemTrustInstalled: false,
     getSpkiFingerprint: () => 'test-spki',
@@ -51,16 +54,50 @@ test('Electron interception passes Chromium proxy switches as process arguments'
 
 test('manual Electron instructions use real command-line arguments', async () => {
   const interceptor = new ElectronInterceptor();
+  interceptor._platform = () => 'linux';
   interceptor.ca = {
     systemTrustInstalled: false,
-    getSpkiFingerprint: () => 'manual-spki'
+    getSpkiFingerprint: () => 'manual-spki',
+    getTerminalCaBundlePath: () => process.execPath
   };
 
   const result = await interceptor.activate(9090);
 
-  assert.match(result.metadata.instructions, /your-app --proxy-server=http:\/\/127\.0\.0\.1:9090/);
+  assert.match(result.metadata.instructions, /your-app '--proxy-server=http:\/\/127\.0\.0\.1:9090'/);
   assert.match(result.metadata.instructions, /--proxy-bypass-list=<-loopback>/);
   assert.match(result.metadata.instructions, /--ignore-certificate-errors-spki-list=manual-spki/);
+  assert.match(result.metadata.instructions, /HTTP_PROXY='http:\/\/127\.0\.0\.1:9090'/);
+  assert.match(result.metadata.instructions, /HTTPS_PROXY='http:\/\/127\.0\.0\.1:9090'/);
+  assert.match(result.metadata.instructions, /NO_PROXY=''/);
+  assert.match(result.metadata.instructions, /NODE_USE_ENV_PROXY='1'/);
+  assert.ok(result.metadata.instructions.includes(`NODE_EXTRA_CA_CERTS='${process.execPath}'`));
+  assert.match(result.metadata.instructions, /embedded Node supports environment proxying/);
+  assert.equal(result.metadata.environment.NODE_EXTRA_CA_CERTS, process.execPath);
+  assert.equal(result.metadata.environment.NO_PROXY, '');
+  assert.deepEqual(result.metadata.arguments, [
+    '--proxy-server=http://127.0.0.1:9090',
+    '--proxy-bypass-list=<-loopback>',
+    '--ignore-certificate-errors-spki-list=manual-spki'
+  ]);
   assert.doesNotMatch(result.metadata.instructions, /(?:^|\s)--ignore-certificate-errors(?:\s|$)/);
   assert.doesNotMatch(result.metadata.instructions, /ELECTRON_EXTRA_LAUNCH_ARGS/);
+});
+
+test('manual Electron instructions use PowerShell-safe environment setup on Windows', async () => {
+  const interceptor = new ElectronInterceptor();
+  interceptor._platform = () => 'win32';
+  interceptor.ca = {
+    systemTrustInstalled: true,
+    getTerminalCaBundlePath: () => "C:\\Program Files\\O'Brien\\FreeKit CA.pem"
+  };
+  interceptor._getMainProcessCaBundlePath = () => "C:\\Program Files\\O'Brien\\FreeKit CA.pem";
+
+  const result = await interceptor.activate(9090);
+
+  assert.match(result.metadata.instructions, /\$env:HTTP_PROXY='http:\/\/127\.0\.0\.1:9090'/);
+  assert.match(result.metadata.instructions, /\$env:NO_PROXY=''/);
+  assert.ok(result.metadata.instructions.includes(
+    "$env:NODE_EXTRA_CA_CERTS='C:\\Program Files\\O''Brien\\FreeKit CA.pem'"
+  ));
+  assert.match(result.metadata.instructions, /& 'C:\\path\\to\\your-app\.exe'/);
 });

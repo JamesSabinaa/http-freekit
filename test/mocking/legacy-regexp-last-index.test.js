@@ -120,15 +120,16 @@ test('stateful legacy misses preserve rule ordering and ordinary patterns', () =
 
   const untouchedPattern = /example/g;
   untouchedPattern.lastIndex = 2;
+  const passthroughRule = {
+    enabled: true,
+    matchers: [{ type: 'wildcard' }],
+    action: { type: 'passthrough' }
+  };
   proxy.mockRules = [
-    {
-      enabled: true,
-      matchers: [{ type: 'wildcard' }],
-      action: { type: 'passthrough' }
-    },
+    passthroughRule,
     legacyRule(untouchedPattern, 'after-passthrough')
   ];
-  assert.equal(proxy._findMockRule('GET', 'https://example.test/path', {}, ''), undefined);
+  assert.equal(proxy._findMockRule('GET', 'https://example.test/path', {}, ''), passthroughRule);
   assert.equal(untouchedPattern.lastIndex, 2);
 });
 

@@ -18,10 +18,7 @@ const expectedEnvironment = {
   NO_PROXY: '',
   no_proxy: '',
   NODE_USE_ENV_PROXY: '1',
-  SSL_CERT_FILE: certPath,
-  NODE_EXTRA_CA_CERTS: certPath,
-  REQUESTS_CA_BUNDLE: certPath,
-  CURL_CA_BUNDLE: certPath
+  NODE_EXTRA_CA_CERTS: certPath
 };
 
 function shellQuote(value) {
@@ -71,7 +68,7 @@ function fakeLauncher(pid) {
   return proc;
 }
 
-test('Existing Terminal emits the exact proxy and trust variables with shell-safe quoting', () => {
+test('Existing Terminal emits proxy variables and additive Node trust with shell-safe quoting', () => {
   const instructions = buildExistingTerminalInstructions(proxyUrl, certPath);
   const expectedNames = Object.keys(expectedEnvironment);
 
@@ -83,17 +80,16 @@ test('Existing Terminal emits the exact proxy and trust variables with shell-saf
   });
   assert.match(instructions.bash, /O'"'"'Brien/);
   assert.match(instructions.powershell, /O''Brien/);
-  assert.match(instructions.cmd, /set "SSL_CERT_FILE=C:\\Program Files\\O'Brien & Partners\\FreeKit CA\.pem"/);
+  assert.match(instructions.cmd, /set "NODE_EXTRA_CA_CERTS=C:\\Program Files\\O'Brien & Partners\\FreeKit CA\.pem"/);
+  for (const name of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE']) {
+    assert.doesNotMatch(instructions.bash, new RegExp(name));
+    assert.doesNotMatch(instructions.powershell, new RegExp(name));
+    assert.doesNotMatch(instructions.cmd, new RegExp(name));
+  }
 });
 
-test('Existing Terminal includes every trust variable when the certificate path is absent', () => {
-  const environment = {
-    ...expectedEnvironment,
-    SSL_CERT_FILE: '',
-    NODE_EXTRA_CA_CERTS: '',
-    REQUESTS_CA_BUNDLE: '',
-    CURL_CA_BUNDLE: ''
-  };
+test('Existing Terminal does not clear inherited Node trust when the certificate path is absent', () => {
+  const { NODE_EXTRA_CA_CERTS: _unused, ...environment } = expectedEnvironment;
 
   assert.deepEqual(
     buildExistingTerminalInstructions(proxyUrl, ''),
@@ -106,6 +102,11 @@ test('Existing Terminal instructions stay consistent with Fresh Terminal environ
   const launcher = fakeLauncher(7330);
   let launchedEnvironment;
   interceptor.ca = { getCertInfo: () => ({ certificatePath: certPath }) };
+  interceptor._environment = () => ({
+    SSL_CERT_FILE: '/target/openssl.pem',
+    REQUESTS_CA_BUNDLE: '/target/requests.pem',
+    CURL_CA_BUNDLE: '/target/curl.pem'
+  });
   interceptor._platform = () => 'win32';
   const identity = {
     pid: 7331,
@@ -130,6 +131,9 @@ test('Existing Terminal instructions stay consistent with Fresh Terminal environ
     Object.fromEntries(Object.keys(expectedEnvironment).map(name => [name, launchedEnvironment[name]])),
     expectedEnvironment
   );
+  assert.equal(launchedEnvironment.SSL_CERT_FILE, '/target/openssl.pem');
+  assert.equal(launchedEnvironment.REQUESTS_CA_BUNDLE, '/target/requests.pem');
+  assert.equal(launchedEnvironment.CURL_CA_BUNDLE, '/target/curl.pem');
   assert.deepEqual(
     buildExistingTerminalInstructions(proxyUrl, certPath),
     expectedInstructions(expectedEnvironment)

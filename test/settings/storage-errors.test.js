@@ -36,6 +36,6 @@ test('navigation and startup use guarded storage access exclusively', () => {
   const theme = source.slice(source.indexOf('function setTheme'), source.indexOf('// Re-apply theme'));
 
   assert.match(switchPanel, /safeLocalStorageSet\('trafficScrollTop'/);
-  assert.match(theme, /safeLocalStorageSet\('http-freekit-theme'/);
+  assert.match(theme, /safeLocalStorageSet\(THEME_SELECTION_STORAGE_KEY/);
   assert.match(source, /loadTheme\(\);\s*connectWebSocket\(\);/);
 });

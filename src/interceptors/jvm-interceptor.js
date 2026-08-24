@@ -1647,6 +1647,13 @@ public class AttachProxy {
     };
   }
 
+  getShutdownTimeoutMs(defaultTimeoutMs = 120_000) {
+    // Each tracked target may consume a bounded JPS/identity lookup plus the
+    // attach helper's 15-second timeout. Cleanup is deliberately serial so a
+    // target-specific failure cannot race recovery-journal replacement.
+    return Math.max(defaultTimeoutMs, 15_000 + (this.activatedProcesses.size * 30_000));
+  }
+
   async deactivate(options = {}) {
     const pid = options.pid == null ? null : String(options.pid);
     const deactivatePid = async processId => {

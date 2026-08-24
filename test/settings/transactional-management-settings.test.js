@@ -143,7 +143,10 @@ test('TLS passthrough bulk replacement rejects malformed collections atomically'
     null,
     { 0: 'malformed.test', length: 1 },
     ['valid.test', 42],
-    ['valid.test', '']
+    ['valid.test', ''],
+    ['https://example.test'],
+    ['example.test:443'],
+    ['api.*.example.test']
   ]) {
     const response = await requestJson(port, 'POST', '/api/tls-passthrough', { hosts });
     assert.equal(response.statusCode, 400);
@@ -152,6 +155,13 @@ test('TLS passthrough bulk replacement rejects malformed collections atomically'
     assert.deepEqual(settings.get('tlsPassthrough'), ['before.test']);
     assert.deepEqual(readSettingsFile(settings), beforeSettings);
   }
+
+  const invalidItem = await requestJson(port, 'POST', '/api/tls-passthrough/items', {
+    host: 'https://example.test'
+  });
+  assert.equal(invalidItem.statusCode, 400);
+  assert.equal(proxy.tlsPassthrough, previousHosts);
+  assert.deepEqual(readSettingsFile(settings), beforeSettings);
 
   const cleared = await requestJson(port, 'POST', '/api/tls-passthrough', { hosts: [] });
   assert.equal(cleared.statusCode, 200);

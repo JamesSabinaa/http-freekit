@@ -58,7 +58,7 @@ function createHarness({ sendPanelActive = true } = {}) {
   };
   vm.createContext(context);
   vm.runInContext([
-    'let currentSendAbort = null;',
+    'const sendAbortControllers = new Map();',
     'let selectedRequestId = null;',
     'let sendTabs = [];',
     "let activeSendTab = 'tab-1';",
@@ -66,7 +66,7 @@ function createHarness({ sendPanelActive = true } = {}) {
     editorShortcuts,
     documentShortcuts,
     `globalThis.escapeApi = {
-      setController(controller) { currentSendAbort = controller; },
+      setController(controller) { sendAbortControllers.set(activeSendTab, controller); },
       registerEditor: registerSendEditorShortcuts
     };`
   ].join('\n'), context);

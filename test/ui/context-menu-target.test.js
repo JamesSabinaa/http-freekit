@@ -134,6 +134,7 @@ function createHarness() {
     const restTrafficClearReplayBarriers = new Map();
     let latestTrafficClearRevision = 0;
     let latestTrafficPinSnapshotRevision = 0;
+    let breakpointRulesLoadGeneration = 0;
     const wsExpandedConnections = new Set();
     function isWebSocketConnection(request) {
       return request?.protocol === 'ws' || request?.protocol === 'wss';

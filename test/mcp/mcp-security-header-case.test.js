@@ -77,7 +77,7 @@ test('MCP security scan finds mixed-case imported headers without mutating traff
     }),
     importedRequest('protected', {
       'SeT-cOoKiE': 'safe=value; Secure; HttpOnly',
-      'CONTENT-type': 'text/html',
+      'CONTENT-type': 'TEXT/HTML; Charset=UTF-8',
       'cOnTeNt-SeCuRiTy-PoLiCy': "default-src 'none'",
       'STRICT-transport-SECURITY': 'max-age=31536000',
       'x-FRAME-options': 'DENY',
@@ -89,6 +89,9 @@ test('MCP security scan finds mixed-case imported headers without mutating traff
       'Content-Type': 'text/html',
       'Access-Control-Allow-Origin': '*'
     }, { source: 'mock' }),
+    importedRequest('forwarded-upstream', {
+      'Content-Type': 'Text/HTML; charset=utf-8'
+    }, { source: 'mock', mockResponseSource: 'upstream' }),
     importedRequest('skipped-status', {
       'Set-Cookie': 'pending=value',
       'Content-Type': 'text/html',
@@ -123,6 +126,18 @@ test('MCP security scan finds mixed-case imported headers without mutating traff
   const missingHeaders = report.issues.filter(issue => issue.category === 'Missing Security Header');
   assert.deepEqual(missingHeaders.map(issue => [issue.requestId, issue.description]), [[
     'vulnerable',
+    'Missing x-content-type-options header on HTML response'
+  ], [
+    'forwarded-upstream',
+    'Missing content-security-policy header on HTML response'
+  ], [
+    'forwarded-upstream',
+    'Missing strict-transport-security header on HTML response'
+  ], [
+    'forwarded-upstream',
+    'Missing x-frame-options header on HTML response'
+  ], [
+    'forwarded-upstream',
     'Missing x-content-type-options header on HTML response'
   ]]);
 

@@ -22,3 +22,18 @@ test('HAR metadata header lookup is case-insensitive', () => {
   assert.equal(entry.response.content.mimeType, 'application/response+json');
   assert.equal(entry.response.redirectURL, '/next');
 });
+
+test('HAR redirect metadata preserves a valid numeric-zero header value', () => {
+  const har = trafficToHar([{
+    timestamp: '2026-01-01T00:00:00.000Z',
+    method: 'GET',
+    url: 'https://example.test/start',
+    requestHeaders: {},
+    responseHeaders: { Location: [0] },
+    statusCode: 302
+  }], { maskSensitive: false });
+
+  const response = har.log.entries[0].response;
+  assert.deepEqual(response.headers, [{ name: 'Location', value: '0' }]);
+  assert.equal(response.redirectURL, '0');
+});

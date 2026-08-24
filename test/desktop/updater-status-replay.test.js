@@ -78,11 +78,13 @@ function loadRendererUpdaterUI() {
   const renderedLinks = [];
   let liveStatusHandler;
   let resolveSnapshot;
+  const updateCheckRow = { style: { display: 'none' } };
   const snapshot = new Promise(resolve => { resolveSnapshot = resolve; });
   const context = vm.createContext({
     console,
     document: {
       getElementById(id) {
+        if (id === 'updateCheckRow') return updateCheckRow;
         if (id === 'toastContainer') {
           return { appendChild: element => renderedToasts.push(element.innerHTML) };
         }
@@ -124,12 +126,32 @@ function loadRendererUpdaterUI() {
   return {
     liveStatus: data => liveStatusHandler(data),
     notifications,
+    updateCheckRow,
     renderedLinks,
     renderedToasts,
     resolveSnapshot,
     snapshot
   };
 }
+
+test('renderer hides inert updater controls and explains unavailable update checks', async () => {
+  const unavailable = loadRendererUpdaterUI();
+  unavailable.liveStatus({
+    status: 'unavailable',
+    available: false,
+    error: 'Update checks require a packaged build.',
+    eventId: 1
+  });
+
+  assert.equal(unavailable.updateCheckRow.style.display, 'none');
+  assert.deepEqual(unavailable.notifications, [
+    'Update checks unavailable: Update checks require a packaged build.'
+  ]);
+
+  const available = loadRendererUpdaterUI();
+  available.liveStatus({ status: 'idle', available: true, eventId: 1 });
+  assert.equal(available.updateCheckRow.style.display, '');
+});
 
 test('main process stores downloaded readiness separately from transient status', async () => {
   assert.match(updater, /let statusEventId = 0/);

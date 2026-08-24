@@ -7,7 +7,11 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { isHarTarget, loadHarTarget } = require('../../electron/har-deep-link.cjs');
+const {
+  isHarTarget,
+  isLocalHarFileTarget,
+  loadHarTarget
+} = require('../../electron/har-deep-link.cjs');
 const { parseOpenDeepLink } = require('../../electron/deep-link.cjs');
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
@@ -31,6 +35,32 @@ test('deep links accept local HAR files but reject other local file URLs', () =>
     ),
     /Only HTTP, HTTPS, and \.har file URLs/
   );
+});
+
+test('Windows HAR file targets reject UNC hosts, alternate UNC spellings, and devices', async () => {
+  const unsafeTargets = [
+    'file://nas/share.har',
+    'file:////nas/share.har',
+    'file:///%3F/C:/capture.har',
+    'file:///C:/NUL.har'
+  ];
+
+  assert.equal(isLocalHarFileTarget('file:///C:/captures/session.har', 'win32'), true);
+  assert.equal(isLocalHarFileTarget('file:///tmp/session.har', 'linux'), true);
+  for (const target of unsafeTargets) {
+    assert.equal(isLocalHarFileTarget(target, 'win32'), false, target);
+    assert.throws(
+      () => parseOpenDeepLink(
+        `http-freekit://open?url=${encodeURIComponent(target)}`,
+        { platform: 'win32' }
+      ),
+      /Only HTTP, HTTPS, and \.har file URLs/
+    );
+    await assert.rejects(
+      loadHarTarget(target, { platform: 'win32' }),
+      /cannot use UNC or device paths/
+    );
+  }
 });
 
 test('loads a local HAR file and enforces the import size limit', async t => {
@@ -127,6 +157,55 @@ test('remote HAR downloads reject IPv4-mapped private IPv6 destinations', async 
     }),
     /public network addresses/
   );
+  assert.equal(fetchCalls, 0);
+});
+
+test('remote HAR downloads reject deprecated and translated special-use addresses', async () => {
+  let fetchCalls = 0;
+  const fetchImpl = async () => {
+    fetchCalls += 1;
+    return new Response('{}');
+  };
+
+  for (const target of [
+    'http://[fec0::1]/capture.har',
+    'http://[100::1]/capture.har',
+    'http://[64:ff9b::7f00:1]/capture.har',
+    'http://[::ffff:0:7f00:1]/capture.har',
+    'http://[2002:7f00:1::]/capture.har',
+    'http://[3fff::1]/capture.har'
+  ]) {
+    await assert.rejects(
+      loadHarTarget(target, { fetchImpl }),
+      /public network addresses/,
+      target
+    );
+  }
+  await assert.rejects(
+    loadHarTarget('https://deprecated-relay.test/capture.har', {
+      fetchImpl,
+      lookupImpl: async () => [{ address: '192.88.99.1', family: 4 }]
+    }),
+    /public network addresses/
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test('the HAR download deadline also bounds an unresolved DNS lookup', async () => {
+  let fetchCalls = 0;
+  const startedAt = Date.now();
+  await assert.rejects(
+    loadHarTarget('https://never-resolves.test/capture.har', {
+      timeoutMs: 20,
+      lookupImpl: () => new Promise(() => {}),
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response('{}');
+      }
+    }),
+    /Timed out downloading HAR file/
+  );
+  assert.ok(Date.now() - startedAt < 1000, 'DNS timeout should return promptly');
   assert.equal(fetchCalls, 0);
 });
 

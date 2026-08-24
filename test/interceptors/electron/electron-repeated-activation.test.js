@@ -6,10 +6,15 @@ import { ElectronInterceptor } from '../../../src/interceptors/electron-intercep
 function fakeChild(pid) {
   const child = new EventEmitter();
   child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
   child.killed = false;
   child.kill = () => {
     child.killed = true;
-    queueMicrotask(() => child.emit('exit', 0));
+    queueMicrotask(() => {
+      child.exitCode = 0;
+      child.emit('exit', 0);
+    });
     return true;
   };
   return child;
@@ -17,6 +22,7 @@ function fakeChild(pid) {
 
 test('a second Electron activation is rejected while the first child is active', async () => {
   const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     getSpkiFingerprint: () => 'test-spki',
     getTerminalCaBundlePath: () => process.execPath
@@ -42,6 +48,7 @@ test('a second Electron activation is rejected while the first child is active',
 
 test('events from a stopped Electron child cannot deactivate its replacement', async () => {
   const interceptor = new ElectronInterceptor();
+  interceptor.startupConfirmationMs = 0;
   interceptor.ca = {
     getSpkiFingerprint: () => 'test-spki',
     getTerminalCaBundlePath: () => process.execPath

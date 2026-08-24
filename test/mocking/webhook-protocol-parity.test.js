@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
+import zlib from 'node:zlib';
 
 import { CertificateAuthority } from '../../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
@@ -77,7 +78,7 @@ function collectH1Response(request, body) {
   });
 }
 
-function requestPlain(proxyPort, body) {
+function requestPlain(proxyPort, body, extraHeaders = {}) {
   const url = 'http://webhook-source.test/original';
   const request = http.request({
     hostname: '127.0.0.1',
@@ -88,13 +89,14 @@ function requestPlain(proxyPort, body) {
       host: 'webhook-source.test',
       connection: 'close',
       'content-type': 'text/original',
+      ...extraHeaders,
       'content-length': Buffer.byteLength(body)
     }
   });
   return collectH1Response(request, body);
 }
 
-async function requestInterceptedH1(proxyPort, authority, body) {
+async function requestInterceptedH1(proxyPort, authority, body, extraHeaders = {}) {
   const socket = await connectTls(proxyPort, authority, ['http/1.1']);
   const agent = new http.Agent();
   agent.createConnection = () => socket;
@@ -109,6 +111,7 @@ async function requestInterceptedH1(proxyPort, authority, body) {
         host: authority,
         connection: 'close',
         'content-type': 'text/original',
+        ...extraHeaders,
         'content-length': Buffer.byteLength(body)
       }
     });
@@ -118,7 +121,7 @@ async function requestInterceptedH1(proxyPort, authority, body) {
   }
 }
 
-async function requestInterceptedH2(proxyPort, authority, body) {
+async function requestInterceptedH2(proxyPort, authority, body, extraHeaders = {}) {
   const socket = await connectTls(proxyPort, authority, ['h2']);
   const client = http2.connect(`https://${authority}`, { createConnection: () => socket });
   try {
@@ -129,6 +132,7 @@ async function requestInterceptedH2(proxyPort, authority, body) {
       ':authority': authority,
       ':scheme': 'https',
       'content-type': 'text/original',
+      ...extraHeaders,
       'content-length': String(Buffer.byteLength(body))
     });
     return await new Promise((resolve, reject) => {
@@ -168,7 +172,7 @@ function captureWebhookRequest(records, statusCode) {
         path: request.url,
         method: request.method,
         headers: request.headers,
-        body: Buffer.concat(chunks).toString('utf8')
+        body: Buffer.concat(chunks)
       });
       response.writeHead(statusCode);
       response.end();
@@ -215,28 +219,34 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
         mode: 'disabled',
         protocol: 'http',
         expectedUrl: 'http://webhook-source.test/rewritten?via=webhook',
-        send: body => requestPlain(proxy.server.address().port, body)
+        send: (body, headers) => requestPlain(proxy.server.address().port, body, headers)
       },
       {
         name: 'intercepted HTTPS H1',
         mode: 'disabled',
         protocol: 'https',
         expectedUrl: 'https://webhook-source.test/rewritten?via=webhook',
-        send: body => requestInterceptedH1(proxy.server.address().port, authority, body)
+        send: (body, headers) => requestInterceptedH1(
+          proxy.server.address().port, authority, body, headers
+        )
       },
       {
         name: 'native H2',
         mode: 'h2-only',
         protocol: 'h2',
         expectedUrl: 'https://webhook-source.test/rewritten?via=webhook',
-        send: body => requestInterceptedH2(proxy.server.address().port, authority, body)
+        send: (body, headers) => requestInterceptedH2(
+          proxy.server.address().port, authority, body, headers
+        )
       },
       {
         name: 'H1-on-H2',
         mode: 'all',
         protocol: 'https',
         expectedUrl: 'https://webhook-source.test/rewritten?via=webhook',
-        send: body => requestInterceptedH1(proxy.server.address().port, authority, body)
+        send: (body, headers) => requestInterceptedH1(
+          proxy.server.address().port, authority, body, headers
+        )
       }
     ];
     const outcomes = [
@@ -257,7 +267,7 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
 
     for (const outcome of outcomes) {
       for (const protocol of protocols) {
-        const body = `${outcome.name}-${protocol.protocol}`;
+        const body = zlib.gzipSync(`${outcome.name}-${protocol.protocol}`);
         proxy.setHttp2Config(protocol.mode);
         proxy.mockRules = [{
           enabled: true,
@@ -278,7 +288,7 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
         const deliveryStart = deliveries.length;
         const captureStart = captures.length;
 
-        const response = await protocol.send(body);
+        const response = await protocol.send(body, { 'content-encoding': 'gzip' });
         assert.equal(response.statusCode, 200, `${outcome.name} ${protocol.name}`);
         assert.equal(response.body, '', `${outcome.name} ${protocol.name}`);
         await waitFor(() => deliveries.length === deliveryStart + 1);
@@ -289,8 +299,9 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
         const delivery = deliveries[deliveryStart];
         assert.equal(delivery.method, 'POST', protocol.name);
         assert.equal(delivery.path, `/${outcome.name}`, protocol.name);
-        assert.equal(delivery.body, body, protocol.name);
+        assert.deepEqual(delivery.body, body, protocol.name);
         assert.equal(delivery.headers['content-type'], 'text/transformed', protocol.name);
+        assert.equal(delivery.headers['content-encoding'], 'gzip', protocol.name);
         assert.equal(delivery.headers['x-forwarded-method'], 'PATCH', protocol.name);
         assert.equal(delivery.headers['x-forwarded-url'], protocol.expectedUrl, protocol.name);
         assert.equal(delivery.headers['x-forwarded-host'], 'webhook-source.test', protocol.name);

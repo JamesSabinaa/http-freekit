@@ -17,6 +17,10 @@ const fixedAndWebhookSource = sourceSection(
   'function updateMockRespHeader(',
   'function mockRuleDraftComparable('
 );
+const headerEditorHelpersSource = sourceSection(
+  'function mockHeaderEditorRows(',
+  'function updateMockRespHeader('
+);
 const transformSource = sourceSection(
   'function _getTransformHeadersProp(',
   'function rerenderMockActionConfig('
@@ -46,6 +50,7 @@ function createEditorHarness(action) {
   vm.createContext(context);
   vm.runInContext(`
     let mockEditDraft = globalThis.__draft;
+    ${headerEditorHelpersSource}
     ${fixedAndWebhookSource}
     ${transformSource}
     globalThis.editorApi = {

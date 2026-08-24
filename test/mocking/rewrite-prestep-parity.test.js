@@ -310,6 +310,65 @@ test('rewrite pre-steps have destination, method, header, and capture parity', {
     assert.equal(capture.requestBody, requestBody, scenario.name);
   }
 
+  const passthroughCases = [
+    {
+      name: 'plain H1 passthrough',
+      mode: 'disabled',
+      originalUrl: `http://localhost:${plainPort}/original`,
+      send: () => requestPlain(
+        proxy.server.address().port,
+        `http://localhost:${plainPort}/original`
+      )
+    },
+    {
+      name: 'intercepted HTTPS H1 passthrough',
+      mode: 'disabled',
+      originalUrl: `https://localhost:${securePort}/original`,
+      send: () => requestInterceptedH1(proxy.server.address().port, `localhost:${securePort}`)
+    },
+    {
+      name: 'native H2 passthrough',
+      mode: 'h2-only',
+      originalUrl: `https://localhost:${securePort}/original`,
+      send: () => requestInterceptedH2(proxy.server.address().port, `localhost:${securePort}`)
+    },
+    {
+      name: 'H1-on-H2 passthrough',
+      mode: 'all',
+      originalUrl: `https://localhost:${securePort}/original`,
+      send: () => requestInterceptedH1(proxy.server.address().port, `localhost:${securePort}`)
+    }
+  ];
+
+  for (const scenario of passthroughCases) {
+    proxy.setHttp2Config(scenario.mode);
+    proxy.mockRules = [{
+      id: 'passthrough-presteps',
+      title: 'Passthrough pre-steps',
+      enabled: true,
+      matchers: [{ type: 'wildcard' }],
+      preSteps: [
+        { type: 'add-header', name: 'x-before', value: 'passthrough' },
+        { type: 'rewrite-url', value: '/passthrough-final' },
+        { type: 'rewrite-method', value: 'PATCH' }
+      ],
+      action: { type: 'passthrough' }
+    }];
+    const captureStart = captures.length;
+    const response = await scenario.send();
+    const originRecord = JSON.parse(response.body);
+    const capture = captures.slice(captureStart).findLast(event => event.statusCode === 200);
+
+    assert.equal(originRecord.method, 'PATCH', scenario.name);
+    assert.equal(originRecord.path, '/passthrough-final', scenario.name);
+    assert.equal(originRecord.before, 'passthrough', scenario.name);
+    assert.ok(capture, `${scenario.name}: completed capture`);
+    assert.equal(capture.method, 'PATCH', scenario.name);
+    assert.equal(capture.originalRequest.method, 'POST', scenario.name);
+    assert.equal(capture.originalRequest.url, scenario.originalUrl, scenario.name);
+    assert.equal(capture.transformedBy, 'Passthrough pre-steps', scenario.name);
+  }
+
   proxy.setHttp2Config('disabled');
   proxy.mockRules = [{
     id: 'keep-alive-rewrite',

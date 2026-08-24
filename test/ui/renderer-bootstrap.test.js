@@ -16,7 +16,7 @@ test('renderer bootstrap loads shared modules before the classic application', a
   assert.doesNotMatch(html, /<script src="\/app\.js"><\/script>/);
   for (const dependency of [
     '/shared/traffic/default-exclusions.js', '/shared/traffic/traffic-lists.js',
-    '/har-import.js', '/curl-parser.js', '/request-export.js'
+    '/har-import.js', '/curl-parser.js', '/send-url.js', '/request-export.js'
   ]) assert.match(bootstrap, new RegExp(JSON.stringify(dependency).slice(1, -1).replaceAll('/', '\\/')));
   assert.match(
     server,
@@ -25,6 +25,7 @@ test('renderer bootstrap loads shared modules before the classic application', a
   assert.match(application, /window\.FreeKitTrafficLists/);
   assert.match(application, /window\.FreeKitHarImport/);
   assert.match(application, /window\.FreeKitCurlParser/);
+  assert.match(application, /window\.FreeKitSendUrl/);
   assert.match(application, /window\.FreeKitRequestExport/);
   const imported = [];
   const modules = {
@@ -32,6 +33,7 @@ test('renderer bootstrap loads shared modules before the classic application', a
     '/shared/traffic/traffic-lists.js': { DEFAULT_TRAFFIC_LIST_ID: 'default', createTrafficListVisibilityMatcher() {} },
     '/har-import.js': { normalizeHarEntries() {} },
     '/curl-parser.js': { parseCurlCommand() {} },
+    '/send-url.js': { normalizeSendUrl() {}, INVALID_SEND_URL_CODE: 'ERR_INVALID_SEND_URL' },
     '/request-export.js': { generateExportSnippet() {} }
   };
   const targetWindow = {};
@@ -49,6 +51,7 @@ test('renderer bootstrap loads shared modules before the classic application', a
   assert.deepEqual(imported, Object.keys(modules));
   assert.equal(appended[0].src, '/app.js');
   assert.equal(targetWindow.FreeKitCurlParser.parseCurlCommand, modules['/curl-parser.js'].parseCurlCommand);
+  assert.equal(targetWindow.FreeKitSendUrl.normalizeSendUrl, modules['/send-url.js'].normalizeSendUrl);
   assert.doesNotMatch(application, /const initialDefaultExclusions =/);
   assert.doesNotMatch(application, /function defaultExclusionHostMatches\(/);
   assert.doesNotMatch(application, /function normalizeHarEntry\(/);
@@ -78,6 +81,8 @@ test('bootstrap dependency and application-script failures replace Connecting st
             ? { normalizeHarEntries() {} }
             : specifier.includes('curl-parser')
               ? { parseCurlCommand() {} }
+              : specifier.includes('send-url')
+                ? { normalizeSendUrl() {}, INVALID_SEND_URL_CODE: 'ERR_INVALID_SEND_URL' }
               : { generateExportSnippet() {} }
       : async () => { throw new Error('dependency missing'); };
 

@@ -146,6 +146,43 @@ test('successful MCP enable and disable keep the confirmed state and refresh sta
   }
 });
 
+test('a stale status response cannot overwrite a completed MCP toggle refresh', async () => {
+  const staleStatus = deferred();
+  let statusRequests = 0;
+  const renderer = createRenderer(async (_url, options = {}) => {
+    if (options.method === 'POST') {
+      return rendererResponse({ success: true, enabled: true });
+    }
+    statusRequests++;
+    if (statusRequests === 1) return staleStatus.promise;
+    return rendererResponse({
+      enabled: true,
+      sseEndpoint: 'http://localhost/fresh-mcp',
+      connectedClients: 2
+    });
+  });
+
+  const staleLoad = renderer.context.loadMcpStatus();
+  await renderer.context.toggleMcp(true);
+  staleStatus.resolve(rendererResponse({
+    enabled: false,
+    sseEndpoint: 'http://localhost/stale-mcp',
+    connectedClients: 0
+  }));
+  await staleLoad;
+
+  assert.equal(statusRequests, 2);
+  assert.equal(renderer.elements.mcpEnabledToggle.checked, true);
+  assert.equal(renderer.elements.mcpStatus.textContent, 'Running');
+  assert.equal(renderer.elements.mcpSseEndpoint.textContent, 'http://localhost/fresh-mcp');
+  assert.equal(renderer.elements.mcpClientCount.textContent, 2);
+  assert.deepEqual(renderer.state(), {
+    mcpAuthoritativeEnabled: true,
+    mcpToggleInFlight: null
+  });
+  assert.deepEqual(renderer.toasts, [{ message: 'MCP server enabled', type: 'success' }]);
+});
+
 test('degraded MCP status is visible with its cleanup failure reason', async () => {
   const renderer = createRenderer(async () => rendererResponse({
     enabled: true,

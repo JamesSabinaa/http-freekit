@@ -192,6 +192,7 @@ export class CertificateAuthority {
       fingerprint: this._getFingerprint(),
       replacedCertificateFingerprint: replacedCertificateFingerprints[0] || null,
       replacedCertificateFingerprints,
+      generatedCa,
       renewalRequired: this._isRenewalRequired(),
       renewalScheduled: this.renewalScheduled,
       automaticRenewalDeferred: this.automaticRenewalDeferred
@@ -480,6 +481,7 @@ export class CertificateAuthority {
     const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
     const privatePublicKey = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
     const validFrom = new Date(certificate.validFrom).getTime();
+    const validTo = new Date(certificate.validTo).getTime();
 
     if (!this._isPositiveSerial(forgeCertificate.serialNumber)) {
       throw new Error('certificate serial number is not positive');
@@ -496,6 +498,9 @@ export class CertificateAuthority {
     }
     if (!Number.isFinite(validFrom) || validFrom > Date.now() + CA_CLOCK_SKEW_TOLERANCE_MS) {
       throw new Error('certificate is not yet valid');
+    }
+    if (!Number.isFinite(validTo) || validTo <= Date.now()) {
+      throw new Error('certificate has expired');
     }
   }
 

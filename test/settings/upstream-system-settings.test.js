@@ -42,7 +42,11 @@ function createHarness(fetch) {
       getElementById: id => elements[id] || null
     },
     fetch: async (url, options = {}) => {
-      requests.push({ url, method: options.method || 'GET' });
+      requests.push({
+        url,
+        method: options.method || 'GET',
+        ...(options.body === undefined ? {} : { body: options.body })
+      });
       return fetch(url, options);
     },
     toast: (message, type) => toasts.push({ message, type })
@@ -107,4 +111,80 @@ test('a failed direct-mode change restores the authoritative active proxy displa
   assert.equal(ui.elements.upstreamNoProxy.value, 'localhost');
   assert.equal(ui.status.child.textContent, 'Active: HTTP proxy at corp.proxy.test:8080');
   assert.deepEqual(ui.toasts, [{ message: 'Error: disk full', type: 'error' }]);
+});
+
+test('upstream details parse IPv6 addresses without inventing a port delimiter', async () => {
+  for (const scenario of [
+    {
+      type: 'https', details: '[2001:db8::1]',
+      expected: { host: '[2001:db8::1]', port: 443 }
+    },
+    {
+      type: 'http', details: 'user:secret@[2001:db8::2]:3128',
+      expected: { host: '[2001:db8::2]', port: 3128, auth: 'user:secret' }
+    },
+    {
+      type: 'socks5h', details: '2001:db8::3',
+      expected: { host: '2001:db8::3', port: 1080 }
+    }
+  ]) {
+    const ui = createHarness(async () => response({ success: true }));
+    ui.elements.upstreamType.value = scenario.type;
+    ui.elements.upstreamDetails.value = scenario.details;
+    ui.elements.upstreamNoProxy.value = 'localhost, internal.test';
+
+    await ui.context.saveUpstreamProxy();
+
+    assert.equal(ui.requests.length, 1);
+    const payload = JSON.parse(ui.requests[0].body);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(payload)),
+      {
+        host: scenario.expected.host,
+        port: scenario.expected.port,
+        auth: scenario.expected.auth || null,
+        type: scenario.type,
+        noProxy: ['localhost', 'internal.test']
+      }
+    );
+    assert.match(ui.status.child.textContent, /\[2001:db8::[123]\]:\d+/);
+  }
+});
+
+test('malformed or out-of-range upstream ports fail before the API request', async () => {
+  for (const details of [
+    'proxy.example:8080junk',
+    'proxy.example:0',
+    'proxy.example:65536',
+    '[2001:db8::1]:443junk',
+    '[2001:db8::1]trailing'
+  ]) {
+    const ui = createHarness(async () => {
+      throw new Error('fetch must not run');
+    });
+    ui.elements.upstreamType.value = 'http';
+    ui.elements.upstreamDetails.value = details;
+
+    await ui.context.saveUpstreamProxy();
+
+    assert.deepEqual(ui.requests, [], details);
+    assert.equal(ui.toasts.length, 1);
+    assert.equal(ui.toasts[0].type, 'error');
+    assert.match(ui.toasts[0].message, /port|IPv6/i);
+  }
+});
+
+test('loaded bare IPv6 upstreams round-trip with unambiguous brackets', () => {
+  const ui = createHarness(async () => response({}));
+
+  ui.context.updateUpstreamProxyUi({
+    type: 'socks5',
+    host: '2001:db8::5',
+    port: 1080,
+    auth: 'alice:secret',
+    noProxy: []
+  });
+
+  assert.equal(ui.elements.upstreamDetails.value, 'alice:secret@[2001:db8::5]:1080');
+  assert.equal(ui.status.child.textContent, 'Active: SOCKS5 proxy at [2001:db8::5]:1080');
 });

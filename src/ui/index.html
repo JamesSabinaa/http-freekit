@@ -180,10 +180,10 @@
       <div class="panel" id="panel-mock" role="tabpanel" aria-labelledby="tab-mock" style="overflow:hidden;">
         <div class="mock-page-container">
           <div class="mock-page-header">
-            <h1 style="font-size:24px;font-weight:bold;font-family:var(--font-title);flex:1;">Transform &amp; Mock HTTP</h1>
+            <h1 class="mock-page-title" style="font-size:24px;font-weight:bold;font-family:var(--font-title);">Transform &amp; Mock HTTP</h1>
             <span id="mockUnsavedBadge" class="mock-unsaved-badge" style="display:none;"></span>
-            <span style="font-size:11px;color:var(--text-watermark);margin-right:auto;" title="Hold Shift while dropping a rule onto another to combine them into a group">Tip: Shift+Drop to group rules</span>
-            <div style="display:flex;gap:8px;align-items:center;margin-left:16px;">
+            <span class="mock-page-tip" style="font-size:11px;color:var(--text-watermark);" title="Hold Shift while dropping a rule onto another to combine them into a group">Tip: Shift+Drop to group rules</span>
+            <div class="mock-page-actions">
               <button id="mockSaveAllBtn" class="btn btn-primary mock-save-all-btn" onclick="saveAllMockRules()" title="Save all changes to server" style="display:none;">
                 <i class="ph ph-floppy-disk" style="font-size:14px;"></i> Save All
               </button>
@@ -247,12 +247,12 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendHeadersBody')" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="true" aria-controls="sendHeadersBody">
-                <div style="display:flex;align-items:center;gap:8px;">
+              <div class="card-header send-card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                <button type="button" class="send-card-disclosure" onclick="toggleSendCard('sendHeadersBody')" aria-expanded="true" aria-controls="sendHeadersBody">
                   <span>Request Headers</span>
-                  <button class="btn" onclick="event.stopPropagation();addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header" aria-label="Add header">+</button>
-                </div>
-                <i id="sendHeadersArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;"></i>
+                  <i id="sendHeadersArrow" class="ph ph-caret-down" aria-hidden="true" style="font-size:14px;transition:transform 0.2s;"></i>
+                </button>
+                <button class="btn" onclick="addSendHeader()" style="padding:1px 6px;font-size:10px;" title="Add header" aria-label="Add header">+</button>
               </div>
               <div id="sendHeadersBody">
                 <div id="sendHeaderRows"></div>
@@ -260,14 +260,14 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendBodyBody')" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="true" aria-controls="sendBodyBody">
+              <div class="card-header send-card-header" style="display:flex;justify-content:space-between;align-items:center;">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <select id="sendBodyType" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyType()" aria-label="Request body type">
+                  <select id="sendBodyType" class="body-view-select" onchange="updateSendBodyType()" aria-label="Request body type">
                     <option value="raw">Raw</option>
                     <option value="urlencoded">x-www-form-urlencoded</option>
                     <option value="multipart">multipart/form-data</option>
                   </select>
-                  <select id="sendBodyFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendBodyLanguage()" aria-label="Raw body format">
+                  <select id="sendBodyFormat" class="body-view-select" onchange="updateSendBodyLanguage()" aria-label="Raw body format">
                     <option value="text">Text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
@@ -277,11 +277,13 @@
                     <option value="markdown">Markdown</option>
                     <option value="yaml">YAML</option>
                   </select>
-                  <span>Request Body</span>
+                  <button type="button" class="send-card-disclosure" onclick="toggleSendCard('sendBodyBody')" aria-expanded="true" aria-controls="sendBodyBody">
+                    <span>Request Body</span>
+                    <i id="sendBodyArrow" class="ph ph-caret-down" aria-hidden="true" style="font-size:14px;transition:transform 0.2s;"></i>
+                  </button>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <button class="btn" id="sendBodyFormatBtn" onclick="event.stopPropagation();formatSendBody()" style="padding:2px 8px;font-size:10px;" title="Format/prettify body">Format</button>
-                  <i id="sendBodyArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;"></i>
+                  <button class="btn" id="sendBodyFormatBtn" onclick="formatSendBody()" style="padding:2px 8px;font-size:10px;" title="Format/prettify body">Format</button>
                 </div>
               </div>
               <div id="sendBodyBody">
@@ -296,9 +298,9 @@
               </div>
             </div>
             <div class="card" style="margin-top:12px;">
-              <div class="card-header" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;" onclick="toggleSendCard('sendExportBody');updateSendExportSnippet()" onkeydown="activateOnKeyboard(event)" role="button" tabindex="0" aria-expanded="false" aria-controls="sendExportBody">
+              <div class="card-header send-card-header" style="display:flex;justify-content:space-between;align-items:center;">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <select id="sendExportFormat" class="body-view-select" onclick="event.stopPropagation()" onchange="updateSendExportSnippet()" aria-label="Export format">
+                  <select id="sendExportFormat" class="body-view-select" onchange="updateSendExportSnippet()" aria-label="Export format">
                     <option value="curl">cURL</option>
                     <option value="python">Python (requests)</option>
                     <option value="javascript-fetch">JavaScript (fetch)</option>
@@ -308,11 +310,13 @@
                     <option value="php">PHP (cURL)</option>
                     <option value="go">Go</option>
                   </select>
-                  <span>Export</span>
+                  <button type="button" class="send-card-disclosure" onclick="toggleSendCard('sendExportBody');updateSendExportSnippet()" aria-expanded="false" aria-controls="sendExportBody">
+                    <span>Export</span>
+                    <i id="sendExportArrow" class="ph ph-caret-down" aria-hidden="true" style="font-size:14px;transition:transform 0.2s;transform:rotate(-90deg);"></i>
+                  </button>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <button class="btn" onclick="event.stopPropagation();copySendExportSnippet()" style="padding:2px 8px;font-size:10px;" title="Copy export snippet">Copy</button>
-                  <i id="sendExportArrow" class="ph ph-caret-down" style="font-size:14px;transition:transform 0.2s;transform:rotate(-90deg);"></i>
+                  <button class="btn" onclick="copySendExportSnippet()" style="padding:2px 8px;font-size:10px;" title="Copy export snippet">Copy</button>
                 </div>
               </div>
               <div id="sendExportBody" style="display:none;">
@@ -330,8 +334,8 @@
                 <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                   <span>Response Body</span>
                   <span style="display:flex;align-items:center;gap:8px;">
-                    <select id="sendResBody-schema" class="body-view-select protobuf-type-select" onchange="setProtobufBodyType('sendResBody', this.value, 'standalone')" style="display:none;"></select>
-                    <select id="sendResBodyMode" class="body-view-select" onchange="switchBodyView('sendResBody', this.value, 'standalone')" style="display:none;"></select>
+                    <select id="sendResBody-schema" class="body-view-select protobuf-type-select" aria-label="Response body Protobuf type" onchange="setProtobufBodyType('sendResBody', this.value, 'standalone')" style="display:none;"></select>
+                    <select id="sendResBodyMode" class="body-view-select" aria-label="Response body view" onchange="switchBodyView('sendResBody', this.value, 'standalone')" style="display:none;"></select>
                   </span>
                 </div>
                 <div id="sendResBody" data-view-mode="text">
@@ -436,7 +440,7 @@
     Hostnames listed here will have their TLS connections passed through directly without interception. Useful for certificate-pinned services.
   </p>
   <div id="tlsPassthroughList" style="margin-bottom:8px;"></div>
-  <div style="display:flex;gap:8px;">
+  <div class="client-cert-editor">
     <input type="text" id="tlsPassthroughInput" aria-label="TLS passthrough hostname" placeholder="A hostname whose TLS should not be intercepted" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
     <button class="btn" onclick="addTlsPassthrough()" style="font-size:11px;padding:4px 10px;">Add</button>
   </div>

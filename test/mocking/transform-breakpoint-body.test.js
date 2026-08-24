@@ -225,8 +225,11 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
 
         const runScenario = async ({ input, inputHeaders = {}, transformed, expectedRule }) => {
           proxy.mockRules = [{
+            id: 'request-transform-provenance',
+            title: 'Request transform provenance',
             enabled: true,
             matchers: [{ type: 'method', value: 'POST' }],
+            preSteps: [{ type: 'add-header', name: 'x-pre-step', value: 'applied' }],
             action: {
               type: 'transform-request',
               urlMode: 'modify',
@@ -263,6 +266,7 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
           assert.equal(breakpointHits.length, hitStart + 1);
           assert.equal(received.length, receivedStart + 1);
           assert.equal(received[receivedStart].body.toString('utf8'), transformed);
+          assert.equal(received[receivedStart].headers['x-pre-step'], 'applied');
           assert.equal(received[receivedStart].headers['content-encoding'], undefined);
           const completedCapture = captured.slice(captureStart)
             .findLast(item => item.method === 'POST' && item.statusCode === 200);
@@ -274,6 +278,10 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
             'requestBodyContentDecoded'
           ), false);
           assert.equal(completedCapture.requestHeaders['content-encoding'], undefined);
+          assert.equal(completedCapture.originalRequest.method, 'POST');
+          assert.equal(String(completedCapture.originalRequest.body), 'before transform');
+          assert.equal(completedCapture.originalRequest.headers['x-pre-step'], undefined);
+          assert.equal(completedCapture.transformedBy, 'Request transform provenance');
         };
 
         await runScenario({
@@ -289,6 +297,7 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
         });
 
         const decodedBody = `buffered gzip capture for ${protocol.name}`;
+        const breakpointEditedBody = `breakpoint edit for ${protocol.name}`;
         const compressedBody = zlib.gzipSync(decodedBody);
         proxy.mockRules = [];
         proxy.breakpointRules = [{
@@ -297,7 +306,8 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
           matchers: [{ type: 'body-contains', value: decodedBody }]
         }];
         resumeModifications = {
-          url: `http://127.0.0.1:${originPort}/buffered-gzip`
+          url: `http://127.0.0.1:${originPort}/buffered-gzip`,
+          body: breakpointEditedBody
         };
         const captureStart = captured.length;
         const response = await protocol.send(compressedBody, {
@@ -308,13 +318,17 @@ test('transformed request bodies drive breakpoints across every HTTP ingress pro
         assert.equal(response.statusCode, 200);
         const requestCaptures = captured.slice(captureStart).filter(item => item.method === 'POST');
         assert.ok(requestCaptures.length >= 2, 'expected pending and completed captures');
-        for (const requestCapture of requestCaptures) {
-          assert.equal(requestCapture.requestBody, decodedBody);
-          assert.equal(requestCapture.requestBodyEncoding, 'utf8');
-          assert.equal(requestCapture.requestBodyContentDecoded, true);
-          assert.equal(requestCapture.requestHeaders['content-encoding'], 'gzip');
-          assert.equal(requestCapture.requestHeaders['content-type'], 'text/plain; charset=utf-8');
-        }
+        const pendingCapture = requestCaptures.find(item => item.statusCode === 0);
+        const completedCapture = requestCaptures.findLast(item => item.statusCode === 200);
+        assert.ok(pendingCapture);
+        assert.ok(completedCapture);
+        assert.equal(pendingCapture.requestBody, decodedBody);
+        assert.equal(pendingCapture.requestBodyContentDecoded, true);
+        assert.equal(completedCapture.requestBody, breakpointEditedBody);
+        assert.equal(completedCapture.requestBodyEncoding, 'utf8');
+        assert.equal(completedCapture.requestHeaders['content-encoding'], undefined);
+        assert.equal(received.at(-1).body.toString('utf8'), breakpointEditedBody);
+        assert.equal(received.at(-1).headers['content-encoding'], undefined);
       });
     }
   });

@@ -94,6 +94,7 @@ function createSelectionHarness(id) {
     renderVirtualRows() {},
     scrollRowIntoView() {},
     showDetail() {},
+    currentTrafficGenerationRequest: candidate => candidate,
     closeDetail() {}
   };
   evaluate([

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -252,6 +253,58 @@ test('generated cURL multipart command cannot load injected form header files', 
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('generated Node.js raw and multipart requests preserve mixed-case extension methods', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freekit-node-method-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const requestLines = [];
+  const server = net.createServer(socket => {
+    let requestHead = '';
+    socket.setEncoding('latin1');
+    socket.on('data', chunk => {
+      if (requestLines.length >= 2 || requestHead.includes('\r\n\r\n')) return;
+      requestHead += chunk;
+      if (!requestHead.includes('\r\n\r\n')) return;
+      requestLines.push(requestHead.slice(0, requestHead.indexOf('\r\n')));
+      socket.end('HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+
+  const runSnippet = (snippet, name) => new Promise((resolve, reject) => {
+    const scriptPath = path.join(tempDir, `${name}.cjs`);
+    fs.writeFileSync(scriptPath, snippet);
+    const child = spawn(process.execPath, [scriptPath], { cwd: tempDir, windowsHide: true });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', code => code === 0
+      ? resolve()
+      : reject(new Error(`${name} exited ${code}: ${stderr}\n${snippet}`)));
+  });
+  const url = `http://127.0.0.1:${server.address().port}/exact-method`;
+
+  await runSnippet(generateExportSnippet({
+    method: 'gEt',
+    url,
+    requestHeaders: {},
+    requestBody: 'raw body'
+  }, 'javascript-node'), 'raw');
+  await runSnippet(generateExportSnippet({
+    method: 'gEt',
+    url,
+    bodyType: 'multipart',
+    requestHeaders: {},
+    formFields: [{ key: 'field', value: 'multipart body' }]
+  }, 'javascript-node'), 'multipart');
+
+  assert.deepEqual(requestLines, [
+    'gEt /exact-method HTTP/1.1',
+    'gEt /exact-method HTTP/1.1'
+  ]);
 });
 
 function escapeRegex(value) {
