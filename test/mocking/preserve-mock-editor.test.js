@@ -14,7 +14,7 @@ function section(startText, endText) {
   return source.slice(start, end);
 }
 
-const editorSource = section('function preserveOpenMockEdit', 'function toggleMockRuleEnabled');
+const editorSource = section('function preserveOpenMockEdit', 'function updateMockMatcher');
 const saveSource = section('function isMockMatcherComplete', '/** Apply a draft');
 const collapseAllSource = section('function collapseAllMockRules', 'function mockDragStart');
 const toggleGroupSource = section('function toggleMockGroup(groupId)', 'function toggleMockGroupEnabled');
@@ -23,6 +23,7 @@ const moveToGroupSource = section('function moveRuleToGroup(ruleId, groupId)', '
 function createEditorHarness({
   valid = false,
   unchanged = false,
+  enabled = true,
   expanded = ['A'],
   grouped = false,
   collapsedTarget = false
@@ -32,7 +33,7 @@ function createEditorHarness({
   vm.runInNewContext(`
     const baseAction = { type: 'fixed-response', status: 200, headers: {}, body: '' };
     const ruleA = {
-        id: 'A', enabled: true, priority: 'normal',
+        id: 'A', enabled: ${enabled}, priority: 'normal',
         matchers: [{ type: 'path', value: '/original', matchType: 'prefix' }],
         preSteps: [], action: baseAction
       };
@@ -52,7 +53,7 @@ function createEditorHarness({
     const mockExpandedRules = new Set(${JSON.stringify(expanded)});
     let mockEditingRule = 'A';
     let mockEditDraft = {
-      enabled: true,
+      enabled: ${enabled},
       priority: 'normal',
       matchers: [{
         type: 'path',
@@ -98,11 +99,16 @@ function createEditorHarness({
     ${toggleGroupSource}
     ${moveToGroupSource}
     globalThis.harness = {
+      addNewMockRule,
       collapseAllMockRules,
+      editMockRule,
       moveRuleToGroup,
       saveMockRule,
       toggleMockGroup,
+      toggleMockRuleEnabled,
       toggleMockRuleExpand,
+      drafts: () => Array.from(mockDraftRules.values()),
+      isNewDraft: id => mockNewDraftIds.has(id),
       state: () => ({
         draftCount: mockDraftRules.size,
         editingRule: mockEditingRule,
@@ -117,11 +123,16 @@ function createEditorHarness({
   return {
     calls,
     harness: {
+      addNewMockRule: context.harness.addNewMockRule,
       collapseAllMockRules: context.harness.collapseAllMockRules,
+      editMockRule: context.harness.editMockRule,
       moveRuleToGroup: context.harness.moveRuleToGroup,
       saveMockRule: context.harness.saveMockRule,
       toggleMockGroup: context.harness.toggleMockGroup,
+      toggleMockRuleEnabled: context.harness.toggleMockRuleEnabled,
       toggleMockRuleExpand: context.harness.toggleMockRuleExpand,
+      drafts: () => JSON.parse(JSON.stringify(context.harness.drafts())),
+      isNewDraft: context.harness.isNewDraft,
       state: () => JSON.parse(JSON.stringify(context.harness.state()))
     }
   };
@@ -220,6 +231,72 @@ test('saving an unchanged grouped rule does not create a false draft', () => {
     message: 'No changes to save',
     type: 'success'
   });
+});
+
+for (const grouped of [false, true]) {
+  test(`reopening and collapsing a ${grouped ? 'grouped' : 'top-level'} draft preserves unsaved changes`, () => {
+    const editor = createEditorHarness({ grouped, valid: true });
+    assert.equal(editor.harness.saveMockRule('A'), true);
+    const savedDraft = editor.harness.drafts()[0];
+
+    editor.harness.editMockRule('A');
+    editor.harness.toggleMockRuleExpand('A');
+
+    assert.deepEqual(editor.harness.drafts(), [savedDraft]);
+    assert.equal(editor.harness.state().editingRule, null);
+    assert.equal(editor.harness.state().savedPath, '/changed');
+  });
+}
+
+test('switching editors preserves an existing pending draft even without further edits', () => {
+  const editor = createEditorHarness({ valid: true });
+  editor.harness.saveMockRule('A');
+  const savedDraft = editor.harness.drafts()[0];
+
+  editor.harness.editMockRule('A');
+  editor.harness.editMockRule('B');
+
+  assert.deepEqual(editor.harness.drafts(), [savedDraft]);
+  assert.equal(editor.harness.state().editingRule, 'B');
+});
+
+test('reopening and saving a new rule keeps it eligible for its first server save', () => {
+  const editor = createEditorHarness({ unchanged: true });
+  editor.harness.addNewMockRule();
+  assert.equal(editor.harness.saveMockRule('__new__'), true);
+  const savedDraft = editor.harness.drafts()[0];
+  assert.equal(editor.harness.isNewDraft(savedDraft.id), true);
+
+  editor.harness.editMockRule(savedDraft.id);
+  assert.equal(editor.harness.saveMockRule(savedDraft.id), true);
+
+  assert.deepEqual(editor.harness.drafts(), [savedDraft]);
+  assert.equal(editor.harness.isNewDraft(savedDraft.id), true);
+});
+
+for (const enabled of [true, false]) {
+  test(`${enabled ? 'disabling' : 'enabling'} an open rule survives saving its other edits`, () => {
+    const editor = createEditorHarness({ valid: true, enabled });
+
+    editor.harness.toggleMockRuleEnabled('A');
+    assert.equal(editor.harness.state().editingRule, 'A');
+    assert.equal(editor.harness.saveMockRule('A'), true);
+
+    const savedDraft = editor.harness.drafts()[0];
+    assert.equal(savedDraft.enabled, !enabled);
+    assert.equal(savedDraft.matchers[0].value, '/changed');
+  });
+}
+
+test('toggling a different rule leaves the active editor enabled state alone', () => {
+  const editor = createEditorHarness({ valid: true });
+
+  editor.harness.toggleMockRuleEnabled('B');
+  editor.harness.saveMockRule('A');
+
+  const drafts = editor.harness.drafts();
+  assert.equal(drafts.find(rule => rule.id === 'A').enabled, true);
+  assert.equal(drafts.find(rule => rule.id === 'B').enabled, false);
 });
 
 test('containing-group collapse preserves valid nested edits and blocks invalid ones', () => {

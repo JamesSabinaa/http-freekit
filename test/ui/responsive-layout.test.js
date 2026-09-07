@@ -6,7 +6,18 @@ const html = fs.readFileSync(new URL('../../src/ui/index.html', import.meta.url)
 const styles = fs.readFileSync(new URL('../../src/ui/styles.css', import.meta.url), 'utf8');
 
 test('client-certificate controls can shrink and wrap at supported window widths', () => {
-  assert.match(html, /<div class="client-cert-editor">[\s\S]*?id="clientCertHost"[\s\S]*?id="clientCertPath"[\s\S]*?id="clientCertPassphrase"[\s\S]*?<\/div>/);
+  const editor = [...html.matchAll(/<div class="client-cert-editor">([\s\S]*?)<\/div>/g)]
+    .map(match => match[1])
+    .find(content => content.includes('id="clientCertHost"'));
+  assert.ok(editor, 'Client Certificates must use the responsive editor wrapper');
+  for (const id of ['clientCertHost', 'clientCertPath', 'clientCertPassphrase']) {
+    const input = editor.match(new RegExp(`<input\\b[^>]*id="${id}"[^>]*>`))?.[0];
+    assert.ok(input, `${id} must belong to the responsive editor`);
+    assert.doesNotMatch(input, /\bstyle="[^"]*\bflex(?:-basis)?\s*:/,
+      `${id} must not override the responsive flex basis`);
+  }
+  assert.match(editor, /onclick="browseClientCert\(\)"/);
+  assert.match(editor, /onclick="addClientCert\(\)"/);
   assert.match(styles, /\.client-cert-editor\s*\{[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?gap:\s*8px;[\s\S]*?\}/);
   assert.match(styles, /\.client-cert-editor input\s*\{[\s\S]*?flex:\s*1 1 150px;[\s\S]*?min-width:\s*0;[\s\S]*?\}/);
 });

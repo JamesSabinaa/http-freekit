@@ -1619,6 +1619,7 @@
 
     function parseFilters(raw) {
       const filters = [];
+      const filterTypes = new Set(['method', 'status', 'host', 'path', 'source', 'body', 'header']);
       // Match tokens: either "type:value" or plain words
       const regex = /(\w+):("[^"]*"|\S+)|(\S+)/g;
       let match;
@@ -1626,6 +1627,11 @@
         if (match[1]) {
           // Structured filter: type:value
           const type = match[1].toLowerCase();
+          if (!filterTypes.has(type)) {
+            // URLs and other colon-containing text must keep their full value.
+            filters.push({ type: 'text', value: match[0] });
+            continue;
+          }
           let value = match[2];
           if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
           filters.push({ type, value });
@@ -1995,8 +2001,12 @@
         return;
       }
 
-      const scrollTop = wrapper.scrollTop;
       const clientHeight = wrapper.clientHeight;
+      // Filtering or collapsing frames can shrink the list before the DOM's
+      // spacers reflect its new height. Clamp first so we render real rows.
+      const maxScrollTop = Math.max(0, totalRows * VS_ROW_HEIGHT + VS_HEADER_HEIGHT - clientHeight);
+      if (wrapper.scrollTop > maxScrollTop) wrapper.scrollTop = maxScrollTop;
+      const scrollTop = wrapper.scrollTop;
 
       const firstVisible = Math.floor(scrollTop / VS_ROW_HEIGHT);
       const lastVisible = Math.min(totalRows, Math.ceil((scrollTop + clientHeight - VS_HEADER_HEIGHT) / VS_ROW_HEIGHT));
@@ -8927,6 +8937,9 @@
       const rule = _findMockRuleDeep(ruleId);
       if (!rule) return;
       rule.enabled = rule.enabled === false ? true : false;
+      if (mockEditingRule === ruleId && mockEditDraft) {
+        mockEditDraft.enabled = rule.enabled;
+      }
       // Save as draft change
       const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
       draft.enabled = rule.enabled;
@@ -9467,7 +9480,8 @@
         toast('Rule saved as draft (unsaved)', 'success');
       } else {
         draft.id = ruleId;
-        // Compare against the original server rule — only create a draft if something actually changed
+        // Local rules already include pending drafts. An unchanged editor must
+        // keep that draft queued until it is saved to the server or reverted.
         const original = _findMockRuleDeep(ruleId);
         const originalJson = original ? JSON.stringify({
           enabled: original.enabled !== false,
@@ -9486,7 +9500,7 @@
           title: draft.title
         });
 
-        if (originalJson === draftJson) {
+        if (originalJson === draftJson && !mockDraftRules.has(ruleId)) {
           // No actual changes — don't create a draft
           mockDraftRules.delete(ruleId);
           mockEditingRule = null;

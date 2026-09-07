@@ -77,6 +77,24 @@ test('plain search expansion does not change filter parsing', () => {
   );
 });
 
+test('pasted URLs keep their scheme when matching traffic', () => {
+  const filters = parseFilters('https://ordinary.example/path');
+  const matches = target => filters.every(filter => matchesFilter(target, filter));
+
+  assert.equal(matches(request), true);
+  assert.equal(matches({ ...request, url: 'http://ordinary.example/path' }), false);
+});
+
+test('colon-containing text searches retain the entire token', () => {
+  const filters = parseFilters('trace:123');
+  const matches = responseBody => filters.every(filter =>
+    matchesFilter({ ...request, responseBody }, filter)
+  );
+
+  assert.equal(matches('received trace:123'), true);
+  assert.equal(matches('received trace:456 with a count of 123'), false);
+});
+
 test('plain renderer search safely ignores null and object field values', () => {
   const malformed = {
     url: {},

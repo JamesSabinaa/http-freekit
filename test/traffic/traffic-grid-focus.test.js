@@ -230,6 +230,36 @@ test('virtualized spacer rows are hidden and data rows retain absolute grid posi
   );
 });
 
+test('filtering a scrolled traffic list renders its remaining rows immediately', () => {
+  const harness = createVirtualGridHarness();
+  harness.wrapper.scrollTop = 1600;
+  harness.gridApi.render();
+
+  const matchingRequests = harness.requests.slice(0, 2);
+  harness.gridApi.setRequests(matchingRequests);
+  harness.gridApi.setForce(true);
+  harness.gridApi.render();
+
+  assert.equal(harness.wrapper.scrollTop, 0);
+  assert.deepEqual([...harness.rows.keys()], ['row-request-0', 'row-request-1']);
+  assert.doesNotMatch(harness.body.innerHTML, /vs-spacer/);
+});
+
+test('shrinking traffic clamps scrolling to the last complete viewport', () => {
+  const harness = createVirtualGridHarness();
+  harness.wrapper.scrollTop = 2400;
+  harness.gridApi.render();
+
+  harness.gridApi.setRequests(harness.requests.slice(0, 30));
+  harness.gridApi.setForce(true);
+  harness.gridApi.render();
+
+  assert.equal(harness.wrapper.scrollTop, 800);
+  for (let index = 25; index < 30; index++) {
+    assert.equal(harness.rows.has(`row-request-${index}`), true);
+  }
+});
+
 test('expanded WebSocket frames count as grid rows but not displayed requests', () => {
   const parent = { id: 'socket', protocol: 'wss' };
   const frames = [
