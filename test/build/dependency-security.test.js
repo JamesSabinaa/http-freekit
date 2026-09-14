@@ -63,6 +63,7 @@ test('locked packages meet the audited safe minimums', () => {
     '@electron/asar': '4.2.1',
     '@electron/universal': '3.0.6',
     '@hono/node-server': '2.0.12',
+    '@xmldom/xmldom': '0.8.15',
     'app-builder-lib': '26.15.0',
     'body-parser': '2.3.0',
     'brace-expansion': '5.0.9',
@@ -70,14 +71,15 @@ test('locked packages meet the audited safe minimums', () => {
     'dompurify': '3.4.13',
     'electron': '43.2.0',
     'electron-builder': '26.15.7',
-    'fast-uri': '3.1.5',
-    'hono': '4.13.2',
+    'fast-uri': '3.1.6',
+    'hono': '4.13.5',
     'https-proxy-agent': '9.1.0',
     'jake': '12.10.1',
-    'js-yaml': '4.3.1',
+    'js-yaml': '4.3.2',
     'monaco-editor': '0.56.0',
     'pako': '3.0.1',
     'protobufjs': '8.7.1',
+    'qs': '6.16.0',
     'socks-proxy-agent': '10.1.0',
     'uuid': '14.0.1',
     'ws': '8.21.1'
@@ -90,8 +92,11 @@ test('locked packages meet the audited safe minimums', () => {
 
 test('the complete dependency graph excludes newly audited vulnerable releases', () => {
   assertEveryVersionAtLeast('brace-expansion', '5.0.9');
-  assertEveryVersionAtLeast('fast-uri', '3.1.5');
-  assertEveryVersionAtLeast('js-yaml', '4.3.1');
+  assertEveryVersionAtLeast('fast-uri', '3.1.6');
+  assertEveryVersionAtLeast('hono', '4.13.5');
+  assertEveryVersionAtLeast('js-yaml', '4.3.2');
+  assertEveryVersionAtLeast('qs', '6.16.0');
+  assertEveryVersionAtLeast('@xmldom/xmldom', '0.8.15');
 
   const squirrelPackages = Object.keys(packageLock.packages)
     .filter(packagePath => packagePath.endsWith('node_modules/electron-builder-squirrel-windows'));

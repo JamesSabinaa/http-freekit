@@ -750,7 +750,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-029 — High — Locked dependencies fail the repository's dependency audit gate
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review (2026-09-14):** Reproduced five affected packages (three high and
+  two moderate). Compatible fixes are available within the existing dependency
+  ranges; no major-version changes or new overrides are needed.
+- **Resolution:** Updated locked fast-uri to 3.1.7, qs to 6.16.0, Hono to 4.13.7,
+  xmldom to 0.8.15, and all four nested js-yaml copies to 4.3.2. Raised the
+  existing dependency version guards to exclude the affected releases.
+- **Verification:** Full suite on Node 26.7.0: 2,506 passed, four skipped, zero
+  failures. All nine updated dependency security checks also passed separately.
+  `npm run audit` and `npm run audit:prod` both exited zero with no vulnerabilities;
+  `npm ls` confirmed the installed versions match the updated lockfile.
 - **Evidence:** the lockfile installs `fast-uri@3.1.5` through MCP SDK / Ajv,
   `qs@6.15.3` through Express / body-parser, and development-only
   `@xmldom/xmldom@0.8.13` through electron-builder / plist
