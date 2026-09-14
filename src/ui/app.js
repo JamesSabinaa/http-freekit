@@ -3886,11 +3886,11 @@
 
       // ---- Request Body Card (separate card) ----
       const effBody = effReq.requestBody;
-      if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
+      if (effBody && !isBodyPlaceholder(effBody, { request: effReq, section: 'request' })) {
         const reqCt = getCombinedHeaderValue(effReq.requestHeaders, 'content-type');
         const reqBodyModes = getBodyViewModes(effBody, reqCt);
         const reqDefaultMode = reqBodyModes[0]?.value || 'text';
-        const reqUseMonaco = isMonacoViewMode(reqDefaultMode) && !effBody.startsWith('[Binary data:');
+        const reqUseMonaco = isMonacoViewMode(reqDefaultMode);
         html += `<div class="detail-card dir-right" id="card-req-body" aria-expanded="true" style="border-right-color:${effMethodColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -3950,7 +3950,7 @@
         const ct = getCombinedHeaderValue(req.responseHeaders, 'content-type');
         const resBodyModes = getBodyViewModes(req.responseBody, ct);
         const resDefaultMode = resBodyModes[0]?.value || 'text';
-        const resUseMonaco = isMonacoViewMode(resDefaultMode) && !req.responseBody.startsWith('[Binary data:');
+        const resUseMonaco = isMonacoViewMode(resDefaultMode) && !isBodyPlaceholder(req.responseBody, { request: req, section: 'response' });
         html += `<div class="detail-card dir-left" id="card-resp-body" aria-expanded="true" style="border-left-color:${statusColor};">
           <div class="detail-card-header">
           <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
@@ -4174,7 +4174,7 @@
       initializeDetailCardDisclosures(content);
 
       // Initialize the request body viewer from the currently selected transform perspective
-      if (effBody && effBody !== '' && !effBody.startsWith('[Binary')) {
+      if (effBody && !isBodyPlaceholder(effBody, { request: effReq, section: 'request' })) {
         const reqCt2 = getCombinedHeaderValue(effReq.requestHeaders, 'content-type');
         const reqModes2 = getBodyViewModes(effBody, reqCt2);
         const reqDefMode2 = reqModes2[0]?.value || 'text';
@@ -4182,7 +4182,7 @@
       }
 
       // Initialize the response body viewer
-      if (req.responseBody && req.responseBody !== '' && !req.responseBody.startsWith('[Binary data:')) {
+      if (req.responseBody && !isBodyPlaceholder(req.responseBody, { request: req, section: 'response' })) {
         const resCt = getCombinedHeaderValue(req.responseHeaders, 'content-type');
         const resModes = getBodyViewModes(req.responseBody, resCt);
         const resDefMode = resModes[0]?.value || 'text';
@@ -4502,6 +4502,14 @@
         ct.includes('x-protobuf') ||
         ct.includes('x-protobuffer') ||
         ct.includes('proto');
+    }
+
+    function isBodyPlaceholder(body, context = {}) {
+      if (!/^\[Binary data: \d+ bytes\]$/.test(String(body))) return false;
+      const request = context.request || {};
+      const prefix = context.section === 'response' ? 'responseBody' : 'requestBody';
+      if (request[prefix + 'Truncated'] === true && request[prefix + 'CapturedSize'] === 0) return true;
+      return !request[prefix + 'Encoding'];
     }
 
     // Determine available view modes based on content type and body content
@@ -5481,7 +5489,7 @@
 
     function formatBodyAs(body, contentType, mode, context = {}) {
       if (!body) return '<span style="color:var(--text-watermark);">Empty</span>';
-      if (body.startsWith('[Binary data:')) return '<span style="color:var(--text-watermark);">' + esc(body) + '</span>';
+      if (isBodyPlaceholder(body, context)) return '<span style="color:var(--text-watermark);">' + esc(body) + '</span>';
 
       switch (mode) {
         case 'image': {
@@ -5641,7 +5649,7 @@
       updateProtobufTypeSelect(elementId, mode, renderContext);
 
       // Both request and response body use Monaco for text-based modes
-      if (isMonacoViewMode(mode) && body && !body.startsWith('[Binary data:')) {
+      if (isMonacoViewMode(mode) && body && !isBodyPlaceholder(body, context)) {
         const monacoEl = document.getElementById(monacoId);
         const fallbackEl = document.getElementById(fallbackId);
         // Keep a complete viewer visible until editor creation has actually succeeded.

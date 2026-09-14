@@ -1140,7 +1140,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-044 — Medium — Request detail hides valid text beginning with `[Binary`
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The broad prefix condition discards ordinary text. Current binary
+  placeholders carry zero retained bytes and truncation metadata; legacy ones
+  can be recognized by their exact format when encoding metadata is absent.
+- **Resolution:** Use metadata-aware placeholder detection for request card
+  visibility and request/response viewer initialization and rendering. Explicit
+  UTF-8 text remains visible even when it matches the placeholder format.
+- **Verification:** 585 traffic, UI, Send, and test-layout checks passed. A live
+  Chromium probe verified three binary-prefixed text cases in both viewers;
+  regressions also cover legacy and metadata-marked placeholders.
 - **Evidence:** request-body rendering rejects every body with this prefix
   (`src/ui/app.js:3881,4169`), without considering explicit UTF-8 encoding.
 - **Reproduction:** render a valid captured `text/plain` request with

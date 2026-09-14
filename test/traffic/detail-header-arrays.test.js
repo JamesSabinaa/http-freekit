@@ -185,6 +185,23 @@ function requestAndResponseCards(request) {
   };
 }
 
+test('detail cards preserve literal binary-prefixed text while hiding capture placeholders', () => {
+  for (const body of ['[Binary search]', '[Binary data: ordinary text]', '[Binary data: 42 bytes]']) {
+    const result = renderDetail(baseRequest({}, {
+      requestBody: body, requestBodyEncoding: 'utf8',
+      responseBody: body, responseBodyEncoding: 'utf8'
+    }));
+    assert.match(result.html, /id="card-req-body"/);
+    assert.ok(result.bodyViewerCalls.some(call => call.elementId === 'reqBody' && call.body === body));
+    assert.ok(result.bodyViewerCalls.some(call => call.elementId === 'resBody' && call.body === body));
+  }
+  for (const metadata of [{}, { requestBodyEncoding: 'utf8', requestBodyTruncated: true, requestBodyCapturedSize: 0 }]) {
+    const result = renderDetail(baseRequest({}, { requestBody: '[Binary data: 42 bytes]', ...metadata }));
+    assert.doesNotMatch(result.html, /id="card-req-body"/);
+    assert.ok(!result.bodyViewerCalls.some(call => call.elementId === 'reqBody'));
+  }
+});
+
 test('traffic detail metadata remains inert if an unvalidated in-process record reaches the renderer', () => {
   const protocolHtml = renderDetail(baseRequest({}, {
     protocol: '<img src=x onerror=alert(1)>'

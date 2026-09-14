@@ -196,6 +196,7 @@ test('body viewers keep populated fallback content through Monaco failure', asyn
     function updateProtobufTypeSelect() {}
     function isMonacoViewMode() { return true; }
     function formatBodyAs(body, _contentType, mode) { return mode + ':' + body; }
+    ${between('function isBodyPlaceholder(', 'function getBodyViewModes(')}
     ${between('async function initBodyMonacoEditor', '// Switch body view mode')}
     globalThis.render = renderBodyViewer;
   `, context);

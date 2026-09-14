@@ -25,6 +25,7 @@ const renderers = vm.runInNewContext(`(() => {
   const syntaxHighlightJson = value => esc(value);
   const syntaxHighlightXml = value => esc(value);
   ${source.slice(compactStart, compactEnd)}
+  ${source.slice(source.indexOf('function isBodyPlaceholder('), source.indexOf('function getBodyViewModes('))}
   ${source.slice(decodedStart, decodedEnd)}
   return { formatBody, formatBodyAs };
 })()`, { URLSearchParams, console });
