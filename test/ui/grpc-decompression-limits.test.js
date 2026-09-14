@@ -69,6 +69,35 @@ function createHarness() {
   };
 }
 
+test('binary gRPC-Web decodes data followed by plain or compressed trailers', () => {
+  const frame = (flags, bytes) => {
+    const header = Buffer.alloc(5);
+    header[0] = flags;
+    header.writeUInt32BE(bytes.length, 1);
+    return Buffer.concat([header, bytes]);
+  };
+  const data = frame(0, Buffer.from([8, 150, 1]));
+  const trailers = Buffer.from('grpc-status: 0\r\nx-metadata: first\r\nx-metadata: second');
+  const harness = createHarness();
+  for (const encoding of ['identity', 'gzip', 'deflate']) {
+    const compressed = encoding !== 'identity';
+    const payload = encoding === 'gzip' ? Buffer.from(pako.gzip(trailers))
+      : encoding === 'deflate' ? Buffer.from(pako.deflate(trailers)) : trailers;
+    const wire = 'data:application/grpc-web+proto;base64,' + Buffer.concat([data, frame(compressed ? 0x81 : 0x80, payload)]).toString('base64');
+    const output = harness.decode(wire, encoding, 'application/grpc-web+proto');
+    assert.match(output, /150/);
+    assert.match(output, /trailers:/);
+    assert.match(output, /grpc-status: 0/);
+    assert.match(output, /x-metadata: first\r\nx-metadata: second/);
+    assert.doesNotMatch(output, /Unable to decode|message 2:/);
+    assert.match(harness.decode(wire, encoding, 'application/grpc'), /Unable to decode gRPC frames/);
+  }
+  const misplaced = 'data:application/grpc-web+proto;base64,' + Buffer.concat([frame(0x80, trailers), data]).toString('base64');
+  assert.match(harness.decode(misplaced, 'identity', 'application/grpc-web+proto'), /Unable to decode gRPC frames/);
+  const oversized = 'data:application/grpc-web+proto;base64,' + frame(0x81, Buffer.from(pako.gzip(' '.repeat(2 * 1024 * 1024)))).toString('base64');
+  assert.match(harness.decode(oversized, 'gzip', 'application/grpc-web+proto'), /decompression-truncated=true/);
+});
+
 test('gRPC preview incrementally decompresses ordinary messages without one-shot pako APIs', () => {
   const harness = createHarness();
   const output = harness.decode(grpcDataUri(Uint8Array.from([0x08, 0x96, 0x01])));

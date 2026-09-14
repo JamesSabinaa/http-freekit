@@ -5218,21 +5218,25 @@
       const decodeType = manualType || schemaType;
       const grpcEncoding = grpcEncodingForContext(context);
       const isConnect = isConnectContentType(context.contentType);
+      const isGrpcWeb = /^application\/grpc-web(?:\+[^;\s]+)?(?:\s*;|$)/i.test(context.contentType || '');
 
       while (offset + 5 <= bytes.length) {
         const flags = bytes[offset];
         const compressed = (flags & 0x01) !== 0;
         const endStream = isConnect && (flags & 0x02) !== 0;
+        const trailers = isGrpcWeb && (flags & 0x80) !== 0;
         const size = ((bytes[offset + 1] << 24) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 8) | bytes[offset + 4]) >>> 0;
         offset += 5;
-        const validFlags = isConnect ? (flags & ~0x03) === 0 : (flags === 0 || flags === 1);
-        if (offset + size > bytes.length || !validFlags) {
+        const validFlags = isConnect ? (flags & ~0x03) === 0
+          : isGrpcWeb ? (flags & ~0x81) === 0 : (flags === 0 || flags === 1);
+        if (offset + size > bytes.length || !validFlags || (trailers && offset + size !== bytes.length)) {
           return 'Unable to decode gRPC frames. Showing as protobuf payload instead.\n\n' + decodeProtobufBody(body, context);
         }
 
         let message = bytes.slice(offset, offset + size);
         offset += size;
         if (endStream) chunks.push('end stream:');
+        else if (trailers) chunks.push('trailers:');
         else chunks.push(`message ${++index}: ${decodeType?.fullName || 'protobuf'} compressed=${compressed}${compressed && grpcEncoding ? ' encoding=' + grpcEncoding : ''} size=${size}`);
         if (compressed) {
           try {
@@ -5254,6 +5258,12 @@
             chunks.push('  hex: ' + bytesToHexPreview(message));
             continue;
           }
+        }
+
+        if (trailers) {
+          const trailerText = tryDecodeUtf8(message);
+          chunks.push(trailerText !== null ? trailerText : '  hex: ' + bytesToHexPreview(message));
+          continue;
         }
 
         if (endStream) {

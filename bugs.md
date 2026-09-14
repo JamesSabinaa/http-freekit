@@ -1862,7 +1862,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-075 — Medium — The JVM launch option changes dollar-sign paths in PowerShell
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed that Windows fallback quoting is CMD-oriented and the
+  UI does not specify a shell. Asked whether to offer separate PowerShell/CMD
+  options or standardize on a labeled PowerShell option.
 - **Evidence:** Windows manual JVM options use expandable double quotes
   (`src/interceptors/jvm-interceptor.js:770-782`), without PowerShell escaping
   for dollar signs. The renderer presents the option without a CMD-only
@@ -1878,7 +1881,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-076 — Medium — The automatically selected gRPC viewer rejects valid gRPC-Web trailers
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Verified binary gRPC-Web trailer flags against the linked protocol
+  specification and reproduced rejection of a data frame followed by trailers.
+- **Resolution:** Recognize binary gRPC-Web trailer frames, display their header
+  text without protobuf decoding, and reuse bounded decompression for compressed
+  trailers. Require trailers to end the stream.
+- **Verification:** All 117 UI, fallback-editor, and test-layout checks passed.
+  Regressions cover message preservation, repeated trailers, identity/gzip/deflate,
+  misplaced trailers, native gRPC flag rejection, and decompression limits.
 - **Evidence:** `application/grpc-web+proto` selects the gRPC viewer
   (`src/ui/app.js:4481-4483,4504-4509`), but its parser accepts only flags 0/1
   and abandons decoded messages on the valid `0x80` trailer (`:5208-5210`).
