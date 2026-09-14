@@ -24,6 +24,8 @@ function createHarness(fetch) {
     }
   };
   const elements = {
+    autoRotateProxyOnError: { checked: false, disabled: false },
+    bottingToolsProvider: { value: 'lemonprime', disabled: false },
     upstreamType: { value: 'none' },
     upstreamDetailsFields: { style: { display: 'block' } },
     upstreamDetailsLabel: { textContent: '' },
@@ -55,6 +57,84 @@ function createHarness(fetch) {
   vm.runInContext(rendererSource.slice(blockStart, blockEnd), context);
   return { context, elements, requests, status, toasts };
 }
+
+test('proxy reconnect reads cannot replace settings saved after the read began', async () => {
+  for (const setting of ['upstream', 'direct', 'auto-rotate', 'rotation']) {
+    let releaseRead;
+    const heldRead = new Promise(resolve => { releaseRead = resolve; });
+    const proxy = { host: '127.0.0.1', port: 9, type: 'http', noProxy: [] };
+    const ui = createHarness(async (_url, options) => options.method
+      ? response({ success: true, enabled: true, provider: 'new-provider', upstreamProxy: proxy })
+      : heldRead);
+    const isAuto = setting === 'auto-rotate';
+    const load = isAuto ? ui.context.loadAutoRotateProxyOnError() : ui.context.loadUpstreamProxy();
+    if (isAuto) {
+      ui.elements.autoRotateProxyOnError.checked = true;
+      ui.elements.bottingToolsProvider.value = 'new-provider';
+      await ui.context.saveAutoRotateProxyOnError();
+    } else if (setting === 'rotation') {
+      await ui.context.rotateBottingToolsProxy();
+    } else {
+      ui.elements.upstreamType.value = setting === 'direct' ? 'none' : 'http';
+      ui.elements.upstreamDetails.value = '127.0.0.1:9';
+      await ui.context.saveUpstreamProxy();
+    }
+    releaseRead(response(isAuto ? { enabled: false, provider: 'old-provider' }
+      : { upstreamProxy: setting === 'direct' ? proxy : null }));
+    await load;
+    if (isAuto) {
+      assert.equal(ui.elements.autoRotateProxyOnError.checked, true);
+      assert.equal(ui.elements.bottingToolsProvider.value, 'new-provider');
+      assert.equal(vm.runInContext('autoRotateProxyAuthoritative.enabled', ui.context), true);
+    } else {
+      assert.equal(ui.elements.upstreamType.value, setting === 'direct' ? 'none' : 'http', setting);
+      assert.match(ui.status.child.textContent, setting === 'direct' ? /Direct connection/ : /127\.0\.0\.1:9/, setting);
+    }
+  }
+});
+
+test('proxy loaders skip pending writes and accept fresh reads after completion', async () => {
+  for (const auto of [false, true]) {
+    let releaseSave;
+    const heldSave = new Promise(resolve => { releaseSave = resolve; });
+    const ui = createHarness(async (_url, options) => options.method ? heldSave
+      : response(auto ? { enabled: true, provider: 'fresh' } : { upstreamProxy: null }));
+    const save = auto ? ui.context.saveAutoRotateProxyOnError() : ui.context.saveUpstreamProxy();
+    const load = () => auto ? ui.context.loadAutoRotateProxyOnError() : ui.context.loadUpstreamProxy();
+    await load();
+    assert.equal(ui.requests.length, 1);
+    releaseSave(response({ success: true, enabled: false }));
+    await save;
+    await load();
+    assert.equal(ui.requests.length, 2);
+    if (auto) assert.equal(ui.elements.autoRotateProxyOnError.checked, true);
+    else assert.equal(ui.elements.upstreamType.value, 'none');
+  }
+});
+
+test('proxy loaders retain the newest read and supersede old reads on rotation events', async () => {
+  for (const auto of [false, true]) {
+    const releases = [];
+    const ui = createHarness(() => new Promise(resolve => releases.push(resolve)));
+    const load = () => auto ? ui.context.loadAutoRotateProxyOnError() : ui.context.loadUpstreamProxy();
+    const older = load();
+    const newer = load();
+    const proxy = { host: 'current.test', port: 8080, type: 'http' };
+    releases[1](response(auto ? { enabled: true, provider: 'current' } : { upstreamProxy: proxy }));
+    await newer;
+    releases[0](response(auto ? { enabled: false, provider: 'old' } : { upstreamProxy: null }));
+    await older;
+    if (auto) assert.equal(ui.elements.autoRotateProxyOnError.checked, true);
+    else {
+      assert.equal(ui.elements.upstreamDetails.value, 'current.test:8080');
+      const stale = load();
+      ui.context.handleProxyAutoRotateEvent({ status: 'success', upstreamProxy: { ...proxy, host: 'rotated.test' } });
+      releases[2](response({ upstreamProxy: proxy }));
+      await stale;
+      assert.equal(ui.elements.upstreamDetails.value, 'rotated.test:8080');
+    }
+  }
+});
 
 test('loading a null upstream configuration explicitly renders direct mode', async () => {
   const ui = createHarness(async () => response({ upstreamProxy: null }));

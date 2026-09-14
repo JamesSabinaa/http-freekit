@@ -1656,7 +1656,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-066 — Medium — Delayed reconnect reads overwrite newly saved proxy settings in the UI
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A held reconnect read reproduced the saved upstream being
+  replaced by direct-mode controls. Both loaders lacked read invalidation.
+- **Resolution:** Invalidate older reads on mutations, skip reads while writes
+  are pending, and retain the newest read or rotation update. Failed upstream
+  deletion still reloads server state after its write completes.
+- **Verification:** All 139 settings, upstream, and test-layout checks passed.
+  Renderer regressions cover upstream POST/DELETE, manual rotation, automatic
+  rotation events, auto-rotate configuration, overlapping reads, pending writes,
+  and fresh reads after completion.
 - **Evidence:** upstream and auto-rotate loaders apply every completed GET
   without invalidating reads started before a newer save
   (`src/ui/app.js:14043-14051,13968-13976`). Both run during WebSocket init,

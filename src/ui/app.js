@@ -13897,12 +13897,18 @@
       return { host, port, auth };
     }
 
+    let upstreamProxyReadGeneration = 0;
+    let upstreamProxyWritesPending = 0;
+
     async function saveUpstreamProxy() {
       const type = document.getElementById('upstreamType').value;
       const statusEl = document.getElementById('upstreamStatus');
 
       if (type === 'none') {
         // Disable upstream proxy
+        upstreamProxyReadGeneration++;
+        upstreamProxyWritesPending++;
+        let reloadAfterFailure = false;
         try {
           const res = await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
           const data = await res.json().catch(() => ({}));
@@ -13913,8 +13919,11 @@
           toast('Upstream proxy disabled', 'success');
         } catch (err) {
           toast('Error: ' + err.message, 'error');
-          await loadUpstreamProxy();
+          reloadAfterFailure = true;
+        } finally {
+          upstreamProxyWritesPending--;
         }
+        if (reloadAfterFailure) await loadUpstreamProxy();
         return;
       }
 
@@ -13925,6 +13934,8 @@
         .filter(Boolean);
       if (!details) { toast('Enter proxy details first', 'error'); return; }
 
+      upstreamProxyReadGeneration++;
+      upstreamProxyWritesPending++;
       try {
         const { host, port, auth } = parseUpstreamProxyDetails(details, type);
         const res = await fetch(API_BASE + '/api/upstream-proxy', {
@@ -13937,9 +13948,11 @@
         setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${formatUpstreamProxyEndpoint(host, port)}`, 'var(--status-2xx)');
         toast('Upstream proxy configured', 'success');
       } catch (err) { toast('Error: ' + err.message, 'error'); }
+      finally { upstreamProxyWritesPending--; }
     }
 
     function updateUpstreamProxyUi(proxy, provider) {
+      upstreamProxyReadGeneration++;
       const typeEl = document.getElementById('upstreamType');
       const fieldsEl = document.getElementById('upstreamDetailsFields');
       const detailsEl = document.getElementById('upstreamDetails');
@@ -13995,6 +14008,8 @@
     }
 
     async function rotateBottingToolsProxy() {
+      upstreamProxyReadGeneration++;
+      upstreamProxyWritesPending++;
       const providerEl = document.getElementById('bottingToolsProvider');
       const buttonEl = document.getElementById('bottingToolsRotateBtn');
       const provider = (providerEl?.value || 'lemonprime').trim() || 'lemonprime';
@@ -14021,6 +14036,7 @@
           buttonEl.disabled = false;
           buttonEl.textContent = 'Rotate with BottingTools';
         }
+        upstreamProxyWritesPending--;
       }
     }
 
@@ -14029,6 +14045,7 @@
       provider: 'lemonprime'
     };
     let autoRotateProxySavePromise = null;
+    let autoRotateProxyReadGeneration = 0;
 
     function applyAutoRotateProxyControls(config) {
       const checkbox = document.getElementById('autoRotateProxyOnError');
@@ -14045,21 +14062,26 @@
     }
 
     async function loadAutoRotateProxyOnError() {
+      if (autoRotateProxySavePromise) return;
+      const readGeneration = ++autoRotateProxyReadGeneration;
       try {
         const res = await fetch(API_BASE + '/api/bottingtools/auto-rotate-proxy');
         const data = await res.json();
+        if (readGeneration !== autoRotateProxyReadGeneration) return;
         autoRotateProxyAuthoritative = {
           enabled: data.enabled === true,
           provider: String(data.provider || 'lemonprime').trim() || 'lemonprime'
         };
         applyAutoRotateProxyControls(autoRotateProxyAuthoritative);
       } catch (err) {
+        if (readGeneration !== autoRotateProxyReadGeneration) return;
         console.warn('[BottingTools auto-rotate]', err.message);
       }
     }
 
     async function saveAutoRotateProxyOnError(showToast = true) {
       if (autoRotateProxySavePromise) return autoRotateProxySavePromise;
+      autoRotateProxyReadGeneration++;
       const checkbox = document.getElementById('autoRotateProxyOnError');
       const providerEl = document.getElementById('bottingToolsProvider');
       const enabled = !!checkbox?.checked;
@@ -14120,15 +14142,19 @@
     }
 
     async function loadUpstreamProxy() {
+      if (upstreamProxyWritesPending) return;
+      const readGeneration = ++upstreamProxyReadGeneration;
       try {
         const res = await fetch(API_BASE + '/api/upstream-proxy');
         const data = await res.json();
+        if (readGeneration !== upstreamProxyReadGeneration) return;
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (!Object.hasOwn(data, 'upstreamProxy')) {
           throw new Error('Upstream proxy response was incomplete');
         }
         updateUpstreamProxyUi(data.upstreamProxy);
       } catch (e) {
+        if (readGeneration !== upstreamProxyReadGeneration) return;
         console.error('[Error]', e.message);
         toast('Error: ' + e.message, 'error');
       }
