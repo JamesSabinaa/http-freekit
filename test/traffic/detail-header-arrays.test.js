@@ -59,6 +59,7 @@ function renderDetail(request) {
   const detailContent = { innerHTML: '' };
   const bodyViewerCalls = [];
   const context = {
+    atob,
     HEADER_DOCS: {},
     SOURCE_ICONS: { Other: '' },
     URL,
@@ -124,6 +125,19 @@ function renderDetail(request) {
     }
   };
 }
+
+test('binary ping and pong payloads display the captured bytes as hex', () => {
+  for (const opcode of [9, 10]) {
+    const { html } = renderDetail({
+      id: 'control', protocol: 'ws-frame', direction: 'server', opcode,
+      opcodeName: opcode === 9 ? 'ping' : 'pong', timestamp: Date.now(),
+      requestBody: '/wCAQQ==', requestBodyEncoding: 'base64', requestBodySize: 4
+    });
+    assert.match(html, /Payload \(Binary\)/);
+    assert.match(html, /ff 00 80 41/);
+    assert.doesNotMatch(html, /�|\/wCAQQ==/);
+  }
+});
 
 function renderTrafficRow(request) {
   const context = {

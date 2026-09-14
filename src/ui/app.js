@@ -3442,7 +3442,8 @@
           ? req.opcode
           : 0;
         const isTextFrame = req.opcode === 1; // TEXT opcode
-        const isBinaryFrame = req.opcode === 2; // BINARY opcode
+        const isBinaryControl = (req.opcode === 9 || req.opcode === 10) && req.requestBodyEncoding === 'base64';
+        const isBinaryFrame = req.opcode === 2 || isBinaryControl;
         const isCloseFrame = req.opcode === 8; // CLOSE opcode
 
         html += `<div class="detail-card dir-right" style="border-right-color:${dirColor};">
@@ -3508,7 +3509,9 @@
             </div>`;
           } else if (isBinaryFrame) {
             // Binary: show as hex dump
-            const hexBody = req.requestBody;
+            const hexBody = isBinaryControl
+              ? Array.from(atob(req.requestBody), char => char.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+              : req.requestBody;
             const hexFormatted = hexBody.replace(/(.{2})/g, '$1 ').replace(/(.{48})/g, '$1\n').trim();
             html += `<div class="detail-card dir-left" style="border-left-color:${dirColor};">
               <div class="detail-card-header">

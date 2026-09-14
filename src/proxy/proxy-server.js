@@ -4907,6 +4907,8 @@ export class ProxyServer {
       }
     }
 
+    const isControlPayload = frame.opcode === WS_OPCODE.PING || frame.opcode === WS_OPCODE.PONG;
+    const controlPayloadEncoding = isControlPayload && !isUtf8(displayPayload) ? 'base64' : 'utf8';
     let payload;
     if (decompressionError) {
       payload = `[Unable to decompress WebSocket message: ${decompressionError}]`;
@@ -4923,8 +4925,8 @@ export class ProxyServer {
       // Hex-encode binary frames
       payload = displayPayload.toString('hex');
     } else {
-      // Ping/pong: show payload as UTF-8 if present, otherwise empty
-      payload = displayPayload.length > 0 ? displayPayload.toString('utf-8') : '';
+      // Control payloads need not be text. Preserve bytes that UTF-8 cannot represent.
+      payload = displayPayload.toString(controlPayloadEncoding);
     }
 
     const event = {
@@ -4936,6 +4938,7 @@ export class ProxyServer {
       path: '',
       requestHeaders: {},
       requestBody: payload,
+      ...(isControlPayload && !decompressionError ? { requestBodyEncoding: controlPayloadEncoding } : {}),
       requestBodySize: frame.payload.length,
       ...(frame.compressed && !decompressionError
         ? { requestBodyDecodedSize: displayPayload.length }

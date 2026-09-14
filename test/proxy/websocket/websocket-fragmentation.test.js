@@ -231,6 +231,30 @@ function responsePayload(bytes) {
   return bytes.subarray(headerEnd + separator.length);
 }
 
+test('real proxy retains ping and pong payload bytes in both directions', async t => {
+  const payloads = [Buffer.from('ff008041', 'hex'), Buffer.from('café'), Buffer.alloc(0)];
+  const frames = payloads.flatMap(payload => [WS_OPCODE.PING, WS_OPCODE.PONG].map(opcode => ({ opcode, payload })));
+  const serverWire = Buffer.concat(frames.map(frame => encodeFrame(frame)));
+  const clientWire = Buffer.concat(frames.map(frame => encodeFrame({ ...frame, masked: true })));
+  const session = await createRawWebSocket(t, { serverWire });
+  session.client.write(clientWire);
+  await waitFor(() => session.capture.events.filter(event => event.protocol === 'ws-frame').length === 12,
+    'Timed out waiting for ping and pong captures');
+  await waitFor(() => Buffer.concat(session.originChunks).length === clientWire.length,
+    'Timed out waiting for client controls at origin');
+  assert.deepEqual(Buffer.concat(session.originChunks), clientWire);
+  assert.deepEqual(responsePayload(session.clientBytes()), serverWire);
+  for (const direction of ['client', 'server']) {
+    const captured = session.capture.events.filter(event => event.protocol === 'ws-frame' && event.direction === direction);
+    assert.equal(captured.length, frames.length);
+    captured.forEach((event, index) => {
+      assert.equal(event.opcode, frames[index].opcode);
+      assert.equal(event.requestBodySize, frames[index].payload.length);
+      assert.deepEqual(Buffer.from(event.requestBody, event.requestBodyEncoding || 'utf8'), frames[index].payload);
+    });
+  }
+});
+
 test('real proxy captures one logical record per fragmented message and relays every byte', async t => {
   const serverWire = Buffer.concat([
     encodeFrame({ fin: false, opcode: WS_OPCODE.BINARY, payload: Buffer.from([0, 1]) }),

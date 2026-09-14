@@ -1750,7 +1750,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-070 — Medium — WebSocket ping and pong captures lose non-text payload bytes
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Real proxied control frames reproduced UTF-8 replacement bytes in
+  captured payloads despite byte-for-byte forwarding. Control payloads are not
+  constrained to text.
+- **Resolution:** Preserve valid UTF-8 controls as text and encode other control
+  payloads as base64 with explicit encoding metadata. Render binary controls
+  through the existing hex payload view.
+- **Verification:** All 86 WebSocket, detail-renderer, and test-layout checks
+  passed. Real proxy coverage checks ping/pong in both directions with invalid
+  UTF-8, Unicode text, and empty payloads, plus exact forwarded wire bytes;
+  renderer tests verify lossless hex display.
 - **Evidence:** ping and pong payloads are converted unconditionally to UTF-8
   (`src/proxy/proxy-server.js:4905-4907`) and retained only as that string
   (`:4910-4919`), although control-frame payloads can contain non-text bytes.
