@@ -685,7 +685,7 @@ function generateExportSnippetCore(req, format) {
       if (hasBody) {
         code += isBinaryBody
           ? ` -Body ([Convert]::FromBase64String(${powerShellStringLiteral(body)}))`
-          : ` -Body ${powerShellStringLiteral(body)}`;
+          : ` -Body ([Text.Encoding]::UTF8.GetBytes(${powerShellStringLiteral(body)}))`;
       }
       code += `\n$response.StatusCode\n$response.Content`;
       return code;

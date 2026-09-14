@@ -51,7 +51,7 @@ test('raw request exports quote every untrusted request component', () => {
   const powershell = generateExportSnippet(request, 'powershell');
   assert.ok(powershell.includes(`-Uri ${powerShellLiteral(url)}`));
   assert.ok(powershell.includes(`-Method ${powerShellLiteral(method)}`));
-  assert.ok(powershell.includes(`-Body ${powerShellLiteral(body)}`));
+  assert.ok(powershell.includes(`-Body ([Text.Encoding]::UTF8.GetBytes(${powerShellLiteral(body)}))`));
   assert.ok(powershell.includes(powerShellLiteral(headerValue)));
 
   const php = generateExportSnippet(request, 'php');

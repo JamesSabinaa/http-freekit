@@ -2730,7 +2730,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-111 — Medium — PowerShell export changes UTF-8 raw bodies on Windows PowerShell 5.1
 
-- **Status:** Open.
+- **Status:** Fixed. Raw text exports explicitly supply UTF-8 bytes. A real
+  Windows PowerShell/local-origin regression reproduced the corruption before
+  the fix and verifies raw text and base64 controls afterward. Import/export,
+  snippet-byte and test-layout checks: 300 passed, two skipped, zero failed.
 - **Evidence:** the PowerShell exporter passes raw text as a string to
   `Invoke-WebRequest -Body` without selecting its byte encoding; its base64
   branch instead supplies explicit bytes (`src/ui/request-export.js:670-681`).
