@@ -14,6 +14,45 @@ import { trafficToHar } from '../../../src/api/har-converter.js';
 import { CertificateAuthority } from '../../../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
+test('a retired 410 response cannot time out a healthy streaming retry', async t => {
+  let attempts = 0;
+  const upstream = http.createServer((_request, response) => {
+    if (++attempts === 1) {
+      response.writeHead(410, { 'content-length': '100' });
+      response.flushHeaders();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.write('start');
+    let chunks = 0;
+    const timer = setInterval(() => {
+      response.write('.');
+      if (++chunks === 20) { clearInterval(timer); response.end('end'); }
+    }, 20);
+    response.once('close', () => clearInterval(timer));
+  });
+  const destroySockets = trackSockets(upstream);
+  const port = await listen(upstream);
+  const proxy = new ProxyServer(null, { port: 0 });
+  proxy._upstreamIdleTimeoutMs = 120;
+  proxy.setUpstreamProxy({ host: '127.0.0.1', port, type: 'http' });
+  proxy._shouldRetryAfterUpstreamResponse = async (response, context) => response.statusCode === 410 && context.attempt === 0;
+  await proxy.start();
+  t.after(async () => { await proxy.stop(); await close(upstream, destroySockets); });
+  const body = await new Promise((resolve, reject) => {
+    const request = http.get({ hostname: '127.0.0.1', port: proxy.server.address().port, path: 'http://origin.test/retry' }, response => {
+      assert.equal(response.statusCode, 200);
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('error', reject);
+      response.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+    request.on('error', reject);
+  });
+  assert.equal(body, 'start' + '.'.repeat(20) + 'end');
+  assert.equal(attempts, 2);
+});
+
 function deferred() {
   let resolve;
   let reject;

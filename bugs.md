@@ -2463,7 +2463,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-101 — Medium — A retired upstream response can abort a healthy HTTP retry
 
-- **Status:** Open.
+- **Status:** Fixed. The H1 streaming retry retires the abandoned response/request
+  and disables its idle timeout. Failure and response callbacks reject superseded
+  attempts, including after asynchronous retry decisions. A real local HTTP test
+  keeps a 410 response open while its replacement streams beyond the old timeout;
+  the replacement completes. All 53 streaming, upstream-proxy, and layout checks passed.
 - **Evidence:** HTTP/1 streaming retries a 410 response after resuming its body,
   leaving the old request's idle timeout and error handler active
   (`src/proxy/proxy-server.js:1662-1665,1766-1773`). The shared failure handler

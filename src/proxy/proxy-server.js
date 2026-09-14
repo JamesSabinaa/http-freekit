@@ -1567,7 +1567,7 @@ export class ProxyServer {
       && this._canSafelyReplayRequest(method);
 
     const handleFailure = async (error, request, context, allowGrace = true) => {
-      if (finalized || downstream.aborted) return;
+      if (finalized || downstream.aborted || (request && request !== activeRequest)) return;
       if (allowGrace && !requestEnded && !responseMetadata) {
         // An upstream failure can happen while request backpressure has the
         // downstream paused. The failed request will never drain, so resume
@@ -1602,6 +1602,7 @@ export class ProxyServer {
           url: targetUrl.href,
           host: targetUrl.hostname
         });
+        if (request && request !== activeRequest) return;
         if (shouldRetry && !finalized && !downstream.aborted) {
           sendProxyRequest(context.attempt + 1, true);
           return;
@@ -1650,7 +1651,7 @@ export class ProxyServer {
     };
 
     const handleResponse = (request, context) => async proxyRes => {
-      if (finalized || downstream.aborted) {
+      if (finalized || downstream.aborted || request !== activeRequest) {
         proxyRes.destroy();
         return;
       }
@@ -1665,12 +1666,16 @@ export class ProxyServer {
           host: targetUrl.hostname
         });
         if (shouldRetry && !finalized && !downstream.aborted) {
-          proxyRes.resume();
+          if (request !== activeRequest) { proxyRes.destroy(); return; }
+          activeRequest = null;
+          request.setTimeout(0);
+          proxyRes.destroy();
+          request.destroy();
           sendProxyRequest(context.attempt + 1, true);
           return;
         }
       }
-      if (finalized || downstream.aborted) {
+      if (finalized || downstream.aborted || request !== activeRequest) {
         proxyRes.destroy();
         return;
       }
