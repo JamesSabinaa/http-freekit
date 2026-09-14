@@ -5228,22 +5228,8 @@
 
         let message = bytes.slice(offset, offset + size);
         offset += size;
-        if (endStream) {
-          const endStreamText = tryDecodeUtf8(message);
-          chunks.push('end stream:');
-          if (endStreamText !== null) {
-            try {
-              chunks.push(JSON.stringify(JSON.parse(endStreamText), null, 2));
-            } catch {
-              chunks.push(endStreamText);
-            }
-          } else {
-            chunks.push('  hex: ' + bytesToHexPreview(message));
-          }
-          continue;
-        }
-
-        chunks.push(`message ${++index}: ${decodeType?.fullName || 'protobuf'} compressed=${compressed}${compressed && grpcEncoding ? ' encoding=' + grpcEncoding : ''} size=${size}`);
+        if (endStream) chunks.push('end stream:');
+        else chunks.push(`message ${++index}: ${decodeType?.fullName || 'protobuf'} compressed=${compressed}${compressed && grpcEncoding ? ' encoding=' + grpcEncoding : ''} size=${size}`);
         if (compressed) {
           try {
             const decompressed = decompressGrpcMessage(message, grpcEncoding);
@@ -5264,6 +5250,20 @@
             chunks.push('  hex: ' + bytesToHexPreview(message));
             continue;
           }
+        }
+
+        if (endStream) {
+          const endStreamText = tryDecodeUtf8(message);
+          if (endStreamText !== null) {
+            try {
+              chunks.push(JSON.stringify(JSON.parse(endStreamText), null, 2));
+            } catch {
+              chunks.push(endStreamText);
+            }
+          } else {
+            chunks.push('  hex: ' + bytesToHexPreview(message));
+          }
+          continue;
         }
 
         if (decodeType) {

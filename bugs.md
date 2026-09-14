@@ -1229,7 +1229,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-048 — Medium — Compressed Connect EndStream previews skip decompression
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The protocol explicitly allows independent compression and
+  EndStream flags. Regressions confirmed the decoder skipped both decompression
+  and its bounded-error diagnostics for these envelopes.
+- **Resolution:** Decompress envelopes before interpreting EndStream JSON,
+  reusing the existing output limits and malformed-compression diagnostics.
+- **Verification:** 116 UI, Monaco fallback, and test-layout checks passed,
+  including gzip, deflate, uncompressed, oversized, and malformed EndStream
+  payloads. A live Chromium probe displayed the gzip-compressed error correctly.
 - **Evidence:** the decoder records the compression flag (`src/ui/app.js:5204`)
   but handles EndStream and continues (`:5215`) before its decompression branch
   (`:5232`). Connect defines compression and EndStream as independent bits in

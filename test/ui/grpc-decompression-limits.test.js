@@ -37,7 +37,6 @@ function createHarness() {
     DataView,
     BigInt,
     atob,
-    isConnectContentType: () => false,
     inferGrpcMessageType: () => null,
     inferProtobufMessageType: () => null,
     lookupProtobufType: () => null,
@@ -48,6 +47,7 @@ function createHarness() {
   };
   vm.createContext(context);
   vm.runInContext(`
+    ${source.slice(source.indexOf('function isGrpcContentType('), source.indexOf('const activeBodyEditors = {}'))}
     ${grpcSource}
     globalThis.grpcApi = {
       decode: decodeGrpcBody,
@@ -55,13 +55,13 @@ function createHarness() {
     };
   `, context);
   return {
-    decode(body, encoding = 'gzip') {
+    decode(body, encoding = 'gzip', contentType = 'application/grpc') {
       return context.grpcApi.decode(body, {
         section: 'response',
-        contentType: 'application/grpc',
+        contentType,
         request: {
           responseBodyEncoding: 'base64',
-          responseHeaders: { 'grpc-encoding': encoding }
+          responseHeaders: { 'grpc-encoding': encoding, 'connect-content-encoding': encoding }
         }
       });
     },
@@ -76,6 +76,36 @@ test('gRPC preview incrementally decompresses ordinary messages without one-shot
   assert.match(output, /decompressed-size=3/);
   assert.match(output, /1: varint 150/);
   assert.doesNotMatch(output, /decompression-truncated/);
+});
+
+function connectEndStream(bytes, compressed = true) {
+  const header = Buffer.alloc(5);
+  header[0] = compressed ? 3 : 2;
+  header.writeUInt32BE(bytes.length, 1);
+  return 'data:application/connect+proto;base64,' + Buffer.concat([header, bytes]).toString('base64');
+}
+
+test('Connect EndStream previews decompress JSON errors and trailing metadata', () => {
+  const payload = Buffer.from(JSON.stringify({ error: { code: 'unavailable', message: 'Try later' }, metadata: { 'retry-after': ['30'] } }));
+  for (const encoding of ['gzip', 'deflate', 'identity']) {
+    const bytes = encoding === 'gzip' ? pako.gzip(payload) : encoding === 'deflate' ? pako.deflate(payload) : payload;
+    const output = createHarness().decode(connectEndStream(bytes, encoding !== 'identity'), encoding, 'application/connect+proto');
+    assert.match(output, /end stream:/);
+    assert.match(output, /Try later/);
+    assert.match(output, /retry-after/);
+    assert.doesNotMatch(output, /unable to|hex:/);
+  }
+});
+
+test('Connect EndStream decompression retains bounded and malformed-payload diagnostics', () => {
+  const harness = createHarness();
+  const oversized = harness.decode(connectEndStream(pako.gzip(Buffer.alloc(2 * 1024 * 1024, 32))), 'gzip', 'application/connect+proto');
+  assert.match(oversized, /end stream:/);
+  assert.match(oversized, /decompression-truncated=true/);
+  assert.ok(oversized.length < 2000);
+  const invalid = harness.decode(connectEndStream(Buffer.from('invalid gzip')), 'gzip', 'application/connect+proto');
+  assert.match(invalid, /unable to decompress/);
+  assert.equal(harness.schemaDecodeCalls, 0);
 });
 
 test('high-ratio gRPC messages stop at bounded output and render explicit limit metadata', () => {
