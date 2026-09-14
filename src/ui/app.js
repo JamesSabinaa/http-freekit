@@ -6394,8 +6394,8 @@
       const operation = beginInterceptorOperation(id);
 
       // Activate if not already active, then expand
-      // Always refresh for android-adb (device list may change)
-      if (id !== 'electron' && (!isActive || id === 'android-adb' || id === 'jvm')) {
+      // Refresh device/process lists and Docker's generated connection instructions.
+      if (id !== 'electron' && (!isActive || id === 'android-adb' || id === 'jvm' || id === 'docker')) {
         interceptorsInProgress.add(id);
         filterInterceptors();
         try {

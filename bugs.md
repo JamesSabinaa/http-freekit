@@ -1340,7 +1340,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-053 — Medium — Reopening active Docker configuration replaces working connection instructions
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The renderer clears metadata on collapse and skips regeneration
+  for active Docker. Docker activation without a container ID generates
+  instructions without mutating containers, so refreshing it is appropriate.
+- **Resolution:** Regenerate Docker connection metadata whenever its card opens.
+- **Verification:** All 28 Docker, interceptor-load, and test-layout checks
+  passed. The regression uses production renderer functions and the Windows
+  instruction generator to verify reopen retains host, CA mount, and Node trust
+  settings while refreshing a changed proxy port. It failed before the fix;
+  no container was launched.
 - **Evidence:** collapsing a card clears activation metadata
   (`src/ui/app.js:6423`), but reopening active Docker skips retrieving it
   (`:6381`). The renderer then uses fallback instructions (`:6529-6532`) with
