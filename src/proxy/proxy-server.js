@@ -10360,6 +10360,7 @@ export class ProxyServer {
 
   _evaluateMatcher(matcher, method, url, headers, body) {
     if (!isCompleteMockMatcher(matcher)) return false;
+    if (body === null && BODY_MATCHER_TYPES.has(matcher.type)) return false;
     if (BLANK_VALUE_MATCH_ALL_TYPES.has(matcher?.type)
       && (typeof matcher.value !== 'string' || matcher.value.trim() === '')) {
       return false;
@@ -11342,13 +11343,14 @@ export class ProxyServer {
   }
 
   _requestBodyForMatching(buffer, headers = {}) {
-    if (!buffer || buffer.length === 0 || buffer.length > this.maxBufferedBodyBytes) return '';
+    if (!buffer || buffer.length === 0) return '';
+    if (buffer.length > this.maxBufferedBodyBytes) return null;
     const encodingKey = Object.keys(headers || {})
       .find(name => name.toLowerCase() === 'content-encoding');
     const headerValue = encodingKey ? headers[encodingKey] : '';
     const codings = this._parseContentCodings(headerValue);
     const decoded = this._decompressBody(buffer, headerValue);
-    if (codings.some(coding => coding !== 'identity') && decoded === buffer) return '';
+    if (codings.some(coding => coding !== 'identity') && decoded === buffer) return null;
     return decoded.toString('utf8');
   }
 

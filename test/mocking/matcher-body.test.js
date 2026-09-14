@@ -42,6 +42,24 @@ async function startProxy(t, rules, options = {}) {
   return { proxy, captured };
 }
 
+test('empty-body rules do not match unavailable decoded bodies', async t => {
+  const { proxy } = await startProxy(t, [
+    { matchers: [{ type: 'raw-body-exact', value: '' }], action: { type: 'fixed-response', status: 200, body: 'empty' } },
+    { matchers: [], action: { type: 'fixed-response', status: 201, body: 'other' } }
+  ]);
+  for (const [body, encoding, expected] of [
+    [Buffer.alloc(0), '', 'empty'],
+    [zlib.gzipSync(Buffer.alloc(0)), 'gzip', 'empty'],
+    [zlib.gzipSync(Buffer.from('small')), 'gzip', 'other'],
+    [zlib.gzipSync(Buffer.alloc(33_554_433, 65)), 'gzip', 'other'],
+    [Buffer.from('invalid gzip'), 'gzip', 'other'],
+    [Buffer.from('encoded'), 'unsupported', 'other']
+  ]) {
+    const result = await requestThroughProxy(proxy.server.address().port, '/empty', body, { 'content-encoding': encoding });
+    assert.equal(result.body, expected);
+  }
+});
+
 test('multipart exact matchers preserve trailing field newlines from native FormData', async t => {
   const values = ['hello', 'hello\r\n', 'hello\r\n\r\n', '\r\n', 'café\r\n'];
   const rules = values.map((value, index) => ({
@@ -146,7 +164,7 @@ test('breakpoint body matchers use decoded input within existing ceilings', () =
 
   assert.equal(proxy._checkBreakpoint('POST', 'http://example.test/', {}, matcherBody), rule);
   const overCeiling = zlib.gzipSync(Buffer.from(JSON.stringify({ match: true, padding: 'x'.repeat(4096) })));
-  assert.equal(proxy._requestBodyForMatching(overCeiling, { 'content-encoding': 'gzip' }), '');
+  assert.equal(proxy._requestBodyForMatching(overCeiling, { 'content-encoding': 'gzip' }), null);
   assert.equal(proxy._checkBreakpoint('POST', 'http://example.test/', {},
     proxy._requestBodyForMatching(overCeiling, { 'content-encoding': 'gzip' })), undefined);
 });
@@ -171,7 +189,7 @@ test('failed or unsupported non-identity codings never expose encoded matcher by
   const proxy = new ProxyServer(null);
   const body = Buffer.from('raw bytes that are not gzip');
 
-  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'GZip' }), '');
-  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'identity, unsupported' }), '');
-  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': ['Identity', 'BR'] }), '');
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'GZip' }), null);
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': 'identity, unsupported' }), null);
+  assert.equal(proxy._requestBodyForMatching(body, { 'content-encoding': ['Identity', 'BR'] }), null);
 });

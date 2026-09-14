@@ -1460,7 +1460,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-062 — Medium — Requests beyond the decode limit incorrectly match an empty-body mock
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Reviewed ahead of BUG-049 because regex matching of empty strings
+  would also expose this ambiguity. A live proxy regression reproduced a false
+  empty-body match for gzip expanding beyond the production 32 MiB limit.
+- **Resolution:** Represent unavailable matcher content separately from empty
+  text and reject body-dependent matchers for unavailable content.
+- **Verification:** 55 focused body, validation, breakpoint, streaming, and
+  test-layout checks passed. Live requests cover empty and gzip-empty bodies,
+  ordinary gzip, over-limit expansion, malformed gzip, and unsupported encoding.
 - **Evidence:** unsuccessful bounded request decompression returns the original
   compressed buffer (`src/proxy/proxy-server.js:11648-11680`), which the body
   matching helper converts to an empty string (`:11688-11696`). The
