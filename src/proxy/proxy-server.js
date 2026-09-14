@@ -471,6 +471,7 @@ export class ProxyServer {
     this._tlsImpersonationWarnings = new Set();
     this._tlsConfigGeneration = 0;
     this._fingerprintedAgents = new Map();
+    this._fingerprintAgentStates = new Map();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
     this._upstreamProxyGeneration = 0;
@@ -1170,7 +1171,8 @@ export class ProxyServer {
     this._upstreamAgent?.destroy?.();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
-    for (const agent of this._fingerprintedAgents.values()) agent.destroy?.();
+    for (const agent of this._fingerprintAgentStates.keys()) agent.destroy?.();
+    this._fingerprintAgentStates.clear();
     this._fingerprintedAgents.clear();
   }
 
@@ -9873,6 +9875,22 @@ export class ProxyServer {
     });
   }
 
+  _retireFingerprintAgent(agent) {
+    const state = this._fingerprintAgentStates.get(agent);
+    if (!state) return;
+    state.retired = true;
+    // Existing queued requests may still reuse a socket, but finished sockets
+    // must no longer enter the idle pool after this agent leaves the cache.
+    agent.keepAlive = false;
+    for (const sockets of Object.values(agent.freeSockets)) {
+      for (const socket of sockets) socket.destroy();
+    }
+    if (state.requests.size === 0) {
+      agent.destroy();
+      this._fingerprintAgentStates.delete(agent);
+    }
+  }
+
   _getFingerprintAgent(route, clientHello) {
     const helloKey = ProxyServer._clientHelloCacheKey(clientHello);
     const routeKey = route === 'proxy'
@@ -9885,12 +9903,33 @@ export class ProxyServer {
     const agent = route === 'proxy'
       ? this._createUpstreamAgent(this._getUpstreamProxyUrl())
       : new https.Agent(this._getAgentOptions());
+    const state = { requests: new Set(), retired: false };
+    this._fingerprintAgentStates.set(agent, state);
+    const addRequest = agent.addRequest;
+    agent.addRequest = (request, ...args) => {
+      state.requests.add(request);
+      const release = () => {
+        state.requests.delete(request);
+        if (state.retired && state.requests.size === 0) {
+          agent.destroy();
+          this._fingerprintAgentStates.delete(agent);
+        }
+      };
+      request.once('close', release);
+      try {
+        return addRequest.call(agent, request, ...args);
+      } catch (error) {
+        request.removeListener('close', release);
+        release();
+        throw error;
+      }
+    };
     this._fingerprintedAgents.set(agentKey, agent);
     if (this._fingerprintedAgents.size > 128) {
       const oldestKey = this._fingerprintedAgents.keys().next().value;
       const oldestAgent = this._fingerprintedAgents.get(oldestKey);
       this._fingerprintedAgents.delete(oldestKey);
-      oldestAgent?.destroy?.();
+      this._retireFingerprintAgent(oldestAgent);
     }
     return agent;
   }

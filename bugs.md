@@ -723,7 +723,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-028 — Medium — Fingerprint cache eviction aborts active HTTPS requests
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Confirmed unconditional eviction destroys an agent with a live
+  HTTPS request; the regression failed with `ECONNRESET` before correction.
+  Queued requests and asynchronous CONNECT setup also need to survive eviction.
+- **Resolution:** Track each agent's outstanding requests, retire evicted agents
+  without interrupting them, disable idle pooling, and destroy retired agents
+  after their last request closes. Shutdown includes retired agents.
+- **Verification:** 17 focused checks passed, including real direct and CONNECT
+  HTTPS exchanges, a queued request, idle socket disposal, retired-agent shutdown,
+  fingerprint mirroring, configuration changes, and test layout.
 - **Evidence:** `_getFingerprintAgent()` destroys the oldest HTTPS agent when
   the cache grows beyond 128 identities (`src/proxy/proxy-server.js:10086-10106`).
   `Agent.destroy()` closes its active sockets as well as idle ones. The cache
