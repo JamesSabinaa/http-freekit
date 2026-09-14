@@ -1275,7 +1275,12 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-050 — Medium — An unmatched text replacement corrupts binary body bytes
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** The shared helper unconditionally round-trips bytes through UTF-8.
+  Preserving unmatched bytes is clear, but matching text inside invalid UTF-8
+  needs a policy: skip non-text bodies (recommended), or replace UTF-8 byte
+  sequences while preserving surrounding binary bytes. Asked for this choice;
+  implementation remains pending.
 - **Evidence:** Match/Replace always decodes and re-encodes a body as UTF-8,
   even when its pattern does not occur (`src/proxy/proxy-server.js:3811-3814`).
   Request and response transforms share this helper (`:3855,3895`).
@@ -1288,7 +1293,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-051 — Medium — A stale Electron status refresh reverses the visible result of Stop
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Deferred process observations reproduced both reactivation after
+  Stop and deactivation of a newly launched app by a stale absent result.
+- **Resolution:** Discard awaited status observations when the captured
+  ownership record is no longer current.
+- **Verification:** All 37 Electron and test-layout checks passed. Six race
+  cases exercise running, absent, and unknown observations after public Stop,
+  with and without a subsequent public activation. Three cases failed before
+  the fix; tests also verify ownership and journal state.
 - **Evidence:** `ElectronInterceptor._refreshOwnedProcess()` applies an awaited
   observation without checking that ownership still refers to the same lifecycle
   (`src/interceptors/electron-interceptor.js:339-360`). Manager listing calls

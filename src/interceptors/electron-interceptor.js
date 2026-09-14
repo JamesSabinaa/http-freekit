@@ -340,6 +340,7 @@ export class ElectronInterceptor {
     const expected = this.ownership;
     if (!expected) return this._hasActiveProcess();
     const observation = await this._observeProcessIdentity(expected.pid);
+    if (this.ownership !== expected) return this._hasActiveProcess();
     const state = this._classifyProcessObservation(expected, observation);
     if (state === 'same' || state === 'unknown') {
       this.active = true;

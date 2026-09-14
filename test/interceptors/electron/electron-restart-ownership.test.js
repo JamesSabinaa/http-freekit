@@ -87,6 +87,38 @@ test('InterceptorManager gives Electron ownership storage in its data directory'
   );
 });
 
+test('late Electron status observations cannot revive or clear retired ownership', async t => {
+  for (const observation of [running(identity()), { state: 'absent' }, { state: 'unknown' }]) {
+    for (const restart of [false, true]) {
+      await t.test(`${observation.state} restart=${restart}`, async t => {
+        const dataDir = createDataDir(t);
+        writeJournal(dataDir, identity());
+        let release;
+        let calls = 0;
+        const next = identity(9444);
+        const interceptor = new ElectronInterceptor({ dataDir, processIdentityLookup: async () => {
+          if (++calls === 1) return new Promise(resolve => { release = resolve; });
+          return calls === 2 ? { state: 'absent' } : running(next);
+        } });
+        const pending = interceptor.isActive();
+        await interceptor.deactivate();
+        assert.equal(interceptor.active, false);
+        assert.equal(interceptor.ownership, null);
+        if (restart) {
+          configureLaunch(interceptor, fakeChild(next.pid));
+          await interceptor.activate(8080, { appPath: 'electron-test' });
+        }
+        const currentOwnership = interceptor.ownership;
+        release(observation);
+        assert.equal(await pending, restart);
+        assert.equal(interceptor.active, restart);
+        assert.equal(interceptor.ownership, currentOwnership);
+        assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_NAME)), restart);
+      });
+    }
+  }
+});
+
 test('a matching Electron child is journaled, adopted after restart, and safely stopped', async t => {
   const dataDir = createDataDir(t);
   const owner = identity();
