@@ -2414,7 +2414,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-099 — Medium — HTTPS Forward rules discard the captured client TLS profile
 
-- **Status:** Open.
+- **Status:** Fixed. Forward carries the captured ClientHello through TLS option
+  and agent selection, including the H1 and H2 mock paths. A real TLS regression
+  verifies the custom client's JA4 for direct and upstream-proxied Forward requests.
+  All 17 focused forwarding, TLS, H2, and layout checks passed on pinned Node 26.
 - **Evidence:** `_requestMockForward()` accepts no captured ClientHello context
   and calls the TLS option/agent helpers without it
   (`src/proxy/proxy-server.js:758-760,801-803`). Ordinary forwarding supplies that

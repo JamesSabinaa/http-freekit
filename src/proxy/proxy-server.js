@@ -758,7 +758,8 @@ export class ProxyServer {
   }
 
   _requestMockForward({
-    forwardUrl, path, method, headers, body, trailers = {}, signal = null, onInformational = null
+    forwardUrl, path, method, headers, body, trailers = {}, signal = null, onInformational = null,
+    clientHelloTls = null
   }) {
     const isHttps = forwardUrl.protocol === 'https:';
     const targetHostname = this._normalizeConnectionHostname(forwardUrl.hostname);
@@ -801,8 +802,8 @@ export class ProxyServer {
         let requestLib = isHttps ? https : http;
 
         if (isHttps) {
-          Object.assign(options, this._getUpstreamTlsOptions(targetHostname));
-          if (useUpstreamProxy) options.agent = this._getUpstreamAgent();
+          Object.assign(options, this._getUpstreamTlsOptions(targetHostname, clientHelloTls));
+          if (useUpstreamProxy) options.agent = this._getUpstreamAgent(clientHelloTls);
         } else if (useUpstreamProxy && this._isSocksProxy()) {
           options.createConnection = (_connectOptions, oncreate) => {
             this._connectViaSocks(targetHostname, targetPort)
@@ -6273,6 +6274,7 @@ export class ProxyServer {
 
             try {
               const fwdRes = await this._requestMockForward({
+                clientHelloTls: tlsSocket._clientHelloTls,
                 forwardUrl,
                 path: req.url,
                 method: req.method,
@@ -7182,6 +7184,7 @@ export class ProxyServer {
         if (mockRule && mockRule.action?.type !== 'passthrough'
             && !mockBreakpointPhase && !mockTransformAction) {
           await this._handleH2MockResponse(stream, mockRule, {
+            clientHelloTls: tlsSocket?._clientHelloTls,
             requestId, method, fullUrl, authority, path, reqHeaders, body,
             requestTrailers, startTime, tlsDetails, downstream, pendingEmitted,
             trafficLifecycleId, webhookPreparation, preStepsApplied: true, ...requestProvenance
@@ -8376,6 +8379,7 @@ export class ProxyServer {
 
       try {
         const fwdRes = await this._requestMockForward({
+          clientHelloTls: ctx.clientHelloTls,
           forwardUrl,
           path,
           method,
@@ -10639,6 +10643,7 @@ export class ProxyServer {
 
       try {
         const proxyRes = await this._requestMockForward({
+          clientHelloTls: clientReq.socket?._clientHelloTls,
           forwardUrl,
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,

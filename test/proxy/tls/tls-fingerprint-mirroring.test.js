@@ -151,4 +151,15 @@ test('passthrough interception preserves the inbound JA4 fingerprint upstream', 
   assert.equal(receivedHellos.length, 4);
   assert.equal(alternateMirroredHello.ja4, alternateDirectHello.ja4);
   assert.equal(upstreamConnects, 2);
+  proxy.mockRules = [{ enabled: true, matchers: [], action: {
+    type: 'forward', forwardTo: `https://localhost:${originPort}`
+  } }];
+  for (const viaUpstream of [true, false]) {
+    if (!viaUpstream) proxy.setUpstreamProxy(null);
+    const forwardTunnel = await openTunnel(proxy.server.address().port, `localhost:${originPort}`);
+    const forwarded = await requestOverTls({ socket: forwardTunnel, ...alternateTls }, 'localhost');
+    assert.match(forwarded, /fingerprint-ok/);
+    assert.equal(receivedHellos.at(-1).ja4, alternateDirectHello.ja4);
+  }
+  assert.equal(upstreamConnects, 3);
 });
