@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { ApiServer } from '../../src/api/api-server.js';
@@ -9,6 +12,7 @@ import {
 } from '../../src/proxy/mock-rule-validation.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { restoreSavedRuleSettings } from '../../src/startup-rule-restoration.js';
+import { Settings } from '../../src/settings.js';
 
 function validRule(id = 'valid') {
   return {
@@ -54,8 +58,31 @@ async function createApi(t) {
     server.once('error', reject);
   });
   t.after(() => new Promise(resolve => server.close(resolve)));
-  return { proxy, port: server.address().port };
+  return { proxy, api, port: server.address().port };
 }
+
+test('initial mock-rule saves preserve titles in responses, storage, and restored rules', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'freekit-mock-titles-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const { api, proxy, port } = await createApi(t);
+  api.settings = new Settings(dataDir);
+  for (const legacy of [false, true]) {
+    for (const title of ['Source rule', 'Source rule (copy)', 'Mock POST /café', '', undefined]) {
+      const candidate = legacy
+        ? { method: 'POST', urlPattern: '/title', response: { status: 200, body: 'ok' } }
+        : validRule();
+      if (title !== undefined) candidate.title = title;
+      const created = await requestJson(port, 'POST', '/api/mock-rules', candidate);
+      assert.equal(created.statusCode, 200);
+      const { id } = created.body.rule;
+      assert.equal(created.body.rule.title, title);
+      assert.equal(proxy.mockRules.find(rule => rule.id === id).title, title);
+      const restored = new ProxyServer(null);
+      restored.loadMockRules(new Settings(dataDir).get('mockRules'));
+      assert.equal(restored.mockRules.find(rule => rule.id === id).title, title);
+    }
+  }
+});
 
 test('persisted mock rules discard malformed leaves at every group depth', () => {
   const proxy = new ProxyServer(null);

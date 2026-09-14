@@ -1162,7 +1162,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-045 — Medium — First server save discards new mock-rule titles
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The create route omits title from its candidate while existing-rule
+  updates preserve it. A live API regression reproduced the missing title
+  before any persistence or renderer refresh could affect the result.
+- **Resolution:** Include title in both modern and legacy create candidates.
+- **Verification:** 24 focused validation, group, persistence, and test-layout
+  checks passed. The regression verifies named, cloned-style, generated-style,
+  empty, and omitted titles in API responses, live rules, and rules restored
+  from freshly read settings in both formats.
 - **Evidence:** POST `/api/mock-rules` builds a candidate without its `title`
   (`src/api/api-server.js:1634-1640`). The renderer sends named new and cloned
   drafts through this route (`src/ui/app.js:9541-9560,9787-9800`); Create Mock

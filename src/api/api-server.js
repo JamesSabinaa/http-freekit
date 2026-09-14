@@ -1637,6 +1637,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (body.matchers !== undefined || body.action !== undefined) {
         // New format
         const candidate = {
+          title: body.title,
           enabled: body.enabled !== undefined ? body.enabled : true,
           priority: body.priority || 'normal',
           matchers: body.matchers,
@@ -1654,6 +1655,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       // Legacy format
       const { method, urlPattern, response } = body;
       const candidate = {
+        title: body.title,
         method: method || '*',
         urlPattern,
         enabled: true,
