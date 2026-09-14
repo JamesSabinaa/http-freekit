@@ -143,7 +143,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-005 — Low — Renderer declarations and legacy stylesheet blocks are orphaned
 
-- **Status:** Open (dead code).
+- **Status:** Fixed. Removed the listed unused renderer declarations, nonexistent
+  element lookups, their now-unused mock count helper, and 44 obsolete CSS blocks.
+  Tests use live hash parsing, header normalization/rendering and JSON formatting
+  entry points. All 1,055 affected checks pass; focused checks were repeated after
+  the final helper removal. Chrome computed styles remain unchanged across five panels.
 - **Evidence:** production cross-reference finds declaration-only
   `parseTrafficViewHash()`, `parseTrafficViewLifecycleHash()`,
   `contentTypeToMonacoLanguage()`, `toggleHexView()`, deprecated no-ops

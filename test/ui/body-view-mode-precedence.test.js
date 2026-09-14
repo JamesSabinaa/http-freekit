@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../../src/ui/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('function isGrpcContentType(');
-const end = source.indexOf('function contentTypeToMonacoLanguage(', start);
+const end = source.indexOf('function viewModeToMonacoLanguage(', start);
 assert.ok(start >= 0 && end > start);
 const context = vm.createContext({});
 vm.runInContext(source.slice(start, end), context);

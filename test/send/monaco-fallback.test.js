@@ -309,7 +309,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
     function getSendBodyType() { return 'raw'; }
     function setDefaultHeader(headers, name, value) { headers[name] = value; }
     function formatToContentType() { return 'application/json'; }
-    ${between('function prettyPrintJson(', 'function tryPrettyJson(')}
+    ${between('function prettyPrintJson(', '// ============ BREAKPOINT FUNCTIONS')}
     ${between('function getSendBodyValue()', 'function createMultipartBoundary()')}
     ${between('async function prepareSendRequestPayload(headers, signal, requestContext = {})', 'async function sendRequest()')}
     globalThis.toasts = [];

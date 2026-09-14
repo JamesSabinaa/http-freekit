@@ -197,7 +197,8 @@ function renderHeaderObject(headers) {
     ${attributeEscaperSource}
     ${headerNormalizerSource}
     ${headerRendererSource}
-    loadSendHeadersFromJson(JSON.stringify(__headers));
+    sendHeadersList = normalizeSendHeaderRows(__headers);
+    renderSendHeaders();
   `, context);
   return container;
 }

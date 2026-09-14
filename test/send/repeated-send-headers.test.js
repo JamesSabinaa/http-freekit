@@ -58,7 +58,8 @@ function loadHeaderRows(headers) {
   vm.runInContext(`
     ${rendererSource.slice(normalizeStart, normalizeEnd)}
     ${rendererSource.slice(editorStart, editorEnd)}
-    loadSendHeadersFromJson(${JSON.stringify(JSON.stringify(headers))});
+    sendHeadersList = normalizeSendHeaderRows(${JSON.stringify(headers)});
+    renderSendHeaders();
     __rows = sendHeadersList;
   `, context);
   return JSON.parse(JSON.stringify(context.__rows));

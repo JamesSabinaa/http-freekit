@@ -517,54 +517,6 @@
 
     /* Note: .app grid is defined in section 1 above with sidebar column */
 
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--font-heading);
-      font-weight: 700;
-      font-size: 16px;
-      color: var(--pop-color);
-      white-space: nowrap;
-    }
-
-    .logo svg { width: 24px; height: 24px; flex-shrink: 0; }
-
-    .header-controls {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .search-box {
-      display: flex;
-      align-items: center;
-      background: var(--bg-input);
-      border: 1px solid var(--text-input-border);
-      border-radius: 4px;
-      padding: 0 10px;
-      min-width: 250px;
-      transition: border-color 0.15s;
-    }
-
-    .search-box:focus-within { border-color: var(--pop-color); }
-
-    .search-box svg { width: 16px; height: 16px; color: var(--text-watermark); flex-shrink: 0; }
-
-    .search-box input {
-      background: transparent;
-      border: none;
-      color: var(--text-main);
-      padding: 6px 8px;
-      font-size: 13px;
-      outline: none;
-      width: 100%;
-      font-family: var(--font-mono);
-    }
-
-    .search-box input::placeholder { color: var(--text-watermark); }
-
     .status-indicator {
       display: flex;
       align-items: center;
@@ -617,23 +569,6 @@
       margin: 3px auto 4px;
     }
 
-    .sidebar-section {
-      padding: 8px 0;
-      border-bottom: 1px solid rgba(0,0,0,0.12);
-    }
-
-    .sidebar-section:last-child { border-bottom: none; }
-
-    .sidebar-title {
-      font-size: 9px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--text-watermark);
-      padding: 4px 0 6px;
-      text-align: center;
-    }
-
     .sidebar-item {
       display: flex;
       flex-direction: column;
@@ -672,21 +607,6 @@
       border-left-color: transparent;
       color: var(--text-main);
       opacity: 1;
-    }
-
-    .sidebar-badge {
-      background: rgba(255,255,255,0.08);
-      color: var(--text-watermark);
-      font-size: 9px;
-      padding: 1px 5px;
-      border-radius: 10px;
-      font-weight: 600;
-      margin-top: 2px;
-    }
-
-    .sidebar-item.active .sidebar-badge {
-      background: rgba(225,66,31,0.15);
-      color: var(--pop-color);
     }
 
     .sidebar-bottom {
@@ -1238,42 +1158,10 @@
     /* ============================================================
        15. Detail Tabs
        ============================================================ */
-    .detail-tabs {
-      display: flex;
-      border-bottom: 1px solid var(--border-color);
-      background: var(--bg-container);
-    }
-
-    .detail-tab {
-      padding: 10px 16px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-lowlight);
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: all 0.15s;
-    }
-
-    .detail-tab:hover { color: var(--text-main); }
-    .detail-tab.active { color: var(--pop-color); border-bottom-color: var(--pop-color); }
-
     .detail-content {
       flex: 1;
       overflow-y: auto;
       padding: 12px 16px;
-    }
-
-    .detail-section {
-      margin-bottom: 16px;
-    }
-
-    .detail-section-title {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-watermark);
-      margin-bottom: 8px;
     }
 
     .detail-url {
@@ -1379,32 +1267,6 @@
     /* ============================================================
        18. Headers Table
        ============================================================ */
-    .headers-table {
-      width: 100%;
-      font-size: 12px;
-      border-collapse: collapse;
-      font-family: var(--font-mono);
-    }
-
-    .headers-table td {
-      padding: 4px 0;
-      border-bottom: 1px solid rgba(0,0,0,0.15);
-      vertical-align: top;
-    }
-
-    .headers-table td:first-child {
-      color: var(--pop-color);
-      font-weight: 600;
-      white-space: nowrap;
-      width: 35%;
-      padding-right: 12px;
-    }
-
-    .headers-table td:last-child {
-      word-break: break-all;
-      color: var(--text-lowlight);
-    }
-
     /* ============================================================
        19. Body Content
        ============================================================ */
@@ -2318,60 +2180,11 @@
     /* ============================================================
        22. Mock / Send / Settings Panels
        ============================================================ */
-    .mock-panel { padding: 20px; overflow-y: auto; }
-    .send-panel { padding: 20px; overflow-y: auto; }
-    .settings-panel { padding: 20px; overflow-y: auto; }
-
-    .mock-form {
-      background: var(--bg-main);
-      border-radius: 4px;
-      box-shadow: 0 2px 10px 0 rgb(0 0 0 / var(--box-shadow-alpha));
-      padding: 20px;
-      margin-bottom: 20px;
-    }
-
-    .mock-form h3 {
-      font-size: 14px;
-      margin-bottom: 12px;
-      color: var(--pop-color);
-      font-family: var(--font-heading);
-      font-weight: bold;
-    }
-
     .mock-rules-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
       width: 100%;
-    }
-
-    .mock-rule {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      background: var(--bg-main);
-      border: 1px solid rgba(0,0,0,0.2);
-      border-radius: 4px;
-      padding: 10px 14px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
-    }
-
-    .mock-rule-info { flex: 1; }
-
-    .mock-rule-method {
-      font-weight: 700;
-      font-size: 11px;
-    }
-
-    .mock-rule-pattern {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-lowlight);
-    }
-
-    .mock-rule-response {
-      font-size: 11px;
-      color: var(--text-watermark);
     }
 
     /* ============================================================
@@ -2544,22 +2357,6 @@
 
     .desktop-setting-status.is-error {
       color: var(--error-color, #ce3939);
-    }
-
-    .settings-section {
-      background: var(--bg-main);
-      border-radius: 4px;
-      box-shadow: 0 2px 10px 0 rgb(0 0 0 / var(--box-shadow-alpha));
-      padding: 20px;
-      margin-bottom: 20px;
-    }
-
-    .settings-section h3 {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 12px;
-      color: var(--pop-color);
-      font-family: var(--font-heading);
     }
 
     .settings-row {
@@ -2922,64 +2719,6 @@
       flex-shrink: 0;
     }
 
-    .send-form {
-      background: var(--bg-main);
-      border-radius: 4px;
-      box-shadow: 0 2px 10px 0 rgb(0 0 0 / var(--box-shadow-alpha));
-      padding: 20px;
-    }
-
-    .send-url-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-
-    .send-url-row select {
-      background: var(--bg-input);
-      border: 1px solid var(--text-input-border);
-      border-radius: 4px;
-      color: var(--pop-color);
-      padding: 8px 10px;
-      font-weight: 700;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      outline: none;
-      cursor: pointer;
-    }
-
-    .send-url-row select:focus { border-color: var(--pop-color); }
-
-    .send-url-row input {
-      flex: 1;
-      background: var(--bg-input);
-      border: 1px solid var(--text-input-border);
-      border-radius: 4px;
-      color: var(--text-main);
-      padding: 8px 12px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      outline: none;
-    }
-
-    .send-url-row input:focus { border-color: var(--pop-color); }
-
-    .send-response {
-      margin-top: 16px;
-      background: var(--bg-main);
-      border-radius: 4px;
-      box-shadow: 0 2px 10px 0 rgb(0 0 0 / var(--box-shadow-alpha));
-      padding: 20px;
-    }
-
-    .send-response h4 {
-      font-size: 13px;
-      margin-bottom: 8px;
-      color: var(--pop-color);
-      font-family: var(--font-heading);
-      font-weight: bold;
-    }
-
     /* ============================================================
        26. Source Icon
        ============================================================ */
@@ -3077,12 +2816,6 @@
       color: var(--text-lowlight);
       background: var(--bg-lowlight);
       border-top: 1px solid var(--border-color);
-    }
-
-    .footer-left, .footer-right {
-      display: flex;
-      align-items: center;
-      gap: 16px;
     }
 
     /* ============================================================

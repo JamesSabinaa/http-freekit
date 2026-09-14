@@ -117,8 +117,7 @@ function createRenderer(fetch) {
   const elements = {
     settingsMinPort: { value: '' },
     settingsMaxPort: { value: '' },
-    settingsCaFingerprint: { textContent: '' },
-    manualProxyPort: { textContent: '' }
+    settingsCaFingerprint: { textContent: '' }
   };
   const toasts = [];
   const context = {
@@ -188,7 +187,6 @@ test('renderer loads the saved range without active-port race in either response
 
     assert.equal(renderer.elements.settingsMinPort.value, '19000', firstResponse);
     assert.equal(renderer.elements.settingsMaxPort.value, '19010', firstResponse);
-    assert.equal(renderer.elements.manualProxyPort.textContent, 19000, firstResponse);
     assert.deepEqual(renderer.toasts, [], firstResponse);
   }
 });

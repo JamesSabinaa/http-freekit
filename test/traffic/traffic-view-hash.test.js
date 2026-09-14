@@ -40,31 +40,30 @@ test('traffic view hash helpers round-trip opaque IDs exactly once', () => {
   const context = evaluate(`${hashHelpers}
     globalThis.hashApi = {
       build: buildTrafficViewHash,
-      parse: parseTrafficViewHash,
-      parseLifecycle: parseTrafficViewLifecycleHash
+      parse: parseTrafficViewIdentityHash
     };
   `);
 
   for (const id of opaqueIds) {
     const hash = context.hashApi.build(id);
     assert.equal(hash, `#/view/${encodeURIComponent(id)}`);
-    assert.equal(context.hashApi.parse(hash), id);
+    assert.equal(context.hashApi.parse(hash)?.requestId, id);
   }
 
   assert.equal(context.hashApi.build('already%2Fencoded'), '#/view/already%252Fencoded');
-  assert.equal(context.hashApi.parse('#/view/already%252Fencoded'), 'already%2Fencoded');
+  assert.equal(context.hashApi.parse('#/view/already%252Fencoded')?.requestId, 'already%2Fencoded');
   const lifecycleHash = context.hashApi.build('duplicate/id', 'life 2/%');
   assert.equal(
     lifecycleHash,
     '#/view/duplicate%2Fid?trafficLifecycleId=life%202%2F%25'
   );
-  assert.equal(context.hashApi.parse(lifecycleHash), 'duplicate/id');
-  assert.equal(context.hashApi.parseLifecycle(lifecycleHash), 'life 2/%');
+  assert.equal(context.hashApi.parse(lifecycleHash)?.requestId, 'duplicate/id');
+  assert.equal(context.hashApi.parse(lifecycleHash)?.trafficLifecycleId, 'life 2/%');
 });
 
 test('malformed percent escapes fail parsing without throwing', () => {
   const context = evaluate(`${hashHelpers}
-    globalThis.parseHash = parseTrafficViewHash;
+    globalThis.parseHash = parseTrafficViewIdentityHash;
   `);
 
   for (const hash of ['#/view/%', '#/view/%2', '#/view/%GG', '#/traffic', '#/view/']) {

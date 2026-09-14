@@ -253,7 +253,7 @@ test('brace-aware CSS audit scopes focus reveals to the existing hover container
   assert.match(decodedSource, /url-decoded-val[\s\S]*?<button class="url-decoded-copy"/);
   const mockRowSource = sourceBetween('function renderMockRuleRow', 'function renderMockGroup');
   assert.match(mockRowSource, /mock-rule-summary[\s\S]*?mock-rule-actions[\s\S]*?<button class="mock-toggle-btn"/);
-  const mockGroupSource = sourceBetween('function renderMockGroup', 'function _countAllMockRules');
+  const mockGroupSource = sourceBetween('function renderMockGroup', 'function renderMockRules');
   assert.match(mockGroupSource, /mock-group-header[\s\S]*?mock-rule-actions[\s\S]*?<button class="mock-toggle-btn/);
   const breakpointSource = sourceBetween(
     'function renderBreakpointRuleRow',

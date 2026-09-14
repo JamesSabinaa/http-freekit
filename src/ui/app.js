@@ -115,14 +115,6 @@
       }
     }
 
-    function parseTrafficViewHash(hash) {
-      return parseTrafficViewIdentityHash(hash)?.requestId ?? null;
-    }
-
-    function parseTrafficViewLifecycleHash(hash) {
-      return parseTrafficViewIdentityHash(hash)?.trafficLifecycleId ?? null;
-    }
-
     let pendingTrafficViewIdentity = null;
 
     function updatePendingTrafficViewFromHash(hash) {
@@ -3347,7 +3339,6 @@
         _transformPerspective = 'transformed';
         for (const key of Object.keys(_headerCollapsed)) delete _headerCollapsed[key];
       }
-      const methodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[req.method] || '#888';
       const statusBreakpoint = req.breakpointActive === true;
       const statusPending = req.statusCode === null || req.statusCode === undefined;
       const statusColor = statusBreakpoint ? '#f1971f' : statusPending ? '#888' :
@@ -3820,12 +3811,6 @@
 
       // ---- Transform Card (shown only for requests modified by mock rules) ----
       if (req.originalRequest) {
-        const perspectiveLabels = {
-          'original': 'Original (client sent)',
-          'transformed': 'Transformed (as modified)',
-          'client': 'Client perspective',
-          'server': 'Server perspective'
-        };
         html += `<div class="detail-card transform-card" id="card-transform">
           <div class="detail-card-body" style="padding:12px 20px;">
             <div style="display:flex;align-items:center;gap:12px;">
@@ -4579,24 +4564,6 @@
       }
       modes.push({ value: 'hex', label: 'Hex' });
       return modes;
-    }
-
-    /**
-     * Map content-type to Monaco editor language identifier.
-     * @param {string} contentType
-     * @returns {string}
-     */
-    function contentTypeToMonacoLanguage(contentType) {
-      const ct = (contentType || '').toLowerCase();
-      if (ct.includes('json')) return 'json';
-      if (ct.includes('html')) return 'html';
-      if (ct.includes('xml') || ct.includes('svg')) return 'xml';
-      if (ct.includes('css')) return 'css';
-      if (ct.includes('javascript') || ct.includes('ecmascript')) return 'javascript';
-      if (ct.includes('typescript')) return 'typescript';
-      if (ct.includes('markdown') || ct.includes('/x-markdown')) return 'markdown';
-      if (ct.includes('yaml') || ct.includes('yml')) return 'yaml';
-      return 'plaintext';
     }
 
     /**
@@ -5911,20 +5878,6 @@
       });
     }
 
-    function toggleHexView(elementId) {
-      const el = document.getElementById(elementId);
-      if (!el) return;
-      if (el.dataset.viewMode === 'hex') {
-        el.dataset.viewMode = 'text';
-        el.innerHTML = el.dataset.originalHtml;
-      } else {
-        el.dataset.viewMode = 'hex';
-        el.dataset.originalHtml = el.innerHTML;
-        const text = el.textContent;
-        el.innerHTML = textToHex(text);
-      }
-    }
-
     function textToHex(text, context = {}) {
       const bytes = bodyToBytes(text, context);
       let result = '';
@@ -6009,22 +5962,6 @@
       'electron': ['Launch an Electron application with traffic intercepted.', `Uses proxy routing plus system trust or a FreeKit-CA-only renderer trust flag. ${NODE_ENV_PROXY_SUPPORT_NOTE}`],
       'android-adb': ['Intercept traffic from an Android device connected via ADB.', 'Uses the companion VPN app for HTTPS, with an HTTP-only global proxy fallback.'],
       'jvm': ['Attach to a running JVM process to intercept HTTP traffic.', 'Sets proxy system properties via the Java Attach API.']
-    };
-
-    const INTERCEPTOR_COLORS = {
-      chrome: '#1da462',
-      'existing-chrome': '#1da462',
-      firefox: '#e66000',
-      edge: '#2c75be',
-      brave: '#fb542b',
-      'fresh-terminal': '#4caf7d',
-      'existing-terminal': '#888',
-      'system-proxy': '#9a9da8',
-      'docker': '#2fb4e0',
-      'electron': '#47848f',
-      'android-adb': '#78c257',
-      'jvm': '#e76f00',
-      'manual-setup': '#4caf7d'
     };
 
     // Download URLs for browsers that aren't installed
@@ -7420,8 +7357,6 @@
         { value: 'multipart-form-data', label: 'Multipart Form Data' },
       ]},
     ];
-    // Flat list for iteration
-    const MOCK_MATCHER_TYPES = MOCK_MATCHER_GROUPS.flatMap(g => g.items);
     const MOCK_ACTION_TYPES = [
       { value: 'fixed-response', label: 'Return a fixed response' },
       { value: 'serve-file', label: 'Serve content from a file' },
@@ -8213,23 +8148,8 @@
       return html;
     }
 
-    function _countAllMockRules(rules) {
-      let count = 0;
-      for (const item of rules) {
-        if (item.type === 'group') {
-          count += (item.items || []).length;
-        } else {
-          count++;
-        }
-      }
-      return count;
-    }
-
     function renderMockRules() {
       const list = document.getElementById('mockRulesList');
-      const mockBadge = document.getElementById('mockBadgeCount');
-      const totalCount = _countAllMockRules(mockRules) + breakpointRules.length;
-      if (mockBadge) mockBadge.textContent = totalCount;
 
       if (mockRules.length === 0 && breakpointRules.length === 0 && mockEditingRule !== '__new__') {
         list.innerHTML = '<div class="empty-state" style="padding:40px;height:auto;"><div class="icon" style="font-size:60px;opacity:0.15;">&#9881;</div><p style="font-size:16px;">No rules configured yet. Click below to add one.</p></div>';
@@ -10466,12 +10386,6 @@
       scheduleSendExportUpdate();
     }
 
-    /** @deprecated No longer needed — kept as no-op for any stale references */
-    function updateSendBodyPreview() {}
-
-    /** @deprecated No longer needed — kept as no-op for any stale references */
-    function toggleSendBodyView() {}
-
     function formatSendBody() {
       const format = document.getElementById('sendBodyFormat')?.value || 'text';
       const currentValue = getSendBodyValue();
@@ -10956,16 +10870,6 @@
       });
       const hidden = document.getElementById('sendHeaders');
       if (hidden) hidden.value = JSON.stringify(obj);
-    }
-
-    // Load headers from JSON string into the key-value editor
-    function loadSendHeadersFromJson(jsonStr) {
-      sendHeadersList = [];
-      try {
-        const obj = JSON.parse(jsonStr);
-        sendHeadersList = normalizeSendHeaderRows(obj);
-      } catch (e) { console.error('[Error]', e.message); }
-      renderSendHeaders();
     }
 
     // ============ SEND TAB MANAGEMENT ============
@@ -13106,8 +13010,6 @@
           const fpEl = document.getElementById('settingsCaFingerprint');
           if (fpEl) fpEl.textContent = data.config.certificateFingerprint || '--';
           if (typeof renderCaRenewalState === 'function') renderCaRenewalState(data.config);
-          const mpEl = document.getElementById('manualProxyPort');
-          if (mpEl) mpEl.textContent = data.config.proxyPort;
         }
       } catch (e) {
         console.error('[Error]', e.message);
@@ -15859,14 +15761,6 @@
         }
       }
       return output.join('');
-    }
-
-    function tryPrettyJson(str) {
-      try {
-        return prettyPrintJson(str);
-      } catch {
-        return str;
-      }
     }
 
     // ============ BREAKPOINT FUNCTIONS ============

@@ -289,7 +289,7 @@ test('custom themes discard unknown or unsafe values and build previews with DOM
 
 test('mock, group, and breakpoint IDs stay in escaped data attributes', () => {
   const mockRule = functionSource('renderMockRuleRow', 'renderMockGroup');
-  const mockGroup = functionSource('renderMockGroup', '_countAllMockRules');
+  const mockGroup = functionSource('renderMockGroup', 'renderMockRules');
   const breakpointRule = functionSource('renderBreakpointRuleRow', 'toggleBreakpointRuleEnabled');
 
   assert.match(mockRule, /data-rule-id="' \+ escapeHtmlAttribute\(rule\.id\) \+ '"/);

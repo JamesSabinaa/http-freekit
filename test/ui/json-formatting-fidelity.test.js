@@ -24,8 +24,7 @@ function harness(body) {
     isBodyPlaceholder: () => false
   });
   vm.runInContext([
-    section('function prettyPrintJson(', 'function tryPrettyJson('),
-    section('function tryPrettyJson(', '// ============ BREAKPOINT FUNCTIONS'),
+    section('function prettyPrintJson(', '// ============ BREAKPOINT FUNCTIONS'),
     section('function formatSendBody(', 'function createMultipartBoundary('),
     section('function getMonacoBodyValue(', 'async function initBodyMonacoEditor('),
     section('function formatBodyAs(', 'function disposeBodyEditor('),
@@ -63,7 +62,6 @@ test('Send and JSON previews preserve exact tokens while indenting nested conten
   assert.equal(context.getMonacoBodyValue(input, 'json'), expected);
   assert.equal(context.formatBodyAs(input, 'application/json', 'json'), expected);
   assert.equal(context.formatBody(input, 'application/json'), expected);
-  assert.equal(context.tryPrettyJson(input), expected);
   context.formatSendBody();
   assert.equal(context.edits, 1, 'formatting is idempotent');
 });

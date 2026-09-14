@@ -28,7 +28,7 @@ const renderRuleSource = sourceBetween(
 );
 const renderGroupSource = sourceBetween(
   'function renderMockGroup',
-  'function _countAllMockRules'
+  'function renderMockRules'
 );
 
 function classListRecorder() {
