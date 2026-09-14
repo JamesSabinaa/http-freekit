@@ -26,13 +26,25 @@ export function normalizeTlsHostname(value) {
 
 export function normalizeExactTlsHostname(value) {
   if (typeof value !== 'string') return '';
-  const candidate = value.trim().replace(/\.$/, '');
+  let candidate = value.trim().replace(/\.$/, '');
   if (!candidate || /[\r\n\0\s/\\@?#*]/.test(candidate)) return '';
 
   const bracketed = candidate.match(/^\[([^\]]+)\]$/);
-  if (bracketed) return net.isIP(bracketed[1]) ? bracketed[1].toLowerCase() : '';
+  if (bracketed) {
+    if (!net.isIP(bracketed[1])) return '';
+    candidate = bracketed[1];
+  }
   if (candidate.includes('[') || candidate.includes(']')) return '';
-  if (net.isIP(candidate)) return candidate.toLowerCase();
+  const ipVersion = net.isIP(candidate);
+  if (ipVersion === 4) return candidate;
+  if (ipVersion === 6) {
+    // URL parsing gives equivalent IPv6 spellings one identity. Preserve any
+    // zone suffix separately because URL hosts do not support scoped addresses.
+    const zoneIndex = candidate.indexOf('%');
+    const address = zoneIndex === -1 ? candidate : candidate.slice(0, zoneIndex);
+    const zone = zoneIndex === -1 ? '' : candidate.slice(zoneIndex).toLowerCase();
+    return new URL(`https://[${address}]/`).hostname.slice(1, -1) + zone;
+  }
   if (candidate.includes(':')) return '';
 
   try {

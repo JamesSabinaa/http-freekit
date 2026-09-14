@@ -27,6 +27,14 @@ function exactCertificate(pfxPath) {
   return { host: '  API.EXAMPLE.TEST.  ', pfxPath, passphrase: 'exact-secret' };
 }
 
+test('exact IPv6 client certificates match canonical destination addresses', t => {
+  const { exactPath } = createCertificateFiles(t);
+  const proxy = new ProxyServer(null, tlsMaterialValidationStubs);
+  proxy.setClientCertificates([{ host: '[0:0:0:0:0:0:0:1]', pfxPath: exactPath }]);
+  assert.deepEqual(proxy._getClientCertificateOptions('::1').pfx, Buffer.from('exact-certificate'));
+  assert.deepEqual(proxy._getClientCertificateOptions('::2'), {});
+});
+
 test('wildcard client certificates are fallbacks and exact normalized hosts always win', (t) => {
   const { wildcardPath, exactPath } = createCertificateFiles(t);
   const proxy = new ProxyServer(null, tlsMaterialValidationStubs);

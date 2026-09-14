@@ -446,7 +446,13 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-016 — Medium — Failed update shutdown leaves updater IPC permanently unavailable
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** missing IPC is confirmed, but clearing the local handoff flag is
+  not cancellation of the native installer. The installed electron-updater
+  BaseUpdater calls installation before app.quit, and NsisUpdater starts the
+  installer process. Its handoff guard protects against untagged late events.
+  User decision requested: move managed cleanup before installer launch, retain
+  launch order with an explicit recovery/restart state, or defer this finding.
 - **Evidence:** install sets `installerHandoffMayEmit = true`
   (`electron/updater.cjs:618`). Quit cleanup stops the updater, releases
   `activeInstallRequest`, and removes its IPC handlers (`:660-685`). After a
@@ -465,8 +471,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-017 — Medium — TLS settings silently miss equivalent IPv6 address spellings
 
-- **Status:** Open.
-- **Evidence:** `normalizeExactTlsHostname()` strips IPv6 brackets and lowercases
+- **Status:** Fixed.
+- **Review:** equivalent addresses produce different textual keys despite
+  identifying the same destination; shared normalization is the appropriate fix.
+- **Resolution:** canonicalize IPv6 addresses through URL parsing while retaining
+  distinct zone suffixes and the existing hostname and IPv4 validation.
+- **Verification:** 15 focused TLS, client-certificate, settings and test-layout
+  checks pass. New regressions failed before the change. Matching tests cover
+  expanded/compressed, IPv4-mapped and scoped IPv6 forms in both directions,
+  nonmatching addresses/zones, and exact client-certificate selection.
+- **Evidence (before fix):** `normalizeExactTlsHostname()` strips IPv6 brackets and lowercases
   text without canonicalizing the address (`src/proxy/https-whitelist.js:35-38`).
   TLS passthrough, the verification whitelist, and exact client-certificate
   selection use those textual keys (`src/proxy/proxy-server.js:3108,3376,3381`).
