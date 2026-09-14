@@ -2095,7 +2095,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-085 — Low — Whole-buffer ClientHello parser is used only by a test
 
-- **Status:** Open (dead code).
+- **Status:** Fixed. Removed the unused whole-buffer helper after confirming it
+  had no production callers. Its regression now exercises the live capturing
+  socket with the handshake header split at each internal byte boundary, both
+  across incoming chunks and in coalesced initial data, asserting capture and
+  unchanged byte forwarding. All 29 proxy TLS and test-layout checks passed.
 - **Evidence:** `ProxyServer._parseClientHello()` remains at
   `src/proxy/proxy-server.js:9411-9443`, but a repository-wide caller search finds
   only its definition and a direct test call in

@@ -9248,40 +9248,6 @@ export class ProxyServer {
 
   // Parse a TLS ClientHello to extract cipher suites, supported groups, and sigalgs.
   // Used by the "passthrough" fingerprint mode to mirror the client's TLS profile upstream.
-  static _parseClientHello(buf) {
-    try {
-      const handshake = Buffer.allocUnsafe(Math.min(buf.length, MAX_CAPTURED_CLIENT_HELLO_BYTES));
-      let recordOffset = 0;
-      let handshakeLength = 0;
-      let expectedHandshakeLength = null;
-      while (recordOffset + 5 <= buf.length) {
-        if (buf[recordOffset] !== 0x16) return null;
-        const recordLength = buf.readUInt16BE(recordOffset + 3);
-        const payloadStart = recordOffset + 5;
-        const recordEnd = payloadStart + recordLength;
-        if (recordEnd > buf.length) return null;
-        if (handshakeLength + recordLength > handshake.length) return null;
-        buf.copy(handshake, handshakeLength, payloadStart, recordEnd);
-        handshakeLength += recordLength;
-        recordOffset = recordEnd;
-
-        if (expectedHandshakeLength === null && handshakeLength >= 4) {
-          if (handshake[0] !== 0x01) return null;
-          expectedHandshakeLength = 4 + handshake.readUIntBE(1, 3);
-          if (expectedHandshakeLength > MAX_CAPTURED_CLIENT_HELLO_BYTES) return null;
-        }
-        if (expectedHandshakeLength !== null && handshakeLength >= expectedHandshakeLength) {
-          return ProxyServer._parseClientHelloHandshake(
-            handshake.subarray(0, expectedHandshakeLength)
-          );
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
   static _parseClientHelloHandshake(handshake) {
     try {
       if (handshake.length < 4 || handshake[0] !== 0x01) return null;

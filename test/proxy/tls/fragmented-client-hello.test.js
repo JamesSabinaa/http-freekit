@@ -67,12 +67,30 @@ test('ClientHello capture waits for all fragmented record bytes', async () => {
   wrapper.destroy();
 });
 
-test('ClientHello parsing reassembles a handshake split across TLS records', () => {
-  const [firstRecord, secondRecord] = splitAcrossRecords(buildClientHello(), 2);
-  const parsed = ProxyServer._parseClientHello(Buffer.concat([firstRecord, secondRecord]));
-
-  assert.deepEqual(parsed?.cipherSuites, [0x1301]);
-  assert.equal(parsed?.tlsVersion, 0x0303);
+test('capture reassembles ClientHello headers split across TLS records', async () => {
+  for (const splitAt of [1, 2, 3]) {
+    for (const coalesced of [false, true]) {
+      const proxy = new ProxyServer(null);
+      const socket = new PassThrough();
+      const [firstRecord, secondRecord] = splitAcrossRecords(buildClientHello(), splitAt);
+      const wireBytes = Buffer.concat([firstRecord, secondRecord]);
+      const wrapper = proxy._createCapturingSocket(socket, coalesced ? wireBytes : firstRecord);
+      try {
+        const forwarded = [];
+        wrapper.on('data', chunk => forwarded.push(Buffer.from(chunk)));
+        if (!coalesced) {
+          assert.equal(wrapper._captured, null);
+          socket.write(secondRecord);
+        }
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(wrapper._captured?.cipherSuites, [0x1301]);
+        assert.equal(wrapper._captured?.tlsVersion, 0x0303);
+        assert.deepEqual(Buffer.concat(forwarded), wireBytes);
+      } finally {
+        wrapper.destroy();
+      }
+    }
+  }
 });
 
 test('capture continues beyond the first TLS record until ClientHello is complete', async () => {
