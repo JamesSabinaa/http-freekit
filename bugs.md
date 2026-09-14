@@ -4,9 +4,10 @@ This ledger records findings from a repository-wide audit of `main` at `4c184e7`
 The audit covers startup and settings, the management API and MCP, proxy protocols
 and mocking, certificates, interceptors, Electron lifecycle and packaging, renderer
 behavior, styling and accessibility, dependencies, documentation, tests, and dead
-code. Findings are documented only; this audit does not change product code.
+code. The original audit documented findings without changing product code;
+the statuses below now track their skeptical review and remediation.
 
-## Completion gate
+## Original audit completion gate
 
 Completion requires two consecutive complete passes over the current candidate with
 no new bugs, broken features, broken styling, or dead code. A pass that finds
@@ -38,17 +39,22 @@ anything resets the clean-pass streak.
 | 22 | **Clean**; complete whole-repository source, caller, test-contract and support review; no new findings | **2/2** |
 
 The previous audit's pass count does not apply to this revision. All seven
-existing findings were rechecked against the current source and remain open;
+existing findings were rechecked against that source and remained open;
 there were no solved entries to delete.
 
 Passes 21 and 22 satisfy the completion gate. This revision records 111 new
-findings and retains the seven original findings: 118 open entries in total.
+findings and retained the seven original findings: 118 open entries at audit
+completion. Current remediation statuses are recorded with each finding.
 
 ## Findings
 
 ### BUG-001 — Medium — Built-in Dark and Light theme text fails WCAG AA contrast
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** the normal-text contrast failure is valid, but the remedy changes
+  the visual palette. Asked whether to use separate accessible text colors,
+  change the accent shades throughout both themes, or defer the design decision.
+  No palette change is made pending that choice.
 - **Evidence:** live Lighthouse accessibility audits of Intercept, View, Mock,
   Send, and every Settings section in Dark report contrast failures. The orange
   `--pop-color` text is only 3.58:1 against the footer, 2.95:1 against Settings
@@ -150,8 +156,17 @@ findings and retains the seven original findings: 118 open entries in total.
 
 ### BUG-006 — Medium — Pako fails to load, breaking every compressed gRPC preview
 
-- **Status:** Open.
-- **Evidence:** the page loads Monaco's AMD loader before the Pako UMD bundle
+- **Status:** Fixed.
+- **Review:** reproduced with the actual shipped vendor bundles and fresh Chrome;
+  both Protobuf and Pako register anonymous AMD modules after Monaco loads.
+  This is an initialization defect, not an intentional decompression limit.
+- **Resolution:** load the UMD codecs before Monaco installs its AMD loader,
+  preserving their browser globals and leaving Monaco's module queue clean.
+- **Verification:** all 14 focused bootstrap, gRPC-limit and Monaco-fallback
+  tests pass, including the new actual-bundle and Chrome bootstrap regressions.
+  A fresh shipped-UI browser check also confirms Monaco initializes, gzip and
+  deflate gRPC messages decode to field 1 = 150, and no startup exception occurs.
+- **Evidence (before fix):** the page loads Monaco's AMD loader before the Pako UMD bundle
   (`src/ui/index.html:679-692`). In a live Chrome renderer, Pako's anonymous AMD
   registration throws `Error: Can only have one anonymous define call per script
   file` from Monaco's loader, leaving `typeof window.pako === "undefined"` on
@@ -2484,7 +2499,7 @@ findings and retains the seven original findings: 118 open entries in total.
   body or ordinary monolith assignment was reread. Unchanged binary, runtime
   and dependency evidence was retained without claiming fresh execution.
 
-## Validation notes
+## Original audit validation notes
 
 - Repository-pinned runtime: Node.js 26.7.0.
 - Current serialized full suite: 2,470 tests; 2,466 passed; 0 failed;

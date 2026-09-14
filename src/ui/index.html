@@ -676,6 +676,9 @@
 
   <div class="toast-container" id="toastContainer" role="status" aria-live="polite" aria-atomic="false" aria-relevant="additions text"></div>
   <script src="/vendor/js-yaml/js-yaml.umd.min.js"></script>
+  <!-- Publish UMD codecs as browser globals before Monaco installs AMD define. -->
+  <script src="/vendor/protobufjs/protobuf.min.js"></script>
+  <script src="/vendor/pako/pako.umd.min.js"></script>
   <script src="/vendor/monaco/vs/loader.js"></script>
   <script>
     try {
@@ -688,8 +691,6 @@
       console.warn('[Monaco] AMD loader configuration failed; using fallback editors', error);
     }
   </script>
-  <script src="/vendor/protobufjs/protobuf.min.js"></script>
-  <script src="/vendor/pako/pako.umd.min.js"></script>
   <script src="/desktop-version.js"></script>
   <script src="/desktop-close-behavior.js"></script>
   <script type="module" src="/bootstrap.js"></script>
