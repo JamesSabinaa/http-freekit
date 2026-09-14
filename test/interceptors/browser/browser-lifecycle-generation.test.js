@@ -196,6 +196,42 @@ test('the current generation exit still cleans and resets its own profile', asyn
   assert.equal(browser.active, false);
 });
 
+test('a status read completing during exit inspection cleans once and retains cleanup failures', async t => {
+  t.mock.method(console, 'log', () => {});
+  for (const removed of [true, false]) {
+    const browser = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+    const child = fakeChild(7350);
+    const cleanups = [];
+    const statuses = [];
+    browser.ca = { systemTrustInstalled: true };
+    browser._findBrowserPath = () => '/test/chrome';
+    browser._createManagedProfile = () => 'racing-profile';
+    browser._spawn = () => child;
+    browser._waitForSpawn = async () => {};
+    browser._startStatusMonitor = () => {};
+    browser._cleanup = profile => { cleanups.push(profile); return { removed }; };
+    browser.onStatusChange = event => statuses.push(event);
+    await browser.activate(8350);
+    const exitInspection = deferred();
+    let inspections = 0;
+    browser._isBrowserStillRunning = async () => ++inspections === 1 ? exitInspection.promise : false;
+    child.exitCode = 0;
+    child.emit('exit', 0);
+    assert.equal(await browser.isActive(), false);
+    exitInspection.resolve(false);
+    await flushEvents();
+    assert.deepEqual(cleanups, ['racing-profile']);
+    assert.equal(browser.active, false);
+    assert.equal(browser.cleanupPending, !removed);
+    assert.equal(browser.needsDeactivation(), !removed);
+    assert.equal(browser.profileDir, removed ? null : 'racing-profile');
+    assert.deepEqual(statuses.map(event => event.reason), ['active', removed ? 'closed' : 'cleanup-failed']);
+    assert.equal(await browser.isActive(), false);
+    assert.equal(cleanups.length, 1);
+    browser._resetLifecycleState();
+  }
+});
+
 test('a superseded launch failure cleans only its own profile and cannot reset newer state', async t => {
   t.mock.method(console, 'log', () => {});
   const browser = new BrowserInterceptor('firefox', 'Firefox', 'firefox');

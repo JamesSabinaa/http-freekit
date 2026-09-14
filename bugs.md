@@ -1837,7 +1837,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-074 — Medium — A concurrent browser status read suppresses profile cleanup after exit
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A held exit inspection reproduced a concurrent status read
+  suppressing cleanup. The status flag must not bypass lifecycle retirement.
+- **Resolution:** Route confirmed closure from isActive through the existing
+  lifecycle cleanup and status notification path.
+- **Verification:** All 137 browser lifecycle and test-layout checks passed.
+  The simulated-child race verifies exactly one cleanup attempt and terminal
+  notification, released ownership on success, and retryable state on failure.
 - **Evidence:** `isActive()` sets `active=false` when it observes closure
   (`src/interceptors/browser-interceptor.js:155-164`). The asynchronous child
   exit handler then skips cleanup if that flag is already false (`:468-470`),

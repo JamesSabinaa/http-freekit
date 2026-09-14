@@ -160,7 +160,7 @@ export class BrowserInterceptor {
     const lifecycle = this._captureLifecycle();
     const running = await this._isBrowserStillRunning(lifecycle);
     if (!this._isLifecycleCurrent(lifecycle)) return this.active;
-    if (!running) this.active = false;
+    if (!running) this._markInactive('closed', {}, lifecycle);
     return running;
   }
 

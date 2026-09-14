@@ -320,7 +320,7 @@ test('manager publishes inspection-unknown startup ownership and its final clean
 
   assert.deepEqual(events.map(event => [event.active, event.reason]), [
     [true, 'cleanup-failed'],
-    [false, 'inactive']
+    [false, 'closed']
   ]);
   assert.equal(interceptor.active, false);
   assert.equal(interceptor.cleanupPending, false);

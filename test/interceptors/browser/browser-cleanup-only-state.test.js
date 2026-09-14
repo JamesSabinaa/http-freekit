@@ -99,16 +99,17 @@ test('cleanup-only state rejects direct Open and Focus before invoking browser h
   assert.equal(browser.toJSON().focusable, false);
 });
 
-test('a fresh dead-process check disables focus before profile cleanup is attempted', async () => {
+test('a fresh dead-process check disables focus when profile cleanup fails', async () => {
   const browser = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
   browser.active = true;
   browser.process = { pid: 9467, exitCode: 0, signalCode: null };
   browser.profileDir = 'not-yet-cleaned-profile';
   browser._platform = () => 'win32';
   browser._isBrowserStillRunning = async () => false;
+  browser._cleanup = () => ({ removed: false, reason: 'profile locked' });
 
   assert.equal(await browser.isActive(), false);
-  assert.equal(browser.cleanupPending, false);
+  assert.equal(browser.cleanupPending, true);
   assert.equal(browser.toJSON().active, false);
   assert.equal(browser.toJSON().focusable, false);
   await assert.rejects(browser.focus(), /Chrome is not running/);
