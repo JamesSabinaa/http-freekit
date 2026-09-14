@@ -176,22 +176,30 @@ function browserProfileCommandMatch(
   // macOS ps flattens argv without restoring quotes, so an application path
   // such as "Google Chrome.app/.../Google Chrome" cannot supply argv[0]
   // reliably. Its comm column remains an authoritative executable name.
-  const snapshotCommandName = platform === 'darwin'
+  const snapshotCommandName = platform === 'darwin' || platform === 'linux'
     ? sanitizeProcessIdentity(commandName)
     : null;
-  const executableName = compare(pathApi.basename(snapshotCommandName || args[0]));
+  const snapshotExecutableName = compare(pathApi.basename(snapshotCommandName || ''));
+  const useSnapshotName = platform === 'darwin'
+    || platformNames.chromium.has(snapshotExecutableName)
+    || platformNames.firefox.has(snapshotExecutableName);
+  // Linux comm can be truncated; retain argv[0] as a fallback in that case.
+  const executableName = compare(pathApi.basename(
+    (useSnapshotName && snapshotCommandName) || args[0]
+  ));
 
-  // Darwin's flattened ps args also lose boundaries around argument values
+  // POSIX flattened ps args also lose boundaries around argument values
   // containing spaces. Resolve the remaining boundary ambiguity against the
   // profile directories that actually exist on disk.
-  if (platform === 'darwin' && snapshotCommandName) {
+  if ((platform === 'darwin' && snapshotCommandName) || platform === 'linux') {
+    let flattenedMatch = PROFILE_MATCH_NONE;
     if (platformNames.chromium.has(executableName)) {
-      return flattenedPathArgumentMatch(commandLine, '--user-data-dir=', expectedProfile);
+      flattenedMatch = flattenedPathArgumentMatch(commandLine, '--user-data-dir=', expectedProfile);
     }
     if (platformNames.firefox.has(executableName)) {
-      return flattenedPathArgumentMatch(commandLine, '-profile ', expectedProfile);
+      flattenedMatch = flattenedPathArgumentMatch(commandLine, '-profile ', expectedProfile);
     }
-    return PROFILE_MATCH_NONE;
+    if (platform === 'darwin' || flattenedMatch !== PROFILE_MATCH_NONE) return flattenedMatch;
   }
 
   for (let index = 0; index < args.length; index++) {

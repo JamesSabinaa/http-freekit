@@ -861,7 +861,18 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-033 — Medium — Linux browser recovery misses profile paths containing spaces
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Real-format Linux ps fixtures reproduced empty exact and ambiguous
+  process sets for Chromium and Firefox profile paths containing spaces.
+- **Resolution:** Apply the existing POSIX flattened-path matching and on-disk
+  ambiguity checks to Linux. Use recognized comm names for executable paths with
+  spaces, retaining argv[0] fallback for truncated Linux comm names and quoted
+  argument matching when no flattened match exists.
+- **Verification:** 31 focused process-identity, cleanup, ownership-marker, and
+  test-layout checks passed. Updated process fixtures also passed separately,
+  including descendants, truncated names, executable paths with spaces, unrelated
+  processes, profile suffixes, and ambiguous longer directories. These are
+  simulated Linux snapshots on Windows, not live Linux browser processes.
 - **Evidence:** process snapshots flatten command arguments, but
   `browserProfileCommandMatch()` handles flattened profile paths only for
   Darwin (`src/interceptors/browser-lifecycle.js:179-221`). Linux's ordinary

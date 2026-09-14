@@ -5,13 +5,45 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   collectRelatedProcessIds,
-  inspectRelatedBrowserProcesses
+  inspectRelatedBrowserProcesses,
+  parsePosixProcessSnapshot
 } from '../../../src/interceptors/browser-lifecycle.js';
 
 function sortedProcessIds(processes, profileDir, rootPids = [], platform = 'linux') {
   return [...collectRelatedProcessIds(processes, profileDir, rootPids, platform)]
     .sort((left, right) => left - right);
 }
+
+test('Linux ps snapshots retain browsers using unquoted profile paths with spaces', () => {
+  const profileDir = '/tmp/FreeKit Temp/http-freekit-chrome-live';
+  const processes = parsePosixProcessSnapshot([
+    `101 chromium 101 1 Mon Sep 14 09:00:00 2026 /usr/bin/chromium --user-data-dir=${profileDir} --no-first-run`,
+    `102 chromium 102 101 Mon Sep 14 09:00:00 2026 /usr/bin/chromium --type=renderer`,
+    `201 firefox 201 1 Mon Sep 14 09:00:00 2026 /usr/bin/firefox -profile ${profileDir} -no-remote`,
+    `301 logger 301 1 Mon Sep 14 09:00:00 2026 logger --user-data-dir=${profileDir} --no-first-run`,
+    `401 chromium 401 1 Mon Sep 14 09:00:00 2026 /usr/bin/chromium --user-data-dir=${profileDir}-backup --no-first-run`,
+    `501 microsoft-edge- 501 1 Mon Sep 14 09:00:00 2026 /usr/bin/microsoft-edge-stable --user-data-dir=${profileDir} --no-first-run`,
+    `601 firefox 601 1 Mon Sep 14 09:00:00 2026 /opt/Browser Builds/firefox -profile ${profileDir} -no-remote`
+  ].join('\n'));
+  const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'linux');
+  assert.deepEqual([...inspection.processIds].sort((a, b) => a - b), [101, 102, 201, 501, 601]);
+  assert.deepEqual([...inspection.ambiguousProcessIds], []);
+});
+
+test('Linux flattened profile paths retain ambiguity when a longer directory exists', t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-linux-argv-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const profileDir = path.join(tempRoot, 'profile with spaces');
+  fs.mkdirSync(profileDir);
+  fs.mkdirSync(`${profileDir} --suffix`);
+  const processes = parsePosixProcessSnapshot([
+    `101 chromium 101 1 Mon Sep 14 09:00:00 2026 /usr/bin/chromium --user-data-dir=${profileDir} --suffix`,
+    `201 firefox 201 1 Mon Sep 14 09:00:00 2026 /usr/bin/firefox -profile ${profileDir} --suffix`
+  ].join('\n'));
+  const inspection = inspectRelatedBrowserProcesses(processes, profileDir, [], 'linux');
+  assert.deepEqual([...inspection.processIds], []);
+  assert.deepEqual([...inspection.ambiguousProcessIds], [101, 201]);
+});
 
 test('process snapshots associate exact quoted Chromium and Firefox profile arguments', () => {
   const profileDir = '/tmp/HTTP FreeKit/http-freekit-chrome-live';
