@@ -937,7 +937,18 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-036 — High — HTTPS server-wide OPTIONS requests terminate the backend
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The live TLS regression reproduced an uncaught `ERR_INVALID_URL`.
+  Native H2 used the same invalid authority/asterisk concatenation. Buffered
+  mock processing also converted unchanged asterisk targets into slash paths.
+- **Resolution:** Validate routable URLs within request error guards, represent
+  the asterisk as `/*` in the URL, and preserve `*` separately in forwarded
+  request targets and capture paths. Unchanged pre-steps/transforms retain the
+  asterisk; URL rewrites can still replace it. Invalid targets receive 400.
+- **Verification:** 36 focused checks passed, including 12 live TLS/H2 asterisk
+  combinations across both upstream protocols and streaming/buffered handling,
+  malformed-request and subsequent healthy-request controls, capture paths,
+  breakpoint rewrites, pre-step parity, streaming, and test layout.
 - **Evidence:** the TLS HTTP/1.1 handlers construct a URL by concatenating the
   CONNECT authority and request target (`src/proxy/proxy-server.js:5968,7676`).
   For the valid server-wide target `*`, a non-default port produces a URL such

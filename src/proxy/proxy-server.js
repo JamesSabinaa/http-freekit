@@ -715,7 +715,8 @@ export class ProxyServer {
   }
 
   _buildH1UpstreamRequestOptions({
-    targetUrl, method, headers, signal, clientHelloTls, useUpstreamProxy
+    targetUrl, method, headers, signal, clientHelloTls, useUpstreamProxy,
+    requestTarget = targetUrl.pathname + targetUrl.search
   }) {
     const isHttps = targetUrl.protocol === 'https:';
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
@@ -723,7 +724,7 @@ export class ProxyServer {
     const options = {
       hostname: targetHostname,
       port: targetPort,
-      path: targetUrl.pathname + targetUrl.search,
+      path: requestTarget,
       method,
       headers: { ...headers },
       insecureHTTPParser: true,
@@ -1365,6 +1366,7 @@ export class ProxyServer {
     const hasBufferedRequestBody = Buffer.isBuffer(bufferedRequestBody);
     const bufferedRequestBytes = hasBufferedRequestBody ? bufferedRequestBody : null;
     const method = clientReq.method;
+    const requestTarget = clientReq.url === '*' ? '*' : targetUrl.pathname + targetUrl.search;
     if (!hasBufferedRequestBody) {
       clientReq.headers = this._incomingMessageHeaders(clientReq);
     }
@@ -1455,7 +1457,7 @@ export class ProxyServer {
         method,
         url: targetUrl.href,
         host: targetUrl.hostname,
-        path: targetUrl.pathname + targetUrl.search,
+        path: requestTarget,
         requestHeaders,
         requestBody: body,
         requestBodySize,
@@ -1748,6 +1750,7 @@ export class ProxyServer {
       try {
         const { options, requestLib } = this._buildH1UpstreamRequestOptions({
           targetUrl,
+          requestTarget,
           method,
           headers: upstreamHeaders,
           signal: downstream.signal,
@@ -1788,7 +1791,7 @@ export class ProxyServer {
         [':method', method],
         [':authority', targetUrl.host],
         [':scheme', targetUrl.protocol.slice(0, -1)],
-        [':path', targetUrl.pathname + targetUrl.search]
+        [':path', requestTarget]
       ]);
       for (const [name, value] of Object.entries(upstreamHeaders)) {
         const lower = name.toLowerCase();
@@ -2470,6 +2473,7 @@ export class ProxyServer {
           targetUrl,
           method,
           headers: h1Headers,
+          requestTarget: path === '*' ? '*' : undefined,
           signal: downstream.signal,
           clientHelloTls,
           useUpstreamProxy: usedUpstreamProxy
@@ -5980,7 +5984,15 @@ export class ProxyServer {
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
-      let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+      let fullUrl;
+      try {
+        fullUrl = new URL(`https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url === '*' ? '/*' : req.url}`).href;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain', Connection: 'close' });
+        res.end('Invalid request target');
+        req.resume();
+        return;
+      }
 
       const initialMatcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
         stripUpstreamHeaders: false
@@ -6103,11 +6115,12 @@ export class ProxyServer {
           }, [webhookPreparation, downstream]);
           if (preStepResult.cancelled) return;
           req.method = preStepResult.method;
+          const preserveAsterisk = req.url === '*' && preStepResult.url.href === fullUrl;
           fullUrl = preStepResult.url.href;
           hostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
           targetPort = parseInt(preStepResult.url.port, 10)
             || (preStepResult.url.protocol === 'https:' ? 443 : 80);
-          req.url = preStepResult.url.pathname + preStepResult.url.search;
+          req.url = preserveAsterisk ? '*' : preStepResult.url.pathname + preStepResult.url.search;
           req.headers = preStepResult.headers;
           transformedRequestHeaders ||= preStepResult.changed;
           requestProvenance = this._mockRequestProvenance(
@@ -6484,11 +6497,12 @@ export class ProxyServer {
             body
           });
           req.method = transformed.method;
+          const preserveAsterisk = req.url === '*' && transformed.url.href === fullUrl;
           fullUrl = transformed.url.href;
           hostname = this._normalizeConnectionHostname(transformed.url.hostname);
           targetPort = parseInt(transformed.url.port, 10)
             || (transformed.url.protocol === 'https:' ? 443 : 80);
-          req.url = transformed.url.pathname + transformed.url.search;
+          req.url = preserveAsterisk ? '*' : transformed.url.pathname + transformed.url.search;
           req.headers = transformed.headers;
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
@@ -6820,6 +6834,7 @@ export class ProxyServer {
           const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
           const { options, requestLib } = this._buildH1UpstreamRequestOptions({
             targetUrl: upstreamUrl,
+            requestTarget: req.url === '*' ? '*' : undefined,
             method: req.method,
             headers: proxyHeaders,
             signal: downstream.signal,
@@ -6974,7 +6989,15 @@ export class ProxyServer {
 
       let method = headers[':method'];
       let path = headers[':path'];
-      let fullUrl = `https://${authority}${path}`;
+      let fullUrl;
+      try {
+        fullUrl = new URL(`https://${authority}${path === '*' ? '/*' : path}`).href;
+      } catch {
+        stream.respond({ ':status': 400 });
+        stream.end('Invalid request target');
+        stream.resume();
+        return;
+      }
       let upstreamHostname = hostname;
       let upstreamPort = targetPort;
 
@@ -7120,9 +7143,10 @@ export class ProxyServer {
           }, [webhookPreparation, downstream]);
           if (preStepResult.cancelled) return;
           method = preStepResult.method;
+          const preserveAsterisk = path === '*' && preStepResult.url.href === fullUrl;
           fullUrl = preStepResult.url.href;
           authority = preStepResult.url.host;
-          path = preStepResult.url.pathname + preStepResult.url.search;
+          path = preserveAsterisk ? '*' : preStepResult.url.pathname + preStepResult.url.search;
           upstreamHostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
           upstreamPort = parseInt(preStepResult.url.port, 10)
             || (preStepResult.url.protocol === 'https:' ? 443 : 80);
@@ -7171,7 +7195,8 @@ export class ProxyServer {
             body
           });
           method = transformed.method;
-          path = transformed.url.pathname + transformed.url.search;
+          path = path === '*' && transformed.url.href === fullUrl
+            ? '*' : transformed.url.pathname + transformed.url.search;
           upstreamHostname = this._normalizeConnectionHostname(transformed.url.hostname);
           upstreamPort = parseInt(transformed.url.port, 10)
             || (transformed.url.protocol === 'https:' ? 443 : 80);
@@ -7514,6 +7539,7 @@ export class ProxyServer {
           try {
             const { options, requestLib } = this._buildH1UpstreamRequestOptions({
               targetUrl: upstreamUrl,
+              requestTarget: path === '*' ? '*' : undefined,
               method,
               headers: upstreamHeaders,
               signal: downstream.signal,
@@ -7578,7 +7604,15 @@ export class ProxyServer {
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
-      let fullUrl = `https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url}`;
+      let fullUrl;
+      try {
+        fullUrl = new URL(`https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url === '*' ? '/*' : req.url}`).href;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain', Connection: 'close' });
+        res.end('Invalid request target');
+        req.resume();
+        return;
+      }
 
       const initialMatcherHeaders = this._rawHeadersToObject(req.rawHeaders, {
         stripUpstreamHeaders: false
@@ -7701,11 +7735,12 @@ export class ProxyServer {
           }, [webhookPreparation, downstream]);
           if (preStepResult.cancelled) return;
           req.method = preStepResult.method;
+          const preserveAsterisk = req.url === '*' && preStepResult.url.href === fullUrl;
           fullUrl = preStepResult.url.href;
           hostname = this._normalizeConnectionHostname(preStepResult.url.hostname);
           targetPort = parseInt(preStepResult.url.port, 10)
             || (preStepResult.url.protocol === 'https:' ? 443 : 80);
-          req.url = preStepResult.url.pathname + preStepResult.url.search;
+          req.url = preserveAsterisk ? '*' : preStepResult.url.pathname + preStepResult.url.search;
           req.headers = preStepResult.headers;
           transformedRequestHeaders ||= preStepResult.changed;
           requestProvenance = this._mockRequestProvenance(
@@ -7755,11 +7790,12 @@ export class ProxyServer {
             body
           });
           req.method = transformed.method;
+          const preserveAsterisk = req.url === '*' && transformed.url.href === fullUrl;
           fullUrl = transformed.url.href;
           hostname = this._normalizeConnectionHostname(transformed.url.hostname);
           targetPort = parseInt(transformed.url.port, 10)
             || (transformed.url.protocol === 'https:' ? 443 : 80);
-          req.url = transformed.url.pathname + transformed.url.search;
+          req.url = preserveAsterisk ? '*' : transformed.url.pathname + transformed.url.search;
           req.headers = transformed.headers;
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
@@ -8090,6 +8126,7 @@ export class ProxyServer {
           const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
           const { options, requestLib } = this._buildH1UpstreamRequestOptions({
             targetUrl: upstreamUrl,
+            requestTarget: req.url === '*' ? '*' : undefined,
             method: req.method,
             headers: proxyHeaders,
             signal: downstream.signal,
