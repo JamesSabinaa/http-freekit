@@ -2489,7 +2489,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-102 — Medium — A stale configuration read hides scheduled CA renewal and its Cancel action
 
-- **Status:** Open.
+- **Status:** Fixed. Configuration reads use a generation guard before updating
+  certificate controls. Deferred-response regressions exercise the production
+  renewal mutation and renderer for both scheduling and cancellation, keeping the
+  confirmed controls after an older read arrives. Focused CA, settings, and layout
+  checks passed.
 - **Evidence:** `loadConfig()` applies every completed configuration response
   without a generation check (`src/ui/app.js:12988-13004`). Renewal actions call
   it after a successful mutation (`:14982-14988`), while the renderer uses the

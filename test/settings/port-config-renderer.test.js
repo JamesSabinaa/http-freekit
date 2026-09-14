@@ -94,7 +94,7 @@ test('port config API keeps the persisted range separate from the active port', 
 });
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
-const configStart = rendererSource.indexOf('async function loadConfig()');
+const configStart = rendererSource.indexOf('let configLoadGeneration = 0;');
 const configEnd = rendererSource.indexOf('let uiSettingsSaveGeneration = 0;', configStart);
 const portStart = rendererSource.indexOf('let portConfigLoadGeneration = 0;');
 const portEnd = rendererSource.indexOf('// ============ TLS PASSTHROUGH', portStart);
@@ -135,6 +135,32 @@ function createRenderer(fetch) {
   );
   return { context, elements, toasts };
 }
+
+test('stale configuration reads cannot reverse confirmed CA renewal changes', async () => {
+  for (const scheduled of [true, false]) {
+    const oldRead = deferred();
+    let reads = 0;
+    const renderer = createRenderer(async (url, options = {}) => {
+      if (url === '/api/config') {
+        if (++reads === 1) return oldRead.promise;
+        return rendererResponse({ config: { certificateRenewalScheduled: scheduled, certificateRenewalRequired: true } });
+      }
+      return rendererResponse({});
+    });
+    renderer.elements.settingsCaCancelRenewal = { style: {} };
+    renderer.elements.settingsCaScheduleRenewal = { style: {} };
+    const renderStart = rendererSource.indexOf('function renderCaRenewalState(');
+    const mutationStart = rendererSource.indexOf('async function updateCaRenewal(');
+    const mutationEnd = rendererSource.indexOf('async function scheduleCaRenewal(', mutationStart);
+    vm.runInContext(rendererSource.slice(renderStart, configStart) + rendererSource.slice(mutationStart, mutationEnd), renderer.context);
+    const older = renderer.context.loadConfig();
+    await renderer.context.updateCaRenewal(scheduled ? 'POST' : 'DELETE', '/api/certificate/renewal', 'Saved');
+    oldRead.resolve(rendererResponse({ config: { certificateRenewalScheduled: !scheduled, certificateRenewalRequired: true } }));
+    await older;
+    assert.equal(renderer.elements.settingsCaCancelRenewal.style.display, scheduled ? '' : 'none');
+    assert.equal(renderer.elements.settingsCaScheduleRenewal.style.display, scheduled ? 'none' : '');
+  }
+});
 
 test('renderer loads the saved range without active-port race in either response order', async () => {
   for (const firstResponse of ['config', 'range']) {

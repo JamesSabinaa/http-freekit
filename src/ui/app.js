@@ -13084,12 +13084,14 @@
       }
     }
 
+    let configLoadGeneration = 0;
     async function loadConfig() {
+      const generation = ++configLoadGeneration;
       const portConfigPromise = loadPortConfig();
       try {
         const res = await fetch(`${API_BASE}/api/config`);
         const data = await res.json();
-        if (data.config) {
+        if (generation === configLoadGeneration && data.config) {
           const fpEl = document.getElementById('settingsCaFingerprint');
           if (fpEl) fpEl.textContent = data.config.certificateFingerprint || '--';
           if (typeof renderCaRenewalState === 'function') renderCaRenewalState(data.config);
