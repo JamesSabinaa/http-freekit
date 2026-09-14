@@ -2438,7 +2438,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-100 — Medium — Unicode hostnames are silently ignored in upstream-proxy exclusions
 
-- **Status:** Open.
+- **Status:** Fixed. Routing canonicalizes exclusion hostnames and destinations
+  through IDNA conversion before comparing them. Regression coverage checks Unicode
+  and ASCII destinations, exact/suffix/wildcard exclusions, trailing dots, and port
+  restrictions alongside existing IPv6 and routing controls. All 39 upstream-proxy
+  and layout checks passed.
 - **Evidence:** the “Non-proxied hosts” field accepts hostname text and submits it
   unchanged (`src/ui/index.html:503-504`, `src/ui/app.js:13843-13854`).
   `normalizeNoProxyEntries()` preserves Unicode spellings

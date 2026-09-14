@@ -96,6 +96,23 @@ test('no-proxy matching supports suffixes, wildcards, local names, and ports', (
   assert.equal(proxy._shouldUseUpstreamProxy('public.test', 443), true);
 });
 
+test('internationalized exclusions match canonical destinations with suffix and port controls', () => {
+  const proxy = new ProxyServer(null);
+  for (const entry of ['bücher.example', 'BÜCHER.example.', '.bücher.example', '*.bücher.example', 'bücher.example:443']) {
+    proxy.setUpstreamProxy({ host: 'proxy.test', noProxy: [entry] });
+    assert.equal(proxy._shouldUseUpstreamProxy('xn--bcher-kva.example', 443), false, entry);
+    assert.equal(proxy._shouldUseUpstreamProxy('bücher.example', 443), false, entry);
+    assert.equal(proxy._shouldUseUpstreamProxy('notxn--bcher-kva.example', 443), true, entry);
+    if (entry.startsWith('.') || entry.startsWith('*.')) {
+      assert.equal(proxy._shouldUseUpstreamProxy('shop.xn--bcher-kva.example', 443), false, entry);
+    }
+    if (entry.endsWith(':443')) assert.equal(proxy._shouldUseUpstreamProxy('xn--bcher-kva.example', 80), true);
+  }
+  proxy.setUpstreamProxy({ host: 'proxy.test', noProxy: ['api-*.bücher.example'] });
+  assert.equal(proxy._shouldUseUpstreamProxy('api-one.xn--bcher-kva.example', 443), false);
+  assert.equal(proxy._shouldUseUpstreamProxy('other.xn--bcher-kva.example', 443), true);
+});
+
 test('renderer saves and restores the configured non-proxied hosts', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'src/ui/app.js'), 'utf8');
   assert.match(source, /JSON\.stringify\(\{ host, port, auth: auth \|\| null, type, noProxy \}\)/);

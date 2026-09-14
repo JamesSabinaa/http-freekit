@@ -8,7 +8,7 @@ import https from 'https';
 import net from 'net';
 import tls from 'tls';
 import zlib from 'zlib';
-import { URL } from 'url';
+import { URL, domainToASCII } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { SocksClient } from 'socks';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -3061,7 +3061,8 @@ export class ProxyServer {
 
   _shouldUseUpstreamProxy(hostname, targetPort) {
     if (!this.upstreamProxy) return false;
-    const host = this._normalizeConnectionHostname(hostname).toLowerCase().replace(/\.$/, '');
+    const connectionHost = this._normalizeConnectionHostname(hostname);
+    const host = (domainToASCII(connectionHost) || connectionHost).toLowerCase().replace(/\.$/, '');
     const port = String(targetPort || '');
 
     for (const rawEntry of this.upstreamProxy.noProxy || []) {
@@ -3085,6 +3086,7 @@ export class ProxyServer {
       }
       if (entryPort && entryPort !== port) continue;
 
+      entryHost = (domainToASCII(entryHost) || entryHost).toLowerCase();
       const suffix = entryHost.replace(/^\*?\./, '').replace(/\.$/, '');
       if (entryHost.startsWith('*.') || entryHost.startsWith('.')) {
         if (host === suffix || host.endsWith(`.${suffix}`)) return false;
