@@ -2592,6 +2592,7 @@ export class ProxyServer {
         }
       });
       request.on('headers', informationalHeaders => {
+        resetIdleTimer();
         const statusCode = Number(informationalHeaders[':status']);
         if (statusCode >= 100 && statusCode < 200 && statusCode !== 101 && !downstream.aborted) {
           const cleanHeaders = createHeaderMap();

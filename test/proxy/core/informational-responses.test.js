@@ -200,6 +200,53 @@ async function withProxy(ca, mode, targetPort, callback) {
   }
 }
 
+test('native H2 informational activity resets idle timeout, but a stalled response still expires',
+  { timeout: 10000 }, async t => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-hints-idle-'));
+    const ca = new CertificateAuthority(dataDir);
+    await ca.initialize();
+    const cert = await ca.generateCertForHost('127.0.0.1');
+    let stalled = false;
+    const origin = http2.createSecureServer({ key: cert.key, cert: cert.cert });
+    origin.on('stream', stream => {
+      stream.on('error', () => {});
+      stream.additionalHeaders({ ':status': 103, link: EARLY_LINK });
+      if (stalled) return;
+      const hints = setInterval(() => {
+        if (!stream.destroyed && !stream.closed) {
+          stream.additionalHeaders({ ':status': 103, link: EARLY_LINK });
+        }
+      }, 50);
+      const finish = setTimeout(() => {
+        clearInterval(hints);
+        if (!stream.destroyed && !stream.closed) {
+          stream.respond({ ':status': 200 });
+          stream.end('completed');
+        }
+      }, 800);
+      stream.once('close', () => { clearInterval(hints); clearTimeout(finish); });
+    });
+    const destroySockets = trackSockets(origin);
+    const port = await listen(origin);
+    const proxy = new ProxyServer(ca, { port: 0, upstreamIdleTimeoutMs: 300 });
+    proxy.setHttp2Config('h2-only');
+    proxy.setHttpsWhitelist(['127.0.0.1']);
+    await proxy.start();
+    t.after(async () => {
+      await proxy.stop();
+      await close(origin, destroySockets);
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    const active = await requestH2ThroughTunnel(proxy.server.address().port, port);
+    assert.equal(active.statusCode, 200);
+    assert.equal(active.body, 'completed');
+    assert.ok(active.informational.length > 5);
+    stalled = true;
+    const idle = await requestH2ThroughTunnel(proxy.server.address().port, port);
+    assert.equal(idle.statusCode, 502);
+    assert.match(idle.body, /timeout/i);
+  });
+
 test('forwards 103 Early Hints through every H1/H2 proxy combination', { timeout: 60000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-info-'));
   const ca = new CertificateAuthority(dataDir);

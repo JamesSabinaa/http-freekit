@@ -645,8 +645,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-025 — Medium — Native H2 streaming times out during regular informational responses
 
-- **Status:** Open.
-- **Evidence:** `_streamH2Exchange()` forwards informational headers without
+- **Status:** Fixed.
+- **Review:** informational headers are upstream activity; other response paths
+  already refresh their idle timers when receiving them.
+- **Resolution:** reset the native H2 streaming idle timer on upstream headers.
+- **Verification:** four focused informational-response and test-layout checks
+  pass. A new live TLS/H2 regression fails before the fix and now completes an
+  800 ms response with 50 ms hints despite a 300 ms idle limit. A response that
+  sends one hint and then stalls still times out with 502.
+- **Evidence (before fix):** `_streamH2Exchange()` forwards informational headers without
   refreshing its idle timer (`src/proxy/proxy-server.js:2594-2603,2176-2187`).
   The equivalent H1-to-H2 streaming and buffered H2 handlers reset their timers
   (`:1837,9298`).
