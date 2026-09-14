@@ -189,6 +189,7 @@ function createRenderer(fetch) {
     let mockSaveInProgress = false;
     let mockRevertInProgress = false;
     let mockCollectionMutationCount = 0;
+    let mockRulesLoadGeneration = 0;
     ${queueSource}
     ${combineSource}
     this.combineRulesAsGroup = combineRulesAsGroup;
@@ -229,6 +230,30 @@ test('renderer combines with one request and applies the complete server respons
     message: 'Rules combined into a group (hold Shift + drop)',
     type: 'success'
   }]);
+});
+
+test('an older rules load cannot undo a successful Combine response', async () => {
+  const flatRules = [{ id: 'first' }, { id: 'second' }];
+  const rules = [{ id: 'group', type: 'group', items: flatRules }];
+  const renderer = createRenderer(async () => ({
+    ok: true,
+    json: async () => ({ success: true, group: rules[0], rules })
+  }));
+  let releaseLoad;
+  renderer.context._fetchAuthoritativeMockRules = () => new Promise(resolve => { releaseLoad = resolve; });
+  renderer.context.loadBreakpointRules = async () => {};
+  const start = rendererSource.indexOf('async function loadMockRules()');
+  const end = rendererSource.indexOf('async function ensureDefaultMockRules()', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(rendererSource.slice(start, end), renderer.context);
+
+  const oldLoad = renderer.context.loadMockRules();
+  await renderer.context.combineRulesAsGroup('first', 'second');
+  assert.deepEqual(renderer.appliedRules, [rules]);
+  releaseLoad(flatRules);
+  assert.equal(await oldLoad, false);
+  assert.deepEqual(renderer.appliedRules, [rules]);
+  assert.equal(renderer.renders, 1);
 });
 
 test('renderer reloads authoritative rules after stale-rule and persistence failures', async t => {

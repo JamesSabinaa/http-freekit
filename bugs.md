@@ -2624,7 +2624,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-107 — Medium — A delayed rule load hides a successfully combined mock group
 
-- **Status:** Open.
+- **Status:** Fixed. Successful Combine responses invalidate earlier rule loads
+  before applying the returned tree. A deferred-load regression using production
+  renderer functions failed before the fix; all 353 mocking and test-layout
+  checks pass afterward.
 - **Evidence:** `loadMockRules()` checks completed responses against its
   load-generation token (`src/ui/app.js:7800-7808`). A successful Combine applies
   the server's new rule tree without invalidating pending loads (`:7717-7735`).

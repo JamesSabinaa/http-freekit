@@ -7786,6 +7786,7 @@
             throw new Error('Server returned an incomplete combined group');
           }
 
+          mockRulesLoadGeneration++;
           _replaceMockRulesFromServer(data.rules);
           updateMockSaveButtons();
           renderMockRules();
