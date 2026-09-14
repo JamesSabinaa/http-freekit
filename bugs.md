@@ -669,7 +669,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-026 — Medium — WebSocket capture drops compression history and silently corrupts later messages
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** omitted compressed messages can contribute dictionary history to
+  later messages when context takeover is enabled. Reusing that history is unsafe.
+- **Resolution:** use an unavailable-context decoder for later compressed
+  captures in the affected direction. Already queued captures retain their valid
+  decoder; no-context-takeover streams can resume normally after overload.
+- **Verification:** 15 focused WebSocket and test-layout checks pass. The new
+  takeover-overload regression failed before the fix and now reports explicit
+  decompression errors after omission while all 64 preceding captures remain
+  correct. The no-context-takeover recovery control and shutdown checks pass.
 - **Evidence:** capture queue overflow omits compressed messages without advancing
   or invalidating the permessage-deflate decoder history
   (`src/proxy/proxy-server.js:4615-4619`). Later accepted messages reuse that stale

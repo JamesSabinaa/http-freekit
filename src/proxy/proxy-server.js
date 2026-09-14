@@ -4557,6 +4557,13 @@ export class ProxyServer {
       let captureTail = Promise.resolve();
       let pendingCaptures = 0;
       const createCaptureState = (direction, decoder, onApplicationMessage) => {
+        const contextTakeover = perMessageDeflate?.[direction]?.noContextTakeover === false;
+        let captureDecoder = decoder;
+        const unavailableDecoder = {
+          async decode() {
+            throw new Error('permessage-deflate context is unavailable after an omitted compressed message');
+          }
+        };
         const state = {
           disabled: false,
           pendingBytes: 0,
@@ -4617,6 +4624,7 @@ export class ProxyServer {
               state.pendingBytes + frame.payload.length > this.maxWsCapturedMessageBytes) {
             ++frameSequence;
             state.omitFrame(frame, 'ERR_WS_CAPTURE_QUEUE_OVERLOAD');
+            if (frame.compressed && contextTakeover) captureDecoder = unavailableDecoder;
             return;
           }
 
@@ -4624,9 +4632,12 @@ export class ProxyServer {
           state.pendingMessages++;
           state.pendingBytes += frame.payload.length;
           pendingCaptures++;
+          // Snapshot before enqueueing: an omission must invalidate only later
+          // messages, not captures already queued with a complete history.
+          const frameDecoder = captureDecoder;
           const operation = captureTail.then(
             () => this._emitWsFrame(
-              frame, direction, requestId, sequence, decoder, startTime,
+              frame, direction, requestId, sequence, frameDecoder, startTime,
               trafficLifecycleId
             )
           );

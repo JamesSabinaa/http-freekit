@@ -118,14 +118,15 @@ async function createWebSocketPair(t, { extension = null, onRequest } = {}) {
   return { client, events, originSocket: upgradedSocket, proxy };
 }
 
-test('WebSocket decompression queue overload omits bounded frames then recovers',
+for (const contextTakeover of [false, true]) {
+test(`WebSocket queue overload ${contextTakeover ? 'marks dependent compression history unavailable' : 'recovers without context takeover'}`,
   { timeout: 15000 }, async t => {
     let releaseFirstCapture;
     const firstCaptureGate = new Promise(resolve => { releaseFirstCapture = resolve; });
     let captureStarted;
     const firstCaptureStarted = new Promise(resolve => { captureStarted = resolve; });
     const pair = await createWebSocketPair(t, {
-      extension: 'permessage-deflate; server_no_context_takeover'
+      extension: contextTakeover ? 'permessage-deflate' : 'permessage-deflate; server_no_context_takeover'
     });
     const emitWsFrame = pair.proxy._emitWsFrame.bind(pair.proxy);
     let gated = false;
@@ -153,7 +154,7 @@ test('WebSocket decompression queue overload omits bounded frames then recovers'
     pair.originSocket.write(encodeFrame(compressMessage('recovered'), { compressed: true }));
     await waitFor(
       () => pair.events.some(event => event.protocol === 'ws-frame'
-        && String(event.requestBody) === 'recovered'),
+        && event.sequence === 67),
       'Timed out waiting for capture recovery'
     );
     pair.originSocket.end();
@@ -165,7 +166,17 @@ test('WebSocket decompression queue overload omits bounded frames then recovers'
 
     const frames = pair.events.filter(event => event.protocol === 'ws-frame');
     assert.equal(frames.length, 65);
-    assert.equal(frames.at(-1).requestBody, 'recovered');
+    for (const [index, frame] of frames.slice(0, 64).entries()) {
+      assert.equal(frame.requestBody, `queued-${index}`);
+      assert.equal(frame.decompressionError, undefined);
+    }
+    if (contextTakeover) {
+      assert.match(frames.at(-1).decompressionError || '', /context.*unavailable.*omitted/i);
+      assert.notEqual(frames.at(-1).requestBody, 'recovered');
+    } else {
+      assert.equal(frames.at(-1).requestBody, 'recovered');
+      assert.equal(frames.at(-1).decompressionError, undefined);
+    }
     assert.equal(frames.at(-1).sequence, 67);
     assert.equal(parent.responseBodyTruncated, true);
     assert.equal(parent.webSocketCaptureOmissions.server.messages, 2);
@@ -177,6 +188,7 @@ test('WebSocket decompression queue overload omits bounded frames then recovers'
       ['ERR_WS_CAPTURE_QUEUE_OVERLOAD']
     );
   });
+}
 
 test('unrecoverable WebSocket parser omissions are disclosed on the parent capture',
   { timeout: 10000 }, async t => {
