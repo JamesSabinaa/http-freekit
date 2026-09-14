@@ -2539,7 +2539,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-104 — Medium — Manual Electron launch commands retain an inherited TLS validation override
 
-- **Status:** Open.
+- **Status:** Fixed. Generated PowerShell and POSIX commands explicitly remove
+  the inherited override. All 38 Electron and test-layout checks pass, including
+  execution of the PowerShell setup with uppercase and lowercase inherited keys
+  in real Node children. The Windows regression failed before the fix.
 - **Evidence:** Electron's automatic environment removes all case variants of
   `NODE_TLS_REJECT_UNAUTHORIZED` (`src/interceptors/electron-interceptor.js:142-147`).
   Its manual environment keeps only eight positive assignments (`:153-165`),

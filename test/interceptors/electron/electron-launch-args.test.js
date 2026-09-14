@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { ElectronInterceptor } from '../../../src/interceptors/electron-interceptor.js';
@@ -64,6 +65,7 @@ test('manual Electron instructions use real command-line arguments', async () =>
   const result = await interceptor.activate(9090);
 
   assert.match(result.metadata.instructions, /your-app '--proxy-server=http:\/\/127\.0\.0\.1:9090'/);
+  assert.match(result.metadata.instructions, /^unset NODE_TLS_REJECT_UNAUTHORIZED;\n/);
   assert.match(result.metadata.instructions, /--proxy-bypass-list=<-loopback>/);
   assert.match(result.metadata.instructions, /--ignore-certificate-errors-spki-list=manual-spki/);
   assert.match(result.metadata.instructions, /HTTP_PROXY='http:\/\/127\.0\.0\.1:9090'/);
@@ -100,4 +102,28 @@ test('manual Electron instructions use PowerShell-safe environment setup on Wind
     "$env:NODE_EXTRA_CA_CERTS='C:\\Program Files\\O''Brien\\FreeKit CA.pem'"
   ));
   assert.match(result.metadata.instructions, /& 'C:\\path\\to\\your-app\.exe'/);
+});
+
+test('manual Electron PowerShell setup removes inherited TLS overrides in a real child', {
+  skip: process.platform !== 'win32'
+}, () => {
+  const interceptor = new ElectronInterceptor();
+  interceptor._platform = () => 'win32';
+  const instructions = interceptor._manualLaunchInstructions(9090, '', [
+    '-e', 'process.stdout.write(JSON.stringify(process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null))'
+  ]);
+  const command = instructions.split('\n\n')[0].replace(
+    "'C:\\path\\to\\your-app.exe'", `'${process.execPath.replace(/'/g, "''")}'`
+  );
+  for (const name of ['NODE_TLS_REJECT_UNAUTHORIZED', 'node_tls_reject_unauthorized']) {
+    const env = Object.fromEntries(Object.entries(process.env).filter(
+      ([key]) => key.toUpperCase() !== 'NODE_TLS_REJECT_UNAUTHORIZED'
+    ));
+    env[name] = '0';
+    const child = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')
+    ], { env, encoding: 'utf8', windowsHide: true });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, 'null', name);
+  }
 });

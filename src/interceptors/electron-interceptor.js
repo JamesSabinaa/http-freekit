@@ -171,7 +171,8 @@ export class ElectronInterceptor {
       const assignments = Object.entries(environment)
         .map(([name, value]) => `$env:${name}=${quote(value)}`);
       const command = `& ${quote('C:\\path\\to\\your-app.exe')} ${launchArgs.map(quote).join(' ')}`;
-      return `${assignments.join('\n')}\n${command}\n\n` +
+      return 'Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED -ErrorAction SilentlyContinue\n' +
+        `${assignments.join('\n')}\n${command}\n\n` +
         'NODE_USE_ENV_PROXY requires an Electron release whose embedded Node supports environment proxying.';
     }
 
@@ -179,7 +180,8 @@ export class ElectronInterceptor {
     const assignments = Object.entries(environment)
       .map(([name, value]) => `${name}=${quote(value)}`)
       .join(' \\\n  ');
-    return `${assignments} \\\n  your-app ${launchArgs.map(quote).join(' ')}\n\n` +
+    return 'unset NODE_TLS_REJECT_UNAUTHORIZED;\n' +
+      `${assignments} \\\n  your-app ${launchArgs.map(quote).join(' ')}\n\n` +
       'NODE_USE_ENV_PROXY requires an Electron release whose embedded Node supports environment proxying.';
   }
 
