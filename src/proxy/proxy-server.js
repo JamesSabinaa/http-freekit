@@ -10467,7 +10467,7 @@ export class ProxyServer {
           const fieldName = parseQuotedParameter(disposition, 'name');
           if (fieldName !== matcher.name) continue;
           if (!matcher.value) return true; // field exists
-          const fieldValue = part.slice(bodyStart + 4).replace(/\r\n$/, '');
+          const fieldValue = part.slice(bodyStart + 4);
           if (fieldValue === matcher.value) return true;
         }
         return false;

@@ -914,7 +914,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-035 — Medium — Multipart matchers remove a real trailing newline from field values
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Confirmed the splitter already removes the framing CRLF. Eight
+  native FormData cases reproduced incorrect matches or misses from the second
+  trim, while plain values passed as controls.
+- **Resolution:** Compare the field content directly after its part headers,
+  preserving trailing newlines that belong to the submitted value.
+- **Verification:** 41 focused matcher, multipart, and layout checks passed;
+  two optional Go/PHP execution checks were skipped because those tools are
+  unavailable. Ten live proxy cases cover first/last fields, plain text, one or
+  two trailing CRLFs, newline-only values, and Unicode text.
 - **Evidence:** `splitMultipartBody()` already removes the delimiter's preceding
   CRLF (`src/proxy/proxy-server.js:332-335`), then `_evaluateMatcher()` strips
   another trailing CRLF from the field data (`:10640`). That second newline

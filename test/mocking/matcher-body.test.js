@@ -42,6 +42,32 @@ async function startProxy(t, rules, options = {}) {
   return { proxy, captured };
 }
 
+test('multipart exact matchers preserve trailing field newlines from native FormData', async t => {
+  const values = ['hello', 'hello\r\n', 'hello\r\n\r\n', '\r\n', 'café\r\n'];
+  const rules = values.map((value, index) => ({
+    matchers: [{ type: 'multipart-form-data', name: 'comment', value }],
+    action: { type: 'fixed-response', status: 200, body: `matched ${index}` }
+  }));
+  rules.push({ matchers: [], action: { type: 'fixed-response', status: 418, body: 'no match' } });
+  const { proxy } = await startProxy(t, rules);
+  for (const position of ['first', 'last']) {
+    for (const [index, value] of values.entries()) {
+      await t.test(`${position} field ${JSON.stringify(value)}`, async () => {
+        const form = new FormData();
+        if (position === 'last') form.append('other', 'untouched');
+        form.append('comment', value);
+        if (position === 'first') form.append('other', 'untouched');
+        const encoded = new Request('http://example.test/', { method: 'POST', body: form });
+        const response = await requestThroughProxy(
+          proxy.server.address().port, '/multipart', Buffer.from(await encoded.arrayBuffer()),
+          { 'content-type': encoded.headers.get('content-type') }
+        );
+        assert.deepEqual(response, { statusCode: 200, body: `matched ${index}` });
+      });
+    }
+  }
+});
+
 test('body matcher sees tokens beyond the bounded capture preview', async t => {
   const token = 'match-after-display-cap';
   const body = Buffer.concat([
