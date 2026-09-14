@@ -9,7 +9,7 @@ const fetchWrapperStart = rendererSource.indexOf('const API_BASE =');
 const fetchWrapperEnd = rendererSource.indexOf('// ============ WEBSOCKET ============', fetchWrapperStart);
 assert.notEqual(fetchWrapperStart, -1);
 assert.notEqual(fetchWrapperEnd, -1);
-const functionsStart = rendererSource.indexOf('async function updateBreakpointBanner()');
+const functionsStart = rendererSource.indexOf('let breakpointBannerGeneration = 0;');
 const functionsEnd = rendererSource.indexOf('function getBreakpointEditDraft(', functionsStart);
 assert.notEqual(functionsStart, -1);
 assert.notEqual(functionsEnd, -1);
@@ -41,6 +41,21 @@ function createRenderer(fetch, breakpointEditDrafts = new Map()) {
   vm.runInContext(rendererSource.slice(functionsStart, functionsEnd), context);
   return { context, elements, toasts };
 }
+
+test('only the latest pending-list refresh can update the breakpoint banner', async () => {
+  for (const latestPending of [[], [{ id: 'new-pause' }]]) {
+    const requests = [];
+    const harness = createRenderer(() => new Promise(resolve => requests.push(resolve)));
+    const older = harness.context.updateBreakpointBanner();
+    const newer = harness.context.updateBreakpointBanner();
+    requests[1](response({ pending: latestPending }));
+    await newer;
+    requests[0](response({ pending: latestPending.length ? [] : [{ id: 'already-resumed' }] }));
+    await older;
+    assert.equal(harness.elements.breakpointBanner.style.display, latestPending.length ? 'flex' : 'none');
+    if (latestPending.length) assert.equal(harness.elements.breakpointBannerText.textContent, '1 request paused');
+  }
+});
 
 test('management fetch errors preserve their HTTP status for callers', async () => {
   const nativeResponse = {

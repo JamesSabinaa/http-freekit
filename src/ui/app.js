@@ -15857,10 +15857,13 @@
     }
 
     // ============ BREAKPOINT FUNCTIONS ============
+    let breakpointBannerGeneration = 0;
     async function updateBreakpointBanner() {
+      const generation = ++breakpointBannerGeneration;
       try {
         const res = await fetch(API_BASE + '/api/breakpoints/pending');
         const data = await res.json();
+        if (generation !== breakpointBannerGeneration) return;
         const banner = document.getElementById('breakpointBanner');
         if (!banner) return;
         if (data.pending && data.pending.length > 0) {

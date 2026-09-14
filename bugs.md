@@ -2393,7 +2393,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-098 — Low — A delayed breakpoint refresh restores a stale paused banner
 
-- **Status:** Open.
+- **Status:** Fixed. Pending-list banner refreshes use a generation check so only
+  the latest request may update the display. Deferred-response tests cover both
+  stale paused lists restoring a cleared banner and stale empty lists hiding a
+  newer pause. Focused breakpoint and layout checks passed.
 - **Evidence:** `updateBreakpointBanner()` applies every completed pending-list
   response without checking whether a newer refresh has superseded it
   (`src/ui/app.js:15680-15694`). Breakpoint hit/resume events and successful Resume
