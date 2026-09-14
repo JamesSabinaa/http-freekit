@@ -697,7 +697,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-027 — Low — Obsolete breakpoint implementations survive behind excluding dispatch guards
 
-- **Status:** Open (dead code).
+- **Status:** Fixed.
+- **Review:** Confirmed all production callers exclude breakpoint actions; the
+  webhook-only call cannot reach them either. The direct helper test did not
+  represent production behavior.
+- **Resolution:** Removed all three obsolete implementations. Replaced the direct
+  helper test with a real TLS/H2 response-breakpoint exchange. That test exposed
+  forbidden edited headers remaining in capture metadata despite being stripped
+  from the wire; live H2 captures now use the same header conversion as delivery.
+- **Verification:** 61 focused breakpoint, fixed-response, serve-file, transform,
+  and test-layout checks passed. The new live test reproduced the capture mismatch
+  before correction and verifies both delivered and captured headers afterward.
 - **Evidence:** legacy breakpoint branches remain in the TLS handler
   (`src/proxy/proxy-server.js:6416-6527`), native H2 mock helper (`:8652-8762`),
   and shared H1 mock helper (`:11010-11226`). Every production caller reaches
