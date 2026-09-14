@@ -1412,7 +1412,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-056 — Low — Completed Add requests erase newer settings input
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Deferred-response tests reproduced both handlers erasing a newer
+  host after successful submission. Their existing operation guards do not
+  track edits to the still-enabled input.
+- **Resolution:** Clear the field only if its value still equals the exact
+  submitted input; continue trimming the host sent to the server.
+- **Verification:** All 97 settings and test-layout checks passed. Both forms
+  cover newer hosts, whitespace edits, unchanged successful submissions, and
+  failed submissions. The newer-host cases failed before the fix.
 - **Evidence:** TLS passthrough and HTTPS whitelist Add handlers clear the
   still-editable input unconditionally after success
   (`src/ui/app.js:14259-14271,14655-14667`), without comparing it with the

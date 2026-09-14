@@ -14315,7 +14315,8 @@
 
     async function addTlsPassthrough() {
       const input = document.getElementById('tlsPassthroughInput');
-      const host = input.value.trim();
+      const submittedValue = input.value;
+      const host = submittedValue.trim();
       if (!host) return;
       const operation = beginSettingsMutation('tls-passthrough');
       try {
@@ -14327,7 +14328,7 @@
         const data = await readSettingsMutationResponse(response, 'Could not add host');
         if (!isCurrentSettingsOperation(operation)) return;
         if (!Array.isArray(data.hosts)) throw new Error('Could not add host returned an invalid host list');
-        input.value = '';
+        if (input.value === submittedValue) input.value = '';
         renderTlsPassthrough(data.hosts);
         toast('Added ' + host, 'success');
       } catch (err) {
@@ -14711,7 +14712,8 @@
 
     async function addHttpsWhitelist() {
       const input = document.getElementById('httpsWhitelistHost');
-      const host = input?.value?.trim();
+      const submittedValue = input?.value;
+      const host = submittedValue?.trim();
       if (!host) { toast('Hostname required', 'error'); return; }
       const operation = beginSettingsMutation('https-whitelist');
       try {
@@ -14723,7 +14725,7 @@
         const data = await readSettingsMutationResponse(response, 'Could not add host');
         if (!isCurrentSettingsOperation(operation)) return;
         if (!Array.isArray(data.hosts)) throw new Error('Could not add host returned an invalid host list');
-        input.value = '';
+        if (input.value === submittedValue) input.value = '';
         renderHttpsWhitelist(data.hosts);
         toast('Host added to whitelist', 'success');
       } catch (err) {
