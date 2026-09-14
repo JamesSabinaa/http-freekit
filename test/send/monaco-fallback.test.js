@@ -76,11 +76,11 @@ test('Monaco readiness settles to null for missing require, AMD errors, and init
 });
 
 test('Monaco readiness exposes the API only after successful initialization', async () => {
-  const themes = [];
+  const themes = new Map();
   const monaco = {
     editor: {
       create: () => ({}),
-      defineTheme: name => themes.push(name)
+      defineTheme: (name, definition) => themes.set(name, definition)
     }
   };
   const harness = createMonacoReadyHarness({
@@ -89,7 +89,11 @@ test('Monaco readiness exposes the API only after successful initialization', as
 
   assert.equal(await harness.context.ready, monaco);
   assert.equal(harness.context.getMonacoApi(), monaco);
-  assert.deepEqual(themes, ['httptoolkit-dark', 'httptoolkit-light']);
+  assert.deepEqual([...themes.keys()], ['httptoolkit-dark', 'httptoolkit-light', 'httptoolkit-high-contrast']);
+  const highContrast = themes.get('httptoolkit-high-contrast');
+  assert.equal(highContrast.base, 'hc-black');
+  assert.equal(highContrast.inherit, true);
+  assert.equal(highContrast.rules.length, 0, 'retain the built-in high-contrast token palette');
 });
 
 test('Monaco readiness has a five-second bounded timeout and ignores late success', async () => {

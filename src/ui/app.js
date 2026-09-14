@@ -16472,6 +16472,13 @@
             }
           });
 
+          monaco.editor.defineTheme('httptoolkit-high-contrast', {
+            base: 'hc-black',
+            inherit: true,
+            rules: [],
+            colors: {}
+          });
+
             monacoApi = monaco;
             settle(monaco);
           } catch (error) {
@@ -16679,6 +16686,7 @@
     function getMonacoTheme() {
       const dataTheme = document.documentElement.getAttribute('data-theme');
       if (dataTheme === 'light') return 'httptoolkit-light';
+      if (dataTheme === 'high-contrast') return 'httptoolkit-high-contrast';
       return 'httptoolkit-dark';
     }
 
@@ -16736,7 +16744,7 @@
     var _customThemeStyleEl = null;
     var THEME_SELECTION_STORAGE_KEY = 'http-freekit-theme';
     var CUSTOM_THEME_STORAGE_KEY = 'http-freekit-custom-theme';
-    var VALID_THEME_SELECTIONS = ['dark', 'light', 'auto', 'custom'];
+    var VALID_THEME_SELECTIONS = ['dark', 'light', 'high-contrast', 'auto', 'custom'];
 
     // Known CSS variable names that a custom theme file can override
     var _themeOverridableVars = [
@@ -16835,7 +16843,7 @@
         raw,
         'theme',
         'Stored theme selection',
-        'expected dark, light, auto, or custom'
+        'expected dark, light, high-contrast, auto, or custom'
       );
       return 'dark';
     }
@@ -17040,7 +17048,7 @@
 
     function setTheme(theme, persist = true) {
       if (VALID_THEME_SELECTIONS.indexOf(theme) === -1) {
-        toast('Theme selection is invalid; choose Dark, Light, System, or Custom.', 'error');
+        toast('Theme selection is invalid; choose Dark, Light, High Contrast, System, or Custom.', 'error');
         return false;
       }
       if (persist) {
@@ -17071,7 +17079,8 @@
       updateCustomThemeSection(theme);
 
       // Sync Monaco editor theme
-      setMonacoTheme(resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
+      setMonacoTheme(resolved === 'high-contrast' ? 'httptoolkit-high-contrast' :
+        resolved === 'light' ? 'httptoolkit-light' : 'httptoolkit-dark');
       return true;
     }
 

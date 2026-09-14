@@ -190,8 +190,18 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-007 — Medium — The advertised High Contrast theme cannot be selected
 
-- **Status:** Open.
-- **Evidence:** Settings offers `<option value="high-contrast">High Contrast</option>`
+- **Status:** Fixed.
+- **Review:** the shipped Settings option and README explicitly promise this
+  existing palette. Fresh Chrome and a regression test reproduced rejection
+  before any CSS or editor design change was considered.
+- **Resolution:** accept and restore `high-contrast`, register a Monaco theme
+  inheriting its built-in `hc-black` palette, and select it for both live theme
+  changes and newly created editors. Storage failures retain the prior theme.
+- **Verification:** 27 focused theme, storage, Monaco readiness and cleanup tests
+  pass. The shipped-UI browser check exercises the Settings change handler,
+  reloads the persisted selection, creates a real high-contrast Monaco editor,
+  and switches back to Light and Dark successfully.
+- **Evidence (before fix):** Settings offers `<option value="high-contrast">High Contrast</option>`
   (`src/ui/index.html:580-584`) and the README advertises it as a built-in theme
   (`README.md:182-189`), but `VALID_THEME_SELECTIONS` contains only `dark`,
   `light`, `auto`, and `custom` (`src/ui/app.js:16739`). `setTheme()`
