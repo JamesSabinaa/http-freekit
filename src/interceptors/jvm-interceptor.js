@@ -1471,6 +1471,8 @@ public class AttachProxy {
 
     const proxyHost = this.proxyHost;
     let fallbackCommand = this._getFallbackCommand(proxyHost, proxyPort);
+    // A failed retry must not erase ownership from an earlier successful attach.
+    const previousOwnership = this.activatedProcesses.get(pid);
     let pendingOwnership = null;
     if (this.recoveryFile) {
       const observation = await this._observeTargetIdentity(pid);
@@ -1518,10 +1520,11 @@ public class AttachProxy {
       if (targetState !== 'same') {
         let discardError = null;
         try {
-          this._forgetTrackedOwnership(pid);
+          if (previousOwnership) this._setTrackedOwnership(pid, previousOwnership);
+          else this._forgetTrackedOwnership(pid);
         } catch (err) {
           discardError = err;
-          this.activatedProcesses.set(pid, { ...pendingOwnership, identityUncertain: true });
+          this.activatedProcesses.set(pid, { ...(previousOwnership || pendingOwnership), identityUncertain: true });
           this.active = true;
         }
         return {
@@ -1571,10 +1574,11 @@ public class AttachProxy {
         }
       } else if (pendingOwnership) {
         try {
-          this._forgetTrackedOwnership(pid);
+          if (previousOwnership) this._setTrackedOwnership(pid, previousOwnership);
+          else this._forgetTrackedOwnership(pid);
         } catch (err) {
-          console.warn(`[Interceptor] Could not discard pending JVM recovery for PID ${pid}:`, err.message);
-          this.activatedProcesses.set(pid, { ...pendingOwnership, identityUncertain: true });
+          console.warn(`[Interceptor] Could not restore prior JVM recovery for PID ${pid}:`, err.message);
+          this.activatedProcesses.set(pid, { ...(previousOwnership || pendingOwnership), identityUncertain: true });
           this.active = true;
         }
       }

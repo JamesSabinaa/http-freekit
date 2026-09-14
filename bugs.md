@@ -389,8 +389,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-014 — High — Failed repeat JVM activation forgets an already-intercepted process
 
-- **Status:** Open.
-- **Evidence:** `activate(pid)` replaces the existing PID's active ownership with
+- **Status:** Fixed.
+- **Review:** confirmed that definite pre-mutation failure on a retry deletes
+  ownership from the earlier attach. Preserve that record rather than changing
+  the existing repeat-activation behavior.
+- **Resolution:** restore prior ownership after failed preparation or target
+  revalidation, retaining it in memory if journal restoration fails.
+- **Verification:** 27 focused JVM and test-layout checks pass; one compiled-agent
+  runtime check skips because Java tools are unavailable. New regressions verify
+  journal preservation and a restore action after interceptor restart for both
+  failure paths. The preparation regression failed before the fix.
+- **Evidence (before fix):** `activate(pid)` replaces the existing PID's active ownership with
   pending state (`src/interceptors/jvm-interceptor.js:1501`). When repeated
   preparation fails before a new mutation, `_forgetTrackedOwnership(pid)` removes
   that state and its recovery journal (`:1572-1578`). Later deactivation has no

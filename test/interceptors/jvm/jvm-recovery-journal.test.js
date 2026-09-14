@@ -112,6 +112,41 @@ test('successful JVM attach is journaled before mutation and survives restart fo
   assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
 });
 
+for (const failure of ['preparation', 'revalidation']) {
+  test(`failed repeat ${failure} preserves active ownership for Stop and restart recovery`, async t => {
+    const dataDir = createDataDir(t);
+    const original = createInterceptor(dataDir);
+    original._attachAgent = async () => ({ success: true });
+    assert.equal((await original.activate(8080, { pid: PID })).success, true);
+    const savedJournal = readJournal(dataDir);
+    const savedOwnership = { ...original.activatedProcesses.get(PID) };
+
+    original._attachAgent = async () => ({
+      success: false, error: 'helper preparation failed', targetMutationPossible: false
+    });
+    if (failure === 'revalidation') {
+      original._classifyTrackedTarget = async () => 'unknown';
+      original._attachAgent = async () => assert.fail('unverified target must not be attached');
+    }
+    const retry = await original.activate(8080, { pid: PID });
+    assert.equal(retry.success, false);
+    assert.equal(original.active, true);
+    assert.deepEqual(original.activatedProcesses.get(PID), savedOwnership);
+    assert.deepEqual(readJournal(dataDir), savedJournal);
+
+    const restarted = createInterceptor(dataDir);
+    let restores = 0;
+    restarted._attachAgent = async (pid, host, port, action) => {
+      assert.deepEqual([pid, host, port, action], [PID, null, null, 'deactivate']);
+      restores++;
+      return { success: true };
+    };
+    await restarted.deactivate();
+    assert.equal(restores, 1);
+    assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
+  });
+}
+
 test('apply-then-timeout ownership remains recoverable after restart', async t => {
   const dataDir = createDataDir(t);
   const original = createInterceptor(dataDir);
