@@ -2163,6 +2163,11 @@ completion. Current remediation statuses are recorded with each finding.
   routing to the existing deactivation path. All 147 interceptor and layout checks
   passed, including simulated partial activation/rollback and card action tests.
   No native system proxy settings were changed during verification.
+- **Follow-up validation:** a full run after BUG-118 found one stale Android
+  source assertion expecting the former Stop expression (2,709 passed, four
+  skipped). Updated that assertion to verify active interceptors retain Stop and
+  inactive cleanup applies only to System Proxy; all 188 Android/core/layout
+  checks pass. The full suite has not been rerun after this test-only correction.
 - **Evidence:** failed activation can retain rollback ownership while setting
   `active = false` (`src/interceptors/system-proxy-interceptor.js:847-882`).
   Its inventory omits the remaining cleanup state (`:995-1001`), and the card

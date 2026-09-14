@@ -246,7 +246,9 @@ test('renderer wires summary refreshes and warning styles without weakening Stop
   assert.match(rendererSource, /updateAndroidInterceptorFromMetadata\(data\.metadata\);\s*renderConnectedSources/);
   assert.match(rendererSource, /updateAndroidInterceptorFromMetadata\(metadata\);\s*renderConnectedSources/);
   assert.match(rendererSource, /event\.id === 'android-adb' \? getAndroidSummaryFields\(event\)/);
-  assert.match(rendererSource, /i\.active && !isExpanded/);
+  assert.match(rendererSource, /const cleanupPending = i\.id === 'system-proxy' && i\.cleanupPending === true/);
+  assert.match(rendererSource, /const canStop = i\.active \|\| cleanupPending/);
+  assert.match(rendererSource, /canStop && !isExpanded/);
   for (const selector of [
     '.intercept-pill.pill-warning',
     '.intercept-pill-group',
