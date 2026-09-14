@@ -2590,7 +2590,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-106 — Medium — macOS Fresh Terminal clears the TLS override in the launcher instead of the target shell
 
-- **Status:** Open.
+- **Status:** Fixed. The generated POSIX command clears the TLS override inside
+  the target shell after the ownership handshake. A real Git Bash regression
+  reproduced the inherited value before the fix and verifies removal afterward;
+  all 98 terminal and test-layout checks pass. Native macOS remains untested.
 - **Evidence:** Fresh Terminal removes `NODE_TLS_REJECT_UNAUTHORIZED` from the
   launcher environment (`src/interceptors/terminal-interceptors.js:1244-1251`).
   On macOS that environment belongs to `osascript`, which sends the generated

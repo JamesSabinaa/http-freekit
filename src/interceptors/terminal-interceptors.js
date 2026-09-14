@@ -1149,6 +1149,7 @@ export class FreshTerminalInterceptor {
         'fi; freeKitAttempt=$((freeKitAttempt + 1)); sleep 0.05; ' +
       'done',
       '[ "$freeKitAcknowledged" -eq 1 ] || exit 1',
+      'unset NODE_TLS_REJECT_UNAUTHORIZED',
       ...Object.entries(buildTerminalEnvironment(proxyUrl, certPath))
         .map(([name, value]) => `export ${name}=${shellQuote(value)}`),
       `echo ${shellQuote(`HTTP FreeKit proxy active on ${proxyUrl}`)}`
