@@ -369,6 +369,28 @@ test('rewrite pre-steps have destination, method, header, and capture parity', {
     assert.equal(capture.transformedBy, 'Passthrough pre-steps', scenario.name);
   }
 
+  for (const scenario of passthroughCases) {
+    await t.test(`${scenario.name}: response transform retains request header removal`, async () => {
+      proxy.setHttp2Config(scenario.mode);
+      proxy.mockRules = [{
+        id: 'remove-before-response-transform', enabled: true,
+        matchers: [{ type: 'wildcard' }],
+        preSteps: [{ type: 'remove-header', name: 'X-Remove' }],
+        action: { type: 'transform-request', resHeadersMode: 'update', resHeaders: { 'x-transformed': 'yes' } }
+      }];
+      const captureStart = captures.length;
+      const response = await scenario.send();
+      assert.equal(response.statusCode, 200);
+      const originRecord = JSON.parse(response.body);
+      assert.equal(originRecord.removed, undefined);
+      assert.equal(originRecord.body, requestBody);
+      const capture = captures.slice(captureStart).findLast(event => event.statusCode === 200);
+      assert.ok(capture);
+      assert.equal(getHeader(capture.requestHeaders, 'x-remove'), undefined);
+      assert.equal(getHeader(capture.responseHeaders, 'x-transformed'), 'yes');
+    });
+  }
+
   proxy.setHttp2Config('disabled');
   proxy.mockRules = [{
     id: 'keep-alive-rewrite',

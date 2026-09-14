@@ -5186,7 +5186,7 @@ export class ProxyServer {
         clientReq.headers = transformed.headers;
         body = transformed.body;
         breakpointBodyModified ||= transformed.bodyChanged;
-        transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+        transformedRequestHeaders ||= transformed.headersChanged || transformed.bodyChanged;
         matcherBody = this._requestBodyForMatching(body, clientReq.headers);
         requestProvenance = this._mockRequestProvenance(
           mockRule,
@@ -6591,7 +6591,7 @@ export class ProxyServer {
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
-          transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+          transformedRequestHeaders ||= transformed.headersChanged || transformed.bodyChanged;
           matcherBody = this._requestBodyForMatching(body, req.headers);
           requestProvenance = this._mockRequestProvenance(
             mockRule,
@@ -7859,7 +7859,7 @@ export class ProxyServer {
           this._setTargetHostHeader(req.headers, new URL(fullUrl).host);
           body = transformed.body;
           breakpointBodyModified ||= transformed.bodyChanged;
-          transformedRequestHeaders = transformed.headersChanged || transformed.bodyChanged;
+          transformedRequestHeaders ||= transformed.headersChanged || transformed.bodyChanged;
           matcherBody = this._requestBodyForMatching(body, req.headers);
           requestProvenance = this._mockRequestProvenance(
             mockRule,

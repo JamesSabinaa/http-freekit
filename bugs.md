@@ -619,8 +619,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-024 — High — Response transforms resurrect request headers removed by pre-steps
 
-- **Status:** Open.
-- **Evidence:** a Transform request action overwrites the flag recording earlier
+- **Status:** Fixed.
+- **Review:** all three H1 transform paths overwrite prior header-mutation
+  state, enabling reconstruction from raw headers that still contain removals.
+- **Resolution:** accumulate transformation flags so later no-op request
+  transforms cannot undo pre-step header changes.
+- **Verification:** 11 focused protocol-parity, breakpoint and test-layout checks
+  pass. New local-origin regressions reproduced leakage in plain H1, TLS H1 and
+  H1-on-H2 fallback before the fix. All now omit the removed header, preserve
+  the body and apply response changes; native H2 remains a passing control.
+- **Evidence (before fix):** a Transform request action overwrites the flag recording earlier
   header changes (`src/proxy/proxy-server.js:5189,6594,7862`). When request headers
   and body remain Original, buffered H1 forwarding reconstructs the headers
   from the original `rawHeaders` (`:5302,6701,8091`), undoing Remove Header
