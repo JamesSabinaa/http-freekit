@@ -215,6 +215,58 @@ function settingsResponse(settings, { ok = true, error } = {}) {
   };
 }
 
+test('failed UI saves restore values learned from the server load', async () => {
+  const tab = createTab({ hideTunnelRequests: true, filterSafeFonts: false });
+  const loaded = { hideTunnelRequests: false, filterSafeFonts: true };
+  tab.context.fetch = async () => settingsResponse(loaded);
+  await tab.context.loadUiSettings();
+  tab.context.fetch = async () => settingsResponse({}, { ok: false, error: 'save failure' });
+  await tab.context.saveHideTunnelRequests(true);
+  assert.deepEqual(tab.settings(), loaded);
+});
+
+test('overlapping failed UI saves restore confirmed settings in either response order', async () => {
+  for (const setting of ['hideTunnelRequests', 'filterSafeFonts', 'both']) {
+    for (const olderSucceeds of [false, true]) {
+      for (const newestFirst of [false, true]) {
+        const initial = { hideTunnelRequests: true, filterSafeFonts: false };
+        const tab = createTab(initial);
+        const older = deferred();
+        const newer = deferred();
+        let count = 0;
+        tab.context.fetch = async () => (++count === 1 ? older : newer).promise;
+        const firstIsHide = setting !== 'filterSafeFonts';
+        const olderSave = firstIsHide
+          ? tab.context.saveHideTunnelRequests(false)
+          : tab.context.saveFilterSafeFonts(true);
+        const newerSave = setting === 'hideTunnelRequests'
+          ? tab.context.saveHideTunnelRequests(true)
+          : tab.context.saveFilterSafeFonts(setting === 'both');
+        const accepted = firstIsHide
+          ? { ...initial, hideTunnelRequests: false }
+          : { ...initial, filterSafeFonts: true };
+        const completeOlder = async () => {
+          older.resolve(olderSucceeds ? settingsResponse(accepted)
+            : settingsResponse({}, { ok: false, error: 'older failure' }));
+          await olderSave;
+        };
+        const completeNewer = async () => {
+          newer.resolve(settingsResponse({}, { ok: false, error: 'newer failure' }));
+          await newerSave;
+        };
+        if (newestFirst) { await completeNewer(); await completeOlder(); }
+        else { await completeOlder(); await completeNewer(); }
+        const expected = olderSucceeds ? accepted : initial;
+        assert.deepEqual(tab.settings(), expected,
+          JSON.stringify({ setting, olderSucceeds, newestFirst }));
+        assert.equal(tab.toggles.hideTunnelRequestsToggle.checked, expected.hideTunnelRequests);
+        assert.equal(tab.toggles.filterSafeFontsToggle.checked, expected.filterSafeFonts);
+        assert.deepEqual(tab.toasts, [{ message: 'Error: newer failure', type: 'error' }]);
+      }
+    }
+  }
+});
+
 test('late older save responses cannot overwrite or roll back newer same-tab state', async () => {
   for (const olderResult of ['success', 'failure']) {
     const tab = createTab({ hideTunnelRequests: true, filterSafeFonts: false });

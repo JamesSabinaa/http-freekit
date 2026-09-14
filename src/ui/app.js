@@ -13064,6 +13064,9 @@
     }
 
     let uiSettingsSaveGeneration = 0;
+    let uiSettingsConfirmedGeneration = 0;
+    let uiSettingsConfirmed = { hideTunnelRequests, filterSafeFonts };
+    const uiSettingsPendingSaves = new Set();
 
     async function parseUiSettingsResponse(response, requireSaveConfirmation = false) {
       let data;
@@ -13099,13 +13102,18 @@
       try {
         const res = await fetch(API_BASE + '/api/ui-settings');
         const data = await parseUiSettingsResponse(res);
-        if (loadGeneration === uiSettingsSaveGeneration) synchronizeUiSettings(data);
+        if (loadGeneration === uiSettingsSaveGeneration) {
+          uiSettingsConfirmed = data;
+          uiSettingsConfirmedGeneration = loadGeneration;
+          synchronizeUiSettings(data);
+        }
       } catch (e) {
         console.error('[Error]', e.message);
       }
     }
 
-    async function saveUiSettingsChange(changes, previousSettings, saveGeneration) {
+    async function saveUiSettingsChange(changes, saveGeneration) {
+      uiSettingsPendingSaves.add(saveGeneration);
       try {
         const response = await fetch(API_BASE + '/api/ui-settings', {
           method: 'POST',
@@ -13113,34 +13121,46 @@
           body: JSON.stringify(changes)
         });
         const data = await parseUiSettingsResponse(response, true);
-        if (saveGeneration !== uiSettingsSaveGeneration) return;
-        synchronizeUiSettings(data);
+        uiSettingsPendingSaves.delete(saveGeneration);
+        const updatesConfirmedSettings = saveGeneration >= uiSettingsConfirmedGeneration;
+        if (updatesConfirmedSettings) {
+          uiSettingsConfirmed = data;
+          uiSettingsConfirmedGeneration = saveGeneration;
+        }
+        if (saveGeneration !== uiSettingsSaveGeneration) {
+          // An older successful save still supplies the rollback state when
+          // the latest save failed, but must not replace a pending edit.
+          if (updatesConfirmedSettings && !uiSettingsPendingSaves.has(uiSettingsSaveGeneration)) {
+            synchronizeUiSettings(uiSettingsConfirmed);
+          }
+          return;
+        }
+        synchronizeUiSettings(uiSettingsConfirmed);
         toast('Traffic display setting saved', 'success');
       } catch (err) {
+        uiSettingsPendingSaves.delete(saveGeneration);
         if (saveGeneration !== uiSettingsSaveGeneration) return;
-        synchronizeUiSettings(previousSettings);
+        synchronizeUiSettings(uiSettingsConfirmed);
         toast('Error: ' + err.message, 'error');
       }
     }
 
     async function saveHideTunnelRequests(enabled) {
-      const previousSettings = { hideTunnelRequests, filterSafeFonts };
       const saveGeneration = ++uiSettingsSaveGeneration;
       hideTunnelRequests = !!enabled;
       const toggle = document.getElementById('hideTunnelRequestsToggle');
       if (toggle) toggle.checked = hideTunnelRequests;
       applyFilter();
-      await saveUiSettingsChange({ hideTunnelRequests }, previousSettings, saveGeneration);
+      await saveUiSettingsChange({ hideTunnelRequests }, saveGeneration);
     }
 
     async function saveFilterSafeFonts(enabled) {
-      const previousSettings = { hideTunnelRequests, filterSafeFonts };
       const saveGeneration = ++uiSettingsSaveGeneration;
       filterSafeFonts = !!enabled;
       const toggle = document.getElementById('filterSafeFontsToggle');
       if (toggle) toggle.checked = filterSafeFonts;
       applyFilter();
-      await saveUiSettingsChange({ filterSafeFonts }, previousSettings, saveGeneration);
+      await saveUiSettingsChange({ filterSafeFonts }, saveGeneration);
     }
 
     let trafficListsSaveGeneration = 0;

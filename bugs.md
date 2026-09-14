@@ -1633,7 +1633,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-065 — Medium — Overlapping failed display-setting saves restore an uncommitted value
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The regression reproduced rollback to an optimistic value after
+  both writes failed. Confirmed settings must be tracked independently of edits.
+- **Resolution:** Retain validated server settings for rollback, account for
+  older successful saves when the latest fails, and protect pending newer edits
+  and newer confirmations from older responses.
+- **Verification:** All 99 settings and test-layout checks passed. Regression
+  coverage exercises both response orders, both toggles and mixed changes,
+  older success/failure with latest failure, and the loaded rollback baseline.
 - **Evidence:** Hide Tunnel Requests and Safe Fonts capture their rollback
   state from optimistic renderer globals (`src/ui/app.js:13067-13084`). Older
   completions are discarded, and the latest failure restores that captured
