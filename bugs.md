@@ -2652,7 +2652,9 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-108 — Medium — cURL paste silently changes ANSI-C quoted request bodies
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Choose between decoding ANSI-C quoting with
+  rejection where Send cannot preserve the resulting bytes, or rejecting this
+  quoting syntax while retaining the current request. No implementation change yet.
 - **Evidence:** the cURL tokenizer recognizes ordinary single and double quotes
   but treats the dollar sign in Bash's `$'…'` syntax as literal text and retains
   the enclosed backslash escapes (`src/ui/curl-parser.js:132-172`). It accepts
@@ -2677,7 +2679,9 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-109 — Medium — HTML Format adds visible spaces between inline elements
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Choose conservative formatting that leaves
+  whitespace-sensitive content unchanged, or disable HTML Format pending a fuller
+  HTML-aware formatter. No implementation change yet.
 - **Evidence:** `beautifyMarkup()` inserts a newline at every adjacent tag
   boundary and joins the tokens with newlines (`src/ui/app.js:5283-5309`).
   Send's HTML Format action replaces the editable request body with that result
@@ -2700,7 +2704,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-110 — Low — Empty whitelist cards falsely report that all traffic is hidden
 
-- **Status:** Open.
+- **Status:** Fixed. Both rendering and mode changes describe the empty list's
+  own matching behavior. Real Chrome/API checks passed for a disabled empty list,
+  an enabled empty list alongside a matching whitelist, and a sole enabled empty
+  list. All 32 traffic-list and test-layout checks pass.
 - **Evidence:** changing a list's mode or rendering its empty state displays
   “This whitelist is empty, so it currently hides every request.” without
   considering whether it is enabled or another whitelist matches

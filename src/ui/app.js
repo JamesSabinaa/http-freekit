@@ -13521,7 +13521,7 @@
           const empty = card.querySelector('.traffic-list-empty');
           if (empty) {
             empty.textContent = list.mode === 'whitelist'
-              ? 'This whitelist is empty, so it currently hides every request.'
+              ? 'This whitelist has no rules and matches no requests.'
               : 'This blacklist has no rules.';
           }
           markTrafficListsChanged({ immediate: true });
@@ -13533,7 +13533,7 @@
           const empty = document.createElement('div');
           empty.className = 'traffic-list-empty';
           empty.textContent = list.mode === 'whitelist'
-            ? 'This whitelist is empty, so it currently hides every request.'
+            ? 'This whitelist has no rules and matches no requests.'
             : 'This blacklist has no rules.';
           rules.append(empty);
         } else {
