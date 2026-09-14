@@ -312,6 +312,8 @@ test('webhook mocks have success and failure parity across every HTTP ingress pr
         );
         assert.equal(finalCaptures.length, 1, `${outcome.name} ${protocol.name} finalizes once`);
         assert.equal(finalCaptures[0].protocol, protocol.protocol, protocol.name);
+        assert.equal(finalCaptures[0].source, 'mock', protocol.name);
+        assert.equal(finalCaptures[0].mockResponseSource, undefined, protocol.name);
         assert.equal(finalCaptures[0].statusCode, outcome.statusCode, protocol.name);
         assert.equal(finalCaptures[0].method, 'PATCH', protocol.name);
         assert.equal(finalCaptures[0].url, protocol.expectedUrl, protocol.name);

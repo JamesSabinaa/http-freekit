@@ -8600,7 +8600,7 @@ export class ProxyServer {
           id: requestId, protocol: 'h2', method, url: targetUrl.href,
           host: authority, path, requestHeaders: reqHeaders,
           requestBody: this._safeRequestBodyString(body, reqHeaders), requestBodySize: body.length,
-          timestamp: startTime, source: 'mock', mockResponseSource: 'upstream',
+          timestamp: startTime, source: 'mock',
           tls: tlsDetails, remote: null,
           originalRequest, transformedBy
         }

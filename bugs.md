@@ -2822,7 +2822,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-114 — Low — HTTP/2 webhook mocks bypass the security scan's synthetic-response exclusion
 
-- **Status:** Open.
+- **Status:** Fixed. HTTP/2 webhook captures no longer label the locally generated
+  response as upstream. The real protocol-parity regression failed for native H2
+  before the fix and now verifies synthetic provenance for every ingress protocol.
+  All 140 webhook, MCP and test-layout checks pass.
 - **Evidence:** HTTP/2 webhook captures set `mockResponseSource: 'upstream'`
   (`src/proxy/proxy-server.js:8640-8646`), while the equivalent HTTP/1 branch
   leaves it unset (`:10995-11005`). Both use `_serveWebhookMock()`, which
