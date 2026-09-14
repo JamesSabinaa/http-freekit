@@ -542,7 +542,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-020 — Medium — Certificate browsing in web mode loses the selected file's directory
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** confirmed that browser file selection supplies only a basename to
+  an API that reads server-side paths. User choice requested between explicitly
+  entering a server-readable path and uploading certificates into managed
+  server-side storage; no storage workflow has been selected yet.
 - **Evidence:** the browser fallback in `selectCertificatePath()` uses
   `file.path || file.name` (`src/ui/app.js:14430-14452`). Ordinary browser `File`
   objects have no filesystem path, so it supplies only the basename to the
@@ -576,8 +580,13 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-022 — Low — Tray close helper retains an unreachable minimize-restoration branch
 
-- **Status:** Open (dead code).
-- **Evidence:** `restoreBeforeHide`, the `restoreMinimizedWindow` option, and
+- **Status:** Fixed.
+- **Review:** the helper is private, has exactly one argument-free caller, and
+  has no exported compatibility contract. Its restore flag can never be true.
+- **Resolution:** remove the unused option, flag and conditional restore call.
+- **Verification:** all seven existing tray-lifecycle and test-layout checks
+  pass, including native minimize, delayed close, restoration and quit behavior.
+- **Evidence (before fix):** `restoreBeforeHide`, the `restoreMinimizedWindow` option, and
   the conditional restore operation remain in `electron/window-to-tray.cjs:36-55`.
   The local `hideAfterNativeTransition()` function has exactly one caller
   (`:70`), which supplies no arguments. The option and accumulated condition

@@ -33,25 +33,19 @@ function installWindowToTray(window, {
   }
 
   let pendingHide = null;
-  let restoreBeforeHide = false;
   const cancelPendingHide = () => {
     if (pendingHide === null) return;
     clearImmediate(pendingHide);
     pendingHide = null;
-    restoreBeforeHide = false;
   };
-  const hideAfterNativeTransition = ({ restoreMinimizedWindow = false } = {}) => {
-    restoreBeforeHide ||= restoreMinimizedWindow;
+  const hideAfterNativeTransition = () => {
     if (pendingHide !== null) return;
     // Windows is still dispatching the native minimize/close transition while
     // these Electron events run. Hiding synchronously can strand Chromium's
     // input routing even though the restored window continues to paint.
     pendingHide = setImmediate(() => {
       pendingHide = null;
-      const shouldRestore = restoreBeforeHide;
-      restoreBeforeHide = false;
       if (!isUsableWindow(window)) return;
-      if (shouldRestore && window.isMinimized?.()) window.restore?.();
       window.hide();
     });
   };
