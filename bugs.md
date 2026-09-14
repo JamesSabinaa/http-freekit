@@ -233,7 +233,9 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-008 — Medium — Formatting Send bodies corrupts valid CSS strings and JavaScript regexes
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Choose a maintained syntax-aware formatter
+  dependency or conservative formatting that retains the original body when
+  safety cannot be established. No implementation change yet.
 - **Evidence:** `beautifyCss()` inserts newlines at every semicolon and brace,
   including inside quoted strings (`src/ui/app.js:5406-5429`).
   `beautifyJs()` recognizes regex literals only after selected punctuation,
@@ -573,7 +575,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-021 — Medium — Request exports generate unusable code for unsupported HTTP methods
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Choose custom-method exports supporting
+  Windows PowerShell 5.1 and 7 through HttpClient, or requiring PowerShell 7's
+  custom-method option. Fetch's forbidden methods should use the existing
+  unavailable-replay diagnostic. No implementation change yet.
 - **Evidence:** PowerShell raw and multipart exports always use
   `Invoke-WebRequest -Method` (`src/ui/request-export.js:474,675`), whose method
   parameter accepts a finite enum. Fetch exports only guard GET/HEAD bodies,
