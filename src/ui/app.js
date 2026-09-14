@@ -8405,7 +8405,7 @@
           html += '<div style="font-size:12px;font-family:var(--font-mono);margin-bottom:4px;color:var(--text-lowlight);">';
           switch (step.type) {
             case 'delay': html += '<span style="color:var(--text-watermark);">Delay</span> ' + (step.ms || 0) + 'ms'; break;
-            case 'add-header': html += '<span style="color:var(--text-watermark);">Add header</span> ' + esc(step.name || '') + ': ' + esc(step.value || ''); break;
+            case 'add-header': html += '<span style="color:var(--text-watermark);">Add header</span> ' + esc(step.name || '') + ': ' + esc(step.value ?? ''); break;
             case 'remove-header': html += '<span style="color:var(--text-watermark);">Remove header</span> ' + esc(step.name || ''); break;
             case 'rewrite-url': html += '<span style="color:var(--text-watermark);">Rewrite URL</span> \u2192 ' + esc(step.value || ''); break;
             case 'rewrite-method': html += '<span style="color:var(--text-watermark);">Rewrite method</span> \u2192 ' + esc(step.value || ''); break;

@@ -2374,7 +2374,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-097 — Low — Read-only mock details hide a numeric zero header value
 
-- **Status:** Open.
+- **Status:** Fixed. The read-only add-header description uses the editor's nullish
+  fallback, preserving numeric zero. Existing detail regression coverage now checks
+  numeric zero, string zero, and empty pre-step values. HTML-rendering, mock-rule
+  validation, and test-layout checks passed.
 - **Evidence:** the add-header pre-step detail renders `step.value || ''`
   (`src/ui/app.js:8347`), while its editor uses `step.value ?? ''` (`:9018`).
   Numeric zero is explicitly supported

@@ -624,6 +624,13 @@ test('mock rule details preserve numeric-zero header values', () => {
     action: { type: 'webhook', webhookUrl: 'https:\/\/hook.test', webhookHeaders: { 'X-Zero': 0 } }
   });
   assert.match(webhook, /X-Zero: 0/);
+  for (const value of [0, '0', '']) {
+    const preStep = context.renderDetail({
+      matchers: [], preSteps: [{ type: 'add-header', name: 'X-Counter', value }],
+      action: { type: 'passthrough' }
+    });
+    assert.ok(preStep.includes(`X-Counter: ${value}</div>`));
+  }
 });
 
 test('newly created mock lookup compares data values instead of building a selector from the ID', () => {
