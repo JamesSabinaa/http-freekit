@@ -1207,7 +1207,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-047 — Medium — Connect body previews fail when Monaco falls back to plain rendering
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The plain formatter receives the content type but drops it from
+  decoder context, unlike the Monaco path. A regression reproduced the invalid
+  frame/protobuf errors with an ordinary uncompressed Connect EndStream.
+- **Resolution:** Include the formatter's content type in decoder context for
+  every plain-rendering call, including direct and editor-fallback rendering.
+- **Verification:** 132 focused UI, fallback, detail, and test-layout checks
+  passed. A live Chromium probe with Monaco creation forced unavailable displayed
+  the protobuf field and `Try later` EndStream error correctly.
 - **Evidence:** fallback rendering omits `contentType` from its context
   (`src/ui/app.js:5625,5643`), which passes through `formatBodyAs()` (`:5525`)
   to a decoder that needs it to recognize Connect framing (`:5200`).

@@ -5488,6 +5488,7 @@
     }
 
     function formatBodyAs(body, contentType, mode, context = {}) {
+      context = { ...context, contentType };
       if (!body) return '<span style="color:var(--text-watermark);">Empty</span>';
       if (isBodyPlaceholder(body, context)) return '<span style="color:var(--text-watermark);">' + esc(body) + '</span>';
 
