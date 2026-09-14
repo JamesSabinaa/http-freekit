@@ -76,7 +76,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-002 — Medium — Generated primary controls override their visible labels with different accessible names
 
-- **Status:** Open.
+- **Status:** Fixed. Interceptor, manual setup and mock disclosure buttons derive
+  their accessible names from visible content; action hints use aria-description.
+  Chrome accessibility-tree checks verify visible labels and separate descriptions
+  for all three control types. All 97 focused interceptor, UI and layout checks pass.
 - **Evidence:** Interceptor cards render a button containing the interceptor name,
   description, and state, then replace that content's accessible name with an
   action-only `aria-label` such as “Start intercepting Chrome”

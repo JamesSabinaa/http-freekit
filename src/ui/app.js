@@ -6352,7 +6352,7 @@
           : `${canStop ? 'Stop' : 'Start'} intercepting ${i.name}`;
         const primaryTag = hasPrimaryAction ? 'button' : 'div';
         const primaryAttributes = hasPrimaryAction
-          ? ` type="button" aria-label="${escapeHtmlAttribute(primaryLabel)}"${expandable ? ` aria-expanded="${isExpanded}" aria-controls="${escapeHtmlAttribute(configId)}"` : ''}`
+          ? ` type="button" aria-description="${escapeHtmlAttribute(primaryLabel)}"${expandable ? ` aria-expanded="${isExpanded}" aria-controls="${escapeHtmlAttribute(configId)}"` : ''}`
           : '';
 
         card.innerHTML =
@@ -6399,7 +6399,7 @@
       manualCard.style.order = filtered.length;
       manualCard.innerHTML =
         `<div class="intercept-card-bg-icon">${MANUAL_SETUP_ICON}</div>` +
-        `<button type="button" class="intercept-card-primary" aria-label="Show manual proxy setup instructions">` +
+        `<button type="button" class="intercept-card-primary" aria-description="Show manual proxy setup instructions">` +
         `<span class="intercept-card-title">Anything</span>` +
         `<span class="intercept-card-description">Manually configure any HTTP client using the proxy settings.</span>` +
         `<span class="intercept-pill pill-proxy-port">Proxy port: ${esc(String(proxyPort))}</span>` +
@@ -8076,7 +8076,7 @@
       const isRenaming = mockRenamingRuleId === rule.id;
       html += isRenaming
         ? '<div class="mock-rule-disclosure mock-rule-disclosure-static">'
-        : '<button type="button" class="mock-rule-disclosure" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" aria-expanded="' + (isExpanded || isEditing) + '" aria-controls="' + escapeHtmlAttribute(detailsId) + '" aria-label="' + (isExpanded || isEditing ? 'Collapse rule details' : 'Show rule details') + '">';
+        : '<button type="button" class="mock-rule-disclosure" onclick="toggleMockRuleExpand(this.closest(\'.mock-rule-card\').dataset.ruleId)" aria-expanded="' + (isExpanded || isEditing) + '" aria-controls="' + escapeHtmlAttribute(detailsId) + '" aria-description="' + (isExpanded || isEditing ? 'Collapse rule details' : 'Show rule details') + '">';
       html += '<span class="mock-drag-handle" title="Drag to reorder">&#10303;</span>';
       html += '<span class="mock-rule-icon" style="background:' + color + ';"></span>';
       html += '<span class="method-badge method-' + escapeHtmlAttribute(summary.methodStr === 'ANY' ? 'OPTIONS' : summary.methodStr) + '" style="font-size:11px;flex-shrink:0;">' + esc(summary.methodStr) + '</span>';

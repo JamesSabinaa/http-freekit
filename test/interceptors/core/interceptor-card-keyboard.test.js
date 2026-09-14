@@ -95,7 +95,7 @@ test('System Proxy cleanup ownership exposes Stop even when activation is unavai
     });
     assert.match(card.innerHTML, /Cleanup pending/);
     assert.match(card.innerHTML, /class="intercept-card-stop"/);
-    assert.match(primaryButtonHtml(card), /aria-label="Stop intercepting System Proxy"/);
+    assert.match(primaryButtonHtml(card), /aria-description="Stop intercepting System Proxy"/);
     assert.doesNotMatch(card.className, /disabled/);
     card.primaryAction.onclick();
     assert.deepEqual(calls, [['system-proxy', true]]);
@@ -141,7 +141,9 @@ test('interceptor cards expose dedicated native primary buttons without nested c
     assert.equal(card.attributes.has('tabindex'), false);
     const primary = primaryButtonHtml(card);
     assert.ok(primary, 'each activatable card needs a native primary button');
-    assert.match(primary, /\baria-label="[^"]+"/);
+    assert.match(primary, /\baria-description="[^"]+"/);
+    assert.doesNotMatch(primary, /\baria-label(?:ledby)?=/);
+    assert.match(primary, /class="intercept-card-title">[^<]+</);
     assert.doesNotMatch(primary.replace(/^<button\b[^>]*>|<\/button>$/g, ''), /<(?:button|input|select|textarea|a)\b/);
   }
   assert.doesNotMatch(source, /activateInterceptorCardOnKeyboard|\.onkeydown = activateInterceptorCardOnKeyboard/);
