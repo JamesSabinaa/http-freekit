@@ -1583,7 +1583,6 @@ export class ExistingTerminalInterceptor {
     this.proxyHost = getLocalProxyHost(options.proxyBindHost);
     this.active = false;
     this.ca = null;
-    this.proxyPort = null;
   }
 
   async isActivable() {
@@ -1595,7 +1594,6 @@ export class ExistingTerminalInterceptor {
   }
 
   async activate(proxyPort) {
-    this.proxyPort = proxyPort;
     this.active = false;
     const certPath = getTerminalCaPath(this.ca);
     const proxyUrl = formatProxyUrl(this.proxyHost, proxyPort);
@@ -1618,7 +1616,6 @@ export class ExistingTerminalInterceptor {
 
   async deactivate() {
     this.active = false;
-    this.proxyPort = null;
   }
 
   toJSON() {

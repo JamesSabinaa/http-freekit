@@ -45,7 +45,6 @@ import {
 import {
   normalizeExactTlsHostname,
   normalizeHttpsWhitelist,
-  normalizeTlsHostname,
   normalizeTlsHostnamePattern
 } from './https-whitelist.js';
 import {
@@ -3006,10 +3005,6 @@ export class ProxyServer {
     console.log(`[Proxy] Upstream proxy set to ${normalized.type.toUpperCase()} ${normalized.host}:${normalized.port}`);
   }
 
-  _normalizeNoProxyEntries(value) {
-    return normalizeNoProxyEntries(value);
-  }
-
   _normalizeConnectionHostname(hostname) {
     const value = String(hostname || '');
     return value.startsWith('[') && value.endsWith(']')
@@ -3386,10 +3381,6 @@ export class ProxyServer {
     this._destroyUpstreamAgent();
     this._closeAllH2Sessions();
     console.log(`[Proxy] HTTPS whitelist: ${this.httpsWhitelist.length} hosts`);
-  }
-
-  _normalizeTlsHostname(value) {
-    return normalizeTlsHostname(value);
   }
 
   _isHttpsWhitelisted(hostname) {

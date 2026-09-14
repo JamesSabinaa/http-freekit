@@ -201,12 +201,3 @@ export function createDefaultExclusionMatcher(patterns = DEFAULT_EXCLUSIONS) {
     );
   };
 }
-
-export function matchesDefaultExclusion(request, patterns = DEFAULT_EXCLUSIONS) {
-  return createDefaultExclusionMatcher(patterns)(request);
-}
-
-export function filterDefaultExclusions(requests, patterns = DEFAULT_EXCLUSIONS) {
-  const matches = createDefaultExclusionMatcher(patterns);
-  return requests.filter(request => !matches(request));
-}

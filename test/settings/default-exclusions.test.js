@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import { ApiServer } from '../../src/api/api-server.js';
 import {
   DEFAULT_EXCLUSIONS,
-  matchesDefaultExclusion,
+  createDefaultExclusionMatcher,
   normalizeDefaultExclusions
 } from '../../src/traffic/default-exclusions.js';
 import {
@@ -73,16 +73,17 @@ async function createApi(t, initialSettings = {}) {
 }
 
 test('the default list contains and matches the restored Chromium background exclusions', () => {
+  const matches = createDefaultExclusionMatcher(DEFAULT_EXCLUSIONS);
   assert.equal(DEFAULT_EXCLUSIONS.includes('android.clients.google.com/c2dm/register3'), true);
-  assert.equal(matchesDefaultExclusion({
+  assert.equal(matches({
     url: 'https://android.clients.google.com/c2dm/register3?app=com.android.chrome'
   }), true);
-  assert.equal(matchesDefaultExclusion({
+  assert.equal(matches({
     host: 'android.clients.google.com',
     path: '/user-request'
   }), false);
-  assert.equal(matchesDefaultExclusion({ host: 'cache.gvt1.com', path: '/asset' }), true);
-  assert.equal(matchesDefaultExclusion({ host: 'my-update-service.googleapis.com', path: '/' }), true);
+  assert.equal(matches({ host: 'cache.gvt1.com', path: '/asset' }), true);
+  assert.equal(matches({ host: 'my-update-service.googleapis.com', path: '/' }), true);
 });
 
 test('exclusion patterns normalize URLs, comments, case, and duplicates', () => {
@@ -137,29 +138,30 @@ test('IPv6 exclusion patterns reject malformed literals, ports, and wildcards', 
 
 test('IPv6 exclusion matching canonicalizes captured hosts and remains exact', () => {
   const pathPattern = ['https://[2001:0db8::1]:8443/API?Mode='];
-  assert.equal(matchesDefaultExclusion({
+  const matches = createDefaultExclusionMatcher(pathPattern);
+  assert.equal(matches({
     host: '[2001:db8:0:0:0:0:0:1]:443',
     path: '/API?MODE=full'
-  }, pathPattern), true);
-  assert.equal(matchesDefaultExclusion({
+  }), true);
+  assert.equal(matches({
     host: '2001:0DB8::1',
     path: '/api?mode=compact'
-  }, pathPattern), true);
-  assert.equal(matchesDefaultExclusion({
+  }), true);
+  assert.equal(matches({
     url: 'http://[2001:db8::1]:9000/api?mode=full'
-  }, pathPattern), true);
-  assert.equal(matchesDefaultExclusion({
+  }), true);
+  assert.equal(matches({
     host: '[2001:db8::10]:443',
     path: '/api?mode=full'
-  }, pathPattern), false);
-  assert.equal(matchesDefaultExclusion({
+  }), false);
+  assert.equal(matches({
     host: '[2001:db8::1]:443',
     path: '/other?mode=full'
-  }, pathPattern), false);
+  }), false);
 
-  assert.equal(matchesDefaultExclusion({ host: '[0:0:0:0:0:0:0:1]:8080' }, ['::1']), true);
-  assert.equal(matchesDefaultExclusion({ host: '::10' }, ['::1']), false);
-  assert.equal(matchesDefaultExclusion({ host: '[::1]suffix' }, ['::1']), false);
+  assert.equal(createDefaultExclusionMatcher(['::1'])({ host: '[0:0:0:0:0:0:0:1]:8080' }), true);
+  assert.equal(createDefaultExclusionMatcher(['::1'])({ host: '::10' }), false);
+  assert.equal(createDefaultExclusionMatcher(['::1'])({ host: '[::1]suffix' }), false);
 });
 
 test('shared renderer filtering applies draft hostname and path patterns', () => {

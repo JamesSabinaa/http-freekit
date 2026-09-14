@@ -99,7 +99,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-003 — Medium — Mock and Send expose invalid ARIA control structures
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Send needs separate ownership for tab controls
+  and close/add actions. Choose retaining per-tab close buttons with a layout
+  adjustment or using Close current tab beside Add. Mock's invalid container
+  expanded attributes remain part of the pending fix.
 - **Evidence:** each `.mock-rule-card` is a plain draggable `div` with
   `aria-expanded`, although that attribute is not permitted for its implicit
   generic role; the nested disclosure button already carries the valid expanded
@@ -117,7 +120,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-004 — Low — Backend and interceptor compatibility APIs and state have no production consumer
 
-- **Status:** Open (dead code).
+- **Status:** Fixed. Removed the unused API/proxy wrappers, exclusion convenience
+  exports, and write-only System Proxy/Existing Terminal fields. Exclusion tests
+  now call the production matcher factory directly. Reference checks found no
+  remaining consumers; all 335 affected API, proxy, interceptor and settings checks pass.
 - **Evidence:** `ApiServer._transferTrafficGeneration()` is declaration-only
   (`src/api/api-server.js:2703-2709`). `ProxyServer._normalizeNoProxyEntries()`
   and `_normalizeTlsHostname()` are declaration-only while live code calls the

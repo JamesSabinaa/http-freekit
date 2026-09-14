@@ -2712,14 +2712,6 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return generation;
   }
 
-  _transferTrafficGeneration(currentRequest, nextRequest) {
-    const generation = this._ensureTrafficGeneration(currentRequest);
-    if (generation && nextRequest && typeof nextRequest === 'object') {
-      this._trafficGenerations.set(nextRequest, generation);
-    }
-    return generation;
-  }
-
   _trafficRequestForRenderer(request) {
     if (!request || typeof request !== 'object') return request;
     const generation = this._ensureTrafficGeneration(request);

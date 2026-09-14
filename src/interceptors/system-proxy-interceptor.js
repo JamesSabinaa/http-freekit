@@ -20,7 +20,6 @@ export class SystemProxyInterceptor {
     this.restoreBaselineSettings = null;
     this.recoveryBlockedReason = null;
     this.previousWinHttpSettings = null;
-    this.activeWinHttpSettings = null;
     this.pendingWinHttpRecovery = null;
     this.winHttpRestorePending = false;
     this.winHttpRecoveryBlockedReason = null;
@@ -650,7 +649,6 @@ if ($null -eq $target) {
       }
       this.winHttpRecoveryBlockedReason = null;
       this.previousWinHttpSettings = previous;
-      this.activeWinHttpSettings = owned;
       this.pendingWinHttpRecovery = {
         ...recovery,
         previousSettings: previous,
@@ -735,7 +733,6 @@ if ($null -eq $target) {
     await this._setWinHttpSettings(previous);
     this._removeWinHttpRecoveryState();
     this.previousWinHttpSettings = null;
-    this.activeWinHttpSettings = null;
     this.pendingWinHttpRecovery = null;
     this.winHttpRestorePending = false;
     this.winHttpRecoveryBlockedReason = null;
@@ -844,7 +841,6 @@ if ($null -eq $target) {
         await this._notifyWinInet();
         await this._setWinHttpSettings(ownedWinHttpSettings);
         this.activeProxyServer = proxyServer;
-        this.activeWinHttpSettings = ownedWinHttpSettings;
         this.active = true;
         console.log(`[Interceptor] WinINet and machine WinHTTP proxies set to ${proxyServer}`);
         return { success: true };
@@ -875,7 +871,6 @@ if ($null -eq $target) {
           this.restoreNotificationPending = false;
           this.restoreBaselineSettings = null;
           this.previousWinHttpSettings = null;
-          this.activeWinHttpSettings = null;
           this.pendingWinHttpRecovery = null;
           this.winHttpRestorePending = false;
         }
@@ -952,7 +947,6 @@ if ($null -eq $target) {
     if (!settingsAreOwned) {
       this._removeWinHttpRecoveryState();
       this.previousWinHttpSettings = null;
-      this.activeWinHttpSettings = null;
       this.pendingWinHttpRecovery = null;
       this.winHttpRestorePending = false;
       this.winHttpRecoveryBlockedReason = null;
