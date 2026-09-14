@@ -1115,7 +1115,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-043 — Medium — Generated Node.js requests lose bodies for GET, DELETE, and OPTIONS
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Executing generated snippets against a live HTTP origin reproduced
+  missing bodies and HTTP 400 for GET, DELETE, OPTIONS, HEAD, and TRACE with
+  text and binary payloads. POST and PATCH passed as controls.
+- **Resolution:** Supply a byte-accurate Content-Length before creating the
+  Node.js request when a nonempty body has no explicit length or transfer
+  encoding. Preserve explicit framing and case-sensitive methods.
+- **Verification:** 299 import/export, snippet-byte, and test-layout checks
+  passed, with two runtime-dependent skips. The new live regression covers
+  56 method/encoding/header combinations, including absent headers, Content-Type
+  only, explicit length, and explicit chunked encoding.
 - **Evidence:** the raw-body Node.js exporter calls `request.write()` without
   providing body framing when the input headers omit `Content-Length`
   (`src/ui/request-export.js:646-667`). Its method-repair helper explicitly

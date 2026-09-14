@@ -655,10 +655,15 @@ function generateExportSnippetCore(req, format) {
       let code = `const https = require('https');\nconst http = require('http');\n\n`;
       code += `const target = new URL(${JSON.stringify(preparedRequest.url)});\n`;
       code += `const options = {\n  method: ${JSON.stringify(method)},\n  hostname: target.hostname,\n  path: target.pathname + target.search,\n  port: target.port || undefined`;
-      if (preparedRequest.headers.length) {
+      if (preparedRequest.headers.length || hasBody) {
+        const additionalHeaders = nodeDefaultHostEntry(preparedRequest.headers);
+        if (hasBody && !preparedRequest.headers.some(([name]) =>
+          ['content-length', 'transfer-encoding'].includes(name.toLowerCase()))) {
+          additionalHeaders.push(`${JSON.stringify('Content-Length')}, String(Buffer.byteLength(${JSON.stringify(body)}, '${isBinaryBody ? 'base64' : 'utf8'}'))`);
+        }
         code += `,\n  headers: ${renderNodeExportHeaders(
           preparedRequest.headers,
-          nodeDefaultHostEntry(preparedRequest.headers)
+          additionalHeaders
         )}`;
       }
       code += `\n};\n\nconst request = (target.protocol === 'https:' ? https : http).request(options, (response) => {\n  let data = '';\n  response.on('data', chunk => data += chunk);\n  response.on('end', () => console.log(response.statusCode, data));\n});\n`;
