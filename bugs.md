@@ -1994,7 +1994,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-081 — Medium — HTTP/2 to HTTP/1 HEAD responses lose representation size metadata
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** HEAD has no response body, so chunked framing cannot justify
+  dropping its representation length. The wire regression also exposed a HEAD
+  failure when advertised trailers reached Node's H1 response writer.
+- **Resolution:** Preserve Content-Length for HEAD while omitting trailer
+  framing; retain chunked framing for other streaming H2 responses.
+- **Verification:** All 16 streaming, trailer, and test-layout checks passed.
+  A real CONNECT/TLS/H1 client receives an H2 origin's length of 321 with zero
+  body bytes, and final capture metadata retains it. Late GET trailers still pass.
 - **Evidence:** the streaming H2-origin to H1-client bridge unconditionally removes
   `Content-Length` before sending and capturing response headers
   (`src/proxy/proxy-server.js:1860-1862`). This selects chunked framing for possible

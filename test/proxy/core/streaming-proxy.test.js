@@ -716,6 +716,50 @@ test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout:
   assert.equal(record.requestBodyDecodedSize, 64 * 1024 * 1024);
 });
 
+test('HTTP/2 HEAD responses retain representation length through the H1 bridge', { timeout: 20000 }, async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-head-'));
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize();
+  const originCert = await ca.generateCertForHost('127.0.0.1');
+  const origin = http2.createSecureServer({ key: originCert.key, cert: originCert.cert });
+  origin.on('stream', (stream, headers) => {
+    assert.equal(headers[':method'], 'HEAD');
+    stream.respond({ ':status': 200, 'content-length': '321',
+      'content-type': 'application/grpc', trailer: 'grpc-status' }, { endStream: true });
+  });
+  const destroyOriginSockets = trackSockets(origin);
+  const originPort = await listen(origin);
+  const events = [];
+  const proxy = new ProxyServer(ca, { port: 0, onRequest: event => {
+    if (event.responseHeaders && event._trafficLifecycleComplete !== false) events.push(event);
+  } });
+  proxy.setHttp2Config('disabled');
+  proxy.setHttpsWhitelist(['127.0.0.1']);
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    await close(origin, destroyOriginSockets);
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const tunnel = await openTunnel(proxy.server.address().port, originPort);
+  const socket = tls.connect({ socket: tunnel, servername: 'localhost',
+    ALPNProtocols: ['http/1.1'], rejectUnauthorized: false });
+  await once(socket, 'secureConnect');
+  const chunks = [];
+  socket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  const ended = once(socket, 'end');
+  socket.write(`HEAD /head-metadata HTTP/1.1\r\nHost: 127.0.0.1:${originPort}\r\nConnection: close\r\n\r\n`);
+  await ended;
+  const response = Buffer.concat(chunks).toString('latin1');
+  assert.match(response, /^HTTP\/1\.1 200 /);
+  assert.match(response, /\r\ncontent-length: 321\r\n/i);
+  assert.doesNotMatch(response, /\r\n(?:transfer-encoding|trailer):/i);
+  assert.equal(response.slice(response.indexOf('\r\n\r\n') + 4), '');
+  const record = await waitForTraffic(events, '/head-metadata');
+  assert.equal(record.responseHeaders['content-length'], '321');
+  assert.equal(record.responseBodySize, 0);
+});
+
 test('HTTP/2 response trailers keep chunked framing even when announced late', { timeout: 20000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-streaming-late-trailer-'));
   const ca = new CertificateAuthority(dataDir);

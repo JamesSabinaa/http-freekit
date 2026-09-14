@@ -1860,12 +1860,15 @@ export class ProxyServer {
         }
         const uniqueTrailerNames = [...new Set(responseTrailerNames)];
         // HTTP/2 peers can send trailers without advertising their names in
-        // the initial headers. Always select chunked H1 framing so those late
-        // trailers are not silently discarded by Node's H1 response writer.
+        // the initial headers. Select chunked H1 framing so those late trailers
+        // survive, except for HEAD: its length describes the representation,
+        // and the H1 response cannot carry a message body or trailers.
         for (const name of Object.keys(responseHeaders)) {
-          if (name.toLowerCase() === 'content-length') delete responseHeaders[name];
+          const lowerName = name.toLowerCase();
+          if ((method !== 'HEAD' && lowerName === 'content-length') ||
+              (method === 'HEAD' && lowerName === 'trailer')) delete responseHeaders[name];
         }
-        if (uniqueTrailerNames.length > 0) {
+        if (method !== 'HEAD' && uniqueTrailerNames.length > 0) {
           responseHeaders.trailer = uniqueTrailerNames.join(', ');
         }
         responseMetadata = {
