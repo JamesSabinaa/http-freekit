@@ -212,6 +212,14 @@ test('context-menu pin toggles row A without changing selected row B or its deta
   assert.equal(harness.state.detailId, 'B');
   assert.equal(harness.state.pinIcon.style.transform, 'unchanged');
   assert.equal(harness.state.renderCalls, 1);
+
+  await actionAfterSelectionMoves(harness, 'Unpin exchange');
+  assert.equal(harness.requests[0].pinned, undefined);
+  assert.equal(harness.requests[1].pinned, false);
+  assert.equal(harness.api.selected(), 'B');
+  assert.equal(JSON.parse(harness.state.fetches.at(-1).options.body).pinned, false);
+  harness.api.open('A');
+  assert.ok(harness.state.menuItems.some(item => item.label === 'Pin exchange'));
 });
 
 test('context-menu delete removes row A without closing selected row B details', async () => {

@@ -1776,7 +1776,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-071 — Medium — Resend drops empty-name fields from complete URL-encoded bodies
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed that serialization drops empty names, while the editor
+  also creates enabled blank placeholder rows. Asked whether to preserve such
+  captured bodies in raw mode or add explicit empty-name support to the editor.
 - **Evidence:** Resend converts a captured URL-encoded body into form fields
   (`src/ui/app.js:3027-3029`), including valid empty names. Send serialization
   discards fields whose key is empty (`:10571-10576`); the corresponding form
@@ -1792,7 +1795,13 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-072 — Medium — The context menu's Pin exchange action unpins an already pinned row
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The menu action is intentionally a toggle, matching the detail
+  button, but its label did not reflect the current state.
+- **Resolution:** Show Unpin exchange for pinned rows and Pin exchange otherwise.
+- **Verification:** All 69 context-menu, keyboard, pin/clear, and test-layout
+  checks passed. The renderer regression pins, reopens the menu, unpins via the
+  correctly labeled action, and verifies that another selected row is unaffected.
 - **Evidence:** the context menu always says “Pin exchange” but calls the
   state-inverting toggle (`src/ui/app.js:15475-15477,2524`). The detail button
   correctly changes its label to “Unpin this exchange” for the same row.

@@ -15589,7 +15589,7 @@
           requestId, actionLifecycleId, originatingGenerationToken
         ) },
         { separator: true },
-        { label: 'Pin exchange', action: () => togglePinRequest(
+        { label: req.pinned ? 'Unpin exchange' : 'Pin exchange', action: () => togglePinRequest(
           requestId, actionLifecycleId, originatingGenerationToken
         ) },
         { label: 'Delete exchange', action: () => deleteSelectedRequest(
