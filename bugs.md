@@ -2045,7 +2045,13 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-083 — Medium — JSON formatting silently changes large integer values
 
-- **Status:** Open.
+- **Status:** Fixed. Send and JSON previews use a shared formatter that validates
+  JSON but writes the original tokens with new whitespace. Regression tests cover
+  large integers, precise decimals, exponent notation, negative zero, escaped
+  strings, duplicate keys, nested/empty containers, and invalid JSON. All 359 UI,
+  Send, and related checks passed. The original Chrome/Monaco reproduction also
+  passed: the preview, Format button, and subsequent real proxied POST preserve
+  `9007199254740993` exactly.
 - **Evidence:** Send's JSON Format button parses the body into JavaScript Numbers
   before serializing it (`src/ui/app.js:10381-10386`). Both Monaco JSON previews
   (`:5556-5560`) and the fallback viewer (`:5507-5512`) perform the same conversion.

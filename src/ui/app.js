@@ -4463,8 +4463,7 @@
       // JSON pretty-print with syntax highlighting
       if (contentType?.includes('json') || body.trimStart().startsWith('{') || body.trimStart().startsWith('[')) {
         try {
-          const parsed = JSON.parse(body);
-          return syntaxHighlightJson(JSON.stringify(parsed, null, 2));
+          return syntaxHighlightJson(prettyPrintJson(body));
         } catch (e) { console.error('[Error]', e.message); }
       }
 
@@ -5537,8 +5536,7 @@
         }
         case 'json': {
           try {
-            const parsed = JSON.parse(body);
-            return wrapWithLineNumbers(syntaxHighlightJson(JSON.stringify(parsed, null, 2)));
+            return wrapWithLineNumbers(syntaxHighlightJson(prettyPrintJson(body)));
           } catch {
             return wrapWithLineNumbers(esc(body));
           }
@@ -5587,7 +5585,7 @@
     function getMonacoBodyValue(body, mode, context = {}) {
       if (mode === 'json') {
         try {
-          return JSON.stringify(JSON.parse(body), null, 2);
+          return prettyPrintJson(body);
         } catch {
           return body;
         }
@@ -10459,8 +10457,7 @@
 
       try {
         if (format === 'json') {
-          const parsed = JSON.parse(value);
-          const formatted = JSON.stringify(parsed, null, 2);
+          const formatted = prettyPrintJson(value);
           setSendBodyValue(formatted);
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('JSON formatted', 'success');
@@ -15796,9 +15793,42 @@
       return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
     }
 
+    function prettyPrintJson(str) {
+      // Validate syntax, but never serialize parsed Numbers: that loses precision.
+      JSON.parse(str);
+      const tokens = str.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\],:]|[^\s{}\[\],:]+/g);
+      const output = [];
+      let depth = 0;
+      const newline = () => output.push('\n', '  '.repeat(depth));
+      for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token === '{' || token === '[') {
+          output.push(token);
+          if (tokens[i + 1] === (token === '{' ? '}' : ']')) {
+            output.push(tokens[++i]);
+          } else {
+            depth++;
+            newline();
+          }
+        } else if (token === '}' || token === ']') {
+          depth--;
+          newline();
+          output.push(token);
+        } else if (token === ',') {
+          output.push(token);
+          newline();
+        } else if (token === ':') {
+          output.push(': ');
+        } else {
+          output.push(token);
+        }
+      }
+      return output.join('');
+    }
+
     function tryPrettyJson(str) {
       try {
-        return JSON.stringify(JSON.parse(str), null, 2);
+        return prettyPrintJson(str);
       } catch {
         return str;
       }
