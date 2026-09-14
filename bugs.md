@@ -2137,7 +2137,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-087 — Medium — Send cannot preview HTTP-compressed response bodies
 
-- **Status:** Open.
+- **Status:** Awaiting user review. The bug is valid; choosing whether to retain
+  Send's reversible raw API body and add decoded preview fields (recommended), or
+  change that body to decoded content with explicit metadata, affects API consumers.
+  Either approach should use bounded decoding and preserve raw data on failure.
 - **Evidence:** the Send API serializes raw response bytes without decoding
   `Content-Encoding` (`src/api/api-server.js:3241-3256`). The renderer selects
   a body mode from the original content type and feeds these bytes directly
@@ -2155,7 +2158,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-088 — Medium — Failed System Proxy cleanup has no Stop control
 
-- **Status:** Open.
+- **Status:** Fixed. System Proxy inventory exposes cleanup ownership while inactive.
+  Its card shows Cleanup pending and offers Stop even when activation is unavailable,
+  routing to the existing deactivation path. All 147 interceptor and layout checks
+  passed, including simulated partial activation/rollback and card action tests.
+  No native system proxy settings were changed during verification.
 - **Evidence:** failed activation can retain rollback ownership while setting
   `active = false` (`src/interceptors/system-proxy-interceptor.js:847-882`).
   Its inventory omits the remaining cleanup state (`:995-1001`), and the card

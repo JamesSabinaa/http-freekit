@@ -34,7 +34,7 @@ class FakeCard {
   }
 }
 
-function renderCards({ expanded = false, proxyAddress, toast = () => {} } = {}) {
+function renderCards({ expanded = false, proxyAddress, toast = () => {}, interceptorOverrides = {}, toggleInterceptor = () => {} } = {}) {
   const cards = [];
   const grid = {
     querySelectorAll: () => [],
@@ -46,7 +46,8 @@ function renderCards({ expanded = false, proxyAddress, toast = () => {} } = {}) 
     active: true,
     activable: true,
     focusable: false,
-    supported: true
+    supported: true,
+    ...interceptorOverrides
   };
   const context = {
     allInterceptors: [interceptor],
@@ -68,7 +69,7 @@ function renderCards({ expanded = false, proxyAddress, toast = () => {} } = {}) 
     esc: String,
     escapeHtmlAttribute: String,
     handleExpandableCardClick: () => {},
-    toggleInterceptor: () => {},
+    toggleInterceptor,
     focusInterceptor: () => {},
     downloadBrowser: () => {},
     renderAndroidInterceptorStatusPills: () => '',
@@ -84,6 +85,25 @@ function renderCards({ expanded = false, proxyAddress, toast = () => {} } = {}) 
 function primaryButtonHtml(card) {
   return card.innerHTML.match(/<button\b[^>]*class="intercept-card-primary"[\s\S]*?<\/button>/)?.[0] || '';
 }
+
+test('System Proxy cleanup ownership exposes Stop even when activation is unavailable', () => {
+  for (const activable of [true, false]) {
+    const calls = [];
+    const [card] = renderCards({
+      interceptorOverrides: { id: 'system-proxy', name: 'System Proxy', active: false, cleanupPending: true, activable },
+      toggleInterceptor: (...args) => calls.push(args)
+    });
+    assert.match(card.innerHTML, /Cleanup pending/);
+    assert.match(card.innerHTML, /class="intercept-card-stop"/);
+    assert.match(primaryButtonHtml(card), /aria-label="Stop intercepting System Proxy"/);
+    assert.doesNotMatch(card.className, /disabled/);
+    card.primaryAction.onclick();
+    assert.deepEqual(calls, [['system-proxy', true]]);
+  }
+  const [clean] = renderCards({ interceptorOverrides: { id: 'system-proxy', active: false, cleanupPending: false } });
+  assert.doesNotMatch(clean.innerHTML, /Cleanup pending|intercept-card-stop/);
+  assert.match(primaryButtonHtml(clean), /Start intercepting/);
+});
 
 test('manual setup uses the server-advertised proxy authority', () => {
   for (const authority of ['[::1]:8310', '192.0.2.10:8310', '127.0.0.1:8310']) {

@@ -6297,10 +6297,14 @@
       // Render each interceptor card
       filtered.forEach((i, index) => {
         const desc = INTERCEPTOR_DESCRIPTIONS[i.id] || [''];
-        const isDisabled = !i.activable;
+        const cleanupPending = i.id === 'system-proxy' && i.cleanupPending === true;
+        const canStop = i.active || cleanupPending;
+        const isDisabled = !i.activable && !cleanupPending;
 
         let pillHtml = '';
-        if (i.active) {
+        if (cleanupPending) {
+          pillHtml = '<span class="intercept-pill pill-warning">Cleanup pending</span>';
+        } else if (i.active) {
           if (i.id === 'android-adb') {
             pillHtml = renderAndroidInterceptorStatusPills(i);
           } else if (i.id === 'jvm' && expandedInterceptorMetadata?.activatedProcesses?.length > 0) {
@@ -6318,7 +6322,7 @@
             pillHtml = `<span class="intercept-pill pill-coming-soon">Coming soon</span>`;
           }
         }
-        if (i.experimental && !i.active) {
+        if (i.experimental && !canStop) {
           pillHtml = '<span class="intercept-pill-wrap"><span class="intercept-pill pill-experimental">Experimental</span></span>';
         }
 
@@ -6328,7 +6332,7 @@
         card.dataset.interceptorId = i.id;
         card.style.order = index;
         const isDownloadAction = !i.activable && !!BROWSER_DOWNLOAD_URLS[i.id];
-        const hasPrimaryAction = i.activable || isDownloadAction;
+        const hasPrimaryAction = i.activable || cleanupPending || isDownloadAction;
         if (isDownloadAction) {
           card.classList.remove('disabled');
         }
@@ -6342,7 +6346,7 @@
           ? `Download ${i.name}`
           : i.active && i.focusable === true
           ? `Focus ${i.name}`
-          : `${i.active ? 'Stop' : 'Start'} intercepting ${i.name}`;
+          : `${canStop ? 'Stop' : 'Start'} intercepting ${i.name}`;
         const primaryTag = hasPrimaryAction ? 'button' : 'div';
         const primaryAttributes = hasPrimaryAction
           ? ` type="button" aria-label="${escapeHtmlAttribute(primaryLabel)}"${expandable ? ` aria-expanded="${isExpanded}" aria-controls="${escapeHtmlAttribute(configId)}"` : ''}`
@@ -6351,7 +6355,7 @@
         card.innerHTML =
           `<div class="intercept-card-bg-icon">${INTERCEPTOR_ICONS[i.id] || ''}</div>` +
           (isExpanded ? `<button type="button" class="intercept-card-close" onclick="collapseInterceptorCard();" title="Close ${escapeHtmlAttribute(i.name)} configuration" aria-label="Close ${escapeHtmlAttribute(i.name)} configuration"><i class="ph ph-x"></i></button>` : '') +
-          (i.active && !isExpanded ? `<button type="button" class="intercept-card-stop" onclick="deactivateInterceptor('${i.id}');" title="Stop intercepting ${escapeHtmlAttribute(i.name)}" aria-label="Stop intercepting ${escapeHtmlAttribute(i.name)}"><i class="ph ph-x"></i></button>` : '') +
+          (canStop && !isExpanded ? `<button type="button" class="intercept-card-stop" onclick="deactivateInterceptor('${i.id}');" title="Stop intercepting ${escapeHtmlAttribute(i.name)}" aria-label="Stop intercepting ${escapeHtmlAttribute(i.name)}"><i class="ph ph-x"></i></button>` : '') +
           `<${primaryTag} class="intercept-card-primary"${primaryAttributes}>` +
           `<span class="intercept-card-title">${esc(i.name)}</span>` +
           desc.map(d => `<span class="intercept-card-description">${esc(d)}</span>`).join('') +
@@ -6369,7 +6373,7 @@
           } else if (i.active && i.focusable === true) {
             primaryAction.onclick = () => focusInterceptor(i.id, i.name);
           } else {
-            primaryAction.onclick = () => toggleInterceptor(i.id, i.active);
+            primaryAction.onclick = () => toggleInterceptor(i.id, canStop);
           }
         }
 

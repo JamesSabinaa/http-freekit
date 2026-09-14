@@ -49,7 +49,11 @@ export class SystemProxyInterceptor {
   }
 
   async needsDeactivation() {
-    return this.active || Boolean(
+    return this.active || this._hasCleanupOwnership();
+  }
+
+  _hasCleanupOwnership() {
+    return Boolean(
       this.recoveryBlockedReason
       || this.winHttpRecoveryBlockedReason
       || (this.previousSettings && this.pendingRecovery)
@@ -997,7 +1001,8 @@ if ($null -eq $target) {
       id: this.id,
       name: this.name,
       type: 'system',
-      active: this.active
+      active: this.active,
+      cleanupPending: !this.active && this._hasCleanupOwnership()
     };
   }
 }

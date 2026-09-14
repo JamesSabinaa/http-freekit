@@ -72,6 +72,7 @@ test('graceful shutdown retries partial System Proxy activation cleanup until it
 
   assert.equal(await interceptor.isActive(), false);
   assert.equal(interceptor.toJSON().active, false);
+  assert.equal(interceptor.toJSON().cleanupPending, true);
   assert.equal(await interceptor.needsDeactivation(), true);
   assert.deepEqual(settings, {
     enabled: true,
@@ -89,6 +90,7 @@ test('graceful shutdown retries partial System Proxy activation cleanup until it
     override: 'intranet.example;<local>'
   });
   assert.equal(await interceptor.needsDeactivation(), false);
+  assert.equal(interceptor.toJSON().cleanupPending, false);
   assert.equal(interceptor.pendingRecovery, null);
   assert.equal(interceptor.previousSettings, null);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
