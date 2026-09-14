@@ -481,7 +481,7 @@ function generateMultipartExportSnippet(req, format) {
 
   if (format === 'wget') {
     const boundary = req.multipartBoundary || '----HTTPFreeKitBoundary';
-    let code = `boundary='${shellSingleQuote(boundary)}'\nbody_file=$(mktemp)\n{\n`;
+    let code = `boundary='${shellSingleQuote(boundary)}'\nbody_file=$(mktemp) || exit 1\ntrap 'rm -f "$body_file"' EXIT\ntrap 'exit 1' HUP INT TERM\n{\n`;
     fields.forEach((field) => {
       const safeName = multipartQuotedString(field.key);
       code += `  printf '%s\\r\\n' "--$boundary"\n`;
@@ -490,7 +490,7 @@ function generateMultipartExportSnippet(req, format) {
         const safeFilename = multipartQuotedString(filename);
         const contentType = field.file?.type || field.fileType || 'application/octet-stream';
         code += `  printf '%s\\r\\n' '${shellSingleQuote(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"`)}'\n`;
-        code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Type: ${contentType}`)}'\n  cat '${shellSingleQuote(filename)}'\n  printf '\\r\\n'\n`;
+        code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Type: ${contentType}`)}'\n  cat < '${shellSingleQuote(filename)}' || exit 1\n  printf '\\r\\n'\n`;
       } else {
         code += `  printf '%s\\r\\n\\r\\n' '${shellSingleQuote(`Content-Disposition: form-data; name="${safeName}"`)}'\n`;
         code += `  printf '%s\\r\\n' '${shellSingleQuote(field.value || '')}'\n`;

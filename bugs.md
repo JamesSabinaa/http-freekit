@@ -2856,7 +2856,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-115 — Medium — Leading-dash filenames corrupt Wget multipart exports
 
-- **Status:** Open.
+- **Status:** Fixed. Multipart file reads use input redirection and stop on failure;
+  temporary body files have an exit cleanup trap. Real shell/body-boundary checks
+  verify exact bytes for ordinary, leading-dash, option-like and single-dash names,
+  and no Wget invocation for missing files. The regression failed before the fix.
+  Import/export and test-layout checks: 220 passed, two skipped, zero failed.
 - **Evidence:** the Wget multipart generator reads each file with `cat 'filename'`
   (`src/ui/request-export.js:489`), without making a leading-dash filename a
   literal path. Shell quoting does not prevent `cat` from interpreting options.
