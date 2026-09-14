@@ -309,7 +309,7 @@ test('mock, group, and breakpoint IDs stay in escaped data attributes', () => {
   assert.match(source, /api\/mock-rules\/' \+ encodeURIComponent\(groupId\)/);
 });
 
-test('mock and breakpoint method summaries escape text and class attributes', () => {
+test('mock and breakpoint summaries retain constraints and escape text and class attributes', () => {
   const attributeEscaper = functionSource('escapeHtmlAttribute', 'getSafeImageDataUri');
   const textEscaper = functionSource('esc', 'formatSize');
   const normalizer = functionSource('normalizeMockRule', 'mockRuleSummary');
@@ -361,6 +361,22 @@ test('mock and breakpoint method summaries escape text and class attributes', ()
   `, context);
 
   const hostileMethod = 'GET" data-audit="present"></span><img src=x onerror=alert(1)>';
+  for (const hostname of ['example.test', '::1', '<img src=x onerror=alert(1)>']) {
+    const rule = {
+      id: 'hostname-rule', enabled: true,
+      matchers: [{ type: 'hostname', value: hostname }, { type: 'path', value: '/resource' }, { type: 'port', value: '8080' }],
+      action: { type: 'fixed-response', status: 200 }
+    };
+    const row = context.renderMock(rule);
+    const escapedHostname = hostname.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    assert.ok(row.includes(escapedHostname), hostname);
+    assert.ok(row.includes('/resource'));
+    assert.ok(row.includes(':8080'));
+    assert.doesNotMatch(row, /<img/);
+    const hostnameOnly = context.mockRuleSummary({ ...rule, matchers: [rule.matchers[0]] });
+    const wildcard = context.mockRuleSummary({ ...rule, matchers: [{ type: 'wildcard' }] });
+    assert.notEqual(hostnameOnly.matchStr, wildcard.matchStr);
+  }
   const mockHtml = context.renderMock({
     id: 'mock',
     enabled: true,

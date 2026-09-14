@@ -1908,7 +1908,13 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-077 — Low — Hostname-restricted mocks display the same summary as wildcard rules
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The collapsed-row regression reproduced omission of a supported
+  hostname matcher. Displaying the constraint matches existing host summaries.
+- **Resolution:** Include hostname matchers in the escaped summary text.
+- **Verification:** All 19 summary/escaping, matcher, and test-layout checks
+  passed. Renderer regressions distinguish hostname-only rules from wildcards,
+  retain combined path/port constraints, and verify IPv6 and HTML escaping.
 - **Evidence:** the live rule-summary switch omits the supported `hostname`
   matcher (`src/ui/app.js:7865-7926`) and falls back to `*` (`:7992`).
 - **Reproduction:** create one hostname-only fixed-response rule and one

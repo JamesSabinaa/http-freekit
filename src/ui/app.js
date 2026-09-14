@@ -7916,6 +7916,7 @@
             pathStr = m.value;
             break;
           case 'host':
+          case 'hostname':
             parts.push(esc(m.value));
             break;
           case 'url-contains':
