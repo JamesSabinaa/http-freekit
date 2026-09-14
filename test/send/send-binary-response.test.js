@@ -96,6 +96,15 @@ test('body byte views decode data URIs only with base64 provenance', async () =>
     [...bodyToBytes(body, { section: 'response', request: { responseBodyEncoding: 'utf8' } })],
     [...new TextEncoder().encode(body)]
   );
+  const empty = 'data:application/octet-stream;base64,';
+  for (const section of ['request', 'response']) {
+    assert.deepEqual([...bodyToBytes(empty, {
+      section, request: { [section + 'BodyEncoding']: 'base64' }
+    })], []);
+    assert.deepEqual([...bodyToBytes(empty, {
+      section, request: { [section + 'BodyEncoding']: 'utf8' }
+    })], [...new TextEncoder().encode(empty)]);
+  }
 });
 
 test('image previews accept only constrained base64 data URIs and escape the source', async () => {

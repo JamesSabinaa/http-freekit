@@ -5075,7 +5075,7 @@
       const bodyEncoding = context.section === 'request'
         ? request.requestBodyEncoding
         : request.responseBodyEncoding;
-      const dataUriMatch = String(body).match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]+)$/i);
+      const dataUriMatch = String(body).match(/^data:([^;,]+(?:;[^,]*)?);base64,([A-Za-z0-9+/=\r\n]*)$/i);
       if (String(bodyEncoding || '').toLowerCase() === 'base64' && dataUriMatch) {
         const raw = atob(dataUriMatch[2].replace(/\s+/g, ''));
         const bytes = new Uint8Array(raw.length);

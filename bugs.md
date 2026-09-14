@@ -2890,7 +2890,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-116 — Low — Empty base64 HAR bodies display URI-wrapper bytes in Hex
 
-- **Status:** Open.
+- **Status:** Fixed. Byte views accept empty base64 payloads and return zero bytes.
+  Request and response regressions also verify that identical UTF-8 text remains
+  literal; the empty-base64 check failed before the fix. All 249 Send and
+  test-layout checks pass.
 - **Evidence:** importing a HAR response with empty `content.text` and
   `encoding: 'base64'` produces `data:application/octet-stream;base64,`
   (`src/ui/har-import.js:226-244`). This is accepted by the API's canonical
