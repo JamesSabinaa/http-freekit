@@ -6298,6 +6298,7 @@
       filtered.forEach((i, index) => {
         const desc = INTERCEPTOR_DESCRIPTIONS[i.id] || [''];
         const cleanupPending = i.id === 'system-proxy' && i.cleanupPending === true;
+        const certificateSetupRequired = i.unavailableReason === 'firefox-certificate-setup-required';
         const canStop = i.active || cleanupPending;
         const isDisabled = !i.activable && !cleanupPending;
 
@@ -6314,7 +6315,9 @@
             pillHtml = `<span class="intercept-pill pill-active">Activated</span>`;
           }
         } else if (!i.activable) {
-          if (BROWSER_DOWNLOAD_URLS[i.id]) {
+          if (certificateSetupRequired) {
+            pillHtml = '<span class="intercept-pill pill-warning">Certificate setup required</span>';
+          } else if (BROWSER_DOWNLOAD_URLS[i.id]) {
             pillHtml = `<span class="intercept-pill pill-unavailable" style="cursor:pointer;">Click to install</span>`;
           } else if (i.supported !== false) {
             pillHtml = `<span class="intercept-pill pill-unavailable">Not available</span>`;
@@ -6331,7 +6334,7 @@
         card.className = `intercept-card${isDisabled ? ' disabled' : ''}${isExpanded ? ' expanded' : ''}`;
         card.dataset.interceptorId = i.id;
         card.style.order = index;
-        const isDownloadAction = !i.activable && !!BROWSER_DOWNLOAD_URLS[i.id];
+        const isDownloadAction = !i.activable && !certificateSetupRequired && !!BROWSER_DOWNLOAD_URLS[i.id];
         const hasPrimaryAction = i.activable || cleanupPending || isDownloadAction;
         if (isDownloadAction) {
           card.classList.remove('disabled');
@@ -6359,6 +6362,7 @@
           `<${primaryTag} class="intercept-card-primary"${primaryAttributes}>` +
           `<span class="intercept-card-title">${esc(i.name)}</span>` +
           desc.map(d => `<span class="intercept-card-description">${esc(d)}</span>`).join('') +
+          (certificateSetupRequired ? '<span class="intercept-card-description">Install Mozilla NSS certutil or trust the FreeKit CA in the system certificate store to start Firefox interception.</span>' : '') +
           (pillHtml || '') +
           `</${primaryTag}>` +
           (expandable ? `<div class="intercept-card-config" id="${escapeHtmlAttribute(configId)}"${isExpanded ? '' : ' hidden'}></div>` : '') +

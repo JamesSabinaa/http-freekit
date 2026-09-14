@@ -2202,7 +2202,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-090 — Medium — Installed Firefox is misreported as missing
 
-- **Status:** Open.
+- **Status:** Fixed. Browser inventory distinguishes missing installation from
+  missing Firefox certificate prerequisites. The latter shows certificate setup
+  guidance instead of a Download action, and clears when trust becomes available.
+  All 215 browser, interceptor-core, and layout checks passed using simulated
+  discovery/trust; no native browser launch, download, or trust change was required.
 - **Evidence:** Firefox `isActivable()` also returns false when the browser is
   installed but both system CA trust and NSS certutil are unavailable
   (`src/interceptors/browser-interceptor.js:53-58`). The renderer interprets

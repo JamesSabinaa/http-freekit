@@ -21,6 +21,13 @@ test('Firefox availability preflights Mozilla NSS certutil when OS trust is abse
     '-delstore -- Delete certificate from store'
   ].join('\n');
   assert.equal(await interceptor.isActivable(), false);
+  assert.equal(interceptor.toJSON().unavailableReason, 'firefox-certificate-setup-required');
+  interceptor.ca.systemTrustInstalled = true;
+  assert.equal(await interceptor.isActivable(), true);
+  assert.equal(interceptor.toJSON().unavailableReason, null);
+  interceptor._findBrowserPath = () => null;
+  assert.equal(await interceptor.isActivable(), false);
+  assert.equal(interceptor.toJSON().unavailableReason, 'browser-not-installed');
 });
 
 test('system-trusted Firefox does not require external NSS tooling', async () => {

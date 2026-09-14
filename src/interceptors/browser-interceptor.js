@@ -51,9 +51,16 @@ export class BrowserInterceptor {
   }
 
   async isActivable() {
-    if (this._findBrowserPath() === null) return false;
+    this.unavailableReason = null;
+    if (this._findBrowserPath() === null) {
+      this.unavailableReason = 'browser-not-installed';
+      return false;
+    }
     if (this.browserType === 'firefox' && this.ca && !this.ca.systemTrustInstalled) {
-      return await this._hasNssCertutil();
+      if (!await this._hasNssCertutil()) {
+        this.unavailableReason = 'firefox-certificate-setup-required';
+        return false;
+      }
     }
     return true;
   }
@@ -1279,6 +1286,7 @@ if (!focused) throw new Error('No matching managed browser application could be 
       active: this.active,
       pid: this.process?.pid || recoveredPid,
       focusable: this.active && this.canFocus(),
+      unavailableReason: this.unavailableReason || null,
       cleanupPending: this.cleanupPending
     };
   }

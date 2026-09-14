@@ -51,7 +51,7 @@ function renderCards({ expanded = false, proxyAddress, toast = () => {}, interce
   };
   const context = {
     allInterceptors: [interceptor],
-    BROWSER_DOWNLOAD_URLS: {},
+    BROWSER_DOWNLOAD_URLS: { firefox: 'https://www.mozilla.org/firefox/' },
     EXPANDABLE_INTERCEPTORS: new Set(['terminal']),
     INTERCEPTOR_DESCRIPTIONS: { terminal: ['Configure a terminal session.'] },
     INTERCEPTOR_ICONS: { terminal: '<svg></svg>' },
@@ -103,6 +103,27 @@ test('System Proxy cleanup ownership exposes Stop even when activation is unavai
   const [clean] = renderCards({ interceptorOverrides: { id: 'system-proxy', active: false, cleanupPending: false } });
   assert.doesNotMatch(clean.innerHTML, /Cleanup pending|intercept-card-stop/);
   assert.match(primaryButtonHtml(clean), /Start intercepting/);
+});
+
+test('installed Firefox with missing certificate prerequisites offers guidance instead of download', () => {
+  const [blocked] = renderCards({ interceptorOverrides: {
+    id: 'firefox', name: 'Firefox', active: false, activable: false,
+    unavailableReason: 'firefox-certificate-setup-required'
+  } });
+  assert.match(blocked.innerHTML, /Certificate setup required/);
+  assert.match(blocked.innerHTML, /Install Mozilla NSS certutil or trust the FreeKit CA/);
+  assert.doesNotMatch(blocked.innerHTML, /Click to install|Download Firefox/);
+  assert.equal(blocked.primaryAction, null);
+  const [missing] = renderCards({ interceptorOverrides: {
+    id: 'firefox', name: 'Firefox', active: false, activable: false,
+    unavailableReason: 'browser-not-installed'
+  } });
+  assert.match(primaryButtonHtml(missing), /Download Firefox/);
+  const [ready] = renderCards({ interceptorOverrides: {
+    id: 'firefox', name: 'Firefox', active: false, activable: true, unavailableReason: null
+  } });
+  assert.match(primaryButtonHtml(ready), /Start intercepting Firefox/);
+  assert.doesNotMatch(ready.innerHTML, /Certificate setup required/);
 });
 
 test('manual setup uses the server-advertised proxy authority', () => {

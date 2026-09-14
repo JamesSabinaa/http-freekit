@@ -64,6 +64,7 @@ test('failed profile cleanup after browser exit is inactive, visible, and retrya
     active: false,
     pid: 9317,
     focusable: false,
+    unavailableReason: null,
     cleanupPending: true
   });
 
