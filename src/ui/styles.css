@@ -1770,7 +1770,8 @@
     }
 
     /* Card content sits above the background icon */
-    .intercept-card > *:not(.intercept-card-bg-icon) {
+    .intercept-card > .intercept-card-primary,
+    .intercept-card > .intercept-card-config {
       z-index: 1;
       position: relative;
     }

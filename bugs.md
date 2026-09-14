@@ -1927,7 +1927,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-078 — High — Uninstall deletes interrupted system-proxy recovery state without restoring settings
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed unconditional deletion of the directory containing proxy
+  recovery journals. Asked whether uninstall should attempt ownership-checked
+  restoration and preserve data on failure, or preserve data whenever a recovery
+  journal exists and report that recovery is required.
 - **Evidence:** true NSIS uninstall invokes the cleanup helper
   (`build/installer.nsh:2-4`), which removes certificates and the entire data
   directory without restoring pending WinINET/WinHTTP journals
@@ -1949,7 +1953,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-079 — Low — The icon-generation command overwrites the shipped artwork with a different design
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed that the generator draws obsolete artwork rather than
+  reading the shipped design. Asked whether to generate sizes from the current
+  1024px artwork or remove the obsolete command.
 - **Evidence:** `npm run generate-icons` draws a blue circle and white H
   (`scripts/generate-icons.js:132-177`), then overwrites every packaged PNG and
   the ICO (`:200,206,213`). The shipped icons instead contain a cyan `://`
@@ -1964,7 +1971,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-080 — Medium — Interceptor card CSS displaces Close buttons and collapses loading overlays
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A Chrome layout probe reproduced relative-positioned controls,
+  a 32x32 overlay, and a Close button displaced from the top-right corner.
+- **Resolution:** Scope relative content positioning to primary/configuration
+  children so overlay and Close positioning and stacking rules take effect.
+- **Verification:** The same live Chrome probe measured a full 300x240 overlay,
+  an 8px top/right Close inset, and the intended content/overlay/Close stacking.
+  All four interceptor-card and test-layout checks passed.
 - **Evidence:** the broad direct-child rule sets `position: relative` with
   higher specificity (`src/ui/styles.css:1773-1775`) than the loading-overlay
   and Close-button rules that require absolute positioning (`:1832-1844,1931-1947`).
