@@ -108,6 +108,35 @@ test('the allocator ignores inherited names and considers only own header keys',
   assert.equal(api.nextMockHeaderName(headers), 'X-Custom-2');
 });
 
+for (const kind of ['fixed', 'webhook', 'req', 'res']) {
+  test(`${kind} header renames preserve visible row identity through edit, add and remove`, () => {
+    const prop = kind === 'webhook' ? 'webhookHeaders' : kind === 'res' ? 'resHeaders' : 'headers';
+    const api = createHarness({ [prop]: { 'X-A': 'one', 'X-B': 'two', 'X-C': 'three' } });
+    const update = (...args) => kind === 'fixed' ? api.updateMockRespHeader(...args)
+      : kind === 'webhook' ? api.updateMockWebhookHeader(...args)
+      : api.updateMockTransformHeader(kind, ...args);
+    const add = () => kind === 'fixed' ? api.addMockRespHeader('editor')
+      : kind === 'webhook' ? api.addMockWebhookHeader('editor')
+      : api.addMockTransformHeader(kind, 'editor');
+    const remove = index => kind === 'fixed' ? api.removeMockRespHeader(index, 'editor')
+      : kind === 'webhook' ? api.removeMockWebhookHeader(index, 'editor')
+      : api.removeMockTransformHeader(kind, index, 'editor');
+    update(2, 'key', 'X-A', 'editor');
+    update(1, 'val', 'edited-B', 'editor');
+    assert.deepEqual(JSON.parse(JSON.stringify(api.getDraft().action[prop])), {
+      'X-A': ['one', 'three'], 'X-B': 'edited-B'
+    });
+    add();
+    assert.deepEqual(Array.from(api.rows(api.getDraft().action[prop]), row => row.name),
+      ['X-A', 'X-B', 'X-A', 'X-Custom']);
+    update(2, 'val', 'edited-third', 'editor');
+    remove(0);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.getDraft().action[prop])), {
+      'X-B': 'edited-B', 'X-A': 'edited-third', 'X-Custom': ''
+    });
+  });
+}
+
 test('repeated fixed and transform headers remain distinct editable values', () => {
   const api = createHarness({
     headers: { 'Set-Cookie': ['first=1', 'second=2'] },

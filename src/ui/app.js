@@ -9180,6 +9180,8 @@
     }
 
     function mockHeaderEditorRows(headers) {
+      const orderedRows = mockHeaderRowOrder.get(headers);
+      if (orderedRows) return orderedRows.map(row => ({ ...row }));
       return Object.entries(headers || {}).flatMap(([name, storedValue]) => {
         const values = Array.isArray(storedValue)
           ? (storedValue.length ? storedValue : [''])
@@ -9187,6 +9189,10 @@
         return values.map(value => ({ name, value }));
       });
     }
+
+    // Keep visible rows stable while the wire-format object groups duplicate
+    // names. Weak keys release this editing state when a draft is discarded.
+    const mockHeaderRowOrder = new WeakMap();
 
     function mockHeadersFromEditorRows(rows) {
       const headers = Object.create(null);
@@ -9199,6 +9205,7 @@
           headers[row.name] = row.value;
         }
       }
+      mockHeaderRowOrder.set(headers, rows.map(row => ({ ...row })));
       return headers;
     }
 
@@ -9229,7 +9236,9 @@
       if (!mockEditDraft) return;
       if (!mockEditDraft.action.headers) mockEditDraft.action.headers = Object.create(null);
       const key = nextMockHeaderName(mockEditDraft.action.headers);
-      mockEditDraft.action.headers[key] = '';
+      mockEditDraft.action.headers = mockHeadersFromEditorRows([
+        ...mockHeaderEditorRows(mockEditDraft.action.headers), { name: key, value: '' }
+      ]);
       rerenderMockRespHeaders(eid);
     }
 
@@ -9274,7 +9283,9 @@
         mockEditDraft.action.webhookHeaders = Object.create(null);
       }
       const key = nextMockHeaderName(mockEditDraft.action.webhookHeaders);
-      mockEditDraft.action.webhookHeaders[key] = '';
+      mockEditDraft.action.webhookHeaders = mockHeadersFromEditorRows([
+        ...mockHeaderEditorRows(mockEditDraft.action.webhookHeaders), { name: key, value: '' }
+      ]);
       rerenderMockWebhookHeaders(eid);
     }
 
@@ -10102,7 +10113,9 @@
       const prop = _getTransformHeadersProp(kind);
       if (!mockEditDraft.action[prop]) mockEditDraft.action[prop] = Object.create(null);
       const key = nextMockHeaderName(mockEditDraft.action[prop]);
-      mockEditDraft.action[prop][key] = '';
+      mockEditDraft.action[prop] = mockHeadersFromEditorRows([
+        ...mockHeaderEditorRows(mockEditDraft.action[prop]), { name: key, value: '' }
+      ]);
       rerenderMockTransformHeaders(kind, eid);
     }
 

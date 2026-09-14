@@ -495,8 +495,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-018 — Medium — Mock header renaming makes later edits update the wrong header
 
-- **Status:** Open.
-- **Evidence:** `updateMockHeaderEditorRow()` rebuilds a grouped header object
+- **Status:** Fixed.
+- **Review:** duplicate grouping changes flattened indexes while controls keep
+  their original positions. This is data corruption, not a header ordering choice.
+- **Resolution:** retain draft header row order in a WeakMap keyed by each
+  generated header object, and preserve that order through edit/add/remove.
+  Serialized headers retain the existing grouped format without editor metadata.
+- **Verification:** 14 focused header and test-layout checks pass. Four new
+  regressions failed before the fix and cover all shared editor variants. A
+  shipped-UI Chrome check exercises generated change/remove handlers and confirms
+  duplicate renames, later edits and additions preserve the intended values.
+- **Evidence (before fix):** `updateMockHeaderEditorRow()` rebuilds a grouped header object
   after each edit; duplicate names change the flattened row indexes, but the
   visible controls retain their earlier indexes (`src/ui/app.js:9182-9226`).
   The shared helper also edits webhook and transform headers.
