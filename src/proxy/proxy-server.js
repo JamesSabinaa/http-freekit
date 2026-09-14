@@ -9045,7 +9045,10 @@ export class ProxyServer {
 
       const requestTrailers = this._cleanTrailers(trailers);
       const hasRequestTrailers = Object.keys(requestTrailers).length > 0;
-      const stream = session.request(h2Headers, hasRequestTrailers ? { waitForTrailers: true } : undefined);
+      const stream = session.request(h2Headers, {
+        endStream: false,
+        waitForTrailers: hasRequestTrailers
+      });
       onRequestCreated?.();
       let settled = false;
       let responseStarted = false;

@@ -997,7 +997,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-038 — Medium — JVM and Android can write recovery journals they cannot reload
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Reader/writer inspection confirms the entry-count mismatch. Asked
+  whether to enforce the existing 128-target admission limit before mutations
+  (recommended), or support larger target sets with bounded journal sizes.
 - **Evidence:** JVM and Android journal readers reject more than 128 entries
   (`src/interceptors/jvm-interceptor.js:227-236` and
   `src/interceptors/android-adb-interceptor.js:211-223`), while their writers and
@@ -1015,7 +1018,12 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-039 — Medium — Group operations can put enabled mock rules behind catch-all passthrough
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed new groups bypass the before-passthrough insertion rule
+  and ungrouping appends at the end. Extracting a middle child requires a choice:
+  keep its group intact and place it immediately after that group (recommended),
+  or split the group to preserve the exact matching order. Asked the user before
+  choosing that behavior.
 - **Evidence:** `addMockRule()` inserts ordinary rules before catch-all
   passthrough rules but excludes groups from that placement
   (`src/proxy/proxy-server.js:12268-12275`). The ungroup API also appends an
@@ -1033,7 +1041,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-040 — Medium — Buffered HTTP/2 forwarding cannot send GET and DELETE bodies
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A live TLS/H2 helper regression reproduced GET/DELETE write-after-end
+  errors with bodies and lost trailers even without bodies. POST passed as a
+  control. The helper always ends its own stream, so method-based pre-closing
+  is inappropriate.
+- **Resolution:** Explicitly keep the writable side open until the buffered
+  helper sends its body and optional trailers and ends the request.
+- **Verification:** 35 focused checks passed, including 12 GET/DELETE/POST
+  body/trailer combinations, replay safety, breakpoint edits, asterisk targets,
+  trailer forwarding, and test layout. Six combinations failed before the fix.
 - **Evidence:** `_makeH2Request()` calls `session.request()` without explicitly
   keeping its write side open (`src/proxy/proxy-server.js:9217`), then sends the
   buffered body with `stream.end(body)` (`:9398-9399`). The pinned runtime

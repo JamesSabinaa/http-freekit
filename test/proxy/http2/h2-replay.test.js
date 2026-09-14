@@ -139,6 +139,50 @@ test('H2 stream creation is reported only after session.request succeeds', async
   assert.equal(created, 1);
 });
 
+test('buffered H2 requests preserve bodies and trailers for methods with empty-body defaults', { timeout: 20000 }, async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-buffered-'));
+  const ca = new CertificateAuthority(dataDir);
+  await ca.initialize();
+  const cert = await ca.generateCertForHost('127.0.0.1');
+  const origin = http2.createSecureServer({ key: cert.key, cert: cert.cert });
+  origin.on('stream', (stream, headers) => {
+    const chunks = [];
+    let trailers = {};
+    stream.on('error', () => {});
+    stream.on('data', chunk => chunks.push(chunk));
+    stream.on('trailers', value => { trailers = value; });
+    stream.on('end', () => {
+      if (stream.destroyed) return;
+      stream.respond({ ':status': 200 });
+      stream.end(JSON.stringify({ method: headers[':method'], body: Buffer.concat(chunks).toString(), trailers }));
+    });
+  });
+  origin.listen(0, '127.0.0.1');
+  await once(origin, 'listening');
+  const port = origin.address().port;
+  const session = http2.connect(`https://127.0.0.1:${port}`, { rejectUnauthorized: false });
+  t.after(async () => {
+    session.destroy();
+    await new Promise(resolve => origin.close(resolve));
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  await once(session, 'connect');
+  const proxy = new ProxyServer(ca);
+  for (const method of ['GET', 'DELETE', 'POST']) {
+    for (const body of ['', '{"hello":"world"}']) {
+      for (const trailers of [{}, { 'x-checksum': 'complete' }]) {
+        await t.test(`${method}, body=${body.length}, trailers=${Object.keys(trailers).length}`, async () => {
+          const response = await proxy._makeH2Request(
+            session, method, '127.0.0.1', port, '/', {}, Buffer.from(body), trailers
+          );
+          assert.equal(response.statusCode, 200);
+          assert.deepEqual(JSON.parse(response.body.toString()), { method, body, trailers });
+        });
+      }
+    }
+  }
+});
+
 test('H2 routing never replays an attempted POST but falls back after setup failure',
   { timeout: 20000 }, async t => {
     t.mock.method(console, 'log', () => {});
