@@ -7,6 +7,36 @@ import vm from 'node:vm';
 import { parseCurlCommand } from '../../src/ui/curl-parser.js';
 import { normalizeSendUrl } from '../../src/ui/send-url.js';
 
+test('explicit cURL headers override special options regardless of order', () => {
+  for (const [name, short, long, value] of [
+    ['User-Agent', '-A', '--user-agent', 'automatic'],
+    ['Authorization', '-u', '--user', 'user:pass'],
+    ['Cookie', '-b', '--cookie', 'session=automatic']
+  ]) {
+    for (const option of [short, long]) {
+      for (const [headers, expected] of [
+        [[`${name}: explicit`], 'explicit'],
+        [[`${name};`], ''],
+        [[`${name}: first`, `${name.toLowerCase()}: second`], ['first', 'second']]
+      ]) {
+        const explicit = headers.map(header => `-H '${header}'`).join(' ');
+        const automatic = `${option} '${value}'`;
+        for (const args of [
+          `${explicit} ${automatic}`,
+          `${automatic} ${explicit}`,
+          `${automatic} ${explicit} ${automatic}`
+        ]) {
+          const result = parseCurlCommand(`curl https://example.test ${args}`);
+          assert.equal(result.error, undefined, args);
+          assert.deepEqual(plain(result.headers), { [name]: expected }, args);
+        }
+      }
+      const result = parseCurlCommand(`curl https://example.test -H '${name}: first' ${option} '${value}' -H '${name.toLowerCase()}: second'`);
+      assert.deepEqual(plain(result.headers), { [name]: ['first', 'second'] });
+    }
+  }
+});
+
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const curlReplacementStart = source.indexOf('function inferCurlSendBodyFormat(');
 const curlReplacementEnd = source.indexOf('function switchSendTab(', curlReplacementStart);

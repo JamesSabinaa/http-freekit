@@ -250,22 +250,25 @@ export function parseCurlCommand(curlStr) {
         result.hasData = true;
         if (!hasExplicitMethod) result.method = 'POST';
       } else if (option === '-A' || option === '--user-agent') {
-        setCurlHeader(result.headers, 'User-Agent', value);
-        explicitHeaderNames.delete('user-agent');
+        if (!explicitHeaderNames.has('user-agent')) {
+          setCurlHeader(result.headers, 'User-Agent', value);
+        }
       } else if (option === '-b' || option === '--cookie') {
         if (value !== '' && !value.includes('=')) {
           return { error: `File- or stdin-backed ${option} values cannot be imported from a pasted cURL command` };
         }
-        setCurlHeader(result.headers, 'Cookie', value);
-        explicitHeaderNames.delete('cookie');
+        if (!explicitHeaderNames.has('cookie')) {
+          setCurlHeader(result.headers, 'Cookie', value);
+        }
       } else if (option === '-u' || option === '--user') {
         if (!value.includes(':')) {
           return {
             error: `Prompt-dependent ${option} credentials cannot be imported; include an explicit password separator (for example, USER:)`
           };
         }
-        setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(value));
-        explicitHeaderNames.delete('authorization');
+        if (!explicitHeaderNames.has('authorization')) {
+          setCurlHeader(result.headers, 'Authorization', 'Basic ' + encodeBasicAuthorization(value));
+        }
       }
       continue;
     }

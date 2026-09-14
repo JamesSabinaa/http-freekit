@@ -1067,7 +1067,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-041 — Medium — Pasted cURL commands give special header options the wrong precedence
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Native cURL against a loopback origin confirmed explicit normal,
+  empty, and duplicate headers win in both option orders for all three special
+  options (18 combinations), consistent with the
+  [cURL header documentation](https://curl.se/docs/manpage.html#-H).
+- **Resolution:** Preserve explicit header ownership when processing special
+  options, including intervening options between repeated explicit headers.
+- **Verification:** All 247 Send and test-layout checks passed. New regression
+  coverage exercises short/long options, ordering, empty values, and duplicates;
+  it failed before the fix. Corrected an existing expectation that encoded the bug.
 - **Evidence:** after parsing explicit `-H` headers, the cURL parser overwrites
   them with later `-A`, `-u`, or `-b` values
   (`src/ui/curl-parser.js:252-268`). cURL gives an explicit header precedence

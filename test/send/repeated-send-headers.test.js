@@ -146,7 +146,7 @@ test('cURL import keeps repeated headers ordered through editor loading', () => 
   );
   assert.equal(
     parseCurl("curl https://example.test -H 'User-Agent: explicit' -A option").headers['User-Agent'],
-    'option'
+    'explicit'
   );
 });
 
