@@ -1,9 +1,9 @@
 const path = require('path');
 
-const PACKED_RESOURCES_PATTERN = /(?:^|[\\/])resources[\\/]app\.asar(?=$|[\\/])/g;
+const PACKED_RESOURCES_PATTERN = /(?:^|[\\/])[rR]esources[\\/]app\.asar(?=$|[\\/])/g;
 
 /**
- * Rewrite the last exact resources/app.asar segment in a path to the
+ * Rewrite the last exact resources/app.asar (Resources on macOS) segment to the
  * corresponding unpacked archive. Earlier matching ancestors are preserved.
  */
 function rewriteResourcesAsarToUnpacked(targetPath) {

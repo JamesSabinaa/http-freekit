@@ -13,6 +13,25 @@ const {
 } = asarPathModule;
 const { resolveBundledMcpBridgeScript } = mcpLaunchModule;
 
+test('macOS bundle paths resolve the unpacked Node, backend and MCP bridge', () => {
+  const resources = '/Applications/HTTP FreeKit.app/Contents/Resources';
+  const packed = `${resources}/app.asar/electron`;
+  const unpacked = `${resources}/app.asar.unpacked`;
+  assert.equal(resolveBundledNodeExecutable(packed, 'darwin', path.posix),
+    `${unpacked}/node_modules/node/bin/node`);
+  assert.equal(resolveBundledServerScript(packed, path.posix), `${unpacked}/src/index.js`);
+  assert.equal(resolveBundledMcpBridgeScript(packed, path.posix), `${unpacked}/src/mcp/stdio-bridge.js`);
+  assert.equal(rewriteResourcesAsarToUnpacked(`${resources}/app.asar`), unpacked);
+
+  const nested = `/opt/resources/app.asar/build${resources}/app.asar/src/index.js`;
+  assert.equal(rewriteResourcesAsarToUnpacked(nested),
+    `/opt/resources/app.asar/build${unpacked}/src/index.js`);
+  for (const archive of ['app.asar.unpacked', 'app.asar-backup', 'APP.ASAR']) {
+    const original = `${resources}/${archive}/src/index.js`;
+    assert.equal(rewriteResourcesAsarToUnpacked(original), original);
+  }
+});
+
 test('archive rewriting targets only the last exact resources/app.asar segment', () => {
   const cases = [
     {

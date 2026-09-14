@@ -274,8 +274,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-010 — High — Packaged macOS paths never resolve to the unpacked backend
 
-- **Status:** Open.
-- **Evidence:** `PACKED_RESOURCES_PATTERN` matches only lowercase `resources`
+- **Status:** Fixed.
+- **Review:** the macOS packaging hook explicitly stages `Contents/Resources`,
+  confirming a resolver mismatch rather than an unsupported bundle layout.
+  A new macOS-layout regression fails before the fix.
+- **Resolution:** recognize both `resources` and `Resources` while preserving
+  exact archive names, already-unpacked paths and earlier matching ancestors.
+- **Verification:** 38 focused path, startup, MCP-host and test-layout checks
+  pass. The new test covers all three resolvers with the actual macOS spelling;
+  native macOS package execution was not performed on this Windows host.
+- **Evidence (before fix):** `PACKED_RESOURCES_PATTERN` matches only lowercase `resources`
   (`electron/asar-path.cjs:3`), but the macOS packaging hook stages the backend
   beneath `Contents/Resources/app.asar.unpacked`
   (`scripts/mac-node-architecture.cjs:55`). For
