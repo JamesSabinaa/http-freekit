@@ -12773,7 +12773,7 @@
       }
 
       if (bodyType === 'multipart') {
-        const multipartFields = sendMultipartFields;
+        const multipartFields = sendMultipartFields.map(field => ({ ...field }));
         const contentTypeKey = findHeaderKey(headers, 'Content-Type');
         const contentType = contentTypeKey ? String(headers[contentTypeKey]) : '';
         const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);

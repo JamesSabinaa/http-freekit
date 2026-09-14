@@ -118,6 +118,44 @@ async function waitFor(predicate, message) {
   assert.fail(message);
 }
 
+test('multipart submission retains its rows while the editor changes during a file read', async () => {
+  let finishRead;
+  const harness = createHarness({ firstRead: new Promise(resolve => { finishRead = resolve; }) });
+  const fields = harness.context.__fields;
+  fields.push({ key: 'message', type: 'text', value: 'ORIGINAL', enabled: true });
+  fields.push({ key: 'retained', type: 'text', value: 'KEEP', enabled: true });
+
+  const request = harness.api.send();
+  await waitFor(() => harness.state.fileReads === 1, 'multipart file read did not start');
+  fields[0].file = new File(['replacement'], 'new.bin');
+  fields[1].key = 'edited';
+  fields[1].value = 'NEWER_UNSUBMITTED';
+  fields[2].enabled = false;
+  fields.push({ key: 'added', type: 'text', value: 'LATER', enabled: true });
+  finishRead(Uint8Array.from([1, 2, 3]).buffer);
+  try {
+    await waitFor(() => harness.state.fetchCalls.length === 1, 'submitted request did not reach fetch');
+    const payload = JSON.parse(harness.state.fetchCalls[0].options.body);
+    const body = Buffer.from(payload.body, 'base64').toString('utf8');
+    assert.match(body, /filename="held.bin"/);
+    assert.match(body, /name="message"\r\n\r\nORIGINAL\r\n/);
+    assert.match(body, /name="retained"\r\n\r\nKEEP\r\n/);
+    assert.doesNotMatch(body, /NEWER_UNSUBMITTED|LATER|new\.bin/);
+    assert.equal(fields[1].value, 'NEWER_UNSUBMITTED');
+  } finally {
+    harness.api.abort();
+    await request;
+  }
+
+  const next = await harness.api.prepare({}, new AbortController().signal);
+  const nextBody = Buffer.from(next.body, 'base64').toString('utf8');
+  assert.match(nextBody, /filename="new.bin"/);
+  assert.match(nextBody, /NEWER_UNSUBMITTED/);
+  assert.match(nextBody, /LATER/);
+  assert.doesNotMatch(nextBody, /ORIGINAL|KEEP/);
+  assert.equal(next.displayBody, 'upload=@new.bin\nedited=NEWER_UNSUBMITTED\nadded=LATER');
+});
+
 test('Abort promptly settles a held multipart read and preserves single-flight ownership', async () => {
   let rejectFirstRead;
   const heldRead = new Promise((_resolve, reject) => { rejectFirstRead = reject; });

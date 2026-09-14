@@ -1588,7 +1588,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-063 — Low — An incomplete method edit falsely marks a valid Send workspace as corrupt
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** The null draft is a real error, but persisted Send tabs reject
+  invalid methods. Asked whether reconciliation should preserve the unfinished
+  editor in a temporary local fork or wait until the method becomes valid.
 - **Evidence:** an empty or invalid method makes the active Send snapshot null
   (`src/ui/app.js:12225-12230`). The storage-event handler passes it to draft
   preservation without checking (`:12301-12330`), which dereferences `draft.id`
@@ -1606,7 +1609,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-064 — Medium — Multipart Send includes body edits made after submission
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A held file read reproduced later text, enabled-state, and row
+  additions leaking into the submitted payload. This violates submission-time
+  capture and does not require changing the editor's interaction policy.
+- **Resolution:** Copy multipart rows before preflight and asynchronous
+  serialization, retaining references to the originally selected immutable files.
+- **Verification:** All 249 Send and test-layout checks passed. The regression
+  inspects the submitted management-request body after edits during a held read,
+  then verifies that the next preparation includes those newer edits instead.
 - **Evidence:** request preparation aliases the live `sendMultipartFields`
   array (`src/ui/app.js:12717`). Serialization awaits a file read before
   reading subsequent text rows (`:10742-10763`), while enabled editor controls
