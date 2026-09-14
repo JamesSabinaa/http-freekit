@@ -2182,7 +2182,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-089 — Low — Update-ready toast keeps the previous downloaded version
 
-- **Status:** Open.
+- **Status:** Fixed. New downloaded versions refresh the existing toast message
+  without replacing its restart action or resetting pending installation state.
+  Regression coverage checks successive downloads, safe text rendering, preserved
+  action identity, and duplicate-click protection. All 38 toast, updater, and
+  test-layout checks passed; no native installation was performed.
 - **Evidence:** downloaded-update events update the renderer's version, but
   `showUpdateReadyToast()` returns when the earlier install button exists
   (`src/ui/app.js:17161-17163,17199-17204`). Its persistent text is never refreshed.

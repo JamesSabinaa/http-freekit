@@ -205,7 +205,7 @@ test('renderer subscribes before replaying current updater state', () => {
 
   assert.notEqual(subscribeIndex, -1);
   assert.ok(queryIndex > subscribeIndex);
-  assert.match(ui, /if \(document\.getElementById\('installUpdateBtn'\)\) return/);
+  assert.match(ui, /if \(document\.getElementById\('installUpdateBtn'\)\) \{/);
   assert.match(ui, /if \(eventId <= lastUpdaterEventId\) return/);
   assert.match(ui, /if \(eventId <= lastDownloadedUpdateEventId\) return/);
   assert.match(ui, /status\?\.downloadedUpdate[\s\S]*handleUpdaterStatus\(status\.downloadedUpdate\)/);

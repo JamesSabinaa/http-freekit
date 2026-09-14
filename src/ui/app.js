@@ -17383,11 +17383,15 @@
       }
 
       function showUpdateReadyToast(version) {
-        if (document.getElementById('installUpdateBtn')) return;
+        if (document.getElementById('installUpdateBtn')) {
+          const message = document.getElementById('updateReadyMessage');
+          if (message) message.textContent = 'Update v' + version + ' ready. ';
+          return;
+        }
         var container = document.getElementById('toastContainer');
         var t = document.createElement('div');
         t.className = 'toast toast-success';
-        t.innerHTML = 'Update v' + escapeHtml(version) + ' ready. <a href="#" class="toast-action" id="installUpdateBtn">Restart to install</a>';
+        t.innerHTML = '<span id="updateReadyMessage">Update v' + escapeHtml(version) + ' ready. </span><a href="#" class="toast-action" id="installUpdateBtn">Restart to install</a>';
         container.appendChild(t);
         var btn = t.querySelector('#installUpdateBtn');
         if (btn) {

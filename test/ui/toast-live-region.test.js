@@ -118,9 +118,19 @@ class FakeElement {
     this.children = [];
     this._innerHTML = String(value);
     const anchorMatch = String(value).match(/<a\s+([^>]*)>([\s\S]*?)<\/a>/i);
-    const nonChildMarkup = anchorMatch
+    let nonChildMarkup = anchorMatch
       ? String(value).replace(anchorMatch[0], '')
       : String(value);
+    const spanMatch = nonChildMarkup.match(/<span\s+([^>]*)>([\s\S]*?)<\/span>/i);
+    if (spanMatch) {
+      const span = new FakeElement('span', this.ownerDocument);
+      for (const [name, attributeValue] of attributesFromTag(`<span ${spanMatch[1]}>`)) {
+        span.setAttribute(name, decodeHtml(attributeValue));
+      }
+      span.textContent = decodeHtml(spanMatch[2]);
+      this.appendChild(span);
+      nonChildMarkup = nonChildMarkup.replace(spanMatch[0], '');
+    }
     this._textContent = decodeHtml(nonChildMarkup.replace(/<[^>]*>/g, ''));
     if (!anchorMatch) return;
     const action = new FakeElement('a', this.ownerDocument);
@@ -361,6 +371,28 @@ test('Linux updater statuses build protocol-checked download anchors without par
   const rejectedToast = harness.container.children[2];
   assert.equal(rejectedToast.querySelector('.toast-action'), null);
   assert.equal(rejectedToast.textContent, 'Update v4.2 available.');
+});
+
+test('new downloaded versions refresh the existing toast without replacing its restart action', async () => {
+  const harness = createHarness();
+  harness.context.updaterStatusForTest({ status: 'update-downloaded', eventId: 1, version: '2.0' });
+  const action = harness.document.getElementById('installUpdateBtn');
+  harness.context.updaterStatusForTest({ status: 'update-downloaded', eventId: 2, version: '3.0' });
+  assert.equal(harness.document.getElementById('updateReadyMessage').textContent, 'Update v3.0 ready. ');
+  assert.equal(harness.document.getElementById('installUpdateBtn'), action);
+  assert.equal(action.textContent, 'Restart to install');
+  action.dispatch('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(action.textContent, 'Restarting…');
+  harness.context.updaterStatusForTest({ status: 'update-downloaded', eventId: 3, version: '3.0<img>' });
+  assert.equal(harness.container.children.length, 1);
+  assert.equal(harness.document.getElementById('updateReadyMessage').textContent, 'Update v3.0<img> ready. ');
+  assert.equal(harness.document.getElementById('updateReadyMessage').children.length, 0);
+  assert.equal(harness.document.getElementById('installUpdateBtn'), action);
+  assert.equal(action.textContent, 'Restarting…');
+  assert.equal(action.getAttribute('aria-disabled'), 'true');
+  action.dispatch('click');
+  assert.deepEqual(harness.installCalls, ['install']);
 });
 
 test('repeated same-version update cancellations restore the restart action', async () => {
