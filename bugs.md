@@ -2115,7 +2115,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-086 — Medium — Original response-header mode still applies hidden removals
 
-- **Status:** Open.
+- **Status:** Fixed. The shared header transformer now preserves headers unless
+  Update or Replace is selected. A real HTTP regression switches repeatedly
+  between modes while retaining hidden replacements/removals and keeping a status
+  override active, verifying headers, status, and body. All 350 mocking and
+  test-layout checks passed.
 - **Evidence:** the transform editor changes `resHeadersMode` to `original`
   without clearing `resRemoveHeaders`, then hides the removal field
   (`src/ui/app.js:8753-8772`). `_applyMockResponseTransform()` still passes those

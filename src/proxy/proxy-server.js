@@ -3771,6 +3771,7 @@ export class ProxyServer {
     const transformed = mode === 'replace'
       ? createHeaderMap()
       : createHeaderMap(Object.entries(headers || {}));
+    if (mode !== 'update' && mode !== 'replace') return transformed;
     const remove = new Set(
       (Array.isArray(removals) ? removals : [])
         .filter(name => typeof name === 'string')

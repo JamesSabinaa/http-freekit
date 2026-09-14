@@ -173,6 +173,36 @@ test('transform-request forwards request changes and transforms the upstream res
   });
 });
 
+test('original response-header mode ignores retained update settings on real exchanges', async t => {
+  const origin = http.createServer((_request, response) => {
+    response.writeHead(202, { 'x-origin': 'preserve-me', 'content-type': 'text/plain' });
+    response.end('origin response');
+  });
+  const originPort = await listen(origin);
+  t.after(() => close(origin));
+  const proxy = new ProxyServer(null, { port: 0 });
+  await proxy.start();
+  t.after(() => proxy.stop());
+  const action = {
+    type: 'transform-request',
+    resStatusMode: 'replace',
+    resStatusOverride: 207,
+    resHeadersMode: 'update',
+    resHeaders: { 'x-added': 'retained setting' },
+    resRemoveHeaders: ['X-Origin']
+  };
+  proxy.mockRules = [{ enabled: true, matchers: [], action }];
+  for (const mode of ['update', 'original', 'replace', 'original', 'update']) {
+    action.resHeadersMode = mode;
+    const response = await requestThroughProxy(proxy.server.address().port, `http://127.0.0.1:${originPort}/`);
+    assert.equal(response.statusCode, 207);
+    assert.equal(response.body, 'origin response');
+    assert.equal(response.headers['x-origin'], mode === 'original' ? 'preserve-me' : undefined, mode);
+    assert.equal(response.headers['x-added'], mode === 'original' ? undefined : 'retained setting', mode);
+  }
+  assert.deepEqual(action.resRemoveHeaders, ['X-Origin']);
+});
+
 test('H2 clients receive transformed responses after transformed requests are forwarded',
   { timeout: 20000 }, async t => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-transform-h2-'));
