@@ -1389,7 +1389,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-055 — Medium — Suggested legacy response-transform migration discards response changes
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The generic action conversion assigns legacy response fields to
+  request options and leaves response modes inactive. A backend parity
+  regression reproduced loss of the status override after conversion.
+- **Resolution:** Explicitly migrate legacy response status, header updates and
+  removals, and all body modes to their response fields while leaving request
+  transform modes unchanged and retaining delay.
+- **Verification:** 34 migration, transform, validation, status, and test-layout
+  checks passed. Sixteen conversion combinations compare backend response
+  behavior before/after migration and verify requests remain unmodified.
 - **Evidence:** the legacy editor directs users to select Transform the request
   (`src/ui/app.js:8800`), but that conversion maps legacy fields into modes
   still set to `original` and discards the response body replacement

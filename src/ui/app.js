@@ -9126,6 +9126,23 @@
           mockEditDraft.action.forwardTo = oldAction.forwardTo || '';
           break;
         case 'transform-request':
+          if (oldAction.type === 'transform-response') {
+            Object.assign(mockEditDraft.action, {
+              methodMode: 'original', urlMode: 'original',
+              headersMode: 'original', headers: {}, removeHeaders: [],
+              bodyMode: 'original', body: '',
+              resStatusMode: oldAction.statusOverride ? 'replace' : 'original',
+              resStatusOverride: oldAction.statusOverride || 200,
+              resHeadersMode: oldAction.headers || oldAction.removeHeaders ? 'update' : 'original',
+              resHeaders: oldAction.headers || {},
+              resRemoveHeaders: oldAction.removeHeaders || [],
+              resBodyMode: oldAction.bodyMode || 'original',
+              resBody: oldAction.body ?? '',
+              resBodyMatchPattern: oldAction.bodyMatchPattern || '',
+              resBodyReplaceWith: oldAction.bodyReplaceWith ?? ''
+            });
+            break;
+          }
           mockEditDraft.action.methodMode = oldAction.methodMode || 'original';
           mockEditDraft.action.urlMode = oldAction.urlMode || 'original';
           mockEditDraft.action.urlReplace = oldAction.urlReplace || '';
