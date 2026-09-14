@@ -245,8 +245,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-009 — Medium — Native menus retain a destroyed window after shutdown recovery
 
-- **Status:** Open.
-- **Evidence:** `runQuitCleanup()` destroys the prepared window before backend
+- **Status:** Fixed.
+- **Review:** confirmed that menu callbacks capture a specific window and that
+  shutdown recovery can replace it without rebuilding the menu. The regression
+  failed for replacement windows on all three simulated desktop platforms;
+  surviving-window controls passed before the fix.
+- **Resolution:** rebuild and install the application menu during failed-quit
+  recovery, binding its callbacks to the recovered window.
+- **Verification:** 32 focused desktop tests pass, including real menu callbacks
+  for Reload, About, documentation failures and macOS Close after recovery.
+  These tests mock native Electron boundaries; no native macOS run was performed.
+- **Evidence (before fix):** `runQuitCleanup()` destroys the prepared window before backend
   cleanup (`electron/quit-cleanup.cjs:80`). On cleanup failure,
   `restoreWindowAfterFailedQuit()` creates another window and rebuilds the tray
   and updater, but leaves the application menu unchanged

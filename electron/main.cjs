@@ -421,6 +421,8 @@ function shutdownServer() {
 function restoreWindowAfterFailedQuit(error) {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   else showMainWindow();
+  // Menu callbacks capture their window, which quit cleanup may have destroyed.
+  Menu.setApplicationMenu(buildAppMenu(mainWindow));
   // Quit cleanup already tears down these window-bound services. Recreate
   // them so the user can retry shutdown after addressing the cleanup error.
   destroyTray();
