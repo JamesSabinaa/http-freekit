@@ -811,7 +811,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-031 — Medium — Request-only transforms buffer responses when original response modes are explicit
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Confirmed `original` performs no response edit but was classified
+  as one by the streaming gate. A live SSE regression withheld its event until
+  the origin closed; an oversized response hit the buffering limit.
+- **Resolution:** Treat explicit `original` response modes as unchanged, like
+  omitted modes and the existing `none` mode, preserving response streaming.
+- **Verification:** Streaming checks cover oversized responses across all four
+  ingress paths and an SSE event received while its origin response remains open.
+  Focused streaming, transform, fixed-response, and test-layout checks passed;
+  separate pre-step parity checks verify response-header edits still apply.
 - **Evidence:** `_mockActionTransformsResponse()` treats every response mode
   other than `none` as an edit (`src/proxy/proxy-server.js:3946-3950`), including
   `original`. The renderer sets `resStatusMode`, `resHeadersMode`, and

@@ -120,13 +120,16 @@ async function requestInterceptedH2(proxyPort, authority, body) {
   }
 }
 
-test('body-matcher misses stream oversized responses across every HTTP ingress',
+for (const requestTransform of [false, true]) {
+test(`${requestTransform ? 'request-only transforms' : 'body-matcher misses'} stream oversized responses across every HTTP ingress`,
   { timeout: 30000 }, async t => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-body-miss-'));
     const ca = new CertificateAuthority(dataDir);
     await ca.initialize();
     const originCert = await ca.generateCertForHost('127.0.0.1');
-    const respond = (_request, response) => {
+    let receivedHeaders;
+    const respond = (request, response) => {
+      receivedHeaders = request.headers;
       response.writeHead(200, {
         'content-type': 'text/plain',
         'content-length': '9'
@@ -148,7 +151,18 @@ test('body-matcher misses stream oversized responses across every HTTP ingress',
       onRequest: event => events.push(event)
     });
     proxy.setHttpsWhitelist(['127.0.0.1']);
-    proxy.mockRules = [{
+    proxy.mockRules = requestTransform ? [{
+      enabled: true,
+      matchers: [],
+      action: {
+        type: 'transform-request',
+        headersMode: 'update',
+        headers: { 'x-edited': 'yes' },
+        resStatusMode: 'original',
+        resHeadersMode: 'original',
+        resBodyMode: 'original'
+      }
+    }] : [{
       enabled: true,
       matchers: [{ type: 'body-contains', value: 'match me' }],
       action: { type: 'fixed-response', status: 200, body: 'unexpected mock' }
@@ -192,6 +206,7 @@ test('body-matcher misses stream oversized responses across every HTTP ingress',
         proxy.setHttp2Config(protocol.mode);
         const eventStart = events.length;
         assert.deepEqual(await protocol.send(), { statusCode: 200, body: '123456789' });
+        if (requestTransform) assert.equal(receivedHeaders['x-edited'], 'yes');
         const capture = events.slice(eventStart).findLast(event =>
           event.path === '/large' && event.statusCode === 200
         );
@@ -203,3 +218,47 @@ test('body-matcher misses stream oversized responses across every HTTP ingress',
       });
     }
   });
+}
+
+test('request-only transforms deliver SSE events before the origin ends its response', { timeout: 10000 }, async t => {
+  let originResponse;
+  let originEnded = false;
+  const origin = http.createServer((request, response) => {
+    assert.equal(request.headers['x-edited'], 'yes');
+    originResponse = response;
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('data: first\n\n');
+  });
+  const originPort = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  proxy.mockRules = [{
+    enabled: true,
+    matchers: [],
+    action: {
+      type: 'transform-request', headersMode: 'update', headers: { 'x-edited': 'yes' },
+      resStatusMode: 'original', resHeadersMode: 'original', resBodyMode: 'original'
+    }
+  }];
+  await proxy.start();
+  const fallback = setTimeout(() => {
+    originEnded = true;
+    originResponse?.end();
+  }, 1500);
+  t.after(async () => {
+    clearTimeout(fallback);
+    originResponse?.end();
+    await proxy.stop();
+    await close(origin);
+  });
+  const request = http.get({
+    hostname: '127.0.0.1', port: proxy.server.address().port,
+    path: `http://127.0.0.1:${originPort}/events`, headers: { connection: 'close' }
+  });
+  const [response] = await once(request, 'response');
+  const [chunk] = await once(response, 'data');
+  assert.equal(chunk.toString(), 'data: first\n\n');
+  assert.equal(originEnded, false, 'the first event must arrive while the origin response is open');
+  const ended = once(response, 'end');
+  originResponse.end();
+  await ended;
+});

@@ -3951,7 +3951,7 @@ export class ProxyServer {
     if (action?.type === 'transform-response') return true;
     if (action?.type !== 'transform-request') return false;
     return [action.resStatusMode, action.resHeadersMode, action.resBodyMode]
-      .some(mode => typeof mode === 'string' && mode !== 'none');
+      .some(mode => typeof mode === 'string' && mode !== 'none' && mode !== 'original');
   }
 
   _captureHeadersFromH2Response(headers) {
