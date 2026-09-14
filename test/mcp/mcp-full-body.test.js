@@ -8,6 +8,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { McpServerBridge, TOOL_DEFINITIONS } from '../../src/mcp/mcp-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { trafficToHar } from '../../src/api/har-converter.js';
+import { normalizeHarEntries } from '../../src/ui/har-import.js';
 
 const MAX_PAGE = 32 * 1024;
 const PREVIEW = 8 * 1024;
@@ -26,6 +28,39 @@ function parseDetail(result) {
   assert.equal(result.content[0].type, 'text');
   return JSON.parse(result.content[0].text);
 }
+
+test('MCP distinguishes complete HAR round trips from explicitly truncated captures', () => {
+  for (const body of ['', 'hello', 'héllo 😀']) {
+    for (const truncated of [false, true]) {
+      const size = Buffer.byteLength(body);
+      const capture = {
+        id: 'roundtrip', method: 'GET', url: 'https://body.test/har',
+        timestamp: '2026-01-01T00:00:00.000Z', duration: 1,
+        statusCode: 200, statusMessage: 'OK',
+        requestHeaders: {}, requestBody: '',
+        responseHeaders: { 'content-type': 'text/plain' },
+        responseBody: body, responseBodyEncoding: 'utf8', responseBodySize: size,
+        ...(truncated ? {
+          responseBodyTruncated: true,
+          responseBodyCapturedSize: size,
+          responseBodyDecodedSize: size + 10
+        } : {})
+      };
+      const [imported] = normalizeHarEntries(trafficToHar([capture]), {
+        createId: () => 'imported'
+      });
+      assert.equal(imported.responseBody, body);
+      assert.equal(imported.responseBodyDecodedSize, truncated ? size + 10 : size);
+      const detail = parseDetail(createBridge([imported])._handleGetRequestDetail({
+        request_id: 'imported'
+      }));
+      assert.equal(detail.bodies.response.truncated, truncated);
+      assert.equal(detail.bodies.response.totalLength, body.length);
+      assert.equal(detail.bodies.response.hasMore, false);
+      assert.equal(detail.bodies.response.decodedSize, imported.responseBodyDecodedSize);
+    }
+  }
+});
 
 function readAllPages(bridge, requestId, side, limit) {
   const chunks = [];

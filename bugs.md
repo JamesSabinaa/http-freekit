@@ -306,8 +306,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-011 — Low — MCP labels complete HAR-imported response bodies as truncated
 
-- **Status:** Open.
-- **Evidence:** `retainedBody()` treats any defined decoded size as proof of
+- **Status:** Fixed.
+- **Review:** complete HAR bodies legitimately carry decoded size; modern
+  truncated captures have an explicit flag. Legacy boxed capture strings still
+  use size properties as their truncation marker, so that fallback is retained.
+- **Resolution:** derive normal-body truncation from the explicit provenance
+  flag and restrict the size-property fallback to legacy boxed bodies.
+- **Verification:** 42 focused MCP, HAR and test-layout checks pass. The new
+  export/import-to-MCP regression failed before the fix and now distinguishes
+  complete and truncated empty, ASCII and Unicode bodies. Existing production
+  boxed-body and interrupted-capture tests also pass.
+- **Evidence (before fix):** `retainedBody()` treats any defined decoded size as proof of
   truncation (`src/mcp/mcp-server.js:240-254`). A normal HAR response's
   `content.size` becomes `responseBodyDecodedSize` even when no truncation
   occurred (`src/ui/har-import.js:366-369,402`).

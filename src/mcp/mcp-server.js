@@ -237,7 +237,11 @@ function retainedBody(value, provenance = {}) {
   return {
     content,
     encoding: encoding.slice(0, 64),
-    truncated: provenance.truncated === true || capturedSize !== null || decodedSize !== null,
+    // HAR imports also carry sizes for complete bodies. Only legacy boxed
+    // capture strings use size properties themselves as a truncation marker.
+    truncated: provenance.truncated === true || (boxedString && (
+      Number.isSafeInteger(boxedCapturedSize) || Number.isSafeInteger(boxedDecodedSize)
+    )),
     capturedSize,
     decodedSize
   };
