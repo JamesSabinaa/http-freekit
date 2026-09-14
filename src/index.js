@@ -336,8 +336,13 @@ async function initializeApplication(apiPort) {
     await mcpBridge.startStdio({ onFatalError: () => shutdown(1) });
   }
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  const shutdownFromSignal = () => {
+    shutdown().catch(error => {
+      console.error('[Shutdown] Cleanup failed; send SIGINT or SIGTERM again to retry:', error);
+    });
+  };
+  process.on('SIGINT', shutdownFromSignal);
+  process.on('SIGTERM', shutdownFromSignal);
 }
 
 main().catch((err) => {

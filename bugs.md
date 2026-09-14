@@ -1457,7 +1457,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-058 — Medium — Imported HAR form parameters disappear from Resend and request snippets
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Parameters are retained but replay only uses the absent raw body.
+  Asked whether to reconstruct available fields with a semantic-replay notice
+  (stopping when file contents are missing), or require raw bytes and explain
+  why replay is unavailable. Implementation remains pending that choice.
 - **Evidence:** the HAR importer retains `postData.params` as
   `requestPostDataParams`, while absent `postData.text` becomes an empty body
   (`src/ui/har-import.js:226-229,342-345,379-383`). Resend and export use only
@@ -1475,7 +1479,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-059 — Medium — Signal shutdown exits on cleanup failure before recovery can be retried
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Isolated Node children executing the production shutdown block
+  reproduced unhandled rejection exits for both SIGINT and SIGTERM before retry.
+- **Resolution:** Catch signal-triggered shutdown failures and report the error
+  with retry instructions, retaining the existing retryable shutdown lifecycle.
+- **Verification:** All 22 signal, graceful shutdown, admission, desktop deadline,
+  and test-layout checks passed. Child-process regressions verify no server stop
+  occurs on cleanup failure and a second signal completes shutdown successfully.
 - **Evidence:** the shutdown handler resets its promise and rethrows an
   interceptor cleanup failure (`src/index.js:324-327`). SIGINT and SIGTERM
   register that promise-returning handler directly (`:339-340`); their event
