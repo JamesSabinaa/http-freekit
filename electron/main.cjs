@@ -774,7 +774,10 @@ if (hasSingleInstanceLock) app.on('window-all-closed', () => {
 });
 
 if (hasSingleInstanceLock) app.on('activate', () => {
-  if (mainWindow === null && apiPort) {
+  if (!apiPort) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
+  } else {
+    showMainWindow();
   }
 });

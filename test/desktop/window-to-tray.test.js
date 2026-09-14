@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -47,6 +48,64 @@ function cancellableEvent() {
     preventDefault() { this.prevented = true; }
   };
 }
+
+function activationHarness(window, { ready = true, port = 8000 } = {}) {
+  const main = fs.readFileSync(new URL('../../electron/main.cjs', import.meta.url), 'utf8');
+  const app = new EventEmitter();
+  const context = vm.createContext({
+    app, hasSingleInstanceLock: true, apiPort: port, mainWindow: window,
+    mainWindowReadyToShow: ready, showMainWindowWhenReady: false,
+    showTrayWindow, createCalls: 0,
+    createWindow() { context.createCalls++; }
+  });
+  vm.runInContext(main.slice(main.indexOf('function showMainWindow()'), main.indexOf('function reportDeepLinkError(')), context);
+  vm.runInContext(main.slice(main.lastIndexOf("if (hasSingleInstanceLock) app.on('activate',")), context);
+  return context;
+}
+
+test('Dock activation restores and focuses the window hidden by Close', async () => {
+  const window = new FakeWindow();
+  installWindowToTray(window);
+  const context = activationHarness(window);
+  window.emit('close', cancellableEvent());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(window.visible, false);
+  context.app.emit('activate', {}, false);
+  assert.equal(window.visible, true);
+  assert.equal(window.showCalls, 1);
+  assert.equal(window.focusCalls, 1);
+  assert.equal(window.webContentsFocusCalls, 1);
+  assert.equal(context.createCalls, 0);
+});
+
+test('Dock activation respects startup readiness and restores minimized windows', () => {
+  const window = new FakeWindow();
+  window.visible = false;
+  const context = activationHarness(window, { ready: false });
+  context.app.emit('activate');
+  assert.equal(window.showCalls, 0);
+  assert.equal(context.showMainWindowWhenReady, true);
+  context.handleMainWindowReady(window, false);
+  assert.equal(window.showCalls, 1);
+  window.minimized = true;
+  context.app.emit('activate');
+  assert.equal(window.restoreCalls, 1);
+  assert.equal(window.focusCalls, 2);
+  assert.equal(context.createCalls, 0);
+});
+
+test('Dock activation creates missing or destroyed windows only after server startup', () => {
+  const destroyed = new FakeWindow();
+  destroyed.destroyed = true;
+  for (const window of [null, destroyed]) {
+    const context = activationHarness(window);
+    context.app.emit('activate');
+    assert.equal(context.createCalls, 1);
+    const starting = activationHarness(window, { port: null });
+    starting.app.emit('activate');
+    assert.equal(starting.createCalls, 0);
+  }
+});
 
 test('minimize keeps the native window open while ordinary close hides it after the transition', async () => {
   const window = new FakeWindow();

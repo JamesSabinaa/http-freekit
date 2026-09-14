@@ -2022,7 +2022,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-082 — Medium — macOS Dock activation does not reopen a window hidden by Close
 
-- **Status:** Open.
+- **Status:** Fixed. Dock activation restores and focuses an existing window through
+  the shared readiness-aware helper, or creates a missing/destroyed window after
+  server startup. Production-handler regression fixtures cover Close → activation,
+  pending window readiness, minimization, and missing/destroyed windows. Native
+  macOS execution remains unavailable on this Windows host.
 - **Evidence:** the desktop's default Close action hides the live window
   (`electron/window-to-tray.cjs:59-70`), but the macOS `activate` handler acts only
   when `mainWindow === null` (`electron/main.cjs:774-778`). It never shows the
