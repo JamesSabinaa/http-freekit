@@ -1726,10 +1726,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!body) return;
       const { ids } = body;
       if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array is required' });
+      if (body.groupId !== undefined && (typeof body.groupId !== 'string' ||
+          !this.proxy.mockRules.some(rule => rule.id === body.groupId && rule.type === 'group'))) {
+        return res.status(400).json({ error: 'groupId must identify an existing group' });
+      }
       const rules = this._mutateRules(
         'mockRules',
         'mockRules',
-        () => this.proxy.reorderMockRules(ids)
+        () => this.proxy.reorderMockRules(ids, body.groupId)
       );
       res.json({ success: true, rules });
     });

@@ -11987,8 +11987,10 @@ export class ProxyServer {
     return rule;
   }
 
-  reorderMockRules(orderedIds) {
-    const ruleMap = new Map(this.mockRules.map(r => [r.id, r]));
+  reorderMockRules(orderedIds, groupId) {
+    const group = groupId === undefined ? null : this.mockRules.find(rule => rule.id === groupId && rule.type === 'group');
+    if (groupId !== undefined && !group) return this.mockRules;
+    const ruleMap = new Map((group ? group.items : this.mockRules).map(r => [r.id, r]));
     const reordered = [];
     for (const id of orderedIds) {
       const rule = ruleMap.get(id);
@@ -12001,7 +12003,8 @@ export class ProxyServer {
     for (const rule of ruleMap.values()) {
       reordered.push(rule);
     }
-    this.mockRules = reordered;
+    if (group) group.items = reordered;
+    else this.mockRules = reordered;
     return this.mockRules;
   }
 

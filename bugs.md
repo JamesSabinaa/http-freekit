@@ -1365,7 +1365,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-054 — Medium — Grouped mock rules ignore their advertised drag reordering
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Both drop handling and the reorder API were limited to top-level
+  rules. Reordering within a group has the same priority semantics as the
+  existing sibling reorder behavior.
+- **Resolution:** Support an optional group scope in reorder requests, reorder
+  child IDs without replacing their contents, and scope optimistic rollback
+  to the affected sibling list.
+- **Verification:** 27 reorder, save-lock, draft, group, and test-layout checks
+  passed. A renderer-to-live-API test verifies persisted child order and matching
+  priority while retaining local drafts. Failure coverage verifies sibling
+  rollback when both persistence and reload fail; invalid group scopes reject.
 - **Evidence:** child rows remain draggable with a “Drag to reorder” tooltip
   (`src/ui/app.js:8011,8018`), but drop handling searches only top-level rules
   (`:7698-7700`) and returns when either child is absent from that list.

@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import http from 'node:http';
+import os from 'node:os';
+import { ApiServer } from '../../src/api/api-server.js';
+import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { Settings } from '../../src/settings.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const reorderStart = rendererSource.indexOf('let mockDragId = null;');
@@ -20,7 +25,7 @@ function jsonResponse(body, { ok = true, status = ok ? 200 : 500 } = {}) {
   return { ok, status, json: async () => body };
 }
 
-function createHarness(fetchImpl) {
+function createHarness(fetchImpl, initialRules) {
   const requests = [];
   const toasts = [];
   let renderCount = 0;
@@ -42,7 +47,7 @@ function createHarness(fetchImpl) {
   };
   vm.createContext(context);
   vm.runInContext(`
-    let mockRules = ${JSON.stringify([
+    let mockRules = ${JSON.stringify(initialRules || [
       serverRules[0],
       { ...serverRules[1], title: 'Draft Rule B' },
       serverRules[2]
@@ -53,7 +58,7 @@ function createHarness(fetchImpl) {
     let mockExpandedRules = new Set();
     let mockSaveInProgress = false;
     function _applyDraftToLocal(ruleId, draft) {
-      const rule = mockRules.find(candidate => candidate.id === ruleId);
+      const rule = mockRules.flatMap(candidate => [candidate, ...(candidate.items || [])]).find(candidate => candidate.id === ruleId);
       if (rule) Object.assign(rule, draft);
     }
     ${reorderSource}
@@ -77,6 +82,48 @@ function createHarness(fetchImpl) {
 function ruleIds(harness) {
   return harness.rules().map(rule => rule.id);
 }
+
+function groupedRules() {
+  return [{ id: 'group', type: 'group', enabled: true, items: ['a', 'b'].map(id => ({
+    id, enabled: true, matchers: [{ type: 'method', value: 'GET' }],
+    action: { type: 'fixed-response', status: 200, body: id }
+  })) }, { id: 'outside', enabled: true, matchers: [{ type: 'wildcard' }], action: { type: 'passthrough' } }];
+}
+
+test('child drag order reaches the live API and changes matching priority without losing drafts', async t => {
+  const proxy = new ProxyServer(null);
+  proxy.mockRules = groupedRules();
+  const api = new ApiServer(proxy, null, null);
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freekit-child-reorder-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  api.settings = new Settings(dataDir);
+  const server = http.createServer(api.app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const harness = createHarness((url, options) => fetch(`http://127.0.0.1:${server.address().port}${url}`, options), groupedRules());
+  harness.context.beginMockDrag('b');
+  await harness.context.dropMockRule('a');
+  assert.deepEqual(proxy.mockRules[0].items.map(rule => rule.id), ['b', 'a']);
+  assert.deepEqual(new Settings(dataDir).get('mockRules')[0].items.map(rule => rule.id), ['b', 'a']);
+  assert.equal(proxy._findMockRule('GET', 'http://example.test/', {}, '').action.body, 'b');
+  assert.deepEqual(ruleIds(harness), ['group', 'outside']);
+  assert.equal(harness.rules()[0].items[0].title, 'Draft Rule B');
+  assert.equal(proxy.mockRules[0].items[0].title, undefined);
+  const rejected = await fetch(`http://127.0.0.1:${server.address().port}/api/mock-rules/reorder`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: ['a'], groupId: 'outside' })
+  });
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(proxy.mockRules[0].items.map(rule => rule.id), ['b', 'a']);
+});
+
+test('failed child reorders restore their sibling order when reload also fails', async () => {
+  const harness = createHarness(async () => { throw new Error('offline'); }, groupedRules());
+  harness.context.beginMockDrag('b');
+  await harness.context.dropMockRule('a');
+  assert.deepEqual(harness.rules()[0].items.map(rule => rule.id), ['a', 'b']);
+  assert.deepEqual(ruleIds(harness), ['group', 'outside']);
+  assert.match(harness.toasts[0].message, /Previous order restored/);
+});
 
 test('successful mock reorder stays optimistic and preserves local drafts', async () => {
   const harness = createHarness(async (_url, options) => {

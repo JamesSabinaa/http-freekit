@@ -7587,8 +7587,11 @@
       }
     }
 
-    function _restoreMockRuleOrder(ids) {
-      const currentById = new Map(mockRules.map(rule => [rule.id, rule]));
+    function _restoreMockRuleOrder(ids, groupId) {
+      const group = groupId === undefined ? null : mockRules.find(rule => rule.id === groupId && rule.type === 'group');
+      if (groupId !== undefined && !group) return;
+      const siblings = group ? group.items : mockRules;
+      const currentById = new Map(siblings.map(rule => [rule.id, rule]));
       const restored = [];
       for (const id of ids) {
         const rule = currentById.get(id);
@@ -7597,13 +7600,14 @@
         currentById.delete(id);
       }
       // Preserve drafts or other rules added while the reorder request was pending.
-      for (const rule of mockRules) {
+      for (const rule of siblings) {
         if (currentById.has(rule.id)) {
           restored.push(rule);
           currentById.delete(rule.id);
         }
       }
-      mockRules = restored;
+      if (group) group.items = restored;
+      else mockRules = restored;
     }
 
     async function _readMockRulesResponse(res, action) {
@@ -7637,12 +7641,12 @@
       return true;
     }
 
-    async function _persistMockRuleOrder(operation, ids, previousIds) {
+    async function _persistMockRuleOrder(operation, ids, previousIds, groupId) {
       try {
         const res = await fetch(API_BASE + '/api/mock-rules/reorder', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ ids })
+          body: JSON.stringify({ ids, groupId })
         });
         const data = await _readMockRulesResponse(res, 'Reordering mock rules');
         if (data?.success !== true || !Array.isArray(data.rules)) {
@@ -7656,7 +7660,7 @@
         // A newer optimistic reorder owns the visible state and is queued to run next.
         if (operation !== mockReorderGeneration) return;
 
-        _restoreMockRuleOrder(previousIds);
+        _restoreMockRuleOrder(previousIds, groupId);
         renderMockRules();
 
         let reloadError = null;
@@ -7712,18 +7716,20 @@
       }
 
       // Normal reorder logic
-      const fromIdx = mockRules.findIndex(r => r.id === mockDragId);
-      const toIdx = mockRules.findIndex(r => r.id === targetId);
+      const group = mockRules.find(rule => rule.type === 'group' && rule.items?.some(child => child.id === mockDragId));
+      const siblings = group ? group.items : mockRules;
+      const fromIdx = siblings.findIndex(r => r.id === mockDragId);
+      const toIdx = siblings.findIndex(r => r.id === targetId);
       if (fromIdx === -1 || toIdx === -1) return;
 
-      const previousIds = mockRules.map(r => r.id);
-      const [moved] = mockRules.splice(fromIdx, 1);
-      mockRules.splice(toIdx, 0, moved);
+      const previousIds = siblings.map(r => r.id);
+      const [moved] = siblings.splice(fromIdx, 1);
+      siblings.splice(toIdx, 0, moved);
 
-      const ids = mockRules.map(r => r.id);
+      const ids = siblings.map(r => r.id);
       const operation = ++mockReorderGeneration;
       const reorderRequest = _queueMockCollectionMutation(
-        () => _persistMockRuleOrder(operation, ids, previousIds)
+        () => _persistMockRuleOrder(operation, ids, previousIds, group?.id)
       );
 
       renderMockRules();
