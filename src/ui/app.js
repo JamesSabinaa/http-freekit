@@ -1281,6 +1281,7 @@
           const statusEl = document.getElementById('settingsStatus');
           if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = '#4caf7d'; }
           config.proxyPort = msg.proxyPort;
+          config.proxyAddress = msg.proxyAddress;
           config.apiPort = msg.apiPort;
           const previousCaptureStateSessionId = captureStateSessionId;
           const acceptedCaptureState = applyCapturePausedState(
@@ -6376,7 +6377,7 @@
         `</button>`;
       manualCard.querySelector('.intercept-card-primary').onclick = () => {
         interceptorSelectionGeneration++;
-        toast(`Proxy: 127.0.0.1:${proxyPort} - Configure any HTTP client to use this proxy`, 'success');
+        toast(`Proxy: ${config.proxyAddress || `127.0.0.1:${proxyPort}`} - Configure any HTTP client to use this proxy`, 'success');
       };
       grid.appendChild(manualCard);
     }

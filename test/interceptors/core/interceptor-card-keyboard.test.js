@@ -34,7 +34,7 @@ class FakeCard {
   }
 }
 
-function renderCards({ expanded = false } = {}) {
+function renderCards({ expanded = false, proxyAddress, toast = () => {} } = {}) {
   const cards = [];
   const grid = {
     querySelectorAll: () => [],
@@ -56,7 +56,7 @@ function renderCards({ expanded = false } = {}) {
     INTERCEPTOR_ICONS: { terminal: '<svg></svg>' },
     INTERCEPTOR_TAGS: { terminal: [] },
     MANUAL_SETUP_ICON: '<svg></svg>',
-    config: { proxyPort: 8310 },
+    config: { proxyPort: 8310, proxyAddress },
     expandedInterceptorId: expanded ? 'terminal' : null,
     expandedInterceptorMetadata: null,
     interceptorsInProgress: new Set(),
@@ -73,7 +73,7 @@ function renderCards({ expanded = false } = {}) {
     downloadBrowser: () => {},
     renderAndroidInterceptorStatusPills: () => '',
     renderInterceptorConfig: () => {},
-    toast: () => {}
+    toast
   };
   vm.createContext(context);
   vm.runInContext(`${source.slice(renderStart, renderEnd)}; globalThis.render = filterInterceptors;`, context);
@@ -84,6 +84,15 @@ function renderCards({ expanded = false } = {}) {
 function primaryButtonHtml(card) {
   return card.innerHTML.match(/<button\b[^>]*class="intercept-card-primary"[\s\S]*?<\/button>/)?.[0] || '';
 }
+
+test('manual setup uses the server-advertised proxy authority', () => {
+  for (const authority of ['[::1]:8310', '192.0.2.10:8310', '127.0.0.1:8310']) {
+    const messages = [];
+    const cards = renderCards({ proxyAddress: authority, toast: message => messages.push(message) });
+    cards.at(-1).primaryAction.onclick();
+    assert.equal(messages[0], `Proxy: ${authority} - Configure any HTTP client to use this proxy`);
+  }
+});
 
 test('interceptor cards expose dedicated native primary buttons without nested controls', () => {
   for (const card of renderCards()) {

@@ -1683,7 +1683,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-067 — Medium — Uncertain JVM activation is displayed as confirmed interception
 
-- **Status:** Open.
+- **Status:** Awaiting user review.
+- **Review:** Confirmed that ownership entries with uncertain activation are
+  presented as active. Asked whether uncertain JVMs should appear only in
+  configuration with warning/cleanup controls or remain in Connected Sources
+  with an explicit uncertainty warning.
 - **Evidence:** a JVM helper failure after attachment begins returns an
   unsuccessful result with `activationUncertain: true`, retaining cleanup
   ownership (`src/interceptors/jvm-interceptor.js:1549-1597`). The renderer
@@ -1699,7 +1703,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-068 — Medium — Manual proxy setup advertises an unreachable address for IPv6 binding
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The manual-card regression reproduced IPv4 instructions despite
+  a supplied IPv6 authority. The server already has bind-aware address helpers.
+- **Resolution:** Advertise a local proxy authority in WebSocket initialization
+  using the shared bind helper, retain it in renderer configuration, and use it
+  for manual setup instructions.
+- **Verification:** All 89 focused management WebSocket, interceptor-core,
+  traffic-init, and test-layout checks passed. Live WebSocket initialization
+  advertised reachable HTTP listeners for IPv4/IPv6 loopback and wildcard binds;
+  renderer fixtures verify IPv6 brackets and specific addresses.
 - **Evidence:** manual setup hardcodes `127.0.0.1` into its proxy address
   (`src/ui/app.js:6362`), although startup supports an explicitly configured
   bind address (`src/index.js:130-150`).

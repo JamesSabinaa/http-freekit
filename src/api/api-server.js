@@ -14,6 +14,7 @@ import { isObjectRecord, validateOpenApiSubmission } from './openapi-validation.
 import { registerConfigurationRoutes } from './routes/configuration-routes.js';
 import { registerTrafficRoutes } from './routes/traffic-routes.js';
 import { validatePortRange } from '../proxy/port-range.js';
+import { formatProxyAuthority, getLocalProxyHost } from '../interceptors/proxy-bind-reachability.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
@@ -3858,6 +3859,7 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
           captureStateSessionId: this.captureStateSessionId,
           captureStateRevision: this.captureStateRevision,
           proxyPort: this.proxy.port,
+          proxyAddress: formatProxyAuthority(getLocalProxyHost(this.proxy.bindHost), this.proxy.port),
           apiPort: this.port
         }));
 

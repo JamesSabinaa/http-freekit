@@ -35,6 +35,32 @@ function authenticatedUpgradeRequest() {
   ].join('\r\n');
 }
 
+test('management init advertises a reachable local address for IPv4 and IPv6 bindings', async t => {
+  for (const bindHost of ['127.0.0.1', '0.0.0.0', '::1', '::']) {
+    await t.test(bindHost, async t => {
+      const listener = http.createServer((_req, res) => res.end('reachable'));
+      listener.listen(0, bindHost);
+      await once(listener, 'listening');
+      t.after(() => new Promise(resolve => listener.close(resolve)));
+      const api = createApi();
+      api.proxy.bindHost = bindHost;
+      api.proxy.port = listener.address().port;
+      await api.start();
+      t.after(() => api.stop());
+      const client = new WebSocket(`ws://127.0.0.1:${api.httpServer.address().port}/ws?authToken=${AUTH_TOKEN}`);
+      t.after(() => client.terminate());
+      const [raw] = await once(client, 'message');
+      const message = JSON.parse(raw.toString());
+      const expectedHost = bindHost.includes(':') ? '[::1]' : '127.0.0.1';
+      assert.equal(message.proxyAddress, `${expectedHost}:${listener.address().port}`);
+      const received = await fetch(`http://${message.proxyAddress}/`);
+      assert.equal(await received.text(), 'reachable');
+      client.close();
+      await once(client, 'close');
+    });
+  }
+});
+
 async function sendMalformedAuthenticatedFrame(port) {
   const socket = net.connect(port, '127.0.0.1');
   const chunks = [];
