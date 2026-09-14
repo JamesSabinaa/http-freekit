@@ -10084,6 +10084,9 @@
           if (shouldReplace || existingRuleCount === 0) {
             mockDraftRules.clear();
             mockNewDraftIds.clear();
+            mockEditingRule = null;
+            mockEditDraft = null;
+            mockRenamingRuleId = null;
           }
           toast((shouldReplace ? 'Replaced with ' : 'Imported ') + importedRuleCount + ' rules', 'success');
           await loadMockRules();
@@ -10113,6 +10116,9 @@
         if (!appendToExistingTree) {
           mockDraftRules.clear();
           mockNewDraftIds.clear();
+          mockEditingRule = null;
+          mockEditDraft = null;
+          mockRenamingRuleId = null;
         }
         toast((shouldReplace ? 'Replaced with ' : 'Imported ') + rules.length + ' rules', 'success');
         await loadMockRules();

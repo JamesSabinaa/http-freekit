@@ -1725,7 +1725,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-069 — Medium — Replacement rule import leaves a deleted editor draft that blocks Save All
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The regression reproduced a retained editor ID after successful
+  replacement. Clearing it matches the existing replacement of all draft state.
+- **Resolution:** Clear the active editor, its draft, and inline rename state
+  after successful replacement in both backup formats. Append and rejected
+  imports preserve the existing editor.
+- **Verification:** All 348 mocking and test-layout checks passed. Renderer/API
+  integration covers both backup formats, replacement/append/rejection, and
+  saving an imported rule's newer response body through Save All.
 - **Evidence:** replacement import clears draft maps but retains the open
   editor (`src/ui/app.js:10026-10029,10055-10057`), while the API regenerates
   imported IDs (`src/api/api-server.js:172-173`). Opening an imported rule
