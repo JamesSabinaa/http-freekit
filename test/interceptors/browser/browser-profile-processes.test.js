@@ -161,6 +161,18 @@ test('explicit browser roots and complete descendant trees do not depend on prof
   assert.deepEqual(sortedProcessIds(processes, profileDir, [rootPid]), [701, 702, 703]);
 });
 
+test('Windows profile matching preserves literal apostrophes in quoted and unquoted paths', () => {
+  const profile = "C:\\Users\\O'Neil\\Temp\\http-freekit-chrome-live";
+  const processes = [
+    { pid: 701, ppid: 1, command: `chrome.exe --user-data-dir=${profile} --no-first-run` },
+    { pid: 702, ppid: 1, command: `firefox.exe -profile ${profile} -no-remote` },
+    { pid: 703, ppid: 1, command: `chrome.exe "--user-data-dir=${profile}"` },
+    { pid: 704, ppid: 1, command: `chrome.exe --user-data-dir=${profile}-backup` },
+    { pid: 705, ppid: 1, command: `diagnostic.exe --user-data-dir=${profile}` }
+  ];
+  assert.deepEqual(sortedProcessIds(processes, profile, [], 'win32'), [701, 702, 703]);
+});
+
 test('macOS flattened arguments reject an existing longer profile interpretation', t => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-argv-'));
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));

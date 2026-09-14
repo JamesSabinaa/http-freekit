@@ -89,7 +89,7 @@ function splitProcessCommandLine(commandLine, platform) {
         current = '';
         started = false;
       }
-    } else if (character === '"' || character === "'") {
+    } else if (character === '"' || (platform !== 'win32' && character === "'")) {
       quote = character;
       started = true;
     } else if (platform !== 'win32' && character === '\\' && index + 1 < command.length) {

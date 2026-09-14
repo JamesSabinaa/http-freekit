@@ -1505,7 +1505,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-060 — Medium — Apostrophes in Windows profile paths prevent browser recovery matching
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Regression fixtures reproduced missed unquoted Chromium and
+  Firefox profile paths containing apostrophes. Windows command-line arguments
+  retain these apostrophes literally rather than treating them as quotes.
+- **Resolution:** Apply single-quote grouping only to non-Windows command lines.
+- **Verification:** All 135 browser lifecycle and test-layout checks passed.
+  A harmless native Windows child and Win32_Process command-line observation
+  confirmed exact matching after substituting only the executable identity;
+  quoted-path, suffix, and unrelated-executable controls also passed.
 - **Evidence:** the process command-line splitter treats a single quote as a
   quoting delimiter on Windows (`src/interceptors/browser-lifecycle.js:92-94`).
   Windows permits literal apostrophes in unquoted arguments; a profile path
