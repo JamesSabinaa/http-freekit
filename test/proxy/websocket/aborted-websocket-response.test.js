@@ -5,6 +5,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
+import { trafficToHar } from '../../../src/api/har-converter.js';
 
 async function listen(server) {
   server.listen(0, '127.0.0.1');
@@ -83,6 +84,9 @@ test('rejected WebSocket response errors close and finalize only once', async ()
   assert.equal(updates[0].id, 'rejected-upgrade');
   assert.equal(updates[0].responseBody, 'partial');
   assert.equal(updates[0].responseBodySize, 7);
+  assert.equal(updates[0].responseBodyTruncated, true);
+  assert.equal(updates[0].responseBodyCapturedSize, 7);
+  assert.equal(updates[0].responseBodyDecodedSize, 100);
   assert.equal(updates[0].error, 'origin response failed');
   assert.equal(updates[0].errorCode, 'ECONNRESET');
 });
@@ -124,6 +128,7 @@ test('chunked WebSocket rejections are re-framed with their trailers', async () 
   assert.match(output, /\r\n\r\n6\r\ndenied\r\n0\r\nX-Checksum: complete\r\n\r\n$/);
   assert.equal(updates.length, 1);
   assert.equal(updates[0].responseBody, 'denied');
+  assert.notEqual(updates[0].responseBodyTruncated, true);
   assert.equal(updates[0].trailers['x-checksum'], 'complete');
 });
 
@@ -216,5 +221,14 @@ test('an aborted rejected WebSocket response forwards its partial body and close
   assert.equal(captures[1].statusCode, 401);
   assert.equal(captures[1].responseBody, 'partial');
   assert.equal(captures[1].responseBodySize, 7);
+  assert.equal(captures[1].responseBodyTruncated, true);
+  assert.equal(captures[1].responseBodyCapturedSize, 7);
+  assert.equal(captures[1].responseBodyDecodedSize, 100);
   assert.match(captures[1].error, /response aborted/i);
+  const content = trafficToHar([captures[1]]).log.entries[0].response.content;
+  assert.equal(content.text, 'partial');
+  assert.equal(content._truncated, true);
+  assert.equal(content._capturedSize, 7);
+  assert.equal(content._originalSize, 100);
+  assert.match(content.comment, /7 of 100 bytes retained/);
 });

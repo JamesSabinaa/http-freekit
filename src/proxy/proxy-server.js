@@ -4286,17 +4286,19 @@ export class ProxyServer {
       finalized = true;
       socket.removeListener('close', onDownstreamClose);
       const trailers = this._incomingMessageTrailers(proxyRes);
+      const capturedBody = this._streamedCaptureBody(
+        responseBody, responseBodySize, 'Response', responseHeaders
+      );
       this._emitRequestUpdate({
         ...requestRecord,
         statusCode: proxyRes.statusCode,
         statusMessage: proxyRes.statusMessage || 'WebSocket handshake rejected',
         responseHeaders,
-        responseBody: this._streamedCaptureBody(
-          responseBody,
-          responseBodySize,
-          'Response',
-          responseHeaders
-        ),
+        responseBody: capturedBody,
+        ...(err ? this._incompleteBodyCaptureFields(
+          'response', capturedBody, responseHeaders,
+          responseBody.exceeded ? 0 : responseBody.length
+        ) : {}),
         responseBodySize,
         trailers: Object.keys(trailers).length > 0 ? trailers : null,
         duration: Date.now() - startTime,

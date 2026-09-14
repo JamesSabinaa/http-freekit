@@ -2226,7 +2226,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-091 — Medium — Interrupted WebSocket rejection bodies lack incomplete-capture metadata
 
-- **Status:** Open.
+- **Status:** Fixed. Failed rejected-upgrade responses now use the shared incomplete
+  body metadata helper. Real-socket and stream regressions verify retained bytes,
+  captured/expected sizes, one-time finalization, and HAR truncation provenance;
+  complete and oversized rejection controls remain covered. All 116 WebSocket,
+  HAR, and layout checks passed, plus the added real-capture HAR assertions.
 - **Evidence:** `_forwardRejectedUpgradeResponse()` finalizes aborted handshake
   responses using the ordinary streamed-body conversion, without the incomplete
   body fields used by other response paths
