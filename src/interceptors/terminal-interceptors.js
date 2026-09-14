@@ -1244,14 +1244,17 @@ export class FreshTerminalInterceptor {
     const baseEnvironment = {
       ...this._environment()
     };
-    delete baseEnvironment.NODE_TLS_REJECT_UNAUTHORIZED;
+    const platform = this._platform();
+    for (const key of Object.keys(baseEnvironment)) {
+      const name = platform === 'win32' ? key.toUpperCase() : key;
+      if (name === 'NODE_TLS_REJECT_UNAUTHORIZED') delete baseEnvironment[key];
+    }
     const env = {
       ...baseEnvironment,
       ...buildTerminalEnvironment(proxyUrl, certPath)
     };
 
     let proc;
-    const platform = this._platform();
     let shellPid = null;
     let sessionIdentity = null;
     let posixHandshake = null;

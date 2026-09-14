@@ -2513,7 +2513,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-103 — Medium — Windows Fresh Terminal preserves a case variant of Node's TLS validation override
 
-- **Status:** Open.
+- **Status:** Fixed. Fresh Terminal removes every Windows case variant of the
+  inherited TLS override while preserving POSIX environment-name semantics.
+  The regression failed before the fix; all 97 terminal and test-layout checks
+  pass, including a real Windows Node child receiving the prepared environment.
 - **Evidence:** Fresh Terminal copies the inherited environment into an ordinary
   object and deletes only `NODE_TLS_REJECT_UNAUTHORIZED`
   (`src/interceptors/terminal-interceptors.js:1244-1251`). A lowercase Windows

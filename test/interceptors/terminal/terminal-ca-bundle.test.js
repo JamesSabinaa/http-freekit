@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -158,6 +159,8 @@ test('Fresh and Existing Terminal add the raw CA without replacing target trust 
     terminal._environment = () => ({
       PATH: '/usr/bin:/bin',
       NODE_TLS_REJECT_UNAUTHORIZED: '0',
+      node_tls_reject_unauthorized: '0',
+      Node_Tls_Reject_Unauthorized: '0',
       ...inheritedTrust
     });
     const sessionPid = 9370 + index;
@@ -201,6 +204,16 @@ test('Fresh and Existing Terminal add the raw CA without replacing target trust 
       `${platform} NODE_EXTRA_CA_CERTS`
     );
     assert.equal('NODE_TLS_REJECT_UNAUTHORIZED' in launch.options.env, false, platform);
+    for (const key of ['node_tls_reject_unauthorized', 'Node_Tls_Reject_Unauthorized']) {
+      assert.equal(key in launch.options.env, platform !== 'win32', `${platform} ${key}`);
+    }
+    if (platform === 'win32' && process.platform === 'win32') {
+      const child = spawnSync(process.execPath, [
+        '-e', 'process.stdout.write(JSON.stringify(process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null))'
+      ], { env: launch.options.env, encoding: 'utf8', windowsHide: true });
+      assert.equal(child.status, 0, child.stderr);
+      assert.equal(child.stdout, 'null');
+    }
     if (platform !== 'win32') {
       const commandText = launch.args.join(' ').replace(/\\\\/g, '\\');
       assert.ok(commandText.includes('export NODE_EXTRA_CA_CERTS='), platform);
