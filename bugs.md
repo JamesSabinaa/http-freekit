@@ -2792,7 +2792,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-113 — Low — Multiline WebSocket close reasons hide the separate close-code field
 
-- **Status:** Open.
+- **Status:** Fixed. The renderer matches the exact serialized separator and
+  accepts multiline reasons without trimming leading whitespace. Real WebSocket/
+  Chrome checks pass for single-line, multiline and whitespace-prefixed reasons;
+  the multiline check failed before the fix. All 79 relevant checks pass.
 - **Evidence:** the proxy preserves a Close frame's code and UTF-8 reason in
   `Close code: 1012 - ...` (`src/proxy/proxy-server.js:4896-4901`). The renderer
   reparses that string with an anchored expression whose `.*` cannot span an

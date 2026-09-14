@@ -3469,7 +3469,7 @@
 
         // Close frame: show code and reason
         if (isCloseFrame && req.requestBody) {
-          const closeMatch = req.requestBody.match(/^Close code: (\d+)(?:\s*-\s*(.*))?$/);
+          const closeMatch = req.requestBody.match(/^Close code: (\d+)(?: - ([\s\S]*))?$/);
           const closeCode = closeMatch ? closeMatch[1] : '';
           const closeReason = closeMatch ? (closeMatch[2] || '') : req.requestBody;
           html += `<div class="detail-card dir-left" style="border-left-color:#ce3939;">
