@@ -1363,7 +1363,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     try {
       const parsed = new URL(origin);
       const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname);
-      return isLoopback && parsed.port === String(this.port);
+      const effectivePort = parsed.port
+        || (parsed.protocol === 'http:' ? '80' : parsed.protocol === 'https:' ? '443' : '');
+      return isLoopback && effectivePort === String(this.port);
     } catch {
       return false;
     }

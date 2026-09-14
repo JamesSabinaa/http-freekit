@@ -837,7 +837,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-032 — Medium — Configuring API port 80 rejects valid browser origins
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Confirmed URL parsing normalizes explicit default ports to an
+  empty string. The authenticated POST regression returned 403 before correction.
+- **Resolution:** Compare effective HTTP/HTTPS ports when checking loopback
+  browser origins, including implicit ports 80 and 443.
+- **Verification:** Seven focused API, MCP, desktop-origin, and test-layout
+  checks passed. Live POST and WebSocket tests exercise configured port 80 with
+  an ephemeral listener, with implicit and explicit default ports. Wrong-port,
+  foreign-host, and missing-token controls remain rejected.
 - **Evidence:** startup accepts API port 80 (`src/startup-config.js:11-17`), but
   `_isAllowedBrowserOrigin()` compares `URL.port` with `String(this.port)`
   (`src/api/api-server.js:1358-1364`). The URL parser normalizes the default
