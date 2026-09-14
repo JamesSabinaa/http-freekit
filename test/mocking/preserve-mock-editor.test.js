@@ -19,9 +19,11 @@ const saveSource = section('function isMockMatcherComplete', '/** Apply a draft'
 const collapseAllSource = section('function collapseAllMockRules', 'function mockDragStart');
 const toggleGroupSource = section('function toggleMockGroup(groupId)', 'function toggleMockGroupEnabled');
 const moveToGroupSource = section('function moveRuleToGroup(ruleId, groupId)', 'async function ungroupRule');
+const renameSource = section('function confirmInlineRename(', 'function cancelInlineRename(');
 
 function createEditorHarness({
   valid = false,
+  title,
   unchanged = false,
   enabled = true,
   expanded = ['A'],
@@ -33,6 +35,7 @@ function createEditorHarness({
   vm.runInNewContext(`
     const baseAction = { type: 'fixed-response', status: 200, headers: {}, body: '' };
     const ruleA = {
+        title: ${JSON.stringify(title)},
         id: 'A', enabled: ${enabled}, priority: 'normal',
         matchers: [{ type: 'path', value: '/original', matchType: 'prefix' }],
         preSteps: [], action: baseAction
@@ -52,7 +55,10 @@ function createEditorHarness({
     const mockNewDraftIds = new Set();
     const mockExpandedRules = new Set(${JSON.stringify(expanded)});
     let mockEditingRule = 'A';
+    let mockRenamingRuleId = null;
+    let renameValue = '';
     let mockEditDraft = {
+      title: ${JSON.stringify(title)},
       enabled: ${enabled},
       priority: 'normal',
       matchers: [{
@@ -91,14 +97,20 @@ function createEditorHarness({
       const rule = _findMockRuleDeep(ruleId);
       if (rule) Object.assign(rule, draft);
     }
-    const document = { getElementById: () => null };
+    const document = { getElementById: id => id === 'mock-rename-input' ? { value: renameValue } : null };
     function setTimeout() {}
     ${collapseAllSource}
     ${editorSource}
     ${saveSource}
     ${toggleGroupSource}
     ${moveToGroupSource}
+    ${renameSource}
     globalThis.harness = {
+      rename(ruleId, value) {
+        mockRenamingRuleId = ruleId;
+        renameValue = value;
+        confirmInlineRename(ruleId);
+      },
       addNewMockRule,
       collapseAllMockRules,
       editMockRule,
@@ -123,6 +135,7 @@ function createEditorHarness({
   return {
     calls,
     harness: {
+      rename: context.harness.rename,
       addNewMockRule: context.harness.addNewMockRule,
       collapseAllMockRules: context.harness.collapseAllMockRules,
       editMockRule: context.harness.editMockRule,
@@ -137,6 +150,25 @@ function createEditorHarness({
     }
   };
 }
+
+for (const title of ['New title', '']) {
+  test(`saving an edited rule preserves its inline ${title ? 'rename' : 'title removal'}`, () => {
+    const { harness } = createEditorHarness({ valid: true, title: 'Original title' });
+    harness.rename('A', title);
+    assert.equal(harness.saveMockRule('A'), true);
+    const draft = harness.drafts().find(rule => rule.id === 'A');
+    assert.equal(draft.title, title || undefined);
+    assert.equal(draft.matchers[0].value, '/changed');
+  });
+}
+
+test('renaming another rule does not change the open editor title', () => {
+  const { harness } = createEditorHarness({ valid: true, title: 'Original title' });
+  harness.rename('B', 'Other title');
+  assert.equal(harness.saveMockRule('A'), true);
+  assert.equal(harness.drafts().find(rule => rule.id === 'A').title, 'Original title');
+  assert.equal(harness.drafts().find(rule => rule.id === 'B').title, 'Other title');
+});
 
 test('opening a mock editor first preserves the currently open edit', () => {
   const addSource = section('function addNewMockRule()', 'function editMockRule');

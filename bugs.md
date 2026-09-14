@@ -520,8 +520,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-019 — Medium — Saving an open mock editor overwrites its inline title rename
 
-- **Status:** Open.
-- **Evidence:** inline rename updates the rule and collection draft but leaves
+- **Status:** Fixed.
+- **Review:** confirmed that the accepted rename updates collection state but
+  leaves the same rule's open editor stale; Save then restores the old title.
+- **Resolution:** synchronize the matching open editor's title on confirmed
+  inline rename, preserving its other pending fields.
+- **Verification:** 43 focused editor, Save All, unload and test-layout checks
+  pass. New rename and title-removal regressions failed before the fix; both
+  now retain unrelated field edits. A different-rule rename control also passes.
+- **Evidence (before fix):** inline rename updates the rule and collection draft but leaves
   `mockEditDraft.title` unchanged (`src/ui/app.js:7766-7781`). Saving the editor
   then replaces the draft with its stale title (`:9444-9514`).
 - **Reproduction:** open a rule titled `Original title`, rename it inline to

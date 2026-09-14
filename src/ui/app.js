@@ -7772,6 +7772,9 @@
       if (!rule) { mockRenamingRuleId = null; return; }
       const name = input.value.trim();
       rule.title = name || undefined;
+      if (mockEditingRule === ruleId && mockEditDraft) {
+        mockEditDraft.title = rule.title;
+      }
       const draft = mockDraftRules.get(ruleId) || JSON.parse(JSON.stringify(rule));
       draft.title = rule.title;
       draft.id = ruleId;
