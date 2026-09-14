@@ -3814,7 +3814,8 @@
       margin-bottom: 8px;
     }
     .mock-matcher-row select,
-    .mock-matcher-row input {
+    .mock-matcher-row input,
+    .mock-matcher-row textarea {
       background: var(--bg-input);
       border: 1px solid var(--text-input-border, rgba(255,255,255,0.1));
       border-radius: 4px;
@@ -3827,7 +3828,8 @@
     .mock-matcher-row select { min-width: 130px; cursor: pointer; }
     .mock-matcher-row input { flex: 1; }
     .mock-matcher-row select:focus,
-    .mock-matcher-row input:focus { border-color: var(--pop-color); }
+    .mock-matcher-row input:focus,
+    .mock-matcher-row textarea:focus { border-color: var(--pop-color); }
 
     .mock-matcher-extra {
       min-width: 80px;

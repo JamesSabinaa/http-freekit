@@ -2568,7 +2568,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-105 — Low — Body-matcher textareas ignore the Dark theme
 
-- **Status:** Open.
+- **Status:** Fixed. Matcher textareas share the existing input theme and focus
+  selectors. A real Chrome check verified all five textareas match adjacent
+  controls in Dark and Light, including matching Dark borders; it failed before
+  the fix. All seven theme, responsive-layout and test-layout checks pass.
 - **Evidence:** the Body Contains, JSON Body exact/partial, Regex Body and Raw Body
   matcher editors generate textareas directly inside `.mock-matcher-row`
   (`src/ui/app.js:8577-8584`, `:8606-8610`). The corresponding theme rules style
