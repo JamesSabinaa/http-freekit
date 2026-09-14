@@ -1252,7 +1252,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-049 — Medium — Regex Body never matches an empty request body
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** A live proxy regression reproduced the incorrect rejection of
+  `^$` against an empty body. BUG-062 was fixed first so unavailable decoded
+  bodies cannot become false empty-string matches.
+- **Resolution:** Evaluate regex patterns against empty text using ordinary
+  regex semantics, retaining validation and unavailable-body guards.
+- **Verification:** 56 focused body, validation, breakpoint, streaming, and
+  test-layout checks passed. Regressions cover plain/gzip empty bodies,
+  nonempty and malformed compressed bodies, and matching/nonmatching/invalid
+  patterns. The live empty-body case failed before the fix.
 - **Evidence:** the regex-body matcher returns false for an empty subject
   before evaluating its configured expression
   (`src/proxy/proxy-server.js:10648-10650`).

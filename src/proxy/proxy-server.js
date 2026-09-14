@@ -10518,7 +10518,6 @@ export class ProxyServer {
         try { return new RegExp(matcher.value).test(url); } catch { return false; }
       }
       case 'regex-body': {
-        if (!body) return false;
         try { return new RegExp(matcher.value).test(body); } catch { return false; }
       }
       case 'raw-body-exact': {

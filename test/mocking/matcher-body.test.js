@@ -60,6 +60,25 @@ test('empty-body rules do not match unavailable decoded bodies', async t => {
   }
 });
 
+test('regex-body evaluates empty strings and rejects unavailable decoded content', async t => {
+  const { proxy } = await startProxy(t, [
+    { matchers: [{ type: 'regex-body', value: '^$' }], action: { type: 'fixed-response', status: 200, body: 'empty' } },
+    { matchers: [], action: { type: 'fixed-response', status: 201, body: 'other' } }
+  ]);
+  for (const [body, headers, expected] of [
+    [Buffer.alloc(0), {}, 'empty'],
+    [zlib.gzipSync(Buffer.alloc(0)), { 'content-encoding': 'gzip' }, 'empty'],
+    [Buffer.from('text'), {}, 'other'],
+    [Buffer.from('bad gzip'), { 'content-encoding': 'gzip' }, 'other']
+  ]) {
+    const response = await requestThroughProxy(proxy.server.address().port, '/regex', body, headers);
+    assert.equal(response.body, expected);
+  }
+  for (const [pattern, expected] of [['a*', true], ['.+', false], ['[', false]]) {
+    assert.equal(proxy._evaluateMatcher({ type: 'regex-body', value: pattern }, 'POST', 'http://example.test/', {}, ''), expected);
+  }
+});
+
 test('multipart exact matchers preserve trailing field newlines from native FormData', async t => {
   const values = ['hello', 'hello\r\n', 'hello\r\n\r\n', '\r\n', 'café\r\n'];
   const rules = values.map((value, index) => ({
