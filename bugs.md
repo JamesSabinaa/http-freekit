@@ -1534,7 +1534,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-061 — Medium — Browser recovery loses proxy ports for IPv6 and specific LAN bindings
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Recovery hard-codes IPv4 loopback despite the launcher's broader
+  authority support. A managed-profile recovery regression reproduced a null
+  port for a valid IPv6 loopback proxy.
+- **Resolution:** Parse and validate proxy authorities before extracting the
+  explicit port, retaining the requirement for one unambiguous valid port.
+- **Verification:** All 136 browser lifecycle and test-layout checks passed.
+  Recovery fixtures cover IPv4, IPv6, LAN, hostname, explicit default port,
+  malformed authority, credentials, paths, invalid port, and conflicting ports.
 - **Evidence:** browser launch formats the configured proxy host into
   `--proxy-server` (`src/interceptors/browser-interceptor.js:31,569`), but
   recovery recognizes only `127.0.0.1` in that argument

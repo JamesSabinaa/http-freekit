@@ -92,6 +92,29 @@ test('startup classifies exact browser processes from a dead profile owner as re
   }]);
 });
 
+test('profile recovery reads valid proxy authorities and rejects invalid or conflicting ports', t => {
+  const root = tempDir(t, 'freekit-proxy-authority-');
+  const profileDir = createManagedBrowserProfile('chrome', root);
+  markOwnerDead(profileDir);
+  for (const [authorities, expected] of [
+    [['127.0.0.1:8000'], 8000], [['[::1]:8000'], 8000],
+    [['192.0.2.10:8000'], 8000], [['http://[::1]:80'], 80],
+    [['localhost:8000'], 8000], [['[not-ipv6]:8000'], null],
+    [['[::1]:0'], null], [['192.0.2.10:65536'], null],
+    [['user@localhost:8000'], null], [['localhost:8000/path'], null],
+    [['[::1]:8000', '[::1]:8001'], null]
+  ]) {
+    const snapshot = authorities.map((authority, index) => ({
+      pid: 8310 + index, ppid: 1, startedAt: Date.now(),
+      command: `chrome --user-data-dir="${profileDir}" --proxy-server=${authority}`,
+      commandName: 'chrome'
+    }));
+    const result = cleanupStaleBrowserProfiles({ tempDir: root, processSnapshot: snapshot });
+    assert.equal(result.recoverable.length, 1);
+    assert.equal(result.recoverable[0].proxyPort, expected, authorities.join(', '));
+  }
+});
+
 test('an isolated interceptor adopts and stops every recoverable profile of its type', async t => {
   const firstProfile = createManagedBrowserProfile('chrome');
   const secondProfile = createManagedBrowserProfile('chrome');

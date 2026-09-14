@@ -545,15 +545,19 @@ export function collectRelatedProcessIds(processes, profileDir, rootPids = [], p
   return inspectRelatedBrowserProcesses(processes, profileDir, rootPids, platform).processIds;
 }
 
-function inferLoopbackProxyPort(processes, processIds, platform = process.platform) {
+function inferProxyPort(processes, processIds, platform = process.platform) {
   const relatedIds = processIds instanceof Set ? processIds : new Set(processIds);
   const ports = new Set();
   for (const row of processes) {
     if (!relatedIds.has(row?.pid)) continue;
     for (const arg of splitProcessCommandLine(row.command, platform)) {
-      const match = arg.match(/^--proxy-server=(?:https?:\/\/)?127\.0\.0\.1:(\d{1,5})$/i);
+      const match = arg.match(/^--proxy-server=(?:https?:\/\/)?(\[[^\]]+\]|[^:/?#@\s]+):(\d{1,5})$/i);
       if (!match) continue;
-      const port = Number(match[1]);
+      try {
+        const target = new URL(`http://${match[1]}:${match[2]}`);
+        if (!target.hostname || target.username || target.password || target.pathname !== '/' || target.search || target.hash) continue;
+      } catch { continue; }
+      const port = Number(match[2]);
       if (port >= 1 && port <= 65535) ports.add(port);
     }
   }
@@ -743,7 +747,7 @@ export function cleanupStaleBrowserProfiles(options = {}) {
         browserType: ownership.owner.browserType,
         createdAt: ownership.owner.createdAt,
         processIds: [...processInspection.processIds].sort((left, right) => left - right),
-        proxyPort: inferLoopbackProxyPort(
+        proxyPort: inferProxyPort(
           snapshot,
           processInspection.processIds,
           options.platform || process.platform
