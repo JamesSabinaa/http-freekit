@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { SystemProxyInterceptor } from '../../../src/interceptors/system-proxy-interceptor.js';
+import { InterceptorManager } from '../../../src/interceptors/interceptor-manager.js';
 
 const OWNER = {
   pid: 4305,
@@ -124,6 +125,41 @@ test('activation journals normalized strong ownership before its first registry 
   await interceptor.activate(8080);
 
   assert.equal(checkedJournalBeforeMutation, true);
+});
+
+test('shutdown retries revalidate owner blockers after recovery journals are released', async t => {
+  t.mock.method(console, 'error', () => {});
+  const dataDir = makeDataDir(t);
+  const interceptor = new SystemProxyInterceptor({ dataDir, processIdentityLookup: () => ({ ...OWNER }) });
+  interceptor._isWindows = () => true;
+  interceptor._readCurrentSettings = () => assert.fail('must not inspect another owner or already released settings');
+  interceptor._readWinHttpSettings = () => assert.fail('must not inspect another owner or already released settings');
+  for (const file of [interceptor.recoveryFile, interceptor.winHttpRecoveryFile]) {
+    fs.writeFileSync(file, JSON.stringify({ owner: OWNER }));
+  }
+  await interceptor.recoverStaleSettings();
+  assert.ok(interceptor.recoveryBlockedReason);
+  assert.ok(interceptor.winHttpRecoveryBlockedReason);
+  const manager = Object.create(InterceptorManager.prototype);
+  manager.interceptors = new Map([[interceptor.id, interceptor]]);
+  manager.operationsInProgress = new Map();
+  manager.statusOperations = new Map();
+  manager.initialize = async () => {};
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(manager.deactivateAll({ maxAttempts: 1 }), error => {
+      assert.match(error.errors[0].message, /active FreeKit process/);
+      return true;
+    });
+    assert.equal(fs.existsSync(interceptor.recoveryFile), true);
+    assert.equal(fs.existsSync(interceptor.winHttpRecoveryFile), true);
+  }
+  // The owning process has restored its settings and released both journals.
+  fs.unlinkSync(interceptor.recoveryFile);
+  fs.unlinkSync(interceptor.winHttpRecoveryFile);
+  await manager.deactivateAll({ maxAttempts: 1 });
+  assert.equal(await interceptor.needsDeactivation(), false);
+  assert.equal(interceptor.recoveryBlockedReason, null);
+  assert.equal(interceptor.winHttpRecoveryBlockedReason, null);
 });
 
 test('stale recovery skips only the same live strong owner', async t => {

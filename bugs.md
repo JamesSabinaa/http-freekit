@@ -2252,7 +2252,9 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-092 — Medium — JVM attach-helper cache survives an incompatible Java runtime change
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Confirmed cache compatibility gap. Choose
+  runtime-aware validation/rebuild (recommended), or a fixed Java 8 helper bytecode
+  policy with Attach API-compatible compiler arguments.
 - **Evidence:** `AttachProxy.class` is compiled with the host `javac` defaults
   (`src/interceptors/jvm-interceptor.js:742-743,1240-1241`). Cache validation checks
   source/content hashes and bytecode magic, but neither runtime identity nor class
@@ -2275,7 +2277,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-093 — Medium — Quit retries retain an obsolete System Proxy owner blocker
 
-- **Status:** Open.
+- **Status:** Fixed. Deactivation revalidates cached ownership blockers through the
+  existing recovery routine before deciding whether cleanup is still blocked.
+  A manager-shutdown regression verifies repeated blocking for a live owner and
+  successful retry after both journals are released. Focused System Proxy,
+  interceptor-core, and layout checks passed with native operations simulated.
 - **Evidence:** startup recovery caches a blocking reason when another live owner
   holds the proxy journals. `deactivate()` throws those cached reasons without
   refreshing recovery (`src/interceptors/system-proxy-interceptor.js:963-981`).

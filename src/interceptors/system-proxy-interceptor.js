@@ -966,6 +966,10 @@ if ($null -eq $target) {
 
   async deactivate() {
     if (this._isWindows()) {
+      if (this.recoveryBlockedReason || this.winHttpRecoveryBlockedReason) {
+        // An owner may have released its journals since the last cleanup attempt.
+        await this.recoverStaleSettings();
+      }
       const hasState = this.active || this.previousSettings || this.pendingRecovery
         || this.previousWinHttpSettings || this.pendingWinHttpRecovery
         || this.recoveryBlockedReason || this.winHttpRecoveryBlockedReason;
