@@ -6242,9 +6242,7 @@ export class ProxyServer {
               this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
               reqHeaders = this._currentHeadersWithRawCase(req.rawHeaders, req.headers);
               if (action.addRequestHeaders) {
-                for (const [k, v] of Object.entries(action.addRequestHeaders)) {
-                  reqHeaders[k] = v;
-                }
+                reqHeaders = this._applyMockHeaderTransform(reqHeaders, 'update', action.addRequestHeaders);
               }
             } catch (err) {
               const syntheticResponse = this._syntheticErrorResponse(
@@ -8343,9 +8341,7 @@ export class ProxyServer {
         this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
         fwdHeaders = { ...reqHeaders };
         if (action.addRequestHeaders) {
-          for (const [k, v] of Object.entries(action.addRequestHeaders)) {
-            fwdHeaders[k.toLowerCase()] = v;
-          }
+          fwdHeaders = this._applyMockHeaderTransform(fwdHeaders, 'update', action.addRequestHeaders);
         }
       } catch (err) {
         const syntheticResponse = this._syntheticErrorResponse(
@@ -10612,9 +10608,7 @@ export class ProxyServer {
         this._assertSupportedOutboundUrl(forwardUrl, 'mock forward URL');
         reqHeaders = this._currentHeadersWithRawCase(clientReq.rawHeaders, clientReq.headers);
         if (action.addRequestHeaders) {
-          for (const [k, v] of Object.entries(action.addRequestHeaders)) {
-            reqHeaders[k] = v;
-          }
+          reqHeaders = this._applyMockHeaderTransform(reqHeaders, 'update', action.addRequestHeaders);
         }
       } catch (err) {
         const syntheticResponse = this._syntheticErrorResponse(

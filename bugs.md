@@ -2303,7 +2303,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-094 — Medium — JVM interception drops configured TLS client certificates
 
-- **Status:** Open.
+- **Status:** Awaiting user review. Confirmed for standard JSSE key-store properties.
+  Choose preserving those configured identities now (recommended), or defer for
+  a broader design that also preserves key managers installed programmatically in
+  custom SSL contexts, which the public SSLContext API does not expose.
 - **Evidence:** the generated agent installs a replacement default SSL context
   with null key managers (`src/interceptors/jvm-interceptor.js:637-642`). It
   preserves server trust but drops the client identity supplied by the original
@@ -2323,7 +2326,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-095 — Medium — Forward capture retains a header value that was replaced on the wire
 
-- **Status:** Open.
+- **Status:** Fixed. Forward paths use the shared case-insensitive header transformer
+  before sending and capturing the effective request. A real HTTP regression checks
+  different-case and same-case overrides against origin headers, capture, and HAR.
+  All 351 mocking and test-layout checks passed.
 - **Evidence:** the HTTP/1 Forward action copies raw-case request headers and
   assigns `addRequestHeaders` using case-sensitive object keys
   (`src/proxy/proxy-server.js:10767-10770`). Its helper snapshots those keys before

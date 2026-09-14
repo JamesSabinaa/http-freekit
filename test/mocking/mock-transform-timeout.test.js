@@ -13,6 +13,7 @@ import zlib from 'node:zlib';
 
 import { CertificateAuthority } from '../../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { trafficToHar } from '../../src/api/har-converter.js';
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -171,6 +172,38 @@ test('transform-request forwards request changes and transforms the upstream res
     keep: 'response',
     added: 'response'
   });
+});
+
+test('Forward overrides capture only the effective case-insensitive request header', async t => {
+  const received = [];
+  const origin = http.createServer((request, response) => {
+    received.push(request.headers['x-color']);
+    response.end('forwarded');
+  });
+  const originPort = await listen(origin);
+  t.after(() => close(origin));
+  const captures = [];
+  const proxy = new ProxyServer(null, { port: 0, onRequest: record => {
+    if (record.responseHeaders && record._trafficLifecycleComplete !== false) captures.push(record);
+  } });
+  await proxy.start();
+  t.after(() => proxy.stop());
+  for (const name of ['x-color', 'X-Color']) {
+    proxy.mockRules = [{ enabled: true, matchers: [], action: {
+      type: 'forward', forwardTo: `http://127.0.0.1:${originPort}`,
+      addRequestHeaders: { [name]: 'new' }
+    } }];
+    const response = await requestThroughProxy(proxy.server.address().port, 'http://original.test/color', {
+      headers: { 'X-Color': 'old' }
+    });
+    assert.equal(response.body, 'forwarded');
+    assert.equal(received.at(-1), 'new');
+    const capture = captures.at(-1);
+    assert.ok(capture);
+    assert.deepEqual(Object.entries(capture.requestHeaders).filter(([key]) => key.toLowerCase() === 'x-color'), [[name, 'new']]);
+    const headers = trafficToHar([capture]).log.entries[0].request.headers;
+    assert.deepEqual(headers.filter(header => header.name.toLowerCase() === 'x-color'), [{ name, value: 'new' }]);
+  }
 });
 
 test('original response-header mode ignores retained update settings on real exchanges', async t => {
