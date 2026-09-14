@@ -99,6 +99,36 @@ test('a restarted manager adopts global-proxy cleanup ownership and can Stop it'
   assert.equal(fs.existsSync(restarted.recoveryFile), false);
 });
 
+test('recovered LAN proxy stays uncertain until the listener bind can serve it', async t => {
+  const dataDir = createDataDir(t);
+  fs.writeFileSync(path.join(dataDir, 'android-adb-global-proxy-recovery.json'),
+    JSON.stringify({ version: 6, devices: [validJournalEntry({ manualCaRemovalRequired: false })] }));
+  const interceptor = new AndroidAdbInterceptor({ dataDir, proxyBindHost: '127.0.0.1' });
+  interceptor._getConnectedDevices = async () => [device('device-1')];
+  interceptor._getConnectedDevicesWithHostIpMetadata = interceptor._getConnectedDevices;
+  interceptor._getProxy = async () => ({ success: true, value: '192.0.2.10:8080' });
+  assert.equal(interceptor.activatedDevices.get('device-1').mode, 'proxy-uncertain');
+
+  const unreachable = await interceptor.getMetadata();
+  assert.equal(unreachable.interceptionActive, false);
+  assert.equal(unreachable.activationUncertain, true);
+  assert.equal(unreachable.activatedDevices[0].mode, 'proxy-uncertain');
+  assert.ok(unreachable.activatedDevices[0].proxyBindError);
+
+  interceptor.proxyBindHost = '0.0.0.0';
+  const reachable = await interceptor.getMetadata();
+  assert.equal(reachable.interceptionActive, true);
+  assert.equal(reachable.activationUncertain, false);
+  assert.equal(reachable.activatedDevices[0].mode, 'global-proxy');
+  assert.equal(reachable.activatedDevices[0].proxyBindError, undefined);
+  assert.equal(readJournal(interceptor).devices[0].mode, 'global-proxy');
+
+  interceptor.proxyBindHost = '127.0.0.1';
+  assert.equal((await interceptor.getMetadata()).interceptionActive, false);
+  assert.equal(readJournal(interceptor).devices[0].mode, 'proxy-uncertain');
+  assert.equal(readJournal(interceptor).devices[0].previousProxy, 'corporate.proxy:8888');
+});
+
 test('normal multi-device cleanup updates and then removes the journal', async t => {
   const interceptor = new AndroidAdbInterceptor({ dataDir: createDataDir(t) });
   configureGlobalActivation(interceptor, [device('device-1'), device('device-2')], {

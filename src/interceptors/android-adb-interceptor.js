@@ -504,8 +504,17 @@ export class AndroidAdbInterceptor {
     }
 
     if (currentProxy.value === ownedProxy) {
-      if (activeInfo.mode !== 'global-proxy') {
-        this._setPersistedActivation(serial, activeInfo, 'global-proxy');
+      if (!this._isProxyHostReachable(activeInfo.hostIp)) {
+        this._setUncertainActivation(serial, {
+          ...activeInfo,
+          proxyBindError: this._proxyBindError('Android global proxy', activeInfo.hostIp).message
+        }, 'proxy-uncertain');
+        return;
+      }
+      if (activeInfo.mode !== 'global-proxy' || activeInfo.proxyBindError) {
+        const reachableInfo = { ...activeInfo };
+        delete reachableInfo.proxyBindError;
+        this._setPersistedActivation(serial, reachableInfo, 'global-proxy');
       }
       return;
     }

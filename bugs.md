@@ -417,8 +417,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-015 — Medium — Android refresh reports unreachable recovered proxies as active
 
-- **Status:** Open.
-- **Evidence:** recovery correctly marks a saved LAN proxy endpoint uncertain
+- **Status:** Fixed.
+- **Review:** recovery already treats incompatible listener binds as uncertain;
+  refresh was incorrectly promoting the same endpoint based only on ownership.
+- **Resolution:** apply the existing bind-reachability check during global-proxy
+  reconciliation, retain cleanup ownership and clear stale bind errors once the
+  endpoint becomes reachable.
+- **Verification:** 15 focused Android recovery, presentation and test-layout
+  checks pass. The new regression failed before the fix and now covers an
+  unreachable recovered LAN endpoint, a reachable bind and a return to loopback.
+  Device readback is simulated; no physical-device network test was performed.
+- **Evidence (before fix):** recovery correctly marks a saved LAN proxy endpoint uncertain
   when the current proxy binds only to loopback
   (`src/interceptors/android-adb-interceptor.js:240-262`). Once the device is
   connected, metadata refresh promotes that entry to `global-proxy` solely
