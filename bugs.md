@@ -46,6 +46,13 @@ Passes 21 and 22 satisfy the completion gate. This revision records 111 new
 findings and retained the seven original findings: 118 open entries at audit
 completion. Current remediation statuses are recorded with each finding.
 
+## Remediation validation
+
+Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
+2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
+the corrected Android Stop assertion. The ledger currently records 97 fixed
+findings and 21 awaiting user review; remediation is not complete.
+
 ## Findings
 
 ### BUG-001 — Medium — Built-in Dark and Light theme text fails WCAG AA contrast
@@ -2185,7 +2192,7 @@ completion. Current remediation statuses are recorded with each finding.
   source assertion expecting the former Stop expression (2,709 passed, four
   skipped). Updated that assertion to verify active interceptors retain Stop and
   inactive cleanup applies only to System Proxy; all 188 Android/core/layout
-  checks pass. The full suite has not been rerun after this test-only correction.
+  checks pass. The subsequent full run on `1b6045d` passed with zero failures.
 - **Evidence:** failed activation can retain rollback ownership while setting
   `active = false` (`src/interceptors/system-proxy-interceptor.js:847-882`).
   Its inventory omits the remaining cleanup state (`:995-1001`), and the card
