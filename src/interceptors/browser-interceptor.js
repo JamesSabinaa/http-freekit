@@ -599,6 +599,8 @@ export class BrowserInterceptor {
       `user_pref("network.proxy.ssl", ${JSON.stringify(this.proxyHost)});`,
       `user_pref("network.proxy.ssl_port", ${proxyPort});`,
       `user_pref("network.proxy.no_proxies_on", "");`,
+      // Firefox bypasses loopback independently of the explicit bypass list.
+      `user_pref("network.proxy.allow_hijacking_localhost", true);`,
       // Allow the OS-trust fallback when NSS certutil is unavailable
       `user_pref("security.enterprise_roots.enabled", true);`,
       // Disable warnings / first-run

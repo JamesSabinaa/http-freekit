@@ -13,6 +13,7 @@ const EXPECTED_FIREFOX_PREFS = [
   'user_pref("network.proxy.ssl", "127.0.0.1");',
   'user_pref("network.proxy.ssl_port", 8123);',
   'user_pref("network.proxy.no_proxies_on", "");',
+  'user_pref("network.proxy.allow_hijacking_localhost", true);',
   'user_pref("security.enterprise_roots.enabled", true);',
   'user_pref("browser.shell.checkDefaultBrowser", false);',
   'user_pref("browser.startup.homepage_override.mstone", "ignore");',

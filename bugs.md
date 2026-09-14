@@ -361,8 +361,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-013 — Medium — Fresh Firefox profiles bypass interception for localhost traffic
 
-- **Status:** Open.
-- **Evidence:** the generated Firefox `user.js` clears
+- **Status:** Fixed.
+- **Review:** Mozilla's current proxy implementation confirms a separate
+  loopback bypass even with an empty explicit bypass list. This conflicts with
+  the isolated interception profile's intended coverage of local development.
+- **Resolution:** enable `network.proxy.allow_hijacking_localhost` in generated
+  interception profiles, retaining the existing proxy and certificate settings.
+- **Verification:** 12 focused profile, certificate, lifecycle and test-layout
+  checks pass; the profile regressions fail before the change. Installed Firefox
+  also sent HTTP requests for `localhost`, `127.0.0.1` and `[::1]` through a local
+  test proxy using three fresh production-generated profiles.
+- **Evidence (before fix):** the generated Firefox `user.js` clears
   `network.proxy.no_proxies_on` but never sets
   `network.proxy.allow_hijacking_localhost` (`src/interceptors/browser-interceptor.js:592-610`).
   Firefox independently excludes loopback destinations unless that preference
