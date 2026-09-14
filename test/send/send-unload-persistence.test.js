@@ -251,6 +251,36 @@ test('a delayed save commits the newer unload journal in the same writer chain',
   assert.equal(storage.journalEntries().length, 0);
 });
 
+test('conflict recovery preserves edits made after the queued snapshot', async () => {
+  const initial = workspace([storedTab('tab-1', 'https://initial.test', 'tab-one')]);
+  const storage = createStorage({ [WORKSPACE_KEY]: JSON.stringify(initial) });
+  const heldLock = createHeldLock();
+  const renderer = createHarness({ storage, locks: heldLock.manager, tabs: [initial.tabs[0].tab] });
+  renderer.api.restore();
+  renderer.api.load();
+  renderer.setEditor({ url: 'https://queued.test' });
+  const pending = renderer.api.save();
+  await waitFor(() => heldLock.requested);
+  storage.setItem(WORKSPACE_KEY, JSON.stringify(workspace([{
+    ...initial.tabs[0], revision: 'revision-remote-change',
+    tab: { ...initial.tabs[0].tab, url: 'https://remote.test' }
+  }])));
+  renderer.setEditor({ url: 'https://later.test', method: 'POST' });
+  renderer.setBody('newer body');
+  await heldLock.release();
+  await pending;
+  assert.equal(renderer.elements.sendUrl.value, 'https://later.test');
+  await waitFor(() => heldLock.requested);
+  await heldLock.release();
+  await renderer.api.settled();
+  const saved = storage.json(WORKSPACE_KEY).tabs.map(entry => entry.tab);
+  assert.equal(saved.find(tab => tab.id === 'tab-1').url, 'https://remote.test');
+  const fork = saved.find(tab => tab.id !== 'tab-1');
+  assert.equal(fork.url, 'https://later.test');
+  assert.equal(fork.method, 'POST');
+  assert.equal(fork.body, 'newer body');
+});
+
 test('a queued edit follows an identical concurrent revision without forking', async () => {
   const initial = workspace([storedTab('tab-1', 'https://initial.test', 'tab-one')]);
   const storage = createStorage({ [WORKSPACE_KEY]: JSON.stringify(initial) });

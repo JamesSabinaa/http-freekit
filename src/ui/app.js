@@ -12125,6 +12125,7 @@
         if (journal.writerId !== sendPersistenceWriterId) continue;
         if (['forked', 'fork-updated'].includes(result.state)) {
           if (latestForkResult.get(result.id) !== result) continue;
+          const activeSnapshot = activeSendTab === journal.id ? snapshotActiveSendTabState() : null;
           const originalIndex = sendTabs.findIndex(tab => tab.id === journal.id);
           const liveOriginal = originalIndex === -1 ? null : sendTabs[originalIndex];
           const storedOriginal = workspace.tabs.find(tab => tab.id === journal.id);
@@ -12143,7 +12144,16 @@
           if (activeSendTab === journal.id && storedFork) {
             activeSendTab = storedFork.id;
             safeLocalStorageSet('http-freekit-send-active', activeSendTab);
-            loadSendTabState(sendTabs.find(tab => tab.id === storedFork.id) || storedFork);
+            if (activeSnapshot) {
+              const liveFork = sendTabs.find(tab => tab.id === storedFork.id) || storedFork;
+              const hasNewerEdits = sendTabFingerprint(activeSnapshot) !== sendTabFingerprint(liveOriginal);
+              if (hasNewerEdits) Object.assign(liveFork, activeSnapshot, { id: storedFork.id });
+              loadSendTabState(liveFork);
+              if (hasNewerEdits) {
+                sendActiveEditorBase = sendCommittedTabState.get(storedFork.id);
+                persistSendTabs([liveFork]);
+              }
+            }
           }
           renderSendTabs();
           if (typeof toast === 'function') {

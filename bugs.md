@@ -2952,7 +2952,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-118 — Medium — Send conflict recovery overwrites edits made while a save is pending
 
-- **Status:** Open.
+- **Status:** Fixed. Conflict recovery snapshots the active editor, carries newer
+  edits into the conflict tab and queues their persistence against that tab's
+  committed revision. An invalid live method prevents reloading the controls.
+  A held-lock regression failed before the fix and now verifies both the newer
+  saved draft and preserved remote original. All 250 Send/test-layout checks pass.
 - **Evidence:** cURL paste replaces the active tab and queues its snapshot for
   persistence (`src/ui/app.js:12552-12592`, `:17280-17295`). Persistence waits for
   the shared workspace lock (`:11383-11387`, `:12064-12090`). When that snapshot
