@@ -175,7 +175,8 @@ export class DockerInterceptor {
     const environment = [...proxyEnvironment, ...trustEnvironment];
     const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
     const composeEnvironment = environment.map(value => `  - ${value}`).join('\n');
-    const composeMount = JSON.stringify(`${caPath}:${containerCaPath}:ro`);
+    // Compose interpolates YAML string values even when they are quoted.
+    const composeMount = JSON.stringify(`${caPath}:${containerCaPath}:ro`.replace(/\$/g, () => '$$'));
     const runInstruction = this._platform() === 'win32'
       ? buildWindowsPowerShellRunInstruction(mountValue, runEnvironment)
       : `docker run --mount ${quotePosixShellArgument(mountValue)} ${runEnvironment} <image>`;

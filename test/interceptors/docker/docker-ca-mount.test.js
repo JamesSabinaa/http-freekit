@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { load } from 'js-yaml';
 import { DockerInterceptor } from '../../../src/interceptors/docker-interceptor.js';
 
 test('Docker instructions add the FreeKit CA for Node without replacing image trust roots', async () => {
@@ -30,4 +31,26 @@ test('Docker activation does not claim HTTPS support without a CA', async () => 
 
   await assert.rejects(interceptor.activate(8080), /FreeKit CA certificate path is not configured/);
   assert.equal(interceptor.active, false);
+});
+
+test('Compose mount paths escape interpolation independently of YAML quoting', async t => {
+  t.mock.method(console, 'log', () => {});
+  const cases = [
+    ['/home/dev/$project/ca.pem', '/home/dev/$$project/ca.pem'],
+    ['/home/dev/${project:-default}/ca.pem', '/home/dev/$${project:-default}/ca.pem'],
+    ['/home/dev/$$cash$/ca.pem', '/home/dev/$$$$cash$$/ca.pem'],
+    ['C:\\Users\\$dev\\FreeKit CA.pem', 'C:\\Users\\$$dev\\FreeKit CA.pem'],
+    ['/home/dev/CA "quoted".pem', '/home/dev/CA "quoted".pem']
+  ];
+  for (const [source, escaped] of cases) {
+    const interceptor = new DockerInterceptor();
+    interceptor._platform = () => 'linux';
+    interceptor._getDockerHost = async () => '172.17.0.1';
+    interceptor._getFreeKitCaPath = () => source;
+    const result = await interceptor.activate(8080);
+    const config = load(result.metadata.instructions.compose);
+    assert.deepEqual(config.volumes, [`${escaped}:/etc/http-freekit/http-freekit-ca.pem:ro`]);
+    assert.equal(result.metadata.caPath, source);
+    assert.ok(config.environment.includes('NODE_EXTRA_CA_CERTS=/etc/http-freekit/http-freekit-ca.pem'));
+  }
 });

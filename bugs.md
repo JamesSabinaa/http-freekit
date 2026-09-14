@@ -890,7 +890,15 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-034 — Medium — Docker Compose instructions interpolate dollar signs in CA paths
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Confirmed against Docker's interpolation documentation and a
+  failing generated-YAML regression: JSON/YAML quoting does not escape `$project`.
+- **Resolution:** Double literal dollar signs in the Compose mount before YAML
+  serialization, preserving the original CA path metadata and docker-run quoting.
+- **Verification:** 25 Docker and layout checks passed, including parsed YAML
+  cases for unbraced/braced variables, repeated/trailing dollars, Windows paths,
+  and quoted names, plus existing POSIX and PowerShell argument checks. Docker
+  is unavailable on this host; no native Compose execution is claimed.
 - **Evidence:** Docker instructions serialize the certificate bind mount with
   `JSON.stringify()` (`src/interceptors/docker-interceptor.js:178`), which does
   not escape Compose interpolation. A CA path such as
