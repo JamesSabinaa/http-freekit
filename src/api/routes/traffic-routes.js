@@ -311,7 +311,9 @@ export function registerTrafficRoutes(router, api) {
     const transaction = req.body?.importTransaction;
     try {
       const { requests } = req.body;
-      const validationError = api._getTrafficImportValidationError(requests);
+      const validationError = api._getTrafficImportValidationError(requests, {
+        validateParents: transaction === undefined
+      });
       if (validationError) {
         if (transaction !== undefined) {
           api._trafficImportTransactions.abort(transaction?.id);

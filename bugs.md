@@ -333,8 +333,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-012 — Medium — Batched traffic import rejects WebSocket parents in earlier batches
 
-- **Status:** Open.
-- **Evidence:** the import route validates each batch before staging it
+- **Status:** Fixed.
+- **Review:** the route already validates the assembled transaction before
+  atomic commit. Per-batch relationship validation incorrectly treats that
+  batch as the entire import; row-shape validation can still run immediately.
+- **Resolution:** defer parent-reference validation for transaction batches
+  until assembly, retaining full validation for standalone imports and commits.
+- **Verification:** 26 focused API/import and test-layout checks pass. Four new
+  HTTP regressions fail before the fix and pass afterward, covering parents in
+  earlier/later batches with lifecycle and legacy IDs. Missing or mismatched
+  parents still discard the transaction without retaining any rows.
+- **Evidence (before fix):** the import route validates each batch before staging it
   (`src/api/routes/traffic-routes.js:314-331`). WebSocket parent validation
   considers only retained traffic and the current batch
   (`src/api/api-server.js:1092-1113`), excluding earlier staged transaction rows.

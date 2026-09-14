@@ -73,6 +73,59 @@ async function getTraffic(port, id) {
   return requestJson(port, 'GET', `/api/traffic/${encodeURIComponent(id)}`);
 }
 
+for (const parentFirst of [true, false]) {
+  for (const withLifecycle of [true, false]) {
+    test(`transaction imports WebSocket parent ${parentFirst ? 'before' : 'after'} its frame (${withLifecycle ? 'lifecycle' : 'legacy'} identity)`, async t => {
+      const { api, port } = await createApi(t);
+      const parent = {
+        ...traffic('socket', '/socket'), protocol: 'ws', statusCode: 101,
+        ...(withLifecycle ? { trafficLifecycleId: 'socket-life' } : {})
+      };
+      const frame = {
+        ...traffic('frame', ''), protocol: 'ws-frame', parentId: parent.id,
+        opcode: 1, direction: 'sent', payload: 'hello',
+        ...(withLifecycle ? { parentTrafficLifecycleId: 'socket-life' } : {})
+      };
+      const batches = parentFirst ? [parent, frame] : [frame, parent];
+      const first = await requestJson(port, 'POST', '/api/traffic/import', {
+        requests: [batches[0]], importTransaction: { id: 'socket-import', index: 0, count: 2 }
+      });
+      assert.equal(first.statusCode, 202, first.body.error);
+      assert.equal(api.trafficLog.length, 0);
+      const last = await requestJson(port, 'POST', '/api/traffic/import', {
+        requests: [batches[1]], importTransaction: { id: 'socket-import', index: 1, count: 2 }
+      });
+      assert.equal(last.statusCode, 200, last.body.error);
+      assert.equal(last.body.imported, 2);
+      const retainedParent = api.trafficLog.find(row => row.protocol === 'ws');
+      const retainedFrame = api.trafficLog.find(row => row.protocol === 'ws-frame');
+      assert.equal(retainedFrame.parentId, retainedParent.id);
+      assert.equal(retainedFrame.parentTrafficLifecycleId, retainedParent.trafficLifecycleId);
+    });
+  }
+}
+
+test('assembled WebSocket transactions reject missing or mismatched parents atomically', async t => {
+  const { api, port } = await createApi(t);
+  for (const parentId of ['missing', 'socket']) {
+    const first = await requestJson(port, 'POST', '/api/traffic/import', {
+      requests: [{ ...traffic('socket', '/socket'), protocol: 'ws', trafficLifecycleId: 'real-life' }],
+      importTransaction: { id: 'invalid-socket', index: 0, count: 2 }
+    });
+    assert.equal(first.statusCode, 202);
+    const last = await requestJson(port, 'POST', '/api/traffic/import', {
+      requests: [{ ...traffic('frame', ''), protocol: 'ws-frame', parentId,
+        parentTrafficLifecycleId: 'wrong-life', opcode: 1 }],
+      importTransaction: { id: 'invalid-socket', index: 1, count: 2 }
+    });
+    assert.equal(last.statusCode, 400);
+    assert.equal(last.body.code, 'ERR_TRAFFIC_IMPORT_TRANSACTION');
+    assert.match(last.body.error, /does not match an imported or retained WebSocket parent/);
+    assert.equal(api.trafficLog.length, 0);
+    assert.equal(api._trafficImportTransactions.transactions.size, 0);
+  }
+});
+
 test('JSON import rejects unsupported protocols and invalid WebSocket opcodes atomically', async t => {
   const { api, port } = await createApi(t);
   const initial = traffic('retained', '/retained');

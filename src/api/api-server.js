@@ -919,7 +919,7 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return this._getTrafficExportTraffic().filter(req => req?.protocol !== 'ws-frame');
   }
 
-  _getTrafficImportValidationError(requests) {
+  _getTrafficImportValidationError(requests, { validateParents = true } = {}) {
     if (!Array.isArray(requests)) return 'requests must be an array';
     const textFields = [
       'id', 'method', 'url', 'host', 'path', 'requestBody', 'responseBody',
@@ -1087,6 +1087,9 @@ print(json.dumps({"providers": get_proxy_providers()}))
       }
     }
 
+    // Transaction batches may reference parents in another batch. Their
+    // relationships are validated once all rows are assembled, before commit.
+    if (!validateParents) return null;
     const parentIds = new Set();
     const parentLifecycleIds = new Set();
     for (const rows of [this.trafficLog, requests]) {
