@@ -2762,7 +2762,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-112 — Medium — Repeated Content-Encoding fields prevent response capture decoding
 
-- **Status:** Open.
+- **Status:** Fixed. Streamed and buffered capture helpers supply every ordered
+  encoding value. Regressions for real proxied responses and buffered request/
+  response captures failed before the fix and pass afterward, including unchanged
+  delivered bytes. All 196 proxy-core, snippet-byte and test-layout checks pass.
 - **Evidence:** the streamed and buffered capture helpers pass only the first
   `Content-Encoding` field value to `_safeBodyString()`
   (`src/proxy/proxy-server.js:1224-1252`). The decoder already accepts arrays

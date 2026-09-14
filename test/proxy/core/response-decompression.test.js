@@ -23,8 +23,9 @@ function requestThroughProxy(proxyPort, targetUrl) {
       port: proxyPort,
       path: targetUrl
     }, response => {
-      response.resume();
-      response.once('end', resolve);
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('end', () => resolve(Buffer.concat(chunks)));
     });
     request.once('error', reject);
   });
@@ -55,10 +56,11 @@ async function captureEncodedResponse(t, contentEncoding, encodedBody) {
     await close(origin);
   });
 
-  await requestThroughProxy(
+  const delivered = await requestThroughProxy(
     proxy.server.address().port,
     `http://127.0.0.1:${originPort}/encoded`
   );
+  assert.deepEqual(delivered, encodedBody);
   return captured;
 }
 
@@ -77,6 +79,30 @@ test('response capture decodes stacked Content-Encoding values in reverse order'
   const captured = await captureEncodedResponse(t, 'gzip, br', stackedBody);
 
   assert.equal(captured.responseBody, text);
+  assert.equal(captured.responseBodyContentDecoded, true);
+});
+
+test('response capture decodes repeated Content-Encoding fields in order', async t => {
+  const text = 'repeated gzip then brotli response';
+  const encoded = zlib.brotliCompressSync(zlib.gzipSync(text));
+  const captured = await captureEncodedResponse(t, ['gzip', 'br'], encoded);
+  assert.equal(captured.responseBody, text);
+  assert.equal(captured.responseBodyContentDecoded, true);
+});
+
+test('buffered request and response captures decode every encoding field', () => {
+  const proxy = new ProxyServer(null);
+  const text = 'buffered stacked content';
+  const encoded = zlib.brotliCompressSync(zlib.gzipSync(text));
+  const headers = { 'Content-Encoding': ['gzip', 'br'], 'Content-Type': 'text/plain' };
+  const captured = {
+    requestBody: proxy._safeRequestBodyString(encoded, headers),
+    responseBody: proxy._safeResponseBodyString(encoded, headers)
+  };
+  proxy._normalizeCapturedBodies(captured);
+  assert.equal(captured.requestBody, text);
+  assert.equal(captured.responseBody, text);
+  assert.equal(captured.requestBodyContentDecoded, true);
   assert.equal(captured.responseBodyContentDecoded, true);
 });
 

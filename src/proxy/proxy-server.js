@@ -1235,7 +1235,7 @@ export class ProxyServer {
     }
     return this._safeBodyString(
       this._concatBody(collector),
-      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-encoding'),
       getHeaderValues(headers, 'content-type')[0]
     );
   }
@@ -1243,7 +1243,7 @@ export class ProxyServer {
   _safeRequestBodyString(buffer, headers = {}) {
     return this._safeBodyString(
       buffer,
-      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-encoding'),
       getHeaderValues(headers, 'content-type')[0]
     );
   }
@@ -1251,7 +1251,7 @@ export class ProxyServer {
   _safeResponseBodyString(buffer, headers = {}) {
     return this._safeBodyString(
       buffer,
-      getHeaderValues(headers, 'content-encoding')[0],
+      getHeaderValues(headers, 'content-encoding'),
       getHeaderValues(headers, 'content-type')[0]
     );
   }
