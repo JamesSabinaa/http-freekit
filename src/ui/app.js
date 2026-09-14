@@ -9849,7 +9849,9 @@
       if (!group) return;
       group.enabled = group.enabled === false ? true : false;
       // Save as draft change
-      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      const draft = mockDraftRules.get(groupId) || { ...group };
+      // Group property edits must not snapshot or replace independently edited children.
+      delete draft.items;
       draft.enabled = group.enabled;
       draft.id = groupId;
       mockDraftRules.set(groupId, draft);
@@ -9864,7 +9866,8 @@
       const name = prompt('Group name:', group.title || '');
       if (name === null) return;
       group.title = name || 'Untitled Group';
-      const draft = mockDraftRules.get(groupId) || JSON.parse(JSON.stringify(group));
+      const draft = mockDraftRules.get(groupId) || { ...group };
+      delete draft.items;
       draft.title = group.title;
       draft.id = groupId;
       mockDraftRules.set(groupId, draft);

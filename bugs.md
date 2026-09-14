@@ -1184,7 +1184,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-046 — Medium — Saving group drafts overwrites newer child-rule edits
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Live API tests using the production renderer save functions
+  reproduced stale child replacement for both toggle and rename drafts through
+  Save All and individual saves. Group property changes need not submit children;
+  the existing update API already supports partial group updates.
+- **Resolution:** Exclude child items from group property drafts, preserving
+  independent child edits during both draft overlays and server updates.
+- **Verification:** 63 draft, save-lock, editor, group, and test-layout checks
+  passed. Four live API regressions cover toggles/renames, both save paths,
+  and a reload before saving. All four failed before the fix.
 - **Evidence:** group drafts deep-copy `items` (`src/ui/app.js:9822,9837`),
   while later child edits update the live collection (`:9523-9535`). Save All
   submits drafts in insertion order (`:9548-9577`), allowing a stale group
