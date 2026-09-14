@@ -46,6 +46,26 @@ test('host and hostname matchers compare DNS names case-insensitively', () => {
   ), false);
 });
 
+test('Unicode host conditions match their ASCII destinations without losing ports or wildcard boundaries', async t => {
+  const proxy = new ProxyServer(null, { port: 0 });
+  await proxy.start();
+  t.after(() => proxy.stop());
+  for (const type of ['host', 'hostname']) {
+    for (const wildcard of ['', '*.']) {
+      const value = `${wildcard}BÜCHER.example${type === 'host' ? ':8080' : ''}`;
+      const target = `http://${wildcard ? 'api.' : ''}xn--bcher-kva.example:8080/path`;
+      const matcher = { type, value };
+      proxy.mockRules = [
+        { enabled: true, matchers: [matcher], action: { type: 'fixed-response', status: 201, body: 'matched' } },
+        { enabled: true, matchers: [], action: { type: 'fixed-response', status: 202, body: 'fallback' } }
+      ];
+      assert.equal(await request(proxy.server.address().port, target, {}), 201, value);
+      assert.equal(matches(matcher, { url: target.replace('xn--bcher-kva', 'notxn--bcher-kva') }), false);
+      assert.equal(matches(matcher, { url: target.replace(':8080', ':9090') }), type === 'hostname');
+    }
+  }
+});
+
 test('header wildcard matchers escape punctuation and support repeated mixed-case headers', () => {
   const matcher = { type: 'header', name: 'X-Release', value: 'release.1+*?' };
 

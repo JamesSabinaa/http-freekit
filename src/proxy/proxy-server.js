@@ -10366,23 +10366,19 @@ export class ProxyServer {
         if (matcher.matchType === 'exact') return urlPath === matcher.value;
         return urlPath.startsWith(matcher.value); // prefix (default)
       }
-      case 'host': {
-        let urlHost;
-        try { urlHost = new URL(url).host; } catch { urlHost = ''; }
-        const expectedHost = matcher.value.toLowerCase();
-        if (expectedHost.startsWith('*')) {
-          return urlHost.toLowerCase().endsWith(expectedHost.slice(1));
-        }
-        return urlHost.toLowerCase() === expectedHost;
-      }
+      case 'host':
       case 'hostname': {
-        let urlHostname;
-        try { urlHostname = new URL(url).hostname; } catch { urlHostname = ''; }
-        const expectedHostname = matcher.value.toLowerCase();
-        if (expectedHostname.startsWith('*')) {
-          return urlHostname.toLowerCase().endsWith(expectedHostname.slice(1));
+        let actual;
+        try { actual = new URL(url)[matcher.type].toLowerCase(); } catch { actual = ''; }
+        const expected = matcher.value.toLowerCase().replace(
+          /^(\*?)(.*?)(:\d+)?$/,
+          (_match, wildcard, hostname, port = '') =>
+            wildcard + (/[^\x00-\x7f]/.test(hostname) ? domainToASCII(hostname) || hostname : hostname) + port
+        );
+        if (expected.startsWith('*')) {
+          return actual.endsWith(expected.slice(1));
         }
-        return urlHostname.toLowerCase() === expectedHostname;
+        return actual === expected;
       }
       case 'url-contains':
         return url.includes(matcher.value);

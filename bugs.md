@@ -2918,7 +2918,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-117 — Medium — Unicode Host and Hostname mock conditions silently miss their destinations
 
-- **Status:** Open.
+- **Status:** Fixed. Host and Hostname conditions canonicalize Unicode hostname
+  text while preserving port and wildcard matching. Real proxy regressions cover
+  exact and wildcard matches with wrong-host/port controls; they failed before
+  the fix. All 354 mocking/test-layout checks passed, followed by focused checks
+  after restricting normalization to Unicode so ASCII matching stays unchanged.
 - **Evidence:** the Host and Hostname editor accepts text without canonicalizing
   the hostname (`src/ui/app.js:8554-8558,8952-8977`). The creation API validates
   and retains those values (`src/api/api-server.js:1628-1646`), but the matching
