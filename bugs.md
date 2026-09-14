@@ -1434,7 +1434,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-057 — Medium — Native storage denial causes uncaught errors in Send tab actions
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The journal reader acquires localStorage outside its existing
+  exception guard. A throwing-getter regression reproduced the uncaught error.
+- **Resolution:** Guard storage acquisition together with journal enumeration,
+  retaining the existing unavailable-storage fallback without altering records.
+- **Verification:** All 250 Send, storage-error, and test-layout checks passed.
+  A real Chrome profile with site data blocked still reported native SecurityError
+  on storage access, but Add Send Tab succeeded and increased the tab count.
 - **Evidence:** the Send journal reader accesses `window.localStorage` before
   entering its error handler (`src/ui/app.js:11540-11543`). The native property
   getter can itself throw. Add, switch, and close call this reader through

@@ -22,6 +22,21 @@ function loadNormalizationContext() {
   return context;
 }
 
+test('Send journal reads tolerate denied storage acquisition without changing corruption records', () => {
+  const context = loadNormalizationContext();
+  const deniedWindow = {};
+  Object.defineProperty(deniedWindow, 'localStorage', {
+    get() { throw new DOMException('Access is denied for this document', 'SecurityError'); }
+  });
+  context.window = deniedWindow;
+  const start = source.indexOf('function readSendJournalEntries(');
+  const end = source.indexOf('function readStoredSendTabJournals(', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(source.slice(start, end), context);
+  context.rendererStorageCorruptionsForGroup = () => { throw new Error('Corruption records must not be accessed'); };
+  assert.deepEqual(Array.from(context.readSendJournalEntries('send', value => value, () => '', 'Send')), []);
+});
+
 function restoreTabs(savedTabs, savedActive = null, addTab = false) {
   const toasts = [];
   const context = {

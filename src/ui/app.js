@@ -11596,10 +11596,10 @@
     }
 
     function readSendJournalEntries(prefix, normalizeJournal, getExpectedKey, label) {
-      const storage = globalThis.window?.localStorage;
-      if (!storage) return [];
       let keys;
       try {
+        const storage = globalThis.window?.localStorage;
+        if (!storage) return [];
         keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
           .filter(key => typeof key === 'string' && key.startsWith(prefix));
       } catch {
