@@ -1093,7 +1093,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-042 — Medium — cURL exports omit explicitly empty headers
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Executing generated commands with native cURL confirmed that raw,
+  URL-encoded, and multipart exports all omitted explicit empty headers.
+  The distinction from an absent header requires no product design choice.
+- **Resolution:** Both cURL export paths use `Name;` for empty values, retaining
+  shell quoting and the order of repeated header fields.
+- **Verification:** 242 import/export, snippet-byte, and test-layout checks
+  passed; two runtime-dependent checks were skipped. The new live-origin
+  regression failed in all three body modes before the fix and now verifies
+  empty, repeated, quoted, ordinary, and absent headers on the wire.
 - **Evidence:** cURL header generation uses `Name: value` for every entry,
   including an empty value (`src/ui/request-export.js:601-602`). For an empty
   value, the resulting `-H 'X-Empty: '` suppresses the header in cURL.

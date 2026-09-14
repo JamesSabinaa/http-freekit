@@ -6,6 +6,10 @@ function shellSingleQuote(value) {
   return String(value ?? '').replace(/'/g, "'\\''");
 }
 
+function curlHeaderArgument(name, value) {
+  return shellSingleQuote(value === '' ? `${name};` : `${name}: ${value}`);
+}
+
 function curlFormQuotedValue(value) {
   return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
@@ -326,7 +330,7 @@ function generateMultipartExportSnippet(req, format) {
       );
     }
     let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
-    headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${shellSingleQuote(key)}: ${shellSingleQuote(value)}'`; });
+    headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${curlHeaderArgument(key, value)}'`; });
     fields.forEach((field) => {
       if (field.type === 'file') {
         const contentType = field.file?.type || field.fileType;
@@ -599,7 +603,7 @@ function generateExportSnippetCore(req, format) {
     case 'curl': {
       let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
       for (const [key, value] of headers) {
-        cmd += ` \\\n  -H '${shellSingleQuote(`${key}: ${value}`)}'`;
+        cmd += ` \\\n  -H '${curlHeaderArgument(key, value)}'`;
       }
       if (hasBody && isBinaryBody) {
         cmd = `printf '%s' '${shellSingleQuote(body)}' | base64 --decode | ${cmd} \\\n  --data-binary @-`;
