@@ -3592,6 +3592,7 @@ export class ProxyServer {
       method,
       url: targetUrl.href,
       headers: requestHeaders,
+      bodySize: requestBody.length,
       body: this._safeRequestBodyString(requestBody, requestHeaders)
     };
   }
@@ -11259,25 +11260,28 @@ export class ProxyServer {
   }
 
   _normalizeCapturedBodies(data) {
-    for (const side of ['request', 'response']) {
-      const field = `${side}Body`;
+    const bodies = [[data, 'requestBody'], [data, 'responseBody']];
+    if (data.originalRequest && typeof data.originalRequest === 'object' && !Array.isArray(data.originalRequest)) {
+      bodies.push([data.originalRequest, 'body']);
+    }
+    for (const [record, field] of bodies) {
       const encodingField = `${field}Encoding`;
-      const body = data[field];
+      const body = record[field];
       if (body instanceof EncodedBodyString) {
-        data[field] = body.toString();
-        data[encodingField] = body.encoding;
+        record[field] = body.toString();
+        record[encodingField] = body.encoding;
       } else if (body instanceof TruncatedBodyString) {
-        data[field] = body.toString();
-        data[`${field}Truncated`] = true;
-        data[`${field}CapturedSize`] = body.capturedSize;
-        data[`${field}DecodedSize`] ??= body.decodedSize;
+        record[field] = body.toString();
+        record[`${field}Truncated`] = true;
+        record[`${field}CapturedSize`] = body.capturedSize;
+        record[`${field}DecodedSize`] ??= body.decodedSize;
       }
       if ((body instanceof EncodedBodyString || body instanceof TruncatedBodyString) &&
           body.contentDecoded === true) {
-        data[`${field}ContentDecoded`] = true;
+        record[`${field}ContentDecoded`] = true;
       }
-      if (typeof data[field] === 'string' && data[encodingField] === undefined) {
-        data[encodingField] = 'utf8';
+      if (typeof record[field] === 'string' && record[encodingField] === undefined) {
+        record[encodingField] = 'utf8';
       }
     }
   }

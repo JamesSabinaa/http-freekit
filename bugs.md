@@ -965,7 +965,18 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-037 — Medium — Original transformed-body metadata is lost on JSON boundaries
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Four capture-normalization/JSON regressions reproduced missing
+  original-body encoding metadata. The renderer inherited transformed-body
+  provenance, while MCP only read metadata attached to boxed original strings.
+- **Resolution:** Normalize original bodies into explicit bodyEncoding,
+  bodyTruncated, bodyCapturedSize, bodyDecodedSize, and bodyContentDecoded fields,
+  retaining original wire size as bodySize. Renderer original views and MCP
+  details now use that original provenance instead of transformed-body metadata.
+- **Verification:** 52 focused checks passed. The four new cases also passed
+  through live JSON import/export endpoints and production renderer/MCP helpers:
+  binary bytes, gzip-decoded binary, truncated text, and complete text all retain
+  their own representation and completeness state.
 - **Evidence:** `_snapshotMockRequest()` stores `originalRequest.body` as a
   boxed string carrying encoding and truncation metadata
   (`src/proxy/proxy-server.js:3580-3588`). `_normalizeCapturedBodies()` promotes

@@ -3278,7 +3278,15 @@
         host: origHost,
         path: origPath,
         requestHeaders: orig.headers,
-        requestBody: orig.body != null ? orig.body : req.requestBody
+        requestBody: orig.body != null ? orig.body : req.requestBody,
+        ...(orig.body != null ? {
+          requestBodyEncoding: orig.bodyEncoding || 'utf8',
+          requestBodySize: orig.bodySize,
+          requestBodyTruncated: orig.bodyTruncated === true,
+          requestBodyCapturedSize: orig.bodyCapturedSize,
+          requestBodyDecodedSize: orig.bodyDecodedSize,
+          requestBodyContentDecoded: orig.bodyContentDecoded === true
+        } : {})
       };
     }
 

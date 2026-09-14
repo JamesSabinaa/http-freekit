@@ -797,7 +797,12 @@ export class McpServerBridge {
     const originalRequestIsObject = originalRequest && typeof originalRequest === 'object' &&
       !isArraySafely(originalRequest);
     if (originalRequestIsObject) {
-      originalRequestBody = retainedBody(ownDataValue(originalRequest, 'body'));
+      originalRequestBody = retainedBody(ownDataValue(originalRequest, 'body'), {
+        encoding: ownDataValue(originalRequest, 'bodyEncoding'),
+        truncated: ownDataValue(originalRequest, 'bodyTruncated'),
+        capturedSize: ownDataValue(originalRequest, 'bodyCapturedSize'),
+        decodedSize: ownDataValue(originalRequest, 'bodyDecodedSize')
+      });
       originalRequestMetadata = boundedMetadata(
         originalRequest,
         null,
