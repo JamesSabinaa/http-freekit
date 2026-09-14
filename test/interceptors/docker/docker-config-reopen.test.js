@@ -30,6 +30,7 @@ test('reopening active Docker configuration refreshes authoritative connection i
     }
   };
   vm.runInNewContext(`
+    let interceptorStateGeneration = 0;
     const API_BASE = 'http://api.test';
     ${section('let allInterceptors = [];', '// Interceptors that have expandable config components')}
     function filterInterceptors() {}

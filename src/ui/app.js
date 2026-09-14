@@ -6448,14 +6448,18 @@
           filterInterceptors();
         }
         // Refresh interceptor state
+        const generation = ++interceptorStateGeneration;
         try {
           const res = await fetch(`${API_BASE}/api/interceptors`);
           const data = await res.json();
           if (!isCurrentInterceptorOperation(operation, false)) return;
-          allInterceptors = data.interceptors;
-          renderConnectedSources(allInterceptors);
+          if (generation === interceptorStateGeneration) {
+            if (!Array.isArray(data.interceptors)) throw new Error('Interceptor list returned an invalid response');
+            allInterceptors = data.interceptors;
+            renderConnectedSources(allInterceptors);
+          }
         } catch (e) {
-          if (isCurrentInterceptorOperation(operation, false)) console.error('[Error]', e.message);
+          if (generation === interceptorStateGeneration && isCurrentInterceptorOperation(operation, false)) console.error('[Error]', e.message);
         }
       }
 

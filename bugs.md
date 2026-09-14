@@ -2350,7 +2350,11 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-096 — Medium — Expanded interceptor refresh overwrites newer live status
 
-- **Status:** Open.
+- **Status:** Fixed. Expanded-card inventory refreshes participate in the shared
+  state generation and ignore responses superseded by live events or newer loads.
+  A deferred-response regression preserves a newer Chrome exit while allowing the
+  selected Terminal card to expand. All 81 interceptor-core, Docker-reopen, and
+  layout checks passed.
 - **Evidence:** after expanding a configurable interceptor, the renderer fetches
   the whole inventory and checks only card-operation ownership before assigning
   it (`src/ui/app.js:6399-6412`). It omits the global status-generation check used

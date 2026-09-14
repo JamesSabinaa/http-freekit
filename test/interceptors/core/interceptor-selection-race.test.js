@@ -40,7 +40,10 @@ function createHarness(fetch) {
   };
   vm.createContext(context);
   vm.runInContext(`
+    let interceptorStateGeneration = 0;
+    let interceptorLoadController = null;
     ${source.slice(stateStart, stateEnd)}
+    ${source.slice(source.indexOf('function handleInterceptorStatusEvent('), source.indexOf('function filterInterceptors('))}
     ${source.slice(selectionStart, selectionEnd)}
     ${source.slice(refreshStart, refreshEnd)}
   `, context);
@@ -57,6 +60,24 @@ function createHarness(fetch) {
     }
   };
 }
+
+test('expanded card inventory cannot undo a newer live status for another interceptor', async () => {
+  const inventory = deferred();
+  const requested = deferred();
+  const harness = createHarness(async url => {
+    if (url.endsWith('/terminal/activate')) return response({ metadata: { ready: true } });
+    if (url === '/api/interceptors') { requested.resolve(); return inventory.promise; }
+    throw new Error(`Unexpected URL: ${url}`);
+  });
+  vm.runInContext("allInterceptors = [{ id: 'chrome', active: true }, { id: 'terminal', active: false }];", harness.context);
+  const selection = harness.context.handleExpandableCardClick('terminal', false);
+  await requested.promise;
+  harness.context.handleInterceptorStatusEvent({ id: 'chrome', active: false });
+  inventory.resolve(response({ interceptors: [{ id: 'chrome', active: true }, { id: 'terminal', active: true }] }));
+  await selection;
+  assert.equal(vm.runInContext("allInterceptors.find(i => i.id === 'chrome').active", harness.context), false);
+  assert.equal(harness.state().expandedInterceptorId, 'terminal');
+});
 
 test('older card success and failure responses cannot replace a newer selection', async () => {
   for (const olderResult of ['success', 'failure']) {
