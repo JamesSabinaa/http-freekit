@@ -786,7 +786,17 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-030 — Medium — HTTP/2 fallback loses GET, DELETE, and OPTIONS request bodies
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Real TLS/H2 exchanges reproduced 400 responses for GET, DELETE,
+  OPTIONS, and HEAD, with and without Content-Length and late trailers. POST
+  and PATCH passed as controls. The fallback relied on method-specific Node
+  defaults after deliberately removing Content-Length.
+- **Resolution:** Explicitly select chunked transfer encoding for the streaming
+  HTTP/1.1 fallback so all methods carry their bodies and late trailers.
+- **Verification:** 37 focused checks passed, including all 12 method/framing
+  combinations, bidirectional streaming, trailers, replay safety, upstream
+  CONNECT routing, and test layout. Eight method/framing cases failed before
+  the correction.
 - **Evidence:** `_streamH2Exchange()` removes `content-length` when selecting
   its HTTP/1.1 fallback (`src/proxy/proxy-server.js:2455-2463`), then relays the
   body (`:2355-2360`). `_requestWithExactMethod()` retains Node's disabled

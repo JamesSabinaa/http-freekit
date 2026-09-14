@@ -109,7 +109,7 @@ async function sendTlsChunked(proxyPort, hostname, targetPort) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function sendH2WithTrailers(proxyPort, hostname, targetPort) {
+async function sendH2WithTrailers(proxyPort, hostname, targetPort, method = 'POST', withTrailers = true) {
   const tunnel = await openTunnel(proxyPort, hostname, targetPort);
   const socket = tls.connect({
     socket: tunnel,
@@ -121,13 +121,12 @@ async function sendH2WithTrailers(proxyPort, hostname, targetPort) {
   const client = http2.connect(`https://${authority}`, { createConnection: () => socket });
   await once(client, 'connect');
   const request = client.request({
-    ':method': 'POST',
+    ':method': method,
     ':path': '/trailers',
     ':authority': authority,
     ':scheme': 'https',
-    'content-length': '8',
-    te: 'trailers'
-  }, { waitForTrailers: true });
+    ...(withTrailers ? { 'content-length': '8', te: 'trailers' } : {})
+  }, { waitForTrailers: withTrailers, endStream: false });
   request.once('wantTrailers', () => {
     request.sendTrailers({ 'x-checksum': 'original checksum' });
   });
@@ -317,7 +316,7 @@ test('intercepted H1 body edits replace chunked framing in both TLS modes',
     }
   });
 
-test('late native H2 trailers use chunked H1 fallback framing',
+test('native H2 bodies and late trailers use chunked H1 fallback framing for every method',
   { timeout: 20000 }, async t => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'http-freekit-h2-trailer-fallback-'));
     const ca = new CertificateAuthority(dataDir);
@@ -341,19 +340,21 @@ test('late native H2 trailers use chunked H1 fallback framing',
       await rm(dataDir, { recursive: true, force: true });
     });
 
-    const response = await sendH2WithTrailers(
-      proxy.server.address().port,
-      '127.0.0.1',
-      originPort
-    );
-
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.body, 'ok');
-    assert.equal(observed.headers['content-length'], undefined);
-    assert.equal(observed.headers['transfer-encoding'], 'chunked');
-    // H2 does not announce request-trailer names before the body, so a
-    // streaming H1 fallback can carry them but cannot advertise their names.
-    assert.equal(observed.headers.trailer, undefined);
-    assert.equal(observed.body, 'original');
-    assert.deepEqual(observed.trailers, { 'x-checksum': 'original checksum' });
+    for (const method of ['POST', 'GET', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH']) {
+      for (const withTrailers of [true, false]) {
+        await t.test(`${method}, ${withTrailers ? 'length and trailers' : 'no length or trailers'}`, async () => {
+          const response = await sendH2WithTrailers(
+            proxy.server.address().port, '127.0.0.1', originPort, method, withTrailers
+          );
+          assert.equal(response.statusCode, 200);
+          assert.equal(response.body, method === 'HEAD' ? '' : 'ok');
+          assert.equal(observed.headers['content-length'], undefined);
+          assert.equal(observed.headers['transfer-encoding'], 'chunked');
+          // H2 does not announce request-trailer names before the body.
+          assert.equal(observed.headers.trailer, undefined);
+          assert.equal(observed.body, 'original');
+          assert.deepEqual(observed.trailers, withTrailers ? { 'x-checksum': 'original checksum' } : {});
+        });
+      }
+    }
   });

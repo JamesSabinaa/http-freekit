@@ -2463,6 +2463,7 @@ export class ProxyServer {
           delete h1Headers[name];
         }
       }
+      h1Headers['transfer-encoding'] = 'chunked';
       let request;
       try {
         const { options, requestLib } = this._buildH1UpstreamRequestOptions({
