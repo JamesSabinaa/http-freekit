@@ -4543,10 +4543,11 @@
         return modes;
       }
 
-      if (ct.includes('x-www-form-urlencoded') || (body && body.includes('=') && body.includes('&') && !body.includes(' ') && !body.trimStart().startsWith('{') && body.length < 10000)) {
+      // Recognized media types take priority over fallback content heuristics.
+      if (ct.includes('x-www-form-urlencoded')) {
         modes.push({ value: 'decoded', label: 'Decoded' });
         modes.push({ value: 'raw', label: 'Raw' });
-      } else if (ct.includes('json') || (body && (body.trimStart().startsWith('{') || body.trimStart().startsWith('[')))) {
+      } else if (ct.includes('json')) {
         modes.push({ value: 'json', label: 'JSON' });
         modes.push({ value: 'text', label: 'Text' });
       } else if (ct.includes('javascript') || ct.includes('ecmascript')) {
@@ -4555,7 +4556,7 @@
       } else if (ct.includes('css')) {
         modes.push({ value: 'css', label: 'CSS' });
         modes.push({ value: 'text', label: 'Text' });
-      } else if (ct.includes('xml') || ct.includes('html') || (body && body.trimStart().startsWith('<'))) {
+      } else if (ct.includes('xml') || ct.includes('html')) {
         modes.push({ value: 'markup', label: ct.includes('html') ? 'HTML' : 'XML' });
         modes.push({ value: 'text', label: 'Text' });
       } else if (ct.includes('markdown') || ct.includes('/x-markdown')) {
@@ -4564,6 +4565,15 @@
       } else if (ct.includes('yaml') || ct.includes('yml')) {
         modes.push({ value: 'yaml', label: 'YAML' });
         modes.push({ value: 'text', label: 'Text' });
+      } else if (body && (body.trimStart().startsWith('{') || body.trimStart().startsWith('['))) {
+        modes.push({ value: 'json', label: 'JSON' });
+        modes.push({ value: 'text', label: 'Text' });
+      } else if (body && body.trimStart().startsWith('<')) {
+        modes.push({ value: 'markup', label: 'XML' });
+        modes.push({ value: 'text', label: 'Text' });
+      } else if (body && body.includes('=') && body.includes('&') && !body.includes(' ') && body.length < 10000) {
+        modes.push({ value: 'decoded', label: 'Decoded' });
+        modes.push({ value: 'raw', label: 'Raw' });
       } else {
         modes.push({ value: 'text', label: 'Text' });
       }

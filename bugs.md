@@ -2071,7 +2071,12 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-084 — Medium — Form detection overrides an explicit JSON response type
 
-- **Status:** Open.
+- **Status:** Fixed. Recognized media types now take priority over fallback content
+  heuristics; JSON arrays and markup also take priority over the form heuristic.
+  Regression tests cover JSON arrays/strings, structured JSON media types, other
+  recognized formats, and fallback controls. All 362 UI, Send, and layout checks
+  passed. The original real Chrome/API/proxy reproduction now opens query-bearing
+  JSON arrays as JSON and keeps genuine form responses in Decoded mode.
 - **Evidence:** body-view selection applies a heuristic for strings containing
   `=` and `&` before checking an explicit JSON Content-Type
   (`src/ui/app.js:4527-4530`). It excludes leading `{` but allows JSON arrays
