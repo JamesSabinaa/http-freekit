@@ -164,6 +164,36 @@ test('Resume All targets duplicate IDs by traffic lifecycle', async () => {
   assert.deepEqual(renderer.toasts, [{ message: 'All breakpoints resumed', type: 'success' }]);
 });
 
+test('Resume All sends dirty edits for each lifecycle and retains failed drafts', async () => {
+  const requestDraft = { _phase: 'request', _dirty: { method: true, headers: true, body: true },
+    method: 'PATCH', url: 'https://unchanged.test/', headers: { 'X-Edited': 'request' }, body: 'EDITED REQUEST' };
+  const responseDraft = { _phase: 'response', _dirty: { status: true, body: true, method: true },
+    status: 201, headers: { 'X-Unchanged': 'response' }, body: 'EDITED RESPONSE', method: 'DELETE' };
+  const requestKey = JSON.stringify(['same', 'request-life']);
+  const responseKey = JSON.stringify(['same', 'response-life']);
+  const drafts = new Map([[requestKey, requestDraft], [responseKey, responseDraft]]);
+  const bodies = [];
+  let pendingRead = 0;
+  const pending = [{ id: 'same', trafficLifecycleId: 'request-life' },
+    { id: 'same', trafficLifecycleId: 'response-life' }, { id: 'untouched' }];
+  const renderer = createRenderer(async (url, options = {}) => {
+    if (!options.method) return response({ pending: pendingRead++ === 0 ? pending : [pending[1]] });
+    bodies.push(JSON.parse(options.body));
+    return url.includes('response-life')
+      ? response({ error: 'Retry required' }, { ok: false })
+      : response({ success: true });
+  }, drafts);
+  await renderer.context.resumeAllBreakpoints();
+  assert.deepEqual(bodies, [
+    { method: 'PATCH', headers: { 'X-Edited': 'request' }, body: 'EDITED REQUEST' },
+    { status: 201, body: 'EDITED RESPONSE' },
+    {}
+  ]);
+  assert.equal(drafts.has(requestKey), false);
+  assert.equal(drafts.get(responseKey), responseDraft);
+  assert.match(renderer.toasts[0].message, /1 breakpoint could not be resumed/);
+});
+
 test('manual resume sends only the selected lifecycle draft', async () => {
   const calls = [];
   const toasts = [];

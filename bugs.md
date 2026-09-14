@@ -1814,7 +1814,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-073 — Medium — Resume All silently discards visible breakpoint edits
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** The regression confirmed that bulk resume submitted empty objects
+  for dirty drafts. Applying edits matches individual Resume behavior.
+- **Resolution:** Share lifecycle-specific, phase-aware dirty-field selection
+  between individual and bulk resume, retaining existing failure handling.
+- **Verification:** All 79 breakpoint and test-layout checks passed. The bulk
+  regression verifies request/response edits, duplicate IDs across lifecycles,
+  untouched requests, and draft retention on a rejected resume.
 - **Evidence:** bulk resume posts an empty modifications object for every
   pending breakpoint (`src/ui/app.js:15702-15710`) and clears its draft
   (`:15722`). Individual Resume instead includes dirty edits (`:15841-15859`).

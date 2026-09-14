@@ -15824,7 +15824,8 @@
             const resumeRes = await fetch(
               API_BASE + '/api/breakpoints/pending/' + encodeURIComponent(bp.id) + '/resume' + lifecycleQuery,
               {
-              method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify(getBreakpointResumeModifications(bp.id, bp.trafficLifecycleId))
               }
             );
             let resumeData = null;
@@ -15867,6 +15868,19 @@
 
     function clearBreakpointEditDraft(requestId, trafficLifecycleId = '') {
       breakpointEditDrafts.delete(breakpointDraftKey(requestId, trafficLifecycleId));
+    }
+
+    function getBreakpointResumeModifications(requestId, trafficLifecycleId = '') {
+      const draft = breakpointEditDrafts.get(breakpointDraftKey(requestId, trafficLifecycleId)) || {};
+      const dirty = draft._dirty || {};
+      const modifications = {};
+      const editableFields = draft._phase === 'response'
+        ? ['status', 'headers', 'body']
+        : ['method', 'url', 'headers', 'body'];
+      for (const field of editableFields) {
+        if (dirty[field]) modifications[field] = draft[field];
+      }
+      return modifications;
     }
 
     function getBreakpointEditDraft(req) {
@@ -15955,16 +15969,7 @@
 
     async function resumeBreakpointRequest(requestId, trafficLifecycleId = '') {
       try {
-        const draftKey = breakpointDraftKey(requestId, trafficLifecycleId);
-        const draft = breakpointEditDrafts.get(draftKey) || {};
-        const dirty = draft._dirty || {};
-        const modifications = {};
-        const editableFields = draft._phase === 'response'
-          ? ['status', 'headers', 'body']
-          : ['method', 'url', 'headers', 'body'];
-        for (const field of editableFields) {
-          if (dirty[field]) modifications[field] = draft[field];
-        }
+        const modifications = getBreakpointResumeModifications(requestId, trafficLifecycleId);
         const lifecycleQuery = trafficLifecycleId
           ? '?trafficLifecycleId=' + encodeURIComponent(trafficLifecycleId)
           : '';
