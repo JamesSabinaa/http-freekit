@@ -3657,7 +3657,7 @@ export class ProxyServer {
   }
 
   _isMockResponseBodyForbidden(method, statusCode) {
-    return String(method || '').toUpperCase() === 'HEAD'
+    return method === 'HEAD'
       || statusCode === 204
       || statusCode === 304;
   }

@@ -598,8 +598,14 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-023 — Medium — Mock responses incorrectly treat mixed-case methods as HEAD
 
-- **Status:** Open.
-- **Evidence:** `_isMockResponseBodyForbidden()` uppercases the method before
+- **Status:** Fixed.
+- **Review:** confirmed that the shared helper collapses distinct custom method
+  tokens into HEAD, unlike exact method matching elsewhere in the application.
+- **Resolution:** suppress HEAD response bodies only for the exact `HEAD` token.
+- **Verification:** 15 focused response-engine, file-streaming and test-layout
+  checks pass. New helper and live HTTP/2 regressions failed before the fix and
+  now retain bodies for `head` and `HeAd`; exact HEAD, 204 and 304 remain bodyless.
+- **Evidence (before fix):** `_isMockResponseBodyForbidden()` uppercases the method before
   comparing it with `HEAD` (`src/proxy/proxy-server.js:3659-3662`), although Send
   preserves custom HTTP method case and the mock matcher compares exact tokens.
 - **Reproduction:** create a wildcard fixed response with status 200 and body

@@ -132,6 +132,19 @@ function fixedRule(id, pathname, status, body) {
   };
 }
 
+test('mock body suppression distinguishes HEAD from custom case variants', () => {
+  const proxy = new ProxyServer(null);
+  for (const method of ['GET', 'HEAD', 'head', 'HeAd']) {
+    for (const statusCode of [200, 204, 304]) {
+      const response = proxy._normalizeMockResponse(method, {
+        statusCode, headers: {}, body: 'expected-body'
+      });
+      assert.equal(response.body.toString(),
+        method === 'HEAD' || statusCode !== 200 ? '' : 'expected-body');
+    }
+  }
+});
+
 test('response transforms cannot replace a final status with an informational status', () => {
   const proxy = new ProxyServer(null);
   const response = {
@@ -256,6 +269,11 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
           assert.deepEqual(rule.action.headers, { 'content-type': 'text/plain' });
         }
         if (protocol.name === 'native H2 engine') {
+          for (const method of ['head', 'HeAd']) {
+            const response = await protocol.send('/upper-bound', method);
+            assert.equal(response.body, 'upper bound response');
+            assert.ok(events.some(event => event.source === 'mock' && event.method === method));
+          }
           const capture = events.findLast(event =>
             event.source === 'mock' && event.protocol === 'h2' && event.path === '/upper-bound'
           );
