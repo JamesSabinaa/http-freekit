@@ -3370,8 +3370,9 @@
       disposeBodyEditor('wsFramePayload-monaco');
 
       // Store headers for context menu lookup
+      const effReq = getEffectiveRequest(req);
       window._detailHeaders = {
-        request: req.requestHeaders || {},
+        request: effReq.requestHeaders || {},
         response: req.responseHeaders || {},
         trailers: req.trailers || {}
       };
@@ -3844,7 +3845,6 @@
       }
 
       // ---- Request Card (border-right, pills left, heading right) ----
-      const effReq = getEffectiveRequest(req);
       const effMethodColor = {GET:'#4caf7d',POST:'#ff8c38',DELETE:'#ce3939',PUT:'#6e40aa',PATCH:'#dd3a96',HEAD:'#5a80cc',OPTIONS:'#2fb4e0'}[effReq.method] || '#888';
       const sourceLabel = req.source || 'Unknown';
       const sourceIconHtml = Object.hasOwn(SOURCE_ICONS, sourceLabel)

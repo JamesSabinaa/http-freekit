@@ -77,7 +77,6 @@ function renderDetail(request) {
     escapeHtmlAttribute: escapeHtml,
     formatBodyAs: body => escapeHtml(body),
     formatSize: size => `${size || 0} bytes`,
-    getEffectiveRequest: value => value,
     getBreakpointEditDraft: req => req.breakpointPhase === 'response' ? {
       _phase: 'response', status: 200, headers: {}, body: ''
     } : {
@@ -103,6 +102,7 @@ function renderDetail(request) {
 
   vm.createContext(context);
   vm.runInContext(`
+    ${sourceBetween('function getEffectiveRequest(', 'function toggleUrlBreakdown(')}
     ${headerLookupSource}
     ${headerGridSource}
     ${bodyModeSource}
@@ -199,6 +199,30 @@ test('detail cards preserve literal binary-prefixed text while hiding capture pl
     const result = renderDetail(baseRequest({}, { requestBody: '[Binary data: 42 bytes]', ...metadata }));
     assert.doesNotMatch(result.html, /id="card-req-body"/);
     assert.ok(!result.bodyViewerCalls.some(call => call.elementId === 'reqBody'));
+  }
+});
+
+test('header context actions copy values from the displayed request perspective', () => {
+  const request = baseRequest({ 'x-response': 'response' }, {
+    requestHeaders: { 'x-value': 'transformed' },
+    originalRequest: { method: 'GET', url: 'https://array-headers.example/data', headers: { 'x-value': ['original', 'second'] } }
+  });
+  const rendered = renderDetail(request);
+  let actions;
+  let copied;
+  rendered.context.showContextMenu = (_x, _y, items) => { actions = items; };
+  rendered.context.copyTextToClipboard = value => { copied = value; };
+  vm.runInContext(sourceBetween('function showHeaderContextMenu(', '// ============ HELPERS'), rendered.context);
+  for (const perspective of ['original', 'transformed', 'client']) {
+    rendered.context._transformPerspective = perspective;
+    rendered.render(request);
+    rendered.context.showHeaderContextMenu({ preventDefault() {}, stopPropagation() {} }, 'x-value', 'request');
+    const expected = perspective === 'transformed' ? 'transformed' : 'original, second';
+    actions[0].action();
+    assert.equal(copied, expected);
+    actions[2].action();
+    assert.equal(copied, `x-value: ${expected}`);
+    assert.equal(rendered.context.window._detailHeaders.response['x-response'], 'response');
   }
 });
 

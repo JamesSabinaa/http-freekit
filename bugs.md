@@ -1317,7 +1317,16 @@ completion. Current remediation statuses are recorded with each finding.
 
 ### BUG-052 — Medium — Copying an original request header returns its transformed value
 
-- **Status:** Open.
+- **Status:** Fixed.
+- **Review:** Production renderer and context-menu functions reproduced copying
+  transformed values after switching to Original. The header grid and lookup
+  store were derived from different request objects.
+- **Resolution:** Populate the request header lookup from the same effective
+  request used to render the selected perspective.
+- **Verification:** 258 traffic, context-menu, escaping, provenance, and
+  test-layout checks passed. The regression exercises value and name/value
+  copying in Original, Transformed, and Client views with repeated headers;
+  it failed before the fix.
 - **Evidence:** the context-menu header store is populated from transformed
   headers (`src/ui/app.js:3365`), while Original perspective renders the
   effective original headers (`:3874`). Copy looks up the value in that stale
