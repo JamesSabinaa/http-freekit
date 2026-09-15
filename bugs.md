@@ -48,12 +48,19 @@ completion. Current remediation statuses are recorded with each finding.
 
 ## Remediation validation
 
-Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
-2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 118 fixed
-findings and no pending fixes; final whole-repository validation remains pending.
-The user selected the recommended solution for all 21 review questions on
-September 15, 2026.
+Final full suite on `a6d9bd1` (`node --test --test-concurrency=1`, pinned Node
+26.7.0 with Java 8 tools available): 2,792 tests, 2,790 passed, two skipped,
+zero failures, in 465 seconds. The skipped checks require native Go and PHP,
+which are unavailable; native JVM identity and rollback checks ran successfully.
+`npm audit --audit-level=high` reports zero vulnerabilities.
+
+All 118 findings are fixed. The completion audit verified sequential BUG-001
+through BUG-118 entries and 118 distinct fix commits on `origin/main`, each
+containing product changes. Each fix has its review and validation recorded
+below. Final Chrome probes also rechecked interceptor overlay/Close geometry,
+matcher textarea themes, empty whitelist explanations, and multiline WebSocket
+close reasons. The user selected the recommended solution for all 21 review
+questions on September 15, 2026. No fixes or design decisions remain pending.
 
 ## Findings
 
