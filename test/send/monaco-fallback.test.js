@@ -303,7 +303,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
     function sendRequest() { globalThis.sends += 1; }
     function handleSendEscapeShortcut() {}
     function toast(message, type) { globalThis.toasts.push({ message, type }); }
-    function beautifyMarkup(value) { return value; }
+    ${between('function beautifyMarkup(', '// Simple JS beautifier')}
     function beautifyJs(value) { return value; }
     function beautifyCss(value) { return value; }
     function getSendBodyType() { return 'raw'; }
@@ -341,6 +341,23 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
   assert.equal(payload.body, '{\n  "answer": 42\n}');
   assert.equal(payload.bodyEncoding, 'utf8');
   assert.equal(headers['Content-Type'], 'application/json');
+
+  format.value = 'html';
+  for (const body of [
+    '<span>Hello</span><span>world</span>',
+    '  <span>Hello</span> <span>world</span>  ',
+    '<pre>  <b>one</b><b>two</b>  </pre>',
+    '<textarea> <b>one</b><b>two</b> </textarea>'
+  ]) {
+    context.harness.setSendBodyValue(body);
+    context.harness.formatSendBody();
+    assert.equal(context.harness.getSendBodyValue(), body);
+    assert.equal((await context.harness.prepareSendRequestPayload({})).body, body);
+  }
+  context.harness.setSendBodyValue('<span class="word" title="a > b">Hello</span><span>world</span>');
+  context.harness.formatSendBody();
+  assert.equal((await context.harness.prepareSendRequestPayload({})).body,
+    '<span\n  class="word"\n  title="a > b">Hello</span><span>world</span>');
 
   let prevented = false;
   context.harness.handleSendBodyFallbackKeydown({

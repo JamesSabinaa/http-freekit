@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 110 fixed
-findings and 8 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 111 fixed
+findings and 7 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2792,9 +2792,18 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-109 — Medium — HTML Format adds visible spaces between inline elements
 
-- **Status:** Awaiting user review. Choose conservative formatting that leaves
-  whitespace-sensitive content unchanged, or disable HTML Format pending a fuller
-  HTML-aware formatter. No implementation change yet.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that inserting inter-element whitespace changes
+  content, including normally block-level elements styled as inline. Conservatively
+  wrap attribute separators inside start tags while preserving text, attribute
+  values, comments, CDATA and tag delimiters. Leave raw-text/preformatted contexts,
+  already multiline input and ambiguous markup unchanged. The Send caller now
+  passes the original body without trimming significant leading/trailing spaces.
+- **Validation:** all 373 Send/UI/meta tests pass, including real formatter calls
+  through the textarea Format/payload flow. Ten production Chrome Format/Send
+  cases preserve parsed DOM and rendered text, and an HTTP origin receives each
+  formatted body exactly. Coverage includes adjacent inline elements, CSS display
+  and white-space overrides, pre/textarea, quoted attributes, SVG and comments.
 - **Evidence:** `beautifyMarkup()` inserts a newline at every adjacent tag
   boundary and joins the tokens with newlines (`src/ui/app.js:5283-5309`).
   Send's HTML Format action replaces the editable request body with that result

@@ -5293,30 +5293,43 @@
 
     function beautifyMarkup(code) {
       if (!code || code.includes('\n')) return code;
-      if (/<(?:script|style)\b/i.test(code)) return code;
+      if (/<(?:script|style|pre|textarea|title|xmp|plaintext|iframe|noembed|noframes|noscript)\b/i.test(code)) return code;
 
-      const voidTags = new Set([
-        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
-        'meta', 'param', 'source', 'track', 'wbr'
-      ]);
-      const tokens = code.replace(/>\s*</g, '>\n<').split('\n').map(t => t.trim()).filter(Boolean);
-      let indent = 0;
-
-      return tokens.map(token => {
-        const closing = /^<\//.test(token);
-        const declaration = /^<!(?:--|doctype)|^<\?/i.test(token);
-        const tagMatch = token.match(/^<\/?([a-zA-Z0-9:-]+)/);
-        const tagName = tagMatch ? tagMatch[1].toLowerCase() : '';
-        const selfClosing = /\/>$/.test(token) || voidTags.has(tagName);
-        const sameLinePair = /^<([a-zA-Z0-9:-]+)\b[^>]*>.*<\/\1>$/.test(token);
-
-        if (closing) indent = Math.max(0, indent - 1);
-        const line = '  '.repeat(indent) + token;
-        if (!closing && !declaration && !selfClosing && !sameLinePair && /^<[^/!?>]/.test(token)) {
-          indent += 1;
+      // Inter-element whitespace is content, even between normally block-level
+      // elements (CSS can change their display). Only wrap attribute separators;
+      // retain text, quoted values and the closing delimiter byte-for-byte.
+      const tokenPattern = /<!--[^]*?-->|<!\[CDATA\[[^]*?\]\]>|<!DOCTYPE(?:[^<>"'\[\]]|"[^"]*"|'[^']*')*>|<\/?[A-Za-z][A-Za-z0-9:_-]*(?:[^<>"']|"[^"]*"|'[^']*')*>/giy;
+      const attributePattern = /[\t\r\f ]+([^\t\r\f "'<>\/=]+(?:[\t\r\f ]*=[\t\r\f ]*(?:"[^"]*"|'[^']*'|[^\t\r\f "'=<>`]+))?)/y;
+      let result = '';
+      let position = 0;
+      while (position < code.length) {
+        const start = code.indexOf('<', position);
+        if (start === -1) return result + code.slice(position);
+        result += code.slice(position, start);
+        tokenPattern.lastIndex = start;
+        const match = tokenPattern.exec(code);
+        if (!match) return code;
+        const token = match[0];
+        position = tokenPattern.lastIndex;
+        if (token.startsWith('<!') || token.startsWith('</')) {
+          result += token;
+          continue;
         }
-        return line;
-      }).join('\n');
+        const name = token.match(/^<[A-Za-z][A-Za-z0-9:_-]*/)[0];
+        const attributes = [];
+        let offset = name.length;
+        while (!/^[\t\r\f ]*\/?>$/.test(token.slice(offset))) {
+          attributePattern.lastIndex = offset;
+          const attribute = attributePattern.exec(token);
+          if (!attribute) return code;
+          attributes.push(attribute[1]);
+          offset = attributePattern.lastIndex;
+        }
+        result += attributes.length > 1
+          ? name + '\n  ' + attributes.join('\n  ') + token.slice(offset)
+          : token;
+      }
+      return result;
     }
 
     // Simple JS beautifier — adds newlines and indentation to minified code
@@ -10429,7 +10442,7 @@
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('JSON formatted', 'success');
         } else if (format === 'xml' || format === 'html') {
-          const formatted = beautifyMarkup(value);
+          const formatted = beautifyMarkup(currentValue);
           setSendBodyValue(formatted);
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
