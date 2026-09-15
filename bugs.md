@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 101 fixed
-findings and 17 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 102 fixed
+findings and 16 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1824,10 +1824,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-071 — Medium — Resend drops empty-name fields from complete URL-encoded bodies
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed that serialization drops empty names, while the editor
-  also creates enabled blank placeholder rows. Asked whether to preserve such
-  captured bodies in raw mode or add explicit empty-name support to the editor.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the form editor drops valid empty-name fields.
+  Per the approved raw-mode policy, Resend retains the original body when any
+  parsed field has an empty name. Named-only forms retain structured editing.
+  Also kept Send restore/initialize calls adjacent after certificate setup, as
+  required by the startup regression assertion found during validation.
+- **Validation:** all 253 Send, certificate-picker and meta checks pass. Real
+  API/proxy/origin checks preserve leading, repeated and empty-valued empty-name
+  fields, percent escapes and Content-Type; cURL exports retain the body. A
+  named-only control still uses the form editor and sends its expected bytes.
 - **Evidence:** Resend converts a captured URL-encoded body into form fields
   (`src/ui/app.js:3027-3029`), including valid empty names. Send serialization
   discards fields whose key is empty (`:10571-10576`); the corresponding form

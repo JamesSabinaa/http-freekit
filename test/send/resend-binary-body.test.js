@@ -149,7 +149,7 @@ function capturedContentEncodedRequest({ id, method = 'POST', wireBytes, content
 
 function currentExportRequest(tab) {
   const elements = {
-    sendHeaders: { value: '{}' },
+    sendHeaders: { value: JSON.stringify(headerRowsToObject(tab.headers)) },
     sendBodyFormat: { value: tab.bodyFormat },
     sendUrl: { value: tab.url },
     sendMethod: { value: tab.method }
@@ -166,7 +166,7 @@ function currentExportRequest(tab) {
     formatToContentType: () => 'text/plain',
     cloneSendFormFields: fields => fields || [],
     sendMultipartFields: [],
-    sendUrlEncodedFields: [],
+    sendUrlEncodedFields: tab.urlEncodedFields || [],
     sendMultipartBoundary: '',
     createMultipartBoundary: () => 'boundary'
   };
@@ -650,4 +650,41 @@ test('Send API decodes canonical base64 and rejects malformed encodings before o
     assert.match(response.body.error, /body|base64/i);
   }
   assert.equal(receivedBodies.length, 2);
+});
+
+test('Resend preserves empty-name URL-encoded fields through raw Send and export', async t => {
+  const received = [];
+  const origin = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    received.push({ body: Buffer.concat(chunks), type: request.headers['content-type'] });
+    response.end('ok');
+  });
+  const port = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  const api = new ApiServer(proxy, null, null, { port: 0 });
+  api.port = 0;
+  await proxy.start();
+  await api.start();
+  t.after(async () => { await api.stop(); await proxy.stop(); await close(origin); });
+  for (const body of ['=alpha&name=beta', 'name=beta&=one&=two', '=', '=a%20b&name=%2f', 'name=beta']) {
+    const { tab } = resendRequest({
+      id: 'empty-name', method: 'POST', url: `http://127.0.0.1:${port}/`,
+      requestBody: body, requestBodyEncoding: 'utf8',
+      requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }
+    });
+    assert.equal(tab.bodyType, body === 'name=beta' ? 'urlencoded' : 'raw');
+    if (tab.bodyType === 'raw') assert.equal(tab.urlEncodedFields.length, 0);
+    const prepared = await prepareTab(tab, headerRowsToObject(tab.headers));
+    assert.equal(prepared.payload.body, body);
+    const result = await postJson(api.httpServer.address().port, {
+      url: tab.url, method: tab.method, headers: prepared.headers,
+      body: prepared.payload.body, bodyEncoding: prepared.payload.bodyEncoding
+    });
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(received.at(-1).body, Buffer.from(body));
+    assert.equal(received.at(-1).type, 'application/x-www-form-urlencoded');
+    const snippet = generateExportSnippet(currentExportRequest(tab), 'curl');
+    assert.ok(snippet.includes(body), snippet);
+  }
 });

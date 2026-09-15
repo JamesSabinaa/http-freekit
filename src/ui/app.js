@@ -3018,8 +3018,13 @@
         // decoded representation instead of normalizing percent escapes through
         // the structured form editor before it reaches Send or snippet export.
         if (ct.includes('application/x-www-form-urlencoded') && !semanticReplay) {
-          bodyType = 'urlencoded';
-          urlEncodedFields = Array.from(new URLSearchParams(req.requestBody), ([key, value]) => ({ key, value, enabled: true }));
+          const fields = Array.from(new URLSearchParams(req.requestBody), ([key, value]) => ({ key, value, enabled: true }));
+          // Empty names are valid on the wire but the form editor treats them
+          // as unused placeholders. Preserve such captures in raw mode.
+          if (fields.every(field => field.key !== '')) {
+            bodyType = 'urlencoded';
+            urlEncodedFields = fields;
+          }
         } else if (ct.includes('json')) bodyFormat = 'json';
         else if (ct.includes('xml')) bodyFormat = 'xml';
         else if (ct.includes('html')) bodyFormat = 'html';
@@ -16807,9 +16812,9 @@
     }
 
     // ============ INIT ============
+    initializeCertificatePathPickers();
     // Restore send tabs from localStorage
     restoreSendTabs();
-    initializeCertificatePathPickers();
     initializeSendTabs();
     document.getElementById('sendBody-fallback')?.addEventListener('input', handleSendBodyUserInput);
     document.addEventListener('input', markOpenMockEditDirty);
