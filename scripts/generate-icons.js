@@ -1,73 +1,13 @@
-/**
- * Generate app icons for HTTP FreeKit in all required sizes.
- * Produces PNG files in build/ directory for electron-builder.
- *
- * Design: Blue circle (#4775e2) with white "H" letterform.
- * Matches the tray icon design in electron/tray.cjs.
- *
- * Usage: node scripts/generate-icons.js
+/** Generate packaged icons from build/icons/1024x1024.png (canonical artwork).
+ * Usage: node scripts/generate-icons.js [output-directory]
  */
-
-import { deflateSync } from 'node:zlib';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PNG } from 'pngjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const buildDir = join(__dirname, '..', 'build');
-const iconsDir = join(buildDir, 'icons');
-
-// --- CRC32 ---
-function crc32(buf) {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) {
-    crc ^= buf[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc & 1) ? ((crc >>> 1) ^ 0xEDB88320) : (crc >>> 1);
-    }
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-// --- PNG encoder ---
-function makePngChunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const typeB = Buffer.from(type, 'ascii');
-  const crcB = Buffer.alloc(4);
-  crcB.writeUInt32BE(crc32(Buffer.concat([typeB, data])), 0);
-  return Buffer.concat([len, typeB, data, crcB]);
-}
-
-function encodePNG(width, height, pixels) {
-  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;  // bit depth
-  ihdr[9] = 6;  // color type RGBA
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
-
-  // Raw image data with filter byte per row
-  const stride = width * 4;
-  const raw = Buffer.alloc(height * (1 + stride));
-  for (let y = 0; y < height; y++) {
-    raw[y * (1 + stride)] = 0; // filter: none
-    pixels.copy(raw, y * (1 + stride) + 1, y * stride, (y + 1) * stride);
-  }
-
-  const compressed = deflateSync(raw, { level: 9 });
-
-  return Buffer.concat([
-    signature,
-    makePngChunk('IHDR', ihdr),
-    makePngChunk('IDAT', compressed),
-    makePngChunk('IEND', Buffer.alloc(0))
-  ]);
-}
+const buildDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'build');
+const sourcePath = join(buildDir, 'icons', '1024x1024.png');
 
 // --- ICO encoder (embeds PNG images) ---
 function encodeICO(pngBuffers, sizes) {
@@ -99,118 +39,58 @@ function encodeICO(pngBuffers, sizes) {
   return Buffer.concat([header, dir, ...pngBuffers]);
 }
 
-// --- Icon renderer ---
-function renderIcon(size) {
-  const pixels = Buffer.alloc(size * size * 4, 0);
-
-  function setPixel(x, y, r, g, b, a) {
-    if (x < 0 || x >= size || y < 0 || y >= size) return;
-    const off = (y * size + x) * 4;
-    pixels[off] = r;
-    pixels[off + 1] = g;
-    pixels[off + 2] = b;
-    pixels[off + 3] = a;
-  }
-
-  function blendPixel(x, y, r, g, b, coverage) {
-    if (x < 0 || x >= size || y < 0 || y >= size) return;
-    const off = (y * size + x) * 4;
-    const existing_a = pixels[off + 3] / 255;
-    const new_a = coverage;
-    const out_a = new_a + existing_a * (1 - new_a);
-    if (out_a === 0) return;
-    pixels[off] = Math.round((r * new_a + pixels[off] * existing_a * (1 - new_a)) / out_a);
-    pixels[off + 1] = Math.round((g * new_a + pixels[off + 1] * existing_a * (1 - new_a)) / out_a);
-    pixels[off + 2] = Math.round((b * new_a + pixels[off + 2] * existing_a * (1 - new_a)) / out_a);
-    pixels[off + 3] = Math.round(out_a * 255);
-  }
-
-  const cx = (size - 1) / 2;
-  const cy = (size - 1) / 2;
-  const radius = size / 2;
-
-  // Blue circle with anti-aliased edges (#4775e2)
-  const br = 71, bg = 117, bb = 226;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const dx = x - cx, dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist <= radius - 1) {
-        setPixel(x, y, br, bg, bb, 255);
-      } else if (dist <= radius) {
-        // Anti-alias edge
-        const coverage = Math.max(0, Math.min(1, radius - dist));
-        setPixel(x, y, br, bg, bb, Math.round(coverage * 255));
+// Area averaging with premultiplied alpha preserves transparent edges and
+// covers fractional source pixels for sizes such as 24 and 48.
+function resize(source, size) {
+  const data = Buffer.alloc(size * size * 4);
+  const scale = source.width / size;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const left = x * scale, right = (x + 1) * scale;
+    const top = y * scale, bottom = (y + 1) * scale;
+    let alpha = 0, red = 0, green = 0, blue = 0;
+    for (let sy = Math.floor(top); sy < Math.ceil(bottom); sy++) {
+      for (let sx = Math.floor(left); sx < Math.ceil(right); sx++) {
+        const weight = (Math.min(right, sx + 1) - Math.max(left, sx))
+          * (Math.min(bottom, sy + 1) - Math.max(top, sy));
+        const offset = (sy * source.width + sx) * 4;
+        const coverage = source.data[offset + 3] * weight;
+        alpha += coverage;
+        red += source.data[offset] * coverage;
+        green += source.data[offset + 1] * coverage;
+        blue += source.data[offset + 2] * coverage;
       }
     }
-  }
-
-  // White "H" letterform
-  const wr = 255, wg = 255, wb = 255;
-
-  // H proportions relative to icon size
-  const hLeft = Math.round(size * 0.25);       // left bar x start
-  const hRight = Math.round(size * 0.625);      // right bar x start
-  const barWidth = Math.round(size * 0.125);     // bar thickness
-  const hTop = Math.round(size * 0.1875);        // top of vertical bars
-  const hBottom = Math.round(size * 0.8125);     // bottom of vertical bars
-  const crossTop = Math.round(size * 0.4375);    // crossbar top
-  const crossBottom = Math.round(size * 0.5625); // crossbar bottom
-
-  // Left vertical bar
-  for (let y = hTop; y < hBottom; y++) {
-    for (let x = hLeft; x < hLeft + barWidth; x++) {
-      blendPixel(x, y, wr, wg, wb, 1);
+    const offset = (y * size + x) * 4;
+    if (alpha > 0) {
+      data[offset] = Math.round(red / alpha);
+      data[offset + 1] = Math.round(green / alpha);
+      data[offset + 2] = Math.round(blue / alpha);
     }
+    data[offset + 3] = Math.round(alpha / (scale * scale));
   }
-
-  // Right vertical bar
-  for (let y = hTop; y < hBottom; y++) {
-    for (let x = hRight; x < hRight + barWidth; x++) {
-      blendPixel(x, y, wr, wg, wb, 1);
-    }
-  }
-
-  // Horizontal crossbar
-  for (let y = crossTop; y < crossBottom; y++) {
-    for (let x = hLeft; x < hRight + barWidth; x++) {
-      blendPixel(x, y, wr, wg, wb, 1);
-    }
-  }
-
-  return pixels;
+  return PNG.sync.write({ width: size, height: size, data });
 }
 
-// --- Main ---
-mkdirSync(buildDir, { recursive: true });
-mkdirSync(iconsDir, { recursive: true });
-
-const sizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024];
-
-console.log('Generating app icons...');
-
-// Generate individual PNGs for Linux (in build/icons/)
-const pngBuffers = {};
-for (const s of sizes) {
-  const pixels = renderIcon(s);
-  const png = encodePNG(s, s, pixels);
-  pngBuffers[s] = png;
-
-  const filename = join(iconsDir, `${s}x${s}.png`);
-  writeFileSync(filename, png);
-  console.log(`  Created ${s}x${s}.png (${png.length} bytes)`);
+export function generateIcons(outputDir = buildDir) {
+  const original = readFileSync(sourcePath);
+  const source = PNG.sync.read(original);
+  if (source.width !== 1024 || source.height !== 1024) {
+    throw new Error('Canonical icon must be a 1024x1024 PNG');
+  }
+  const sizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024];
+  const pngs = new Map(sizes.map(size => [size, size === 1024 ? original : resize(source, size)]));
+  const iconsDir = join(outputDir, 'icons');
+  mkdirSync(iconsDir, { recursive: true });
+  for (const [size, png] of pngs) {
+    const destination = join(iconsDir, `${size}x${size}.png`);
+    if (resolve(destination) !== resolve(sourcePath)) writeFileSync(destination, png);
+  }
+  writeFileSync(join(outputDir, 'icon.png'), pngs.get(512));
+  const icoSizes = [16, 32, 48, 256];
+  writeFileSync(join(outputDir, 'icon.ico'), encodeICO(icoSizes.map(size => pngs.get(size)), icoSizes));
 }
 
-// Main icon.png at 512x512 for electron-builder
-const mainIcon = pngBuffers[512];
-writeFileSync(join(buildDir, 'icon.png'), mainIcon);
-console.log(`  Created build/icon.png (512x512)`);
-
-// Generate ICO for Windows (embeds 16, 32, 48, 256 as PNG)
-const icoSizes = [16, 32, 48, 256];
-const icoPngs = icoSizes.map(s => pngBuffers[s]);
-const ico = encodeICO(icoPngs, icoSizes);
-writeFileSync(join(buildDir, 'icon.ico'), ico);
-console.log(`  Created build/icon.ico (${ico.length} bytes)`);
-
-console.log('Done! Icons written to build/');
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  generateIcons(process.argv[2] ? resolve(process.argv[2]) : buildDir);
+  console.log('Generated icons from the canonical 1024x1024 artwork.');
+}

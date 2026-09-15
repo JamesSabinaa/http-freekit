@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 106 fixed
-findings and 12 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 107 fixed
+findings and 11 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2025,10 +2025,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-079 — Low — The icon-generation command overwrites the shipped artwork with a different design
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed that the generator draws obsolete artwork rather than
-  reading the shipped design. Asked whether to generate sizes from the current
-  1024px artwork or remove the obsolete command.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the obsolete procedural drawing. Per the approved
+  artwork choice, generation reads build/icons/1024x1024.png as the canonical
+  source and preserves its bytes. Alpha-aware area downsampling produces the
+  smaller PNGs; the Windows ICO embeds those same outputs. Added pngjs as a
+  development dependency and regenerated packaged sizes from the shipped source.
+- **Validation:** all 21 build/meta checks pass. Tests verify source preservation,
+  dimensions, independent pixel samples, ICO directory/image contents and
+  reproducible output matching packaged assets. Visual inspection confirms the
+  source design is retained; npm reports zero dependency vulnerabilities.
 - **Evidence:** `npm run generate-icons` draws a blue circle and white H
   (`scripts/generate-icons.js:132-177`), then overwrites every packaged PNG and
   the ICO (`:200,206,213`). The shipped icons instead contain a cyan `://`
