@@ -481,3 +481,32 @@ test('definite pre-mutation attach failure discards its pending journal', async 
   assert.equal(interceptor.activatedProcesses.size, 0);
   assert.equal(fs.existsSync(recoveryFile(dataDir)), false);
 });
+
+test('JVM admits 128 recoverable targets and rejects the next before attachment', async t => {
+  const dataDir = createDataDir(t);
+  const interceptor = createInterceptor(dataDir);
+  const processes = Array.from({ length: 129 }, (_, index) => ({ ...PROCESS, pid: String(index + 1) }));
+  interceptor._getRunningProcesses = async () => processes;
+  interceptor._observeTargetIdentity = async pid => ({ state: 'running', identity: identity({ pid: Number(pid) }) });
+  let attaches = 0;
+  interceptor._attachAgent = async () => { attaches++; return { success: true }; };
+  for (const process of processes.slice(0, 128)) {
+    const result = await interceptor.activate(8080, { pid: process.pid });
+    assert.equal(result.success, true, result.error);
+  }
+  const before = fs.readFileSync(interceptor.recoveryFile, 'utf8');
+  const rejected = await interceptor.activate(8080, { pid: '129' });
+  assert.equal(rejected.success, false);
+  assert.match(rejected.error, /128 targets/);
+  assert.equal(attaches, 128);
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), before);
+  const oversized = new Map(interceptor.activatedProcesses);
+  oversized.set('129', oversized.get('1'));
+  assert.throws(() => interceptor._writeRecoveryJournal(oversized), /128 targets/);
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), before);
+  const restarted = createInterceptor(dataDir);
+  assert.equal(restarted.recoveryJournalError, null);
+  assert.equal(restarted.activatedProcesses.size, 128);
+  assert.equal((await interceptor.activate(8080, { pid: '1' })).success, true);
+  assert.equal(interceptor.activatedProcesses.size, 128);
+});

@@ -23,6 +23,7 @@ const ANDROID_COMPANION_RECOVERY_VERSION = 4;
 const ANDROID_VPN_CONFIRMATION_RECOVERY_VERSION = 5;
 const ANDROID_RECOVERY_VERSION = 6;
 const MAX_ANDROID_RECOVERY_BYTES = 128 * 1024;
+const MAX_ANDROID_RECOVERY_DEVICES = 128;
 const ANDROID_INTERCEPTING_MODES = new Set(['global-proxy', 'http-toolkit-app']);
 const ANDROID_CLEANUP_MODES = new Set(['staging-cleanup', 'reverse-cleanup']);
 const ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED = 'ANDROID_CA_REMOVAL_CONFIRMATION_REQUIRED';
@@ -220,7 +221,7 @@ export class AndroidAdbInterceptor {
             ANDROID_RECOVERY_VERSION
           ].includes(parsed.version) ||
           !Array.isArray(parsed.devices) ||
-          parsed.devices.length > 128 ||
+          parsed.devices.length > MAX_ANDROID_RECOVERY_DEVICES ||
           Object.keys(parsed).some(field => !['version', 'devices'].includes(field))) {
         throw new Error('Recovery journal has an invalid schema');
       }
@@ -273,6 +274,7 @@ export class AndroidAdbInterceptor {
   }
 
   _writeGlobalProxyJournal(devices) {
+    if (devices.size > MAX_ANDROID_RECOVERY_DEVICES) throw new Error(`Android recovery supports at most ${MAX_ANDROID_RECOVERY_DEVICES} targets`);
     if (!this.recoveryFile) return;
     if (devices.size === 0) {
       try {
@@ -292,8 +294,12 @@ export class AndroidAdbInterceptor {
       version: ANDROID_RECOVERY_VERSION,
       devices: Array.from(devices.values())
     };
+    const serialized = JSON.stringify(payload, null, 2);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_ANDROID_RECOVERY_BYTES) {
+      throw new Error('Android recovery journal exceeds its size limit');
+    }
     try {
-      fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), {
+      fs.writeFileSync(tempPath, serialized, {
         encoding: 'utf8',
         mode: 0o600,
         flag: 'wx',
@@ -1544,6 +1550,10 @@ export class AndroidAdbInterceptor {
         success: false,
         error: `Android recovery journal is invalid and must be resolved before changing device state: ${this.recoveryJournalError.message}`
       };
+    }
+
+    if (!this.activatedDevices.has(deviceId) && this.activatedDevices.size >= MAX_ANDROID_RECOVERY_DEVICES) {
+      return { success: false, error: `Android recovery supports at most ${MAX_ANDROID_RECOVERY_DEVICES} targets. Stop an existing attachment before adding another.` };
     }
 
     // Verify device is connected and authorized

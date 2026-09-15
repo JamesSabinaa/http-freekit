@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 104 fixed
-findings and 14 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 105 fixed
+findings and 13 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1041,10 +1041,17 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-038 — Medium — JVM and Android can write recovery journals they cannot reload
 
-- **Status:** Awaiting user review.
-- **Review:** Reader/writer inspection confirms the entry-count mismatch. Asked
-  whether to enforce the existing 128-target admission limit before mutations
-  (recommended), or support larger target sets with bounded journal sizes.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the reader/writer count mismatch. Per the approved
+  limit, activation rejects a new target at 128 retained targets before target
+  changes, while allowing retries of existing targets. Both journal writers
+  enforce the same count; Android also enforces the reader's existing byte limit
+  before replacing the previous journal.
+- **Validation:** 254 JVM/Android/interceptor-core/meta checks pass; two Java
+  runtime checks skip without java/javac. Public activation tests with simulated
+  native operations admit 128 targets, reject target 129 without further target
+  mutations, preserve journal bytes and reload all 128 entries on restart. Writer
+  count/size checks preserve the previous journal; JVM retry at capacity succeeds.
 - **Evidence:** JVM and Android journal readers reject more than 128 entries
   (`src/interceptors/jvm-interceptor.js:227-236` and
   `src/interceptors/android-adb-interceptor.js:211-223`), while their writers and

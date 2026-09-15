@@ -335,3 +335,31 @@ test('HTTP Toolkit app activation remains pending and durable until VPN confirma
   assert.equal(interceptor.active, false);
   assert.equal(fs.existsSync(interceptor.recoveryFile), false);
 });
+
+test('Android admits 128 recoverable targets and rejects the next before device changes', async t => {
+  const dataDir = createDataDir(t);
+  const interceptor = new AndroidAdbInterceptor({ dataDir });
+  const devices = Array.from({ length: 129 }, (_, index) => device('device-' + index));
+  configureGlobalActivation(interceptor, devices);
+  let mutations = 0;
+  interceptor._setProxy = async () => { mutations++; return true; };
+  for (const candidate of devices.slice(0, 128)) {
+    const result = await interceptor.activate(8080, { deviceId: candidate.serial, useHttpToolkitApp: false });
+    assert.equal(result.success, true, result.error);
+  }
+  const before = fs.readFileSync(interceptor.recoveryFile, 'utf8');
+  const rejected = await interceptor.activate(8080, { deviceId: 'device-128', useHttpToolkitApp: false });
+  assert.equal(rejected.success, false);
+  assert.match(rejected.error, /128 targets/);
+  assert.equal(mutations, 128);
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), before);
+  const restarted = new AndroidAdbInterceptor({ dataDir });
+  assert.equal(restarted.recoveryJournalError, null);
+  assert.equal(restarted.activatedDevices.size, 128);
+  const tooMany = new Map(readJournal(interceptor).devices.map(entry => [entry.serial, entry]));
+  tooMany.set('extra', validJournalEntry({ serial: 'extra' }));
+  assert.throws(() => interceptor._writeGlobalProxyJournal(tooMany), /128 targets/);
+  const oversized = new Map(readJournal(interceptor).devices.map(entry => [entry.serial, { ...entry, model: 'x'.repeat(2000) }]));
+  assert.throws(() => interceptor._writeGlobalProxyJournal(oversized), /size limit/);
+  assert.equal(fs.readFileSync(interceptor.recoveryFile, 'utf8'), before);
+});

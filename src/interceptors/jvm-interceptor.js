@@ -252,6 +252,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _writeRecoveryJournal(processes) {
+    if (processes.size > MAX_JVM_RECOVERY_PROCESSES) throw new Error(`JVM recovery supports at most ${MAX_JVM_RECOVERY_PROCESSES} targets`);
     if (!this.recoveryFile) return;
     if (processes.size === 0) {
       try {
@@ -1459,6 +1460,10 @@ public class AttachProxy {
         success: false,
         error: `JVM recovery journal is invalid and must be resolved before attach: ${this.recoveryJournalError.message}`
       };
+    }
+
+    if (!this.activatedProcesses.has(pid) && this.activatedProcesses.size >= MAX_JVM_RECOVERY_PROCESSES) {
+      return { success: false, error: `JVM recovery supports at most ${MAX_JVM_RECOVERY_PROCESSES} targets. Stop an existing attachment before adding another.` };
     }
 
     // Verify process exists
