@@ -5,7 +5,7 @@ import test from 'node:test';
 
 const source = fs.readFileSync(new URL('../../src/ui/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('function beautifyMarkup(');
-const end = source.indexOf('// Simple JS beautifier', start);
+const end = source.indexOf('// Syntax-aware code formatting', start);
 assert.ok(start >= 0 && end > start);
 const format = vm.runInNewContext(`(${source.slice(start, end).trim()})`);
 

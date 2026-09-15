@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import beautifier from 'js-beautify';
+import * as acorn from 'acorn';
+import * as csstree from 'css-tree';
 
 const appSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'index.html'), 'utf8');
@@ -286,7 +289,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
   const context = {
     console: { warn: () => {} },
     document: { getElementById: id => elements[id] || null },
-    TextEncoder
+    TextEncoder, beautifier, acorn, csstree
   };
   vm.createContext(context);
   vm.runInContext(`
@@ -303,9 +306,8 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
     function sendRequest() { globalThis.sends += 1; }
     function handleSendEscapeShortcut() {}
     function toast(message, type) { globalThis.toasts.push({ message, type }); }
-    ${between('function beautifyMarkup(', '// Simple JS beautifier')}
-    function beautifyJs(value) { return value; }
-    function beautifyCss(value) { return value; }
+    ${between('function beautifyMarkup(', '// Syntax-aware code formatting')}
+    ${between('function formatCodeWithSyntaxChecks(', 'function wrapWithLineNumbers(')}
     function getSendBodyType() { return 'raw'; }
     function setDefaultHeader(headers, name, value) { headers[name] = value; }
     function formatToContentType() { return 'application/json'; }
@@ -358,6 +360,25 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
   context.harness.formatSendBody();
   assert.equal((await context.harness.prepareSendRequestPayload({})).body,
     '<span\n  class="word"\n  title="a > b">Hello</span><span>world</span>');
+
+  for (const [language, body] of [
+    ['javascript', 'function f(){return /a{2}/.test("aa");}'],
+    ['css', 'p::before{content:"a;b";}']
+  ]) {
+    format.value = language;
+    context.harness.setSendBodyValue(body);
+    context.harness.formatSendBody();
+    const formatted = context.harness.getSendBodyValue();
+    assert.notEqual(formatted, body);
+    assert.equal((await context.harness.prepareSendRequestPayload({})).body, formatted);
+  }
+  for (const [language, body] of [['javascript', '  function f( {  '], ['css', ' p{content:"unfinished;} ']]) {
+    format.value = language;
+    context.harness.setSendBodyValue(body);
+    context.harness.formatSendBody();
+    assert.equal(context.harness.getSendBodyValue(), body);
+    assert.equal((await context.harness.prepareSendRequestPayload({})).body, body);
+  }
 
   let prevented = false;
   context.harness.handleSendBodyFallbackKeydown({

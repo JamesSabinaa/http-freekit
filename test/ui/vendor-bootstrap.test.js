@@ -15,6 +15,9 @@ const vendorFiles = new Map([
   ['/vendor/js-yaml/js-yaml.umd.min.js', 'node_modules/js-yaml/dist/browser/js-yaml.umd.min.js'],
   ['/vendor/protobufjs/protobuf.min.js', 'node_modules/protobufjs/dist/protobuf.min.js'],
   ['/vendor/pako/pako.umd.min.js', 'node_modules/pako/dist/browser/pako.umd.min.js'],
+  ['/vendor/beautifier/beautifier.min.js', 'node_modules/js-beautify/js/lib/beautifier.min.js'],
+  ['/vendor/acorn/acorn.js', 'node_modules/acorn/dist/acorn.js'],
+  ['/vendor/css-tree/csstree.js', 'node_modules/css-tree/dist/csstree.js'],
   ['/vendor/monaco/vs/loader.js', 'node_modules/monaco-editor/min/vs/loader.js']
 ]);
 
@@ -32,6 +35,10 @@ test('shipped vendor script sequence exposes codecs without contaminating the AM
   assert.equal(typeof context.pako?.Inflate, 'function');
   assert.equal(typeof context.protobuf?.parse, 'function');
   assert.equal(context.jsyaml.load('ready: true').ready, true);
+  assert.equal(typeof context.beautifier?.js, 'function');
+  assert.equal(typeof context.beautifier?.css, 'function');
+  assert.equal(typeof context.acorn?.parse, 'function');
+  assert.equal(typeof context.csstree?.parse, 'function');
 
   const payload = Buffer.from([0x08, 0x96, 0x01]);
   for (const encoded of [gzipSync(payload), deflateSync(payload)]) {
@@ -72,6 +79,7 @@ test('browser loads the shipped codec sequence without startup exceptions', {
     ${scripts}
     <script>
       const result = { errors, pako: typeof window.pako?.Inflate, protobuf: typeof window.protobuf?.parse };
+      result.formatters = [typeof beautifier.js, typeof beautifier.css, typeof acorn.parse, typeof csstree.parse];
       try {
         result.decoded = ${JSON.stringify(compressed)}.map(bytes => {
           const inflator = new pako.Inflate(); inflator.push(Uint8Array.from(bytes), true);
@@ -94,6 +102,7 @@ test('browser loads the shipped codec sequence without startup exceptions', {
   assert.ok(encodedResult, 'browser must execute the final bootstrap check');
   assert.deepEqual(JSON.parse(decodeURIComponent(encodedResult)), {
     errors: [], pako: 'function', protobuf: 'function',
+    formatters: ['function', 'function', 'function', 'function'],
     decoded: [[8, 150, 1], [8, 150, 1]], amd: 'ready'
   });
 });

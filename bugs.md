@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 112 fixed
-findings and 6 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 113 fixed
+findings and 5 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -258,9 +258,21 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-008 — Medium — Formatting Send bodies corrupts valid CSS strings and JavaScript regexes
 
-- **Status:** Awaiting user review. Choose a maintained syntax-aware formatter
-  dependency or conservative formatting that retains the original body when
-  safety cannot be established. No implementation change yet.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that the hand-written scanners corrupt quoted CSS
+  and JavaScript regexes. Replace them with locally shipped JS Beautify, validating
+  input/output with Acorn and CSS Tree and retaining the original when parsing
+  fails or syntax trees differ. CSS token checks reject unfinished strings, URLs,
+  comments and unbalanced delimiters that CSS recovery parsing otherwise accepts.
+  Send passes the untrimmed body so rejected formatting is byte-preserving; both
+  preview paths use the same guarded formatters. Load the vendor globals before
+  Monaco's AMD loader, including in packaged installations.
+- **Validation:** all 396 Send/UI/build/meta tests pass. Tests cover regexes,
+  division, templates, comments, BigInt, modules, nested CSS, quotes, URLs and
+  automatic-semicolon behavior, plus actual textarea Format/payload calls. Chrome
+  verifies the original regex and CSS content reproductions, matching previews
+  and HTTP payloads, and unchanged invalid input. Dependency audit reports zero
+  vulnerabilities.
 - **Evidence:** `beautifyCss()` inserts newlines at every semicolon and brace,
   including inside quoted strings (`src/ui/app.js:5406-5429`).
   `beautifyJs()` recognizes regex literals only after selected punctuation,

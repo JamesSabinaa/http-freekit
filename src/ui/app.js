@@ -5332,123 +5332,72 @@
       return result;
     }
 
-    // Simple JS beautifier — adds newlines and indentation to minified code
-    function beautifyJs(code) {
-      if (!code || code.includes('\n')) return code; // already formatted
-
-      let result = '';
-      let indent = 0;
-      let inString = false;
-      let stringChar = '';
-      let inComment = false;
-      let inLineComment = false;
-      let escaped = false;
-      let inRegex = false;
-      let lastNonSpace = '';
-
-      for (let i = 0; i < code.length; i++) {
-        const ch = code[i];
-        const next = code[i + 1] || '';
-
-        // Handle escape sequences inside strings
-        if (escaped) { result += ch; escaped = false; continue; }
-        if (ch === '\\' && (inString || inRegex)) { result += ch; escaped = true; continue; }
-
-        // Handle strings
-        if (inString) {
-          result += ch;
-          if (ch === stringChar) inString = false;
-          continue;
+    // Syntax-aware code formatting; retain the original on unsupported syntax.
+    function formatCodeWithSyntaxChecks(code, language) {
+      if (!code) return code;
+      try {
+        const formatter = globalThis.beautifier?.[language];
+        if (typeof formatter !== 'function') return code;
+        let parse;
+        if (language === 'js') {
+          const options = { ecmaVersion: 'latest', sourceType: 'module' };
+          try { globalThis.acorn.parse(code, options); }
+          catch { options.sourceType = 'script'; }
+          parse = value => globalThis.acorn.parse(value, options);
+        } else {
+          parse = value => {
+            const syntax = globalThis.csstree;
+            const types = syntax.tokenTypes;
+            const closing = new Map([
+              [types.Function, types.RightParenthesis],
+              [types.LeftParenthesis, types.RightParenthesis],
+              [types.LeftSquareBracket, types.RightSquareBracket],
+              [types.LeftCurlyBracket, types.RightCurlyBracket]
+            ]);
+            const stack = [];
+            syntax.tokenize(value, (type, start, end) => {
+              if (type === types.BadString || type === types.BadUrl) throw new Error('Invalid CSS token');
+              if (type === types.String || type === types.Url) {
+                const expected = type === types.String ? value[start] : ')';
+                let slashes = 0;
+                for (let i = end - 2; i >= start && value[i] === '\\'; i--) slashes++;
+                if (end - start < 2 || value[end - 1] !== expected || slashes % 2) {
+                  throw new Error('Unterminated CSS token');
+                }
+              }
+              if (type === types.Comment && (end - start < 4 || value.slice(end - 2, end) !== '*/')) {
+                throw new Error('Unterminated CSS comment');
+              }
+              if (closing.has(type)) stack.push(closing.get(type));
+              else if ([types.RightParenthesis, types.RightSquareBracket, types.RightCurlyBracket].includes(type)) {
+                if (stack.pop() !== type) throw new Error('Unbalanced CSS delimiter');
+              }
+            });
+            if (stack.length) throw new Error('Unterminated CSS block');
+            return syntax.toPlainObject(syntax.parse(value, {
+              positions: false,
+              onParseError(error) { throw error; }
+            }));
+          };
         }
-
-        // Handle comments
-        if (inLineComment) {
-          result += ch;
-          if (ch === '\n') inLineComment = false;
-          continue;
-        }
-        if (inComment) {
-          result += ch;
-          if (ch === '*' && next === '/') { result += '/'; i++; inComment = false; }
-          continue;
-        }
-
-        // Handle regex
-        if (inRegex) {
-          result += ch;
-          if (ch === '/') inRegex = false;
-          continue;
-        }
-
-        // Start string
-        if (ch === '"' || ch === "'" || ch === '`') {
-          inString = true; stringChar = ch; result += ch; continue;
-        }
-
-        // Start comment
-        if (ch === '/' && next === '/') { inLineComment = true; result += ch; continue; }
-        if (ch === '/' && next === '*') { inComment = true; result += ch; continue; }
-
-        // Start regex (heuristic: / after operator or start of statement)
-        if (ch === '/' && '=(:;,([!&|?{}'.includes(lastNonSpace)) {
-          inRegex = true; result += ch; continue;
-        }
-
-        // Formatting logic
-        if (ch === '{') {
-          result += ' {\n' + '  '.repeat(++indent);
-          lastNonSpace = ch;
-          continue;
-        }
-        if (ch === '}') {
-          indent = Math.max(0, indent - 1);
-          result = result.replace(/\s+$/, '');
-          result += '\n' + '  '.repeat(indent) + '}';
-          // Add newline after } unless followed by else, catch, finally, comma, semicolon, or closing paren
-          const afterClose = code.slice(i + 1).match(/^\s*(\S)/);
-          if (afterClose && !',;)].'.includes(afterClose[1]) && afterClose[1] !== 'e' && afterClose[1] !== 'c' && afterClose[1] !== 'f') {
-            result += '\n' + '  '.repeat(indent);
-          }
-          lastNonSpace = ch;
-          continue;
-        }
-        if (ch === ';') {
-          result += ';\n' + '  '.repeat(indent);
-          lastNonSpace = ch;
-          continue;
-        }
-
-        if (ch !== ' ' && ch !== '\t') lastNonSpace = ch;
-        result += ch;
+        const signature = value => JSON.stringify(parse(value), (key, item) => {
+          if (language === 'js' && (key === 'start' || key === 'end')) return undefined;
+          return typeof item === 'bigint' ? item.toString() : item;
+        });
+        const original = signature(code);
+        const formatted = formatter(code, { indent_size: 2, end_with_newline: false });
+        return signature(formatted) === original ? formatted : code;
+      } catch {
+        return code;
       }
-
-      // Clean up excessive blank lines
-      return result.replace(/\n{3,}/g, '\n\n').replace(/\n\s+\n/g, '\n\n').trim();
     }
 
-    // Simple CSS beautifier
+    function beautifyJs(code) {
+      return formatCodeWithSyntaxChecks(code, 'js');
+    }
+
     function beautifyCss(code) {
-      if (!code || code.includes('\n')) return code;
-
-      let result = '';
-      let indent = 0;
-
-      for (let i = 0; i < code.length; i++) {
-        const ch = code[i];
-        if (ch === '{') {
-          result += ' {\n' + '  '.repeat(++indent);
-        } else if (ch === '}') {
-          indent = Math.max(0, indent - 1);
-          result = result.replace(/\s+$/, '');
-          result += '\n' + '  '.repeat(indent) + '}\n' + '  '.repeat(indent);
-        } else if (ch === ';') {
-          result += ';\n' + '  '.repeat(indent);
-        } else {
-          result += ch;
-        }
-      }
-
-      return result.replace(/\n{3,}/g, '\n\n').trim();
+      return formatCodeWithSyntaxChecks(code, 'css');
     }
 
     function wrapWithLineNumbers(html) {
@@ -10447,12 +10396,12 @@
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
         } else if (format === 'javascript') {
-          const formatted = beautifyJs(value);
+          const formatted = beautifyJs(currentValue);
           setSendBodyValue(formatted);
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');
         } else if (format === 'css') {
-          const formatted = beautifyCss(value);
+          const formatted = beautifyCss(currentValue);
           setSendBodyValue(formatted);
           if (formatted !== currentValue) markActiveSendBodyEdited();
           toast('Formatted', 'success');

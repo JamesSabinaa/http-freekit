@@ -207,6 +207,11 @@ async function initializeApplication(apiPort) {
   const JS_YAML_DIR = path.join(__dirname, '..', 'node_modules', 'js-yaml', 'dist', 'browser');
   api.app.use('/vendor/js-yaml', express.static(JS_YAML_DIR));
 
+  // Formatting stays local in both browser and packaged desktop installations.
+  api.app.use('/vendor/beautifier', express.static(path.join(__dirname, '..', 'node_modules', 'js-beautify', 'js', 'lib')));
+  api.app.use('/vendor/acorn', express.static(path.join(__dirname, '..', 'node_modules', 'acorn', 'dist')));
+  api.app.use('/vendor/css-tree', express.static(path.join(__dirname, '..', 'node_modules', 'css-tree', 'dist')));
+
   // 5. Start servers
   await proxy.start();
   try {
