@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { execFile } from 'node:child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -1248,8 +1249,28 @@ public class AttachProxy {
 `;
   }
 
-  _compileJava(sourcePath, cwd) {
-    return this._runJavac([sourcePath], cwd);
+  _compileJava(sourcePath, cwd, runtimeClassVersion) {
+    const target = runtimeClassVersion ? String(runtimeClassVersion - 44) : null;
+    // --release hides the Attach API on older targets; use source/target here.
+    return this._runJavac(target ? ['-source', target, '-target', target, sourcePath] : [sourcePath], cwd);
+  }
+
+  _readAttachRuntimeProperties() {
+    return new Promise((resolve, reject) => {
+      execFile('java', ['-XshowSettings:properties', '-version'], {
+        encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true
+      }, (error, stdout, stderr) => error ? reject(error) : resolve(`${stdout}\n${stderr}`));
+    });
+  }
+
+  async _getAttachRuntimeClassVersion() {
+    const output = await this._readAttachRuntimeProperties();
+    const match = output.match(/^\s*java\.class\.version\s*=\s*(\d+)\.0\s*$/m);
+    const version = Number(match?.[1]);
+    if (!Number.isSafeInteger(version) || version < 52 || version > 65534) {
+      throw new Error('Could not determine a supported Java runtime class-file version');
+    }
+    return version;
   }
 
   _readAttachHelperClass(classPath, expectedClass = null) {
@@ -1274,11 +1295,13 @@ public class AttachProxy {
       version: JVM_ATTACH_CACHE_VERSION,
       sourceHash,
       classHash: crypto.createHash('sha256').update(classBytes).digest('hex'),
-      classSize: classBytes.length
+      classSize: classBytes.length,
+      classMajorVersion: classBytes.readUInt16BE(6),
+      classMinorVersion: classBytes.readUInt16BE(4)
     };
   }
 
-  _attachHelperCacheIsValid(classPath, stampPath, sourceHash, expectedClass = null) {
+  _attachHelperCacheIsValid(classPath, stampPath, sourceHash, expectedClass = null, runtimeClassVersion = Infinity) {
     const stamp = JSON.parse(this._readBoundedRegularFile(
       stampPath,
       1,
@@ -1297,10 +1320,13 @@ public class AttachProxy {
       expectedClass
     );
     return actualStamp.classHash === stamp.classHash &&
-      actualStamp.classSize === stamp.classSize;
+      actualStamp.classSize === stamp.classSize &&
+      actualStamp.classMajorVersion >= 45 && actualStamp.classMajorVersion <= runtimeClassVersion &&
+      actualStamp.classMinorVersion === 0;
   }
 
   async _ensureAttachHelper() {
+    const runtimeClassVersion = await this._getAttachRuntimeClassVersion();
     const attachDir = this.agentDir;
     const attachSource = this._getAttachSource();
     const attachJavaPath = path.join(attachDir, 'AttachProxy.java');
@@ -1310,7 +1336,7 @@ public class AttachProxy {
 
     try {
       if (fs.existsSync(attachClassPath) && fs.existsSync(attachStampPath) &&
-          this._attachHelperCacheIsValid(attachClassPath, attachStampPath, sourceHash)) {
+          this._attachHelperCacheIsValid(attachClassPath, attachStampPath, sourceHash, null, runtimeClassVersion)) {
         return attachDir;
       }
     } catch (error) {
@@ -1328,7 +1354,7 @@ public class AttachProxy {
       this._writeNewAgentBuildFile(builtJavaPath, attachSource);
       this._writeNewAgentBuildFile(builtClassPath, Buffer.alloc(0));
 
-      await this._compileJava(builtJavaPath, buildDir);
+      await this._compileJava(builtJavaPath, buildDir, runtimeClassVersion);
       if (this._readBoundedRegularFile(
         builtJavaPath,
         Buffer.byteLength(attachSource),
@@ -1338,6 +1364,9 @@ public class AttachProxy {
         throw new Error('JVM attach helper source changed during compilation');
       }
       const compiledClass = this._readAttachHelperClass(builtClassPath);
+      if (compiledClass.readUInt16BE(6) > runtimeClassVersion || compiledClass.readUInt16BE(4) !== 0) {
+        throw new Error('Compiled JVM attach helper is incompatible with the current Java runtime');
+      }
       this._writeNewAgentBuildFile(
         builtStampPath,
         JSON.stringify(this._getAttachHelperCacheStamp(
@@ -1350,7 +1379,8 @@ public class AttachProxy {
         builtClassPath,
         builtStampPath,
         sourceHash,
-        compiledClass
+        compiledClass,
+        runtimeClassVersion
       )) {
         throw new Error('JVM attach helper build outputs changed before publication');
       }
@@ -1365,7 +1395,8 @@ public class AttachProxy {
         attachClassPath,
         attachStampPath,
         sourceHash,
-        compiledClass
+        compiledClass,
+        runtimeClassVersion
       )) {
         throw new Error('JVM attach helper cache changed during publication');
       }

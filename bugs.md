@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 108 fixed
-findings and 10 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 109 fixed
+findings and 9 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2350,9 +2350,17 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-092 — Medium — JVM attach-helper cache survives an incompatible Java runtime change
 
-- **Status:** Awaiting user review. Confirmed cache compatibility gap. Choose
-  runtime-aware validation/rebuild (recommended), or a fixed Java 8 helper bytecode
-  policy with Attach API-compatible compiler arguments.
+- **Status:** Fixed.
+- **Review and fix:** confirmed cache validation ignored runtime compatibility.
+  Per the approved runtime-aware policy, every helper preparation probes the
+  current java.class.version and validates cached class major/minor versions.
+  Incompatible caches rebuild with source/target options for that runtime; rebuilt
+  bytecode is checked before publication. Compatible older bytecode remains
+  reusable, while unknown runtime versions fail before attachment.
+- **Validation:** 151 JVM/interceptor-core/meta checks pass; two generated-agent
+  runtime checks skip without java/javac. Simulated runtime/compiler tests cover
+  Java 17 to 8 rebuild, subsequent Java 11 reuse, incompatible compiler output,
+  failed version detection, cache preservation and version-output parsing.
 - **Evidence:** `AttachProxy.class` is compiled with the host `javac` defaults
   (`src/interceptors/jvm-interceptor.js:742-743,1240-1241`). Cache validation checks
   source/content hashes and bytecode magic, but neither runtime identity nor class
