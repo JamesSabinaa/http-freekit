@@ -187,7 +187,7 @@ function getRepeatedHeaderUnavailableReason(format, headers) {
   const apiName = {
     python: 'Python Requests',
     'javascript-fetch': 'the browser Fetch API',
-    powershell: 'Invoke-WebRequest'
+    powershell: 'PowerShell HTTP APIs'
   }[format];
   if (!apiName || !getRepeatedExportHeaderName(headers)) return '';
   return `${apiName} cannot guarantee that repeated request header values are sent as separate wire fields.`;
@@ -278,6 +278,44 @@ function isFetchBodyForbiddenMethod(method) {
   return /^(?:GET|HEAD)$/i.test(String(method));
 }
 
+function getFetchMethodUnavailableReason(method) {
+  return /^(?:CONNECT|TRACE|TRACK)$/i.test(method)
+    ? `The browser Fetch API forbids the ${method} request method.` : '';
+}
+
+function needsPowerShellHttpClient(method) {
+  return !['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'TRACE', 'PATCH'].includes(method);
+}
+
+function renderPowerShellMethodGuard(method) {
+  if (!method.includes("'")) return '';
+  return "if ($PSVersionTable.PSEdition -ne 'Core') {\n" +
+    "    throw 'EXACT REPLAY UNAVAILABLE: Windows PowerShell .NET Framework rejects apostrophes in HTTP methods. Run this snippet in PowerShell 7.'\n" +
+    '}\n';
+}
+
+// HttpMethod accepts custom tokens in both Windows PowerShell 5.1 and PowerShell 7.
+// The caller supplies $headers and, when present, an already encoded byte body.
+function renderPowerShellHttpClient(url, method, bodyExpression = null) {
+  let code = "Add-Type -AssemblyName System.Net.Http\n";
+  code += '$client = [System.Net.Http.HttpClient]::new()\n';
+  code += `$request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new(${powerShellStringLiteral(method)}), ${powerShellStringLiteral(url)})\n`;
+  code += '$response = $null\ntry {\n';
+  if (bodyExpression !== null) {
+    code += `    [byte[]]$requestBytes = ${bodyExpression}\n`;
+    code += '    $request.Content = [System.Net.Http.ByteArrayContent]::new($requestBytes)\n';
+  }
+  code += '    foreach ($name in $headers.Keys) {\n';
+  code += '        if (!$request.Headers.TryAddWithoutValidation([string]$name, [string]$headers[$name])) {\n';
+  code += '            if ($null -eq $request.Content) { $request.Content = [System.Net.Http.ByteArrayContent]::new([byte[]]@()) }\n';
+  code += '            if (!$request.Content.Headers.TryAddWithoutValidation([string]$name, [string]$headers[$name])) { throw "Cannot replay header: $name" }\n';
+  code += '        }\n    }\n';
+  code += '    $response = $client.SendAsync($request).GetAwaiter().GetResult()\n';
+  code += '    [int]$response.StatusCode\n    $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()\n';
+  code += '} finally {\n    if ($null -ne $response) { $response.Dispose() }\n    $request.Dispose()\n    $client.Dispose()\n}';
+  return code;
+}
+
 function generateFetchBodyUnavailableSnippet(method) {
   return generateUnavailableExportSnippet(
     'javascript-fetch',
@@ -290,6 +328,9 @@ function generateMultipartExportSnippet(req, format) {
   const headers = getMultipartExportHeaders(req);
   const method = getExportMethod(req, 'POST');
   if (method === null) return generateInvalidMethodExportSnippet(format);
+  if (format === 'javascript-fetch' && getFetchMethodUnavailableReason(method)) {
+    return generateUnavailableExportSnippet(format, getFetchMethodUnavailableReason(method));
+  }
   const url = String(req.url || '');
   const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
   if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
@@ -442,7 +483,7 @@ function generateMultipartExportSnippet(req, format) {
   }
 
   if (format === 'powershell') {
-    let code = '$headers = @{}\n';
+    let code = renderPowerShellMethodGuard(method) + '$headers = @{}\n';
     headers.forEach(([key, value]) => { code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`; });
     code += "\n$boundary = '----HTTPFreeKit' + [Guid]::NewGuid().ToString('N')\n";
     code += '$bodyStream = [System.IO.MemoryStream]::new()\n';
@@ -475,7 +516,12 @@ function generateMultipartExportSnippet(req, format) {
     code += '    & $writeMultipartText (\'--\' + $boundary + "--`r`n")\n';
     code += '    [byte[]]$body = $bodyStream.ToArray()\n';
     code += '} finally {\n    $bodyStream.Dispose()\n}\n\n';
-    code += `$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers -ContentType ('multipart/form-data; boundary=' + $boundary) -Body $body\n$response.StatusCode\n$response.Content`;
+    if (needsPowerShellHttpClient(method)) {
+      code += "$headers['Content-Type'] = 'multipart/form-data; boundary=' + $boundary\n";
+      code += renderPowerShellHttpClient(url, method, '$body');
+    } else {
+      code += `$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers -ContentType ('multipart/form-data; boundary=' + $boundary) -Body $body\n$response.StatusCode\n$response.Content`;
+    }
     return code;
   }
 
@@ -587,6 +633,9 @@ function generateExportSnippetCore(req, format) {
 
   const method = getExportMethod(req, 'GET');
   if (method === null) return generateInvalidMethodExportSnippet(format);
+  if (format === 'javascript-fetch' && getFetchMethodUnavailableReason(method)) {
+    return generateUnavailableExportSnippet(format, getFetchMethodUnavailableReason(method));
+  }
   const url = String(req.url || '');
   const exportBody = getExportRequestBody(req);
   if (exportBody.kind === 'unavailable') {
@@ -677,9 +726,15 @@ function generateExportSnippetCore(req, format) {
       return code;
     }
     case 'powershell': {
-      let code = `$headers = @{}\n`;
+      let code = renderPowerShellMethodGuard(method) + '$headers = @{}\n';
       for (const [key, value] of headers) {
         code += `$headers[${powerShellStringLiteral(key)}] = ${powerShellStringLiteral(value)}\n`;
+      }
+      if (needsPowerShellHttpClient(method)) {
+        const bytes = !hasBody ? null : isBinaryBody
+          ? `[Convert]::FromBase64String(${powerShellStringLiteral(body)})`
+          : `[Text.Encoding]::UTF8.GetBytes(${powerShellStringLiteral(body)})`;
+        return code + '\n' + renderPowerShellHttpClient(url, method, bytes);
       }
       code += `\n$response = Invoke-WebRequest -Uri ${powerShellStringLiteral(url)} -Method ${powerShellStringLiteral(method)} -Headers $headers`;
       if (hasBody) {

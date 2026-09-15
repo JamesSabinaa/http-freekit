@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 113 fixed
-findings and 5 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 114 fixed
+findings and 4 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -624,10 +624,21 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-021 — Medium — Request exports generate unusable code for unsupported HTTP methods
 
-- **Status:** Awaiting user review. Choose custom-method exports supporting
-  Windows PowerShell 5.1 and 7 through HttpClient, or requiring PowerShell 7's
-  custom-method option. Fetch's forbidden methods should use the existing
-  unavailable-replay diagnostic. No implementation change yet.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the fixed PowerShell method enum and Fetch's
+  case-insensitive forbidden-method list. PowerShell custom-method exports use
+  HttpClient/HttpRequestMessage with explicit UTF-8 or binary content and proper
+  request/content header placement, including assembled multipart bodies. Generated
+  code disposes HTTP resources. Windows PowerShell's .NET Framework additionally
+  rejects apostrophes in method names: those snippets fail early with an explicit
+  replay-unavailable explanation on 5.1 and run normally on PowerShell 7. Fetch
+  exports emit the existing unavailable diagnostic for CONNECT, TRACE and TRACK
+  across raw, URL-encoded and multipart representations.
+- **Validation:** 483 import-export/Send/meta tests pass, two platform/tool checks
+  skip, zero fail. Native Windows PowerShell 5.1 and PowerShell 7 executions verify
+  custom method tokens, headers, UTF-8 and binary bytes, repeated multipart fields,
+  and the platform-specific apostrophe behavior against a raw TCP HTTP origin.
+  Quoting tests cover the new constructor/body expressions and hostile literals.
 - **Evidence:** PowerShell raw and multipart exports always use
   `Invoke-WebRequest -Method` (`src/ui/request-export.js:474,675`), whose method
   parameter accepts a finite enum. Fetch exports only guard GET/HEAD bodies,
