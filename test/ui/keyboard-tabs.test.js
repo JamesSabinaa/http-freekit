@@ -196,7 +196,12 @@ test('generated Send tabs expose sibling tab and close controls with roving sema
   vm.createContext(context);
   vm.runInContext(`${renderSource}; renderSendTabs();`, context);
 
-  const tabItem = bar.children[0];
+  const tablist = bar.children[0];
+  assert.equal(bar.getAttribute('role'), 'group');
+  assert.equal(tablist.getAttribute('role'), 'tablist');
+  assert.equal(tablist.getAttribute('aria-owns'), 'send-request-tab-0 send-request-tab-1');
+  assert.equal(tablist.children.length, 0);
+  const tabItem = bar.children[1];
   const [tabControl, closeControl] = tabItem.children;
   assert.equal(tabItem.className, 'send-tab-item active');
   assert.equal(tabItem.getAttribute('role'), 'presentation');
@@ -204,12 +209,12 @@ test('generated Send tabs expose sibling tab and close controls with roving sema
   assert.equal(closeControl.tagName, 'BUTTON');
   assert.equal(closeControl.className, 'send-tab-close');
   assert.equal(closeControl.getAttribute('aria-label'), 'Close request tab 1: New request');
-  assert.equal(bar.children[1].children[1].getAttribute('aria-label'), 'Close request tab 2: POST example.test');
+  assert.equal(bar.children[2].children[1].getAttribute('aria-label'), 'Close request tab 2: POST example.test');
   assert.equal(closeControl.parentNode, tabItem);
   assert.equal(tabControl.children.includes(closeControl), false);
 
   closeControl.dispatch('click', { detail: 0, stopPropagation() {} });
-  bar.children[1].children[1].dispatch('click', { detail: 1, stopPropagation() {} });
+  bar.children[2].children[1].dispatch('click', { detail: 1, stopPropagation() {} });
   assert.deepEqual(closeCalls, [['tab-1', true], ['tab-2', false]]);
 
   assert.match(stylesSource, /\.send-tab-item\s*{[\s\S]*?gap:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?overflow:\s*visible;/);

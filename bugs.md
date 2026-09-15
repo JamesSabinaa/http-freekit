@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 98 fixed
-findings and 20 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 99 fixed
+findings and 19 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -113,10 +113,17 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-003 — Medium — Mock and Send expose invalid ARIA control structures
 
-- **Status:** Awaiting user review. Send needs separate ownership for tab controls
-  and close/add actions. Choose retaining per-tab close buttons with a layout
-  adjustment or using Close current tab beside Add. Mock's invalid container
-  expanded attributes remain part of the pending fix.
+- **Status:** Fixed.
+- **Review and fix:** confirmed invalid generic-container expansion attributes
+  and mixed Send tab/action ownership. Per the approved per-tab close design,
+  the tab list explicitly owns only tab elements; close/add buttons remain
+  separately operable in the same layout. Keyboard navigation locates the Send
+  control group, preserving navigation and focus after rerenders. Mock expansion
+  state remains on disclosure buttons, not generic rule/group containers.
+- **Validation:** all 718 UI, Send, Mock and metadata checks pass. Real Chrome
+  accessibility-tree inspection confirms the list owns only tabs; native keyboard
+  checks cover End/Home/arrows, tabbing to Close, Enter activation and restored
+  active-tab focus. Rendered Mock containers have no invalid expansion attributes.
 - **Evidence:** each `.mock-rule-card` is a plain draggable `div` with
   `aria-expanded`, although that attribute is not permitted for its implicit
   generic role; the nested disclosure button already carries the valid expanded

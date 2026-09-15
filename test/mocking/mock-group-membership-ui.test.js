@@ -190,5 +190,9 @@ test('group markup exposes drop handling and grouped rules expose ungrouping', (
   assert.match(emptyGroup, /ondragover="mockGroupDragOver\(event, this\.dataset\.groupId\)"/);
   assert.match(emptyGroup, /ondrop="mockGroupDrop\(event, this\.dataset\.groupId\)"/);
   assert.match(emptyGroup, /Drag a rule here/);
+  for (const markup of [groupedRule, topLevelRule, emptyGroup]) {
+    assert.doesNotMatch(markup, /<div\b[^>]*\baria-expanded=/);
+    assert.match(markup, /<button\b[^>]*\baria-expanded="(?:true|false)"[^>]*\baria-controls=/);
+  }
   assert.match(stylesSource, /\.mock-group\.mock-drag-over\s*\{/);
 });

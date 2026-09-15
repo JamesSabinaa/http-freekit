@@ -8005,7 +8005,7 @@
       const serverMutationDisabledAttr = serverMutationDisabled ? ' disabled' : '';
       const detailsId = 'mockRuleDetails_' + rule.id.replace(/[^a-zA-Z0-9_-]/g, '');
 
-      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" aria-expanded="' + (isExpanded || isEditing) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
+      let html = '<div class="mock-rule-card' + disabledClass + editingClass + draftClass + '" data-rule-id="' + escapeHtmlAttribute(rule.id) + '" draggable="true" ondragstart="mockDragStart(event, this.dataset.ruleId)" ondragover="mockDragOver(event)" ondrop="mockDrop(event, this.dataset.ruleId)" ondragend="mockDragEnd(event)">';
 
       html += '<div class="mock-rule-summary">';
       const isRenaming = mockRenamingRuleId === rule.id;
@@ -8101,7 +8101,7 @@
       const disabledClass = group.enabled === false ? ' mock-rule-disabled' : '';
       const draftClass = isDraft ? ' mock-rule-draft' : '';
       const groupItemsId = 'mockGroupItems_' + group.id.replace(/[^a-zA-Z0-9_-]/g, '');
-      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + escapeHtmlAttribute(group.id) + '" aria-expanded="' + !isCollapsed + '" ondragover="mockGroupDragOver(event, this.dataset.groupId)" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, this.dataset.groupId)">';
+      let html = '<div class="mock-group' + disabledClass + draftClass + '" data-group-id="' + escapeHtmlAttribute(group.id) + '" ondragover="mockGroupDragOver(event, this.dataset.groupId)" ondragleave="mockGroupDragLeave(event)" ondrop="mockGroupDrop(event, this.dataset.groupId)">';
 
       // Group header
       html += '<div class="mock-group-header">';
@@ -10876,9 +10876,16 @@
     function renderSendTabs() {
       const bar = document.getElementById('sendTabBar');
       if (!bar) return;
-      bar.setAttribute('role', 'tablist');
-      bar.setAttribute('aria-label', 'Request tabs');
+      bar.setAttribute('role', 'group');
+      bar.setAttribute('aria-label', 'Request tab controls');
       bar.textContent = '';
+      // Own only tabs in the accessibility tree; adjacent close/add buttons
+      // remain separate controls without changing their visual placement.
+      const tablist = document.createElement('div');
+      tablist.setAttribute('role', 'tablist');
+      tablist.setAttribute('aria-label', 'Request tabs');
+      bar.appendChild(tablist);
+      const ownedTabIds = [];
       let activeTabDomId = null;
       sendTabs.forEach((tab, index) => {
         const isActive = tab.id === activeSendTab;
@@ -10893,6 +10900,7 @@
         const tabEl = document.createElement('div');
         tabEl.className = 'send-tab';
         tabEl.id = 'send-request-tab-' + index;
+        ownedTabIds.push(tabEl.id);
         tabEl.setAttribute('role', 'tab');
         tabEl.setAttribute('aria-selected', String(isActive));
         tabEl.setAttribute('aria-controls', 'sendTabPanel');
@@ -10924,6 +10932,7 @@
         bar.appendChild(tabItemEl);
       });
 
+      tablist.setAttribute('aria-owns', ownedTabIds.join(' '));
       const panel = document.getElementById('sendTabPanel');
       if (panel && activeTabDomId) panel.setAttribute('aria-labelledby', activeTabDomId);
 
@@ -15172,7 +15181,7 @@
     function handleTablistKeydown(event, previousKey, nextKey) {
       const currentTab = event.currentTarget;
       if (event.target !== currentTab) return;
-      const tablist = currentTab.closest('[role="tablist"]');
+      const tablist = currentTab.closest('[role="tablist"]') || currentTab.closest('#sendTabBar');
       if (!tablist) return;
       const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
       const currentIndex = tabs.indexOf(currentTab);
