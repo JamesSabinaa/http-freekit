@@ -3255,6 +3255,10 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
             const rawContentType = Object.entries(responseHeaders)
               .find(([name]) => name.toLowerCase() === 'content-type')?.[1];
             const contentType = normalizeDataUriMediaType(rawContentType);
+            const contentEncoding = Object.entries(responseHeaders)
+              .find(([name]) => name.toLowerCase() === 'content-encoding')?.[1];
+            const preview = this.proxy?._decodeContentBody?.(responseBody, contentEncoding);
+            const previewEncoding = preview?.contentDecoded && !isUtf8(preview.body) ? 'base64' : 'utf8';
             succeed({
               statusCode: res.statusCode,
               statusMessage: res.statusMessage,
@@ -3264,6 +3268,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
                 : responseBody.toString('utf8'),
               bodyEncoding,
               bodySize: responseBody.length,
+              ...(preview?.contentDecoded ? {
+                previewBody: previewEncoding === 'base64'
+                  ? `data:${contentType};base64,${preview.body.toString('base64')}`
+                  : preview.body.toString('utf8'),
+                previewBodyEncoding: previewEncoding,
+                previewBodySize: preview.body.length,
+                previewBodyContentDecoded: true
+              } : {}),
               duration: Date.now() - startTime,
               ...(sendContext ? { trafficId: sendContext.requestId } : {})
             });

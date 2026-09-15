@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 105 fixed
-findings and 13 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 106 fixed
+findings and 12 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2209,10 +2209,17 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-087 — Medium — Send cannot preview HTTP-compressed response bodies
 
-- **Status:** Awaiting user review. The bug is valid; choosing whether to retain
-  Send's reversible raw API body and add decoded preview fields (recommended), or
-  change that body to decoded content with explicit metadata, affects API consumers.
-  Either approach should use bounded decoding and preserve raw data on failure.
+- **Status:** Fixed.
+- **Review and fix:** confirmed Send displayed compressed wire bytes directly.
+  Per the approved additive API design, raw body/bodyEncoding/bodySize stay
+  unchanged. Successful bounded decoding adds previewBody, previewBodyEncoding,
+  previewBodySize and previewBodyContentDecoded. The renderer uses decoded
+  content and provenance for current and restored-tab previews. Missing decoder,
+  corrupt/unsupported encodings and expansion-limit failures retain raw fallback.
+- **Validation:** all 252 Send/meta checks pass. Real HTTP fixtures cover gzip,
+  deflate, stacked gzip/br, binary decoded bytes, corrupt/unsupported content and
+  expansion limits while checking raw API byte preservation. Real Chrome displays
+  decoded JSON and preserves the preview and provenance across tab switches.
 - **Evidence:** the Send API serializes raw response bytes without decoding
   `Content-Encoding` (`src/api/api-server.js:3241-3256`). The renderer selects
   a body mode from the original content type and feeds these bytes directly

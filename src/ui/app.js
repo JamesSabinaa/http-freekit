@@ -12531,6 +12531,7 @@
             path: responsePath,
             responseHeaders: tab.response.responseHeaders || {},
             responseBodyEncoding: tab.response.bodyEncoding || 'utf8',
+            responseBodyContentDecoded: tab.response.bodyContentDecoded === true,
             source: 'Send'
           },
           section: 'response'
@@ -12874,7 +12875,10 @@
 
         const headersHtml = renderHeaders(data.headers);
         const resCt = data.headers?.['content-type'] || '';
-        const modes = getBodyViewModes(data.body, resCt);
+        const contentDecoded = data.previewBodyContentDecoded === true && typeof data.previewBody === 'string';
+        const previewBody = contentDecoded ? data.previewBody : data.body;
+        const previewEncoding = (contentDecoded ? data.previewBodyEncoding : data.bodyEncoding) || 'utf8';
+        const modes = getBodyViewModes(previewBody, resCt);
         const defaultMode = modes[0]?.value || 'text';
         const duration = data.duration + 'ms';
 
@@ -12890,8 +12894,9 @@
           statusMessage: data.statusMessage || '',
           headersHtml,
           responseHeaders: data.headers || {},
-          body: data.body || '',
-          bodyEncoding: data.bodyEncoding || 'utf8',
+          body: previewBody || '',
+          bodyEncoding: previewEncoding,
+          bodyContentDecoded: contentDecoded,
           bodySize: Number.isFinite(data.bodySize) ? data.bodySize : (data.body ? data.body.length : 0),
           contentType: resCt,
           mode: defaultMode,
@@ -12928,14 +12933,15 @@
           statusCode: data.statusCode,
           statusMessage: data.statusMessage,
           responseHeaders: data.headers,
-          responseBody: data.body,
-          responseBodyEncoding: data.bodyEncoding || 'utf8',
+          responseBody: previewBody,
+          responseBodyEncoding: previewEncoding,
+          responseBodyContentDecoded: contentDecoded,
           responseBodySize: Number.isFinite(data.bodySize) ? data.bodySize : (data.body ? data.body.length : 0),
           duration: data.duration,
           timestamp: Date.now(),
           source: 'Send'
         };
-        setStandaloneBodyViewer('sendResBody', data.body || '', resCt, 'sendResBodyMode', defaultMode, {
+        setStandaloneBodyViewer('sendResBody', previewBody || '', resCt, 'sendResBodyMode', defaultMode, {
           viewerIdentity: responseViewerIdentity,
           request: responseRequest,
           section: 'response'

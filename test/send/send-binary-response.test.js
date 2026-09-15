@@ -126,7 +126,45 @@ test('image previews accept only constrained base64 data URIs and escape the sou
 
 test('Send traffic entries retain response encoding and wire size metadata', async () => {
   const source = await readFile(new URL('../../src/ui/app.js', import.meta.url), 'utf8');
-  assert.match(source, /responseBodyEncoding:\s*data\.bodyEncoding \|\| 'utf8'/);
+  assert.match(source, /responseBodyEncoding:\s*previewEncoding/);
   assert.match(source, /responseBodySize:\s*Number\.isFinite\(data\.bodySize\)/);
   assert.match(source, /responseBodyEncoding:\s*tab\.response\.bodyEncoding \|\| 'utf8'/);
+});
+
+test('Send adds bounded decoded previews while preserving compressed API bytes', async t => {
+  const { ProxyServer } = await import('../../src/proxy/proxy-server.js');
+  const { gzipSync, brotliCompressSync, deflateSync } = await import('node:zlib');
+  const plain = Buffer.from('{"message":"hello 世界"}');
+  const binary = Buffer.from([0xff, 0x00, 0x80]);
+  const fixtures = [
+    { encoding: 'gzip', wire: gzipSync(plain), decoded: plain },
+    { encoding: 'deflate', wire: deflateSync(plain), decoded: plain },
+    { encoding: ['gzip', 'br'], wire: brotliCompressSync(gzipSync(plain)), decoded: plain },
+    { encoding: 'gzip', wire: gzipSync(binary), decoded: binary },
+    { encoding: 'gzip', wire: Buffer.from('broken') },
+    { encoding: 'unsupported', wire: plain },
+    { encoding: 'gzip', wire: gzipSync(Buffer.alloc(2048, 65)) }
+  ];
+  const origin = http.createServer((req, res) => {
+    const fixture = fixtures[Number(req.url.slice(1))];
+    res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': fixture.encoding });
+    res.end(fixture.wire);
+  });
+  const port = await listen(origin); t.after(() => close(origin));
+  const proxy = new ProxyServer(null, { port: 0, maxDecompressedBodyBytes: 1024 });
+  for (const [index, fixture] of fixtures.entries()) {
+    const result = await ApiServer.prototype._sendRequest.call({ proxy }, `http://127.0.0.1:${port}/${index}`, 'GET', {}, '');
+    const wire = result.bodyEncoding === 'base64' ? Buffer.from(result.body.split(',')[1], 'base64') : Buffer.from(result.body);
+    assert.deepEqual(wire, fixture.wire);
+    assert.equal(result.bodySize, fixture.wire.length);
+    if (fixture.decoded) {
+      assert.equal(result.previewBodyContentDecoded, true);
+      const decoded = result.previewBodyEncoding === 'base64' ? Buffer.from(result.previewBody.split(',')[1], 'base64') : Buffer.from(result.previewBody);
+      assert.deepEqual(decoded, fixture.decoded);
+      assert.equal(result.previewBodySize, fixture.decoded.length);
+    } else {
+      assert.equal(result.previewBody, undefined);
+      assert.equal(result.previewBodyContentDecoded, undefined);
+    }
+  }
 });
