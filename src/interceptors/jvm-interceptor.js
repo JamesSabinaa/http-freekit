@@ -493,9 +493,12 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Base64;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
@@ -564,7 +567,7 @@ public class ProxyAgent {
                 installCa(caPath);
             } catch (Exception error) {
                 restore();
-                throw new IllegalStateException("Unable to trust the HTTP FreeKit CA", error);
+                throw new IllegalStateException("Unable to configure HTTP FreeKit TLS trust and client identity", error);
             }
         }
         System.out.println("[HTTP FreeKit] Proxy agent loaded: " + args);
@@ -611,6 +614,34 @@ public class ProxyAgent {
         }
         throw new IllegalStateException("No X509 trust manager is available");
     }
+    private static KeyManager[] configuredKeyManagers() throws Exception {
+        String location = System.getProperty("javax.net.ssl.keyStore", "");
+        String type = System.getProperty("javax.net.ssl.keyStoreType", KeyStore.getDefaultType());
+        String provider = System.getProperty("javax.net.ssl.keyStoreProvider", "");
+        String secret = System.getProperty("javax.net.ssl.keyStorePassword", "");
+        char[] password = secret.isEmpty() ? null : secret.toCharArray();
+        try {
+            if ("PKCS11".equals(type) && !"NONE".equals(location)) {
+                throw new IllegalArgumentException("PKCS11 key stores require javax.net.ssl.keyStore=NONE");
+            }
+            KeyStore store = null;
+            if (!type.isEmpty()) {
+                store = provider.isEmpty() ? KeyStore.getInstance(type) : KeyStore.getInstance(type, provider);
+                if (location.isEmpty() || "NONE".equals(location)) {
+                    store.load(null, password);
+                } else {
+                    try (InputStream input = new FileInputStream(location)) {
+                        store.load(input, password);
+                    }
+                }
+            }
+            KeyManagerFactory factory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            factory.init(store, "PKCS11".equals(type) ? null : password);
+            return factory.getKeyManagers();
+        } finally {
+            if (password != null) Arrays.fill(password, '\\0');
+        }
+    }
     private static void installCa(String caPath) throws Exception {
         CertificateFactory certificates = CertificateFactory.getInstance("X.509");
         Certificate caCertificate;
@@ -637,7 +668,7 @@ public class ProxyAgent {
         X509TrustManager combinedTrust = findX509TrustManager(combinedFactory.getTrustManagers());
 
         SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, new TrustManager[] { combinedTrust }, null);
+        context.init(configuredKeyManagers(), new TrustManager[] { combinedTrust }, null);
         SSLSocketFactory socketFactory = context.getSocketFactory();
         SSLContext.setDefault(context);
         installedSslContext = context;

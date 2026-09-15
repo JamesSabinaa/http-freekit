@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 114 fixed
-findings and 4 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 115 fixed
+findings and 3 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2439,10 +2439,22 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-094 — Medium — JVM interception drops configured TLS client certificates
 
-- **Status:** Awaiting user review. Confirmed for standard JSSE key-store properties.
-  Choose preserving those configured identities now (recommended), or defer for
-  a broader design that also preserves key managers installed programmatically in
-  custom SSL contexts, which the public SSLContext API does not expose.
+- **Status:** Fixed for the approved standard JSSE key-store configuration scope.
+- **Review and fix:** confirmed that null key managers remove configured client
+  identities. Load key managers using the standard keyStore, keyStoreType,
+  keyStoreProvider and keyStorePassword properties and the default key-manager
+  algorithm. Support non-file NONE stores and PKCS11's null key password, close
+  file streams and clear the temporary password array. Supply these managers
+  while installing combined system/FreeKit trust. Invalid identity configuration
+  fails activation and restores the original proxy/TLS state. Programmatically
+  installed custom-context key managers remain outside the approved scope.
+- **Validation:** all 155 JVM/core/meta tests pass with a portable Java 8 JDK;
+  none skip. The generated agent compiles and preserves JKS and PKCS12 client
+  authentication in 20 actual TLS exchanges through SSLContext and
+  HttpsURLConnection default factories, including the newly trusted FreeKit CA.
+  Wrong passwords, missing stores and invalid providers roll back without
+  replacing original TLS objects; existing Java 8 bytecode and ownership tests
+  also run natively and pass.
 - **Evidence:** the generated agent installs a replacement default SSL context
   with null key managers (`src/interceptors/jvm-interceptor.js:637-642`). It
   preserves server trust but drops the client identity supplied by the original
