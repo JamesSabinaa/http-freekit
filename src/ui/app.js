@@ -11161,6 +11161,7 @@
     }
 
     function serializeSendTab(tab) {
+      if (tab && Object.prototype.hasOwnProperty.call(tab, 'unfinishedMethod')) return null;
       const normalized = normalizeSendTab(tab, tab?.id, {
         includeFiles: false,
         includeResponse: false
@@ -12030,7 +12031,8 @@
         if (journal.writerId !== sendPersistenceWriterId) continue;
         if (['forked', 'fork-updated'].includes(result.state)) {
           if (latestForkResult.get(result.id) !== result) continue;
-          const activeSnapshot = activeSendTab === journal.id ? snapshotActiveSendTabState() : null;
+          const activeSnapshot = activeSendTab === journal.id
+            ? snapshotActiveSendTabState({ allowInvalidMethod: true }) : null;
           const originalIndex = sendTabs.findIndex(tab => tab.id === journal.id);
           const liveOriginal = originalIndex === -1 ? null : sendTabs[originalIndex];
           const storedOriginal = workspace.tabs.find(tab => tab.id === journal.id);
@@ -12051,8 +12053,12 @@
             safeLocalStorageSet('http-freekit-send-active', activeSendTab);
             if (activeSnapshot) {
               const liveFork = sendTabs.find(tab => tab.id === storedFork.id) || storedFork;
-              const hasNewerEdits = sendTabFingerprint(activeSnapshot) !== sendTabFingerprint(liveOriginal);
-              if (hasNewerEdits) Object.assign(liveFork, activeSnapshot, { id: storedFork.id });
+              const hasNewerEdits = Object.prototype.hasOwnProperty.call(activeSnapshot, 'unfinishedMethod') ||
+                sendTabFingerprint(activeSnapshot) !== sendTabFingerprint(liveOriginal);
+              if (hasNewerEdits) {
+                Object.assign(liveFork, activeSnapshot, { id: storedFork.id });
+                if (!Object.prototype.hasOwnProperty.call(activeSnapshot, 'unfinishedMethod')) delete liveFork.unfinishedMethod;
+              }
               loadSendTabState(liveFork);
               if (hasNewerEdits) {
                 sendActiveEditorBase = sendCommittedTabState.get(storedFork.id);
@@ -12177,6 +12183,8 @@
       };
       sendTabs = normalizedWorkspace.tabs.map(tab => {
         const liveTab = liveTabs.get(tab.id);
+        if (liveTab && Object.prototype.hasOwnProperty.call(liveTab, 'unfinishedMethod') &&
+            !(skipActiveTransientFileConflict && liveTab.id === activeSendTab)) return liveTab;
         const oldMetadata = previousMetadata.get(tab.id);
         const newMetadata = normalizedWorkspace.tabMetadata.get(tab.id);
         if (liveTab && hasPendingSendJournal(tab.id, oldMetadata?.generation || null)) {
@@ -12195,7 +12203,8 @@
       });
       for (const [id, liveTab] of liveTabs) {
         if (!sendTabs.some(tab => tab.id === id)) {
-          if (hasPendingSendJournal(id)) sendTabs.push(liveTab);
+          if (hasPendingSendJournal(id) || (Object.prototype.hasOwnProperty.call(liveTab, 'unfinishedMethod') &&
+              !(skipActiveTransientFileConflict && id === activeSendTab))) sendTabs.push(liveTab);
           else preserveTransientFileConflict(liveTab);
         }
       }
@@ -12237,16 +12246,16 @@
       );
     }
 
-    function snapshotActiveSendTabState() {
+    function snapshotActiveSendTabState({ allowInvalidMethod = false } = {}) {
       const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
       if (!tab) return null;
       const methodInput = document.getElementById('sendMethod');
       const method = normalizeSendMethod(methodInput?.value);
-      if (method === null) return null;
+      if (method === null && !allowInvalidMethod) return null;
       const bodyType = getSendBodyType();
-      return {
+      const snapshot = {
         ...tab,
-        method,
+        method: method ?? tab.method,
         url: document.getElementById('sendUrl')?.value || '',
         headers: sendHeadersList.slice(),
         body: getSendBodyValue(),
@@ -12257,6 +12266,11 @@
         multipartFields: cloneSendFormFields(sendMultipartFields),
         multipartBoundary: sendMultipartBoundary
       };
+      // This field belongs only to live editor state. It is never serialized
+      // into a workspace or journal, whose method validation remains strict.
+      if (method === null) snapshot.unfinishedMethod = methodInput?.value ?? '';
+      else delete snapshot.unfinishedMethod;
+      return snapshot;
     }
 
     function preserveDirtyActiveSendDraft(remoteWorkspace, draft) {
@@ -12271,7 +12285,7 @@
       safeLocalStorageSet('http-freekit-send-active', activeSendTab);
       loadSendTabState(fork);
       renderSendTabs();
-      persistSendTabs([fork]);
+      if (!Object.prototype.hasOwnProperty.call(fork, 'unfinishedMethod')) persistSendTabs([fork]);
       if (typeof toast === 'function') {
         toast(
           `Another window changed Send tab ${originalId}. Your draft was preserved in a new tab.`,
@@ -12313,7 +12327,16 @@
           return;
         }
 
-        const draft = snapshotActiveSendTabState();
+        const draft = snapshotActiveSendTabState({ allowInvalidMethod: true });
+        if (!draft) return;
+        if (Object.prototype.hasOwnProperty.call(draft, 'unfinishedMethod')) {
+          if (hasPendingSendJournal(activeSendTab, localMetadata.generation)) {
+            enqueueSendTabJournalPersistence();
+            return;
+          }
+          preserveDirtyActiveSendDraft(workspace, draft);
+          return;
+        }
         const draftFingerprint = sendTabFingerprint(draft);
         const remoteTab = workspace.tabs.find(tab => tab.id === activeSendTab);
         const remoteFingerprint = sendTabFingerprint(remoteTab);
@@ -12360,6 +12383,7 @@
       const tab = sendTabs.find(candidate => candidate.id === activeSendTab);
       if (!tab) return null;
       Object.assign(tab, snapshot);
+      delete tab.unfinishedMethod;
       return tab;
     }
 
@@ -12452,12 +12476,14 @@
     }
 
     function loadSendTabState(tab) {
+      const unfinishedMethod = tab && Object.prototype.hasOwnProperty.call(tab, 'unfinishedMethod')
+        ? tab.unfinishedMethod : null;
       tab = normalizeSendTab(tab, activeSendTab || 'tab-1');
       if (!tab) {
         reportInvalidSendMethod();
         return false;
       }
-      document.getElementById('sendMethod').value = tab.method;
+      document.getElementById('sendMethod').value = unfinishedMethod ?? tab.method;
       document.getElementById('sendUrl').value = tab.url || '';
       sendHeadersList = tab.headers.slice();
       renderSendHeaders();

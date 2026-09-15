@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 116 fixed
-findings and 2 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 117 fixed
+findings and 1 pending fix; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1677,10 +1677,20 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-063 — Low — An incomplete method edit falsely marks a valid Send workspace as corrupt
 
-- **Status:** Awaiting user review.
-- **Review:** The null draft is a real error, but persisted Send tabs reject
-  invalid methods. Asked whether reconciliation should preserve the unfinished
-  editor in a temporary local fork or wait until the method becomes valid.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that a temporary invalid method produced a null
+  editor snapshot that was mistaken for storage corruption. Capture the unfinished
+  method separately in live draft state, preserve it in a local conflict fork,
+  and exclude that draft from workspace/journal serialization until corrected.
+  Later remote snapshots retain local-only drafts. Queued conflict completion
+  captures the newest editor state, including invalid methods, without creating
+  duplicate forks. Saving a corrected method clears the transient marker and
+  resumes normal persistence; stored method validation remains strict.
+- **Validation:** all 381 Send/UI/meta tests pass. Empty and invalid methods retain
+  URLs, bodies and selected files through repeated remote revisions and queued
+  conflicts; correction persists a valid fork without transient metadata. A real
+  Chrome storage event preserves an empty-method draft, reconciles the remote URL,
+  reports no corruption and saves the corrected PROPFIND request.
 - **Evidence:** an empty or invalid method makes the active Send snapshot null
   (`src/ui/app.js:12225-12230`). The storage-event handler passes it to draft
   preservation without checking (`:12301-12330`), which dereferences `draft.id`

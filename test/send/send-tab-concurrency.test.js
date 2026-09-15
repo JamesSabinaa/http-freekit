@@ -119,6 +119,8 @@ function createRenderer(storage, locks, uuidPrefix) {
       settled: () => sendTabPersistenceQueue,
       create: createEmptySendTab,
       handleStorage: handleSendTabStorageEvent,
+      save: saveSendTabState,
+      corruptions: () => rendererStorageCorruptions.size,
       load(id = activeSendTab) {
         activeSendTab = id;
         return loadSendTabState(sendTabs.find(tab => tab.id === id));
@@ -151,6 +153,73 @@ function plain(value) {
 
 function storedTabs(storage) {
   return storage.json(WORKSPACE_KEY).tabs.map(entry => entry.tab);
+}
+
+for (const method of ['', 'GET /unfinished', '<invalid>']) {
+  test(`remote updates preserve unfinished method ${JSON.stringify(method)} in a local draft until corrected`, async () => {
+    const storage = createStorage({
+      [LEGACY_KEY]: JSON.stringify([{ id: 'tab-1', method: 'GET', url: 'https://old.test' }])
+    });
+    const locks = createLockManager();
+    const local = createRenderer(storage, locks, '11111111');
+    const remote = createRenderer(storage, locks, '22222222');
+    await restore(local);
+    await restore(remote);
+    const file = { name: 'selected.bin', size: 3 };
+    local.api.setMultipartFields([{ key: 'upload', type: 'file', file }]);
+    local.setEditor({ method, url: 'https://local.test', nextBody: 'local draft' });
+    await remote.api.persist([{ ...plain(remote.api.tabs()[0]), url: 'https://remote.test' }]);
+    local.api.handleStorage({ key: WORKSPACE_KEY, newValue: storage.getItem(WORKSPACE_KEY) });
+    await local.api.settled();
+    const forkId = local.api.active();
+    assert.notEqual(forkId, 'tab-1');
+    assert.deepEqual(local.editor(), { method, url: 'https://local.test', body: 'local draft' });
+    assert.equal(local.api.tabs().find(tab => tab.id === forkId).multipartFields[0].file, file);
+    assert.equal(local.api.tabs().find(tab => tab.id === 'tab-1').url, 'https://remote.test');
+    assert.equal(local.api.corruptions(), 0);
+    assert.equal(storedTabs(storage).length, 1);
+    assert.equal(local.api.save(), false);
+    await remote.api.persist([{ ...plain(remote.api.tabs()[0]), url: 'https://remote-again.test' }]);
+    local.api.handleStorage({ key: WORKSPACE_KEY, newValue: storage.getItem(WORKSPACE_KEY) });
+    assert.equal(local.api.active(), forkId);
+    assert.equal(local.editor().method, method);
+    assert.equal(local.api.tabs().find(tab => tab.id === 'tab-1').url, 'https://remote-again.test');
+    local.setEditor({ method: 'PROPFIND' });
+    await local.api.save();
+    await local.api.settled();
+    assert.equal(storedTabs(storage).length, 2);
+    assert.equal(storedTabs(storage).find(tab => tab.id === forkId).method, 'PROPFIND');
+    assert.equal(storedTabs(storage).find(tab => tab.id === forkId).body, 'local draft');
+    assert.equal(storage.getItem(WORKSPACE_KEY).includes('unfinishedMethod'), false);
+    assert.equal(local.api.corruptions(), 0);
+  });
+}
+
+for (const storageEvent of [false, true]) {
+test(`queued conflict completion retains a newer invalid method with storage event ${storageEvent}`, async () => {
+  const storage = createStorage({
+    [LEGACY_KEY]: JSON.stringify([{ id: 'tab-1', method: 'GET', url: 'https://old.test' }])
+  });
+  const local = createRenderer(storage, createLockManager(), '11111111');
+  await restore(local);
+  const pending = local.api.persist([{ ...plain(local.api.tabs()[0]), url: 'https://queued.test' }]);
+  local.setEditor({ method: '', url: 'https://newer.test', nextBody: 'newer body' });
+  const workspace = storage.json(WORKSPACE_KEY);
+  workspace.tabs[0].tab.url = 'https://remote.test';
+  workspace.tabs[0].revision = 'remote-revision';
+  storage.setItem(WORKSPACE_KEY, JSON.stringify(workspace));
+  if (storageEvent) local.api.handleStorage({ key: WORKSPACE_KEY, newValue: storage.getItem(WORKSPACE_KEY) });
+  await pending;
+  await local.api.settled();
+  assert.deepEqual(local.editor(), { method: '', url: 'https://newer.test', body: 'newer body' });
+  assert.equal(local.api.corruptions(), 0);
+  assert.equal(local.api.tabs().length, 2);
+  assert.equal(storage.getItem(WORKSPACE_KEY).includes('unfinishedMethod'), false);
+  local.setEditor({ method: 'PATCH' });
+  await local.api.save();
+  await local.api.settled();
+  assert.equal(storedTabs(storage).find(tab => tab.id === local.api.active()).body, 'newer body');
+});
 }
 
 async function restore(renderer) {
