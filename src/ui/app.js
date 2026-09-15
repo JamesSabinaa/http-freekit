@@ -23,7 +23,7 @@
     const { assertHarImportFileSize, prepareHarImport } = window.FreeKitHarImport;
     const { parseCurlCommand } = window.FreeKitCurlParser;
     const { normalizeSendUrl } = window.FreeKitSendUrl;
-    const { generateExportSnippet } = window.FreeKitRequestExport;
+    const { generateExportSnippet, prepareHarFormReplay } = window.FreeKitRequestExport;
     let trafficLists = [{
       id: DEFAULT_TRAFFIC_LIST_ID,
       name: 'Default Exclusions',
@@ -2951,6 +2951,12 @@
     }
 
     function resendResolvedRequest(req) {
+      const replay = prepareHarFormReplay(req);
+      if (replay.error) {
+        toast(replay.error, 'error');
+        return;
+      }
+      req = replay.request;
       const requestMethod = req.method === undefined ? 'GET' : req.method;
       if (typeof requestMethod !== 'string' || requestMethod.length === 0 ||
           /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(requestMethod)) {
@@ -3017,7 +3023,7 @@
         // A decoded capture is a byte-oriented semantic replay. Keep its exact
         // decoded representation instead of normalizing percent escapes through
         // the structured form editor before it reaches Send or snippet export.
-        if (ct.includes('application/x-www-form-urlencoded') && !semanticReplay) {
+        if (ct.includes('application/x-www-form-urlencoded') && !semanticReplay && !replay.notice) {
           const fields = Array.from(new URLSearchParams(req.requestBody), ([key, value]) => ({ key, value, enabled: true }));
           // Empty names are valid on the wire but the form editor treats them
           // as unused placeholders. Preserve such captures in raw mode.
@@ -3062,7 +3068,9 @@
 
       loadSendTabState(newTab);
       renderSendTabs();
-      if (semanticReplay) {
+      if (replay.notice) {
+        toast(replay.notice, 'warning');
+      } else if (semanticReplay) {
         toast(
           'Request loaded for semantic replay with decoded body bytes. ' +
             'Content-Encoding and Content-Length were omitted.',

@@ -48,7 +48,8 @@ export async function bootstrapApplication({
       INVALID_SEND_URL_CODE: sendUrl.INVALID_SEND_URL_CODE
     });
     targetWindow.FreeKitRequestExport = Object.freeze({
-      generateExportSnippet: requestExport.generateExportSnippet
+      generateExportSnippet: requestExport.generateExportSnippet,
+      prepareHarFormReplay: requestExport.prepareHarFormReplay
     });
 
     const applicationScript = targetDocument.createElement('script');

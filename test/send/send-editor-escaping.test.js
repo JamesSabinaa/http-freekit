@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 import { parseCurlCommand } from '../../src/ui/curl-parser.js';
 import { normalizeHarEntries } from '../../src/ui/har-import.js';
+import { prepareHarFormReplay } from '../../src/ui/request-export.js';
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
@@ -229,6 +230,7 @@ function resendRequest(request) {
   let loadedTab = null;
   const context = {
     selectedRequestId: request.id,
+    prepareHarFormReplay,
     selectedRequestLifecycleId: null,
     requests: [request],
     sendTabs: [],

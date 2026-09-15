@@ -2,6 +2,80 @@ export function getExportFormFields(req) {
   return (req.formFields || []).filter(field => field.enabled !== false && field.key);
 }
 
+export function prepareHarFormReplay(req) {
+  if (!Array.isArray(req.requestPostDataParams) || req.requestBodyTextPresent === true ||
+      req.requestBody || req.requestBodyTruncated === true ||
+      String(req.requestBodyEncoding || '').toLowerCase() === 'base64') return { request: req };
+
+  const unavailable = reason => ({ error: `Cannot reconstruct the HAR form: ${reason}` });
+  const fields = req.requestPostDataParams;
+  for (const field of fields) {
+    if (!field || typeof field !== 'object' || Array.isArray(field) || typeof field.name !== 'string') {
+      return unavailable('a parameter has no valid name.');
+    }
+    if (typeof field.value !== 'string') {
+      return unavailable(Object.hasOwn(field, 'fileName')
+        ? 'required file contents are missing. Supply the original body or file contents before replaying.'
+        : 'a parameter value is missing or invalid.');
+    }
+    if (Object.hasOwn(field, 'fileName') && typeof field.fileName !== 'string') {
+      return unavailable('a file name is invalid.');
+    }
+  }
+  const contentTypeKey = findHeaderKey(req.requestHeaders || {}, 'Content-Type');
+  const headerType = contentTypeKey ? req.requestHeaders[contentTypeKey] : '';
+  const mimeType = String(req.requestPostDataMimeType ||
+    (Array.isArray(headerType) ? headerType[0] : headerType) || '').split(';')[0].trim().toLowerCase();
+  let body;
+  let contentType;
+  if (mimeType === 'application/x-www-form-urlencoded') {
+    if (fields.some(field => Object.hasOwn(field, 'fileName'))) {
+      return unavailable('file parameters require multipart/form-data.');
+    }
+    const params = new URLSearchParams();
+    fields.forEach(field => params.append(field.name, field.value));
+    body = params.toString();
+    contentType = 'application/x-www-form-urlencoded';
+  } else if (mimeType === 'multipart/form-data') {
+    const parts = [];
+    for (const field of fields) {
+      if (!isSafeMultipartDispositionValue(field.name) ||
+          (Object.hasOwn(field, 'fileName') && !isSafeMultipartDispositionValue(field.fileName))) {
+        return unavailable('a multipart name contains unsupported control characters.');
+      }
+      if (field.contentType !== undefined &&
+          (typeof field.contentType !== 'string' || !field.contentType || /[\0-\x1f\x7f]/.test(field.contentType))) {
+        return unavailable('a multipart content type is invalid.');
+      }
+      let part = `Content-Disposition: form-data; name="${multipartQuotedString(field.name)}"`;
+      if (Object.hasOwn(field, 'fileName')) part += `; filename="${multipartQuotedString(field.fileName)}"`;
+      if (field.contentType) part += `\r\nContent-Type: ${field.contentType}`;
+      parts.push(`${part}\r\n\r\n${field.value}\r\n`);
+    }
+    // Scan once, so even values containing many possible boundaries stay cheap.
+    const occupied = new Set();
+    for (const part of parts) {
+      for (const match of part.matchAll(/(?=(----HTTPFreeKitHarForm-[0-9]+-))/g)) occupied.add(match[1]);
+    }
+    let index = 0;
+    while (occupied.has(`----HTTPFreeKitHarForm-${index}-`)) index++;
+    const boundary = `----HTTPFreeKitHarForm-${index}-`;
+    body = parts.map(part => `--${boundary}\r\n${part}`).join('') + `--${boundary}--\r\n`;
+    contentType = `multipart/form-data; boundary=${boundary}`;
+  } else {
+    return unavailable('the form MIME type is missing or unsupported.');
+  }
+  const headers = Object.fromEntries(Object.entries(req.requestHeaders || {})
+    .filter(([name]) => !REBUILT_MULTIPART_HEADER_NAMES.has(name.toLowerCase())));
+  headers['Content-Type'] = contentType;
+  return {
+    request: { ...req, requestHeaders: headers, requestBody: body, requestBodyEncoding: 'utf8',
+      requestBodyContentDecoded: false, bodyType: 'raw' },
+    notice: 'SEMANTIC REPLAY: The body was reconstructed from HAR form parameters. ' +
+      'Original body bytes are unavailable; encoding and multipart boundaries may differ.'
+  };
+}
+
 function shellSingleQuote(value) {
   return String(value ?? '').replace(/'/g, "'\\''");
 }
@@ -802,5 +876,13 @@ function generateExportSnippetCore(req, format) {
 }
 
 export function generateExportSnippet(req, format) {
-  return addSemanticReplayWarning(req, format, generateExportSnippetCore(req, format));
+  const replay = prepareHarFormReplay(req);
+  if (replay.error) return generateUnavailableExportSnippet(format, replay.error);
+  const snippet = addSemanticReplayWarning(replay.request, format, generateExportSnippetCore(replay.request, format));
+  if (!replay.notice || /^(?:#|\/\/) EXACT REPLAY UNAVAILABLE/.test(snippet)) return snippet;
+  if (format === 'php' && snippet.startsWith('<?php\n')) {
+    return `<?php\n// ${replay.notice}\n${snippet.slice('<?php\n'.length)}`;
+  }
+  const prefix = ['javascript-fetch', 'javascript-node', 'go'].includes(format) ? '//' : '#';
+  return `${prefix} ${replay.notice}\n${snippet}`;
 }

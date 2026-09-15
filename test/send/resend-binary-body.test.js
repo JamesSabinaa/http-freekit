@@ -5,11 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import zlib from 'node:zlib';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
 import { normalizeHarEntries } from '../../src/ui/har-import.js';
-import { generateExportSnippet } from '../../src/ui/request-export.js';
+import { generateExportSnippet, prepareHarFormReplay } from '../../src/ui/request-export.js';
+import { trafficToHar } from '../../src/api/har-converter.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 
@@ -51,6 +54,7 @@ function resendRequest(request) {
   const persisted = [];
   const context = {
     __request: request,
+    prepareHarFormReplay,
     URLSearchParams,
     activeSendTab: 'tab-1',
     sendTabs: [],
@@ -215,6 +219,113 @@ function importedRequest(bytes) {
     }
   }, { createId: () => 'imported-binary' })[0];
 }
+
+function importedForm(postData) {
+  return normalizeHarEntries({ log: { entries: [{
+    startedDateTime: '2026-09-15T00:00:00.000Z',
+    request: { method: 'POST', url: 'http://example.test/form',
+      headers: [{ name: 'Content-Type', value: 'multipart/form-data; boundary=stale' },
+        { name: 'Content-Length', value: '99999' }, { name: 'Content-Encoding', value: 'gzip' }], postData },
+    response: { status: 200, headers: [] }
+  }] } }, { createId: () => 'har-form' })[0];
+}
+
+test('HAR parameter replay retains form values through Resend/API and executable Node export', async t => {
+  const received = [];
+  const origin = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    received.push({ body: Buffer.concat(chunks), headers: request.headers });
+    response.end('ok');
+  });
+  const port = await listen(origin);
+  const proxy = new ProxyServer(null, { port: 0 });
+  const api = new ApiServer(proxy, null, null, { port: 0 });
+  api.port = 0;
+  await proxy.start();
+  await api.start();
+  t.after(async () => { await api.stop(); await proxy.stop(); await close(origin); });
+  const params = [{ name: 'q', value: 'hello café 🌍' }, { name: 'q', value: 'again' },
+    { name: '', value: 'empty name' }, { name: 'blank', value: '' }];
+  for (const mimeType of ['application/x-www-form-urlencoded', 'multipart/form-data']) {
+    const fields = mimeType === 'multipart/form-data'
+      ? [...params, { name: 'upload', fileName: 'sample.txt', contentType: 'text/plain', value: 'file café\r\n----HTTPFreeKitHarForm-0-' }]
+      : params;
+    const capture = importedForm({ mimeType, params: fields });
+    capture.url = `http://127.0.0.1:${port}/`;
+    assert.equal(capture.requestBodyTextPresent, false);
+    const before = JSON.stringify(capture);
+    const { tab, toasts } = resendRequest(capture);
+    assert.ok(tab);
+    assert.equal(tab.bodyType, 'raw');
+    assert.match(toasts[0].message, /SEMANTIC REPLAY.*HAR form parameters/);
+    assert.equal(toasts[0].type, 'warning');
+    const prepared = await prepareTab(tab, headerRowsToObject(tab.headers));
+    const result = await postJson(api.httpServer.address().port, {
+      url: tab.url, method: tab.method, headers: prepared.headers,
+      body: prepared.payload.body, bodyEncoding: prepared.payload.bodyEncoding
+    });
+    assert.equal(result.statusCode, 200);
+    for (const format of ['curl', 'wget', 'python', 'javascript-fetch', 'javascript-node', 'powershell', 'php', 'go']) {
+      const snippet = generateExportSnippet(capture, format);
+      assert.match(snippet, /SEMANTIC REPLAY.*HAR form parameters/);
+      assert.doesNotMatch(snippet, /EXACT REPLAY UNAVAILABLE/);
+      if (format === 'javascript-node') {
+        await promisify(execFile)(process.execPath, ['--input-type=commonjs', '-e', snippet],
+          { timeout: 10000, windowsHide: true });
+      }
+    }
+    for (const record of received.slice(-2)) {
+      assert.equal(record.headers['content-encoding'], undefined);
+      assert.deepEqual(record.body, Buffer.from(tab.body));
+      const form = await new Response(record.body, { headers: { 'Content-Type': record.headers['content-type'] } }).formData();
+      assert.deepEqual(form.getAll('q'), ['hello café 🌍', 'again']);
+      assert.equal(form.get(''), 'empty name');
+      assert.equal(form.get('blank'), '');
+      if (mimeType === 'multipart/form-data') {
+        assert.equal(form.get('upload').name, 'sample.txt');
+        assert.equal(await form.get('upload').text(), fields.at(-1).value);
+      }
+    }
+    assert.equal(JSON.stringify(capture), before);
+  }
+  assert.equal(received.length, 4);
+});
+
+test('HAR form replay refuses unavailable or malformed fields without creating a tab or executable snippet', () => {
+  for (const postData of [
+    { mimeType: 'multipart/form-data', params: [{ name: 'upload', fileName: 'missing.bin' }] },
+    { mimeType: 'multipart/form-data', params: [{ name: 'bad\r\nname', value: 'x' }] },
+    { mimeType: 'multipart/form-data', params: [{ name: 'file', value: 'x', fileName: 'a', contentType: 'text/plain\r\nInjected: yes' }] },
+    { mimeType: 'application/x-www-form-urlencoded', params: [{ name: 'q' }] },
+    { mimeType: 'application/x-www-form-urlencoded', params: [null] },
+    { mimeType: 'application/json', params: [{ name: 'q', value: 'x' }] }
+  ]) {
+    const capture = importedForm(postData);
+    const result = resendRequest(capture);
+    assert.equal(result.tab, null);
+    assert.equal(result.persisted.length, 0);
+    assert.match(result.toasts[0].message, /Cannot reconstruct the HAR form/);
+    for (const format of ['curl', 'wget', 'python', 'javascript-fetch', 'javascript-node', 'powershell', 'php', 'go']) {
+      assert.match(generateExportSnippet(capture, format), /EXACT REPLAY UNAVAILABLE[\s\S]*No request was generated/);
+    }
+  }
+});
+
+test('explicit HAR text wins over parameters, including empty text across HAR round trips', () => {
+  for (const text of ['', 'q=raw%20body']) {
+    const capture = importedForm({ mimeType: 'application/x-www-form-urlencoded', text,
+      params: [{ name: 'q', value: 'must not replace raw' }] });
+    const roundtrip = normalizeHarEntries(trafficToHar([capture], { maskSensitive: false }),
+      { createId: () => 'roundtrip' })[0];
+    for (const request of [capture, roundtrip]) {
+      assert.equal(request.requestBodyTextPresent, true);
+      assert.equal(prepareHarFormReplay(request).request.requestBody, text);
+      assert.equal(resendRequest(request).tab.body, text);
+      assert.doesNotMatch(generateExportSnippet(request, 'javascript-node'), /HAR form parameters/);
+    }
+  }
+});
 
 function listen(server) {
   return new Promise((resolve, reject) => {

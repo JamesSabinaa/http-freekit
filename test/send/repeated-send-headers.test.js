@@ -7,6 +7,7 @@ import vm from 'node:vm';
 
 import { ApiServer } from '../../src/api/api-server.js';
 import { parseCurlCommand } from '../../src/ui/curl-parser.js';
+import { prepareHarFormReplay } from '../../src/ui/request-export.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const editorStart = rendererSource.indexOf('let sendHeadersList = []');
@@ -161,6 +162,7 @@ test('resend preserves one Host and Accept-Encoding while dropping hop and frami
   let loadedTab;
   const context = {
     selectedRequestId: 'request-1',
+    prepareHarFormReplay,
     selectedRequestLifecycleId: null,
     requests: [{
       id: 'request-1',

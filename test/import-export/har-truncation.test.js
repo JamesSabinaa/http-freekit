@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 import { ApiServer } from '../../src/api/api-server.js';
 import { trafficToHar } from '../../src/api/har-converter.js';
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { prepareHarFormReplay } from '../../src/ui/request-export.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
 const rendererStyles = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'styles.css'), 'utf8');
@@ -506,6 +507,7 @@ test('renderer warns about incomplete bodies and blocks unsafe derived actions',
   const toasts = [];
   const context = {
     selectedRequestId: 'truncated',
+    prepareHarFormReplay,
     selectedRequestLifecycleId: null,
     requests: [{
       id: 'truncated',

@@ -50,10 +50,10 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 117 fixed
-findings and 1 pending fix; remediation is not complete. The user selected
-the recommended solution for all 21 review questions on September 15, 2026;
-remaining Awaiting user review entries now have approved design choices.
+the corrected Android Stop assertion. The ledger currently records 118 fixed
+findings and no pending fixes; final whole-repository validation remains pending.
+The user selected the recommended solution for all 21 review questions on
+September 15, 2026.
 
 ## Findings
 
@@ -1546,11 +1546,22 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-058 — Medium — Imported HAR form parameters disappear from Resend and request snippets
 
-- **Status:** Awaiting user review.
-- **Review:** Parameters are retained but replay only uses the absent raw body.
-  Asked whether to reconstruct available fields with a semantic-replay notice
-  (stopping when file contents are missing), or require raw bytes and explain
-  why replay is unavailable. Implementation remains pending that choice.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that parameters survive import but were ignored
+  by replay. Per the approved choice, a shared preparation helper rebuilds
+  URL-encoded and multipart bodies with a semantic-replay notice. It preserves
+  duplicate and empty names, Unicode values and supplied file contents, replaces
+  stale body headers, and selects a boundary absent from the parts. Missing file
+  contents, invalid parameters and unsupported MIME types stop replay before a
+  Send tab or executable snippet is created. Explicit raw text takes precedence,
+  including empty text; import/export preserves that distinction across HAR
+  round trips. Rebuilt bodies use raw Send mode to preserve empty field names.
+- **Validation:** 608 import/export, Send, UI and meta tests: 606 passed, two
+  native Go/PHP checks skipped, zero failures. All 11 focused body-replay checks
+  also pass after final boundary review. Real API/Node-origin exchanges and a
+  Chrome HAR import → Resend → Send probe preserve form values and notices;
+  missing-file attempts leave tabs unchanged. All eight snippet formats expose
+  either the semantic notice or an explicit unavailable diagnostic.
 - **Evidence:** the HAR importer retains `postData.params` as
   `requestPostDataParams`, while absent `postData.text` becomes an empty body
   (`src/ui/har-import.js:226-229,342-345,379-383`). Resend and export use only

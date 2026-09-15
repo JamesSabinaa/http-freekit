@@ -85,7 +85,8 @@ export function trafficToHar(requests, options = {}) {
             queryString: parseQueryString(req.url),
             postData: hasPostData ? {
               mimeType: req.requestPostDataMimeType || reqContentType,
-              ...(requestBody ? { text: requestBody.text } : {}),
+              ...(requestBody ? { text: requestBody.text }
+                : req.requestBodyTextPresent === true ? { text: '' } : {}),
               ...(requestBody?.encoding ? { encoding: requestBody.encoding } : {}),
               ...(requestPostDataParams !== null ? { params: requestPostDataParams } : {}),
               ...(requestContentDecoded ? { _contentDecoded: true } : {}),

@@ -381,6 +381,8 @@ function normalizeHarEntry(entry, index, createId) {
     ...(requestContentDecoded ? { requestBodyContentDecoded: true } : {}),
     requestCookies: Array.isArray(request.cookies) ? request.cookies : [],
     requestPostDataParams: Array.isArray(requestPostData?.params) ? requestPostData.params : undefined,
+    ...(Array.isArray(requestPostData?.params)
+      ? { requestBodyTextPresent: requestPostData.text !== undefined } : {}),
     requestPostDataMimeType,
     requestHttpVersion,
     requestBodySize,
