@@ -136,7 +136,7 @@ test('all interceptor copy blocks expose scoped button semantics', () => {
     ['Copy Docker Compose configuration', 1],
     ['Copy terminal command', 1],
     ['Copy Android QR connection URL', 1],
-    ['Copy JVM launch option', 1]
+    ['Copy JVM launch option for ${esc(option.label)}', 1]
   ]);
   for (const [label, count] of expectedLabels) {
     assert.equal(copyBlocks.filter(block => block.includes(`aria-label="${label}"`)).length, count);

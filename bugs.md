@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 107 fixed
-findings and 11 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 108 fixed
+findings and 10 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1934,10 +1934,18 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-075 — Medium — The JVM launch option changes dollar-sign paths in PowerShell
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed that Windows fallback quoting is CMD-oriented and the
-  UI does not specify a shell. Asked whether to offer separate PowerShell/CMD
-  options or standardize on a labeled PowerShell option.
+- **Status:** Fixed.
+- **Review and fix:** confirmed CMD quoting expands dollar-sign paths in
+  PowerShell. Per the approved separate-shell design, fallback metadata now
+  includes labeled PowerShell and CMD options on Windows, or a POSIX option
+  elsewhere. PowerShell uses literal single quotes with embedded quotes escaped.
+  The UI renders separately labeled copy controls; the legacy fallbackCommand
+  field remains available. Missing-agent results retain their explanation.
+- **Validation:** 147 JVM/interceptor-core/meta checks pass; two generated-agent
+  runtime checks skip without java/javac. Native PowerShell evaluates the option
+  to its exact original text, and CMD echo preserves its quoted content, including
+  dollar signs, apostrophes, spaces and ampersands. Renderer tests cover shell
+  labels, separate commands and absent fallback behavior.
 - **Evidence:** Windows manual JVM options use expandable double quotes
   (`src/interceptors/jvm-interceptor.js:770-782`), without PowerShell escaping
   for dollar signs. The renderer presents the option without a CMD-only

@@ -7060,8 +7060,11 @@
       const fallbackCmd = typeof meta?.fallbackCommand === 'string'
         ? meta.fallbackCommand
         : '';
+      const fallbackOptions = Array.isArray(meta?.fallbackCommands) && meta.fallbackCommands.length
+        ? meta.fallbackCommands.filter(option => typeof option.command === 'string' && typeof option.label === 'string')
+        : [{ command: fallbackCmd, label: 'JVM launch option' }];
       const fallbackContent = fallbackCmd
-        ? `<div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM launch option" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(fallbackCmd)}</div>`
+        ? fallbackOptions.map(option => `<p>${esc(option.label)}</p><div class="config-code-block" role="button" tabindex="0" aria-label="Copy JVM launch option for ${esc(option.label)}" title="Copy to clipboard" onkeydown="activateOnKeyboard(event)" onclick="event.stopPropagation(); copyConfigCode(this)">${esc(option.command)}</div>`).join('')
         : '<p style="color: var(--text-watermark); font-size: 13px;">The CA-capable JVM launch agent could not be prepared. Install a full JDK and refresh.</p>';
 
       if (processes.length === 0) {

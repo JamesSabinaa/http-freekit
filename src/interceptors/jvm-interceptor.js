@@ -768,19 +768,29 @@ public class ProxyAgent {
     });
   }
 
-  _quoteManualJvmOption(option) {
+  _quoteManualJvmOption(option, shell) {
+    if (shell === 'powershell') return `'${option.replaceAll("'", "''")}'`;
     if (this._platform() === 'win32') {
       return `"${option.replaceAll('"', '\\"')}"`;
     }
     return `'${option.replaceAll("'", "'\\''")}'`;
   }
 
-  _getFallbackCommand(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath) {
+  _getFallbackCommand(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath, shell) {
     const caPath = this.ca?.getCertInfo?.()?.certificatePath;
     if (!agentJar || !caPath) return null;
     return this._quoteManualJvmOption(
-      `-javaagent:${agentJar}=${this._getAgentArgs(proxyHost, proxyPort)}`
+      `-javaagent:${agentJar}=${this._getAgentArgs(proxyHost, proxyPort)}`, shell
     );
+  }
+
+  _getFallbackCommands(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath) {
+    const shells = this._platform() === 'win32'
+      ? [['powershell', 'PowerShell'], ['cmd', 'Command Prompt (CMD)']]
+      : [['posix', 'POSIX shell']];
+    return shells.map(([shell, label]) => ({
+      shell, label, command: this._getFallbackCommand(proxyHost, proxyPort, agentJar, shell)
+    })).filter(option => option.command);
   }
 
   _sameFileIdentity(first, second) {
@@ -1450,6 +1460,7 @@ public class AttachProxy {
           activatedProcesses: this._getActivatedProcessMetadata(),
           activationUncertain: this._hasUncertainActivation(),
           fallbackCommand: this._getFallbackCommand(proxyHost, proxyPort, fallbackAgentJar),
+          fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort, fallbackAgentJar),
           requiresProcessSelection: true
         }
       };
@@ -1487,6 +1498,7 @@ public class AttachProxy {
           error: `Could not verify the identity of JVM process ${pid}; no attach was attempted`,
           metadata: {
             fallbackCommand,
+            fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort),
             processes,
             activatedProcesses: this._getActivatedProcessMetadata(),
             activationUncertain: this._hasUncertainActivation(),
@@ -1512,6 +1524,7 @@ public class AttachProxy {
           error: `Could not persist JVM recovery ownership before attach: ${err.message}`,
           metadata: {
             fallbackCommand,
+            fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort),
             processes,
             activatedProcesses: this._getActivatedProcessMetadata(),
             activationUncertain: this._hasUncertainActivation(),
@@ -1538,6 +1551,7 @@ public class AttachProxy {
             (discardError ? `, and pending recovery ownership could not be cleared: ${discardError.message}` : ''),
           metadata: {
             fallbackCommand,
+            fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort),
             processes: currentProcesses,
             activatedProcesses: this._getActivatedProcessMetadata(),
             activationUncertain: this._hasUncertainActivation(),
@@ -1600,6 +1614,7 @@ public class AttachProxy {
             : ' A CA-capable manual launch fallback could not be prepared.'),
         metadata: {
           fallbackCommand,
+          fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort),
           processes: await this._getRunningProcesses(),
           activatedProcesses: this._getActivatedProcessMetadata(),
           activationUncertain: this._hasUncertainActivation(),
@@ -1631,6 +1646,7 @@ public class AttachProxy {
         error: `Attached to PID ${pid}, but could not finalize durable recovery ownership: ${err.message}. Stop will retry restoration.`,
         metadata: {
           fallbackCommand,
+          fallbackCommands: this._getFallbackCommands(proxyHost, proxyPort),
           processes: await this._getRunningProcesses(),
           activatedProcesses: this._getActivatedProcessMetadata(),
           activationUncertain: true,
