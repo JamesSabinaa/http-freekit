@@ -240,7 +240,7 @@ test('brace-aware CSS audit scopes focus reveals to the existing hover container
   assert.equal(declarationFor('.url-decoded-key:focus-within .url-decoded-copy', 'opacity'), '1');
   assert.equal(declarationFor('.url-decoded-val:hover .url-decoded-copy', 'opacity'), '1');
   assert.equal(declarationFor('.url-decoded-val:focus-within .url-decoded-copy', 'opacity'), '1');
-  assert.equal(declarationFor('.url-decoded-copy:focus-visible', 'color'), 'var(--pop-color)');
+  assert.equal(declarationFor('.url-decoded-copy:focus-visible', 'color'), 'var(--pop-text-color)');
 
   assert.equal(declarationFor('.mock-rule-actions', 'opacity'), '0');
   assert.equal(declarationFor('.mock-rule-summary:hover .mock-rule-actions', 'opacity'), '1');
@@ -300,7 +300,7 @@ test('Tab focus reveals one decoded copy control and blur restores both hidden s
   fields.keyCopy.focus();
   assert.equal(computedCssValue(fields.keyCopy, 'opacity'), '1');
   assert.equal(computedCssValue(fields.valueCopy, 'opacity'), '0');
-  assert.equal(computedCssValue(fields.keyCopy, 'color'), 'var(--pop-color)');
+  assert.equal(computedCssValue(fields.keyCopy, 'color'), 'var(--pop-text-color)');
   assert.equal(computedCssValue(fields.keyCopy, 'outline'), '2px solid var(--pop-color)');
 
   fields.keyCopy.blur();

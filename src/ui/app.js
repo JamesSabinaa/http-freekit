@@ -1782,7 +1782,7 @@
       hint.style.display = 'block';
       hint.innerHTML = suggestions.map(s =>
         `<div class="filter-hint-item" onmousedown="applyFilterHint('${s.prefix}')">
-          <span style="color:var(--pop-color);font-weight:600;">${s.prefix}:</span>
+          <span style="color:var(--pop-text-color);font-weight:600;">${s.prefix}:</span>
           <span style="color:var(--text-lowlight);font-size:11px;margin-left:8px;">${s.desc}</span>
         </div>`
       ).join('');
@@ -3784,7 +3784,7 @@
         if (req.apiMatch.parameters?.length) {
           apiParams = '<div style="margin-top:8px;"><div class="section-label">Parameters</div>' +
             req.apiMatch.parameters.map(p =>
-              '<div style="font-size:12px;margin-bottom:4px;"><span style="color:var(--pop-color);font-family:var(--font-mono);">' + esc(p.name) + '</span>' +
+              '<div style="font-size:12px;margin-bottom:4px;"><span style="color:var(--pop-text-color);font-family:var(--font-mono);">' + esc(p.name) + '</span>' +
               '<span style="color:var(--text-watermark);margin:0 4px;">(' + esc(p.in || 'query') + ')</span>' +
               (p.required ? '<span style="color:#ff8c38;font-size:10px;">required</span>' : '') +
               (p.description ? '<div style="color:var(--text-lowlight);font-size:11px;margin-left:12px;">' + esc(p.description) + '</div>' : '') +
@@ -3814,9 +3814,9 @@
         html += `<div class="detail-card transform-card" id="card-transform">
           <div class="detail-card-body" style="padding:12px 20px;">
             <div style="display:flex;align-items:center;gap:12px;">
-              <i class="ph ph-shuffle" style="font-size:18px;color:var(--pop-color);"></i>
+              <i class="ph ph-shuffle" style="font-size:18px;color:var(--pop-text-color);"></i>
               <div style="flex:1;">
-                <div style="font-weight:600;font-size:13px;color:var(--pop-color);">Request Modified</div>
+                <div style="font-weight:600;font-size:13px;color:var(--pop-text-color);">Request Modified</div>
                 <div style="font-size:11px;color:var(--text-lowlight);">by ${esc(req.transformedBy || 'Mock Rule')}</div>
               </div>
               <select class="body-view-select transform-perspective-select" aria-label="Request transform perspective" onchange="switchTransformPerspective(this.value)">
@@ -10807,7 +10807,7 @@
         html = sendHeadersList.map((h, i) =>
           `<div class="send-header-row" style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
             <input type="checkbox" ${h.enabled !== false ? 'checked' : ''} data-focus-key="send-header-${i}-enabled" aria-label="Enable request header ${i + 1}" onchange="toggleSendHeaderEnabled(${i}, this.checked)" title="Enable/disable this header" style="cursor:pointer;">
-            <input type="text" value="${escapeHtmlAttribute(h.key)}" data-focus-key="send-header-${i}-name" aria-label="Request header ${i + 1} name" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
+            <input type="text" value="${escapeHtmlAttribute(h.key)}" data-focus-key="send-header-${i}-name" aria-label="Request header ${i + 1} name" oninput="updateSendHeaderKey(${i}, this.value)" placeholder="Header name" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:${h.enabled !== false ? 'var(--pop-text-color)' : 'var(--text-watermark)'};padding:5px 8px;font-family:var(--font-mono);font-size:12px;font-weight:600;outline:none;min-width:0;">
             <input type="text" value="${escapeHtmlAttribute(h.value)}" data-focus-key="send-header-${i}-value" aria-label="Request header ${i + 1} value" oninput="updateSendHeaderVal(${i}, this.value)" placeholder="Header value" style="flex:2;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:5px 8px;font-family:var(--font-mono);font-size:12px;outline:none;min-width:0;">
             <button type="button" class="btn" data-focus-key="send-header-${i}-remove" onclick="removeSendHeader(${i})" style="padding:2px 6px;font-size:12px;color:#ce3939;flex-shrink:0;" title="Remove header" aria-label="Remove request header ${i + 1}">&times;</button>
           </div>`
@@ -16845,7 +16845,7 @@
     var _themeOverridableVars = [
       'bg-main','bg-lowlight','bg-container','bg-input','bg-highlight',
       'highlight-color','border-color','text-main','text-lowlight','text-watermark',
-      'text-input-border','pop-color','pop-overlay-color','warning-color','warning-background',
+      'text-input-border','pop-color','pop-text-color','pop-overlay-color','warning-color','warning-background',
       'primary-input-bg','primary-input-color','secondary-input-border','secondary-input-color',
       'input-hover-bg','input-placeholder-color','input-warning-placeholder',
       'container-watermark','container-border',

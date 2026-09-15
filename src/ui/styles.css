@@ -18,6 +18,7 @@
       --text-watermark: #aeb1bc;
       --text-input-border: #53565e;
       --pop-color: #e1421f;
+      --pop-text-color: #ffc0ad;
       --pop-overlay-color: #ffffff;
       --input-text-color: #ffffff;
       --highlight-text-color: #ffffff;
@@ -139,6 +140,7 @@
       --text-watermark: #5b5e66;
       --text-input-border: #53565e;
       --pop-color: #e1421f;
+      --pop-text-color: #a52b12;
       --pop-overlay-color: #ffffff;
       --input-text-color: #1e2028;
       --highlight-text-color: #1e2028;
@@ -251,6 +253,7 @@
       --text-watermark: #ffffff;
       --text-input-border: #aaa;
       --pop-color: #e1421f;
+      --pop-text-color: var(--pop-color);
       --pop-overlay-color: #ffffff;
       --input-text-color: #000000;
       --highlight-text-color: #000000;
@@ -598,7 +601,7 @@
     .sidebar-item i.ph { font-size: 34px; flex-shrink: 0; margin-bottom: 5px; }
 
     .sidebar-item:hover {
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       opacity: 1;
     }
 
@@ -724,7 +727,7 @@
     }
 
     .traffic-table th.sortable.sorted .sort-chevron {
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
 
     .traffic-table th.sortable.sorted .sort-chevron::before {
@@ -1384,7 +1387,7 @@
     }
     .url-decoded-copy:hover,
     .url-decoded-copy:focus-visible {
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
     .url-decoded-value {
       font-family: var(--font-mono);
@@ -1412,7 +1415,7 @@
       white-space: nowrap;
     }
 
-    .btn:hover { border-color: var(--pop-color); color: var(--pop-color); }
+    .btn:hover { border-color: var(--pop-color); color: var(--pop-text-color); }
     .btn:active { transform: scale(0.97); }
     .btn svg { width: 14px; height: 14px; }
     .btn i.ph { display: inline-flex; align-items: center; justify-content: center; }
@@ -1534,7 +1537,7 @@
     }
 
     .connected-source-item.focusable:hover span {
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
 
     .connected-source-item:last-child {
@@ -2291,7 +2294,7 @@
     .settings-nav-item.is-active {
       border-color: color-mix(in srgb, var(--pop-color) 42%, transparent);
       background: color-mix(in srgb, var(--pop-color) 14%, transparent);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       font-weight: 600;
     }
 
@@ -2374,7 +2377,7 @@
     .settings-value {
       font-family: var(--font-mono);
       font-size: 13px;
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
 
     .traffic-lists-toolbar {
@@ -2466,7 +2469,7 @@
     .traffic-list-accordion-toggle:hover,
     .traffic-list-accordion-toggle:focus-visible {
       border-color: var(--pop-color);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       outline: none;
     }
 
@@ -2522,7 +2525,7 @@
       padding: 2px 6px;
       border: 1px solid color-mix(in srgb, var(--pop-color) 35%, transparent);
       border-radius: 999px;
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
@@ -2601,7 +2604,7 @@
 
     .traffic-list-rule-button:hover {
       border-color: var(--pop-color);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
 
     .traffic-list-rule-button.is-remove:hover {
@@ -2886,7 +2889,7 @@
       letter-spacing: 0.5px;
       cursor: pointer;
     }
-    .detail-card-header:hover .detail-card-heading { color: var(--pop-color); }
+    .detail-card-header:hover .detail-card-heading { color: var(--pop-text-color); }
 
     .collapse-chevron {
       background: none;
@@ -2895,7 +2898,7 @@
       cursor: pointer;
       font: inherit;
     }
-    .detail-card-header:hover .collapse-chevron { color: var(--pop-color); }
+    .detail-card-header:hover .collapse-chevron { color: var(--pop-text-color); }
 
     .detail-card-body { padding: 0 20px 20px; }
 
@@ -2942,7 +2945,7 @@
       padding: 4px 10px;
       cursor: pointer;
     }
-    .detail-card-header:hover .collapse-chevron { color: var(--pop-color); }
+    .detail-card-header:hover .collapse-chevron { color: var(--pop-text-color); }
 
     /* Pills (method+host, status code, content-type, size) */
     .detail-pill {
@@ -2997,7 +3000,7 @@
       text-align: left;
       width: 100%;
     }
-    .url-summary:hover .url-toggle { color: var(--pop-color); }
+    .url-summary:hover .url-toggle { color: var(--pop-text-color); }
 
     .url-toggle {
       display: inline-flex;
@@ -3013,7 +3016,7 @@
       user-select: none;
       flex-shrink: 0;
     }
-    .url-toggle:hover { color: var(--pop-color); }
+    .url-toggle:hover { color: var(--pop-text-color); }
 
     .url-text {
       word-break: break-all;
@@ -3032,7 +3035,7 @@
       border-top: 1px solid rgba(255,255,255,0.05);
     }
     .url-grid-key {
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       font-weight: 600;
       white-space: nowrap;
     }
@@ -3074,13 +3077,13 @@
       font-family: var(--font-mono);
       line-height: 1.1;
     }
-    .header-toggle:hover { color: var(--pop-color); }
+    .header-toggle:hover { color: var(--pop-text-color); }
 
-    /* Header name in pop-color (#e1421f) */
+    /* Accessible accent text for header names */
     .header-name {
       font-family: var(--font-mono);
       font-size: 12px;
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       font-weight: 600;
       word-break: break-all;
       line-height: 1.1;
@@ -3293,7 +3296,7 @@
       font: inherit;
       padding: 18px 20px;
       margin-top: 12px;
-      opacity: 0.7;
+      opacity: 1;
       transition: opacity 0.15s, border-color 0.15s, background 0.15s;
       font-size: 14px;
       color: var(--text-watermark);
@@ -3310,13 +3313,13 @@
     .mock-add-rule-row:hover {
       opacity: 1;
       border-color: var(--pop-color);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       background: rgba(255,255,255,0.015);
     }
     .mock-add-rule-row:focus-visible {
       opacity: 1;
       border-color: var(--pop-color);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       outline: 2px solid var(--pop-color);
       outline-offset: 2px;
     }
@@ -3595,7 +3598,7 @@
       width: 100%;
       text-align: left;
     }
-    .mock-add-matcher-btn:hover { border-color: var(--pop-color); color: var(--pop-color); }
+    .mock-add-matcher-btn:hover { border-color: var(--pop-color); color: var(--pop-text-color); }
 
     .mock-action-config {
       margin-top: 8px;
@@ -4105,7 +4108,7 @@
       line-height: 1;
       z-index: 2;
     }
-    .search-clear-btn:hover { color: var(--pop-color); }
+    .search-clear-btn:hover { color: var(--pop-text-color); }
 
     /* ============================================================
        View in Traffic Button (Send page)
@@ -4119,7 +4122,7 @@
       background: var(--bg-highlight);
       border: 1px solid var(--border-color);
       border-radius: 4px;
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       font-size: 13px;
       cursor: pointer;
       transition: background 0.15s, border-color 0.15s;
@@ -4163,7 +4166,7 @@
       border: 1px solid var(--text-input-border);
       border-radius: 4px;
       background: var(--bg-input);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
       cursor: pointer;
       font-size: 11px;
     }
@@ -4269,7 +4272,7 @@
     }
     .send-tab-close:hover {
       background: var(--bg-lowlight);
-      color: var(--pop-color);
+      color: var(--pop-text-color);
     }
     .send-tab:focus-visible,
     .send-tab-add:focus-visible,

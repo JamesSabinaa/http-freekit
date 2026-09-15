@@ -50,18 +50,25 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 97 fixed
-findings and 21 awaiting user review; remediation is not complete.
+the corrected Android Stop assertion. The ledger currently records 98 fixed
+findings and 20 pending fixes; remediation is not complete. The user selected
+the recommended solution for all 21 review questions on September 15, 2026;
+remaining Awaiting user review entries now have approved design choices.
 
 ## Findings
 
 ### BUG-001 — Medium — Built-in Dark and Light theme text fails WCAG AA contrast
 
-- **Status:** Awaiting user review.
-- **Review:** the normal-text contrast failure is valid, but the remedy changes
-  the visual palette. Asked whether to use separate accessible text colors,
-  change the accent shades throughout both themes, or defer the design decision.
-  No palette change is made pending that choice.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the rendered contrast failures. Per the approved
+  choice, added separate Dark/Light accent text colors while retaining decorative
+  accent backgrounds and borders. Updated CSS, inline labels and Send header
+  inputs; custom themes can override the text token. Removed reduced opacity
+  from the Mock Add rule control so its ordinary label retains text contrast.
+- **Validation:** all 116 UI/meta checks pass, including base/tinted-surface
+  contrast coverage. Real Chrome checked 48 Dark and 51 Light rendered text
+  instances across panels and Settings sections, including the focused Mock
+  control; minimum observed ratios were 7.14:1 and 5.62:1 respectively.
 - **Evidence:** live Lighthouse accessibility audits of Intercept, View, Mock,
   Send, and every Settings section in Dark report contrast failures. The orange
   `--pop-color` text is only 3.58:1 against the footer, 2.95:1 against Settings

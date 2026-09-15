@@ -68,3 +68,23 @@ test('High Contrast gives white input and highlight surfaces an effective black 
   assert.match(styles, /\.context-menu-item:hover,[\s\S]*?color:\s*var\(--highlight-text-color\);/);
   assert.match(styles, /\.filter-hint-item:hover\s*\{[\s\S]*?color:\s*var\(--highlight-text-color\);/);
 });
+
+test('accent text meets contrast on base and tinted surfaces without changing decorative accents', () => {
+  const mix = (foreground, background, opacity) => '#' + foreground.slice(1).match(/../g)
+    .map((channel, index) => Math.round(parseInt(channel, 16) * opacity
+      + parseInt(background.slice(1 + index * 2, 3 + index * 2), 16) * (1 - opacity))
+      .toString(16).padStart(2, '0')).join('');
+  for (const selector of [':root', '[data-theme="light"]']) {
+    const theme = block(selector);
+    const accent = variable(theme, 'pop-color');
+    const text = variable(theme, 'pop-text-color');
+    assert.equal(accent, '#e1421f', 'decorative accent stays unchanged');
+    for (const surface of ['bg-main', 'bg-lowlight', 'bg-container', 'bg-input', 'bg-highlight']) {
+      const background = variable(theme, surface);
+      assertNormalTextContrast(text, background, `${selector} accent text on ${surface}`);
+      for (const opacity of [0.06, 0.07, 0.14]) {
+        assertNormalTextContrast(text, mix(accent, background, opacity), `${selector} tinted ${surface}`);
+      }
+    }
+  }
+});
