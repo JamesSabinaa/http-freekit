@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 99 fixed
-findings and 19 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 100 fixed
+findings and 18 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -578,11 +578,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-020 — Medium — Certificate browsing in web mode loses the selected file's directory
 
-- **Status:** Awaiting user review.
-- **Review:** confirmed that browser file selection supplies only a basename to
-  an API that reads server-side paths. User choice requested between explicitly
-  entering a server-readable path and uploading certificates into managed
-  server-side storage; no storage workflow has been selected yet.
+- **Status:** Fixed.
+- **Review and fix:** confirmed the browser cannot supply the server-side path
+  required by this API. Per the approved path-entry design, both certificate
+  inputs are editable and explain that the file must be readable on the machine
+  running FreeKit. Browse is shown only when the native Electron picker exists.
+  Browser fallback focuses the existing input without changing its value.
+- **Validation:** all 190 certificate/UI/meta checks pass, including native
+  selection and cancellation. Real Chrome verified editable fields, hidden
+  Browse buttons, path guidance, and successful trusted CA and client PKCS#12
+  additions through the production UI/API with isolated certificate files.
 - **Evidence:** the browser fallback in `selectCertificatePath()` uses
   `file.path || file.name` (`src/ui/app.js:14430-14452`). Ordinary browser `File`
   objects have no filesystem path, so it supplies only the basename to the

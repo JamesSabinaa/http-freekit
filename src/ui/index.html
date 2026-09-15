@@ -527,12 +527,13 @@
   <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Configure client certificates to send when connecting to specific hosts. Useful for mutual TLS (mTLS) authentication.
   </p>
+  <p id="clientCertPathHelp" style="font-size:12px;color:var(--text-lowlight);">Enter an absolute file path on the machine running FreeKit. The server must be able to read this file.</p>
   <div id="clientCertList" style="margin-bottom:8px;"></div>
   <div class="client-cert-editor">
     <input type="text" id="clientCertHost" placeholder="hostname (or * for all hosts)" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
-    <input type="text" id="clientCertPath" placeholder="No file selected" readonly style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;cursor:pointer;" onclick="browseClientCert()">
+    <input type="text" id="clientCertPath" aria-label="Certificate path on the server" aria-describedby="clientCertPathHelp" placeholder="Absolute path on the server" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
     <input type="password" id="clientCertPassphrase" placeholder="Passphrase (optional)" autocomplete="off" style="background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
-    <button class="btn" onclick="browseClientCert()" style="font-size:11px;">Browse</button>
+    <button type="button" class="btn" id="clientCertPathBrowse" onclick="browseClientCert()" style="font-size:11px;display:none;">Browse</button>
     <button class="btn" onclick="addClientCert()" style="font-size:11px;">Add</button>
   </div>
 </div>
@@ -541,10 +542,11 @@
   <p style="font-size:12px;color:var(--text-lowlight);margin-bottom:12px;line-height:1.5;">
     Additional CA certificates to trust when connecting to upstream servers.
   </p>
+  <p id="trustedCAPathHelp" style="font-size:12px;color:var(--text-lowlight);">Enter an absolute file path on the machine running FreeKit. The server must be able to read this file.</p>
   <div id="trustedCAList" style="margin-bottom:8px;"></div>
   <div style="display:flex;gap:8px;">
-    <input type="text" id="trustedCAPath" placeholder="No file selected" readonly style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;cursor:pointer;" onclick="browseTrustedCA()">
-    <button class="btn" onclick="browseTrustedCA()" style="font-size:11px;">Browse</button>
+    <input type="text" id="trustedCAPath" aria-label="Certificate path on the server" aria-describedby="trustedCAPathHelp" placeholder="Absolute path on the server" style="flex:1;background:var(--bg-input);border:1px solid var(--text-input-border);border-radius:4px;color:var(--text-main);padding:6px 10px;font-family:var(--font-mono);font-size:12px;">
+    <button type="button" class="btn" id="trustedCAPathBrowse" onclick="browseTrustedCA()" style="font-size:11px;display:none;">Browse</button>
     <button class="btn" onclick="addTrustedCA()" style="font-size:11px;">Add</button>
   </div>
 </div>

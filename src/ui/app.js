@@ -14514,14 +14514,16 @@
         return;
       }
 
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = extensions.map(ext => '.' + ext).join(',');
-      input.onchange = (event) => {
-        const file = event.target.files[0];
-        if (file) pathInput.value = file.path || file.name;
-      };
-      input.click();
+      pathInput.focus();
+      toast('Enter an absolute certificate path on the machine running FreeKit.', 'info');
+    }
+
+    function initializeCertificatePathPickers() {
+      const nativePickerAvailable = typeof window.electronApi?.selectFilePath === 'function';
+      for (const targetId of ['clientCertPath', 'trustedCAPath']) {
+        const button = document.getElementById(targetId + 'Browse');
+        if (button) button.style.display = nativePickerAvailable ? '' : 'none';
+      }
     }
 
     function browseClientCert() {
@@ -16807,6 +16809,7 @@
     // ============ INIT ============
     // Restore send tabs from localStorage
     restoreSendTabs();
+    initializeCertificatePathPickers();
     initializeSendTabs();
     document.getElementById('sendBody-fallback')?.addEventListener('input', handleSendBodyUserInput);
     document.addEventListener('input', markOpenMockEditDirty);
