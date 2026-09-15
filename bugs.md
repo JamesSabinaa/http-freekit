@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 100 fixed
-findings and 18 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 101 fixed
+findings and 17 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1319,12 +1319,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-050 — Medium — An unmatched text replacement corrupts binary body bytes
 
-- **Status:** Awaiting user review.
-- **Review:** The shared helper unconditionally round-trips bytes through UTF-8.
-  Preserving unmatched bytes is clear, but matching text inside invalid UTF-8
-  needs a policy: skip non-text bodies (recommended), or replace UTF-8 byte
-  sequences while preserving surrounding binary bytes. Asked for this choice;
-  implementation remains pending.
+- **Status:** Fixed.
+- **Review and fix:** confirmed unconditional UTF-8 transcoding corrupts binary
+  bytes. Per the approved policy, text Match/Replace skips invalid UTF-8 bodies.
+  Unmatched and identical replacements return the original bytes with no body
+  change, retaining original compression and encoding headers. Valid UTF-8
+  replacements still update bytes and framing through the existing pipeline.
+- **Validation:** all 383 mocking/meta checks pass. New real origin/proxy tests
+  cover request and response transformations, plain and gzip bodies, invalid and
+  truncated UTF-8, absent patterns, identical replacements, Unicode replacements
+  and deletion. Both network boundaries retain the expected bytes and encodings.
 - **Evidence:** Match/Replace always decodes and re-encodes a body as UTF-8,
   even when its pattern does not occur (`src/proxy/proxy-server.js:3811-3814`).
   Request and response transforms share this helper (`:3855,3895`).

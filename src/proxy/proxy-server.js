@@ -3821,8 +3821,12 @@ export class ProxyServer {
       }
     }
     if (mode === 'match-replace' && typeof matchPattern === 'string' && matchPattern) {
+      if (!isUtf8(decoded)) return { body: original, changed: false };
+      const text = decoded.toString('utf8');
+      const replaced = text.split(matchPattern).join(String(replacement ?? ''));
+      if (replaced === text) return { body: original, changed: false };
       return {
-        body: Buffer.from(decoded.toString('utf8').split(matchPattern).join(String(replacement ?? ''))),
+        body: Buffer.from(replaced),
         changed: true
       };
     }
