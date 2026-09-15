@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 111 fixed
-findings and 7 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 112 fixed
+findings and 6 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -482,13 +482,20 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-016 — Medium — Failed update shutdown leaves updater IPC permanently unavailable
 
-- **Status:** Awaiting user review.
-- **Review:** missing IPC is confirmed, but clearing the local handoff flag is
-  not cancellation of the native installer. The installed electron-updater
-  BaseUpdater calls installation before app.quit, and NsisUpdater starts the
-  installer process. Its handoff guard protects against untagged late events.
-  User decision requested: move managed cleanup before installer launch, retain
-  launch order with an explicit recovery/restart state, or defer this finding.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that native installation precedes app.quit, so
+  moved backend shutdown into installation preparation. Require explicit cleanup
+  completion before launching the installer, retaining the window, tray and updater
+  IPC during preparation. Disable window input while shutdown is pending so no new
+  edits follow renderer persistence. Cleanup failure re-enables the window; an
+  installer failure restores a missing backend and reconnects the window before
+  another preparation can proceed. Ordinary Quit cannot race active preparation
+  or recovery. Native handoff guards remain in place.
+- **Validation:** all 231 desktop/meta tests pass. Real updater handlers combined
+  with the preparation controller prove cleanup failure invokes no installer,
+  keeps all updater IPC handlers available, and permits a successful retry.
+  Tests cover installer-failure recovery, unconfirmed cleanup, renderer cancel,
+  concurrent preparation/cancellation, recovery errors and main-process wiring.
 - **Evidence:** install sets `installerHandoffMayEmit = true`
   (`electron/updater.cjs:618`). Quit cleanup stops the updater, releases
   `activeInstallRequest`, and removes its IPC handlers (`:660-685`). After a

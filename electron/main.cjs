@@ -38,6 +38,7 @@ const {
   DesktopPreferences
 } = require('./desktop-preferences.cjs');
 const { prepareRendererForQuit, runQuitCleanup } = require('./quit-cleanup.cjs');
+const { createUpdateInstallPreparation } = require('./update-install-preparation.cjs');
 const { installUnloadConfirmation } = require('./unload-confirmation.cjs');
 const { installWindowToTray, showTrayWindow } = require('./window-to-tray.cjs');
 
@@ -418,6 +419,37 @@ function shutdownServer() {
   });
 }
 
+const updateInstallPreparation = createUpdateInstallPreparation({
+  prepareRenderer: () => prepareRendererForQuit(mainWindow),
+  shutdownServer,
+  restoreBackend: async () => {
+    if (serverProcess) return;
+    await startServer();
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+    else await mainWindow.loadURL(`http://127.0.0.1:${apiPort}/?authToken=${authToken}`);
+  },
+  setBusy: busy => {
+    isShuttingDown = busy;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setEnabled(!busy);
+  },
+  onPrepared: prepared => {
+    updateInstallPrepared = prepared;
+    updateInstallQuitStarted = false;
+  }
+});
+
+async function prepareUpdateInstall() {
+  if (quitCleanupPromise || quitCleanupComplete) return false;
+  return updateInstallPreparation.prepare();
+}
+
+function recoverUpdateInstall() {
+  updateInstallPreparation.recover().catch(error => {
+    console.error('[Electron] Update recovery failed:', error.message);
+    dialog.showErrorBox('HTTP FreeKit — Update Recovery Failed', error.message);
+  });
+}
+
 function restoreWindowAfterFailedQuit(error) {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   else showMainWindow();
@@ -429,15 +461,8 @@ function restoreWindowAfterFailedQuit(error) {
   createTray(mainWindow);
   initAutoUpdater(mainWindow, {
     validateSender,
-    prepareForInstall: async () => {
-      updateInstallQuitStarted = false;
-      updateInstallPrepared = await prepareRendererForQuit(mainWindow);
-      return updateInstallPrepared;
-    },
-    onInstallPreparationFailed: () => {
-      updateInstallPrepared = false;
-      updateInstallQuitStarted = false;
-    }
+    prepareForInstall: async () => prepareUpdateInstall(),
+    onInstallPreparationFailed: () => recoverUpdateInstall()
   });
   dialog.showErrorBox(
     'HTTP FreeKit — Shutdown Incomplete',
@@ -695,12 +720,13 @@ if (hasSingleInstanceLock) nativeAutoUpdater.on('before-quit-for-update', () => 
 if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   if (quitCleanupComplete) return;
   event.preventDefault();
+  if (updateInstallPreparation.busy) return;
   if (quitCleanupPromise) return;
 
   const windowForQuit = mainWindow;
   quitCleanupPromise = runQuitCleanup({
     mainWindow: windowForQuit,
-    prepare: updateInstallQuitStarted ? async () => true : undefined,
+    prepare: updateInstallPrepared ? async () => true : undefined,
     onPrepared: () => { isShuttingDown = true; },
     relaunch: relaunchRequested ? () => app.relaunch() : null,
     stopAutoUpdater,
@@ -753,15 +779,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // Set up auto-updater
     initAutoUpdater(mainWindow, {
       validateSender,
-      prepareForInstall: async () => {
-        updateInstallQuitStarted = false;
-        updateInstallPrepared = await prepareRendererForQuit(mainWindow);
-        return updateInstallPrepared;
-      },
-      onInstallPreparationFailed: () => {
-        updateInstallPrepared = false;
-        updateInstallQuitStarted = false;
-      }
+      prepareForInstall: async () => prepareUpdateInstall(),
+      onInstallPreparationFailed: () => recoverUpdateInstall()
     });
   } catch (err) {
     dialog.showErrorBox('HTTP FreeKit — Startup Error', err.message);

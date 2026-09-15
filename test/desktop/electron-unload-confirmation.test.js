@@ -7,6 +7,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const require = createRequire(import.meta.url);
+const { createUpdateInstallPreparation } = require('../../electron/update-install-preparation.cjs');
 const {
   UNSAVED_CHANGES_DIALOG,
   installUnloadConfirmation
@@ -94,7 +95,8 @@ function loadUpdater({
   prepareResult = true,
   prepareError = null,
   prepareOperation = null,
-  quitOperation = null
+  quitOperation = null,
+  recoveryOperation = null
 } = {}) {
   const filename = path.join(process.cwd(), 'electron', 'updater.cjs');
   const source = fs.readFileSync(filename, 'utf8');
@@ -115,7 +117,10 @@ function loadUpdater({
   const electron = {
     app: { getVersion: () => '1.0.0', isPackaged: true },
     dialog: { showMessageBox: () => Promise.resolve({ response: 1 }) },
-    ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
+    ipcMain: {
+      handle: (channel, handler) => ipcHandlers.set(channel, handler),
+      removeHandler: channel => ipcHandlers.delete(channel)
+    },
     shell: { openExternal: () => Promise.resolve() }
   };
   const mocks = {
@@ -153,12 +158,13 @@ function loadUpdater({
       if (prepareOperation) return prepareOperation();
       return prepareResult;
     },
-    onInstallPreparationFailed: () => { preparationFailureCalls++; }
+    onInstallPreparationFailed: () => { preparationFailureCalls++; recoveryOperation?.(); }
   });
   return {
     autoUpdater,
     cancelInstall: module.exports.cancelUpdateInstall,
     install: ipcHandlers.get('updater-install'),
+    ipcHandlers,
     statuses,
     get prepareCalls() { return prepareCalls; },
     get preparationFailureCalls() { return preparationFailureCalls; },
@@ -278,8 +284,104 @@ test('main process wires native unload confirmation and updater preparation toge
   assert.match(mainSource, /nativeAutoUpdater\.on\('before-quit-for-update'/);
   assert.match(mainSource, /updateInstallQuitStarted = updateInstallPrepared/);
   assert.match(mainSource, /prepareForInstall: async \(\) =>/);
-  assert.match(mainSource, /updateInstallPrepared = await prepareRendererForQuit\(mainWindow\)/);
-  assert.match(mainSource, /prepare: updateInstallQuitStarted \? async \(\) => true : undefined/);
+  assert.match(mainSource, /prepareForInstall: async \(\) => prepareUpdateInstall\(\)/);
+  assert.match(mainSource, /prepareRenderer: \(\) => prepareRendererForQuit\(mainWindow\)/);
+  assert.match(mainSource, /prepare: updateInstallPrepared \? async \(\) => true : undefined/);
+  assert.match(mainSource, /if \(updateInstallPreparation\.busy\) return/);
+});
+
+test('cleanup failure leaves updater IPC usable and retry cleans up before native install', async () => {
+  const events = [];
+  let failCleanup = true;
+  const preparation = createUpdateInstallPreparation({
+    prepareRenderer: async () => { events.push('renderer'); return true; },
+    shutdownServer: async () => {
+      events.push('cleanup');
+      if (failCleanup) throw new Error('System Proxy restoration failed');
+      events.push('cleanup-complete');
+      return { cleanupComplete: true };
+    },
+    restoreBackend: async () => { events.push('recover'); },
+    setBusy: value => events.push(`busy:${value}`),
+    onPrepared: value => events.push(`prepared:${value}`)
+  });
+  const updater = loadUpdater({
+    prepareOperation: preparation.prepare,
+    recoveryOperation: () => { preparation.recover().catch(() => {}); },
+    quitOperation: () => events.push('install')
+  });
+  const failure = await updater.install({});
+  await preparation.recover();
+  assert.equal(failure.started, false);
+  assert.equal(updater.quitCalls, 0);
+  assert.match(updater.statuses.at(-1).error, /System Proxy restoration failed/);
+  for (const channel of ['updater-install', 'updater-get-status', 'updater-check-now']) {
+    assert.equal(typeof updater.ipcHandlers.get(channel), 'function', channel);
+  }
+  assert.equal(updater.ipcHandlers.get('updater-get-status')({}).status, 'error');
+  assert.equal(preparation.busy, false);
+  failCleanup = false;
+  const retry = await updater.install({});
+  assert.equal(retry.started, true);
+  assert.equal(updater.quitCalls, 1);
+  assert.ok(events.indexOf('cleanup-complete') < events.indexOf('install'));
+});
+
+test('installer launch failure restores the backend before an installation retry', async () => {
+  let backendRunning = true;
+  let shutdowns = 0;
+  let restarts = 0;
+  const restored = deferred();
+  const preparation = createUpdateInstallPreparation({
+    prepareRenderer: async () => true,
+    shutdownServer: async () => {
+      assert.equal(backendRunning, true);
+      backendRunning = false;
+      shutdowns++;
+      return { cleanupComplete: true };
+    },
+    restoreBackend: async () => {
+      await restored.promise;
+      backendRunning = true;
+      restarts++;
+    },
+    setBusy() {}, onPrepared() {}
+  });
+  const updater = loadUpdater({
+    prepareOperation: preparation.prepare,
+    recoveryOperation: () => { preparation.recover().catch(() => {}); },
+    quitOperation: (autoUpdater, count) => {
+      assert.equal(backendRunning, false);
+      if (count === 1) autoUpdater.emit('error', new Error('installer launch failed'));
+    }
+  });
+  assert.equal((await updater.install({})).started, false);
+  const retry = updater.install({});
+  await Promise.resolve();
+  assert.equal(shutdowns, 1);
+  restored.resolve();
+  assert.equal((await retry).started, true);
+  assert.equal(restarts, 1);
+  assert.equal(shutdowns, 2);
+});
+
+test('update preparation requires confirmed cleanup and preserves renderer cancellation', async () => {
+  for (const accepted of [false, true]) {
+    let cleanupCalls = 0;
+    const busy = [];
+    const preparation = createUpdateInstallPreparation({
+      prepareRenderer: async () => accepted,
+      shutdownServer: async () => { cleanupCalls++; return { cleanupComplete: false }; },
+      restoreBackend: async () => {},
+      setBusy: value => busy.push(value),
+      onPrepared() {}
+    });
+    if (accepted) await assert.rejects(preparation.prepare(), /without confirming/);
+    else assert.equal(await preparation.prepare(), false);
+    assert.equal(cleanupCalls, accepted ? 1 : 0);
+    assert.equal(preparation.busy, false);
+    assert.deepEqual(busy, accepted ? [true, false] : []);
+  }
 });
 
 test('renderer disables Restart to install while its request is pending', () => {
