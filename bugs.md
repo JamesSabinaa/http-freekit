@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 109 fixed
-findings and 9 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 110 fixed
+findings and 8 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2758,9 +2758,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-108 — Medium — cURL paste silently changes ANSI-C quoted request bodies
 
-- **Status:** Awaiting user review. Choose between decoding ANSI-C quoting with
-  rejection where Send cannot preserve the resulting bytes, or rejecting this
-  quoting syntax while retaining the current request. No implementation change yet.
+- **Status:** Fixed.
+- **Review and fix:** confirmed that dollar-single quotes were incorrectly treated
+  as ordinary quotes. Decode ANSI-C text, control, octal, hexadecimal and Unicode
+  escapes, assembling adjacent fragments before validating UTF-8. Preserve unknown
+  escapes literally. Reject NUL bytes, invalid UTF-8, invalid Unicode and unsupported
+  control escapes before the paste handler replaces any request state.
+- **Validation:** all 255 Send/meta tests pass. New tests compare decoded arguments
+  byte-for-byte with native Bash, cover quoting boundaries and split UTF-8 sequences,
+  and exercise successful multiline paste and atomic rejection with an existing
+  multipart request and file handle.
 - **Evidence:** the cURL tokenizer recognizes ordinary single and double quotes
   but treats the dollar sign in Bash's `$'…'` syntax as literal text and retains
   the enclosed backslash escapes (`src/ui/curl-parser.js:132-172`). It accepts

@@ -3,9 +3,75 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 
 import { parseCurlCommand } from '../../src/ui/curl-parser.js';
 import { normalizeSendUrl } from '../../src/ui/send-url.js';
+
+const ansiWords = [
+  [String.raw`$'first\nsecond'`, 'first\nsecond'],
+  [String.raw`$'\a\b\e\E\f\n\r\t\v\\\'\"\?'`, '\x07\b\x1b\x1b\f\n\r\t\v\\\'"?'],
+  [String.raw`$'\101\x42\7Z\777'`, null],
+  [String.raw`$'\101\x42\7Z'`, 'AB\x07Z'],
+  [String.raw`$'\u00e9\U0001f680'`, 'é🚀'],
+  [String.raw`$'\xc3'$'\xa9'`, 'é'],
+  [String.raw`before$'\n'"after"`, 'before\nafter'],
+  [String.raw`$'\xef\xbb\xbftext'`, '\ufefftext'],
+  [String.raw`$'\q\x\u\U'`, '\\q\\x\\u\\U'],
+  [String.raw`$'\cA\cz\c?\c\\'`, '\x01\x1a\x7f\x1c'],
+  [String.raw`$'é🚀 $HOME $(echo nope)'`, 'é🚀 $HOME $(echo nope)'],
+  [String.raw`"$'first\nsecond'"`, "$'first\\nsecond'"],
+  [String.raw`\$'first\nsecond'`, '$first\\nsecond'],
+  [String.raw`$''`, '']
+];
+
+test('ANSI-C cURL arguments preserve decoded bytes and shell quote boundaries', () => {
+  for (const [word, expected] of ansiWords) {
+    const parsed = parseCurlCommand(`curl https://example.test --data-raw ${word}`);
+    if (expected === null) assert.match(parsed.error, /cannot preserve/);
+    else {
+      assert.equal(parsed.error, undefined, word);
+      assert.equal(parsed.body, expected, word);
+    }
+  }
+  const parsed = parseCurlCommand(String.raw`curl $'https://example.test/\x61' -H $'X-Test: \u00e9' --data-urlencode=$'q=a\nb'`);
+  assert.equal(parsed.url, 'https://example.test/a');
+  assert.equal(parsed.headers['X-Test'], 'é');
+  assert.equal(parsed.body, 'q=a%0Ab');
+});
+
+test('decoded ANSI-C arguments match native Bash bytes', t => {
+  const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';
+  if (!fs.existsSync(bash)) return t.skip('Bash is not installed');
+  for (const [word, expected] of ansiWords.filter(([, value]) => value !== null)) {
+    const native = spawnSync(bash, ['--noprofile', '--norc', '-s'], {
+      input: `printf '%s' ${word}\n`,
+      env: { ...process.env, LC_ALL: 'C.UTF-8' }, windowsHide: true
+    });
+    assert.equal(native.status, 0, word + ': ' + native.stderr?.toString());
+    const parsed = parseCurlCommand(`curl https://example.test --data-raw ${word}`);
+    assert.deepEqual(Buffer.from(parsed.body), native.stdout, word);
+    assert.deepEqual(Buffer.from(expected), native.stdout, word);
+  }
+});
+
+test('unpreservable ANSI-C pastes leave the complete request intact', () => {
+  for (const word of [String.raw`$'\0hidden'`, String.raw`$'\x00'`, String.raw`$'\xff'`,
+    String.raw`$'\xc3'`, String.raw`$'\ud800'`, String.raw`$'\U00110000'`, "$'unfinished"]) {
+    const harness = createCurlPasteHarness();
+    const { state } = harness.paste(`curl https://other.example.test --data-raw ${word}`);
+    assert.strictEqual(state.tab, harness.initialTab, word);
+    assert.strictEqual(state.headers, harness.initialTab.headers, word);
+    assert.equal(state.body, 'stale secret body', word);
+    assert.equal(state.multipartFields[0].file.marker, 'stale-file-handle', word);
+    assert.equal(harness.persisted.length, 0, word);
+    assert.equal(harness.toasts[0].type, 'error', word);
+  }
+  const harness = createCurlPasteHarness();
+  const { state } = harness.paste(String.raw`curl https://example.test --data-raw $'first\nsecond'`);
+  assert.equal(state.body, 'first\nsecond');
+  assert.equal(harness.toasts[0].type, 'success');
+});
 
 test('explicit cURL headers override special options regardless of order', () => {
   for (const [name, short, long, value] of [

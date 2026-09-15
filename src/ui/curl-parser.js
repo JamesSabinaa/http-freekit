@@ -111,6 +111,65 @@ function curlUnsupportedOptionName(token) {
   return token.slice(0, 2);
 }
 
+// Keep byte escapes as bytes until the complete shell word has been assembled:
+// adjacent quoted fragments can contain separate bytes of one UTF-8 character.
+function readCurlAnsiQuote(command, start) {
+  const bytes = [];
+  const appendText = value => {
+    for (const byte of new TextEncoder().encode(value)) bytes.push(byte);
+  };
+  const simple = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11,
+    '\\': 92, "'": 39, '"': 34, '?': 63 };
+  for (let i = start; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "'") return { bytes, end: i };
+    if (ch !== '\\') {
+      const point = String.fromCodePoint(command.codePointAt(i));
+      appendText(point);
+      i += point.length - 1;
+      continue;
+    }
+    const escape = command[++i];
+    if (escape === undefined) break;
+    if (Object.hasOwn(simple, escape)) {
+      bytes.push(simple[escape]);
+      continue;
+    }
+    const pattern = /[0-7]/.test(escape) ? /^[0-7]{1,3}/
+      : escape === 'x' ? /^[0-9a-fA-F]{1,2}/
+        : escape === 'u' ? /^[0-9a-fA-F]{1,4}/
+          : escape === 'U' ? /^[0-9a-fA-F]{1,8}/ : null;
+    if (pattern) {
+      const octal = /[0-7]/.test(escape);
+      const digits = command.slice(octal ? i : i + 1).match(pattern)?.[0];
+      if (digits) {
+        const value = parseInt(digits, octal ? 8 : 16);
+        i += digits.length - (octal ? 1 : 0);
+        if (escape === 'u' || escape === 'U') {
+          if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) {
+            return { error: 'Cannot import cURL ANSI-C quoting: invalid Unicode escape' };
+          }
+          appendText(String.fromCodePoint(value));
+        } else {
+          bytes.push(value & 0xff);
+        }
+        continue;
+      }
+    }
+    if (escape === 'c') {
+      let control = command[++i];
+      if (control === '\\' && command[i + 1] === '\\') control = command[++i];
+      if (!control || control === "'" || control.charCodeAt(0) > 127) {
+        return { error: 'Cannot import cURL ANSI-C quoting: unsupported control escape' };
+      }
+      bytes.push(control === '?' ? 127 : control.toUpperCase().charCodeAt(0) & 31);
+      continue;
+    }
+    appendText('\\' + escape);
+  }
+  return { error: 'Cannot import cURL command: an argument has an unterminated quote' };
+}
+
 export function parseCurlCommand(curlStr) {
   const result = {
     method: 'GET',
@@ -132,41 +191,70 @@ export function parseCurlCommand(curlStr) {
 
   const tokens = [];
   let current = '';
+  let byteParts = [];
+  const flushText = () => {
+    for (const byte of new TextEncoder().encode(current)) byteParts.push(byte);
+    current = '';
+  };
+  const pushToken = () => {
+    if (byteParts.length === 0) {
+      tokens.push(current);
+    } else {
+      flushText();
+      if (byteParts.includes(0)) throw new Error('NUL bytes cannot be preserved');
+      tokens.push(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(new Uint8Array(byteParts)));
+    }
+    current = '';
+    byteParts = [];
+  };
   let inSingle = false, inDouble = false, escaped = false, tokenStarted = false;
 
-  for (let i = 0; i < cmd.length; i++) {
-    const ch = cmd[i];
-    if (escaped) { current += ch; escaped = false; tokenStarted = true; continue; }
-    if (ch === '\\' && !inSingle) {
-      const next = cmd[i + 1];
-      if (next === '\n') {
-        i++;
+  try {
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (escaped) { current += ch; escaped = false; tokenStarted = true; continue; }
+      if (ch === '$' && cmd[i + 1] === "'" && !inSingle && !inDouble) {
+        const quoted = readCurlAnsiQuote(cmd, i + 2);
+        if (quoted.error) return { error: quoted.error };
+        flushText();
+        for (const byte of quoted.bytes) byteParts.push(byte);
+        i = quoted.end;
+        tokenStarted = true;
         continue;
       }
-      if (next === '\r' && cmd[i + 2] === '\n') {
-        i += 2;
+      if (ch === '\\' && !inSingle) {
+        const next = cmd[i + 1];
+        if (next === '\n') {
+          i++;
+          continue;
+        }
+        if (next === '\r' && cmd[i + 2] === '\n') {
+          i += 2;
+          continue;
+        }
+        if (inDouble && next && !['\\', '"', '$', '`'].includes(next)) {
+          current += ch;
+          tokenStarted = true;
+        } else {
+          escaped = true;
+          tokenStarted = true;
+        }
         continue;
       }
-      if (inDouble && next && !['\\', '"', '$', '`'].includes(next)) {
-        current += ch;
-        tokenStarted = true;
-      } else {
-        escaped = true;
-        tokenStarted = true;
+      if (ch === "'" && !inDouble) { inSingle = !inSingle; tokenStarted = true; continue; }
+      if (ch === '"' && !inSingle) { inDouble = !inDouble; tokenStarted = true; continue; }
+      if (/\s/.test(ch) && !inSingle && !inDouble) {
+        if (tokenStarted) { pushToken(); tokenStarted = false; }
+        continue;
       }
-      continue;
+      current += ch;
+      tokenStarted = true;
     }
-    if (ch === "'" && !inDouble) { inSingle = !inSingle; tokenStarted = true; continue; }
-    if (ch === '"' && !inSingle) { inDouble = !inDouble; tokenStarted = true; continue; }
-    if (/\s/.test(ch) && !inSingle && !inDouble) {
-      if (tokenStarted) { tokens.push(current); current = ''; tokenStarted = false; }
-      continue;
-    }
-    current += ch;
-    tokenStarted = true;
+    if (escaped) current += '\\';
+    if (tokenStarted) pushToken();
+  } catch {
+    return { error: 'Cannot import cURL ANSI-C quoting: Send cannot preserve NUL bytes or invalid UTF-8' };
   }
-  if (escaped) current += '\\';
-  if (tokenStarted) tokens.push(current);
   if (inSingle || inDouble) {
     return { error: 'Cannot import cURL command: an argument has an unterminated quote' };
   }
