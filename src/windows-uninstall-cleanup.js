@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { removeWindowsCaTrust } from './proxy/windows-ca-trust.js';
+import { SystemProxyInterceptor } from './interceptors/system-proxy-interceptor.js';
 
 const FINGERPRINT_PATTERN = /^[0-9A-F]{40}$/;
 
@@ -47,7 +48,7 @@ export function collectOwnedCaFingerprints(dataDir, fileSystem = fs) {
   return [...fingerprints];
 }
 
-export function cleanupWindowsInstallation(dataDir, options = {}) {
+export async function cleanupWindowsInstallation(dataDir, options = {}) {
   const platform = options.platform || process.platform;
   const fileSystem = options.fileSystem || fs;
   const run = options.run;
@@ -69,6 +70,22 @@ export function cleanupWindowsInstallation(dataDir, options = {}) {
     throw new Error('Cannot identify the trusted CA associated with the retained private key');
   }
 
+  const recoveryPaths = ['system-proxy-recovery.json', 'winhttp-proxy-recovery.json']
+    .map(name => path.join(resolvedDataDir, name));
+  if (recoveryPaths.some(filePath => fileSystem.existsSync(filePath))) {
+    const interceptor = options.createSystemProxyInterceptor
+      ? options.createSystemProxyInterceptor(resolvedDataDir)
+      : new SystemProxyInterceptor({ dataDir: resolvedDataDir });
+    await interceptor.recoverStaleSettings();
+    const remaining = recoveryPaths.filter(filePath => fileSystem.existsSync(filePath));
+    if (remaining.length) {
+      const detail = [interceptor.recoveryBlockedReason, interceptor.winHttpRecoveryBlockedReason]
+        .filter(Boolean).join('; ');
+      throw new Error(`System proxy recovery is incomplete (${remaining.map(filePath => path.basename(filePath)).join(', ')}). ` +
+        `Close running FreeKit sessions and retry uninstall. Recovery data was preserved.${detail ? ' ' + detail : ''}`);
+    }
+  }
+
   const removal = removeWindowsCaTrust(fingerprints, run);
   if (removal.remainingFingerprints.length > 0) {
     throw new AggregateError(
@@ -86,7 +103,7 @@ const isMain = process.argv[1]
 
 if (isMain) {
   try {
-    cleanupWindowsInstallation(process.argv[2]);
+    await cleanupWindowsInstallation(process.argv[2]);
   } catch (error) {
     console.error(`[Uninstall] ${error.message}`);
     process.exitCode = 1;

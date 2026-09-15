@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 115 fixed
-findings and 3 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 116 fixed
+findings and 2 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -2037,11 +2037,20 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-078 — High — Uninstall deletes interrupted system-proxy recovery state without restoring settings
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed unconditional deletion of the directory containing proxy
-  recovery journals. Asked whether uninstall should attempt ownership-checked
-  restoration and preserve data on failure, or preserve data whenever a recovery
-  journal exists and report that recovery is required.
+- **Status:** Fixed.
+- **Review and fix:** confirmed unconditional recovery-journal deletion. The
+  asynchronous uninstall helper now invokes production System Proxy recovery
+  before removing certificates or private data and requires both WinINET and
+  WinHTTP journals to be cleared. Existing identity and settings ownership checks
+  preserve external changes and block live or ambiguous owners. Remaining journals
+  produce a nonzero CLI result with recovery guidance. NSIS aborts before deleting
+  installed files on cleanup failure, retaining the application and recovery data.
+- **Validation:** all 406 desktop/system-proxy/core/build/meta checks pass; the
+  final 11 uninstall tests also pass, including a native CLI failure check. Tests
+  activate production interceptors with in-memory Windows adapters, then verify
+  both restorations, external-change preservation, live-owner refusal, corrupt
+  journals, partial failures and successful retry. Certificate removal occurs
+  only after both journals disappear. No native proxy settings were changed.
 - **Evidence:** true NSIS uninstall invokes the cleanup helper
   (`build/installer.nsh:2-4`), which removes certificates and the entire data
   directory without restoring pending WinINET/WinHTTP journals
