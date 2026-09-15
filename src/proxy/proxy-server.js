@@ -11898,7 +11898,7 @@ export class ProxyServer {
     const passthroughIdx = this.mockRules.findIndex(r =>
       r.action?.type === 'passthrough' && r.matchers?.some(m => m.type === 'method' && m.value === '*')
     );
-    if (storedRule.type !== 'group' && passthroughIdx !== -1) {
+    if (passthroughIdx !== -1) {
       this.mockRules.splice(passthroughIdx, 0, storedRule);
     } else {
       this.mockRules.push(storedRule);

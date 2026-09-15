@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 102 fixed
-findings and 16 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 103 fixed
+findings and 15 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1062,12 +1062,16 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-039 — Medium — Group operations can put enabled mock rules behind catch-all passthrough
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed new groups bypass the before-passthrough insertion rule
-  and ungrouping appends at the end. Extracting a middle child requires a choice:
-  keep its group intact and place it immediately after that group (recommended),
-  or split the group to preserve the exact matching order. Asked the user before
-  choosing that behavior.
+- **Status:** Fixed.
+- **Review and fix:** confirmed both ordering defects. New groups now use the
+  existing before-passthrough insertion rule. Per the approved extraction policy,
+  an ungrouped rule is inserted immediately after its former top-level group,
+  leaving the remaining children together in their existing order. Ungrouping an
+  already top-level rule retains its position; missing IDs leave state unchanged.
+- **Validation:** all 384 mocking/meta checks pass. A real API/proxy/origin test
+  confirms the mock continues matching through group creation, move-to-group and
+  extraction of a middle child. Checks cover remaining child order, persisted
+  ordering, repeated ungrouping and missing-ID behavior.
 - **Evidence:** `addMockRule()` inserts ordinary rules before catch-all
   passthrough rules but excludes groups from that placement
   (`src/proxy/proxy-server.js:12268-12275`). The ungroup API also appends an

@@ -286,3 +286,50 @@ test('renderer reloads authoritative rules after stale-rule and persistence fail
     });
   }
 });
+
+test('new groups and extracted children stay before catch-all passthrough on the wire', async t => {
+  const writes = [];
+  const { proxy, port } = await createServer(t, {
+    set: (key, value) => writes.push(JSON.parse(JSON.stringify(value)))
+  });
+  proxy.port = 0;
+  await proxy.start();
+  t.after(() => proxy.stop());
+  const origin = http.createServer((req, res) => res.end('ORIGIN'));
+  origin.listen(0, '127.0.0.1');
+  await new Promise(resolve => origin.once('listening', resolve));
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  const send = () => new Promise((resolve, reject) => {
+    const req = http.get({ hostname: '127.0.0.1', port: proxy.server.address().port,
+      path: `http://127.0.0.1:${origin.address().port}/target` }, res => {
+      const chunks = [];res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+    req.on('error', reject);
+  });
+  const passthrough = proxy.addMockRule({ matchers: [{ type: 'method', value: '*' }], action: { type: 'passthrough' } });
+  const matching = proxy.addMockRule({ matchers: [{ type: 'path', value: '/target' }], action: { type: 'fixed-response', status: 200, body: 'MOCK' } });
+  assert.equal(await send(), 'MOCK');
+  const created = await postJson(port, '/api/mock-rules/group', { title: 'Group' });
+  assert.equal(created.statusCode, 200);
+  const group = created.body.group;
+  assert.deepEqual(proxy.mockRules.map(r => r.id), [matching.id, group.id, passthrough.id]);
+  assert.equal((await postJson(port, '/api/mock-rules/move-to-group', { ruleId: matching.id, groupId: group.id })).statusCode, 200);
+  assert.equal(await send(), 'MOCK');
+  // Give the matching rule neighbors so extraction covers a middle child.
+  const owner = proxy.mockRules[0];
+  owner.items.unshift({ id: 'before', matchers: [{ type: 'path', value: '/before' }], action: { type: 'passthrough' } });
+  owner.items.push({ id: 'after', matchers: [{ type: 'path', value: '/after' }], action: { type: 'passthrough' } });
+  assert.equal((await postJson(port, '/api/mock-rules/ungroup', { ruleId: matching.id })).statusCode, 200);
+  assert.deepEqual(proxy.mockRules.map(r => r.id), [group.id, matching.id, passthrough.id]);
+  assert.deepEqual(proxy.mockRules[0].items.map(r => r.id), ['before', 'after']);
+  assert.deepEqual(writes.at(-1), proxy.mockRules);
+  assert.equal(await send(), 'MOCK');
+  const snapshot = JSON.parse(JSON.stringify(proxy.mockRules));
+  assert.equal((await postJson(port, '/api/mock-rules/ungroup', { ruleId: matching.id })).statusCode, 200);
+  assert.deepEqual(proxy.mockRules, snapshot);
+  const count = writes.length;
+  assert.equal((await postJson(port, '/api/mock-rules/ungroup', { ruleId: 'missing' })).statusCode, 404);
+  assert.equal(writes.length, count);
+  assert.deepEqual(proxy.mockRules, snapshot);
+});

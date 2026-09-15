@@ -1844,8 +1844,14 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       if (!body) return;
       const { ruleId } = body;
       const rule = this._mutateRules('mockRules', 'mockRules', () => {
+        const ownerIndex = this.proxy.mockRules.findIndex(item =>
+          this.proxy._findMockRuleById(ruleId, [item])
+        );
+        if (ownerIndex === -1) return null;
+        const owner = this.proxy.mockRules[ownerIndex];
+        if (owner.id === ruleId) return owner;
         const removed = this._removeRuleById(ruleId);
-        if (removed) this.proxy.mockRules.push(removed);
+        if (removed) this.proxy.mockRules.splice(ownerIndex + 1, 0, removed);
         return removed;
       }, result => result !== null);
       if (!rule) return res.status(404).json({ error: 'Rule not found' });
