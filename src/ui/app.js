@@ -6118,6 +6118,7 @@
 
     function isConnectedInterceptorSource(interceptor) {
       if (!interceptor?.active) return false;
+      if (interceptor.id === 'jvm') return interceptor.interceptionActive === true || !interceptor.activationUncertain;
       if (interceptor.id !== 'android-adb') return true;
       return getAndroidInterceptorSummary(interceptor).interceptionActive;
     }
@@ -6247,6 +6248,8 @@
         let pillHtml = '';
         if (cleanupPending) {
           pillHtml = '<span class="intercept-pill pill-warning">Cleanup pending</span>';
+        } else if (i.id === 'jvm' && i.activationUncertain) {
+          pillHtml = '<span class="intercept-pill pill-warning">Activation uncertain · cleanup available</span>';
         } else if (i.active) {
           if (i.id === 'android-adb') {
             pillHtml = renderAndroidInterceptorStatusPills(i);
@@ -7042,10 +7045,17 @@
 
     function renderJvmConfig(container) {
       const meta = expandedInterceptorMetadata;
-      const processes = meta?.processes || [];
-      const activatedPids = new Set(
-        (meta?.activatedProcesses || []).map(p => p.pid)
-      );
+      const ownedProcesses = meta?.activatedProcesses || [];
+      const processes = [...(meta?.processes || [])];
+      for (const owned of ownedProcesses) {
+        if (!processes.some(p => p.pid === owned.pid)) processes.push(owned);
+      }
+      const activatedPids = new Set(ownedProcesses.filter(p => !p.activationUncertain).map(p => p.pid));
+      const uncertainPids = new Set(ownedProcesses.filter(p => p.activationUncertain).map(p => p.pid));
+      const cleanupNotice = uncertainPids.size > 0
+        ? `<p class="intercept-pill pill-warning">JVM activation could not be confirmed. Cleanup is available.</p>
+           <button type="button" class="btn" onclick="event.stopPropagation(); deactivateInterceptor('jvm');">Stop and clean up all JVM attachments</button>`
+        : '';
 
       const fallbackCmd = typeof meta?.fallbackCommand === 'string'
         ? meta.fallbackCommand
@@ -7078,9 +7088,11 @@
       container.innerHTML = `
         <div class="config-section">
           <h3>Running JVM Processes</h3>
+          ${cleanupNotice}
           <div class="jvm-process-list">
             ${processes.map(p => {
               const isActivated = activatedPids.has(p.pid);
+              const isUncertain = uncertainPids.has(p.pid);
               return `
                 <div class="jvm-process-item${isActivated ? ' activated' : ''}" data-jvm-pid="${esc(p.pid)}">
                   <div class="jvm-process-info">
@@ -7091,7 +7103,9 @@
                     </div>
                   </div>
                   <div class="jvm-process-actions">
-                    ${isActivated
+                    ${isUncertain
+                      ? '<span class="intercept-pill pill-warning" style="margin:0;">Activation uncertain</span>'
+                      : isActivated
                       ? '<span class="intercept-pill pill-active" style="margin:0;">Activated</span>'
                       : `<button class="jvm-process-activate" onclick="event.stopPropagation(); activateJvmProcess('${esc(p.pid)}');">Attach</button>`
                     }
@@ -7145,6 +7159,14 @@
               ? data.metadata.activatedProcesses
               : expandedInterceptorMetadata?.activatedProcesses || []
           };
+          const owned = expandedInterceptorMetadata.activatedProcesses;
+          allInterceptors = allInterceptors.map(interceptor => interceptor.id === 'jvm' ? {
+            ...interceptor,
+            active: owned.length > 0,
+            interceptionActive: owned.some(process => !process.activationUncertain),
+            activationUncertain: owned.some(process => process.activationUncertain)
+          } : interceptor);
+          renderConnectedSources(allInterceptors);
           metadataUpdated = true;
         }
 

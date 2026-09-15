@@ -102,6 +102,7 @@ test('JVM helper failure after spawn retains uncertain ownership without reporti
     name: 'Java/JVM Application',
     type: 'jvm',
     active: true,
+    interceptionActive: false,
     activationUncertain: true,
     pid: null
   });

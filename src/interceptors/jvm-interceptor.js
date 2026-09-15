@@ -1748,6 +1748,7 @@ public class AttachProxy {
       name: this.name,
       type: 'jvm',
       active: this.active,
+      interceptionActive: Array.from(this.activatedProcesses.values()).some(info => !info.activationUncertain),
       activationUncertain: this._hasUncertainActivation(),
       ...(this._hasRecoveryUncertainty() ? { recoveryUncertain: true } : {}),
       pid: null

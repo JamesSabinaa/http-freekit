@@ -50,8 +50,8 @@ completion. Current remediation statuses are recorded with each finding.
 
 Full suite on `1b6045d` (`node --test --test-concurrency=1`): 2,714 tests,
 2,710 passed, four skipped, zero failed. This includes the renderer cleanup and
-the corrected Android Stop assertion. The ledger currently records 103 fixed
-findings and 15 pending fixes; remediation is not complete. The user selected
+the corrected Android Stop assertion. The ledger currently records 104 fixed
+findings and 14 pending fixes; remediation is not complete. The user selected
 the recommended solution for all 21 review questions on September 15, 2026;
 remaining Awaiting user review entries now have approved design choices.
 
@@ -1735,11 +1735,18 @@ remaining Awaiting user review entries now have approved design choices.
 
 ### BUG-067 — Medium — Uncertain JVM activation is displayed as confirmed interception
 
-- **Status:** Awaiting user review.
-- **Review:** Confirmed that ownership entries with uncertain activation are
-  presented as active. Asked whether uncertain JVMs should appear only in
-  configuration with warning/cleanup controls or remain in Connected Sources
-  with an explicit uncertainty warning.
+- **Status:** Fixed.
+- **Review and fix:** confirmed uncertain ownership was labeled Activated. Per
+  the approved configuration-only policy, JVM summaries now expose confirmed
+  interception separately from retained ownership. Uncertain-only sessions are
+  excluded from Connected Sources; configuration and the card show warnings.
+  Configuration retains owned processes missing from discovery and offers Stop
+  and clean up all JVM attachments. Attach error metadata updates status too.
+- **Validation:** 144 JVM/interceptor-core/meta checks pass; two generated-agent
+  runtime checks skip without java/javac. Coverage includes uncertain-only and
+  mixed ownership, discovery omissions and removal of uncertainty. Real Chrome
+  confirms warning presentation, absence from Connected Sources and cleanup
+  button dispatch to the existing JVM deactivation action.
 - **Evidence:** a JVM helper failure after attachment begins returns an
   unsuccessful result with `activationUncertain: true`, retaining cleanup
   ownership (`src/interceptors/jvm-interceptor.js:1549-1597`). The renderer
