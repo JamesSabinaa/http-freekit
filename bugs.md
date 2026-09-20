@@ -246,6 +246,14 @@ strings. Request and response variants share this rerender data-loss defect.
 
 ### BUG-006 — Malformed optional API metadata in traffic imports crashes details
 
+**Resolution: Fixed.** Import validation now checks the API-card metadata object,
+parameter collection/entries, and consumed text/boolean fields before publishing
+traffic. Invalid rows reject the whole batch and discard an invalid staged
+transaction; optional null fields, references and schema/extension data remain
+supported. Validation: 234 import/export and identity tests passed with two
+existing unavailable Go/PHP skips; 15 focused checks passed. Root reviewed the
+validator and independently reran three atomic-import/detail-render regressions.
+
 **Severity: Medium (accepted traffic cannot be inspected).** Locations:
 `src/api/api-server.js:923-1119`, `:2576` onward;
 `src/ui/app.js:3799`.

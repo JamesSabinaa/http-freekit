@@ -1053,6 +1053,41 @@ print(json.dumps({"providers": get_proxy_providers()}))
           return `requests[${index}].${bodyField} must be a canonical base64 data URI when ${encodingField} is base64`;
         }
       }
+      if (request.apiMatch !== undefined && request.apiMatch !== null) {
+        const apiMatch = request.apiMatch;
+        const location = `requests[${index}].apiMatch`;
+        if (!isObjectRecord(apiMatch)) return `${location} must be an object`;
+        for (const field of ['operationId', 'summary', 'description', 'pathPattern']) {
+          if (apiMatch[field] !== undefined && apiMatch[field] !== null &&
+              typeof apiMatch[field] !== 'string') {
+            return `${location}.${field} must be a string`;
+          }
+        }
+        if (apiMatch.tags !== undefined && apiMatch.tags !== null &&
+            (!Array.isArray(apiMatch.tags) || apiMatch.tags.some(tag => typeof tag !== 'string'))) {
+          return `${location}.tags must be an array of strings`;
+        }
+        if (apiMatch.parameters !== undefined && apiMatch.parameters !== null) {
+          if (!Array.isArray(apiMatch.parameters)) return `${location}.parameters must be an array`;
+          for (const [parameterIndex, parameter] of apiMatch.parameters.entries()) {
+            const parameterLocation = `${location}.parameters[${parameterIndex}]`;
+            if (!isObjectRecord(parameter)) return `${parameterLocation} must be an object`;
+            // Parameters may be references or carry schema/extension metadata.
+            // Validate the fields consumed by the detail card without requiring
+            // a resolved OpenAPI parameter or discarding its other properties.
+            for (const field of ['name', 'in', 'description']) {
+              if (parameter[field] !== undefined && parameter[field] !== null &&
+                  typeof parameter[field] !== 'string') {
+                return `${parameterLocation}.${field} must be a string`;
+              }
+            }
+            if (parameter.required !== undefined && parameter.required !== null &&
+                typeof parameter.required !== 'boolean') {
+              return `${parameterLocation}.required must be a boolean`;
+            }
+          }
+        }
+      }
       for (const field of ['requestHeaders', 'responseHeaders']) {
         const headers = request[field];
         if (headers === undefined || headers === null) continue;
