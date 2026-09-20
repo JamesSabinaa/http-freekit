@@ -95,6 +95,43 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test('certificate add completions preserve a newer unsent draft as a whole', async () => {
+  const original = {
+    clientCertHost: ' client.example ', clientCertPath: ' client.p12 ', clientCertPassphrase: 'secret'
+  };
+  for (const changed of [null, ...Object.keys(original)]) {
+    const harness = createHarness();
+    for (const [key, value] of Object.entries(original)) harness.elements[key].value = value;
+    const pending = harness.api.addClientCert();
+    assert.deepEqual(JSON.parse(harness.calls[0].options.body), {
+      host: 'client.example', pfxPath: 'client.p12', passphrase: 'secret'
+    });
+    if (changed) harness.elements[changed].value += 'next';
+    const draft = Object.fromEntries(Object.keys(original).map(key => [key, harness.elements[key].value]));
+    const certificates = [{ host: 'client.example', pfxPath: 'client.p12' }];
+    harness.respond(0, { success: true, certificates });
+    await pending;
+    for (const key of Object.keys(original)) {
+      assert.equal(harness.elements[key].value, changed ? draft[key] : '', `${changed}: ${key}`);
+    }
+    assert.deepEqual(plain(harness.api.getClient()), certificates);
+  }
+});
+
+test('trusted CA add clears only its unchanged submitted draft', async () => {
+  for (const next of [null, 'next.pem', ' trusted.pem  ', '']) {
+    const harness = createHarness();
+    harness.elements.trustedCAPath.value = ' trusted.pem ';
+    const pending = harness.api.addTrustedCA();
+    assert.deepEqual(JSON.parse(harness.calls[0].options.body), { ca: 'trusted.pem' });
+    if (next !== null) harness.elements.trustedCAPath.value = next;
+    harness.respond(0, { success: true, cas: ['trusted.pem'] });
+    await pending;
+    assert.equal(harness.elements.trustedCAPath.value, next === null ? '' : next);
+    assert.deepEqual(plain(harness.api.getTrusted()), ['trusted.pem']);
+  }
+});
+
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 20; attempt++) {
     if (predicate()) return;

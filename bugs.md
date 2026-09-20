@@ -336,6 +336,13 @@ needs a pending-mutation/read guard in addition to ordering mutation completions
 
 ### BUG-009 — Certificate add completion erases a newer unsent form draft
 
+**Resolution: Fixed.** Certificate and trusted-CA additions clear inputs only
+when the complete submitted draft is still unchanged. Editing any certificate
+field preserves the whole new draft while the saved list still updates. The
+regressions cover each field, whitespace-only edits, empty drafts and ordinary
+successful clearing; both new tests failed before the fix. Review and all 19
+focused settings/certificate tests passed.
+
 **Severity: Medium (unsent input loss).** Locations:
 `src/ui/app.js:14599-14601`, `:14687`;
 editable controls in `src/ui/index.html:533-535`, `:548`.

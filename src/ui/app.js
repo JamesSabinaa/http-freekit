@@ -14608,8 +14608,12 @@
     }
 
     async function addClientCert() {
-      const host = document.getElementById('clientCertHost')?.value?.trim();
-      const path = document.getElementById('clientCertPath')?.value?.trim();
+      const hostInput = document.getElementById('clientCertHost');
+      const pathInput = document.getElementById('clientCertPath');
+      const hostDraft = hostInput?.value ?? '';
+      const pathDraft = pathInput?.value ?? '';
+      const host = hostDraft.trim();
+      const path = pathDraft.trim();
       const passphraseInput = document.getElementById('clientCertPassphrase');
       const passphrase = passphraseInput?.value ?? '';
       if (!host || !path) { toast('Both host and path required', 'error'); return; }
@@ -14629,9 +14633,12 @@
         if (!Array.isArray(data.certificates)) {
           throw new Error('Could not add certificate returned an invalid certificate list');
         }
-        document.getElementById('clientCertHost').value = '';
-        document.getElementById('clientCertPath').value = '';
-        if (passphraseInput) passphraseInput.value = '';
+        if (hostInput.value === hostDraft && pathInput.value === pathDraft &&
+            (passphraseInput?.value ?? '') === passphrase) {
+          hostInput.value = '';
+          pathInput.value = '';
+          if (passphraseInput) passphraseInput.value = '';
+        }
         renderClientCerts(data.certificates);
         toast('Client certificate added', 'success');
       } catch (err) {
@@ -14705,7 +14712,8 @@
 
     async function addTrustedCA() {
       const input = document.getElementById('trustedCAPath');
-      const path = input?.value?.trim();
+      const submittedDraft = input?.value ?? '';
+      const path = submittedDraft.trim();
       if (!path) { toast('Path required', 'error'); return; }
       const operation = beginSettingsMutation('trusted-cas');
       try {
@@ -14717,7 +14725,7 @@
         const data = await readSettingsMutationResponse(response, 'Could not add CA');
         if (!isCurrentSettingsOperation(operation)) return;
         if (!Array.isArray(data.cas)) throw new Error('Could not add CA returned an invalid CA list');
-        input.value = '';
+        if (input.value === submittedDraft) input.value = '';
         renderTrustedCAs(data.cas);
         toast('Trusted CA added', 'success');
       } catch (err) {
