@@ -5623,6 +5623,10 @@ export class ProxyServer {
     const responseBuffer = Buffer.isBuffer(responseBody)
       ? responseBody
       : Buffer.from(String(responseBody));
+    // Internal Send uses a POST envelope, so Node alone cannot suppress HEAD bodies.
+    const allowedResponseBody = this._isMockResponseBodyForbidden(clientReq.method, statusCode)
+      ? Buffer.alloc(0)
+      : responseBuffer;
     clientRes.writeHead(statusCode, responseHeaders);
     if (capture) {
       const requestUrl = targetUrl?.href || String(clientReq.url || '');
@@ -5642,8 +5646,8 @@ export class ProxyServer {
         statusCode,
         statusMessage,
         responseHeaders,
-        responseBody: this._safeBodyString(responseBuffer),
-        responseBodySize: responseBuffer.length,
+        responseBody: this._safeBodyString(allowedResponseBody),
+        responseBodySize: allowedResponseBody.length,
         duration: Date.now() - startTime,
         timestamp: startTime,
         source: 'proxy',
@@ -5651,7 +5655,7 @@ export class ProxyServer {
         remote: null
       }, trafficLifecycleId);
     }
-    clientRes.end(responseBuffer);
+    clientRes.end(allowedResponseBody);
   }
 
   _getHttpToolkitAndroidConfigResponse(clientReq, targetUrl) {

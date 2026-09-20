@@ -3,6 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 import zlib from 'node:zlib';
 import { ApiServer } from '../../../src/api/api-server.js';
+import { trafficToHar } from '../../../src/api/har-converter.js';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
 function listen(server) {
@@ -92,57 +93,77 @@ test('oversized pass-through uploads stream while capture remains bounded', asyn
   assert.equal(finalRecord.requestBodySize, 9);
 });
 
-test('oversized body-dependent uploads return 413 with a traffic record', async t => {
-  let originHits = 0;
-  const origin = http.createServer((_request, response) => {
-    originHits++;
-    response.end('unexpected');
-  });
-  const originPort = await listen(origin);
-  const events = [];
-  const proxy = new ProxyServer(null, {
-    port: 0,
-    maxBufferedBodyBytes: 8,
-    onRequest: event => events.push(event)
-  });
-  proxy.mockRules = [{
-    enabled: true,
-    matchers: [{ type: 'body-contains', value: 'never matches' }],
-    action: { type: 'fixed-response', status: 200, body: 'mocked' }
-  }];
-  await proxy.start();
-  t.after(async () => {
-    await proxy.stop();
-    await close(origin);
-  });
-
-  const result = await new Promise((resolve, reject) => {
-    const request = http.request({
-      hostname: '127.0.0.1',
-      port: proxy.server.address().port,
-      path: `http://127.0.0.1:${originPort}/buffered`,
-      method: 'POST',
-      headers: { 'content-length': '9' }
-    }, response => {
-      const chunks = [];
-      response.on('data', chunk => chunks.push(chunk));
-      response.once('end', () => resolve({
-        statusCode: response.statusCode,
-        body: Buffer.concat(chunks).toString('utf8')
-      }));
+for (const [method, source] of [['POST', 'proxy'], ['HEAD', 'proxy'], ['POST', 'Send'], ['HEAD', 'Send']]) {
+  test(`oversized body-dependent ${method} uploads via ${source} capture the actual 413 response body`, async t => {
+    let originHits = 0;
+    const origin = http.createServer((_request, response) => {
+      originHits++;
+      response.end('unexpected');
     });
-    request.once('error', reject);
-    request.end('123456789');
-  });
+    const originPort = await listen(origin);
+    const events = [];
+    const proxy = new ProxyServer(null, {
+      port: 0,
+      maxBufferedBodyBytes: 8,
+      onRequest: event => events.push(event)
+    });
+    proxy.mockRules = [{
+      enabled: true,
+      matchers: [{ type: 'body-contains', value: 'never matches' }],
+      action: { type: 'fixed-response', status: 200, body: 'mocked' }
+    }];
+    await proxy.start();
+    t.after(async () => {
+      await proxy.stop();
+      await close(origin);
+    });
 
-  assert.deepEqual(result, { statusCode: 413, body: 'Request body too large' });
-  assert.equal(originHits, 0);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].statusCode, 413);
-  assert.equal(events[0].requestBodySize, 9);
-  assert.equal(events[0].requestBodyTruncated, true);
-  assert.equal(events[0].requestBodyCapturedSize, 0);
-});
+    const url = `http://127.0.0.1:${originPort}/buffered`;
+    let result;
+    if (source === 'Send') {
+      const api = new ApiServer(proxy, null, null);
+      const response = await api._sendRequest(url, method, { 'content-length': '9' }, '123456789');
+      assert.equal(response.bodySize, Buffer.byteLength(response.body));
+      result = { statusCode: response.statusCode, body: response.body };
+    } else {
+      result = await new Promise((resolve, reject) => {
+        const request = http.request({
+          hostname: '127.0.0.1',
+          port: proxy.server.address().port,
+          path: url,
+          method,
+          headers: { 'content-length': '9' }
+        }, response => {
+          const chunks = [];
+          response.on('data', chunk => chunks.push(chunk));
+          response.once('end', () => resolve({
+            statusCode: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8')
+          }));
+        });
+        request.once('error', reject);
+        request.end('123456789');
+      });
+    }
+
+    const responseBody = method === 'HEAD' ? '' : 'Request body too large';
+    assert.deepEqual(result, { statusCode: 413, body: responseBody });
+    assert.equal(originHits, 0);
+    assert.equal(events.length, 1);
+    if (source === 'Send') assert.equal(events[0].source, 'Send');
+    assert.equal(events[0].method, method);
+    assert.equal(events[0].statusCode, 413);
+    assert.equal(events[0].requestBodySize, 9);
+    assert.equal(events[0].requestBodyTruncated, true);
+    assert.equal(events[0].requestBodyCapturedSize, 0);
+    assert.equal(events[0].responseBody, responseBody);
+    assert.equal(events[0].responseBodySize, Buffer.byteLength(responseBody));
+    const exported = trafficToHar(events).log.entries[0].response;
+    assert.equal(exported.content.text, responseBody);
+    assert.equal(exported.content.size, Buffer.byteLength(responseBody));
+    assert.equal(exported.bodySize, Buffer.byteLength(responseBody));
+  });
+}
 
 test('Send rejects an upstream response beyond its buffer ceiling', async (t) => {
   const origin = http.createServer((req, res) => res.end('123456789'));

@@ -407,6 +407,14 @@ problem and are not counted as separate bugs.
 
 ### BUG-013 — Early HEAD rejection records a body that was never sent
 
+**Resolution: Fixed.** Early responses now use the method/status-appropriate
+payload for both transmission and capture. This also suppresses HEAD bodies
+behind Send's internal POST transport envelope. Existing explicit response
+headers are retained. Direct proxy and Send POST/HEAD regressions verify wire,
+capture and HAR body/size parity with no origin request. Validation: 30 targeted
+tests passed; independent review exposed the Send case, and root reviewed the
+final correction and reran all nine body-limit tests before commit.
+
 **Severity: Low (incorrect capture/export evidence).** Locations:
 `src/proxy/proxy-server.js:5645-5646`, oversized buffered request path `:5094`.
 
