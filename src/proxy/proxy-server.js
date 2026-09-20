@@ -42,6 +42,7 @@ import {
   validateMockMatcher,
   validateMockRule
 } from './mock-rule-validation.js';
+import { cloneMockRuleData, mockBodyToBuffer } from './mock-rule-body.js';
 import {
   normalizeExactTlsHostname,
   normalizeHttpsWhitelist,
@@ -3682,7 +3683,7 @@ export class ProxyServer {
     const headers = createHeaderMap(Object.entries(response.headers || {}));
     const body = Buffer.isBuffer(response.body)
       ? response.body
-      : Buffer.from(String(response.body ?? ''));
+      : mockBodyToBuffer(response.body);
     if (!this._isMockResponseBodyForbidden(method, statusCode)) {
       return { ...response, statusCode, headers, body };
     }
@@ -3802,7 +3803,7 @@ export class ProxyServer {
     const original = Buffer.isBuffer(body) ? body : Buffer.from(body || '');
     if (!mode || mode === 'original') return { body: original, changed: false };
     if (mode === 'replace-fixed') {
-      return { body: Buffer.from(String(fixedBody ?? '')), changed: true };
+      return { body: mockBodyToBuffer(fixedBody), changed: true };
     }
     const codings = this._parseContentCodings(contentEncoding);
     const hasEncoding = codings.some(coding => coding !== 'identity');
@@ -3811,7 +3812,7 @@ export class ProxyServer {
     if (mode === 'json-merge') {
       try {
         const current = JSON.parse(decoded.toString('utf8'));
-        const additions = JSON.parse(String(fixedBody ?? ''));
+        const additions = JSON.parse(mockBodyToBuffer(fixedBody).toString('utf8'));
         if (!current || typeof current !== 'object' || Array.isArray(current)
           || !additions || typeof additions !== 'object' || Array.isArray(additions)) {
           return { body: original, changed: false };
@@ -10243,7 +10244,7 @@ export class ProxyServer {
 
   loadMockRules(rules) {
     let migrated = !Array.isArray(rules);
-    const input = structuredClone(Array.isArray(rules) ? rules : []);
+    const input = cloneMockRuleData(Array.isArray(rules) ? rules : []);
     const normalizeLeaf = (item, parentEnabled = true) => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) {
         migrated = true;
@@ -11901,7 +11902,7 @@ export class ProxyServer {
 
   addMockRule(rule) {
     const usedIds = this._collectMockRuleIds();
-    const storedRule = this._withServerOwnedMockIds(rule, usedIds);
+    const storedRule = this._withServerOwnedMockIds(cloneMockRuleData(rule), usedIds);
     if (storedRule.enabled === undefined) storedRule.enabled = true;
     if (storedRule.type !== 'group' && !storedRule.priority) storedRule.priority = 'normal';
     // Insert before any wildcard/passthrough rules so new rules take priority
@@ -11949,7 +11950,7 @@ export class ProxyServer {
   updateMockRule(id, updates) {
     const rule = this._findMockRuleById(id);
     if (!rule) return null;
-    const mutableUpdates = { ...updates };
+    const mutableUpdates = cloneMockRuleData({ ...updates });
     delete mutableUpdates.id;
     if (Array.isArray(mutableUpdates.items)) {
       mutableUpdates.items = this._withReconciledMockItemIds(

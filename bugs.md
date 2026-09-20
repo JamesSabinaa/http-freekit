@@ -418,6 +418,14 @@ curl, not running the PHP snippet.
 
 ### BUG-012 — Accepted Buffer bodies are corrupted or lost across rule operations
 
+**Resolution: Fixed.** Fixed replacements retain binary bytes. Rule cloning,
+loading, settings persistence and failed-save rollback preserve Buffer values;
+canonical JSON Buffer bodies are strictly validated and revived only in body
+slots. Malformed byte arrays remain invalid. All 50 new tests and 114 related
+tests passed, covering actual request/response bytes, empty and string controls,
+modern/legacy/nested rules, caller ownership, memory/JSON/disk restoration and
+atomic failures. Review reran the 50 new tests successfully.
+
 **Severity: Medium (binary data/rule loss; programmatic API).**
 Locations: `src/proxy/proxy-server.js:3801`;
 `src/proxy/mock-rule-validation.js:159`, `:280`, `:369`.

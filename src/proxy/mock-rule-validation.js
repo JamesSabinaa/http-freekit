@@ -1,4 +1,5 @@
 import { validateHeaderName, validateHeaderValue } from 'node:http';
+import { isSerializedMockBody, mockBodyToBuffer } from './mock-rule-body.js';
 
 const MOCK_MATCHER_TYPES = new Set([
   'wildcard',
@@ -136,12 +137,12 @@ function validateHttpRewrite(value, label) {
 }
 
 function validateJsonMergeBody(value, label) {
-  if (typeof value !== 'string' && !Buffer.isBuffer(value)) {
+  if (typeof value !== 'string' && !Buffer.isBuffer(value) && !isSerializedMockBody(value)) {
     return `${label} must be a JSON object`;
   }
   let parsed;
   try {
-    parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : value);
+    parsed = JSON.parse(mockBodyToBuffer(value).toString('utf8'));
   } catch {
     return `${label} must contain valid JSON`;
   }
@@ -159,6 +160,7 @@ function validateOptionalStatus(container, property, label) {
 function validateOptionalBody(container, property, label) {
   if (!hasOwn(container, property) || container[property] === undefined) return null;
   return typeof container[property] === 'string' || Buffer.isBuffer(container[property])
+    || isSerializedMockBody(container[property])
     ? null
     : `${label} must be a string or buffer`;
 }

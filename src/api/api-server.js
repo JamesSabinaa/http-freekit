@@ -22,6 +22,7 @@ import {
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
+import { cloneMockRuleData } from '../proxy/mock-rule-body.js';
 import {
   normalizeHttpsWhitelist,
   normalizeTlsHostnamePattern
@@ -319,7 +320,8 @@ export class ApiServer {
   _persistSettings(values) {
     if (!this.settings) return;
     const clonedValues = Object.fromEntries(
-      Object.entries(values).map(([key, value]) => [key, this._cloneConfigValue(value)])
+      Object.entries(values).map(([key, value]) => [key,
+        key === 'mockRules' ? cloneMockRuleData(value) : this._cloneConfigValue(value)])
     );
     if (typeof this.settings.setAll === 'function') {
       this.settings.setAll(clonedValues);
@@ -352,14 +354,19 @@ export class ApiServer {
 
   _captureRuleCollection(property) {
     const reference = this.proxy[property];
-    return { reference, value: this._cloneConfigValue(reference) };
+    const value = property === 'mockRules'
+      ? cloneMockRuleData(reference)
+      : this._cloneConfigValue(reference);
+    return { reference, value };
   }
 
   _restoreRuleCollection(property, previous) {
     previous.reference.splice(
       0,
       previous.reference.length,
-      ...this._cloneConfigValue(previous.value)
+      ...(property === 'mockRules'
+        ? cloneMockRuleData(previous.value)
+        : this._cloneConfigValue(previous.value))
     );
     this.proxy[property] = previous.reference;
   }
