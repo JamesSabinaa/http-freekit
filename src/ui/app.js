@@ -15653,6 +15653,12 @@
       return copiedHeaders;
     }
 
+    function getCapturedRequestHostname(req) {
+      // Older captures may store a host:port authority or a bare IPv6 address.
+      try { return new URL(req.url).hostname || req.host; }
+      catch { return req.host; }
+    }
+
     function createMockFromRequest(
       requestId = selectedRequestId,
       trafficLifecycleId,
@@ -15709,9 +15715,9 @@
         { type: 'method', value: req.method }
       ];
 
-      // Captured hosts are hostname-only, so match them independently of port.
-      if (req.host) {
-        matchers.push({ type: 'hostname', value: req.host });
+      const hostname = getCapturedRequestHostname(req);
+      if (hostname) {
+        matchers.push({ type: 'hostname', value: hostname });
       }
 
       // Add path matcher
@@ -16108,7 +16114,7 @@
           body: JSON.stringify({
             matchers: [
               { type: 'method', value: req.method },
-              { type: 'hostname', value: req.host }
+              { type: 'hostname', value: getCapturedRequestHostname(req) }
             ]
           })
         });

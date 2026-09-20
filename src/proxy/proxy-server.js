@@ -11034,10 +11034,20 @@ export class ProxyServer {
     return false;
   }
 
+  _normalizeCapturedHostname(data) {
+    try {
+      const target = new URL(data.url);
+      if (target.protocol === 'http:' || target.protocol === 'https:') {
+        data.host = target.hostname;
+      }
+    } catch { /* Partial updates and non-URL diagnostics retain their host. */ }
+  }
+
   _emitRequest(data, trafficLifecycleId = data.trafficLifecycleId) {
     const lifecycleComplete = data._pending !== true && data._trafficLifecycleComplete !== false;
     delete data._trafficLifecycleComplete;
     this._normalizeCapturedBodies(data);
+    this._normalizeCapturedHostname(data);
     this._markBreakpointTrafficState(data);
     const internalSend = this._tagInternalSendTraffic(data);
     // Auto-detect source from User-Agent if source is 'proxy' (generic)
@@ -11144,6 +11154,7 @@ export class ProxyServer {
     delete data._trafficLifecycleComplete;
     data._update = true;
     this._normalizeCapturedBodies(data);
+    this._normalizeCapturedHostname(data);
     this._markBreakpointTrafficState(data);
     const internalSend = this._tagInternalSendTraffic(data);
     // Auto-detect source

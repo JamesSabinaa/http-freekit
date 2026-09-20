@@ -693,6 +693,14 @@ ordering in BUG-008.
 
 ### BUG-022 — Inconsistent captured hosts create mocks and breakpoints that never match
 
+**Resolution: Fixed.** HTTP/HTTPS capture emissions consistently derive `host`
+from the URL hostname, including pending updates. Mock and breakpoint creation
+also derive hostname conditions from the URL to support older records. Ten
+actual CONNECT/TLS HTTP/1 and HTTP/2 cases cover IPv4, DNS, IPv6 and default or
+nondefault ports; legacy authority/bare-IPv6 records are covered too. Eight tests
+failed before the fix. All 55 focused checks passed, and independent lifecycle
+review passed 71 tests plus partial/invalid/non-HTTP record controls.
+
 **Severity: Medium (rules derived from captured traffic fail on the same request).**
 Locations: `src/proxy/proxy-server.js:8645-8656`, `:6485`, `:10364-10379`;
 `src/ui/app.js:15660-15662`, `:16059`.

@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import http2 from 'node:http2';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import tls from 'node:tls';
 import vm from 'node:vm';
+import { once } from 'node:events';
 
 import { ProxyServer } from '../../src/proxy/proxy-server.js';
+import { CertificateAuthority } from '../../src/proxy/certificate-authority.js';
 import { normalizeHarEntries } from '../../src/ui/har-import.js';
 
 const rendererSource = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 'utf8');
@@ -115,6 +121,7 @@ async function deriveRendererRules(request) {
   const submissions = new Map();
   const context = {
     API_BASE: '',
+    URL,
     console,
     document: { querySelector: () => null },
     editMockRule() {},
@@ -157,7 +164,7 @@ async function assertDerivedRulesMatch(request, { oldHostMatcherMatches = false 
   const derived = await deriveRendererRules(request);
   const mockHostname = derived.mock.matchers.find(matcher => matcher.type === 'hostname');
   const breakpointHostname = derived.breakpoint.matchers.find(matcher => matcher.type === 'hostname');
-  assert.deepEqual(mockHostname, { type: 'hostname', value: request.host });
+  assert.deepEqual(mockHostname, { type: 'hostname', value: new URL(request.url).hostname });
   assert.deepEqual(breakpointHostname, mockHostname);
   assert.equal(derived.mock.matchers.some(matcher => matcher.type === 'host'), false);
   assert.equal(derived.breakpoint.matchers.some(matcher => matcher.type === 'host'), false);
@@ -245,5 +252,87 @@ test('derived hostname rules retain ordinary and explicit default-port matching'
     'https://secure.example.test:443/resource'
   ]) {
     await assertDerivedRulesMatch(harRequest(url), { oldHostMatcherMatches: true });
+  }
+});
+
+test('rules derived from older authority or bare IPv6 captures use the URL hostname', async () => {
+  for (const [url, host, oldHostMatcherMatches] of [
+    ['https://dev.example.test:8443/resource', 'dev.example.test:8443', true],
+    ['https://127.0.0.1:8443/resource', '127.0.0.1:8443', true],
+    ['https://[::1]:8443/resource', '[::1]:8443', true],
+    ['https://[::1]/resource', '::1', false],
+    ['https://[::1]:8443/resource', '::1', false]
+  ]) {
+    await assertDerivedRulesMatch({ ...harRequest(url), host }, { oldHostMatcherMatches });
+  }
+});
+
+test('TLS HTTP/1 and native HTTP/2 captures have hostname-only hosts and produce matching rules', { timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'http-freekit-derived-host-'));
+  const records = [];
+  const ca = new CertificateAuthority(directory);
+  const proxy = new ProxyServer(ca, { port: 0, onRequest: record => records.push(record) });
+  t.after(async () => {
+    await proxy.stop();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  await ca.initialize();
+  proxy.setTlsFingerprint('default');
+  proxy.addMockRule({ matchers: [{ type: 'wildcard' }], action: { type: 'fixed-response', body: 'local mock' } });
+  await proxy.start();
+  for (const [mode, protocol, authority] of [
+    ['all', 'http/1.1', '127.0.0.1:54321'],
+    ['all', 'http/1.1', '[::1]:443'],
+    ['all', 'h2', '127.0.0.1:443'],
+    ['all', 'h2', '127.0.0.1:54321'],
+    ['all', 'h2', '[::1]:443'],
+    ['all', 'h2', '[::1]:54321'],
+    ['all', 'h2', 'example.test:54321'],
+    ['disabled', 'http/1.1', '127.0.0.1:54321'],
+    ['disabled', 'http/1.1', '[::1]:443'],
+    ['disabled', 'http/1.1', '[::1]:54321']
+  ]) {
+    await t.test(`${mode} ${protocol} ${authority}`, async () => {
+      proxy.setHttp2Config(mode);
+      const before = records.length;
+      const socket = net.connect(proxy.server.address().port, '127.0.0.1');
+      await once(socket, 'connect');
+      socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`);
+      let header = Buffer.alloc(0);
+      while (!header.includes('\r\n\r\n')) {
+        const [bytes] = await once(socket, 'data');
+        header = Buffer.concat([header, bytes]);
+      }
+      assert.match(header.toString(), /^HTTP\/1\.1 200 /);
+      const secure = tls.connect({ socket, rejectUnauthorized: false, ALPNProtocols: [protocol] });
+      let client;
+      try {
+        await once(secure, 'secureConnect');
+        if (protocol === 'h2') {
+          client = http2.connect(`https://${authority}`, { createConnection: () => secure });
+          const stream = client.request({ ':method': 'GET', ':path': '/same', ':authority': authority });
+          const chunks = [];
+          stream.on('data', chunk => chunks.push(chunk));
+          await once(stream, 'end');
+          assert.equal(Buffer.concat(chunks).toString(), 'local mock');
+        } else {
+          const chunks = [];
+          secure.on('data', chunk => chunks.push(chunk));
+          secure.write(`GET /same HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n\r\n`);
+          await once(secure, 'end');
+          assert.match(Buffer.concat(chunks).toString(), /^HTTP\/1\.1 200 /);
+        }
+        const captured = records.slice(before).filter(record => /^https:/.test(record.url));
+        assert.ok(captured.some(record => record.statusCode === 200));
+        for (const record of captured) assert.equal(record.host, new URL(record.url).hostname);
+        const completed = captured.findLast(record => record.statusCode === 200);
+        await assertDerivedRulesMatch(completed, {
+          oldHostMatcherMatches: new URL(completed.url).port === ''
+        });
+      } finally {
+        client?.destroy();
+        secure.destroy();
+      }
+    });
   }
 });
