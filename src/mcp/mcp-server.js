@@ -1215,7 +1215,12 @@ export class McpServerBridge {
         }
       };
 
-      server.connect(transport).catch(async err => {
+      server.connect(transport).then(() => {
+        // A successfully admitted SSE response intentionally waits between
+        // messages. Keep the management upload timeout until admission, then
+        // let client disconnect or MCP shutdown own this stream's lifetime.
+        res.setTimeout(0);
+      }).catch(async err => {
         console.error('[MCP] SSE connection error:', err.message);
         if (this.sseSessions.get(sessionId) === session) {
           this.sseSessions.delete(sessionId);

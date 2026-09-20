@@ -464,6 +464,14 @@ not additional independently rendered findings.
 
 ### BUG-015 — Idle MCP sessions and their stdio bridge disconnect after 30 seconds
 
+**Resolution: Fixed.** Successfully admitted SSE responses now disable their
+idle timeout; pending uploads and ordinary management requests retain it.
+Local tests exercise real SDK transports and the production stdio bridge after
+idle time, verify ping delivery and disconnect/EOF/shutdown cleanup, and check
+ordinary and incomplete-request timeouts. All 141 focused MCP/API tests and four
+Send timeout/cancellation tests passed; independent review reran the three new
+lifetime tests successfully.
+
 **Severity: Medium (routine connection loss).** Locations:
 `src/api/api-server.js:1424-1429`; `src/mcp/mcp-server.js:1192-1200`;
 `src/mcp/stdio-bridge.js:46`, `:60-70`, `:79`.
