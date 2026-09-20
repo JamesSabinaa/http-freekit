@@ -210,6 +210,16 @@ function getMultipartExportHeaders(req) {
   });
 }
 
+function getEmptyMultipartExportBody(req) {
+  // RFC 2046 permits 1–70 boundary characters, with no trailing space.
+  const requestedBoundary = req.multipartBoundary;
+  const boundary = typeof requestedBoundary === 'string' &&
+    /^[0-9A-Za-z'()+_,./:=? -]{0,69}[0-9A-Za-z'()+_,./:=?-]$/.test(requestedBoundary)
+    ? requestedBoundary : '----HTTPFreeKitBoundary';
+  const parameter = HTTP_METHOD_TOKEN_PATTERN.test(boundary) ? boundary : `"${boundary}"`;
+  return { body: `--${boundary}--\r\n`, contentType: `multipart/form-data; boundary=${parameter}` };
+}
+
 function encodeBasicAuthorization(value) {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
@@ -457,6 +467,11 @@ function generateMultipartExportSnippet(req, format) {
     }
   }
 
+  // Client multipart helpers do not construct an entity when no parts remain.
+  const emptyMultipart = fields.length === 0 && ['curl', 'python'].includes(format)
+    ? getEmptyMultipartExportBody(req) : null;
+  if (emptyMultipart) headers.push(['Content-Type', emptyMultipart.contentType]);
+
   if (format === 'curl') {
     const unsafeFileField = fields.find((field) => {
       if (String(field.key).includes('=')) return true;
@@ -474,6 +489,9 @@ function generateMultipartExportSnippet(req, format) {
     }
     let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
     headers.forEach(([key, value]) => { cmd += ` \\\n  -H '${curlHeaderArgument(key, value)}'`; });
+    if (emptyMultipart) {
+      cmd = `printf '%s\\r\\n' '${shellSingleQuote(emptyMultipart.body.slice(0, -2))}' | ${cmd} \\\n  --data-binary @-`;
+    }
     fields.forEach((field) => {
       if (field.type === 'file') {
         const contentType = field.file?.type || field.fileType;
@@ -502,6 +520,7 @@ function generateMultipartExportSnippet(req, format) {
     code += `\nrequest = requests.Request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
     if (headers.length) code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
     if (fields.length) code += ',\n    files=files';
+    else code += `,\n    data=${JSON.stringify(emptyMultipart.body)}`;
     code += renderPythonPreparedRequestSend(method);
     return code;
   }

@@ -95,7 +95,9 @@ test('request exports preserve omitted-method compatibility but reject explicit 
   };
 
   assert.match(generateExportSnippet(baseRequest, 'curl'), /^curl -X 'GET' /);
-  assert.match(generateExportSnippet({ ...baseRequest, bodyType: 'multipart' }, 'curl'), /^curl -X 'POST' /);
+  const emptyMultipart = generateExportSnippet({ ...baseRequest, bodyType: 'multipart' }, 'curl');
+  assert.match(emptyMultipart, /\| curl -X 'POST' 'https:\/\/example\.test\/'/);
+  assert.match(emptyMultipart, /--data-binary @-/);
 
   for (const method of ['', null, '<img>', 'GET /smuggled']) {
     const raw = generateExportSnippet({ ...baseRequest, method }, 'curl');

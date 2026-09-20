@@ -6,6 +6,17 @@ findings without a resolution note remain open. Related manifestations share one
 Severity describes the demonstrated impact and prerequisites; unverified
 candidates are excluded.
 
+## Fix status and validation
+
+All **23 findings are fixed**. Each fix has regression coverage and was reviewed
+before its commit; its resolution note appears with the original finding below.
+
+Final `npm test` on the completed code, using bundled Node **26.7.0**:
+**3,178 tests, 3,173 passed, 0 failed, 5 skipped**. The five skips are unchanged
+from baseline: three JVM runtime tests and the PHP and Go export runtime tests,
+whose runtimes are unavailable in this environment. The original audit record
+and its reproduction limits are retained below.
+
 ## Audit status and validation
 
 The audit is complete. Passes **13 and 14** were consecutive entire-project
@@ -656,6 +667,15 @@ matcher value is only lowercased. These address-identity cases share this entry,
 but the newly verified matcher case makes pass 7 non-clean.
 
 ### BUG-020 — Empty multipart forms lose their body in cURL and Python exports
+
+**Resolution: Fixed.** Empty cURL/Python forms now include the closing boundary
+and matching Content-Type, with valid configured boundaries retained and safe
+fallbacks otherwise. cURL uses `printf` and binary stdin to preserve CRLF through
+shell/script handling. Stale framing/coding headers are removed. Actual wire
+tests cover empty, disabled and unnamed fields, boundary quoting, nonempty forms
+and exact custom methods, with Node and production Send controls. All 40 new
+tests passed; the final full-suite result is recorded above.
+The production changes and wire regressions were reviewed before commit.
 
 **Severity: Medium (exported request differs from Send).** Locations:
 `src/ui/request-export.js:403-480`; `src/ui/app.js:12766-12788`.
