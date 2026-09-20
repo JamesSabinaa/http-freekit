@@ -367,6 +367,15 @@ this entry. The new annotation manifestation makes pass 11 non-clean.
 
 ### BUG-011 — PHP cURL exports suppress explicitly empty headers
 
+**Resolution: Fixed.** Raw, URL-encoded and multipart PHP exports now share
+libcurl's empty-header serialization with the cURL exporter: a trailing semicolon
+preserves an empty value instead of suppressing the field. PHP string escaping
+and ordered repeated fields remain intact. Validation: 60 tests passed, with
+two existing unavailable Go/PHP runtime skips. New regressions decode the exact
+generated PHP header literals and verify them against a real loopback curl
+request; PHP itself remains unavailable. The source and generated values were
+reviewed against the [libcurl header contract](https://curl.se/libcurl/c/CURLOPT_HTTPHEADER.html).
+
 **Severity: Medium (exported request differs from captured request).** Locations:
 `src/ui/request-export.js:648-650`, `:842`; correct cURL helper at `:83`.
 

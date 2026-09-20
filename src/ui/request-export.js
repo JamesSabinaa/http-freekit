@@ -80,8 +80,12 @@ function shellSingleQuote(value) {
   return String(value ?? '').replace(/'/g, "'\\''");
 }
 
+function curlHeaderLine(name, value) {
+  return value === '' ? `${name};` : `${name}: ${value}`;
+}
+
 function curlHeaderArgument(name, value) {
-  return shellSingleQuote(value === '' ? `${name};` : `${name}: ${value}`);
+  return shellSingleQuote(curlHeaderLine(name, value));
 }
 
 function curlFormQuotedValue(value) {
@@ -645,7 +649,7 @@ function generateMultipartExportSnippet(req, format) {
     code += `$body .= '--' . $boundary . "--\\r\\n";\n\n`;
     code += `$ch = curl_init(${phpStringLiteral(url)});\n`;
     code += `curl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_POSTFIELDS, $body);\n`;
-    const headerLines = headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`);
+    const headerLines = headers.map(([key, value]) => `    ${phpStringLiteral(curlHeaderLine(key, value))}`);
     headerLines.push("    'Content-Type: multipart/form-data; boundary=' . $boundary");
     code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headerLines.join(',\n')}\n]);\n`;
     code += `$response = curl_exec($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\necho $httpCode . "\\n" . $response;\n?>`;
@@ -839,7 +843,7 @@ function generateExportSnippetCore(req, format) {
       }
       code += `$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, ${phpStringLiteral(url)});\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
       if (headers.length) {
-        code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(`${key}: ${value}`)}`).join(',\n')}\n]);\n`;
+        code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(curlHeaderLine(key, value))}`).join(',\n')}\n]);\n`;
       }
       if (hasBody) {
         code += isBinaryBody
