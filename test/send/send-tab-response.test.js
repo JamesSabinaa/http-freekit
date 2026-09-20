@@ -12,6 +12,10 @@ const sendStart = source.indexOf('async function sendRequest()');
 const sendEnd = source.indexOf('function abortSendRequest()', sendStart);
 assert.ok(sendStart >= 0 && sendEnd > sendStart, 'sendRequest must be present');
 const sendSource = source.slice(sendStart, sendEnd);
+const headerStart = source.indexOf('function findHeaderValues(');
+const headerEnd = source.indexOf('function matchesFilter(', headerStart);
+assert.ok(headerStart >= 0 && headerEnd > headerStart);
+const headerSource = source.slice(headerStart, headerEnd);
 
 function deferred() {
   let resolve;
@@ -74,6 +78,7 @@ function createHarness() {
       { id: 'tab-1', response: null },
       { id: 'tab-2', response: null }
     ];
+    ${headerSource}
     ${sendSource}
     globalThis.sendApi = {
       send: sendRequest,

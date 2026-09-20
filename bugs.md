@@ -263,6 +263,13 @@ failure was reproduced by invoking the full production `renderDetailCards`.
 
 ### BUG-007 — Send loses successful responses with repeated Content-Type fields
 
+**Resolution: Fixed.** Send now uses the shared case-insensitive header-value
+reader before choosing a response view. Arrays, mixed-case repeated fields and
+empty values produce a string without changing captured headers or body bytes.
+Validation: 40 targeted tests passed, including an actual duplicate-header
+origin and binary/decoded-preview controls. Root reviewed the one-line fix and
+independently reran 12 response/draft regressions before commit.
+
 **Severity: Medium (response unavailable in Send).** Locations:
 `src/ui/app.js:12876-12891`, `:4519`.
 

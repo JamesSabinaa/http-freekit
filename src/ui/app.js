@@ -12882,7 +12882,7 @@
         if (data.error) throw new Error(data.error);
 
         const headersHtml = renderHeaders(data.headers);
-        const resCt = data.headers?.['content-type'] || '';
+        const resCt = getCombinedHeaderValue(data.headers, 'content-type');
         const contentDecoded = data.previewBodyContentDecoded === true && typeof data.previewBody === 'string';
         const previewBody = contentDecoded ? data.previewBody : data.body;
         const previewEncoding = (contentDecoded ? data.previewBodyEncoding : data.bodyEncoding) || 'utf8';
