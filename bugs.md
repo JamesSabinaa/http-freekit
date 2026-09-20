@@ -25,8 +25,11 @@ source reads, and independent probes. Tests are not a substitute for source revi
 | 3 | Entire project reviewed | 1, plus a new settings race in BUG-008 | 0 |
 | 4 | Entire project reviewed | 2 | 0 |
 | 5 | Entire project reviewed | 0 | 1 |
-| 6 | Application, desktop and proxy complete; UI and interceptor reviews finishing | 0 distinct; new Compose path case in BUG-004 | 0 |
-| 7 | Entire-project review underway | 0 so far | Pending |
+| 6 | Entire project reviewed | 0 distinct; new Compose path case in BUG-004 | 0 |
+| 7 | Entire project reviewed | 1, plus a new host-matcher case in BUG-019 | 0 |
+| 8 | Entire project reviewed | 0 | 1 |
+| 9 | Entire project reviewed | 0 distinct; new browser PATH cases in BUG-004 | 0 |
+| 10 | Entire-project review underway | 0 so far | Pending |
 
 Baseline `npm test`: **2,792 tests, 2,787 passed, 0 failed, 5 skipped**.
 `npm audit --audit-level=high --json`: **0 vulnerabilities**. The package runtime
@@ -115,7 +118,9 @@ identity defect.
 **Severity: Medium (activation/restoration can fail or use a different value).**
 Locations: `src/interceptors/jvm-interceptor.js:803-824`;
 `src/interceptors/android-adb-interceptor.js:102-104`, `:183`, `:871-875`,
-`:1305-1331`; `src/interceptors/docker-interceptor.js:179-183`.
+`:1305-1331`; `src/interceptors/docker-interceptor.js:179-183`;
+`src/interceptors/browser-paths.js:72-74`, `:94-95`;
+`src/interceptors/browser-interceptor.js:53-58`.
 
 The Windows JVM Command Prompt fallback quotes an agent path without protecting
 percent expansion. Generate the fallback for
@@ -147,8 +152,27 @@ Production instruction generation, actual YAML parsing, and a bounded translatio
 of that primary parser's separator logic establish the rejection for two colon
 paths; ordinary Linux and Windows-drive controls pass. Go and Docker Compose
 were unavailable, so this is source-backed validation, not a Compose execution.
-These related literal-value handling failures share one entry; the new Compose
-case still prevents pass 6 from counting as clean.
+The new Compose case prevents pass 6 from counting as clean.
+
+Pass 9 verified related browser PATH handling failures. On Linux, set
+`PATH=/opt/browser ` with a literal trailing space and make Chromium available
+only at `/opt/browser /chromium`. Discovery trims the directory before lookup,
+returns no browser, and reports `browser-not-installed`. Leading whitespace in
+a relative directory and literal leading/trailing double quotes are also altered.
+Empty PATH components naming the working directory are skipped. If a distinct
+lowercase `path` variable appears before `PATH`, the case-insensitive lookup
+uses that wrong variable instead.
+
+The pinned [glibc PATH lookup](https://github.com/bminor/glibc/blob/glibc-2.42/posix/execvpe.c#L85-L125)
+uses exact `PATH`, preserves each colon-delimited directory, and treats an empty
+component as the working directory. Production browser discovery and availability
+checks, with injected filesystem predicates and a source-derived lookup oracle,
+fail for nine such configurations. Three ordinary/value-order controls work;
+FreeKit's production Fresh Terminal resolver finds the intended executable in
+all twelve. No actual Linux filesystem, command or browser was executed.
+Expected: preserve platform-specific PATH values and lookup semantics. This new
+configuration-value manifestation makes pass 9 non-clean. All these related
+literal-value handling failures share one entry.
 
 ### BUG-005 — Mock transform rerenders overwrite edited replacement bodies
 
@@ -410,11 +434,12 @@ works. Expected: accept the legitimate launcher-to-binary transition while
 retaining process ownership checks. No Linux browser was actually launched here;
 the package source and fully mocked activation establish the failure together.
 
-### BUG-019 — Equivalent IPv6 proxy-bypass addresses fail to select the direct route
+### BUG-019 — Equivalent IPv6 addresses fail host-based routing and rule matching
 
-**Severity: Medium (incorrect upstream routing).** Locations:
+**Severity: Medium (incorrect upstream routing or missed rules).** Locations:
 `src/proxy/proxy-server.js:3062-3105`;
-`src/proxy/upstream-proxy-config.js:27-33`.
+`src/proxy/upstream-proxy-config.js:27-33`; host/hostname matchers at
+`src/proxy/proxy-server.js:10364-10379`.
 
 Configure an upstream proxy and `noProxy: ['[0:0:0:0:0:0:0:1]']`, then request
 `http://[0:0:0:0:0:0:0:1]:<port>/` through FreeKit. URL parsing compresses the
@@ -427,6 +452,16 @@ upstream hit. Changing only the bypass entry to `[::1]` gives one origin hit and
 zero upstream hits. Expanded unbracketed and expanded bracket-plus-port entries
 fail the same way. Expected: equivalent addresses select the same route.
 All forms are one normalization bug; no additional security impact is asserted.
+
+Pass 7 verified the same asymmetric normalization in mock host/hostname
+matchers. A validated `hostname` matcher for `[0:0:0:0:0:0:0:1]` misses a request
+whose URL uses that address, while changing only the matcher to `[::1]` matches.
+The `host` matcher behaves the same way with `:54321` appended. A loopback proxy
+with the tested fixed-response rule returning 201 and a wildcard fallback
+returning 202 confirms 202 for expanded forms and 201 for compressed controls,
+without contacting an origin. The actual URL is canonicalized; the expected
+matcher value is only lowercased. These address-identity cases share this entry,
+but the newly verified matcher case makes pass 7 non-clean.
 
 ### BUG-020 — Empty multipart forms lose their body in cURL and Python exports
 
@@ -472,3 +507,33 @@ revisions before replacing the editor. The preserved on-disk data limits the
 immediate loss, but the user sees and can send the wrong request. This is a
 workspace event reconciliation defect, distinct from the HTTP settings response
 ordering in BUG-008.
+
+### BUG-022 — Inconsistent captured hosts create mocks and breakpoints that never match
+
+**Severity: Medium (rules derived from captured traffic fail on the same request).**
+Locations: `src/proxy/proxy-server.js:8645-8656`, `:6485`, `:10364-10379`;
+`src/ui/app.js:15660-15662`, `:16059`.
+
+Enable HTTP/2 All and capture a native HTTP/2 request to
+`https://example.test:54321/same`, answered by a temporary wildcard fixed-response
+mock, then use Create Mock or Create Breakpoint. Disable the temporary rule
+before testing the derived rule. The capture stores `host` as
+`example.test:54321`; both UI actions copy it into a `hostname` matcher. Runtime
+matching compares that value to `new URL(url).hostname`, which has no port, so
+the derived rule cannot match the original request. IPv4 and IPv6 nondefault
+ports fail identically; default HTTPS port controls work.
+
+A second capture path has the same host-contract problem: with HTTP/2 mode
+disabled, buffered TLS/HTTP/1.1 traffic to `[::1]` stores bare `::1`. Both derived
+rules then compare it to bracketed `[::1]` and miss, on default and nondefault
+ports. IPv4 controls work; the HTTP/1.1 fallback engine used in HTTP/2 All mode
+keeps the bracketed IPv6 hostname and also works.
+
+An isolated real CONNECT/TLS/H2/H1 probe uses fixed-response mocks to generate
+these captures without an origin. The production UI derivation functions and
+runtime matcher reproduce both failures across ten protocol/authority controls.
+Expected: mocks and breakpoints created from a capture match that same request.
+Normalize the capture's hostname contract consistently or derive the matcher
+from its parsed URL. Both protocol manifestations share one capture-to-rule
+contract defect; the nondefault-port case also affects DNS/IPv4 and differs from
+BUG-019's equivalent IPv6 spelling mismatch.
