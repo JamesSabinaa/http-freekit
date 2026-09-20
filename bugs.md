@@ -205,6 +205,13 @@ JDK 8 classpath. This additional material case makes pass 12 non-clean.
 
 ### BUG-005 — Mock transform rerenders overwrite edited replacement bodies
 
+**Resolution: Fixed.** Rendering action controls no longer reinitializes the
+action from captured defaults. Mode changes and selecting the same action type
+retain current request/response drafts, including explicit empty bodies; actual
+type changes still initialize or migrate fields. Eight new regression tests
+failed before the fix and pass afterward; 50 focused tests passed. Root reviewed
+the change and independently reran the eight regressions before commit.
+
 **Severity: Medium (draft edits lost and an unintended body may be saved).**
 Locations: `src/ui/app.js:9110`, `:9120`, `:10163-10165`; triggering handlers
 `:8663`, `:8674`, `:8701`, `:8724`, `:8735`, `:8762`.

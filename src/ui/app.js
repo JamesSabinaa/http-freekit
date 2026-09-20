@@ -9070,6 +9070,10 @@
     function changeMockActionType(newType, eid) {
       if (!mockEditDraft) return;
       const oldAction = mockEditDraft.action;
+      if (oldAction.type === newType) {
+        renderMockActionConfig(eid);
+        return;
+      }
       mockEditDraft.action = { type: newType, delay: oldAction.delay || 0 };
       switch (newType) {
         case 'fixed-response':
@@ -9142,6 +9146,11 @@
           mockEditDraft.action.webhookHeaders = oldAction.webhookHeaders || {};
           break;
       }
+      renderMockActionConfig(eid);
+    }
+
+    function renderMockActionConfig(eid) {
+      if (!mockEditDraft) return;
       const configEl = document.getElementById('mockActionConfig_' + eid);
       if (configEl) {
         const _primaryActions2 = ['fixed-response', 'forward', 'passthrough', 'transform-request', 'serve-file'];
@@ -10161,8 +10170,8 @@
     }
 
     function rerenderMockActionConfig(eid) {
-      // Trigger a re-render by simulating a type change to the same type
-      changeMockActionType(mockEditDraft.action.type, eid);
+      // Mode changes only update the view; captured defaults belong to type changes.
+      renderMockActionConfig(eid);
     }
 
     // ============ SEND REQUEST ============
