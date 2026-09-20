@@ -438,6 +438,13 @@ their unconditional error buffer before Node suppresses HEAD response bytes.
 
 ### BUG-014 — High Contrast hides response summary text on white backgrounds
 
+**Resolution: Fixed.** Summary surfaces now use their paired input foreground;
+High Contrast summary labels and status badges explicitly use that black text.
+Dark/Light colors remain unchanged. Validation: 12 focused tests and 39 actual
+Chrome checks passed. High Contrast Send labels, duration, all status families,
+Traffic summary text and the input control measured 21:1. Root reviewed the CSS,
+browser evidence and regression assertions, then reran the contrast suite.
+
 **Severity: Medium (response details unreadable in an accessibility theme).**
 Locations: `src/ui/styles.css:247`, `:251-253`, `:331-336`, `:1190-1207`;
 `src/ui/index.html:331`; `src/ui/app.js:12917`.

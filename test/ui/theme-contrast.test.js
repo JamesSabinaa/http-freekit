@@ -6,7 +6,7 @@ const styles = fs.readFileSync(new URL('../../src/ui/styles.css', import.meta.ur
 
 function block(selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = styles.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
+  const match = styles.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]+)\\}`));
   assert.ok(match, `missing CSS block ${selector}`);
   return match[1];
 }
@@ -18,6 +18,7 @@ function variable(css, name) {
 }
 
 function luminance(hex) {
+  if (hex.length === 4) hex = '#' + [...hex.slice(1)].map(channel => channel.repeat(2)).join('');
   const channels = hex.slice(1).match(/../g).map(channel => parseInt(channel, 16) / 255);
   const linear = channels.map(channel => channel <= 0.04045
     ? channel / 12.92
@@ -67,6 +68,38 @@ test('High Contrast gives white input and highlight surfaces an effective black 
   assert.match(styles, /\.detail-pill\.pill-muted\s*\{[\s\S]*?color:\s*var\(--highlight-text-color\);/);
   assert.match(styles, /\.context-menu-item:hover,[\s\S]*?color:\s*var\(--highlight-text-color\);/);
   assert.match(styles, /\.filter-hint-item:hover\s*\{[\s\S]*?color:\s*var\(--highlight-text-color\);/);
+});
+
+test('response summary labels and values remain readable on each built-in theme', () => {
+  const declarations = css => Object.fromEntries([...css.matchAll(/([\w-]+):\s*([^;]+);/g)]
+    .map(([, name, value]) => [name, value.trim()]));
+  const findBlock = selector => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return styles.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]+)\\}`))?.[1] || '';
+  };
+  const summary = declarations(block('.detail-summary-item'));
+  const label = declarations(block('.detail-summary-label'));
+  const value = declarations(block('.detail-summary-value'));
+  for (const theme of ['dark', 'light', 'high-contrast']) {
+    const selector = `[data-theme="${theme}"]`;
+    const palette = { ...declarations(block(':root')), ...declarations(findBlock(selector)) };
+    const resolve = color => color.replace(/var\((--[\w-]+)\)/g, (_, name) => resolve(palette[name]));
+    const item = { ...summary, ...declarations(findBlock(`${selector} .detail-summary-item`)) };
+    const labelStyle = { ...label, ...declarations(findBlock(`${selector} .detail-summary-label`)) };
+    const valueStyle = { ...value, ...declarations(findBlock(`${selector} .detail-summary-value`)) };
+    const background = resolve(item.background);
+    const inheritedColor = item.color || 'var(--text-main)';
+    assertNormalTextContrast(resolve(labelStyle.color || inheritedColor), background, `${theme} summary labels`);
+    assertNormalTextContrast(resolve(valueStyle.color || inheritedColor), background, `${theme} summary values`);
+    if (theme === 'high-contrast') {
+      const badgeStyle = declarations(findBlock(`${selector} .detail-summary-item .status-badge`));
+      for (const family of [1, 2, 3, 4, 5]) {
+        const statusStyle = declarations(block(`.status-${family}xx`));
+        assertNormalTextContrast(resolve(badgeStyle.color || statusStyle.color || inheritedColor),
+          background, `High Contrast summary status ${family}xx`);
+      }
+    }
+  }
 });
 
 test('accent text meets contrast on base and tinted surfaces without changing decorative accents', () => {

@@ -324,6 +324,14 @@
       border: 1px solid #ffffff;
     }
 
+    [data-theme="high-contrast"] .detail-summary-label {
+      color: var(--input-text-color);
+    }
+
+    [data-theme="high-contrast"] .detail-summary-item .status-badge {
+      color: var(--input-text-color);
+    }
+
     [data-theme="high-contrast"] .btn {
       border-color: #ffffff;
     }
@@ -1190,6 +1198,7 @@
     .detail-summary-item {
       padding: 10px;
       background: var(--bg-input);
+      color: var(--input-text-color);
       border-radius: 4px;
     }
 
