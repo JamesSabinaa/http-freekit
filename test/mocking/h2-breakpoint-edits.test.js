@@ -92,7 +92,8 @@ test('H2 breakpoint method and URL edits reach the edited origin', { timeout: 20
   const editedAuthority = `127.0.0.1:${originPort}`;
   assert.equal(Buffer.concat(chunks).toString('utf8'), `pOsT /edited?yes=1 ${editedAuthority}`);
   assert.equal(captures.at(-1).url, `https://${editedAuthority}/edited?yes=1`);
-  assert.equal(captures.at(-1).host, editedAuthority);
+  // Captures expose the hostname; the URL and wire authority retain the port.
+  assert.equal(captures.at(-1).host, '127.0.0.1');
 });
 
 test('live H2 response breakpoints strip connection-specific edited headers', { timeout: 20000 }, async (t) => {
