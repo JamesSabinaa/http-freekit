@@ -1,7 +1,8 @@
 # Bug audit
 
 Audited 2026-09-20 against `86c7303ed66b0275a3f9edff34a45ba4d054c357`.
-These are open findings, not fixes. Related manifestations share one entry.
+Findings describe that audited revision. Resolution notes record subsequent fixes;
+findings without a resolution note remain open. Related manifestations share one entry.
 Severity describes the demonstrated impact and prerequisites; unverified
 candidates are excluded.
 
@@ -9,7 +10,7 @@ candidates are excluded.
 
 The audit is complete. Passes **13 and 14** were consecutive entire-project
 reviews with **no newly verified bugs or material new manifestations**.
-The **23 merged findings** below remain open. A newly verified manifestation
+The audit produced **23 merged findings** below. A newly verified manifestation
 reset the clean-pass count even when merged into an existing entry. Each pass covered the
 **88 first-party production files**: 21 application/API/MCP/traffic/startup,
 17 interceptor, 14 proxy, 10 UI, 22 Electron, and four script files, plus
@@ -40,7 +41,7 @@ Baseline `npm test`: **2,792 tests, 2,787 passed, 0 failed, 5 skipped**.
 is Node **26.7.0**, although the shell's default Node is 25.2.1. Focused
 verification also used the bundled Node 26.7.0 runtime.
 
-Production code and tracked tests have not been changed. Reproductions use
+The audit itself did not change production code or tracked tests. Reproductions used
 isolated local listeners, synthetic traffic, VM-loaded production UI functions,
 or stubbed process/device operations. Linux reboot collisions were simulated;
 no real process was terminated. No real Android device, system proxy, or host
@@ -53,6 +54,14 @@ uncommitted files to understand the defects.
 ## Findings
 
 ### BUG-001 — Streaming HTTP/2 forwarding can silently discard request bodies
+
+**Resolution: Fixed.** Both streaming HTTP/2 request constructors now explicitly
+keep the request stream open until the upload relay ends it. Regression tests
+exercise HTTP/1 and native HTTP/2 ingress with GET, DELETE, HEAD and POST, empty
+and Content-Length bodies, and chunked/data-frame bodies with trailers. All 24
+wire-level cases preserve bytes and trailers without falling back to HTTP/1.
+Validation: 63 tests passed across the new streaming-method suite and existing
+streaming, replay and HTTP/2 settlement suites. Change reviewed before commit.
 
 **Severity: High (request data loss).** Locations:
 `src/proxy/proxy-server.js:1815`, `:2592`.

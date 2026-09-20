@@ -1812,7 +1812,7 @@ export class ProxyServer {
 
       let request;
       try {
-        request = session.request(h2Headers, { waitForTrailers: true });
+        request = session.request(h2Headers, { endStream: false, waitForTrailers: true });
       } catch {
         sendProxyRequest();
         return;
@@ -2589,7 +2589,7 @@ export class ProxyServer {
       }
       let request;
       try {
-        request = session.request(headers, { waitForTrailers: true });
+        request = session.request(headers, { endStream: false, waitForTrailers: true });
       } catch (error) {
         startH1();
         return;
