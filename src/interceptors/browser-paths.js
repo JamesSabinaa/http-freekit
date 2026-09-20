@@ -69,9 +69,10 @@ const MACOS_USER_APPLICATIONS = {
   brave: 'Brave Browser.app/Contents/MacOS/Brave Browser'
 };
 
-function getPathValue(env) {
+function getPathValue(env, platform) {
+  if (platform !== 'win32') return env.PATH == null ? '/usr/bin:/bin' : String(env.PATH);
   const entry = Object.entries(env).find(([key]) => key.toLowerCase() === 'path');
-  return entry?.[1] || '';
+  return String(entry?.[1] || '');
 }
 
 export function findBrowserPath(browser, options = {}) {
@@ -90,11 +91,13 @@ export function findBrowserPath(browser, options = {}) {
   }
 
   const executableNames = BROWSER_EXECUTABLES[browser]?.[platform] || [];
-  for (const entry of getPathValue(env).split(delimiter)) {
-    const directory = entry.trim().replace(/^"|"$/g, '');
-    if (!directory) continue;
+  for (const entry of getPathValue(env, platform).split(delimiter)) {
+    const directory = platform === 'win32' ? entry.trim().replace(/^"|"$/g, '') : entry;
+    if (platform === 'win32' && !directory) continue;
     for (const executable of executableNames) {
-      candidates.push(pathApi.join(directory, executable));
+      candidates.push(platform === 'win32'
+        ? pathApi.join(directory, executable)
+        : pathApi.resolve(options.cwd || process.cwd(), directory, executable));
     }
   }
 

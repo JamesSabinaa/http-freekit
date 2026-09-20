@@ -144,6 +144,17 @@ identity defect.
 
 ### BUG-004 — Interceptor commands and configuration fail to preserve literal values
 
+**Resolution: Fixed.** CMD JVM fallback instructions now decode the literal
+option after shell parsing and clearly identify the complete launch command;
+PowerShell retains an inline option. Android restoration quotes remote-shell
+operands. Compose uses separate bind-mount fields. POSIX browser/JDK discovery
+preserves PATH/JAVA_HOME spelling, empty entries and case-sensitive variable
+lookup. All five manifestations have regressions: 53 previously failed, all
+73 focused checks now pass, and 401 surrounding interceptor tests pass. Review
+reran the 73 checks, including native CMD/PowerShell argv captures. Java attach,
+Android devices and a Docker engine were not used; those checks use isolated
+filesystem/process fixtures, a print-only shell and parsed Compose configuration.
+
 **Severity: Medium (activation/restoration can fail or use a different value).**
 Locations: `src/interceptors/jvm-interceptor.js:803-824`, `:329-372`, `:1446-1454`;
 `src/interceptors/android-adb-interceptor.js:102-104`, `:183`, `:871-875`,

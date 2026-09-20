@@ -1,7 +1,52 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
 import { findBrowserPath } from '../../../src/interceptors/browser-paths.js';
+import { BrowserInterceptor } from '../../../src/interceptors/browser-interceptor.js';
+
+for (const platform of ['linux', 'darwin']) {
+  test(`${platform} browser discovery preserves literal PATH components and exact environment names`, async t => {
+    const cwd = '/fixture';
+    const fixtures = [
+      [{ PATH: '/opt/browser' }, '/opt/browser'],
+      [{ PATH: '/opt/browser tools' }, '/opt/browser tools'],
+      [{ PATH: '/opt/browser ' }, '/opt/browser '],
+      [{ PATH: ' browser' }, ' browser'],
+      [{ PATH: '/opt/browser"' }, '/opt/browser"'],
+      [{ PATH: '"browser' }, '"browser'],
+      ...['', ':/missing', '/missing:', '/missing::/unused'].map(PATH => [{ PATH }, '.']),
+      [{ path: '/wrong', PATH: '/opt/browser' }, '/opt/browser'],
+      [{ PATH: '/opt/browser', path: '/wrong' }, '/opt/browser'],
+      [{ path: '/wrong' }, '/usr/bin']
+    ];
+    for (const [env, directory] of fixtures) {
+      await t.test(JSON.stringify(env), async () => {
+        const executable = path.posix.resolve(cwd, directory, platform === 'linux' ? 'chromium' : 'chrome');
+        const bundleExecutable = '/Applications/Test Chrome.app/Contents/MacOS/Chrome';
+        const lookup = () => findBrowserPath('chrome', {
+          platform, env, cwd, existsSync: candidate => candidate === executable,
+          realpathSync: candidate => {
+            assert.equal(candidate, executable);
+            return bundleExecutable;
+          }
+        });
+        assert.equal(lookup(), platform === 'linux' ? executable : bundleExecutable);
+        const browser = new BrowserInterceptor('chrome', 'Chrome', 'chrome');
+        browser._findBrowserPath = lookup;
+        assert.equal(await browser.isActivable(), true);
+      });
+    }
+  });
+}
+
+test('Windows browser PATH retains case-insensitive lookup and quoted-directory support', () => {
+  const expected = 'C:\\Program Files\\Browser\\chrome.exe';
+  assert.equal(findBrowserPath('chrome', {
+    platform: 'win32', env: { Path: '"C:\\Program Files\\Browser";C:\\Other' },
+    existsSync: candidate => candidate === expected
+  }), expected);
+});
 
 test('browser discovery finds Chromium installations on PATH', () => {
   const expected = '/opt/browser/bin/chromium-browser';

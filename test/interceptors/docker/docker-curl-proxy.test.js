@@ -106,7 +106,8 @@ test('Docker run, Compose, and renderer fallback emit the exact lowercase proxy 
     assert.equal(Object.hasOwn(run, name), false, name);
   }
   assert.match(instructions.run, /--mount 'type=bind,"source=\/tmp\/FreeKit CA bundle\.pem",target=\/etc\/http-freekit\/http-freekit-ca\.pem,readonly'/);
-  assert.match(instructions.compose, /"\/tmp\/FreeKit CA bundle\.pem:\/etc\/http-freekit\/http-freekit-ca\.pem:ro"/);
+  assert.match(instructions.compose, /source: "\/tmp\/FreeKit CA bundle\.pem"/);
+  assert.match(instructions.compose, /target: \/etc\/http-freekit\/http-freekit-ca\.pem\n    read_only: true/);
 
   const fallback = rendererFallback(8297);
   const fallbackRunText = fallback.match(/<h3>Docker Run<\/h3>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';

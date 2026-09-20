@@ -42,6 +42,11 @@ function getActivityLaunchError(output) {
     : 'Android activity launch did not report Status: ok';
 }
 
+function quoteRemoteShellArgument(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9._:/-]+$/.test(text) ? text : `'${text.replace(/'/g, `'"'"'`)}'`;
+}
+
 function reportsMissingHttpToolkitPackage(output) {
   const escapedPackage = HTTP_TOOLKIT_ANDROID_PACKAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const text = String(output || '');
@@ -1291,7 +1296,7 @@ export class AndroidAdbInterceptor {
       const value = await this._adb(deviceId, ['shell', 'settings', 'get', 'global', 'http_proxy'], {
         timeout: 5000
       });
-      return { success: true, value: String(value).trim() };
+      return { success: true, value: String(value).replace(/\r?\n$/, '') };
     } catch (err) {
       console.error(`[Interceptor] Failed to read proxy on ${deviceId}:`, err.message);
       return { success: false, error: err.message };
@@ -1321,7 +1326,7 @@ export class AndroidAdbInterceptor {
     const wasUnset = previousProxy == null || previousProxy === '' || previousProxy === 'null';
     const settingsArgs = wasUnset
       ? ['shell', 'settings', 'delete', 'global', 'http_proxy']
-      : ['shell', 'settings', 'put', 'global', 'http_proxy', previousProxy];
+      : ['shell', 'settings', 'put', 'global', 'http_proxy', quoteRemoteShellArgument(previousProxy)];
     try {
       await this._adb(deviceId, settingsArgs, {
         stdio: 'ignore',

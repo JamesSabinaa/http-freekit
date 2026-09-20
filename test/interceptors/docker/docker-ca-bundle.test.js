@@ -87,7 +87,8 @@ test('Docker mounts only the FreeKit CA and preserves image-specific trust roots
   assert.match(result.metadata.caBundleDescription, /added to Node trust with NODE_EXTRA_CA_CERTS/);
   assert.match(result.metadata.caBundleDescription, /trust stores remain unchanged/);
   assert.ok(run.includes(`--mount 'type=bind,"source=${caPath}",target=${containerCaPath},readonly'`));
-  assert.ok(compose.includes(JSON.stringify(`${caPath}:${containerCaPath}:ro`)));
+  assert.ok(compose.includes(`source: ${JSON.stringify(caPath)}`));
+  assert.ok(compose.includes(`target: ${containerCaPath}\n    read_only: true`));
 
   assert.deepEqual(runEnv, composeEnv);
   assert.deepEqual(select(runEnv, PROXY_VARIABLES), {

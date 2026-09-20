@@ -176,11 +176,11 @@ export class DockerInterceptor {
     const runEnvironment = environment.map(value => `-e ${value}`).join(' ');
     const composeEnvironment = environment.map(value => `  - ${value}`).join('\n');
     // Compose interpolates YAML string values even when they are quoted.
-    const composeMount = JSON.stringify(`${caPath}:${containerCaPath}:ro`.replace(/\$/g, () => '$$'));
+    const composeSource = JSON.stringify(caPath.replace(/\$/g, () => '$$'));
     const runInstruction = this._platform() === 'win32'
       ? buildWindowsPowerShellRunInstruction(mountValue, runEnvironment)
       : `docker run --mount ${quotePosixShellArgument(mountValue)} ${runEnvironment} <image>`;
-    const composeInstruction = `volumes:\n  - ${composeMount}\nenvironment:\n${composeEnvironment}`;
+    const composeInstruction = `volumes:\n  - type: bind\n    source: ${composeSource}\n    target: ${containerCaPath}\n    read_only: true\nenvironment:\n${composeEnvironment}`;
     this.active = true;
 
     console.log(`[Interceptor] Docker interceptor active. Proxy: ${proxyUrl}`);

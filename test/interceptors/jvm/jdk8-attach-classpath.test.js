@@ -33,3 +33,52 @@ test('modern JDK Attach helper runtime keeps its ordinary classpath', () => {
 
   assert.equal(interceptor._getAttachHelperClasspath('attach-helper'), 'attach-helper');
 });
+
+test('POSIX JDK 8 lookup preserves literal PATH and JAVA_HOME values in the helper working directory', async t => {
+  const cwd = '/fixture/attach';
+  const fixtures = [
+    ...['/opt/jdk/bin', '/opt/jdk tools/bin', '/opt/jdk/bin ', ' jdk/bin', '/opt/jdk/bin"', '"jdk/bin']
+      .map(directory => ({ env: { PATH: directory }, directory })),
+    ...['', ':/missing', '/missing:', '/missing::/unused']
+      .map(PATH => ({ env: { PATH }, directory: '.' })),
+    { env: { path: '/wrong', PATH: '/opt/jdk/bin' }, directory: '/opt/jdk/bin' },
+    { env: { path: '/wrong' }, directory: '/usr/bin' },
+    ...['/opt/jdk ', ' jdk', '/opt/jdk tools', '/opt/jdk"', '"jdk']
+      .map(JAVA_HOME => ({ env: { PATH: '/fixture/launcher', JAVA_HOME }, directory: '/fixture/launcher' }))
+  ];
+  for (const { env, directory } of fixtures) {
+    await t.test(JSON.stringify(env), t => {
+      const executable = path.posix.resolve(cwd, directory, 'java');
+      const realExecutable = env.JAVA_HOME ? executable : '/opt/owning-jdk/bin/java';
+      const toolsJar = env.JAVA_HOME
+        ? path.posix.resolve(cwd, env.JAVA_HOME, 'lib/tools.jar')
+        : '/opt/owning-jdk/lib/tools.jar';
+      t.mock.method(fs, 'statSync', candidate => {
+        if (candidate === executable || candidate === toolsJar) return { isFile: () => true };
+        throw new Error('ENOENT fixture');
+      });
+      t.mock.method(fs, 'realpathSync', candidate => {
+        assert.equal(candidate, executable);
+        return realExecutable;
+      });
+      const interceptor = new JvmInterceptor();
+      interceptor._platform = () => 'linux';
+      interceptor._environment = () => env;
+      assert.equal(interceptor._getAttachHelperClasspath(cwd), `${cwd}:${toolsJar}`);
+    });
+  }
+});
+
+test('Windows JDK 8 lookup retains Path casing and quoted-directory support', t => {
+  const executable = 'C:\\Program Files\\JDK\\bin\\java.exe';
+  const toolsJar = 'C:\\Program Files\\JDK\\lib\\tools.jar';
+  t.mock.method(fs, 'statSync', candidate => {
+    if (candidate === executable || candidate === toolsJar) return { isFile: () => true };
+    throw new Error('ENOENT fixture');
+  });
+  t.mock.method(fs, 'realpathSync', () => executable);
+  const interceptor = new JvmInterceptor();
+  interceptor._platform = () => 'win32';
+  interceptor._environment = () => ({ Path: '"C:\\Program Files\\JDK\\bin";C:\\Other' });
+  assert.equal(interceptor._getAttachHelperClasspath('C:\\attach'), `C:\\attach;${toolsJar}`);
+});

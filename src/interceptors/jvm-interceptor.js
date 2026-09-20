@@ -334,17 +334,22 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
     return process.env;
   }
 
-  _findJavaExecutablePath() {
-    const executableNames = this._platform() === 'win32'
+  _findJavaExecutablePath(workingDirectory = process.cwd()) {
+    const isWindows = this._platform() === 'win32';
+    const pathApi = isWindows ? path.win32 : path.posix;
+    const environment = this._environment();
+    const executableNames = isWindows
       ? ['java.exe', 'java']
       : ['java'];
-    const pathEntries = String(this._environment().PATH || '')
-      .split(path.delimiter)
-      .map(entry => entry.trim().replace(/^"|"$/g, ''))
-      .filter(Boolean);
-    for (const directory of pathEntries) {
+    const pathValue = isWindows
+      ? Object.entries(environment).find(([name]) => name.toUpperCase() === 'PATH')?.[1] || ''
+      : environment.PATH == null ? '/usr/bin:/bin' : environment.PATH;
+    const pathEntries = String(pathValue).split(pathApi.delimiter);
+    for (const entry of pathEntries) {
+      const directory = isWindows ? entry.trim().replace(/^"|"$/g, '') : entry;
+      if (isWindows && !directory) continue;
       for (const executableName of executableNames) {
-        const candidate = path.join(directory, executableName);
+        const candidate = pathApi.resolve(workingDirectory, directory, executableName);
         try {
           if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
         } catch {}
@@ -353,21 +358,24 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
     return null;
   }
 
-  _getJdk8ToolsJarPath() {
+  _getJdk8ToolsJarPath(workingDirectory = process.cwd()) {
+    const isWindows = this._platform() === 'win32';
+    const pathApi = isWindows ? path.win32 : path.posix;
     const candidates = [];
-    const javaExecutable = this._findJavaExecutablePath();
+    const javaExecutable = this._findJavaExecutablePath(workingDirectory);
     if (javaExecutable) {
-      const javaHome = path.dirname(path.dirname(javaExecutable));
-      candidates.push(path.join(javaHome, 'lib', 'tools.jar'));
-      if (path.basename(javaHome).toLowerCase() === 'jre') {
-        candidates.push(path.join(path.dirname(javaHome), 'lib', 'tools.jar'));
+      const javaHome = pathApi.dirname(pathApi.dirname(javaExecutable));
+      candidates.push(pathApi.join(javaHome, 'lib', 'tools.jar'));
+      if (pathApi.basename(javaHome).toLowerCase() === 'jre') {
+        candidates.push(pathApi.join(pathApi.dirname(javaHome), 'lib', 'tools.jar'));
       }
     }
-    const configuredJavaHome = String(this._environment().JAVA_HOME || '').trim();
+    const javaHomeValue = String(this._environment().JAVA_HOME || '');
+    const configuredJavaHome = isWindows ? javaHomeValue.trim() : javaHomeValue;
     if (configuredJavaHome) {
-      candidates.push(path.join(configuredJavaHome, 'lib', 'tools.jar'));
-      if (path.basename(configuredJavaHome).toLowerCase() === 'jre') {
-        candidates.push(path.join(path.dirname(configuredJavaHome), 'lib', 'tools.jar'));
+      candidates.push(pathApi.resolve(workingDirectory, configuredJavaHome, 'lib', 'tools.jar'));
+      if (pathApi.basename(configuredJavaHome).toLowerCase() === 'jre') {
+        candidates.push(pathApi.resolve(workingDirectory, pathApi.dirname(configuredJavaHome), 'lib', 'tools.jar'));
       }
     }
     return candidates.find(candidate => {
@@ -376,8 +384,9 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _getAttachHelperClasspath(attachDir) {
-    const toolsJar = this._getJdk8ToolsJarPath();
-    return toolsJar ? `${attachDir}${path.delimiter}${toolsJar}` : attachDir;
+    const toolsJar = this._getJdk8ToolsJarPath(attachDir);
+    const delimiter = this._platform() === 'win32' ? path.win32.delimiter : path.posix.delimiter;
+    return toolsJar ? `${attachDir}${delimiter}${toolsJar}` : attachDir;
   }
 
   async isActivable() {
@@ -810,18 +819,21 @@ public class ProxyAgent {
 
   _quoteManualJvmOption(option, shell) {
     if (shell === 'powershell') return `'${option.replaceAll("'", "''")}'`;
-    if (this._platform() === 'win32') {
-      return `"${option.replaceAll('"', '\\"')}"`;
-    }
     return `'${option.replaceAll("'", "'\\''")}'`;
   }
 
-  _getFallbackCommand(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath, shell) {
+  _getFallbackCommand(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath,
+      shell = this._platform() === 'win32' ? 'powershell' : 'posix') {
     const caPath = this.ca?.getCertInfo?.()?.certificatePath;
     if (!agentJar || !caPath) return null;
-    return this._quoteManualJvmOption(
-      `-javaagent:${agentJar}=${this._getAgentArgs(proxyHost, proxyPort)}`, shell
-    );
+    const option = `-javaagent:${agentJar}=${this._getAgentArgs(proxyHost, proxyPort)}`;
+    if (shell === 'cmd') {
+      // CMD expands percent variables inside quoted options, and can also expand
+      // exclamation marks. Decode the literal option only after CMD has parsed it.
+      const encodedOption = Buffer.from(option, 'utf16le').toString('base64');
+      return `powershell.exe -NoProfile -NonInteractive -Command "& java ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedOption}'))) -jar 'your-application.jar'"`;
+    }
+    return this._quoteManualJvmOption(option, shell);
   }
 
   _getFallbackCommands(proxyHost, proxyPort, agentJar = this._preparedAgentJarPath) {
@@ -829,7 +841,11 @@ public class ProxyAgent {
       ? [['powershell', 'PowerShell'], ['cmd', 'Command Prompt (CMD)']]
       : [['posix', 'POSIX shell']];
     return shells.map(([shell, label]) => ({
-      shell, label, command: this._getFallbackCommand(proxyHost, proxyPort, agentJar, shell)
+      shell, label, command: this._getFallbackCommand(proxyHost, proxyPort, agentJar, shell),
+      kind: shell === 'cmd' ? 'command' : 'option',
+      ...(shell === 'cmd' ? {
+        description: "Run this command in Command Prompt. Replace -jar 'your-application.jar' with your application's Java launch arguments."
+      } : {})
     })).filter(option => option.command);
   }
 
