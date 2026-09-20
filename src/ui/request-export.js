@@ -401,6 +401,11 @@ function generateFetchBodyUnavailableSnippet(method) {
   );
 }
 
+function generateCurlHeadBodyUnavailableSnippet(format) {
+  return generateUnavailableExportSnippet(format,
+    'cURL HEAD exports with a request body are unavailable. Use the Node.js export to retain the request body and HEAD response handling.');
+}
+
 function generateMultipartExportSnippet(req, format) {
   const fields = getExportFormFields(req);
   const headers = getMultipartExportHeaders(req);
@@ -415,6 +420,9 @@ function generateMultipartExportSnippet(req, format) {
 
   if (format === 'javascript-fetch' && isFetchBodyForbiddenMethod(method)) {
     return generateFetchBodyUnavailableSnippet(method);
+  }
+  if (method === 'HEAD' && ['curl', 'php'].includes(format)) {
+    return generateCurlHeadBodyUnavailableSnippet(format);
   }
 
   if (['javascript-node', 'powershell', 'wget', 'php', 'go'].includes(format)) {
@@ -723,12 +731,15 @@ function generateExportSnippetCore(req, format) {
   const isBinaryBody = exportBody.kind === 'base64' && body.length > 0;
   const headers = getExportHeaders(req);
   const hasBody = body.length > 0;
+  if (method === 'HEAD' && hasBody && ['curl', 'php'].includes(format)) {
+    return generateCurlHeadBodyUnavailableSnippet(format);
+  }
   const repeatedHeaderReason = getRepeatedHeaderUnavailableReason(format, headers);
   if (repeatedHeaderReason) return generateUnavailableExportSnippet(format, repeatedHeaderReason);
 
   switch (format) {
     case 'curl': {
-      let cmd = `curl -X '${shellSingleQuote(method)}' '${shellSingleQuote(url)}'`;
+      let cmd = `curl ${method === 'HEAD' ? '--head' : `-X '${shellSingleQuote(method)}'`} '${shellSingleQuote(url)}'`;
       for (const [key, value] of headers) {
         cmd += ` \\\n  -H '${curlHeaderArgument(key, value)}'`;
       }
@@ -842,6 +853,7 @@ function generateExportSnippetCore(req, format) {
         code += `$body = base64_decode(${phpStringLiteral(body)}, true);\nif ($body === false) {\n    throw new RuntimeException('Invalid captured request body');\n}\n`;
       }
       code += `$ch = curl_init();\ncurl_setopt($ch, CURLOPT_URL, ${phpStringLiteral(url)});\ncurl_setopt($ch, CURLOPT_CUSTOMREQUEST, ${phpStringLiteral(method)});\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n`;
+      if (method === 'HEAD') code += 'curl_setopt($ch, CURLOPT_NOBODY, true);\n';
       if (headers.length) {
         code += `curl_setopt($ch, CURLOPT_HTTPHEADER, [\n${headers.map(([key, value]) => `    ${phpStringLiteral(curlHeaderLine(key, value))}`).join(',\n')}\n]);\n`;
       }

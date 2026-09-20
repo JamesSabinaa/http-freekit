@@ -503,6 +503,15 @@ successfully admitted SSE session idle beyond the timeout.
 
 ### BUG-016 — cURL HEAD exports report failure for a normal successful response
 
+**Resolution: Fixed.** Bodyless HEAD exports use cURL's `--head` or PHP's
+`CURLOPT_NOBODY`. HEAD uploads, including multipart entities, explicitly direct
+users to Node export instead of silently losing request bytes or mishandling the
+response. Real cURL regressions verify successful HEAD responses with nonzero
+representation lengths and GET/POST controls. All 30 focused tests passed;
+independent review reran the three new tests. PHP behavior was checked against
+the [libcurl option contract](https://curl.se/libcurl/c/CURLOPT_NOBODY.html);
+PHP itself remains unavailable.
+
 **Severity: Medium (common request export falsely fails).** Location:
 `src/ui/request-export.js:727`; analogous multipart construction at `:447`.
 
