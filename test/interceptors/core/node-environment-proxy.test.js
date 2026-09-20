@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import { load as loadYaml } from 'js-yaml';
 
 import { DockerInterceptor } from '../../../src/interceptors/docker-interceptor.js';
 import { ElectronInterceptor } from '../../../src/interceptors/electron-interceptor.js';
@@ -218,14 +219,15 @@ test('all advertised Node paths emit the exact environment-proxy contract', asyn
       '-e NODE_EXTRA_CA_CERTS=/etc/http-freekit/http-freekit-ca.pem ' +
       '-e NODE_USE_ENV_PROXY=1 <image>'
   );
-  assert.equal(
-    dockerResult.metadata.instructions.compose,
-    `volumes:\n  - "/tmp/freekit-ca-bundle.pem:/etc/http-freekit/http-freekit-ca.pem:ro"\nenvironment:\n` +
-      `  - HTTP_PROXY=http://172.17.0.1:${proxyPort}\n  - HTTPS_PROXY=http://172.17.0.1:${proxyPort}\n` +
-      `  - http_proxy=http://172.17.0.1:${proxyPort}\n  - https_proxy=http://172.17.0.1:${proxyPort}\n` +
-      '  - NO_PROXY=\n  - no_proxy=\n' +
-      '  - NODE_EXTRA_CA_CERTS=/etc/http-freekit/http-freekit-ca.pem\n  - NODE_USE_ENV_PROXY=1'
-  );
+  assert.deepEqual(loadYaml(dockerResult.metadata.instructions.compose), {
+    volumes: [{ type: 'bind', source: '/tmp/freekit-ca-bundle.pem',
+      target: '/etc/http-freekit/http-freekit-ca.pem', read_only: true }],
+    environment: [
+      `HTTP_PROXY=http://172.17.0.1:${proxyPort}`, `HTTPS_PROXY=http://172.17.0.1:${proxyPort}`,
+      `http_proxy=http://172.17.0.1:${proxyPort}`, `https_proxy=http://172.17.0.1:${proxyPort}`,
+      'NO_PROXY=', 'no_proxy=', 'NODE_EXTRA_CA_CERTS=/etc/http-freekit/http-freekit-ca.pem', 'NODE_USE_ENV_PROXY=1'
+    ]
+  });
   const dockerFallback = rendererDockerFallback(rendererSource, proxyPort);
   assert.ok(dockerFallback.includes(
     `docker run -e HTTP_PROXY=http://172.17.0.1:${proxyPort} -e HTTPS_PROXY=http://172.17.0.1:${proxyPort} ` +

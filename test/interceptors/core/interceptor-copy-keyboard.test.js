@@ -135,11 +135,38 @@ test('all interceptor copy blocks expose scoped button semantics', () => {
     ['Copy Docker Run command', 1],
     ['Copy Docker Compose configuration', 1],
     ['Copy terminal command', 1],
-    ['Copy Android QR connection URL', 1],
-    ['Copy JVM launch option for ${esc(option.label)}', 1]
+    ['Copy Android QR connection URL', 1]
   ]);
   for (const [label, count] of expectedLabels) {
     assert.equal(copyBlocks.filter(block => block.includes(`aria-label="${label}"`)).length, count);
+  }
+});
+
+test('rendered JVM fallback copy labels distinguish commands, options and legacy metadata', () => {
+  const cases = [
+    [{ fallbackCommand: 'legacy-option', fallbackCommands: [
+      { label: 'PowerShell', kind: 'option', command: 'inline-option' },
+      { label: 'Command Prompt', kind: 'command', command: 'complete-command', description: 'Replace the application arguments.' }
+    ] }, ['Copy JVM launch option for PowerShell', 'Copy JVM launch command for Command Prompt']],
+    [{ fallbackCommand: 'legacy-option' }, ['Copy JVM launch option for JVM launch option']]
+  ];
+  for (const [metadata, labels] of cases) {
+    const context = vm.createContext({ expandedInterceptorMetadata: metadata, esc: String });
+    vm.runInContext(extractFunction('renderJvmConfig', 'async function activateJvmProcess'), context);
+    const container = {};
+    context.renderJvmConfig(container);
+    const blocks = [...container.innerHTML.matchAll(/<div class="config-code-block"[^>]*>[^<]*<\/div>/g)]
+      .map(match => match[0]);
+    assert.equal(blocks.length, labels.length);
+    for (const [index, block] of blocks.entries()) {
+      assert.ok(block.includes(`aria-label="${labels[index]}"`));
+      assert.match(block, /role="button" tabindex="0"/);
+      assert.match(block, /onkeydown="activateOnKeyboard\(event\)"/);
+      assert.match(block, /onclick="event\.stopPropagation\(\); copyConfigCode\(this\)"/);
+      const expected = metadata.fallbackCommands?.[index].command || metadata.fallbackCommand;
+      assert.ok(block.endsWith(`>${expected}</div>`));
+    }
+    if (metadata.fallbackCommands) assert.ok(container.innerHTML.includes('Replace the application arguments.'));
   }
 });
 
