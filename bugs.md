@@ -547,6 +547,12 @@ and multipart variants were not independently verified.
 
 ### BUG-017 — Original/client body perspective shows the transformed body size
 
+**Resolution: Fixed.** The request-body pill now uses the same effective
+perspective as the body viewer. Renderer regressions cover all four perspectives
+with text, binary, truncated and unavailable original bodies, and verify that
+capture metadata remains unchanged. The regression failed before the one-line
+fix; review and all 22 focused detail/body-view tests passed.
+
 **Severity: Low (misleading displayed byte count).** Locations:
 `src/ui/app.js:3903`, effective original size at `:3290`.
 

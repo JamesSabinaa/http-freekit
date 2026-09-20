@@ -166,6 +166,39 @@ function renderTrafficRow(request) {
   return context.buildRowHtmlForTest(request, 0);
 }
 
+test('request-body size follows the selected original or transformed perspective', () => {
+  for (const originalBody of [
+    { body: 'abc', bodySize: 3 },
+    { body: 'data:application/octet-stream;base64,AP+A', bodyEncoding: 'base64', bodySize: 3 },
+    { body: 'abc', bodySize: 30, bodyTruncated: true, bodyCapturedSize: 3 },
+    { body: null }
+  ]) {
+    const request = baseRequest({}, {
+      method: 'POST', requestBody: 'expanded-body', requestBodySize: 13,
+      responseBody: '', responseBodySize: 0,
+      originalRequest: {
+        method: 'POST', url: 'https://array-headers.example/original',
+        headers: { 'content-type': 'text/plain' }, ...originalBody
+      }
+    });
+    const before = structuredClone(request);
+    const renderer = renderDetail(request);
+    vm.runInContext(sourceBetween('function formatSize(', 'function prettyPrintJson('), renderer.context);
+    for (const perspective of ['transformed', 'original', 'client', 'server']) {
+      renderer.context._transformPerspective = perspective;
+      const html = renderer.render(request);
+      const card = html.slice(html.indexOf('id="card-req-body"'), html.indexOf('id="card-response"'));
+      const useOriginal = ['original', 'client'].includes(perspective) && originalBody.body !== null;
+      assert.equal(card.match(/class="detail-pill pill-muted">([^<]+)/)?.[1],
+        `${useOriginal ? originalBody.bodySize : 13}B`, perspective);
+      assert.equal(renderer.bodyViewerCalls.findLast(call => call.elementId === 'reqBody').body,
+        useOriginal ? originalBody.body : 'expanded-body', perspective);
+      if (useOriginal && originalBody.bodyTruncated) assert.match(html, /3B of 30B/);
+    }
+    assert.deepEqual(request, before, 'rendering must not mutate capture metadata');
+  }
+});
+
 function baseRequest(responseHeaders, overrides = {}) {
   return {
     id: 'imported-exchange',

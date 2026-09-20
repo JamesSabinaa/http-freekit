@@ -3900,7 +3900,7 @@
               ${reqBodyModes.map(m => '<option value="' + escapeHtmlAttribute(m.value) + '">' + esc(m.label) + '</option>').join('')}
             </select>
             <select class="body-view-select protobuf-type-select" id="reqBody-schema" aria-label="Request body Protobuf type" onclick="event.stopPropagation()" onchange="setProtobufBodyType('reqBody', this.value, 'request')" style="display:none;"></select>
-            <span class="detail-pill pill-muted">${formatSize(req.requestBodySize)}</span>
+            <span class="detail-pill pill-muted">${formatSize(effReq.requestBodySize)}</span>
             <span class="detail-card-heading">Request Body</span>
             <span class="collapse-chevron">&#9650;</span>
           </span>
