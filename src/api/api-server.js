@@ -14,7 +14,11 @@ import { isObjectRecord, validateOpenApiSubmission } from './openapi-validation.
 import { registerConfigurationRoutes } from './routes/configuration-routes.js';
 import { registerTrafficRoutes } from './routes/traffic-routes.js';
 import { validatePortRange } from '../proxy/port-range.js';
-import { formatProxyAuthority, getLocalProxyHost } from '../interceptors/proxy-bind-reachability.js';
+import {
+  classifyProxyBindHost,
+  formatProxyAuthority,
+  getLocalProxyHost
+} from '../interceptors/proxy-bind-reachability.js';
 import { MCP_ENABLED_SETTING } from '../mcp/enabled-state.js';
 import { UpstreamProxyConfigError } from '../proxy/upstream-proxy-config.js';
 import { validateMockRule } from '../proxy/mock-rule-validation.js';
@@ -1359,6 +1363,31 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     };
   }
 
+  _isAllowedRequestAuthority(req) {
+    // Tokenless web mode relies on a local authority even when browsers omit
+    // Origin. A separately configured proxy bind address does not change the
+    // loopback management listener, and forwarded headers are not authoritative.
+    if (this.authToken) return true;
+    const authority = req.headers?.host;
+    if (typeof authority !== 'string' || !authority ||
+        /[\s\\/?#@]/.test(authority) || authority.endsWith(':')) return false;
+    if (Array.isArray(req.rawHeaders)) {
+      let hostCount = 0;
+      for (let index = 0; index < req.rawHeaders.length; index += 2) {
+        if (req.rawHeaders[index].toLowerCase() === 'host') hostCount++;
+      }
+      if (hostCount !== 1) return false;
+    }
+    try {
+      const parsed = new URL(`http://${authority}`);
+      const listenerPort = req.socket?.localPort ?? this.port;
+      return classifyProxyBindHost(parsed.hostname).kind === 'loopback' &&
+        Number(parsed.port || 80) === listenerPort;
+    } catch {
+      return false;
+    }
+  }
+
   _isAllowedBrowserOrigin(origin) {
     if (!origin) return true;
     try {
@@ -1395,6 +1424,9 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     this.app.use((req, res, next) => {
       res.header('Content-Security-Policy', "frame-ancestors 'none'");
       res.header('X-Frame-Options', 'DENY');
+      if (!this._isAllowedRequestAuthority(req)) {
+        return res.status(403).json({ error: 'Forbidden host' });
+      }
       const origin = req.get('origin');
       if (origin && !this._isAllowedBrowserOrigin(origin)) {
         return res.status(403).json({ error: 'Forbidden origin' });
@@ -3807,7 +3839,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
         }
 
         if (pathname === '/ws') {
-          if (!this._isAllowedBrowserOrigin(request.headers.origin)) {
+          if (!this._isAllowedRequestAuthority(request) ||
+              !this._isAllowedBrowserOrigin(request.headers.origin)) {
             socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
             return;
           }

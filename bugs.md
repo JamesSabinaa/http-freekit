@@ -84,6 +84,14 @@ was exercised end to end. These variants constitute one framing defect.
 
 ### BUG-002 — Tokenless management API accepts an unexpected Host authority
 
+**Resolution: Fixed.** Tokenless HTTP and WebSocket admission now requires one
+well-formed loopback Host authority matching the actual management listener port.
+Foreign, malformed, duplicate and missing authorities are rejected before routing
+or preflight; forwarded headers cannot authorize them. Valid loopback/IPv6 forms
+and existing token authentication retain their behavior. Validation: 42 targeted
+API/MCP tests passed, including real loopback HTTP/WebSocket controls. Root
+reviewed the patch and independently reran all seven auth tests before commit.
+
 **Severity: Medium (conditional exposure of captured traffic).** Locations:
 `src/api/api-server.js:1362-1423`, optional `AUTH_TOKEN` in `src/index.js`.
 
