@@ -7,10 +7,10 @@ candidates are excluded.
 
 ## Audit status and validation
 
-The audit remains in progress. Completion requires **two consecutive entire
-project passes with no newly verified bugs or material new manifestations**.
-Related manifestations are merged in the findings below, but a newly verified
-case still prevents that pass from counting as clean. Each pass covers the
+The audit is complete. Passes **13 and 14** were consecutive entire-project
+reviews with **no newly verified bugs or material new manifestations**.
+The **23 merged findings** below remain open. A newly verified manifestation
+reset the clean-pass count even when merged into an existing entry. Each pass covered the
 **88 first-party production files**: 21 application/API/MCP/traffic/startup,
 17 interceptor, 14 proxy, 10 UI, 22 Electron, and four script files, plus
 packaging/build/CI configuration, documentation, assets and relevant test coverage.
@@ -29,12 +29,16 @@ source reads, and independent probes. Tests are not a substitute for source revi
 | 7 | Entire project reviewed | 1, plus a new host-matcher case in BUG-019 | 0 |
 | 8 | Entire project reviewed | 0 | 1 |
 | 9 | Entire project reviewed | 0 distinct; new browser PATH cases in BUG-004 | 0 |
-| 10 | Entire-project review underway | 0 so far | Pending |
+| 10 | Entire project reviewed | 1 (BUG-023) | 0 |
+| 11 | Entire project reviewed | 0 distinct; new API-annotation case in BUG-010 | 0 |
+| 12 | Entire project reviewed | 0 distinct; new JDK 8 path cases in BUG-004 | 0 |
+| 13 | Entire project reviewed | 0 | 1 |
+| 14 | Entire project reviewed | 0 | 2 |
 
 Baseline `npm test`: **2,792 tests, 2,787 passed, 0 failed, 5 skipped**.
 `npm audit --audit-level=high --json`: **0 vulnerabilities**. The package runtime
-is Node **26.7.0**, although the shell's default Node is 25.2.1. The proxy,
-management API, and seven UI reproduction groups were verified on 26.7.0.
+is Node **26.7.0**, although the shell's default Node is 25.2.1. Focused
+verification also used the bundled Node 26.7.0 runtime.
 
 Production code and tracked tests have not been changed. Reproductions use
 isolated local listeners, synthetic traffic, VM-loaded production UI functions,
@@ -116,7 +120,7 @@ identity defect.
 ### BUG-004 — Interceptor commands and configuration fail to preserve literal values
 
 **Severity: Medium (activation/restoration can fail or use a different value).**
-Locations: `src/interceptors/jvm-interceptor.js:803-824`;
+Locations: `src/interceptors/jvm-interceptor.js:803-824`, `:329-372`, `:1446-1454`;
 `src/interceptors/android-adb-interceptor.js:102-104`, `:183`, `:871-875`,
 `:1305-1331`; `src/interceptors/docker-interceptor.js:179-183`;
 `src/interceptors/browser-paths.js:72-74`, `:94-95`;
@@ -173,6 +177,22 @@ all twelve. No actual Linux filesystem, command or browser was executed.
 Expected: preserve platform-specific PATH values and lookup semantics. This new
 configuration-value manifestation makes pass 9 non-clean. All these related
 literal-value handling failures share one entry.
+
+Pass 12 verified the same PATH transformations in JDK 8 tool discovery, plus
+trimming of `JAVA_HOME`. In a simulated available JDK 8 installation with
+`PATH=/opt/jdk/bin ` and a `java` symlink in that literal directory, production
+`_runAttachHelper` emits `java -cp /fixture/attach AttachProxy ...`, omitting the
+owning JDK's available `lib/tools.jar`. The ordinary-directory control includes
+that jar. A fallback `JAVA_HOME=/opt/jdk ` is similarly changed before lookup.
+
+Ten literal PATH/JAVA_HOME configurations omit the dependency; four controls
+retain it. The unchanged production module was evaluated with POSIX path,
+filesystem and command doubles. The helper imports `VirtualMachine`, and
+[Java 8 class-loading documentation](https://docs.oracle.com/javase/8/docs/technotes/tools/windows/findingclasses.html)
+requires tools classes to be on the user classpath. The resulting missing
+dependency is source-backed; no Java compiler, runtime or attach was executed.
+Expected: preserve the configured directories when discovering the required
+JDK 8 classpath. This additional material case makes pass 12 non-clean.
 
 ### BUG-005 — Mock transform rerenders overwrite edited replacement bodies
 
@@ -265,10 +285,12 @@ fields. The TLS passthrough/HTTPS whitelist handlers already compare submitted
 values before clearing. Client-certificate and CA variants are one draft-loss
 bug.
 
-### BUG-010 — Python and Fetch exports change HTTP method casing
+### BUG-010 — Method case folding changes exports and mislabels API operations
 
 **Severity: Medium (exported request differs from captured request).** Locations:
-`src/ui/request-export.js:474`, `:518`, `:740`, `:761`.
+`src/ui/request-export.js:474`, `:518`, `:740`, `:761`;
+`src/proxy/proxy-server.js:12055`, `:12082`;
+`src/api/api-server.js:2335`, `:3410-3417`; `src/ui/app.js:3791-3820`.
 
 Export and execute a request with method `MiXeD` as Python Requests, or `pOsT`
 as JavaScript Fetch, against a local raw TCP listener. Python sends `MIXED` and
@@ -279,6 +301,22 @@ HTTP method tokens are case-sensitive. Expected: preserve the token or clearly
 report that exact export is unsupported. The application and Node HTTP exporter
 preserve casing, but the generated Requests/Fetch calls normalize these methods.
 All body-format variants are grouped as one export-fidelity defect.
+
+Pass 11 verified a related case-folding error in OpenAPI matching. Import a spec
+with a GET operation `getResource` at `/same`, then use Send with the custom
+method `gEt` or `get` at that URL. The actual method remains unchanged on the
+loopback origin's wire and in captured traffic, but `matchApiSpec` lowercases it
+and incorrectly attaches the GET operation's documentation. Explicit
+`GET /api/specs/match` returns the same wrong operation. Ordinary GET correctly
+matches; POST correctly has no match.
+
+Expected: distinct case-sensitive HTTP method tokens must not share an operation
+annotation merely because their lowercase spelling is equal. This additional
+case is **Low severity, metadata only**: it mislabels the detail card without
+altering routing or request bytes. The real spec-import, Send, capture-enrichment
+and explicit-match API flows were exercised; UI display is established by the
+detail renderer's source. Both subsystems lose method-case identity and share
+this entry. The new annotation manifestation makes pass 11 non-clean.
 
 ### BUG-011 — PHP cURL exports suppress explicitly empty headers
 
@@ -537,3 +575,41 @@ Normalize the capture's hostname contract consistently or derive the matcher
 from its parsed URL. Both protocol manifestations share one capture-to-rule
 contract defect; the nondefault-port case also affects DNS/IPv4 and differs from
 BUG-019's equivalent IPv6 spelling mismatch.
+
+### BUG-023 — Send silently rewrites raw request-body newlines
+
+**Severity: Medium (an unedited replay sends and saves different body bytes).**
+Locations: `src/ui/app.js:10252-10277`, `:10317-10360`, `:12269`, `:12505`,
+`:12791-12808`.
+
+With the fallback Send editor active, resend captured UTF-8 text
+`alpha\r\nbeta\r\n` without editing it. Assigning it to the textarea changes CRLF
+to LF; reading the editor produces `alpha\nbeta\n`. Production preparation and
+Send dispatch submit 11 bytes instead of 13, and workspace persistence saves
+that changed body. Pasting cURL containing the same literal CRLF body also
+changes it, although the cURL parser itself preserves the original text.
+
+HAR multipart reconstruction initially produces correct CRLF framing. Loading
+that reconstructed body into raw Send strips the CR characters while retaining
+its multipart Content-Type and boundary: a one-field 121-byte fixture becomes
+116 bytes. The submitted body therefore loses the original multipart framing.
+Node's local `Response.formData()` parser accepts the original field and rejects
+the changed body; no claim is made that every multipart server rejects it.
+This differs from BUG-020's generated exports of an empty structured form.
+
+The real shipped Monaco editor preserves uniform CRLF when already initialized,
+but also changes mixed newlines without an edit: the 23-byte body
+`alpha\r\nbeta\ngamma\rdelta` becomes 25 bytes with CRLF throughout. The fallback
+turns the same body into 22 bytes with LF throughout. LF-only and base64-encoded
+body controls preserve their exact bytes.
+
+Directly invoking the real Monaco initializer also changes uniform CRLF through
+its reconciliation with the fallback textarea. This initialization path was
+exercised directly; a separate initial-page workspace reload was not executed.
+
+These results use Chrome running the actual page and shipped editor. The editor,
+`prepareSendRequestPayload`, locally intercepted `/api/send` JSON, and persisted
+workspace body all agree on the changed content; no origin request was made.
+Expected: preserve unedited raw body bytes across loading, sending and saving,
+including mixed line endings. The fallback and Monaco variants share one
+editor-to-payload preservation defect.
