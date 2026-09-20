@@ -190,6 +190,7 @@
     /** @type {object|null} Active Monaco editor for the Send page request body */
     let sendBodyEditor = null;
     let sendBodyProgrammaticUpdateDepth = 0;
+    let sendBodySnapshot = null;
     let sendUrlEncodedFields = [];
     let sendMultipartFields = [];
     let sendMultipartBoundary = '';
@@ -10262,10 +10263,13 @@
      * @returns {string}
      */
     function getSendBodyValue() {
-      if (sendBodyEditor) {
-        return sendBodyEditor.getValue();
-      }
-      return document.getElementById('sendBody-fallback')?.value || '';
+      const value = sendBodyEditor
+        ? sendBodyEditor.getValue()
+        : document.getElementById('sendBody-fallback')?.value || '';
+      const renderedValue = sendBodyEditor ? sendBodySnapshot?.editor : sendBodySnapshot?.fallback;
+      // Textarea and Monaco normalize line endings when displaying a body.
+      // Keep the loaded bytes until the user changes that displayed content.
+      return sendBodySnapshot && value === renderedValue ? sendBodySnapshot.source : value;
     }
 
     /**
@@ -10284,6 +10288,11 @@
         if (sendBodyEditor) {
           sendBodyEditor.setValue(normalizedValue);
         }
+        sendBodySnapshot = {
+          source: normalizedValue,
+          fallback: fallback?.value,
+          editor: sendBodyEditor?.getValue()
+        };
       } finally {
         sendBodyProgrammaticUpdateDepth--;
       }
@@ -10299,6 +10308,8 @@
     }
 
     function handleSendBodyUserInput() {
+      if (sendBodyProgrammaticUpdateDepth > 0) return;
+      sendBodySnapshot = null;
       markActiveSendBodyEdited();
       scheduleSendExportUpdate();
     }
@@ -10332,16 +10343,15 @@
       const fallback = document.getElementById('sendBody-fallback');
       if (!container || !fallback) return null;
 
+      const startingValue = fallback.dataset.bodyInitialized === 'true'
+        ? getSendBodyValue()
+        : (initialValue || '');
       // Dispose previous instance if any
       if (sendBodyEditor) {
         disposeMonacoEditor(sendBodyEditor);
       }
       container.innerHTML = '';
-      const startingValue = fallback.dataset.bodyInitialized === 'true'
-        ? fallback.value
-        : (initialValue || '');
-      fallback.value = startingValue;
-      fallback.dataset.bodyInitialized = 'true';
+      setSendBodyValue(startingValue);
       fallback.style.display = 'block';
       container.style.display = 'none';
 
@@ -10364,8 +10374,9 @@
       }
       try {
         // Keep edits made in the textarea while Monaco was loading.
-        if (editor.getValue() !== fallback.value) editor.setValue(fallback.value);
+        const latestValue = getSendBodyValue();
         sendBodyEditor = editor;
+        setSendBodyValue(latestValue);
 
         editor.onDidChangeModelContent(() => {
           fallback.value = editor.getValue();

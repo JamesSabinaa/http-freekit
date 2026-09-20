@@ -412,6 +412,7 @@ test('programmatic binary body loads stay base64 while a genuine edit transition
     let sendTabs = [globalThis.__tab];
     let activeSendTab = globalThis.__tab.id;
     let sendBodyProgrammaticUpdateDepth = 0;
+    let sendBodySnapshot = null;
     let sendBodyEditor = {
       setValue(value) {
         globalThis.__fallback.value = value;

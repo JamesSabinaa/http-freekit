@@ -8,6 +8,8 @@ const source = fs.readFileSync(path.join(process.cwd(), 'src', 'ui', 'app.js'), 
 const start = source.indexOf('function initializeSendTabs()');
 const end = source.indexOf('function prepopulateSendUrl', start);
 const initSource = source.slice(start, end);
+const bodyHelpersStart = source.indexOf('function getSendBodyValue()');
+const bodyHelpersEnd = source.indexOf('function handleSendBodyFallbackKeydown(', bodyHelpersStart);
 const editorStart = source.indexOf('async function initSendBodyEditor(');
 const languageStart = source.indexOf('function updateSendBodyLanguage()', editorStart);
 const languageEnd = source.indexOf('function formatSendBody(', languageStart);
@@ -16,7 +18,7 @@ const bodyTypeEnd = source.indexOf('function getSendMultipartFilePresentation(',
 const switchStart = source.indexOf('function switchSendTab(');
 const switchEnd = source.indexOf('function addSendTab(', switchStart);
 
-for (const boundary of [editorStart, languageStart, languageEnd, bodyTypeStart, bodyTypeEnd, switchStart, switchEnd]) {
+for (const boundary of [bodyHelpersStart, bodyHelpersEnd, editorStart, languageStart, languageEnd, bodyTypeStart, bodyTypeEnd, switchStart, switchEnd]) {
   assert.notEqual(boundary, -1);
 }
 
@@ -111,10 +113,13 @@ test('a tab switch and live body presentation edits survive delayed Monaco start
   vm.createContext(context);
   vm.runInContext(`
     let sendBodyEditor = null;
+    let sendBodyProgrammaticUpdateDepth = 0;
+    let sendBodySnapshot = null;
     let monacoApi = __monacoApi;
     let sendUrlEncodedFields = [];
     let sendMultipartFields = [];
     let sendMultipartBoundary = '';
+    ${source.slice(bodyHelpersStart, bodyHelpersEnd)}
     ${source.slice(editorStart, languageStart)}
     ${source.slice(languageStart, languageEnd)}
     ${source.slice(bodyTypeStart, bodyTypeEnd)}

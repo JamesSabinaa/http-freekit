@@ -295,6 +295,7 @@ test('Send textarea fallback preserves editing, formatting, payload, and Ctrl+En
   vm.runInContext(`
     let sendBodyEditor = null;
     let sendBodyProgrammaticUpdateDepth = 0;
+    let sendBodySnapshot = null;
     let sendTabs = [];
     let activeSendTab = 'tab-1';
     let monacoApi = null;

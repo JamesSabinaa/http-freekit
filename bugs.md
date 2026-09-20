@@ -715,6 +715,14 @@ BUG-019's equivalent IPv6 spelling mismatch.
 
 ### BUG-023 — Send silently rewrites raw request-body newlines
 
+**Resolution: Fixed.** Send retains the exact loaded body alongside the editor's
+displayed text until an actual edit. Fallback/Monaco initialization and reloads
+preserve that source for payloads, exports and workspace persistence. Regressions
+cover CRLF, LF, mixed/lone-CR endings, Unicode, binary controls, genuine and empty
+edits, HAR multipart and pasted cURL. All 309 Send/HAR tests passed; review reran
+37 focused tests. Actual Chrome checks passed for fallback (72) and shipped
+Monaco (74), including fresh-page reload and locally intercepted Send payloads.
+
 **Severity: Medium (an unedited replay sends and saves different body bytes).**
 Locations: `src/ui/app.js:10252-10277`, `:10317-10360`, `:12269`, `:12505`,
 `:12791-12808`.
