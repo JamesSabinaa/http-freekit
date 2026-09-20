@@ -293,6 +293,14 @@ Send tests cover Set-Cookie/Warning but only a singleton Content-Type.
 
 ### BUG-008 — Out-of-order settings responses overwrite newer saved UI values
 
+**Resolution: Fixed.** UI-settings reads now wait until pending saves settle and
+discard older read responses. Upstream saves and rotations reject superseded
+completions and reconcile authoritative server state after overlapping writes,
+including failures. Regression coverage separates server application order from
+response order and checks optimistic state, rollback, rotation events and later
+saves. All 63 focused tests passed, including behavioral no-proxy save/restore
+coverage; the production changes and ordering matrix were reviewed before commit.
+
 **Severity: Medium (displayed settings disagree with the latest saved values).**
 Location: `src/ui/app.js:13899-13944`, especially `:13914`.
 

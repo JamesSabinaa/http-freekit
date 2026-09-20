@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -113,8 +114,40 @@ test('internationalized exclusions match canonical destinations with suffix and 
   assert.equal(proxy._shouldUseUpstreamProxy('other.xn--bcher-kva.example', 443), true);
 });
 
-test('renderer saves and restores the configured non-proxied hosts', () => {
+test('renderer saves and restores the configured non-proxied hosts', async () => {
   const source = fs.readFileSync(path.join(repoRoot, 'src/ui/app.js'), 'utf8');
-  assert.match(source, /JSON\.stringify\(\{ host, port, auth: auth \|\| null, type, noProxy \}\)/);
-  assert.match(source, /noProxyEl\.value = \(proxy\.noProxy \|\| \[\]\)\.join\(', '\)/);
+  const start = source.indexOf('function setSettingsStatus(');
+  const end = source.indexOf('// ============ PORT CONFIG', start);
+  assert.ok(start >= 0 && end > start);
+  const elements = Object.fromEntries([
+    'upstreamType', 'upstreamDetails', 'upstreamDetailsFields',
+    'upstreamDetailsLabel', 'upstreamNoProxy', 'upstreamStatus'
+  ].map(id => [id, { value: '', style: {}, replaceChildren() {} }]));
+  elements.upstreamType.value = 'http';
+  elements.upstreamDetails.value = 'user:secret@proxy.test:8080';
+  elements.upstreamNoProxy.value = ' localhost, *.internal.test, [::1]:9443, ';
+  const submitted = [];
+  const context = vm.createContext({
+    API_BASE: '',
+    document: {
+      getElementById: id => elements[id],
+      createElement: () => ({ style: {} })
+    },
+    fetch: async (url, options) => {
+      submitted.push({ url, method: options.method, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ success: true }) };
+    },
+    toast() {}
+  });
+  vm.runInContext(source.slice(start, end), context);
+  await context.saveUpstreamProxy();
+  assert.deepEqual(submitted, [{
+    url: '/api/upstream-proxy', method: 'POST', body: {
+      host: 'proxy.test', port: 8080, auth: 'user:secret', type: 'http',
+      noProxy: ['localhost', '*.internal.test', '[::1]:9443']
+    }
+  }]);
+  elements.upstreamNoProxy.value = '';
+  context.updateUpstreamProxyUi(submitted[0].body);
+  assert.equal(elements.upstreamNoProxy.value, 'localhost, *.internal.test, [::1]:9443');
 });

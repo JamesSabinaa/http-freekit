@@ -306,3 +306,78 @@ test('late older save responses cannot overwrite or roll back newer same-tab sta
     ]);
   }
 });
+
+test('reconnect UI settings loads cannot read stale values while a save is pending', async () => {
+  for (const saveSucceeds of [true, false]) {
+    const initial = { hideTunnelRequests: true, filterSafeFonts: false };
+    const accepted = { ...initial, hideTunnelRequests: false };
+    const tab = createTab(initial);
+    const saveResponse = deferred();
+    const reads = [];
+    tab.context.fetch = async (_url, options = {}) => {
+      if (options.method === 'POST') return saveResponse.promise;
+      const read = deferred();
+      reads.push(read);
+      return read.promise;
+    };
+    const save = tab.context.saveHideTunnelRequests(false);
+    const reconnect = tab.context.loadUiSettings();
+    if (reads.length) reads[0].resolve(settingsResponse(initial));
+    await reconnect;
+    assert.equal(reads.length, 0, 'reconnect must not take a pre-save snapshot');
+    assert.deepEqual(tab.settings(), accepted, 'pending optimistic values remain visible');
+
+    saveResponse.resolve(saveSucceeds ? settingsResponse(accepted)
+      : settingsResponse({}, { ok: false, error: 'disk full' }));
+    await save;
+    assert.deepEqual(tab.settings(), saveSucceeds ? accepted : initial);
+
+    const fresh = { hideTunnelRequests: false, filterSafeFonts: true };
+    const reload = tab.context.loadUiSettings();
+    assert.equal(reads.length, 1, 'loading resumes after settlement');
+    reads[0].resolve(settingsResponse(fresh));
+    await reload;
+    assert.deepEqual(tab.settings(), fresh);
+    assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('uiSettingsConfirmed', tab.context))),
+      { success: true, ...fresh });
+  }
+});
+
+test('a reconnect started during a save cannot replace the later successful save confirmation', async () => {
+  const initial = { hideTunnelRequests: true, filterSafeFonts: false };
+  const accepted = { ...initial, hideTunnelRequests: false };
+  const tab = createTab(initial);
+  const saveResponse = deferred();
+  const staleRead = deferred();
+  tab.context.fetch = async (_url, options = {}) => options.method === 'POST'
+    ? saveResponse.promise : staleRead.promise;
+  const save = tab.context.saveHideTunnelRequests(false);
+  const reconnect = tab.context.loadUiSettings();
+  saveResponse.resolve(settingsResponse(accepted));
+  await save;
+  staleRead.resolve(settingsResponse(initial));
+  await reconnect;
+  assert.deepEqual(tab.settings(), accepted);
+  assert.equal(vm.runInContext('uiSettingsConfirmed.hideTunnelRequests', tab.context), false);
+  assert.equal(tab.toggles.hideTunnelRequestsToggle.checked, false);
+  assert.deepEqual(tab.toasts, [{ message: 'Traffic display setting saved', type: 'success' }]);
+});
+
+test('UI settings reads retain the newest load and never overwrite a later save', async () => {
+  for (const saveAfterRead of [false, true]) {
+    const initial = { hideTunnelRequests: true, filterSafeFonts: false };
+    const current = { hideTunnelRequests: false, filterSafeFonts: true };
+    const tab = createTab(initial);
+    const oldResponse = deferred();
+    let calls = 0;
+    tab.context.fetch = async () => ++calls === 1 ? oldResponse.promise : settingsResponse(current);
+    const oldLoad = tab.context.loadUiSettings();
+    if (saveAfterRead) await tab.context.saveFilterSafeFonts(true);
+    else await tab.context.loadUiSettings();
+    oldResponse.resolve(settingsResponse(initial));
+    await oldLoad;
+    assert.deepEqual(tab.settings(), current);
+    assert.equal(tab.toggles.hideTunnelRequestsToggle.checked, false);
+    assert.equal(tab.toggles.filterSafeFontsToggle.checked, true);
+  }
+});

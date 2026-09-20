@@ -13069,6 +13069,7 @@
     }
 
     let uiSettingsSaveGeneration = 0;
+    let uiSettingsLoadGeneration = 0;
     let uiSettingsConfirmedGeneration = 0;
     let uiSettingsConfirmed = { hideTunnelRequests, filterSafeFonts };
     const uiSettingsPendingSaves = new Set();
@@ -13103,13 +13104,15 @@
     }
 
     async function loadUiSettings() {
-      const loadGeneration = uiSettingsSaveGeneration;
+      if (uiSettingsPendingSaves.size) return;
+      const loadGeneration = ++uiSettingsLoadGeneration;
+      const saveGeneration = uiSettingsSaveGeneration;
       try {
         const res = await fetch(API_BASE + '/api/ui-settings');
         const data = await parseUiSettingsResponse(res);
-        if (loadGeneration === uiSettingsSaveGeneration) {
+        if (loadGeneration === uiSettingsLoadGeneration && saveGeneration === uiSettingsSaveGeneration) {
           uiSettingsConfirmed = data;
-          uiSettingsConfirmedGeneration = loadGeneration;
+          uiSettingsConfirmedGeneration = saveGeneration;
           synchronizeUiSettings(data);
         }
       } catch (e) {
@@ -13904,56 +13907,68 @@
 
     let upstreamProxyReadGeneration = 0;
     let upstreamProxyWritesPending = 0;
+    let upstreamProxyReloadAfterWrites = false;
+
+    function beginUpstreamProxyWrite() {
+      if (upstreamProxyWritesPending) upstreamProxyReloadAfterWrites = true;
+      upstreamProxyWritesPending++;
+      return ++upstreamProxyReadGeneration;
+    }
+
+    async function finishUpstreamProxyWrite() {
+      upstreamProxyWritesPending--;
+      // Responses can arrive in a different order from server-side changes.
+      // Reconcile once every overlapping write has settled, including failures.
+      if (!upstreamProxyWritesPending && upstreamProxyReloadAfterWrites) {
+        upstreamProxyReloadAfterWrites = false;
+        await loadUpstreamProxy();
+      }
+    }
 
     async function saveUpstreamProxy() {
       const type = document.getElementById('upstreamType').value;
       const statusEl = document.getElementById('upstreamStatus');
 
-      if (type === 'none') {
-        // Disable upstream proxy
-        upstreamProxyReadGeneration++;
-        upstreamProxyWritesPending++;
-        let reloadAfterFailure = false;
+      let proxy = null;
+      if (type !== 'none') {
+        const details = document.getElementById('upstreamDetails').value.trim();
+        const noProxy = document.getElementById('upstreamNoProxy').value
+          .split(',')
+          .map(hostname => hostname.trim())
+          .filter(Boolean);
+        if (!details) { toast('Enter proxy details first', 'error'); return; }
         try {
-          const res = await fetch(API_BASE + '/api/upstream-proxy', { method: 'DELETE' });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || data.success === false) {
-            throw new Error(data.error || `HTTP ${res.status}`);
-          }
-          updateUpstreamProxyUi(null);
-          toast('Upstream proxy disabled', 'success');
+          const { host, port, auth } = parseUpstreamProxyDetails(details, type);
+          proxy = { host, port, auth: auth || null, type, noProxy };
         } catch (err) {
           toast('Error: ' + err.message, 'error');
-          reloadAfterFailure = true;
-        } finally {
-          upstreamProxyWritesPending--;
+          return;
         }
-        if (reloadAfterFailure) await loadUpstreamProxy();
-        return;
       }
 
-      const details = document.getElementById('upstreamDetails').value.trim();
-      const noProxy = document.getElementById('upstreamNoProxy').value
-        .split(',')
-        .map(hostname => hostname.trim())
-        .filter(Boolean);
-      if (!details) { toast('Enter proxy details first', 'error'); return; }
-
-      upstreamProxyReadGeneration++;
-      upstreamProxyWritesPending++;
+      const writeGeneration = beginUpstreamProxyWrite();
       try {
-        const { host, port, auth } = parseUpstreamProxyDetails(details, type);
-        const res = await fetch(API_BASE + '/api/upstream-proxy', {
+        const res = await fetch(API_BASE + '/api/upstream-proxy', proxy ? {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host, port, auth: auth || null, type, noProxy })
-        });
+          body: JSON.stringify(proxy)
+        } : { method: 'DELETE' });
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${formatUpstreamProxyEndpoint(host, port)}`, 'var(--status-2xx)');
-        toast('Upstream proxy configured', 'success');
-      } catch (err) { toast('Error: ' + err.message, 'error'); }
-      finally { upstreamProxyWritesPending--; }
+        if (!res.ok || data.success === false || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        if (writeGeneration !== upstreamProxyReadGeneration) return;
+        if (proxy) {
+          setSettingsStatus(statusEl, `Active: ${type.toUpperCase()} proxy at ${formatUpstreamProxyEndpoint(proxy.host, proxy.port)}`, 'var(--status-2xx)');
+        } else {
+          updateUpstreamProxyUi(null);
+        }
+        toast(proxy ? 'Upstream proxy configured' : 'Upstream proxy disabled', 'success');
+      } catch (err) {
+        if (writeGeneration !== upstreamProxyReadGeneration) return;
+        toast('Error: ' + err.message, 'error');
+        upstreamProxyReloadAfterWrites = true;
+      } finally {
+        await finishUpstreamProxyWrite();
+      }
     }
 
     function updateUpstreamProxyUi(proxy, provider) {
@@ -14013,8 +14028,7 @@
     }
 
     async function rotateBottingToolsProxy() {
-      upstreamProxyReadGeneration++;
-      upstreamProxyWritesPending++;
+      const writeGeneration = beginUpstreamProxyWrite();
       const providerEl = document.getElementById('bottingToolsProvider');
       const buttonEl = document.getElementById('bottingToolsRotateBtn');
       const provider = (providerEl?.value || 'lemonprime').trim() || 'lemonprime';
@@ -14032,16 +14046,19 @@
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+        if (writeGeneration !== upstreamProxyReadGeneration) return;
         updateUpstreamProxyUi(data.upstreamProxy, data.provider);
         toast('BottingTools proxy rotated', 'success');
       } catch (err) {
+        if (writeGeneration !== upstreamProxyReadGeneration) return;
         toast('BottingTools: ' + err.message, 'error');
+        upstreamProxyReloadAfterWrites = true;
       } finally {
         if (buttonEl) {
           buttonEl.disabled = false;
           buttonEl.textContent = 'Rotate with BottingTools';
         }
-        upstreamProxyWritesPending--;
+        await finishUpstreamProxyWrite();
       }
     }
 
@@ -14130,13 +14147,17 @@
         return;
       }
       if (msg.status === 'success') {
-        if (msg.upstreamProxy) updateUpstreamProxyUi(msg.upstreamProxy, msg.provider);
+        if (msg.upstreamProxy) {
+          if (upstreamProxyWritesPending) upstreamProxyReloadAfterWrites = true;
+          else updateUpstreamProxyUi(msg.upstreamProxy, msg.provider);
+        }
         toast('BottingTools proxy auto-rotated', 'success');
         return;
       }
       if (msg.status === 'cancelled') {
         if (Object.hasOwn(msg, 'upstreamProxy')) {
-          updateUpstreamProxyUi(msg.upstreamProxy);
+          if (upstreamProxyWritesPending) upstreamProxyReloadAfterWrites = true;
+          else updateUpstreamProxyUi(msg.upstreamProxy);
         }
         toast('Auto proxy rotation cancelled; current proxy settings retained', 'info');
         return;

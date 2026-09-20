@@ -268,3 +268,175 @@ test('loaded bare IPv6 upstreams round-trip with unambiguous brackets', () => {
   assert.equal(ui.elements.upstreamDetails.value, 'alice:secret@[2001:db8::5]:1080');
   assert.equal(ui.status.child.textContent, 'Active: SOCKS5 proxy at [2001:db8::5]:1080');
 });
+
+test('overlapping upstream saves reconcile server state independently of request and response order', async t => {
+  const oldProxy = { type: 'http', host: 'old.test', port: 8080, auth: null, noProxy: [] };
+  const newProxy = { type: 'https', host: 'new.test', port: 8443, auth: null, noProxy: ['internal.test'] };
+  for (const [first, second] of [[null, newProxy], [oldProxy, null], [oldProxy, newProxy]]) {
+    for (const applyNewestLast of [true, false]) {
+      for (const respondNewestLast of [true, false]) {
+        await t.test(JSON.stringify({ first: first?.host, second: second?.host, applyNewestLast, respondNewestLast }), async () => {
+          const submitted = [];
+          let canonical = oldProxy;
+          const ui = createHarness((_url, options) => {
+            if (!options.method) return response({ upstreamProxy: canonical });
+            return new Promise(resolve => submitted.push({
+              proxy: options.method === 'DELETE' ? null : JSON.parse(options.body), resolve
+            }));
+          });
+          const save = proxy => {
+            ui.elements.upstreamType.value = proxy?.type || 'none';
+            ui.elements.upstreamDetails.value = proxy ? `${proxy.host}:${proxy.port}` : '';
+            ui.elements.upstreamNoProxy.value = (proxy?.noProxy || []).join(', ');
+            return ui.context.saveUpstreamProxy();
+          };
+          const saves = [save(first), save(second)];
+          assert.equal(submitted.length, 2, 'both submitted user changes reach the server');
+          for (const index of applyNewestLast ? [0, 1] : [1, 0]) canonical = submitted[index].proxy;
+          for (const index of respondNewestLast ? [0, 1] : [1, 0]) {
+            submitted[index].resolve(response({ success: true, upstreamProxy: submitted[index].proxy }));
+            await saves[index];
+            if (index === 0 && respondNewestLast) {
+              assert.equal(ui.elements.upstreamType.value, second?.type || 'none', 'old response must not reset newer selection');
+              assert.equal(ui.elements.upstreamDetails.value, second ? `${second.host}:${second.port}` : '');
+            }
+          }
+          assert.equal(ui.requests.filter(request => request.method === 'GET').length, 1,
+            'overlap triggers one authoritative read after both saves settle');
+          assert.equal(ui.elements.upstreamType.value, canonical?.type || 'none');
+          assert.equal(ui.elements.upstreamDetails.value, canonical ? `${canonical.host}:${canonical.port}` : '');
+          assert.equal(ui.elements.upstreamNoProxy.value, (canonical?.noProxy || []).join(', '));
+          assert.equal(ui.elements.upstreamDetailsFields.style.display, canonical ? 'block' : 'none');
+          assert.match(ui.status.child.textContent, canonical ? new RegExp(canonical.host) : /Direct connection/);
+          assert.equal(vm.runInContext('upstreamProxyWritesPending', ui.context), 0);
+        });
+      }
+    }
+  }
+});
+
+test('overlapping upstream failures reload the successfully persisted setting', async () => {
+  for (const failNewest of [false, true]) {
+    for (const respondNewestLast of [false, true]) {
+      let canonical = { type: 'http', host: 'original.test', port: 3128, noProxy: [] };
+      const submitted = [];
+      const ui = createHarness((_url, options) => options.method
+        ? new Promise(resolve => submitted.push({ options, resolve }))
+        : response({ upstreamProxy: canonical }));
+      const first = ui.context.saveUpstreamProxy();
+      ui.elements.upstreamType.value = 'https';
+      ui.elements.upstreamDetails.value = 'new.test:8443';
+      const second = ui.context.saveUpstreamProxy();
+      const saves = [first, second];
+      canonical = failNewest ? null : JSON.parse(submitted[1].options.body);
+      for (const index of respondNewestLast ? [0, 1] : [1, 0]) {
+        const failed = index === (failNewest ? 1 : 0);
+        submitted[index].resolve(failed ? response({ error: 'disk full' }, { ok: false, status: 500 })
+          : response({ success: true, upstreamProxy: canonical }));
+        await saves[index];
+      }
+      assert.equal(ui.elements.upstreamType.value, canonical?.type || 'none');
+      assert.equal(ui.elements.upstreamDetails.value, canonical ? 'new.test:8443' : '');
+      assert.equal(ui.requests.filter(request => request.method === 'GET').length, 1);
+      assert.equal(ui.toasts.filter(toast => toast.type === 'error').length, failNewest ? 1 : 0);
+    }
+  }
+});
+
+test('a failed active-proxy save restores authoritative fields and status', async () => {
+  const canonical = { type: 'http', host: 'saved.test', port: 3128, auth: null, noProxy: ['localhost'] };
+  const ui = createHarness((_url, options) => options.method
+    ? response({ error: 'disk full' }, { ok: false, status: 500 })
+    : response({ upstreamProxy: canonical }));
+  ui.elements.upstreamType.value = 'https';
+  ui.elements.upstreamDetails.value = 'unsaved.test:8443';
+  await ui.context.saveUpstreamProxy();
+  assert.equal(ui.elements.upstreamType.value, 'http');
+  assert.equal(ui.elements.upstreamDetails.value, 'saved.test:3128');
+  assert.equal(ui.elements.upstreamNoProxy.value, 'localhost');
+  assert.equal(ui.status.child.textContent, 'Active: HTTP proxy at saved.test:3128');
+  assert.deepEqual(ui.toasts, [{ message: 'Error: disk full', type: 'error' }]);
+});
+
+test('manual rotation and direct-mode saves share write ordering and reconciliation', async () => {
+  for (const rotationFirst of [false, true]) {
+    for (const rotationResponseFirst of [false, true]) {
+      const rotated = { type: 'http', host: 'rotated.test', port: 3128, noProxy: [] };
+      const canonical = rotationFirst ? null : rotated;
+      const pending = {};
+      const ui = createHarness((url, options) => options.method
+        ? new Promise(resolve => { pending[options.method === 'DELETE' ? 'save' : 'rotation'] = resolve; })
+        : response({ upstreamProxy: canonical }));
+      const save = () => ui.context.saveUpstreamProxy();
+      const rotate = () => ui.context.rotateBottingToolsProxy();
+      let saving, rotating;
+      if (rotationFirst) { rotating = rotate(); saving = save(); }
+      else { saving = save(); rotating = rotate(); }
+      const completeRotation = async () => {
+        pending.rotation(response({ success: true, upstreamProxy: rotated, provider: 'lemonprime' }));
+        await rotating;
+      };
+      const completeSave = async () => {
+        pending.save(response({ success: true }));
+        await saving;
+      };
+      if (rotationResponseFirst) { await completeRotation(); await completeSave(); }
+      else { await completeSave(); await completeRotation(); }
+      assert.equal(ui.elements.upstreamType.value, canonical?.type || 'none');
+      assert.equal(ui.elements.upstreamDetails.value, canonical ? 'rotated.test:3128' : '');
+      assert.equal(ui.requests.filter(request => request.method === 'GET').length, 1);
+      assert.equal(vm.runInContext('upstreamProxyWritesPending', ui.context), 0);
+    }
+  }
+});
+
+test('an older reconciliation read cannot replace a subsequent upstream save', async () => {
+  const pendingWrites = [];
+  let releaseRead;
+  const ui = createHarness((_url, options) => options.method
+    ? new Promise(resolve => pendingWrites.push(resolve))
+    : new Promise(resolve => { releaseRead = resolve; }));
+  const first = ui.context.saveUpstreamProxy();
+  const second = ui.context.saveUpstreamProxy();
+  pendingWrites[0](response({ success: true }));
+  await first;
+  pendingWrites[1](response({ success: true }));
+  // Let the second response start its reconciliation GET without resolving it.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof releaseRead, 'function');
+  ui.elements.upstreamType.value = 'https';
+  ui.elements.upstreamDetails.value = 'latest.test:8443';
+  const third = ui.context.saveUpstreamProxy();
+  pendingWrites[2](response({ success: true }));
+  await third;
+  releaseRead(response({ upstreamProxy: null }));
+  await second;
+  assert.equal(ui.elements.upstreamType.value, 'https');
+  assert.equal(ui.elements.upstreamDetails.value, 'latest.test:8443');
+  assert.equal(ui.status.child.textContent, 'Active: HTTPS proxy at latest.test:8443');
+});
+
+test('rotation events during a save defer to the authoritative post-save read', async () => {
+  for (const status of ['success', 'cancelled']) {
+    let releaseSave;
+    const canonical = { type: 'https', host: 'saved.test', port: 8443, noProxy: [] };
+    const ui = createHarness((_url, options) => options.method
+      ? new Promise(resolve => { releaseSave = resolve; })
+      : response({ upstreamProxy: canonical }));
+    ui.elements.upstreamType.value = canonical.type;
+    ui.elements.upstreamDetails.value = 'saved.test:8443';
+    const save = ui.context.saveUpstreamProxy();
+    ui.context.handleProxyAutoRotateEvent({
+      status, upstreamProxy: status === 'success'
+        ? { type: 'http', host: 'earlier-rotation.test', port: 3128 } : null
+    });
+    assert.equal(ui.elements.upstreamType.value, 'https');
+    assert.equal(ui.elements.upstreamDetails.value, 'saved.test:8443');
+    releaseSave(response({ success: true, upstreamProxy: canonical }));
+    await save;
+    assert.equal(ui.elements.upstreamType.value, 'https');
+    assert.equal(ui.elements.upstreamDetails.value, 'saved.test:8443');
+    assert.equal(ui.status.child.textContent, 'Active: HTTPS proxy at saved.test:8443');
+    assert.equal(ui.requests.filter(request => request.method === 'GET').length, 1);
+  }
+});
