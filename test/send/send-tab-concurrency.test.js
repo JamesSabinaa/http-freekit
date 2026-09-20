@@ -296,6 +296,165 @@ test('a clean active editor reloads a same-tab remote revision and cannot revert
   assert.equal(storedTabs(storage)[0].url, 'https://remote.test');
 });
 
+test('a delayed B save event retains the newer saved A editor and current combined workspace', async () => {
+  const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+    { id: 'tab-1', method: 'POST', url: 'https://original-a.test', body: '' },
+    { id: 'tab-2', method: 'POST', url: 'https://original-b.test', body: '' }
+  ]) });
+  const locks = createLockManager();
+  const first = createRenderer(storage, locks, '11111111');
+  const second = createRenderer(storage, locks, '22222222');
+  await restore(first);
+  await restore(second);
+  second.api.load('tab-2');
+  second.setEditor({ url: 'https://saved-b.test', nextBody: 'saved B body' });
+  second.api.switch('tab-1');
+  await second.api.settled();
+  const delayedEvent = storage.getItem(WORKSPACE_KEY);
+
+  first.setEditor({ url: 'https://saved-a.test', nextBody: 'new saved body' });
+  first.api.switch('tab-1');
+  await first.api.settled();
+  const current = storage.getItem(WORKSPACE_KEY);
+  assert.notEqual(current, delayedEvent);
+  assert.deepEqual(storedTabs(storage).map(tab => [tab.url, tab.body]), [
+    ['https://saved-a.test', 'new saved body'], ['https://saved-b.test', 'saved B body']
+  ]);
+  first.api.handleStorage({ key: WORKSPACE_KEY, newValue: delayedEvent });
+  await first.api.settled();
+  assert.deepEqual(first.editor(), { method: 'POST', url: 'https://saved-a.test', body: 'new saved body' });
+  assert.deepEqual(plain(first.api.tabs()).map(tab => [tab.url, tab.body]), [
+    ['https://saved-a.test', 'new saved body'], ['https://saved-b.test', 'saved B body']
+  ]);
+  assert.equal(storage.getItem(WORKSPACE_KEY), current);
+  assert.equal(first.api.active(), 'tab-1');
+  assert.deepEqual(first.api.toasts(), []);
+});
+
+test('delayed update events honor a newer deletion and preserve only genuine local drafts', async () => {
+  for (const dirty of [false, true]) {
+    const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+      { id: 'tab-1', method: 'GET', url: 'https://keep.test' },
+      { id: 'tab-2', method: 'POST', url: 'https://delete.test' }
+    ]) });
+    const locks = createLockManager();
+    const local = createRenderer(storage, locks, '11111111');
+    const remote = createRenderer(storage, locks, '22222222');
+    await restore(local);
+    await restore(remote);
+    local.api.load('tab-2');
+    await remote.api.persist([{ ...plain(remote.api.tabs()[1]), url: 'https://intermediate.test' }]);
+    const staleUpdate = storage.getItem(WORKSPACE_KEY);
+    await remote.api.persist([], ['tab-2']);
+    if (dirty) local.setEditor({ url: 'https://local-draft.test', nextBody: 'unsent draft' });
+    local.api.handleStorage({ key: WORKSPACE_KEY, newValue: staleUpdate });
+    await local.api.settled();
+    assert.equal(local.api.tabs().some(tab => tab.id === 'tab-2'), false);
+    assert.equal(storedTabs(storage).some(tab => tab.id === 'tab-2'), false);
+    if (dirty) {
+      assert.deepEqual(local.editor(), { method: 'POST', url: 'https://local-draft.test', body: 'unsent draft' });
+      assert.notEqual(local.api.active(), 'tab-2');
+      assert.equal(storedTabs(storage).length, 2);
+    } else {
+      assert.equal(local.api.active(), 'tab-1');
+      assert.equal(local.editor().url, 'https://keep.test');
+      assert.equal(storedTabs(storage).length, 1);
+    }
+  }
+});
+
+test('obsolete delete or malformed event payloads read the current valid workspace', async () => {
+  for (const newValue of [null, '{stale invalid JSON', JSON.stringify({ version: 3, tabs: 'invalid' })]) {
+    const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+      { id: 'tab-1', method: 'GET', url: 'https://before.test' }
+    ]) });
+    const locks = createLockManager();
+    const local = createRenderer(storage, locks, '11111111');
+    const remote = createRenderer(storage, locks, '22222222');
+    await restore(local);
+    await restore(remote);
+    await remote.api.persist([{ ...plain(remote.api.tabs()[0]), url: 'https://current.test' }]);
+    local.api.handleStorage({ key: WORKSPACE_KEY, newValue });
+    assert.equal(local.editor().url, 'https://current.test');
+    assert.equal(local.api.corruptions(), 0);
+  }
+});
+
+test('a removed workspace retains the live session instead of applying an obsolete snapshot', async () => {
+  const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+    { id: 'tab-1', method: 'GET', url: 'https://original.test' }
+  ]) });
+  const renderer = createRenderer(storage, createLockManager(), '11111111');
+  await restore(renderer);
+  const obsolete = storage.getItem(WORKSPACE_KEY);
+  renderer.setEditor({ url: 'https://session.test', nextBody: 'session body' });
+  await renderer.api.save();
+  await renderer.api.settled();
+  storage.removeItem(WORKSPACE_KEY);
+  renderer.api.handleStorage({ key: WORKSPACE_KEY, newValue: obsolete });
+  assert.deepEqual(renderer.editor(), { method: 'GET', url: 'https://session.test', body: 'session body' });
+  assert.equal(storage.getItem(WORKSPACE_KEY), null);
+  assert.equal(renderer.api.corruptions(), 0);
+});
+
+test('unreadable or currently corrupt storage never falls back to a valid stale event snapshot', async () => {
+  for (const failure of ['read', 'json', 'structure']) {
+    const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+      { id: 'tab-1', method: 'GET', url: 'https://original.test' }
+    ]) });
+    const renderer = createRenderer(storage, createLockManager(), '11111111');
+    await restore(renderer);
+    const obsolete = storage.getItem(WORKSPACE_KEY);
+    renderer.setEditor({ url: 'https://saved.test', nextBody: 'saved body' });
+    await renderer.api.save();
+    await renderer.api.settled();
+    if (failure === 'read') storage.getItem = () => { throw new Error('storage is unavailable'); };
+    else storage.setItem(WORKSPACE_KEY, failure === 'json' ? '{broken' : JSON.stringify({ version: 3, tabs: 'invalid' }));
+    assert.doesNotThrow(() => renderer.api.handleStorage({ key: WORKSPACE_KEY, newValue: obsolete }));
+    assert.deepEqual(renderer.editor(), { method: 'GET', url: 'https://saved.test', body: 'saved body' });
+    assert.equal(renderer.api.corruptions(), failure === 'read' ? 0 : 1);
+  }
+});
+
+test('session-storage events do not reconcile local-storage workspaces', async () => {
+  const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+    { id: 'tab-1', method: 'GET', url: 'https://before.test' }
+  ]) });
+  const locks = createLockManager();
+  const local = createRenderer(storage, locks, '11111111');
+  const remote = createRenderer(storage, locks, '22222222');
+  await restore(local);
+  await restore(remote);
+  await remote.api.persist([{ ...plain(remote.api.tabs()[0]), url: 'https://current.test' }]);
+  const event = { key: WORKSPACE_KEY, newValue: storage.getItem(WORKSPACE_KEY), storageArea: createStorage() };
+  local.api.handleStorage(event);
+  assert.equal(local.editor().url, 'https://before.test');
+  local.api.handleStorage({ ...event, storageArea: storage });
+  assert.equal(local.editor().url, 'https://current.test');
+});
+
+test('a storage read failure retains existing corruption records until a current valid read', async () => {
+  const storage = createStorage({ [LEGACY_KEY]: JSON.stringify([
+    { id: 'tab-1', method: 'GET', url: 'https://session.test' }
+  ]) });
+  const renderer = createRenderer(storage, createLockManager(), '11111111');
+  await restore(renderer);
+  const validWorkspace = storage.getItem(WORKSPACE_KEY);
+  storage.setItem(WORKSPACE_KEY, '{invalid current workspace');
+  renderer.api.handleStorage({ key: WORKSPACE_KEY, newValue: validWorkspace });
+  assert.equal(renderer.api.corruptions(), 1);
+  const getItem = storage.getItem;
+  storage.getItem = () => { throw new Error('storage read denied'); };
+  renderer.api.handleStorage({ key: WORKSPACE_KEY, newValue: null });
+  assert.equal(renderer.api.corruptions(), 1);
+  assert.equal(renderer.editor().url, 'https://session.test');
+  storage.getItem = getItem;
+  storage.setItem(WORKSPACE_KEY, validWorkspace);
+  renderer.api.handleStorage({ key: WORKSPACE_KEY, newValue: '{old corrupt snapshot' });
+  assert.equal(renderer.api.corruptions(), 0);
+  assert.equal(renderer.editor().url, 'https://session.test');
+});
+
 test('a dirty active editor forks on a same-tab remote update', async () => {
   const storage = createStorage({
     [LEGACY_KEY]: JSON.stringify([{ id: 'tab-1', method: 'GET', url: 'https://old.test' }])

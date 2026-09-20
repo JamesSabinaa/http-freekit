@@ -12327,16 +12327,27 @@
 
     function handleSendTabStorageEvent(event) {
       if (event.key !== SEND_TABS_WORKSPACE_KEY) return;
-      if (event.newValue === null) {
+      let savedWorkspace;
+      try {
+        const storage = window.localStorage;
+        if (event.storageArea && event.storageArea !== storage) return;
+        // Storage events can be queued behind a newer local or remote save.
+        // Reconcile the current record, never the event's obsolete snapshot.
+        savedWorkspace = storage.getItem(SEND_TABS_WORKSPACE_KEY);
+      } catch (error) {
+        console.warn('[Storage] Could not read ' + SEND_TABS_WORKSPACE_KEY + ': ' + error.message);
+        return;
+      }
+      if (savedWorkspace === null) {
         clearRendererStorageCorruption(SEND_TABS_WORKSPACE_KEY);
         return;
       }
       try {
-        const workspace = normalizeStoredSendWorkspace(JSON.parse(event.newValue));
+        const workspace = normalizeStoredSendWorkspace(JSON.parse(savedWorkspace));
         if (!workspace) {
           registerRendererStorageCorruption(
             SEND_TABS_WORKSPACE_KEY,
-            event.newValue,
+            savedWorkspace,
             'send',
             'Stored Send workspace',
             'invalid workspace structure'
@@ -12400,7 +12411,7 @@
       } catch (error) {
         registerRendererStorageCorruption(
           SEND_TABS_WORKSPACE_KEY,
-          event.newValue,
+          savedWorkspace,
           'send',
           'Stored Send workspace',
           error.message || 'invalid JSON'

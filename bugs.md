@@ -678,6 +678,14 @@ Both affected generators share one empty-collection handling defect.
 
 ### BUG-021 — Delayed cross-window storage events revert a saved Send editor
 
+**Resolution: Fixed.** Workspace storage events now trigger a read of the
+current saved record instead of applying stale event bytes. Existing draft,
+deletion, incarnation and journal handling is retained; read failures leave the
+live editor and corruption records unchanged. Regression tests reproduce the
+two-window save sequence and cover newer deletions, obsolete malformed events,
+session-storage events and read recovery. All 75 focused tests passed; review
+reran 48 workspace/storage tests successfully.
+
 **Severity: Medium (the editor silently displays stale request data).** Location:
 `src/ui/app.js:12305-12384`, especially `:12369-12371`.
 
