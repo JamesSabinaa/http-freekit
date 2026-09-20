@@ -12074,6 +12074,9 @@ export class ProxyServer {
 
   matchApiSpec(method, path, host) {
     if (typeof method !== 'string' || typeof path !== 'string' || typeof host !== 'string') return null;
+    // OpenAPI's lowercase operation keys describe these uppercase HTTP tokens,
+    // not custom methods that happen to have the same letters in another case.
+    if (!['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH', 'TRACE'].includes(method)) return null;
     const normalizedMethod = method.toLowerCase();
     const testPath = path.split('?')[0];
     const normalizedHost = normalizeApiSpecMatchHost(host);

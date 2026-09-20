@@ -36,9 +36,9 @@ function executeFetchSnippet(req) {
 test('empty GET and HEAD Fetch exports execute without a body', async t => {
   const cases = [
     ['GET raw', request({ method: 'GET' })],
-    ['mixed-case HEAD raw', request({ method: 'HeAd' })],
-    ['lower-case GET URL-encoded', request({
-      method: 'get',
+    ['HEAD raw', request({ method: 'HEAD' })],
+    ['GET URL-encoded', request({
+      method: 'GET',
       bodyType: 'urlencoded',
       formFields: []
     })]
@@ -62,13 +62,13 @@ test('body-bearing GET and HEAD Fetch exports fail closed before fetch', async t
   const compressed = zlib.gzipSync(Buffer.from('compressed request body')).toString('base64');
   const cases = [
     ['raw GET', request({ requestBody: 'raw body' })],
-    ['binary mixed-case GET', request({
-      method: 'gEt',
+    ['binary GET', request({
+      method: 'GET',
       requestBody: `data:application/octet-stream;base64,${binary}`,
       requestBodyEncoding: 'base64'
     })],
     ['compressed HEAD', request({
-      method: 'head',
+      method: 'HEAD',
       requestHeaders: { 'Content-Encoding': 'gzip' },
       requestBody: `data:application/octet-stream;base64,${compressed}`,
       requestBodyEncoding: 'base64'
@@ -78,8 +78,8 @@ test('body-bearing GET and HEAD Fetch exports fail closed before fetch', async t
       bodyType: 'urlencoded',
       formFields: [{ key: 'field', value: 'value' }]
     })],
-    ['multipart mixed-case HEAD', request({
-      method: 'hEaD',
+    ['multipart HEAD', request({
+      method: 'HEAD',
       bodyType: 'multipart',
       formFields: [{ key: 'field', value: 'value' }]
     })],

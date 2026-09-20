@@ -357,8 +357,24 @@ function isFetchBodyForbiddenMethod(method) {
 }
 
 function getFetchMethodUnavailableReason(method) {
-  return /^(?:CONNECT|TRACE|TRACK)$/i.test(method)
-    ? `The browser Fetch API forbids the ${method} request method.` : '';
+  if (/^(?:CONNECT|TRACE|TRACK)$/i.test(method)) {
+    return `The browser Fetch API forbids the ${method} request method.`;
+  }
+  const normalized = method.toUpperCase();
+  if (method !== normalized && ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'].includes(normalized)) {
+    return `The browser Fetch API changes the case-sensitive method ${method} to ${normalized}. Use the Node.js export to preserve the original method.`;
+  }
+  return '';
+}
+
+function renderPythonPreparedRequestSend(method) {
+  return '\n)\n\nwith requests.Session() as session:\n' +
+    '    prepared = session.prepare_request(request)\n' +
+    '    # Requests uppercases methods during preparation; restore the exact token.\n' +
+    `    prepared.method = ${JSON.stringify(method)}\n` +
+    '    settings = session.merge_environment_settings(prepared.url, {}, None, None, None)\n' +
+    '    response = session.send(prepared, **settings)\n\n' +
+    'print(response.status_code)\nprint(response.text)';
 }
 
 function needsPowerShellHttpClient(method) {
@@ -483,10 +499,10 @@ function generateMultipartExportSnippet(req, format) {
         return `    (${JSON.stringify(field.key)}, (${JSON.stringify(filename)}, open(${JSON.stringify(filename)}, 'rb'), ${JSON.stringify(contentType)}))`;
       }).join(',\n')}\n]\n`;
     }
-    code += `\nresponse = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
+    code += `\nrequest = requests.Request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
     if (headers.length) code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
     if (fields.length) code += ',\n    files=files';
-    code += '\n)\n\nprint(response.status_code)\nprint(response.text)';
+    code += renderPythonPreparedRequestSend(method);
     return code;
   }
 
@@ -752,7 +768,7 @@ function generateExportSnippetCore(req, format) {
     }
     case 'python': {
       let code = isBinaryBody ? `import base64\nimport requests\n\n` : `import requests\n\n`;
-      code += `response = requests.request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
+      code += `request = requests.Request(\n    ${JSON.stringify(method)},\n    ${JSON.stringify(url)}`;
       if (headers.length) {
         code += `,\n    headers={\n${headers.map(([key, value]) => `        ${JSON.stringify(key)}: ${JSON.stringify(String(value))}`).join(',\n')}\n    }`;
       }
@@ -761,7 +777,7 @@ function generateExportSnippetCore(req, format) {
           ? `,\n    data=base64.b64decode(${JSON.stringify(body)})`
           : `,\n    data=${JSON.stringify(body)}`;
       }
-      code += `\n)\n\nprint(response.status_code)\nprint(response.text)`;
+      code += renderPythonPreparedRequestSend(method);
       return code;
     }
     case 'javascript-fetch': {

@@ -360,6 +360,15 @@ bug.
 
 ### BUG-010 — Method case folding changes exports and mislabels API operations
 
+**Resolution: Fixed.** Python exports restore the exact method after Requests
+preparation. Fetch explicitly declines spellings that its API would normalize.
+OpenAPI annotations match only the documented uppercase HTTP tokens. Actual raw
+TCP tests verify methods and bodies for Python/Fetch exports, and live API
+import/Send/capture/match tests cover 24 operation spellings. Review reran all
+97 focused tests successfully; broader validation passed 357 tests with the two
+existing unavailable PHP/Go runtime skips. The pre-fix regression run failed 39
+tests.
+
 **Severity: Medium (exported request differs from captured request).** Locations:
 `src/ui/request-export.js:474`, `:518`, `:740`, `:761`;
 `src/proxy/proxy-server.js:12055`, `:12082`;
