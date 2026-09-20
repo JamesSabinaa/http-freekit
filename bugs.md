@@ -8,15 +8,25 @@ candidates are excluded.
 ## Audit status and validation
 
 The audit remains in progress. Completion requires **two consecutive entire
-project passes with no new distinct bugs**. A pass covers all production modules,
-desktop/build configuration, and relevant test coverage; tests are not counted
-as a substitute for source review.
+project passes with no newly verified bugs or material new manifestations**.
+Related manifestations are merged in the findings below, but a newly verified
+case still prevents that pass from counting as clean. Each pass covers the
+**88 first-party production files**: 21 application/API/MCP/traffic/startup,
+17 interceptor, 14 proxy, 10 UI, 22 Electron, and four script files, plus
+packaging/build/CI configuration, documentation, assets and relevant test coverage.
+Earlier passes included full textual reviews; later passes used complete module
+and function inventories, fresh reviews of behavior and error handling, targeted
+source reads, and independent probes. Tests are not a substitute for source review.
 
 | Pass | Coverage | New distinct bugs | Consecutive clean passes |
 | --- | --- | ---: | ---: |
 | 1 | Entire project reviewed, including final markup/theme verification | 14 | 0 |
-| 2 | Application, UI and proxy reviews complete; interceptor review in progress | 3 so far | 0 |
-| 3 | Application, UI and proxy invariant reviews underway | Pending | 0 |
+| 2 | Entire project reviewed | 4, plus a new Buffer round-trip case in BUG-012 | 0 |
+| 3 | Entire project reviewed | 1, plus a new settings race in BUG-008 | 0 |
+| 4 | Entire project reviewed | 2 | 0 |
+| 5 | Entire project reviewed | 0 | 1 |
+| 6 | Application, desktop and proxy complete; UI and interceptor reviews finishing | 0 distinct; new Compose path case in BUG-004 | 0 |
+| 7 | Entire-project review underway | 0 so far | Pending |
 
 Baseline `npm test`: **2,792 tests, 2,787 passed, 0 failed, 5 skipped**.
 `npm audit --audit-level=high --json`: **0 vulnerabilities**. The package runtime
@@ -27,8 +37,9 @@ Production code and tracked tests have not been changed. Reproductions use
 isolated local listeners, synthetic traffic, VM-loaded production UI functions,
 or stubbed process/device operations. Linux reboot collisions were simulated;
 no real process was terminated. No real Android device, system proxy, or host
-trust store was modified. Java/Javac and PHP were unavailable; the relevant
-runtime limitations are stated below. Detailed local evidence is under the
+trust store was modified. Java/Javac, PHP and Go were unavailable; the five
+baseline skips comprise three JVM runtime tests and two generated-export runtime
+tests. Relevant reproduction limits are stated below. Detailed local evidence is under the
 ignored `data/bug-audit/` directory; the descriptions below do not require those
 uncommitted files to understand the defects.
 
@@ -43,7 +54,8 @@ Both streaming HTTP/2 constructors omit `endStream: false`. Node can create
 GET/DELETE/HEAD streams already ended; the upload relay then skips writing the
 body. The buffered helper at `:9059` already sets this option correctly.
 
-Reproduce with a local TLS HTTP/2 echo origin trusted by an isolated proxy.
+Reproduce with a local TLS HTTP/2 echo origin (`allowHTTP1: true`) trusted by an
+isolated proxy.
 Send a plain HTTP proxy request with an absolute HTTPS destination, method
 DELETE, `Transfer-Encoding: chunked`, and body `abc`. The origin receives an
 empty body and returns 200. With `Content-Length: 3`, DELETE instead returns
@@ -98,12 +110,12 @@ Expected: discard ownership from another boot. Terminal recovery already
 implements boot-bound ownership. Both affected interceptor families share this
 identity defect.
 
-### BUG-004 — Interceptor shell commands fail to preserve literal values
+### BUG-004 — Interceptor commands and configuration fail to preserve literal values
 
-**Severity: Medium (activation/restoration can use a different value).**
+**Severity: Medium (activation/restoration can fail or use a different value).**
 Locations: `src/interceptors/jvm-interceptor.js:803-824`;
 `src/interceptors/android-adb-interceptor.js:102-104`, `:183`, `:871-875`,
-`:1305-1331`.
+`:1305-1331`; `src/interceptors/docker-interceptor.js:179-183`.
 
 The Windows JVM Command Prompt fallback quotes an agent path without protecting
 percent expansion. Generate the fallback for
@@ -122,7 +134,21 @@ stub mirroring that join, with saved value
 Expected: restore the original string, or reject unsupported values before
 replacing the original setting. No physical device was used.
 
-Both are missing shell-specific literal-data escaping and are grouped together.
+Pass 6 verified a related Docker Compose path case. With a valid Linux CA path
+`/tmp/project:blue/data/ca.pem` (for example, a source checkout containing `:`),
+the generator emits the short volume string
+`/tmp/project:blue/data/ca.pem:/etc/http-freekit/http-freekit-ca.pem:ro`.
+YAML quotes preserve the string, but the
+[Compose volume parser](https://github.com/compose-spec/compose-go/blob/75fb1aba98ff8a944ebc5ea54f1054f1329e999c/format/volume.go#L57-L92)
+then splits its colon separators and rejects it as `too many colons`.
+Expected: represent the literal source path using separate source/target fields.
+
+Production instruction generation, actual YAML parsing, and a bounded translation
+of that primary parser's separator logic establish the rejection for two colon
+paths; ordinary Linux and Windows-drive controls pass. Go and Docker Compose
+were unavailable, so this is source-backed validation, not a Compose execution.
+These related literal-value handling failures share one entry; the new Compose
+case still prevents pass 6 from counting as clean.
 
 ### BUG-005 — Mock transform rerenders overwrite edited replacement bodies
 
@@ -149,7 +175,8 @@ strings. Request and response variants share this rerender data-loss defect.
 `src/ui/app.js:3799`.
 
 Import an otherwise valid HTTP traffic row with
-`"apiMatch":{"parameters":"invalid"}` or `"parameters":[null]`, then select it.
+`"apiMatch":{"parameters":"invalid"}` or `"apiMatch":{"parameters":[null]}`,
+then select it.
 The real import validator accepts both and appending preserves the metadata.
 Detail rendering assumes an array of non-null parameter objects: the string
 throws `parameters.map is not a function`; the null member throws on `p.name`.
@@ -173,9 +200,9 @@ Expected: display the response and retain its repeated headers. Traffic details
 already use `getCombinedHeaderValue` for this purpose. Existing repeated-header
 Send tests cover Set-Cookie/Warning but only a singleton Content-Type.
 
-### BUG-008 — A delayed upstream-disable response overwrites newer settings UI
+### BUG-008 — Out-of-order settings responses overwrite newer saved UI values
 
-**Severity: Medium (displayed routing disagrees with the latest saved setting).**
+**Severity: Medium (displayed settings disagree with the latest saved values).**
 Location: `src/ui/app.js:13899-13944`, especially `:13914`.
 
 Choose None to disable the upstream proxy and delay the DELETE response. Enter
@@ -187,6 +214,15 @@ Direct connection, although the newer save had succeeded.
 Expected: an older operation's completion must not replace the state of a newer
 successful operation. Existing read-generation guards do not order two mutation
 responses. The demonstrated case is upstream disable versus a subsequent save.
+
+Pass 3 also verified a read-during-write race in `loadUiSettings`
+(`src/ui/app.js:13096-13104`): it snapshots
+only `uiSettingsSaveGeneration`. Start saving `hideTunnelRequests: false`, then
+start a reconnect GET while that save is pending. Complete the POST, then return
+the GET's older `hideTunnelRequests: true` value. The production renderer restores
+the old checkbox/filter state and `uiSettingsConfirmed`, despite the newer
+successful save. Both operations shared the same generation. This related case
+needs a pending-mutation/read guard in addition to ordering mutation completions.
 
 ### BUG-009 — Certificate add completion erases a newer unsent form draft
 
@@ -347,3 +383,92 @@ says `13B`. Transformed/server perspectives correctly show `expanded-body` and
 Expected: the pill says `3B` with the original body. It uses
 `req.requestBodySize` instead of the effective request's size. The body bytes and
 forwarding are unaffected by this presentation error.
+
+### BUG-018 — Global Chrome rejects Debian Chromium's supported launcher
+
+**Severity: Medium (activation fails on a supported Linux installation).**
+Locations: `src/interceptors/browser-paths.js:46`, `:103`;
+`src/interceptors/existing-browser-interceptor.js:244-255`, `:463-490`.
+
+On Debian with Chromium discovered as `/usr/bin/chromium`, Global Chrome starts
+the browser but then rejects ownership because the observed process executable
+is `/usr/lib/chromium/chromium`. Its failed-launch path terminates the child.
+The check equates a supported launcher path with the eventual executable path.
+
+The actual wrapper transition is established by the official
+[Debian Chromium source archive](https://deb.debian.org/debian/pool/main/c/chromium/chromium_153.0.8010.52-1.debian.tar.xz):
+`debian/scripts/chromium:9,12,153` executes the binary under `/usr/lib/chromium`,
+and `debian/rules` installs the wrapper under `/usr/bin`. It does not preserve the
+wrapper as argv[0]. Google's different Chrome wrapper uses `exec -a` and is not
+claimed to exhibit this case.
+
+A fixture invoking production discovery, POSIX snapshot parsing and activation
+with the Debian paths gets `Launched Global browser executable identity does not
+match the selected browser`, `active: false`, and a mocked SIGTERM. A direct
+binary-path control succeeds without a signal; already-running detection also
+works. Expected: accept the legitimate launcher-to-binary transition while
+retaining process ownership checks. No Linux browser was actually launched here;
+the package source and fully mocked activation establish the failure together.
+
+### BUG-019 — Equivalent IPv6 proxy-bypass addresses fail to select the direct route
+
+**Severity: Medium (incorrect upstream routing).** Locations:
+`src/proxy/proxy-server.js:3062-3105`;
+`src/proxy/upstream-proxy-config.js:27-33`.
+
+Configure an upstream proxy and `noProxy: ['[0:0:0:0:0:0:0:1]']`, then request
+`http://[0:0:0:0:0:0:0:1]:<port>/` through FreeKit. URL parsing compresses the
+request hostname to `[::1]`, while the bypass matcher strips brackets and
+lowercases without canonicalizing IPv6 literals. The equivalent strings fail
+to match and the request goes through the upstream.
+
+An isolated `::1` origin and `127.0.0.1` upstream confirm zero origin hits and one
+upstream hit. Changing only the bypass entry to `[::1]` gives one origin hit and
+zero upstream hits. Expanded unbracketed and expanded bracket-plus-port entries
+fail the same way. Expected: equivalent addresses select the same route.
+All forms are one normalization bug; no additional security impact is asserted.
+
+### BUG-020 — Empty multipart forms lose their body in cURL and Python exports
+
+**Severity: Medium (exported request differs from Send).** Locations:
+`src/ui/request-export.js:403-480`; `src/ui/app.js:12766-12788`.
+
+Choose POST and multipart body mode, leaving the default unnamed row or no
+enabled named fields. Send still produces a multipart Content-Type with a
+boundary and the closing boundary as its body. The cURL and Python generators
+remove that Content-Type, then add multipart options only while iterating fields.
+With zero fields, neither generator supplies a body or multipart Content-Type.
+
+A loopback listener confirms that both generated exports send no multipart
+header and an empty body. Executing the real Send preparation and generated
+Node export with boundary `----audit-empty-form` produces the correct 26-byte
+closing boundary and multipart header. A server requiring multipart therefore
+returns 415 for the cURL/Python requests and 200 for the Node control.
+
+Expected: preserve the empty multipart entity, or explicitly report that the
+target cannot replay it. Silently changing it to a bodyless POST is incorrect.
+Both affected generators share one empty-collection handling defect.
+
+### BUG-021 — Delayed cross-window storage events revert a saved Send editor
+
+**Severity: Medium (the editor silently displays stale request data).** Location:
+`src/ui/app.js:12305-12384`, especially `:12369-12371`.
+
+Open two FreeKit windows sharing a Send workspace with tabs A and B. In the
+second window, edit B and switch tabs to persist it, delaying delivery of that
+window's storage event to the first window. In the first window, edit A's URL
+and body and click its already selected A tab to finish its save
+(`switchSendTab`, `:12645-12651`) before delivering the queued event.
+
+The event contains a snapshot from before A's save. The handler trusts
+`event.newValue`, treats the now-saved editor as clean, and reloads A from that
+old snapshot. Executing the production persistence and event functions changes
+the visible URL from `https://saved-a.test` back to `https://original-a.test`
+and its body from `new saved body` to empty, with no notification. Current
+localStorage still contains saved A and the other window's updated B.
+
+Expected: reconcile against the current persisted workspace or reject obsolete
+revisions before replacing the editor. The preserved on-disk data limits the
+immediate loss, but the user sees and can send the wrong request. This is a
+workspace event reconciliation defect, distinct from the HTTP settings response
+ordering in BUG-008.
