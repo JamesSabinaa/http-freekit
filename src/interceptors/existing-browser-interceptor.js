@@ -60,6 +60,16 @@ export class ExistingBrowserInterceptor {
     return process.platform;
   }
 
+  _getBrowserExecutablePaths(browserPath) {
+    // Debian's Chromium launcher execs this packaged binary without preserving
+    // the launcher's argv0. Accept only this known pair, not a basename match.
+    if (this._getPlatform() === 'linux' && this.browserType === 'chrome' &&
+        browserPath === '/usr/bin/chromium') {
+      return [browserPath, '/usr/lib/chromium/chromium'];
+    }
+    return [browserPath];
+  }
+
   _normalizeExecutableIdentity(executable, platform = this._getPlatform()) {
     if (typeof executable !== 'string') throw new Error('Browser executable identity is missing');
     const value = executable.trim();
@@ -243,6 +253,8 @@ export class ExistingBrowserInterceptor {
 
   async _captureLaunchedOwnership(launchedProcess, browserPath) {
     const expectedExecutable = this._normalizeExecutableIdentity(browserPath);
+    const expectedExecutables = new Set(this._getBrowserExecutablePaths(browserPath)
+      .map(executable => this._normalizeExecutableIdentity(executable)));
     const provisional = {
       pid: launchedProcess.pid,
       executable: expectedExecutable
@@ -251,7 +263,7 @@ export class ExistingBrowserInterceptor {
     if (observation.state !== 'running') {
       throw observation.error || new Error('Global browser process exited before ownership was recorded');
     }
-    if (observation.identity.executable !== expectedExecutable) {
+    if (!expectedExecutables.has(observation.identity.executable)) {
       throw new Error('Launched Global browser executable identity does not match the selected browser');
     }
     return Object.freeze({
@@ -272,7 +284,7 @@ export class ExistingBrowserInterceptor {
       const normalized = pathApi.normalize(String(value));
       return platform === 'win32' ? normalized.toLowerCase() : normalized;
     };
-    const selectedPath = normalize(browserPath);
+    const selectedPaths = new Set(this._getBrowserExecutablePaths(browserPath).map(normalize));
     const selectedName = normalize(pathApi.basename(browserPath));
     const selectedIsAbsolute = pathApi.isAbsolute(browserPath);
     const identityMatches = identity => {
@@ -281,7 +293,7 @@ export class ExistingBrowserInterceptor {
       if (!value) return false;
       if (pathApi.isAbsolute(value)) {
         return selectedIsAbsolute
-          ? normalize(value) === selectedPath
+          ? selectedPaths.has(normalize(value))
           : normalize(pathApi.basename(value)) === selectedName;
       }
       return normalize(pathApi.basename(value)) === selectedName;

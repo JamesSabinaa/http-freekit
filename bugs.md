@@ -535,6 +535,15 @@ forwarding are unaffected by this presentation error.
 
 ### BUG-018 — Global Chrome rejects Debian Chromium's supported launcher
 
+**Resolution: Fixed.** Global Chrome recognizes the documented Linux
+`/usr/bin/chromium` to `/usr/lib/chromium/chromium` launcher transition. It records
+the observed binary and retains exact PID/start/executable checks for subsequent
+refresh, recovery and cleanup. Stubbed lifecycle tests exercise discovery,
+activation, persisted-journal recovery and cleanup, with direct-launch and
+wrong-path/platform/browser/process-identity controls. All 90 focused and
+surrounding browser tests passed; review reran the nine new tests. No real browser
+or process was launched or signaled by these regressions.
+
 **Severity: Medium (activation fails on a supported Linux installation).**
 Locations: `src/interceptors/browser-paths.js:46`, `:103`;
 `src/interceptors/existing-browser-interceptor.js:244-255`, `:463-490`.
