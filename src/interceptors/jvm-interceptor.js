@@ -8,6 +8,7 @@ import { execFileAsync } from './command-runner.js';
 import {
   inspectDarwinProcessIdentity,
   inspectLinuxProcessIdentity,
+  normalizeBootId,
   normalizeExecutableIdentity,
   parseLinuxProcessStart,
   probeProcessPid,
@@ -83,10 +84,14 @@ export class JvmInterceptor {
     if (!this._isSafeJournalString(startTime, 128) || !stableStartTime) {
       throw new Error('Process start identity is missing or invalid');
     }
+    // Linux start ticks identify a process only within the recorded boot.
     return Object.freeze({
       pid,
       startTime,
-      executable: this._normalizeExecutableIdentity(identity.executable)
+      executable: this._normalizeExecutableIdentity(identity.executable),
+      ...(this._platform() === 'linux' || identity.bootId !== undefined
+        ? { bootId: normalizeBootId(identity.bootId) }
+        : {})
     });
   }
 
@@ -98,6 +103,7 @@ export class JvmInterceptor {
 
   async _inspectLinuxTargetIdentity(pid) {
     return inspectLinuxProcessIdentity(pid, {
+      includeBootId: true,
       parseStart: (stat, processId) => this._parseLinuxProcessStart(stat, processId)
     });
   }
@@ -173,7 +179,9 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
   }
 
   _sameTargetIdentity(left, right) {
-    return sameProcessIdentity(left, right);
+    const needsBootIdentity = this._platform() === 'linux' || left?.bootId || right?.bootId;
+    return sameProcessIdentity(left, right) &&
+      (!needsBootIdentity || Boolean(left.bootId && left.bootId === right.bootId));
   }
 
   _normalizeJournalProcess(entry) {
@@ -188,7 +196,7 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
         !['pending', 'active', 'uncertain'].includes(entry.state) ||
         !entry.identity || typeof entry.identity !== 'object' || Array.isArray(entry.identity) ||
         Object.keys(entry.identity).some(field => ![
-          'pid', 'startTime', 'executable'
+          'pid', 'startTime', 'executable', 'bootId'
         ].includes(field))) {
       return null;
     }

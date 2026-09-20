@@ -7,6 +7,7 @@ import { NODE_USE_ENV_PROXY_VALUE } from './node-environment-proxy.js';
 import { formatProxyUrl, getLocalProxyHost } from './proxy-bind-reachability.js';
 import {
   inspectProcessIdentity,
+  normalizeBootId,
   normalizeProcessIdentity,
   sameProcessIdentity
 } from './process-identity.js';
@@ -207,15 +208,21 @@ export class ElectronInterceptor {
   }
 
   _normalizeProcessIdentity(identity, expectedPid, platform = this._platform()) {
-    return normalizeProcessIdentity(identity, expectedPid, {
+    const normalized = normalizeProcessIdentity(identity, expectedPid, {
       platform,
       includePlatform: true
+    });
+    // Linux start ticks identify a process only within the recorded boot.
+    return Object.freeze({
+      ...normalized,
+      ...(platform === 'linux' ? { bootId: normalizeBootId(identity.bootId) } : {})
     });
   }
 
   async _inspectProcessIdentity(pid) {
     return inspectProcessIdentity(pid, {
       platform: this._platform(),
+      includeBootId: this._platform() === 'linux',
       environment: this._environment(),
       execFile: (...args) => this._execFile(...args),
       timeoutMs: this._identityInspectionTimeoutMs(),
@@ -244,7 +251,10 @@ export class ElectronInterceptor {
   }
 
   _sameProcessIdentity(left, right) {
-    return sameProcessIdentity(left, right, { includePlatform: true });
+    const needsBootIdentity = this._platform() === 'linux' ||
+      left?.platform === 'linux' || right?.platform === 'linux';
+    return sameProcessIdentity(left, right, { includePlatform: true }) &&
+      (!needsBootIdentity || Boolean(left.bootId && left.bootId === right.bootId));
   }
 
   _classifyProcessObservation(expected, observation) {
@@ -258,7 +268,10 @@ export class ElectronInterceptor {
       throw new Error('Ownership journal must contain an object');
     }
     const keys = Object.keys(record).sort();
-    const expectedKeys = ['executable', 'pid', 'platform', 'startTime', 'version'];
+    const expectedKeys = [
+      ...(record.platform === 'linux' ? ['bootId'] : []),
+      'executable', 'pid', 'platform', 'startTime', 'version'
+    ];
     if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
       throw new Error('Ownership journal has an invalid schema');
     }

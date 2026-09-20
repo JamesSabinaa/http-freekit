@@ -27,6 +27,7 @@ function identity(pid = 8333, overrides = {}) {
     pid,
     startTime: '638891424000000000',
     executable: executableIdentity(),
+    ...(process.platform === 'linux' ? { bootId: 'aaaaaaaa-1111-4111-8111-111111111111' } : {}),
     ...overrides
   };
 }

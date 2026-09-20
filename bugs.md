@@ -113,6 +113,14 @@ worked and is outside the demonstrated tokenless case.
 
 ### BUG-003 — Recovered Linux JVM/Electron ownership is not bound to a boot
 
+**Resolution: Fixed.** Linux JVM/Electron inspection, persisted ownership and
+pre-action identity checks now require a validated boot ID. Cross-boot records
+are retired without attaching or signalling; unknown current identity retains
+ownership for retry. Legacy Linux journals without a usable boot ID remain
+untouched and cannot authorize recovery. Windows/macOS journal formats are
+unchanged. Validation: 99 targeted tests passed, including 20 new stub-only
+regressions; root reviewed the source and independently reran all 20 before commit.
+
 **Severity: Medium (wrong process may be modified/stopped after a collision).**
 Locations: `src/interceptors/jvm-interceptor.js:73-103`, `:175-176`, `:682-703`,
 `:1744-1795`; `src/interceptors/electron-interceptor.js:209-253`, `:686-733`;
