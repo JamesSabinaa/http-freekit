@@ -561,6 +561,14 @@ the package source and fully mocked activation establish the failure together.
 
 ### BUG-019 — Equivalent IPv6 addresses fail host-based routing and rule matching
 
+**Resolution: Fixed.** Bypass destinations and entries now share IPv6 address
+normalization, as do bracketed host/hostname matcher values. Explicit ports and
+existing DNS, IDNA and wildcard behavior are retained. New regressions verify
+real direct-versus-upstream routing and rule selection across compressed,
+expanded and IPv4-mapped spellings, with wrong-port/address controls. All three
+new tests failed before the fix; peer review found no blocking issues and all
+23 focused tests passed independently.
+
 **Severity: Medium (incorrect upstream routing or missed rules).** Locations:
 `src/proxy/proxy-server.js:3062-3105`;
 `src/proxy/upstream-proxy-config.js:27-33`; host/hostname matchers at

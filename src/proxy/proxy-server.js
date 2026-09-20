@@ -3062,7 +3062,9 @@ export class ProxyServer {
   _shouldUseUpstreamProxy(hostname, targetPort) {
     if (!this.upstreamProxy) return false;
     const connectionHost = this._normalizeConnectionHostname(hostname);
-    const host = (domainToASCII(connectionHost) || connectionHost).toLowerCase().replace(/\.$/, '');
+    const host = (net.isIP(connectionHost) === 6
+      ? normalizeExactTlsHostname(connectionHost)
+      : domainToASCII(connectionHost) || connectionHost).toLowerCase().replace(/\.$/, '');
     const port = String(targetPort || '');
 
     for (const rawEntry of this.upstreamProxy.noProxy || []) {
@@ -3086,7 +3088,9 @@ export class ProxyServer {
       }
       if (entryPort && entryPort !== port) continue;
 
-      entryHost = (domainToASCII(entryHost) || entryHost).toLowerCase();
+      entryHost = (net.isIP(entryHost) === 6
+        ? normalizeExactTlsHostname(entryHost)
+        : domainToASCII(entryHost) || entryHost).toLowerCase();
       const suffix = entryHost.replace(/^\*?\./, '').replace(/\.$/, '');
       if (entryHost.startsWith('*.') || entryHost.startsWith('.')) {
         if (host === suffix || host.endsWith(`.${suffix}`)) return false;
@@ -10373,6 +10377,8 @@ export class ProxyServer {
           /^(\*?)(.*?)(:\d+)?$/,
           (_match, wildcard, hostname, port = '') =>
             wildcard + (/[^\x00-\x7f]/.test(hostname) ? domainToASCII(hostname) || hostname : hostname) + port
+        ).replace(/^\[([^\]]+)\](:\d+)?$/, (value, address, port = '') =>
+          net.isIP(address) === 6 ? `[${normalizeExactTlsHostname(address)}]${port}` : value
         );
         if (expected.startsWith('*')) {
           return actual.endsWith(expected.slice(1));
