@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import http2 from 'node:http2';
 import test from 'node:test';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -57,6 +58,7 @@ function installTimerHarness(t) {
 
 function createHarness(t, sessions) {
   const proxy = new ProxyServer(null);
+  t.mock.method(proxy, '_connectH2Tls', async () => ({ destroy() {} }));
   const timers = installTimerHarness(t);
   let connectCalls = 0;
   t.mock.method(http2, 'connect', () => {
@@ -71,6 +73,7 @@ function createHarness(t, sessions) {
 
 async function connectSession(proxy, session) {
   const pending = proxy._getH2Session(HOSTNAME, PORT);
+  await nextTurn();
   session.emit('connect');
   assert.equal(await pending, session);
   return proxy._h2Sessions.get(ORIGIN);
@@ -84,8 +87,10 @@ test('concurrent HTTP/2 callers still coalesce onto one pending attempt', async 
   const second = proxy._getH2Session(HOSTNAME, PORT);
 
   assert.equal(first, second);
+  await nextTurn();
   assert.equal(getConnectCalls(), 1);
 
+  await nextTurn();
   session.emit('connect');
   assert.deepEqual(await Promise.all([first, second]), [session, session]);
   assert.equal(await proxy._getH2Session(HOSTNAME, PORT), session);
@@ -138,6 +143,7 @@ test('eviction deletes the mapped session before close can synchronously install
   proxy._evictH2Session(ORIGIN, sessionA, entryA.attempt);
 
   assert.equal(mappedDuringClose, undefined);
+  await nextTurn();
   assert.equal(getConnectCalls(), 2, 'close observes an empty cache and starts replacement B');
   assert.equal(proxy._h2Sessions.get(ORIGIN).session, sessionB);
 
@@ -151,6 +157,7 @@ test('closeAll invalidates a pending attempt before its callbacks race with repl
   const sessionB = fakeSession('replacement B');
   const { proxy, timers } = createHarness(t, [sessionA, sessionB]);
   const pendingA = proxy._getH2Session(HOSTNAME, PORT);
+  await nextTurn();
   const connectTimerA = timers.find(timer => timer.delay === 15000 && !timer.cleared);
   assert.ok(connectTimerA);
 
@@ -159,7 +166,7 @@ test('closeAll invalidates a pending attempt before its callbacks race with repl
   assert.equal(await pendingA, null, 'bulk close settles the invalidated pending caller');
   assert.equal(proxy._h2Sessions.has(ORIGIN), false);
   assert.equal(proxy._h2Blacklist.has(ORIGIN), false);
-  assert.equal(sessionA.closeCalls, 1);
+  assert.equal(sessionA.destroyCalls, 1);
 
   const entryB = await connectSession(proxy, sessionB);
 
@@ -184,6 +191,7 @@ test('current pre-connect errors and timeouts retain existing null/blacklist beh
       const { proxy, timers } = createHarness(t, [session]);
       const pending = proxy._getH2Session(HOSTNAME, PORT);
 
+      await nextTurn();
       if (failure === 'error') session.emit('error', new Error('ALPN failed'));
       else timers.find(timer => timer.delay === 15000 && !timer.cleared).run();
 

@@ -56,6 +56,7 @@ import {
   validateTlsFingerprint
 } from './tls-fingerprint-config.js';
 import { validateHttp2Mode } from './http2-config.js';
+import { IntermediateCertificates } from './intermediate-certificates.js';
 import { normalizeIncomingResponseHeaders } from '../api/incoming-response-headers.js';
 import {
   compileOpenApiPathPattern,
@@ -1170,6 +1171,8 @@ export class ProxyServer {
   }
 
   _destroyUpstreamAgent() {
+    this._certificateAgent?.destroy();
+    this._certificateAgent = null;
     this._upstreamAgent?.destroy?.();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
@@ -8689,151 +8692,21 @@ export class ProxyServer {
   // Get or create an HTTP/2 session to the given origin, with caching.
   // Returns the h2 session or null if the origin doesn't support h2.
   _getH2Session(hostname, port, clientHelloTls = null, clientHttp2Profile = null) {
-    const normalizedHttp2Profile = normalizeClientHttp2Profile(clientHttp2Profile);
-    if (this._shouldUseUpstreamProxy(hostname, port)) {
-      return this._getProxiedH2Session(
-        hostname, port, clientHelloTls, normalizedHttp2Profile
-      );
-    }
-    const origin = `${hostname}:${port}`;
-    let cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
-      ? `${origin}|${this.tlsFingerprint}:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
-      : origin;
-    if (normalizedHttp2Profile) {
-      cacheKey += `|h2:${clientHttp2ProfileCacheKey(normalizedHttp2Profile)}`;
-    }
-    const urlHostname = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
-
-    // Known not to support h2
-    if (this._isH2Blacklisted(cacheKey)) return Promise.resolve(null);
-
-    // Already connecting — wait for it rather than exposing a session that has
-    // not completed its TLS/ALPN handshake yet.
-    const cached = this._h2Sessions.get(cacheKey);
-    if (cached && cached.pending) return cached.pending;
-
-    // Existing live session
-    if (cached && !cached.session.destroyed && !cached.session.closed) {
-      // Reset idle timer
-      clearTimeout(cached.timer);
-      cached.timer = setTimeout(
-        () => this._evictH2Session(cacheKey, cached.session, cached.attempt),
-        60000
-      );
-      return Promise.resolve(cached.session);
-    }
-    if (cached) {
-      this._evictH2Session(cacheKey, cached.session, cached.attempt);
-    }
-
-    // Create new session
-    const attempt = Symbol('h2-session-attempt');
-    let attemptEntry;
-    const pending = new Promise((resolve) => {
-      const url = `https://${urlHostname}:${port}`;
-      let settled = false;
-      let connectTimeout;
-
-      const session = http2.connect(url, {
-        ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true),
-        ...(normalizedHttp2Profile && Object.keys(normalizedHttp2Profile.settings).length > 0
-          ? { settings: normalizedHttp2Profile.settings }
-          : {})
-      });
-
-      attemptEntry = { session, timer: null, pending: null, attempt };
-      const isCurrentAttempt = () => {
-        const current = this._h2Sessions.get(cacheKey);
-        return current === attemptEntry &&
-          current.session === session && current.attempt === attempt;
-      };
-      const settlePendingFailure = ({ destroy = false } = {}) => {
-        if (settled) return false;
-        settled = true;
-        clearTimeout(connectTimeout);
-        clearTimeout(attemptEntry.timer);
-        if (isCurrentAttempt()) {
-          // Delete ownership before destruction can synchronously emit more events.
-          this._h2Sessions.delete(cacheKey);
-          this._blacklistH2Origin(cacheKey);
-        }
-        if (destroy && !session.destroyed) session.destroy();
-        resolve(null);
-        return true;
-      };
-      attemptEntry.abortPending = () => settlePendingFailure();
-
-      session.on('connect', () => {
-        if (settled) return;
-        if (session.socket?.alpnProtocol && session.socket.alpnProtocol !== 'h2') {
-          settlePendingFailure({ destroy: true });
-          return;
-        }
-        settled = true;
-        clearTimeout(connectTimeout);
-        if (!isCurrentAttempt()) {
-          if (!session.destroyed && !session.closed) session.close();
-          resolve(null);
-          return;
-        }
-        this._applyClientHttp2ConnectionWindow(session, normalizedHttp2Profile);
-        attemptEntry.pending = null;
-        attemptEntry.abortPending = null;
-        attemptEntry.timer = setTimeout(
-          () => this._evictH2Session(cacheKey, session, attempt),
-          60000
-        );
-        resolve(session);
-      });
-
-      session.on('error', () => {
-        if (!settled) {
-          settlePendingFailure();
-        } else {
-          // Session died after initial connect — evict
-          this._evictH2Session(cacheKey, session, attempt);
-        }
-      });
-
-      session.on('close', () => {
-        if (!settled) settlePendingFailure();
-        else this._evictH2Session(cacheKey, session, attempt);
-      });
-
-      session.on('goaway', () => {
-        this._evictH2Session(cacheKey, session, attempt);
-      });
-
-      // Use the same configurable connect timeout as TCP and HTTP/1 upstreams.
-      if (this._upstreamConnectTimeoutMs > 0) {
-        connectTimeout = setTimeout(
-          () => settlePendingFailure({ destroy: true }),
-          this._upstreamConnectTimeoutMs
-        );
-        connectTimeout.unref?.();
-      }
-
-      // The pending promise is attached immediately after construction below.
-      // Referencing it here would hit its temporal dead zone because Promise
-      // executors run synchronously.
-      this._h2Sessions.set(cacheKey, attemptEntry);
-    });
-
-    // Update cache entry with the pending promise
-    const cachedEntry = this._h2Sessions.get(cacheKey);
-    if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
-
-    return pending;
+    return this._getH2SessionForRoute(
+      hostname, port, clientHelloTls, normalizeClientHttp2Profile(clientHttp2Profile)
+    );
   }
 
-  _getProxiedH2Session(hostname, port, clientHelloTls, clientHttp2Profile) {
+  // Shared direct/tunneled connection setup keeps TLS recovery ahead of HTTP/2.
+  _getH2SessionForRoute(hostname, port, clientHelloTls, clientHttp2Profile) {
+    const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, port);
     const origin = `${hostname}:${port}`;
     const upstreamProxyGeneration = this._upstreamProxyGeneration;
-    const upstreamProxyUrl = this._getUpstreamProxyUrl();
+    const upstreamProxyUrl = useUpstreamProxy ? this._getUpstreamProxyUrl() : '';
     let cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
       ? `${origin}|${this.tlsFingerprint}:${ProxyServer._clientHelloCacheKey(clientHelloTls)}`
       : origin;
-    cacheKey += `|proxy:${upstreamProxyGeneration}:${upstreamProxyUrl}`;
+    if (useUpstreamProxy) cacheKey += `|proxy:${upstreamProxyGeneration}:${upstreamProxyUrl}`;
     if (clientHttp2Profile) {
       cacheKey += `|h2:${clientHttp2ProfileCacheKey(clientHttp2Profile)}`;
     }
@@ -8853,11 +8726,12 @@ export class ProxyServer {
     }
     if (cached) this._evictH2Session(cacheKey, cached.session, cached.attempt);
 
-    const attempt = Symbol('proxied-h2-session-attempt');
+    const attempt = Symbol('h2-session-attempt');
     let attemptEntry;
     const pending = new Promise((resolve) => {
       let settled = false;
       let connectTimeout;
+      const connectionAbort = new AbortController();
       attemptEntry = {
         session: null,
         connectSocket: null,
@@ -8872,6 +8746,7 @@ export class ProxyServer {
       const settlePendingFailure = ({ destroy = false } = {}) => {
         if (settled) return false;
         settled = true;
+        connectionAbort.abort(new Error('HTTP/2 connection cancelled'));
         clearTimeout(connectTimeout);
         clearTimeout(attemptEntry.timer);
         if (isCurrentAttempt()) {
@@ -8896,7 +8771,7 @@ export class ProxyServer {
           return;
         }
         attemptEntry.session = session;
-        session._usedUpstreamProxy = true;
+        session._usedUpstreamProxy = useUpstreamProxy;
         session._upstreamProxyGeneration = upstreamProxyGeneration;
 
         session.on('connect', () => {
@@ -8942,19 +8817,11 @@ export class ProxyServer {
       }
       this._h2Sessions.set(cacheKey, attemptEntry);
 
-      void this._connectTcp(hostname, port).then((tunnelSocket) => {
+      void this._connectH2Tls(hostname, port, clientHelloTls, connectionAbort.signal).then(secureSocket => {
         if (settled || !isCurrentAttempt()) {
-          tunnelSocket.destroy();
+          secureSocket.destroy();
           return;
         }
-        const upstreamTlsOptions = {
-          ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true)
-        };
-        delete upstreamTlsOptions.agent;
-        const secureSocket = tls.connect({
-          ...upstreamTlsOptions,
-          socket: tunnelSocket
-        });
         attemptEntry.connectSocket = secureSocket;
         const session = http2.connect(`https://${urlHostname}:${port}`, {
           ...(clientHttp2Profile && Object.keys(clientHttp2Profile.settings).length > 0
@@ -8963,12 +8830,27 @@ export class ProxyServer {
           createConnection: () => secureSocket
         });
         attachSession(session);
-      }, () => settlePendingFailure());
+      }).catch(() => settlePendingFailure({ destroy: true }));
     });
 
     const cachedEntry = this._h2Sessions.get(cacheKey);
     if (cachedEntry?.attempt === attempt) cachedEntry.pending = pending;
     return pending;
+  }
+
+  _connectH2Tls(hostname, port, clientHelloTls, signal) {
+    this._intermediateCertificates ||= new IntermediateCertificates();
+    return this._intermediateCertificates.connect(async certificates => {
+      const socket = await this._connectTcp(hostname, port);
+      if (signal.aborted) {
+        socket.destroy();
+        signal.throwIfAborted();
+      }
+      return tls.connect({
+        ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true, certificates),
+        socket
+      });
+    }, { cacheKey: `${this._tlsConfigGeneration}|${hostname}:${port}`, signal, timeoutMs: 0 });
   }
 
   _applyClientHttp2ConnectionWindow(session, clientHttp2Profile) {
@@ -9729,7 +9611,21 @@ export class ProxyServer {
   };
 
   _getUpstreamTlsOptions(
-    hostname, clientHelloTls, requestedAlpn = ['http/1.1'], preserveClientAlpn = false
+    hostname, clientHelloTls, requestedAlpn = ['http/1.1'], preserveClientAlpn = false,
+    intermediates = []
+  ) {
+    this._certificateAgent ||= this._enableCertificateDiscovery(new https.Agent(this._getAgentOptions()));
+    return {
+      agent: this._certificateAgent,
+      ...this._buildUpstreamTlsOptions(hostname, clientHelloTls, requestedAlpn, preserveClientAlpn, intermediates),
+      _freekitTlsOptions: certificates => this._getUpstreamTlsOptions(
+        hostname, clientHelloTls, requestedAlpn, preserveClientAlpn, certificates
+      )
+    };
+  }
+
+  _buildUpstreamTlsOptions(
+    hostname, clientHelloTls, requestedAlpn, preserveClientAlpn, intermediates
   ) {
     const connectionHostname = this._normalizeConnectionHostname(hostname);
     const connectionOptions = {
@@ -9737,9 +9633,10 @@ export class ProxyServer {
       rejectUnauthorized: !this._isHttpsWhitelisted(connectionHostname)
     };
     const contextOptions = {
-      ...(this._trustedCaCertificates.length > 0
-        ? { ca: [...tls.rootCertificates, ...this._trustedCaCertificates] }
+      ...(this._trustedCaCertificates.length > 0 || intermediates.length > 0
+        ? { ca: [...tls.getCACertificates(), ...this._trustedCaCertificates, ...intermediates] }
         : {}),
+      allowPartialTrustChain: false,
       ...this._getClientCertificateOptions(connectionHostname)
     };
     const base = {
@@ -9776,7 +9673,8 @@ export class ProxyServer {
           this._tlsImpersonationCache.set(clientHelloTls, helloCache);
         }
         const alpn = [...new Set((requestedAlpn || []).map(String))];
-        const cacheKey = `${this._tlsConfigGeneration}|${connectionHostname}|${connectionOptions.rejectUnauthorized}|${alpn.join(',')}|${preserveClientAlpn}`;
+        const chainKey = intermediates.map(cert => new X509Certificate(cert).fingerprint256).join(',');
+        const cacheKey = `${this._tlsConfigGeneration}|${connectionHostname}|${connectionOptions.rejectUnauthorized}|${alpn.join(',')}|${preserveClientAlpn}|${chainKey}`;
         if (!helloCache.has(cacheKey)) {
           try {
             const result = impersonateFromClientHello(clientHelloTls, {
@@ -9891,16 +9789,61 @@ export class ProxyServer {
   _createUpstreamAgent(proxyUrl) {
     const agentOptions = this._getAgentOptions();
     if (this.upstreamProxy.type?.startsWith('socks')) {
-      return new SocksProxyAgent(proxyUrl, {
+      return this._enableCertificateDiscovery(new SocksProxyAgent(proxyUrl, {
         ...agentOptions,
         timeout: this._upstreamConnectTimeoutMs
-      });
+      }));
     }
     const proxyTlsOptions = this._getUpstreamTlsOptions(this.upstreamProxy.host);
-    return new HttpsProxyAgent(proxyUrl, {
+    return this._enableCertificateDiscovery(new HttpsProxyAgent(proxyUrl, {
       ...agentOptions,
       ...proxyTlsOptions
-    });
+    }));
+  }
+
+  _enableCertificateDiscovery(agent) {
+    const pendingRequests = new Set();
+    const destroy = agent.destroy.bind(agent);
+    agent.destroy = () => {
+      for (const controller of pendingRequests) controller.abort(new Error('Upstream agent closed'));
+      pendingRequests.clear();
+      destroy();
+    };
+    const addRequest = agent.addRequest.bind(agent);
+    agent.addRequest = (request, options, ...args) => {
+      const controller = new AbortController();
+      pendingRequests.add(controller);
+      request.once('close', () => {
+        pendingRequests.delete(controller);
+        controller.abort(new Error('Upstream request closed'));
+      });
+      return addRequest(request, { ...options, _freekitSignal: controller.signal }, ...args);
+    };
+    const connect = (factory, options) => {
+      this._intermediateCertificates ||= new IntermediateCertificates();
+      return this._intermediateCertificates.connect(certificates => {
+        const refreshed = options._freekitTlsOptions?.(certificates) || options;
+        return factory({ ...options, ...refreshed });
+      }, {
+        cacheKey: `${this._tlsConfigGeneration}|${options.servername || options.host}:${options.port}`,
+        signal: options._freekitSignal || options.signal,
+        timeoutMs: this._upstreamConnectTimeoutMs
+      });
+    };
+    if (typeof agent.connect === 'function') {
+      const original = agent.connect.bind(agent);
+      agent.connect = (request, options) => connect(next => original(request, next), options);
+    } else {
+      const original = agent.createConnection.bind(agent);
+      agent.createConnection = (options, callback) => {
+        // Returning a socket here would let ClientRequest write before the
+        // fallback handshake has completed. Supply only the verified socket.
+        void connect(next => original(next), options).then(
+          socket => callback(null, socket), error => callback(error)
+        );
+      };
+    }
+    return agent;
   }
 
   _retireFingerprintAgent(agent) {
@@ -9930,7 +9873,7 @@ export class ProxyServer {
 
     const agent = route === 'proxy'
       ? this._createUpstreamAgent(this._getUpstreamProxyUrl())
-      : new https.Agent(this._getAgentOptions());
+      : this._enableCertificateDiscovery(new https.Agent(this._getAgentOptions()));
     const state = { requests: new Set(), retired: false };
     this._fingerprintAgentStates.set(agent, state);
     const addRequest = agent.addRequest;

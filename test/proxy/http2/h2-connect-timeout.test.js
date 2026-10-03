@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import http2 from 'node:http2';
 import test from 'node:test';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -39,12 +40,14 @@ function captureTimeout(t, expectedDelay) {
 
 test('direct H2 probes use the configured upstream connect timeout', async t => {
   const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: 123 });
+  t.mock.method(proxy, '_connectH2Tls', async () => ({ destroy() {} }));
   const session = fakeSession();
   const getTimer = captureTimeout(t, 123);
   t.mock.method(http2, 'connect', () => session);
   t.after(() => proxy._closeAllH2Sessions());
 
   const pending = proxy._getH2Session('timeout.example.test', 443);
+  await nextTurn();
   assert.ok(getTimer());
   getTimer().run();
 
@@ -60,6 +63,7 @@ test('proxied H2 probes use the configured upstream connect timeout', async t =>
   t.after(() => proxy._closeAllH2Sessions());
 
   const pending = proxy._getH2Session('timeout.example.test', 443);
+  await nextTurn();
   assert.ok(getTimer());
   getTimer().run();
 
@@ -68,6 +72,7 @@ test('proxied H2 probes use the configured upstream connect timeout', async t =>
 
 test('a zero upstream connect timeout disables the H2 probe timer', async t => {
   const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: 0 });
+  t.mock.method(proxy, '_connectH2Tls', async () => ({ destroy() {} }));
   const session = fakeSession();
   const scheduled = [];
   const realSetTimeout = globalThis.setTimeout.bind(globalThis);

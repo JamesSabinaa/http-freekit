@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import http2 from 'node:http2';
 import https from 'node:https';
+import tls from 'node:tls';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -144,9 +145,13 @@ test('the HTTP/2 session path passes the exact certificate over an earlier wildc
   const originalConnect = http2.connect;
   let capturedUrl;
   let capturedOptions;
+  t.mock.method(proxy, '_connectTcp', async () => ({ destroy() {} }));
+  t.mock.method(tls, 'connect', options => {
+    capturedOptions = options;
+    return { destroy() {} };
+  });
   http2.connect = (url, options) => {
     capturedUrl = url;
-    capturedOptions = options;
     const session = new EventEmitter();
     session.destroyed = false;
     session.closed = false;

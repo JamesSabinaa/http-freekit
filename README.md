@@ -127,6 +127,7 @@ http-freekit/
 - **WebSocket** frame-level interception — individual messages parsed (text, binary, ping, pong, close)
 - **TLS passthrough** for configured hostnames (bypass interception)
 - **TLS failure capture** — handshake failures shown as distinct traffic events
+- **Missing intermediate certificates** — automatically fetches HTTP(S) AIA issuer certificates and caches verified chains for one hour. Certificate and hostname validation remain enabled; downloaded certificates cannot establish a new trusted root. Fetches are bounded and restricted to public addresses on standard HTTP(S) ports, without redirects.
 - **Upstream proxy** chaining (HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h)
 - **Body decompression** (gzip, brotli, deflate, zstd)
 - **Source detection** from User-Agent (Chrome, Firefox, cURL, Python, Node.js, Go, Java, etc.)

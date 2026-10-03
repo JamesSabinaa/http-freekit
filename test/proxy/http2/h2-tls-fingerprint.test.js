@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import http2 from 'node:http2';
+import tls from 'node:tls';
 import test from 'node:test';
 
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
@@ -20,12 +21,18 @@ function fakeSession() {
 
 test('passthrough H2 sessions use and cache by captured ClientHello parameters', async t => {
   const proxy = new ProxyServer(null);
+  let tlsOptions;
+  t.mock.method(proxy, '_connectTcp', async () => ({ destroy() {} }));
+  t.mock.method(tls, 'connect', options => {
+    tlsOptions = options;
+    return { destroy() {} };
+  });
   proxy.setTlsFingerprint('passthrough');
   const originalConnect = http2.connect;
   const connections = [];
   http2.connect = (url, options) => {
     const session = fakeSession();
-    connections.push({ url, options, session });
+    connections.push({ url, options: tlsOptions, session });
     queueMicrotask(() => session.emit('connect'));
     return session;
   };

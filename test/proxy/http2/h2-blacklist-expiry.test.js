@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import http2 from 'node:http2';
 import test from 'node:test';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -21,12 +22,14 @@ test('a failed H2 capability probe is retried after its cooldown', async t => {
   const sessions = [failedSession, recoveredSession];
   let connectCalls = 0;
   const proxy = new ProxyServer(null, { h2BlacklistTtlMs: 1000 });
+  t.mock.method(proxy, '_connectH2Tls', async () => ({ destroy() {} }));
 
   t.mock.method(Date, 'now', () => now);
   t.mock.method(http2, 'connect', () => sessions[connectCalls++]);
   t.after(() => proxy._closeAllH2Sessions());
 
   const firstAttempt = proxy._getH2Session('recovered.example.test', 443);
+  await nextTurn();
   failedSession.emit('error', new Error('temporary connection failure'));
   assert.equal(await firstAttempt, null);
   assert.equal(connectCalls, 1);
@@ -37,6 +40,7 @@ test('a failed H2 capability probe is retried after its cooldown', async t => {
 
   now += 1;
   const retry = proxy._getH2Session('recovered.example.test', 443);
+  await nextTurn();
   assert.equal(connectCalls, 2, 'the origin is retried when the cooldown expires');
   recoveredSession.emit('connect');
   assert.equal(await retry, recoveredSession);
@@ -47,10 +51,12 @@ test('a failed H2 capability probe is retried after its cooldown', async t => {
 test('closing H2 state clears failure cooldown metadata', async t => {
   const failedSession = fakeSession();
   const proxy = new ProxyServer(null);
+  t.mock.method(proxy, '_connectH2Tls', async () => ({ destroy() {} }));
   t.mock.method(http2, 'connect', () => failedSession);
   t.after(() => proxy._closeAllH2Sessions());
 
   const attempt = proxy._getH2Session('reset.example.test', 443);
+  await nextTurn();
   failedSession.emit('error', new Error('temporary connection failure'));
   assert.equal(await attempt, null);
   assert.equal(proxy._h2BlacklistExpiresAt.size, 1);
