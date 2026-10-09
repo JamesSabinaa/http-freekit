@@ -13913,7 +13913,7 @@
           // Download HAR from server (proper HAR 1.2 format)
           const a = document.createElement('a');
           a.href = authenticatedApiUrl(`${API_BASE}/api/traffic/export.har`);
-          a.download = `http-freekit-${new Date().toISOString().slice(0,10)}.har`;
+          a.download = `http-freekit-${new Date().toISOString().replace(/[:.]/g, '-')}.har`;
           a.click();
           toast('HAR download started', 'success');
         } else {

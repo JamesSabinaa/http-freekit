@@ -199,7 +199,8 @@ export function registerTrafficRoutes(router, api) {
         maxBytes: api.harExportMaxBytes
       });
       res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', 'attachment; filename=http-freekit-export.har');
+      const filename = `http-freekit-${new Date().toISOString().replace(/[:.]/g, '-')}.har`;
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.json(har);
     } catch (error) {
       res.status(500).json({ error: `Failed to create bounded HAR export: ${error.message}` });

@@ -209,7 +209,7 @@ test('HAR traffic export remains independently reachable and server-backed', asy
 
   assert.equal(anchors.length, 1);
   assert.equal(anchors[0].href, 'authenticated:http://127.0.0.1:8080/api/traffic/export.har');
-  assert.equal(anchors[0].download, 'http-freekit-2026-07-26.har');
+  assert.equal(anchors[0].download, 'http-freekit-2026-07-26T12-34-56-000Z.har');
   assert.equal(anchors[0].clicked, true);
   assert.deepEqual(fetches, []);
   assert.deepEqual(blobs, []);
@@ -372,6 +372,10 @@ test('server JSON and HAR exports share saved visibility settings without losing
   const filteredHar = await requestJson(port, '/api/traffic/export.har');
   assert.equal(filteredJson.statusCode, 200);
   assert.match(filteredJson.headers['content-disposition'], /http-freekit-export\.json/);
+  assert.match(
+    filteredHar.headers['content-disposition'],
+    /^attachment; filename=http-freekit-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.har$/
+  );
   assert.deepEqual(filteredJson.body.requests, [eligible, socket, socketFrame]);
   assert.deepEqual(
     filteredHar.body.log.entries.map(entry => entry.request.url),

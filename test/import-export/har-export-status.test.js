@@ -14,7 +14,7 @@ function exportHarness({ clickError } = {}) {
   const anchors = [];
   class FixedDate extends Date {
     constructor(...args) {
-      super(...(args.length ? args : ['2026-07-26T12:34:56.000Z']));
+      super(...(args.length ? args : ['2026-07-26T12:34:56.123Z']));
     }
   }
   const context = {
@@ -56,13 +56,13 @@ test('HAR export reports authenticated browser download initiation without claim
 
   assert.equal(anchors.length, 1);
   assert.equal(anchors[0].href, 'authenticated:http://127.0.0.1:8080/api/traffic/export.har');
-  assert.equal(anchors[0].download, 'http-freekit-2026-07-26.har');
+  assert.equal(anchors[0].download, 'http-freekit-2026-07-26T12-34-56-123Z.har');
   assert.deepEqual(events, [
     ['authenticate', 'http://127.0.0.1:8080/api/traffic/export.har'],
     [
       'click',
       'authenticated:http://127.0.0.1:8080/api/traffic/export.har',
-      'http-freekit-2026-07-26.har'
+      'http-freekit-2026-07-26T12-34-56-123Z.har'
     ],
     ['toast', 'HAR download started', 'success']
   ]);
@@ -79,7 +79,7 @@ test('HAR export reports a synchronous browser download launch failure without s
     [
       'click',
       'authenticated:http://127.0.0.1:8080/api/traffic/export.har',
-      'http-freekit-2026-07-26.har'
+      'http-freekit-2026-07-26T12-34-56-123Z.har'
     ],
     ['toast', 'Export failed: download blocked', 'error']
   ]);
