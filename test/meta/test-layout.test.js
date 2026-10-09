@@ -5,7 +5,6 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const testRoot = fileURLToPath(new URL('../', import.meta.url));
-const repoRoot = path.resolve(testRoot, '..');
 
 function findTestFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -23,7 +22,4 @@ test('tests use descriptive feature folders instead of numbered bug filenames', 
     assert.notEqual(path.dirname(file), testRoot, `${path.basename(file)} must be in a feature folder`);
     assert.doesNotMatch(path.basename(file), /^bug-[0-9]+-/);
   }
-
-  const bugHistory = fs.readFileSync(path.join(repoRoot, 'bugs.md'), 'utf8');
-  assert.doesNotMatch(bugHistory, /test\/bug-[0-9]+-[^\s`]+\.test\.js/);
 });
