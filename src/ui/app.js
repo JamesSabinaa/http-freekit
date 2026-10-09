@@ -406,6 +406,41 @@
         (typeof trafficDumpReady === 'undefined' || trafficDumpReady === true);
     }
 
+    const trafficSelection = new Map();
+    let trafficSelectionAnchor = null;
+
+    function isTrafficRowSelected(req) {
+      return isSelectedTrafficRequest(req) ||
+        trafficSelection.has(ensureTrafficGenerationToken(req));
+    }
+
+    function selectedTrafficRequests() {
+      const current = new Map(trafficSelection.size
+        ? requests.map(req => [ensureTrafficGenerationToken(req), req])
+        : []);
+      const selected = [];
+      for (const token of trafficSelection.keys()) {
+        if (current.has(token)) {
+          const req = current.get(token);
+          trafficSelection.set(token, req);
+          selected.push(req);
+        } else trafficSelection.delete(token);
+      }
+      if (!selected.length) {
+        const primary = getSelectedTrafficRequest();
+        if (primary) selected.push(primary);
+      }
+      return selected;
+    }
+
+    function updateTrafficSelectionActions() {
+      const button = document.getElementById('deleteTrafficSelectionBtn');
+      if (!button) return;
+      const count = selectedTrafficRequests().length;
+      button.hidden = count < 2;
+      button.textContent = `Delete ${count} selected`;
+    }
+
     function isSelectedTrafficRequest(request) {
       return selectedRequestId !== null && trafficRequestMatchesIdentity(
         request,
@@ -1859,12 +1894,12 @@
     }
 
     function buildRowHtml(req, index) {
-      const rowSelected = isSelectedTrafficRequest(req);
+      const rowSelected = isTrafficRowSelected(req);
       const selected = rowSelected ? 'selected' : '';
       const ariaRowIndex = index + 2; // The real column-header row occupies row 1.
       const rowId = escapeHtmlAttribute(trafficRowDomId(req));
       const identityAttributes = trafficRowIdentityAttributes(req);
-      const selectHandler = "selectRequest(this.dataset.id, true, this.dataset.lifecycleId)";
+      const selectHandler = "selectTrafficRow(event, this.dataset.id, this.dataset.lifecycleId)";
       // ---- WebSocket frame sub-row ----
       if (req.protocol === 'ws-frame') {
         const dirArrow = req.direction === 'client' ? '&rarr;' : '&larr;';
@@ -1986,6 +2021,7 @@
 
     // Render the visible virtual-scroll rows into the tbody
     function renderVirtualRows() {
+      updateTrafficSelectionActions();
       const tbody = document.getElementById('trafficBody');
       const wrapper = document.getElementById('trafficTableWrapper');
       const totalRows = filteredRequests.length;
@@ -2036,6 +2072,7 @@
     }
 
     function renderTraffic() {
+      updateTrafficSelectionActions();
       const tbody = document.getElementById('trafficBody');
       const empty = document.getElementById('emptyState');
       const countEl = document.getElementById('trafficCount');
@@ -2127,12 +2164,56 @@
       }
     }
 
-    function selectRequest(id, toggle = true, trafficLifecycleId) {
+    function selectTrafficRow(event, id, trafficLifecycleId) {
+      const req = findTrafficRequestByIdentity(requests, id, trafficLifecycleId);
+      if (!req) return;
+      const additive = event.ctrlKey || event.metaKey;
+      if (!additive && !event.shiftKey) {
+        selectRequest(id, trafficSelection.size <= 1, trafficLifecycleId);
+        return;
+      }
+      event.preventDefault();
+      const selected = selectedTrafficRequests();
+      if (!trafficSelection.size && selected.length) {
+        trafficSelection.set(ensureTrafficGenerationToken(selected[0]), selected[0]);
+      }
+      const token = ensureTrafficGenerationToken(req);
+      const anchor = trafficSelectionAnchor && currentTrafficGenerationRequest(trafficSelectionAnchor);
+      const anchorIndex = filteredRequests.indexOf(anchor);
+      const clickedIndex = filteredRequests.indexOf(req);
+      if (event.shiftKey && anchorIndex !== -1 && clickedIndex !== -1) {
+        for (const row of filteredRequests.slice(
+          Math.min(anchorIndex, clickedIndex), Math.max(anchorIndex, clickedIndex) + 1
+        )) trafficSelection.set(ensureTrafficGenerationToken(row), row);
+      } else if (additive && trafficSelection.has(token)) {
+        trafficSelection.delete(token);
+      } else {
+        trafficSelection.set(token, req);
+      }
+      trafficSelectionAnchor = req;
+      const primary = trafficSelection.values().next().value;
+      if (!primary) {
+        closeDetail();
+      } else if (!isSelectedTrafficRequest(primary)) {
+        const currentPrimary = currentTrafficGenerationRequest(primary);
+        selectRequest(currentPrimary.id, false, currentPrimary.trafficLifecycleId, true);
+      } else {
+        vsForceRender = true;
+        renderVirtualRows();
+      }
+    }
+
+    function selectRequest(id, toggle = true, trafficLifecycleId, preserveSelection = false) {
       const req = findTrafficRequestByIdentity(requests, id, trafficLifecycleId);
       if (!req) return;
       if (isSelectedTrafficRequest(req) && toggle) {
         closeDetail();
         return;
+      }
+      if (!preserveSelection) {
+        trafficSelection.clear();
+        trafficSelection.set(ensureTrafficGenerationToken(req), req);
+        trafficSelectionAnchor = req;
       }
       selectedRequestId = id;
       selectedRequestLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
@@ -2349,6 +2430,8 @@
     }
 
     function closeDetail(renderSelection = true) {
+      trafficSelection.clear();
+      trafficSelectionAnchor = null;
       trafficDetailSelectionGeneration++;
       const panel = document.getElementById('detailPanel');
       const emptyEl = document.getElementById('detailEmptyState');
@@ -2358,6 +2441,7 @@
       if (activeEl) activeEl.style.display = 'none';
       selectedRequestId = null;
       selectedRequestLifecycleId = null;
+      updateTrafficSelectionActions();
       _detailRenderedRequestIdentity = null;
       _transformPerspective = 'transformed';
       updateTrafficActiveDescendant(null);
@@ -2633,6 +2717,9 @@
       trafficLifecycleId,
       originatingGenerationToken
     ) {
+      if (arguments.length === 0 && selectedTrafficRequests().length > 1) {
+        return deleteTrafficSelection();
+      }
       if (!requestId) return;
       if (originatingGenerationToken) {
         return withResolvedTrafficAction(
@@ -2661,11 +2748,35 @@
       return deleteResolvedRequest(req);
     }
 
-    async function deleteResolvedRequest(req) {
+    async function deleteTrafficSelection(selection = selectedTrafficRequests()) {
+      const targets = selection.filter(req => !req.pinned).map(req => ({
+        id: req.id,
+        lifecycleId: req.trafficLifecycleId,
+        token: ensureTrafficGenerationToken(req)
+      }));
+      if (!targets.length) { toast('Unpin the selected requests before deleting', 'error'); return; }
+      const pinnedCount = selection.length - targets.length;
+      if (!confirm(`Delete ${targets.length} selected requests?` +
+          (pinnedCount ? ` ${pinnedCount} pinned requests will be kept.` : ''))) return;
+      let deletedCount = 0;
+      for (const target of targets) {
+        // Keep the original generation even if selection changes during deletion.
+        // A parent WebSocket deletion may already have removed selected frames.
+        if (!trafficActionGenerationRequest(target.id, target.lifecycleId, target.token)) continue;
+        const deleted = await withResolvedTrafficAction(
+          target.id, target.lifecycleId, 'delete exchange',
+          req => deleteResolvedRequest(req, true), target.token
+        );
+        if (deleted) deletedCount++;
+      }
+      if (deletedCount) toast(`${deletedCount} requests deleted`, 'success');
+    }
+
+    async function deleteResolvedRequest(req, confirmed = false) {
       if (req.pinned) { toast('Unpin this exchange before deleting', 'error'); return; }
       const identityKey = trafficRequestIdentityKey(req);
       if (trafficDeleteInFlight.has(identityKey)) return;
-      if (!confirm('Are you sure you want to delete this request?')) return;
+      if (!confirmed && !confirm('Are you sure you want to delete this request?')) return;
 
       const mutationGenerationToken = ensureTrafficGenerationToken(req);
       let requestAuthority;
@@ -2740,7 +2851,8 @@
             (supersededByClear || identityStillPresent)) {
           throw new Error('The exchange changed while deletion was pending.');
         }
-        toast('Exchange deleted', 'success');
+        if (!confirmed) toast('Exchange deleted', 'success');
+        return true;
       } catch (err) {
         toast('Failed to delete exchange: ' + err.message, 'error');
       } finally {
@@ -13660,6 +13772,9 @@
       else newIdx = Math.max(0, Math.min(filteredRequests.length - 1, currentIdx + delta));
 
       const req = filteredRequests[newIdx];
+      trafficSelection.clear();
+      trafficSelection.set(ensureTrafficGenerationToken(req), req);
+      trafficSelectionAnchor = req;
       selectedRequestId = req.id;
       selectedRequestLifecycleId = normalizeTrafficLifecycleId(req.trafficLifecycleId);
       if (window.location.hash.startsWith('#/view') || window.location.hash.startsWith('#/traffic')) {
@@ -15595,7 +15710,7 @@
       const req = trafficActionRequest(requestId, trafficLifecycleId);
       if (!req) return;
 
-      if (!isSelectedTrafficRequest(req)) {
+      if (!isTrafficRowSelected(req)) {
         selectRequest(requestId, false, req.trafficLifecycleId);
       }
 
@@ -15609,6 +15724,13 @@
       const originatingGenerationToken = ensureTrafficGenerationToken(req);
       const keyboardInvoked = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
       const anchor = keyboardInvoked ? contextMenuAnchorFor(invoker) : { x: e.clientX, y: e.clientY };
+      const selection = selectedTrafficRequests();
+      if (selection.length > 1) {
+        showContextMenu(anchor.x, anchor.y, [
+          { label: `Delete ${selection.length} selected requests`, action: () => deleteTrafficSelection(selection) }
+        ], { invoker, focusFirst: keyboardInvoked });
+        return;
+      }
       showContextMenu(anchor.x, anchor.y, [
         { label: 'Copy URL', action: () => withResolvedTrafficAction(
           requestId,
@@ -16452,7 +16574,7 @@
       }
 
       // Delete: Confirm deletion of the selected exchange
-      if (e.key === 'Delete' && !e.shiftKey && !e.altKey && !isInput && selectedRequestId) {
+      if (e.key === 'Delete' && !e.shiftKey && !e.altKey && !isInput && selectedRequestId && trafficPanelActive) {
         e.preventDefault();
         deleteSelectedRequest();
         return;

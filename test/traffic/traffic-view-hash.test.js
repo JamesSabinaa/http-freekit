@@ -94,6 +94,7 @@ function createSelectionHarness(id) {
     scrollRowIntoView() {},
     showDetail() {},
     currentTrafficGenerationRequest: candidate => candidate,
+    ensureTrafficGenerationToken: candidate => candidate,
     closeDetail() {}
   };
   evaluate([

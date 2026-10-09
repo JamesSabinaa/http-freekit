@@ -146,7 +146,7 @@ function renderTrafficRow(request) {
     selectedRequestLifecycleId: null,
     esc: escapeHtml,
     escapeHtmlAttribute: escapeHtml,
-    isSelectedTrafficRequest: () => false,
+    isTrafficRowSelected: () => false,
     trafficRowDomId: request => `row-${request.id}`,
     trafficRowIdentityAttributes: request =>
       `data-id="${escapeHtml(request.id)}" data-lifecycle-id="${escapeHtml(request.trafficLifecycleId || '')}"`,

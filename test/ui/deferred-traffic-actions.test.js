@@ -15,7 +15,7 @@ function between(startMarker, endMarker) {
 
 const identitySource = between(
   'function normalizeTrafficLifecycleId(',
-  'function isSelectedTrafficRequest('
+  'function mergeServerTrafficRequest('
 );
 const mergeSource = between(
   'function mergeServerTrafficRequest(',

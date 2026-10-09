@@ -95,7 +95,7 @@ test('traffic rows keep imported methods and sources inside their intended attri
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;'),
-    isSelectedTrafficRequest: () => false,
+    isTrafficRowSelected: () => false,
     trafficRowDomId: request => `row-${request.id}`,
     trafficRowIdentityAttributes: request => `data-id="${request.id}" data-lifecycle-id=""`,
     isWebSocketConnection: () => false,

@@ -487,7 +487,7 @@ test('rendered Traffic rows and header targets expose keyboard menu hooks', () =
     formatSize: value => String(value || 0),
     esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
     escapeHtmlAttribute: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
-    isSelectedTrafficRequest: request => request.id === 'row-1',
+    isTrafficRowSelected: request => request.id === 'row-1',
     trafficRowDomId: request => `row-${request.id}`,
     trafficRowIdentityAttributes: request =>
       `data-id="${request.id}" data-lifecycle-id="${request.trafficLifecycleId || ''}"`

@@ -1424,6 +1424,9 @@
       white-space: nowrap;
     }
 
+    #deleteTrafficSelectionBtn[hidden] { display: none; }
+    .traffic-table tbody { user-select: none; }
+
     .btn:hover { border-color: var(--pop-color); color: var(--pop-text-color); }
     .btn:active { transform: scale(0.97); }
     .btn svg { width: 14px; height: 14px; }

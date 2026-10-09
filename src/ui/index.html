@@ -67,7 +67,7 @@
               <button class="btn" onclick="resumeAllBreakpoints()" style="margin-left:auto;font-size:11px;padding:3px 10px;">Resume All</button>
             </div>
             <div class="traffic-table-wrapper" id="trafficTableWrapper" role="region" aria-label="Traffic list pane" tabindex="-1">
-              <table class="traffic-table" id="trafficGrid" role="grid" tabindex="0" aria-label="Intercepted HTTP traffic" aria-rowcount="1" aria-colcount="6">
+              <table class="traffic-table" id="trafficGrid" role="grid" tabindex="0" aria-label="Intercepted HTTP traffic" aria-multiselectable="true" title="Ctrl-click to toggle requests; Shift-click to select a range" aria-rowcount="1" aria-colcount="6">
                 <thead><tr role="row" aria-rowindex="1">
                   <th role="columnheader" style="width:5px;padding:0;" aria-label="Row marker"></th>
                   <th role="columnheader" class="sortable" data-sort-field="method" aria-sort="none" tabindex="0" style="width:71px" onclick="sortBy('method')" onkeydown="activateOnKeyboard(event)"><span>Method</span><span class="sort-chevron" aria-hidden="true"></span></th>
@@ -94,6 +94,7 @@
                 <span class="request-count-label" id="trafficCountLabel">requests</span>
               </div>
               <div class="traffic-toolbar-actions" role="toolbar" aria-label="Traffic actions">
+                <button class="btn btn-danger" id="deleteTrafficSelectionBtn" onclick="deleteTrafficSelection()" hidden>Delete selected</button>
                 <button class="btn" id="pauseBtn" onclick="togglePause()" title="Pause/Resume capture" aria-label="Pause capture" aria-pressed="false">
                   <i class="ph ph-pause" style="font-size:14px;"></i>
                 </button>
@@ -141,7 +142,7 @@
                 <button class="btn" id="pinBtn" onclick="togglePinRequest()" title="Pin this exchange" aria-label="Pin this exchange" aria-pressed="false">
                   <i class="ph ph-push-pin" id="pinBtnIcon" style="font-size:14px;transform:rotate(45deg);"></i>
                 </button>
-                <button class="btn btn-danger" onclick="deleteSelectedRequest()" title="Delete this exchange" aria-label="Delete this exchange">
+                <button class="btn btn-danger" onclick="deleteSelectedRequest()" title="Delete selected requests" aria-label="Delete selected requests">
                   <i class="ph ph-trash-simple" style="font-size:14px;"></i>
                 </button>
                 <button class="btn" onclick="resendSelectedRequest()" title="Resend this request in the Send tab" aria-label="Resend this request">
