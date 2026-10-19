@@ -10,6 +10,7 @@ import { execFile, spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import os from 'os';
 import { trafficToHar } from './har-converter.js';
+import { launchGenerator, resolveGeneratorRuntime } from './generator-launch.js';
 import { isObjectRecord, validateOpenApiSubmission } from './openapi-validation.js';
 import { registerConfigurationRoutes } from './routes/configuration-routes.js';
 import { registerTrafficRoutes } from './routes/traffic-routes.js';
@@ -1212,150 +1213,22 @@ print(json.dumps({"providers": get_proxy_providers()}))
     return this._getPythonCandidates(process.env.GENERATOR_PYTHON);
   }
 
-  _getGeneratorLaunchPythonCandidates(pythonCandidates = this._getGeneratorPythonCandidates()) {
-    if (process.platform !== 'win32') return pythonCandidates;
-
-    const candidates = [];
-    const seen = new Set();
-    const addCandidate = (candidate) => {
-      const key = `${candidate.command}\0${candidate.args.join('\0')}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        candidates.push(candidate);
-      }
-    };
-    const toWindowedPython = (candidate) => {
-      const command = String(candidate.command || '');
-      const basename = path.basename(command).toLowerCase();
-      const dirname = path.dirname(command);
-      const hasDirectory = dirname && dirname !== '.';
-      let windowedCommand = command;
-
-      if (basename === 'py' || basename === 'py.exe') {
-        windowedCommand = hasDirectory ? path.join(dirname, 'pyw.exe') : 'pyw';
-      } else if (
-        basename === 'python' ||
-        basename === 'python.exe' ||
-        basename === 'python3' ||
-        basename === 'python3.exe'
-      ) {
-        windowedCommand = hasDirectory ? path.join(dirname, 'pythonw.exe') : 'pythonw';
-      }
-
-      return { command: windowedCommand, args: candidate.args };
-    };
-
-    for (const candidate of pythonCandidates) {
-      addCandidate(toWindowedPython(candidate));
-    }
-
-    addCandidate({ command: 'pyw', args: ['-3'] });
-    addCandidate({ command: 'pythonw', args: [] });
-    return candidates;
-  }
-
   _formatCommand(candidate) {
     return [candidate.command, ...candidate.args].join(' ');
   }
 
-  async _getGeneratorHarBaseDir(generatorDir, pythonCandidates) {
-    if (process.env.GENERATOR_HARS_DIR) {
-      return this._toHostPath(process.env.GENERATOR_HARS_DIR);
-    }
-
-    const script = `
-import json
-import os
-import sys
-
-generator_dir = sys.argv[1]
-os.chdir(generator_dir)
-sys.path.insert(0, generator_dir)
-
-import config
-config.load_config()
-print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
-`;
-    const result = await this._runGeneratorPythonJson(script, [generatorDir], {
+  async _getGeneratorRuntime(generatorDir, pythonCandidates) {
+    const runtime = await resolveGeneratorRuntime(pythonCandidates, {
       cwd: generatorDir,
-      candidates: pythonCandidates
+      harsBaseDir: process.env.GENERATOR_HARS_DIR
+        ? this._toHostPath(process.env.GENERATOR_HARS_DIR)
+        : undefined
     });
-    return this._toHostPath(result.harsBaseDir);
+    return { ...runtime, harsBaseDir: path.resolve(generatorDir, this._toHostPath(runtime.harsBaseDir)) };
   }
 
-  _execGeneratorPythonJson(candidate, script, args = [], options = {}) {
-    return new Promise((resolve, reject) => {
-      execFile(candidate.command, [...candidate.args, '-c', script, ...args], {
-        timeout: 30000,
-        cwd: options.cwd,
-        windowsHide: true
-      }, (error, stdout, stderr) => {
-        if (error) {
-          const message = (stderr || stdout || error.message).trim();
-          reject(new Error(message || error.message));
-          return;
-        }
-
-        const lines = stdout.split(/\r?\n/)
-          .map(line => line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '').trim())
-          .filter(Boolean);
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const objectStart = lines[i].indexOf('{');
-          const objectEnd = lines[i].lastIndexOf('}');
-          const jsonText = objectStart >= 0 && objectEnd > objectStart
-            ? lines[i].slice(objectStart, objectEnd + 1)
-            : lines[i];
-          try {
-            resolve(JSON.parse(jsonText));
-            return;
-          } catch {}
-        }
-
-        reject(new Error('Generator did not return JSON output.'));
-      });
-    });
-  }
-
-  async _runGeneratorPythonJson(script, args = [], options = {}) {
-    const candidates = options.candidates || this._getGeneratorPythonCandidates();
-    const errors = [];
-
-    for (const candidate of candidates) {
-      try {
-        return await this._execGeneratorPythonJson(candidate, script, args, options);
-      } catch (err) {
-        errors.push(`${this._formatCommand(candidate)}: ${err.message}`);
-      }
-    }
-
-    throw new Error(`Could not run generator Python. Tried ${errors.join('; ')}`);
-  }
-
-  async _spawnGeneratorPython(pythonCandidates, args, options = {}) {
-    const errors = [];
-
-    for (const candidate of pythonCandidates) {
-      try {
-        await new Promise((resolve, reject) => {
-          const child = spawn(candidate.command, [...candidate.args, ...args], {
-            cwd: options.cwd,
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: true
-          });
-          child.once('error', reject);
-          child.once('spawn', () => {
-            child.unref();
-            resolve();
-          });
-        });
-        return;
-      } catch (err) {
-        errors.push(`${this._formatCommand(candidate)}: ${err.message}`);
-      }
-    }
-
-    throw new Error(`Could not launch generator. Tried ${errors.join('; ')}`);
+  _spawnGeneratorPython(executable, args, options) {
+    return launchGenerator(executable, args, options);
   }
 
   async _reserveGeneratorSession(harBaseDir) {
@@ -1378,7 +1251,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
   async _exportToGenerator() {
     const generatorDir = this._getGeneratorDir();
     const pythonCandidates = this._getGeneratorPythonCandidates();
-    const harBaseDir = await this._getGeneratorHarBaseDir(generatorDir, pythonCandidates);
+    const runtime = await this._getGeneratorRuntime(generatorDir, pythonCandidates);
+    const harBaseDir = runtime.harsBaseDir;
     const har = trafficToHar(this._getHarExportTraffic(), { maskSensitive: false });
     const { sessionDir, sessionName } = await this._reserveGeneratorSession(harBaseDir);
     const harPath = path.join(sessionDir, `${sessionName}.har`);
@@ -1387,13 +1261,13 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
       await fs.writeFile(harPath, JSON.stringify(har, null, 2), 'utf8');
 
       await this._spawnGeneratorPython(
-        this._getGeneratorLaunchPythonCandidates(pythonCandidates),
+        runtime.executable,
         ['main_app.py', '--session', sessionName],
-        { cwd: generatorDir }
+        { cwd: generatorDir, sessionDir }
       );
     } catch (err) {
       try {
-        await this._cleanupGeneratorSession(sessionDir, harBaseDir);
+        if (!err.keepGeneratorSession) await this._cleanupGeneratorSession(sessionDir, harBaseDir);
       } catch {}
       throw err;
     }
@@ -1401,7 +1275,8 @@ print(json.dumps({"harsBaseDir": str(config.HARS_BASE_DIR)}))
     return {
       sessionName,
       harPath,
-      requestCount: har.log.entries.length
+      requestCount: har.log.entries.length,
+      opened: true
     };
   }
 

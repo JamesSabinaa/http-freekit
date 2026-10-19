@@ -13940,19 +13940,37 @@
       }
     }
 
+    let generatorExportInProgress = false;
+
     async function exportHarToGenerator() {
+      if (generatorExportInProgress) return;
+      generatorExportInProgress = true;
+      const button = document.getElementById('exportGeneratorBtn');
+      if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+        button.title = 'Opening Generator…';
+      }
+      toast('Opening Generator…', 'info');
       try {
         const res = await fetch(`${API_BASE}/api/traffic/export-generator`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.success === false) {
-          throw new Error(data.error || `HTTP ${res.status}`);
+        if (!res.ok || data.success !== true || data.opened !== true) {
+          throw new Error(data.error || (res.ok ? 'Generator did not confirm its window opened' : `HTTP ${res.status}`));
         }
         toast(`Opened ${data.requestCount || 0} requests in Generator`, 'success');
       } catch (err) {
         toast(`Generator export failed: ${err.message}`, 'error');
+      } finally {
+        generatorExportInProgress = false;
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute('aria-busy');
+          button.title = 'Open HAR in Generator';
+        }
       }
     }
 

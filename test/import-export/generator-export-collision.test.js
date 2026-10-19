@@ -35,10 +35,10 @@ test('concurrent generator exports atomically reserve distinct sessions', async 
   let exportNumber = 0;
   api._getGeneratorDir = () => path.join(root, 'generator');
   api._getGeneratorPythonCandidates = () => [{ command: 'python-test', args: [] }];
-  api._getGeneratorHarBaseDir = async () => harBaseDir;
+  api._getGeneratorRuntime = async () => ({ executable: 'python-test', harsBaseDir: harBaseDir });
   api._getHarExportTraffic = () => [trafficRecord(++exportNumber)];
-  api._spawnGeneratorPython = async (candidates, args, options) => {
-    launches.push({ candidates, args, options });
+  api._spawnGeneratorPython = async (executable, args, options) => {
+    launches.push({ executable, args, options });
   };
 
   const exports = await Promise.all([
@@ -53,6 +53,7 @@ test('concurrent generator exports atomically reserve distinct sessions', async 
     assert.match(result.sessionName, /^[0-9A-Za-z_-]+$/);
     assert.equal(path.basename(path.dirname(result.harPath)), result.sessionName);
     assert.equal(path.basename(result.harPath), `${result.sessionName}.har`);
+    assert.equal(result.opened, true);
   }
 
   const hars = await Promise.all(exports.map(result =>
@@ -74,7 +75,9 @@ test('concurrent generator exports atomically reserve distinct sessions', async 
   );
   for (const launch of launches) {
     assert.deepEqual(launch.args.slice(0, 2), ['main_app.py', '--session']);
+    assert.equal(launch.executable, 'python-test');
     assert.equal(launch.options.cwd, path.join(root, 'generator'));
+    assert.equal(path.basename(launch.options.sessionDir), launch.args[2]);
   }
 });
 
@@ -92,7 +95,7 @@ test('a failed generator launch removes only its reserved session', async t => {
   const api = createApi();
   api._getGeneratorDir = () => path.join(root, 'generator');
   api._getGeneratorPythonCandidates = () => [{ command: 'python-test', args: [] }];
-  api._getGeneratorHarBaseDir = async () => harBaseDir;
+  api._getGeneratorRuntime = async () => ({ executable: 'python-test', harsBaseDir: harBaseDir });
   api._getHarExportTraffic = () => [trafficRecord(1)];
   api._spawnGeneratorPython = async () => {
     throw new Error('launch failed');
