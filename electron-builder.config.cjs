@@ -34,6 +34,14 @@ module.exports = {
     '!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}',
     '!**/node_modules/*.d.ts',
     '!**/node_modules/.bin',
+    // The UI serves Monaco's min/ tree and only the regular Phosphor font.
+    // Shipping their development/source trees adds thousands of install-time
+    // file operations without providing any runtime functionality.
+    '!**/node_modules/monaco-editor/{dev,esm}/**/*',
+    '!**/node_modules/@phosphor-icons/web/src/{bold,duotone,fill,light,thin}/**/*',
+    '!**/node_modules/@phosphor-icons/web/src/Phosphor.json',
+    '!**/node_modules/**/*.map',
+    '!**/node_modules/**/*.{d.cts,d.mts}',
     '!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}',
     '!.editorconfig',
     '!**/._*',
