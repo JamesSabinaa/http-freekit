@@ -212,9 +212,12 @@ test('truncated text and binary captures fail closed in every format', async t =
   const largeText = captureRequestBody(Buffer.alloc(512 * 1024 + 1, 0x41));
   const largeBinary = captureRequestBody(Buffer.alloc(2 * 1024 * 1024, 0x00));
 
+  // Model genuinely interrupted/imported records, rather than display limits.
+  largeText.requestBodyTruncated = true;
+  largeBinary.requestBodyTruncated = true;
   assert.equal(largeText.requestBodyTruncated, true);
   assert.equal(largeBinary.requestBodyTruncated, true);
-  assert.match(largeBinary.requestBody, /^\[Binary data:/);
+  assert.equal(largeBinary.requestBodyEncoding, 'base64');
 
   for (const [label, captured, forbidden] of [
     ['text', largeText, 'AAAAAAAAAAAA'],

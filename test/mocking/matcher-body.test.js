@@ -105,7 +105,7 @@ test('multipart exact matchers preserve trailing field newlines from native Form
   }
 });
 
-test('body matcher sees tokens beyond the bounded capture preview', async t => {
+test('body matcher and retained capture both include tokens beyond the former preview limit', async t => {
   const token = 'match-after-display-cap';
   const body = Buffer.concat([
     Buffer.alloc(512 * 1024 + 32, 0x61),
@@ -121,9 +121,9 @@ test('body matcher sees tokens beyond the bounded capture preview', async t => {
   assert.deepEqual(response, { statusCode: 209, body: 'tail matched' });
   const recorded = captured.find(request => request.statusMessage === 'Mocked');
   assert.ok(recorded);
-  assert.equal(recorded.requestBodyTruncated, true);
-  assert.equal(Buffer.byteLength(recorded.requestBody), 512 * 1024);
-  assert.equal(recorded.requestBody.includes(token), false);
+  assert.equal(recorded.requestBodyTruncated, undefined);
+  assert.equal(Buffer.byteLength(recorded.requestBody), body.length);
+  assert.equal(recorded.requestBody.includes(token), true);
 });
 
 test('gzip request bodies are decoded for body and JSON matchers and buffered mock capture', async t => {

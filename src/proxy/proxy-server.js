@@ -339,12 +339,6 @@ function splitMultipartBody(body, boundary) {
   }
 }
 
-function utf8PrefixWithinByteLimit(buffer, limit) {
-  let end = Math.min(buffer.length, limit);
-  while (end > 0 && end < buffer.length && (buffer[end] & 0xc0) === 0x80) end--;
-  return buffer.subarray(0, end);
-}
-
 class TruncatedBodyString extends String {
   constructor(value, capturedSize, decodedSize, contentDecoded = false) {
     super(value);
@@ -355,10 +349,13 @@ class TruncatedBodyString extends String {
 }
 
 class EncodedBodyString extends String {
-  constructor(value, encoding, contentDecoded = false) {
+  constructor(value, encoding, contentDecoded = false, decodedSize) {
     super(value);
     this.encoding = encoding;
-    if (contentDecoded) this.contentDecoded = true;
+    if (contentDecoded) {
+      this.contentDecoded = true;
+      this.decodedSize = decodedSize;
+    }
   }
 }
 
@@ -11210,6 +11207,7 @@ export class ProxyServer {
       if (body instanceof EncodedBodyString) {
         record[field] = body.toString();
         record[encodingField] = body.encoding;
+        if (body.decodedSize !== undefined) record[`${field}DecodedSize`] = body.decodedSize;
       } else if (body instanceof TruncatedBodyString) {
         record[field] = body.toString();
         record[`${field}Truncated`] = true;
@@ -11307,21 +11305,23 @@ export class ProxyServer {
       ct.includes('protobuf') ||
       ct.includes('x-protobuf') ||
       ct.includes('x-protobuffer');
-    if (isProtobufLike && decoded.length < 2 * 1024 * 1024) {
+    if (isProtobufLike) {
       const mimeType = ct.split(';')[0].trim() || 'application/x-protobuf';
       return new EncodedBodyString(
         `data:${mimeType};base64,${decoded.toString('base64')}`,
         'base64',
-        contentDecoded
+        contentDecoded,
+        decoded.length
       );
     }
 
-    if (ct.startsWith('image/') && decoded.length < 2 * 1024 * 1024) { // up to 2MB images
+    if (ct.startsWith('image/')) {
       const mimeType = ct.split(';')[0].trim();
       return new EncodedBodyString(
         `data:${mimeType};base64,${decoded.toString('base64')}`,
         'base64',
-        contentDecoded
+        contentDecoded,
+        decoded.length
       );
     }
 
@@ -11338,34 +11338,18 @@ export class ProxyServer {
 
     // Only expose text when converting it to UTF-8 preserves every captured byte.
     if (isText && isUtf8(decoded)) {
-      const maxSize = 512 * 1024;
-      if (decoded.length > maxSize) {
-        const captured = utf8PrefixWithinByteLimit(decoded, maxSize);
-        return new TruncatedBodyString(
-          captured.toString('utf8'),
-          captured.length,
-          decoded.length,
-          contentDecoded
-        );
-      }
+      // Retain every captured byte. Renderer/MCP previews must never alter the
+      // body used by exports, search, or replay.
       const text = decoded.toString('utf8');
-      return contentDecoded ? new EncodedBodyString(text, 'utf8', true) : text;
+      return contentDecoded ? new EncodedBodyString(text, 'utf8', true, decoded.length) : text;
     }
 
-    if (decoded.length < 2 * 1024 * 1024) {
-      const mimeType = ct.split(';')[0].trim() || 'application/octet-stream';
-      return new EncodedBodyString(
-        `data:${mimeType};base64,${decoded.toString('base64')}`,
-        'base64',
-        contentDecoded
-      );
-    }
-
-    return new TruncatedBodyString(
-      `[Binary data: ${buffer.length} bytes]`,
-      0,
-      decoded.length,
-      contentDecoded
+    const mimeType = ct.split(';')[0].trim() || 'application/octet-stream';
+    return new EncodedBodyString(
+      `data:${mimeType};base64,${decoded.toString('base64')}`,
+      'base64',
+      contentDecoded,
+      decoded.length
     );
   }
 

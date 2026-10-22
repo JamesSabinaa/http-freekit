@@ -1,4 +1,6 @@
-import { trafficToBoundedHar } from '../har-converter.js';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { serializeHar } from '../har-converter.js';
 import { TRAFFIC_IMPORT_TRANSACTION_ERROR_CODE } from '../traffic-import-transactions.js';
 import { matchesTrafficStatus, parseTrafficStatusFilter } from '../../traffic/status-filter.js';
 
@@ -192,18 +194,22 @@ export function registerTrafficRoutes(router, api) {
     }
   });
 
-  router.get('/api/traffic/export.har', (req, res) => {
+  router.get('/api/traffic/export.har', async (req, res) => {
     try {
-      const har = trafficToBoundedHar(api._getHarExportTraffic(), {
-        maskSensitive: false,
-        maxBytes: api.harExportMaxBytes
-      });
+      const requests = api._getHarExportTraffic();
       res.setHeader('Content-Type', 'application/json');
       const filename = `http-freekit-${new Date().toISOString().replace(/[:.]/g, '-')}.har`;
       res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
-      res.json(har);
+      await pipeline(Readable.from(serializeHar(requests, { maskSensitive: false }), {
+        objectMode: false,
+        highWaterMark: 64 * 1024
+      }), res);
     } catch (error) {
-      res.status(500).json({ error: `Failed to create bounded HAR export: ${error.message}` });
+      if (!res.destroyed && !res.headersSent) {
+        res.status(500).json({ error: `Failed to export HAR: ${error.message}` });
+      } else if (!res.destroyed) {
+        res.destroy(error);
+      }
     }
   });
 

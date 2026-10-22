@@ -64,7 +64,7 @@ async function waitForCapture(captures, predicate, timeoutMs = 3000) {
   throw new Error(`Timed out waiting for an incomplete body capture: ${JSON.stringify(captures)}`);
 }
 
-test('UTF-8 capture truncation retains only complete 2, 3, and 4-byte code points', () => {
+test('UTF-8 captures preserve complete bodies across the former preview boundary', () => {
   const proxy = new ProxyServer(null);
   const cases = [
     { name: '2-byte split after 1 byte', character: '¢', bytesInsideLimit: 1 },
@@ -84,10 +84,9 @@ test('UTF-8 capture truncation retains only complete 2, 3, and 4-byte code point
     const captured = proxy._safeBodyString(body, undefined, 'text/plain; charset=utf-8');
     const text = String(captured);
 
-    assert.equal(captured.capturedSize, asciiSize, scenario.name);
-    assert.equal(captured.decodedSize, body.length, scenario.name);
-    assert.equal(Buffer.byteLength(text), asciiSize, scenario.name);
-    assert.equal(text.length, asciiSize, scenario.name);
+    assert.equal(text, body.toString('utf8'), scenario.name);
+    assert.equal(Buffer.byteLength(text), body.length, scenario.name);
+    assert.equal(text.endsWith(scenario.character + 'tail'), true, scenario.name);
     assert.equal(text.includes('\ufffd'), false, scenario.name);
   }
 });
@@ -129,7 +128,7 @@ test('exact-limit UTF-8 and non-text bytes preserve their existing capture repre
   );
 });
 
-test('large text captures retain bounded previews and export explicit HAR truncation metadata', () => {
+test('large text request and response captures export complete HAR bodies', () => {
   let captured;
   const proxy = new ProxyServer(null, { onRequest: request => { captured = request; } });
   const body = Buffer.alloc(1024 * 1024, 0x61);
@@ -140,26 +139,23 @@ test('large text captures retain bounded previews and export explicit HAR trunca
     method: 'GET',
     url: 'http://example.test/',
     responseHeaders: { 'content-type': 'text/plain' },
+    requestBody: proxy._safeBodyString(body, undefined, 'text/plain'),
+    requestBodySize: body.length,
     responseBody: proxy._safeBodyString(body, undefined, 'text/plain'),
     responseBodySize: body.length
   });
 
-  assert.equal(Buffer.byteLength(captured.responseBody), 512 * 1024);
-  assert.equal(captured.responseBodyTruncated, true);
-  assert.equal(captured.responseBodyCapturedSize, 512 * 1024);
-  assert.equal(captured.responseBodyDecodedSize, body.length);
-
-  const response = trafficToHar([captured], { maskSensitive: false }).log.entries[0].response;
-  assert.equal(Buffer.byteLength(response.content.text), 512 * 1024);
-  assert.equal(response.content.size, 512 * 1024);
-  assert.equal(response.bodySize, body.length);
-  assert.equal(response.content._truncated, true);
-  assert.equal(response.content._capturedSize, 512 * 1024);
-  assert.equal(response.content._originalSize, body.length);
-  assert.match(response.content.comment, /524288 of 1048576 bytes retained/);
+  assert.equal(captured.responseBody, body.toString());
+  assert.equal(captured.responseBodyTruncated, undefined);
+  const entry = trafficToHar([captured], { maskSensitive: false }).log.entries[0];
+  assert.equal(entry.request.postData.text, body.toString());
+  assert.equal(entry.response.content.text, body.toString());
+  assert.equal(entry.response.content.size, body.length);
+  assert.equal(entry.response.bodySize, body.length);
+  assert.equal(entry.response.content._truncated, undefined);
 });
 
-test('compressed HTTP captures and HAR export retain byte-accurate UTF-8 prefixes', async t => {
+test('compressed HTTP captures and HAR export retain complete UTF-8 bodies', async t => {
   const decodedBody = Buffer.concat([
     Buffer.alloc(TEXT_CAPTURE_LIMIT - 1, 0x61),
     Buffer.from('😀')
@@ -215,27 +211,19 @@ test('compressed HTTP captures and HAR export retain byte-accurate UTF-8 prefixe
     captures,
     capture => capture.path === '/utf8-boundary' && capture.statusCode === 200
   );
-  assert.equal(Buffer.byteLength(captured.responseBody), TEXT_CAPTURE_LIMIT - 1);
-  assert.equal(captured.responseBody.includes('\ufffd'), false);
-  assert.equal(captured.responseBodyTruncated, true);
-  assert.equal(captured.responseBodyCapturedSize, TEXT_CAPTURE_LIMIT - 1);
-  assert.equal(captured.responseBodyDecodedSize, decodedBody.length);
+  assert.equal(captured.responseBody, decodedBody.toString());
+  assert.equal(captured.responseBodyTruncated, undefined);
+  assert.equal(captured.responseBodyContentDecoded, true);
   assert.equal(captured.responseBodySize, wireBody.length);
   assert.equal(captured.responseBodyEncoding, 'utf8');
-
   const response = trafficToHar([captured], { maskSensitive: false }).log.entries[0].response;
-  assert.equal(response.content.text.includes('\ufffd'), false);
-  assert.equal(Buffer.byteLength(response.content.text), TEXT_CAPTURE_LIMIT - 1);
-  assert.equal(response.content.size, TEXT_CAPTURE_LIMIT - 1);
+  assert.equal(response.content.text, decodedBody.toString());
   assert.equal(response.content.mimeType, 'text/plain; charset=utf-8');
-  assert.equal(response.content._truncated, true);
-  assert.equal(response.content._capturedSize, TEXT_CAPTURE_LIMIT - 1);
-  assert.equal(response.content._originalSize, decodedBody.length);
+  assert.equal(response.content._truncated, undefined);
   assert.equal(response.bodySize, wireBody.length);
-  assert.match(response.content.comment, /524287 of 524291 bytes retained/);
 });
 
-test('omitted large binary captures are not exported as fake HAR body text', () => {
+test('large binary captures export complete base64 bodies', () => {
   let captured;
   const proxy = new ProxyServer(null, { onRequest: request => { captured = request; } });
   const body = Buffer.alloc(2 * 1024 * 1024, 0);
@@ -250,17 +238,14 @@ test('omitted large binary captures are not exported as fake HAR body text', () 
     responseBodySize: body.length
   });
 
-  assert.equal(captured.responseBody, `[Binary data: ${body.length} bytes]`);
-  assert.equal(captured.responseBodyTruncated, true);
-  assert.equal(captured.responseBodyCapturedSize, 0);
-
+  assert.equal(captured.responseBodyEncoding, 'base64');
+  assert.equal(captured.responseBodyTruncated, undefined);
   const response = trafficToHar([captured], { maskSensitive: false }).log.entries[0].response;
-  assert.equal(response.content.text, '');
-  assert.equal(response.content.size, 0);
+  assert.equal(response.content.encoding, 'base64');
+  assert.deepEqual(Buffer.from(response.content.text, 'base64'), body);
+  assert.equal(response.content.size, body.length);
   assert.equal(response.bodySize, body.length);
-  assert.equal(response.content._truncated, true);
-  assert.equal(response.content._capturedSize, 0);
-  assert.equal(response.content._originalSize, body.length);
+  assert.equal(response.content._truncated, undefined);
 });
 
 test('large interrupted prefixes export only bytes retained in the capture', () => {
@@ -272,16 +257,16 @@ test('large interrupted prefixes export only bytes retained in the capture', () 
       prefix: Buffer.alloc(1024 * 1024, 0x61),
       originalSize: 2 * 1024 * 1024,
       contentType: 'text/plain',
-      expectedCapturedSize: 512 * 1024,
-      expectedTextSize: 512 * 1024
+      expectedCapturedSize: 1024 * 1024,
+      expectedTextSize: 1024 * 1024
     },
     {
       id: 'interrupted-large-binary',
       prefix: Buffer.alloc(3 * 1024 * 1024, 0),
       originalSize: 4 * 1024 * 1024,
       contentType: 'application/octet-stream',
-      expectedCapturedSize: 0,
-      expectedTextSize: 0
+      expectedCapturedSize: 3 * 1024 * 1024,
+      expectedTextSize: 4 * 1024 * 1024
     }
   ];
 

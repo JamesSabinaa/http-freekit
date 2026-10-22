@@ -143,7 +143,7 @@ test('HTTP/2 all mode still accepts HTTP/1.1 via ALPN fallback', { timeout: 2000
   ]);
 });
 
-test('HTTP/2 body matching uses complete input while capture stays truncated', { timeout: 20000 }, async t => {
+test('HTTP/2 body matching and capture retain complete input', { timeout: 20000 }, async t => {
   const token = 'h2-token-after-display-cap';
   const requestBody = Buffer.concat([
     Buffer.alloc(512 * 1024 + 32, 0x61),
@@ -178,6 +178,6 @@ test('HTTP/2 body matching uses complete input while capture stays truncated', {
 
   assert.equal(headers[':status'], 200);
   assert.equal(Buffer.concat(chunks).toString('utf8'), 'h2-matched');
-  assert.equal(events[1].requestBodyTruncated, true);
-  assert.equal(events[1].requestBody.includes(token), false);
+  assert.equal(events[1].requestBodyTruncated, undefined);
+  assert.equal(events[1].requestBody, requestBody.toString());
 });

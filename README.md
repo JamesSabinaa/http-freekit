@@ -153,6 +153,8 @@ Collapsible groups, drag-and-drop reorder (Shift+Drop to combine into groups), c
 
 **Traffic export:** HAR 1.2 (`.har`), JSON
 
+Captured text and binary bodies are retained in full within the proxy's body-buffer limits (32 MiB by default); display and MCP previews do not shorten stored bodies. HAR downloads stream all retained entries without an export-size cap. Import limits remain separate: a downloaded HAR above 128 MiB cannot currently be reimported. Interrupted or buffer-limited captures remain explicitly marked incomplete; previously discarded bytes cannot be recovered by exporting again.
+
 **Code snippets** (per-request, from the Export card):
 cURL, Python (requests), JavaScript (fetch), Node.js (http), PowerShell, wget, PHP (cURL), Go
 

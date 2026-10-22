@@ -277,7 +277,6 @@ export class ApiServer {
       HAR_IMPORT_MAX_BATCH_BYTES;
     this.harImportMaxExpandedBytes = options.harImportMaxExpandedBytes ??
       HAR_IMPORT_MAX_EXPANDED_BYTES;
-    this.harExportMaxBytes = options.harExportMaxBytes ?? HAR_IMPORT_MAX_FILE_BYTES;
     this._trafficImportTransactions = new TrafficImportTransactionStore({
       maxExpandedBytes: this.harImportMaxExpandedBytes,
       maxEntries: this.maxTrafficLog,

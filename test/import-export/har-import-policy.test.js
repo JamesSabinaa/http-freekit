@@ -3,7 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 
 import { ApiServer } from '../../src/api/api-server.js';
-import { trafficToBoundedHar, trafficToHar } from '../../src/api/har-converter.js';
+import { serializeHar, trafficToHar } from '../../src/api/har-converter.js';
 import {
   HAR_IMPORT_MAX_BATCH_BYTES,
   HAR_IMPORT_MAX_EXPANDED_BYTES,
@@ -208,7 +208,7 @@ test('the normalized import route accepts a batch above the former 50 MiB ceilin
   assert.equal(api.trafficLog[0].requestBody.length, 50 * 1024 * 1024 + 1024);
 });
 
-test('bounded HAR export retains newest entries and records every omission', async t => {
+test('HAR download preserves all entries even above the former export ceiling', async t => {
   const records = ['old', 'new'].map((id, index) => ({
     id,
     timestamp: Date.UTC(2026, 0, index + 1),
@@ -223,23 +223,9 @@ test('bounded HAR export retains newest entries and records every omission', asy
     maskSensitive: false
   })));
   const maxBytes = oneEntryBytes + 512;
-  const bounded = trafficToBoundedHar(records, { maskSensitive: false, maxBytes });
-  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= maxBytes);
-  assert.deepEqual(bounded.log.entries.map(item => item.request.url),
-    ['https://example.test/new']);
-  assert.deepEqual(bounded.log._httpFreeKitExport, {
-    complete: false,
-    totalEntries: 2,
-    exportedEntries: 1,
-    omittedEntries: 1,
-    maxBytes,
-    warning: bounded.log.comment
-  });
-  assert.match(bounded.log.comment, /1 older traffic entry was omitted/);
-
   const api = new ApiServer({ port: 8080 }, null, null, {
     port: 0,
-    harExportMaxBytes: maxBytes
+    harImportMaxRequestBytes: maxBytes
   });
   api.port = 0;
   api.trafficLog.push(...records);
@@ -260,47 +246,48 @@ test('bounded HAR export retains newest entries and records every omission', asy
     }).once('error', reject);
   });
   assert.equal(route.statusCode, 200);
-  assert.ok(route.raw.byteLength <= maxBytes);
+  assert.ok(route.raw.byteLength > maxBytes);
   const routeHar = JSON.parse(route.raw.toString('utf8'));
-  assert.equal(routeHar.log._httpFreeKitExport.omittedEntries, 1);
-  assert.equal(routeHar.log.entries[0].request.url, 'https://example.test/new');
+  assert.equal(routeHar.log._httpFreeKitExport, undefined);
+  assert.deepEqual(routeHar, JSON.parse(JSON.stringify(trafficToHar(records, { maskSensitive: false }))));
 });
 
-test('bounded HAR export accounts for the entries array brackets at the exact byte boundary', () => {
-  const records = ['older', 'newer'].map((id, index) => ({
-    id,
-    timestamp: Date.UTC(2026, 1, index + 1),
-    method: 'GET',
-    url: `https://example.test/${id}`,
-    protocol: 'https',
-    responseBody: id.repeat(900),
-    responseHeaders: { 'content-type': 'text/plain' },
-    statusCode: 200
-  }));
-  const oneEntryBytes = Buffer.byteLength(JSON.stringify(trafficToHar([records[1]], {
-    maskSensitive: false
-  })));
-  const probe = trafficToBoundedHar(records, {
-    maskSensitive: false,
-    maxBytes: oneEntryBytes + 512
-  });
-  assert.equal(probe.log.entries.length, 1);
-  const exactBytes = Buffer.byteLength(JSON.stringify(probe));
-
-  const exact = trafficToBoundedHar(records, {
-    maskSensitive: false,
-    maxBytes: exactBytes
-  });
-  assert.equal(Buffer.byteLength(JSON.stringify(exact)), exactBytes);
-
-  const belowBoundary = exactBytes - 1;
-  try {
-    const below = trafficToBoundedHar(records, {
-      maskSensitive: false,
-      maxBytes: belowBoundary
-    });
-    assert.ok(Buffer.byteLength(JSON.stringify(below)) <= belowBoundary);
-  } catch (error) {
-    assert.match(error.message, /limit is too small/);
+test('streamed HAR serialization preserves empty logs, Unicode, and JSON escapes', () => {
+  for (const records of [[], [{
+    timestamp: 0, method: 'POST', url: 'https://example.test/',
+    requestBody: 'emoji \u{1f600} and "quotes"', responseBody: 'tail\n\u0000\u{1f600}',
+    responseBodySize: 10
+  }]]) {
+    const chunks = [...serializeHar(records, { maskSensitive: false })];
+    assert.deepEqual(JSON.parse(chunks.join('')), trafficToHar(records, { maskSensitive: false }));
   }
+});
+
+test('HAR downloads stream beyond 128 MiB without omitting any retained entry', async t => {
+  const api = new ApiServer({ port: 8080 }, null, null, { port: 0 });
+  api.port = 0;
+  const body = 'a'.repeat(1024 * 1024);
+  for (let index = 0; index < 129; index++) {
+    api.trafficLog.push({
+      id: `large-${index}`, timestamp: index, method: 'GET', statusCode: 200,
+      url: `http://example.test/${index}`, responseBody: body, responseBodySize: body.length
+    });
+  }
+  await api.start();
+  t.after(() => api.stop());
+  const response = await fetch(`http://127.0.0.1:${api.httpServer.address().port}/api/traffic/export.har`);
+  assert.equal(response.status, 200);
+  let bytes = 0;
+  let count = 0;
+  let suffix = '';
+  const marker = '"startedDateTime":';
+  for await (const chunk of response.body) {
+    bytes += chunk.length;
+    const text = suffix + Buffer.from(chunk).toString('utf8');
+    count += text.split(marker).length - 1;
+    suffix = text.slice(-(marker.length - 1));
+  }
+  assert.ok(bytes > 128 * 1024 * 1024);
+  assert.equal(count, api.trafficLog.length);
+  assert.ok(suffix.endsWith(']}}'));
 });

@@ -13,11 +13,11 @@ const bytesSource = source.slice(source.indexOf('    function bodyToBytes('), so
 const renderer = vm.createContext({ URL, TextEncoder, Uint8Array, atob });
 vm.runInContext(`let _transformPerspective = 'original';\n${viewSource}\n${bytesSource}`, renderer);
 
-for (const kind of ['binary', 'decoded binary', 'truncated text', 'complete text']) {
+for (const kind of ['binary', 'decoded binary', 'large text', 'complete text']) {
   test(`original ${kind} retains its own provenance through JSON and renderer/MCP views`, async t => {
     const proxy = new ProxyServer(null);
     const binary = Buffer.from([0, 255, 16, 128]);
-    const original = kind === 'truncated text' ? Buffer.alloc(512 * 1024 + 17, 'x')
+    const original = kind === 'large text' ? Buffer.alloc(512 * 1024 + 17, 'x')
       : kind === 'complete text' ? Buffer.from('original text') : binary;
     const wire = kind === 'decoded binary' ? zlib.gzipSync(original) : original;
     const capture = {
@@ -55,22 +55,16 @@ for (const kind of ['binary', 'decoded binary', 'truncated text', 'complete text
     assert.equal(serialized.originalRequest.bodySize, wire.length);
     const view = renderer.getEffectiveRequest(serialized);
     const bytes = Buffer.from(renderer.bodyToBytes(view.requestBody, { section: 'request', request: view }));
-    const retained = original.subarray(0, 512 * 1024);
+    const retained = original;
     assert.deepEqual(bytes, retained);
     assert.equal(view.requestBodySize, wire.length);
-    assert.equal(view.requestBodyTruncated, kind === 'truncated text');
+    assert.equal(view.requestBodyTruncated, false);
     assert.equal(view.requestBodyContentDecoded, kind === 'decoded binary');
-    if (kind === 'truncated text') {
-      assert.equal(view.requestBodyCapturedSize, retained.length);
-      assert.equal(view.requestBodyDecodedSize, original.length);
-    } else {
-      assert.notEqual(view.requestBodyDecodedSize, 100);
-      assert.notEqual(view.requestBodyCapturedSize, 7);
-    }
+    assert.notEqual(view.requestBodyDecodedSize, 100);
+    assert.notEqual(view.requestBodyCapturedSize, 7);
     const bridge = new McpServerBridge({ apiServer: { trafficLog: [serialized], _broadcast() {} }, proxyServer: {}, interceptorManager: {} });
     const detail = JSON.parse(bridge._handleGetRequestDetail({ request_id: serialized.id }).content[0].text);
     assert.equal(detail.bodies.original_request.encoding, kind.includes('binary') ? 'base64' : 'utf8');
-    assert.equal(detail.bodies.original_request.truncated, kind === 'truncated text');
-    if (kind === 'truncated text') assert.equal(detail.bodies.original_request.decodedSize, original.length);
+    assert.equal(detail.bodies.original_request.truncated, false);
   });
 }

@@ -182,7 +182,7 @@ test('production boxed original bodies retain content and provenance across page
     '',
     'image/png'
   );
-  const truncatedBody = proxy._safeBodyString(
+  const largeBody = proxy._safeBodyString(
     Buffer.alloc(512 * 1024 + 17, 0x61),
     '',
     'text/plain'
@@ -196,10 +196,10 @@ test('production boxed original bodies retain content and provenance across page
       timestamp: 1_767_225_600_000
     },
     {
-      id: 'boxed-truncated',
+      id: 'large-complete',
       requestBody: '',
       responseBody: '',
-      originalRequest: { body: truncatedBody },
+      originalRequest: { body: largeBody },
       timestamp: 1_767_225_600_000
     }
   ]);
@@ -211,15 +211,14 @@ test('production boxed original bodies retain content and provenance across page
   assert.equal(encodedDetail.bodies.original_request.totalLength, String(encodedBody).length);
   assert.equal(readAllPages(bridge, 'boxed-encoded', 'original_request', 7), String(encodedBody));
 
-  const truncatedDetail = parseDetail(bridge._handleGetRequestDetail({
-    request_id: 'boxed-truncated'
+  const largeDetail = parseDetail(bridge._handleGetRequestDetail({
+    request_id: 'large-complete'
   }));
-  assert.equal(truncatedDetail.bodies.original_request.truncated, true);
-  assert.equal(truncatedDetail.bodies.original_request.capturedSize, 512 * 1024);
-  assert.equal(truncatedDetail.bodies.original_request.decodedSize, 512 * 1024 + 17);
+  assert.equal(largeDetail.bodies.original_request.truncated, false);
+  assert.equal(largeDetail.bodies.original_request.totalLength, 512 * 1024 + 17);
   assert.equal(
-    readAllPages(bridge, 'boxed-truncated', 'original_request', MAX_PAGE),
-    String(truncatedBody)
+    readAllPages(bridge, 'large-complete', 'original_request', MAX_PAGE),
+    String(largeBody)
   );
 });
 
