@@ -23,7 +23,7 @@ async function connectH2(proxyPort, originPort) {
   assert.match(response.toString(), /^HTTP\/1\.1 200 /);
   const remaining = response.subarray(response.indexOf('\r\n\r\n') + 4);
   if (remaining.length) tunnel.unshift(remaining);
-  const socket = tls.connect({ socket: tunnel, servername: 'localhost', ALPNProtocols: ['h2'], rejectUnauthorized: false });
+  const socket = tls.connect({ socket: tunnel, servername: '', ALPNProtocols: ['h2'], rejectUnauthorized: false });
   await once(socket, 'secureConnect');
   assert.equal(socket.alpnProtocol, 'h2');
   const client = http2.connect(`https://127.0.0.1:${originPort}`, { createConnection: () => socket });

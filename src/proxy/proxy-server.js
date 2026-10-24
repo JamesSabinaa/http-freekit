@@ -58,6 +58,10 @@ import {
 import { validateHttp2Mode } from './http2-config.js';
 import { IntermediateCertificates } from './intermediate-certificates.js';
 import { createConnectSniCallback } from './connect-tls-identity.js';
+import {
+  boundH1RequestStatus, boundH2Authority, connectDestination,
+  connectRouteForEndpoint, createConnectRoute, isConnectOriginTarget
+} from './connect-route.js';
 import { normalizeIncomingResponseHeaders } from '../api/incoming-response-headers.js';
 import {
   compileOpenApiPathPattern,
@@ -418,6 +422,8 @@ export class ProxyServer {
     this._pendingWebhookPreparations = new Set();
     this._internalSendTokens = new Map();
     this._internalSendRequestIds = new Map();
+    // Trusted ingress context, never populated from HTTP headers or rule data.
+    this._connectRoutes = new WeakMap();
     this._lifecycleGeneration = 0;
     this._stopping = false;
     this.breakpointRules = []; // {id, enabled, matchers: [...]}
@@ -715,18 +721,21 @@ export class ProxyServer {
 
   _buildH1UpstreamRequestOptions({
     targetUrl, method, headers, signal, clientHelloTls, useUpstreamProxy,
+    connectRoute = null,
+    absoluteRequestTarget = targetUrl.href,
+    insecureHTTPParser = true,
     requestTarget = targetUrl.pathname + targetUrl.search
   }) {
     const isHttps = targetUrl.protocol === 'https:';
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
     const targetPort = parseInt(targetUrl.port, 10) || (isHttps ? 443 : 80);
     const options = {
-      hostname: targetHostname,
+      hostname: connectDestination(connectRoute, targetUrl),
       port: targetPort,
       path: requestTarget,
       method,
       headers: { ...headers },
-      insecureHTTPParser: true,
+      insecureHTTPParser,
       ...(signal ? { signal } : {})
     };
     let requestLib = isHttps ? https : http;
@@ -743,7 +752,7 @@ export class ProxyServer {
     } else if (useUpstreamProxy) {
       options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
       options.port = this.upstreamProxy.port;
-      options.path = targetUrl.href;
+      options.path = absoluteRequestTarget;
       if (this.upstreamProxy.auth) {
         options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
       }
@@ -758,7 +767,7 @@ export class ProxyServer {
 
   _requestMockForward({
     forwardUrl, path, method, headers, body, trailers = {}, signal = null, onInformational = null,
-    clientHelloTls = null
+    clientHelloTls = null, connectRoute = null
   }) {
     const isHttps = forwardUrl.protocol === 'https:';
     const targetHostname = this._normalizeConnectionHostname(forwardUrl.hostname);
@@ -785,42 +794,15 @@ export class ProxyServer {
         }
 
         const proxyGeneration = this._upstreamProxyGeneration;
-        const useUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+        const useUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, forwardUrl), targetPort);
         const requestHeaders = this._stripUpstreamHeaders(headers);
         this._setTargetHostHeader(requestHeaders, forwardUrl.host);
         const destinationRequestHeaders = createHeaderMap(Object.entries(requestHeaders));
-        const options = {
-          hostname: targetHostname,
-          port: targetPort,
-          path: targetPath,
-          method,
-          headers: requestHeaders,
-          insecureHTTPParser: true,
-          ...(signal ? { signal } : {})
-        };
-        let requestLib = isHttps ? https : http;
-
-        if (isHttps) {
-          Object.assign(options, this._getUpstreamTlsOptions(targetHostname, clientHelloTls));
-          if (useUpstreamProxy) options.agent = this._getUpstreamAgent(clientHelloTls);
-        } else if (useUpstreamProxy && this._isSocksProxy()) {
-          options.createConnection = (_connectOptions, oncreate) => {
-            this._connectViaSocks(targetHostname, targetPort)
-              .then(socket => oncreate(null, socket))
-              .catch(error => oncreate(error));
-          };
-        } else if (useUpstreamProxy) {
-          options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
-          options.port = this.upstreamProxy.port;
-          options.path = requestUrl;
-          if (this.upstreamProxy.auth) {
-            options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
-          }
-          requestLib = this.upstreamProxy.type === 'https' ? https : http;
-          if (requestLib === https) {
-            Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
-          }
-        }
+        const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+          targetUrl: new URL(requestUrl), method, headers: requestHeaders,
+          signal, clientHelloTls, useUpstreamProxy, connectRoute,
+          requestTarget: targetPath, absoluteRequestTarget: requestUrl
+        });
 
         let request;
         try {
@@ -1365,6 +1347,7 @@ export class ProxyServer {
     pendingEmitted = false,
     requestProvenance = {}
   }) {
+    const connectRoute = this._connectRoutes.get(clientReq);
     const hasBufferedRequestBody = Buffer.isBuffer(bufferedRequestBody);
     const bufferedRequestBytes = hasBufferedRequestBody ? bufferedRequestBody : null;
     const method = clientReq.method;
@@ -1752,11 +1735,12 @@ export class ProxyServer {
       activeResponse = null;
       connectStart = Date.now();
       const proxyGeneration = this._upstreamProxyGeneration;
-      const usedUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+      const usedUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, targetUrl), targetPort);
       let request;
       try {
         const { options, requestLib } = this._buildH1UpstreamRequestOptions({
           targetUrl,
+          connectRoute,
           requestTarget,
           method,
           headers: upstreamHeaders,
@@ -2034,8 +2018,8 @@ export class ProxyServer {
     if (!hasBufferedRequestBody) clientReq.pause();
     const selectUpstream = async () => {
       if (targetUrl.protocol === 'https:'
-          && !this._shouldUseUpstreamProxy(targetHostname, targetPort)) {
-        const session = await this._getH2Session(targetHostname, targetPort, clientHelloTls);
+          && !this._shouldUseUpstreamProxy(connectDestination(connectRoute, targetUrl), targetPort)) {
+        const session = await this._getH2Session(targetHostname, targetPort, clientHelloTls, null, connectRoute);
         if (session && !finalized && !downstream.aborted) {
           sendH2Request(session);
           return;
@@ -2071,6 +2055,7 @@ export class ProxyServer {
     pendingEmitted = false,
     requestProvenance = {}
   }) {
+    const connectRoute = this._connectRoutes.get(stream);
     const targetUrl = new URL(fullUrl);
     const targetHostname = this._normalizeConnectionHostname(targetUrl.hostname);
     const targetPort = parseInt(targetUrl.port, 10)
@@ -2466,7 +2451,7 @@ export class ProxyServer {
       activeProtocol = 'h1';
       connectStart = Date.now();
       const proxyGeneration = this._upstreamProxyGeneration;
-      const usedUpstreamProxy = this._shouldUseUpstreamProxy(targetHostname, targetPort);
+      const usedUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, targetUrl), targetPort);
       const h1Headers = { ...upstreamHeaders };
       // HTTP/2 request trailers are delivered only after the body and their
       // names are not advertised up front. Chunked H1 framing is therefore
@@ -2481,6 +2466,7 @@ export class ProxyServer {
       try {
         const { options, requestLib } = this._buildH1UpstreamRequestOptions({
           targetUrl,
+          connectRoute,
           method,
           headers: h1Headers,
           requestTarget: path === '*' ? '*' : undefined,
@@ -2688,7 +2674,7 @@ export class ProxyServer {
     const selectUpstream = async () => {
       if (targetUrl.protocol === 'https:') {
         const session = await this._getH2Session(
-          targetHostname, targetPort, clientHelloTls, clientHttp2Profile
+          targetHostname, targetPort, clientHelloTls, clientHttp2Profile, connectRoute
         );
         if (session && !downstream.aborted && !finalized) {
           startH2(session);
@@ -4380,6 +4366,13 @@ export class ProxyServer {
 
   // Handle HTTP upgrade requests (WebSocket passthrough)
   _handleHttpUpgrade(req, socket, head, context = {}) {
+    const connectRoute = createConnectRoute(context.hostname, context.targetPort, context.serverName);
+    const boundStatus = boundH1RequestStatus(connectRoute, req);
+    if (boundStatus) {
+      socket.end(`HTTP/1.1 ${boundStatus} ${http.STATUS_CODES[boundStatus]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+      return;
+    }
+    if (connectRoute) context = { ...context, hostname: connectRoute.logicalHostname };
     req.headers = this._incomingMessageHeaders(req);
     const startTime = Date.now();
     const requestId = uuidv4();
@@ -4426,43 +4419,17 @@ export class ProxyServer {
       targetUrl.protocol === 'https:' || targetUrl.protocol === 'wss:';
     const targetPort = parseInt(targetUrl.port, 10) || (secureOrigin ? 443 : 80);
     const buildHandshakeRoute = () => {
-      const options = {
-        hostname: targetUrl.hostname,
-        port: targetPort,
-        path: targetUrl.pathname + targetUrl.search,
-        headers: this._rawHeadersToObject(req.rawHeaders),
-        method: 'GET'
-      };
-      this._setTargetHostHeader(options.headers, targetUrl.host);
-      let requestLib = secureOrigin ? https : http;
-      if (secureOrigin) {
-        Object.assign(
-          options,
-          this._getUpstreamTlsOptions(targetUrl.hostname, context.clientHelloTls)
-        );
-      }
+      const headers = this._rawHeadersToObject(req.rawHeaders);
+      this._setTargetHostHeader(headers, targetUrl.host);
       const proxyGeneration = this._upstreamProxyGeneration;
-      const useUpstreamProxy = this._shouldUseUpstreamProxy(targetUrl.hostname, targetPort);
-      if (useUpstreamProxy && secureOrigin) {
-        options.agent = this._getUpstreamAgent(context.clientHelloTls);
-      } else if (useUpstreamProxy && this._isSocksProxy()) {
-        options.createConnection = (connectOptions, oncreate) => {
-          this._connectViaSocks(targetUrl.hostname, targetPort)
-            .then(upstreamSocket => oncreate(null, upstreamSocket))
-            .catch(err => oncreate(err));
-        };
-      } else if (useUpstreamProxy) {
-        options.hostname = this._normalizeConnectionHostname(this.upstreamProxy.host);
-        options.port = this.upstreamProxy.port;
-        options.path = targetUrl.href;
-        if (this.upstreamProxy.auth) {
-          options.headers['proxy-authorization'] = 'Basic ' + Buffer.from(this.upstreamProxy.auth).toString('base64');
-        }
-        requestLib = this.upstreamProxy.type === 'https' ? https : http;
-        if (requestLib === https) {
-          Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));
-        }
-      }
+      const useUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, targetUrl), targetPort);
+      const httpUrl = new URL(targetUrl);
+      httpUrl.protocol = secureOrigin ? 'https:' : 'http:';
+      const { options, requestLib } = this._buildH1UpstreamRequestOptions({
+        targetUrl: httpUrl, method: 'GET', headers,
+        clientHelloTls: context.clientHelloTls, useUpstreamProxy, connectRoute,
+        absoluteRequestTarget: targetUrl.href, insecureHTTPParser: false
+      });
       return { options, requestLib, proxyGeneration, useUpstreamProxy };
     };
     const initialRoute = buildHandshakeRoute();
@@ -5998,19 +5965,29 @@ export class ProxyServer {
     // Use Node's http parser by creating a virtual HTTP server on this TLS socket.
     // This properly handles keep-alive, chunked encoding, pipelining, etc.
     const virtualServer = http.createServer((req, res) => {
+      rawTunnel.recognizeHttp();
       req.headers = this._incomingMessageHeaders(req);
       // URL rewrites are scoped to this request and must not retarget later
       // requests that reuse the same intercepted CONNECT tunnel.
-      let hostname = tunnelHostname;
+      const connectRoute = createConnectRoute(tunnelHostname, tunnelTargetPort, req.socket.servername);
+      const boundStatus = boundH1RequestStatus(connectRoute, req);
+      if (boundStatus) {
+        res.writeHead(boundStatus, { Connection: 'close' });
+        res.end(http.STATUS_CODES[boundStatus]);
+        req.resume();
+        return;
+      }
+      if (connectRoute) this._connectRoutes.set(req, connectRoute);
+      let hostname = connectRoute?.logicalHostname || tunnelHostname;
       let targetPort = tunnelTargetPort;
       captureTlsDetails();
-      rawTunnel.recognizeHttp();
       const startTime = Date.now();
       const requestId = uuidv4();
       this.requestCount++;
       let fullUrl;
       try {
-        fullUrl = new URL(`https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url === '*' ? '/*' : req.url}`).href;
+        const requestAuthority = connectRoute?.logicalAuthority || `${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}`;
+        fullUrl = new URL(`https://${requestAuthority}${req.url === '*' ? '/*' : req.url}`).href;
       } catch {
         res.writeHead(400, { 'Content-Type': 'text/plain', Connection: 'close' });
         res.end('Invalid request target');
@@ -6288,6 +6265,7 @@ export class ProxyServer {
             try {
               const fwdRes = await this._requestMockForward({
                 clientHelloTls: tlsSocket._clientHelloTls,
+                connectRoute,
                 forwardUrl,
                 path: req.url,
                 method: req.method,
@@ -6682,14 +6660,14 @@ export class ProxyServer {
           });
         };
 
-        const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, upstreamUrl), targetPort);
         let h2RequestAttempted = false;
         // Try HTTP/2 upstream first when this host bypasses the configured proxy.
         if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(
-              hostname, targetPort, tlsSocket._clientHelloTls
+              hostname, targetPort, tlsSocket._clientHelloTls, null, connectRoute
             );
             if (downstream.aborted) return;
             if (h2Session) {
@@ -6854,9 +6832,10 @@ export class ProxyServer {
         const sendProxyRequest = (attempt = 0) => {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
-          const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+          const useUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, upstreamUrl), targetPort);
           const { options, requestLib } = this._buildH1UpstreamRequestOptions({
             targetUrl: upstreamUrl,
+            connectRoute,
             requestTarget: req.url === '*' ? '*' : undefined,
             method: req.method,
             headers: proxyHeaders,
@@ -6905,7 +6884,8 @@ export class ProxyServer {
         hostname,
         targetPort,
         tlsDetails,
-        clientHelloTls: tlsSocket._clientHelloTls
+        clientHelloTls: tlsSocket._clientHelloTls,
+        serverName: tlsSocket.servername
       });
     });
 
@@ -6991,9 +6971,10 @@ export class ProxyServer {
       };
       stream.session._clientHttp2Profile = clientHttp2Profile;
 
-      let authority = this._getConnectH2Authority(
-        headers[':authority'], headers[':scheme'], hostname, targetPort
-      );
+      const connectRoute = createConnectRoute(tunnelHostname, tunnelTargetPort, stream.session.socket.servername);
+      let authority = connectRoute
+        ? boundH2Authority(connectRoute, headers[':authority'], headers[':scheme'], headers.host)
+        : this._getConnectH2Authority(headers[':authority'], headers[':scheme'], hostname, targetPort);
       if (!authority) {
         const message = 'Misdirected Request';
         stream.respond({
@@ -7005,6 +6986,15 @@ export class ProxyServer {
         stream.resume();
         return;
       }
+
+      if (connectRoute && !isConnectOriginTarget(headers[':path'], headers[':method'])) {
+        stream.respond({ ':status': 400 });
+        stream.end('Invalid request target');
+        stream.resume();
+        return;
+      }
+
+      if (connectRoute) this._connectRoutes.set(stream, connectRoute);
 
       const startTime = Date.now();
       const requestId = uuidv4();
@@ -7021,7 +7011,7 @@ export class ProxyServer {
         stream.resume();
         return;
       }
-      let upstreamHostname = hostname;
+      let upstreamHostname = connectRoute?.logicalHostname || hostname;
       let upstreamPort = targetPort;
 
       let reqHeaders = createHeaderMap();
@@ -7382,7 +7372,8 @@ export class ProxyServer {
               upstreamHostname,
               upstreamPort,
               tlsSocket._clientHelloTls,
-              clientHttp2Profile
+              clientHttp2Profile,
+              connectRoute
             );
             if (downstream.aborted) return;
             if (h2Session) {
@@ -7559,10 +7550,11 @@ export class ProxyServer {
         const sendProxyRequest = (attempt = 0) => {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
-          const useUpstreamProxy = this._shouldUseUpstreamProxy(upstreamHostname, upstreamPort);
+          const useUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, upstreamUrl), upstreamPort);
           try {
             const { options, requestLib } = this._buildH1UpstreamRequestOptions({
               targetUrl: upstreamUrl,
+              connectRoute,
               requestTarget: path === '*' ? '*' : undefined,
               method,
               headers: upstreamHeaders,
@@ -7623,6 +7615,16 @@ export class ProxyServer {
       // HTTP/2 requests are handled by the 'stream' event above, not this one.
       // Only handle if this is actually an HTTP/1.1 request (not an h2 stream).
       if (req.httpVersion === '2.0') return; // already handled by 'stream'
+      const connectRoute = createConnectRoute(tunnelHostname, tunnelTargetPort, req.socket.servername);
+      const boundStatus = boundH1RequestStatus(connectRoute, req);
+      if (boundStatus) {
+        res.writeHead(boundStatus, { Connection: 'close' });
+        res.end(http.STATUS_CODES[boundStatus]);
+        req.resume();
+        return;
+      }
+      if (connectRoute) this._connectRoutes.set(req, connectRoute);
+      hostname = connectRoute?.logicalHostname || hostname;
       req.headers = this._incomingMessageHeaders(req);
 
       const startTime = Date.now();
@@ -7630,7 +7632,8 @@ export class ProxyServer {
       this.requestCount++;
       let fullUrl;
       try {
-        fullUrl = new URL(`https://${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}${req.url === '*' ? '/*' : req.url}`).href;
+        const requestAuthority = connectRoute?.logicalAuthority || `${urlHostname}${targetPort !== 443 ? ':' + targetPort : ''}`;
+        fullUrl = new URL(`https://${requestAuthority}${req.url === '*' ? '/*' : req.url}`).href;
       } catch {
         res.writeHead(400, { 'Content-Type': 'text/plain', Connection: 'close' });
         res.end('Invalid request target');
@@ -7969,14 +7972,14 @@ export class ProxyServer {
           });
         };
 
-        const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+        const initiallyUsesUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, upstreamUrl), targetPort);
         let h2RequestAttempted = false;
         // Try HTTP/2 upstream when this host bypasses the configured proxy.
         if (isUpstreamHttps && !initiallyUsesUpstreamProxy) {
           try {
             if (downstream.aborted) return;
             const h2Session = await this._getH2Session(
-              hostname, targetPort, tlsSocket._clientHelloTls
+              hostname, targetPort, tlsSocket._clientHelloTls, null, connectRoute
             );
             if (downstream.aborted) return;
             if (h2Session) {
@@ -8147,9 +8150,10 @@ export class ProxyServer {
         const sendProxyRequest = (attempt = 0) => {
           if (downstream.aborted) return;
           const proxyGeneration = this._upstreamProxyGeneration;
-          const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
+          const useUpstreamProxy = this._shouldUseUpstreamProxy(connectDestination(connectRoute, upstreamUrl), targetPort);
           const { options, requestLib } = this._buildH1UpstreamRequestOptions({
             targetUrl: upstreamUrl,
+            connectRoute,
             requestTarget: req.url === '*' ? '*' : undefined,
             method: req.method,
             headers: proxyHeaders,
@@ -8202,7 +8206,8 @@ export class ProxyServer {
         hostname,
         targetPort,
         tlsDetails,
-        clientHelloTls: tlsSocket._clientHelloTls
+        clientHelloTls: tlsSocket._clientHelloTls,
+        serverName: tlsSocket.servername
       });
     });
 
@@ -8393,6 +8398,7 @@ export class ProxyServer {
       try {
         const fwdRes = await this._requestMockForward({
           clientHelloTls: ctx.clientHelloTls,
+          connectRoute: this._connectRoutes.get(stream),
           forwardUrl,
           path,
           method,
@@ -8690,16 +8696,17 @@ export class ProxyServer {
 
   // Get or create an HTTP/2 session to the given origin, with caching.
   // Returns the h2 session or null if the origin doesn't support h2.
-  _getH2Session(hostname, port, clientHelloTls = null, clientHttp2Profile = null) {
+  _getH2Session(hostname, port, clientHelloTls = null, clientHttp2Profile = null, connectRoute = null) {
     return this._getH2SessionForRoute(
-      hostname, port, clientHelloTls, normalizeClientHttp2Profile(clientHttp2Profile)
+      hostname, port, clientHelloTls, normalizeClientHttp2Profile(clientHttp2Profile),
+      connectRouteForEndpoint(connectRoute, hostname, port)
     );
   }
 
   // Shared direct/tunneled connection setup keeps TLS recovery ahead of HTTP/2.
-  _getH2SessionForRoute(hostname, port, clientHelloTls, clientHttp2Profile) {
-    const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, port);
-    const origin = `${hostname}:${port}`;
+  _getH2SessionForRoute(hostname, port, clientHelloTls, clientHttp2Profile, connectRoute = null) {
+    const useUpstreamProxy = this._shouldUseUpstreamProxy(connectRoute?.address || hostname, port);
+    const origin = connectRoute?.poolKey || `${hostname}:${port}`;
     const upstreamProxyGeneration = this._upstreamProxyGeneration;
     const upstreamProxyUrl = useUpstreamProxy ? this._getUpstreamProxyUrl() : '';
     let cacheKey = CLIENT_HELLO_TLS_FINGERPRINT_MODES.has(this.tlsFingerprint) && clientHelloTls
@@ -8816,7 +8823,7 @@ export class ProxyServer {
       }
       this._h2Sessions.set(cacheKey, attemptEntry);
 
-      void this._connectH2Tls(hostname, port, clientHelloTls, connectionAbort.signal).then(secureSocket => {
+      void this._connectH2Tls(hostname, port, clientHelloTls, connectionAbort.signal, connectRoute).then(secureSocket => {
         if (settled || !isCurrentAttempt()) {
           secureSocket.destroy();
           return;
@@ -8837,10 +8844,10 @@ export class ProxyServer {
     return pending;
   }
 
-  _connectH2Tls(hostname, port, clientHelloTls, signal) {
+  _connectH2Tls(hostname, port, clientHelloTls, signal, connectRoute = null) {
     this._intermediateCertificates ||= new IntermediateCertificates();
     return this._intermediateCertificates.connect(async certificates => {
-      const socket = await this._connectTcp(hostname, port);
+      const socket = await this._connectTcp(connectRoute?.address || hostname, port);
       if (signal.aborted) {
         socket.destroy();
         signal.throwIfAborted();
@@ -8852,7 +8859,7 @@ export class ProxyServer {
         host: this._normalizeConnectionHostname(hostname),
         socket
       });
-    }, { cacheKey: `${this._tlsConfigGeneration}|${hostname}:${port}`, signal, timeoutMs: 0 });
+    }, { cacheKey: `${this._tlsConfigGeneration}|${connectRoute?.poolKey || `${hostname}:${port}`}`, signal, timeoutMs: 0 });
   }
 
   _applyClientHttp2ConnectionWindow(session, clientHttp2Profile) {
@@ -9823,11 +9830,19 @@ export class ProxyServer {
     };
     const connect = (factory, options) => {
       this._intermediateCertificates ||= new IntermediateCertificates();
+      const identity = options.servername || options.host;
       return this._intermediateCertificates.connect(certificates => {
         const refreshed = options._freekitTlsOptions?.(certificates) || options;
-        return factory({ ...options, ...refreshed });
+        return factory({
+          ...options,
+          ...refreshed,
+          // Tunnel agents omit host when TLS-wrapping their socket. Pin Node's
+          // standard check here, after pool selection, without emitting IP SNI
+          // or creating per-request TLS callbacks that disable socket reuse.
+          checkServerIdentity: (_serverName, certificate) => tls.checkServerIdentity(identity, certificate)
+        });
       }, {
-        cacheKey: `${this._tlsConfigGeneration}|${options.servername || options.host}:${options.port}`,
+        cacheKey: `${this._tlsConfigGeneration}|${options.host}:${options.port}|${options.servername || ''}`,
         signal: options._freekitSignal || options.signal,
         timeoutMs: this._upstreamConnectTimeoutMs
       });
@@ -10598,6 +10613,7 @@ export class ProxyServer {
       try {
         const proxyRes = await this._requestMockForward({
           clientHelloTls: clientReq.socket?._clientHelloTls,
+          connectRoute: this._connectRoutes.get(clientReq),
           forwardUrl,
           path: targetUrl.pathname + targetUrl.search,
           method: clientReq.method,

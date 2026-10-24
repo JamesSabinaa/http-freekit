@@ -63,7 +63,7 @@ for (const mode of ['disabled', 'h2-only']) {
 
 test('SNI certificate selection keeps the original IP CONNECT egress and upstream trust', { timeout: 20000 }, async t => {
   const { proxy, ca, trustedRoot } = await fixture(t);
-  const originCertificate = await ca.generateCertForHost('127.0.0.1');
+  const originCertificate = await ca.generateCertForHost('app.example.invalid');
   let receivedHost;
   const origin = https.createServer({ key: originCertificate.key, cert: originCertificate.cert }, (request, response) => {
     receivedHost = request.headers.host;
@@ -80,8 +80,8 @@ test('SNI certificate selection keeps the original IP CONNECT egress and upstrea
   const originPort = origin.address().port;
   proxy.setTrustedCAs([ca.caCertPath]);
   const socket = await tunnel(t, proxy, `127.0.0.1:${originPort}`);
-  // This DNS name cannot be resolved. A response proves SNI did not retarget
-  // egress. The unchanged forwarded Host semantics are a separate design gate.
+  // This DNS name cannot be resolved. A response proves the logical identity
+  // is preserved independently of the original IP dial destination.
   const secured = tls.connect({ socket, servername: 'app.example.invalid', ca: trustedRoot, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
   t.after(() => secured.destroy());
   await once(secured, 'secureConnect');
@@ -89,10 +89,10 @@ test('SNI certificate selection keeps the original IP CONNECT egress and upstrea
   const chunks = [];
   secured.on('data', chunk => chunks.push(chunk));
   const ended = once(secured, 'end');
-  secured.write('GET /sni-routing HTTP/1.1\r\nHost: app.example.invalid\r\nConnection: close\r\n\r\n');
+  secured.write(`GET /sni-routing HTTP/1.1\r\nHost: app.example.invalid:${originPort}\r\nConnection: close\r\n\r\n`);
   await ended;
   assert.match(Buffer.concat(chunks).toString('utf8'), /original-ip-origin/);
-  assert.equal(receivedHost, `127.0.0.1:${originPort}`);
+  assert.equal(receivedHost, `app.example.invalid:${originPort}`);
 });
 
 test('a client without SNI still verifies the CONNECT IP certificate', { timeout: 20000 }, async t => {

@@ -333,7 +333,7 @@ test('native HTTP/2 streams request and response data bidirectionally', { timeou
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
   const secureSocket = tls.connect({
     socket: tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['h2'],
     rejectUnauthorized: false
   });
@@ -420,7 +420,7 @@ test('HTTP/1.1 clients stream bidirectionally to HTTP/2 origins', { timeout: 200
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
   const secureSocket = tls.connect({
     socket: tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['http/1.1'],
     rejectUnauthorized: false
   });
@@ -493,7 +493,7 @@ test('HTTP/2 clients stream bidirectionally through the HTTP/1.1 fallback', { ti
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
   const secureSocket = tls.connect({
     socket: tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['h2'],
     rejectUnauthorized: false
   });
@@ -709,7 +709,7 @@ test('an upstream reset cannot strand a backpressured HTTP/2 upload', { timeout:
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
   const secureSocket = tls.connect({
     socket: tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['h2'],
     rejectUnauthorized: false
   });
@@ -781,7 +781,7 @@ test('HTTP/2 HEAD responses retain representation length through the H1 bridge',
     await rm(dataDir, { recursive: true, force: true });
   });
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
-  const socket = tls.connect({ socket: tunnel, servername: 'localhost',
+  const socket = tls.connect({ socket: tunnel, servername: '',
     ALPNProtocols: ['http/1.1'], rejectUnauthorized: false });
   await once(socket, 'secureConnect');
   const chunks = [];
@@ -831,7 +831,7 @@ test('HTTP/2 response trailers keep chunked framing even when announced late', {
   const tunnel = await openTunnel(proxy.server.address().port, originPort);
   const secureSocket = tls.connect({
     socket: tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['http/1.1'],
     rejectUnauthorized: false
   });
@@ -886,7 +886,7 @@ test('HTTP/2 CANCEL falls back to HTTP/1 for H1 and H2 clients', { timeout: 3000
   const h1Tunnel = await openTunnel(h1Proxy.server.address().port, originPort);
   const h1Socket = tls.connect({
     socket: h1Tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['http/1.1'],
     rejectUnauthorized: false
   });
@@ -912,7 +912,7 @@ test('HTTP/2 CANCEL falls back to HTTP/1 for H1 and H2 clients', { timeout: 3000
   const h2Tunnel = await openTunnel(h2Proxy.server.address().port, originPort);
   const h2Socket = tls.connect({
     socket: h2Tunnel,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: ['h2'],
     rejectUnauthorized: false
   });

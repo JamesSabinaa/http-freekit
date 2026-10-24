@@ -60,7 +60,7 @@ async function connectTls(proxyPort, targetPort, protocols) {
   const socket = await openTunnel(proxyPort, targetPort);
   const secureSocket = tls.connect({
     socket,
-    servername: 'localhost',
+    servername: '',
     ALPNProtocols: protocols,
     rejectUnauthorized: false
   });
