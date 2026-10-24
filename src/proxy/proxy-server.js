@@ -57,6 +57,7 @@ import {
 } from './tls-fingerprint-config.js';
 import { validateHttp2Mode } from './http2-config.js';
 import { IntermediateCertificates } from './intermediate-certificates.js';
+import { createConnectSniCallback } from './connect-tls-identity.js';
 import { normalizeIncomingResponseHeaders } from '../api/incoming-response-headers.js';
 import {
   compileOpenApiPathPattern,
@@ -5893,7 +5894,8 @@ export class ProxyServer {
       key: hostCert.key,
       cert: hostCert.cert,
       ca: hostCert.ca,
-      ALPNProtocols
+      ALPNProtocols,
+      SNICallback: createConnectSniCallback(this.ca)
     };
 
     clientSocket.on('error', () => {}); // Suppress connection reset errors

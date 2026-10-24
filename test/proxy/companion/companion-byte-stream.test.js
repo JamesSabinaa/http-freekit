@@ -292,7 +292,7 @@ test('companion passthrough CONNECT preserves write-side EOF while reading the r
   socket.destroy();
 });
 
-test('CONNECT to an IP does not satisfy a client expecting the original DNS TLS identity', { timeout: 20000 }, async t => {
+test('CONNECT to an IP can present the original DNS TLS identity from SNI', { timeout: 20000 }, async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'freekit-companion-wire-'));
   const ca = new CertificateAuthority(directory);
   await ca.initialize();
@@ -305,7 +305,7 @@ test('CONNECT to an IP does not satisfy a client expecting the original DNS TLS 
   });
   const tunnel = await connect(t, proxy.server.address().port);
   const reader = new WireReader(tunnel);
-  // No origin is needed: the failure occurs in the client/proxy TLS handshake.
+  // No origin is needed: this checks the client/proxy TLS identity only.
   await fragmentedWrite(tunnel, 'CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n');
   assert.match(await reader.headers(), /^HTTP\/1\.1 200 Connection Established\r\n/);
   reader.detach();
@@ -317,8 +317,8 @@ test('CONNECT to an IP does not satisfy a client expecting the original DNS TLS 
     ALPNProtocols: ['http/1.1']
   });
   t.after(() => secureSocket.destroy());
-  await assert.rejects(
-    bounded(once(secureSocket, 'secureConnect'), 'Expected the DNS identity mismatch to fail'),
-    { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }
-  );
+  await bounded(once(secureSocket, 'secureConnect'), 'Expected the DNS identity to validate');
+  assert.equal(secureSocket.authorized, true);
+  assert.equal(secureSocket.getPeerCertificate().subjectaltname, 'DNS:original-app.example.invalid');
+  secureSocket.destroy();
 });

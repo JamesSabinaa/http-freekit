@@ -14,7 +14,7 @@ Source baseline: desktop `e7243638407efacb6b72c53d7fac893414418f03`. Canonical A
 | CONNECT then TLS then HTTP | CONNECT response precedes the TLS exchange; client validates the fixture CA/IP identity; incremental binary upload/download reaches the origin and desktop capture | IP identity throughout; does not prove a DNS site's HTTPS identity |
 | WebSocket | Upgrade and a masked binary frame arrive in the same write; origin receives it as binary and the unmasked echo is byte-identical | Plain WebSocket; secure WebSocket behavior is covered by existing regression tests |
 | Write-side EOF | Passthrough CONNECT origin receives EOF, then replies while the client keeps reading | Passthrough TCP only; does not establish TLS or carrier half-close semantics |
-| IP CONNECT / DNS TLS identity mismatch | With CONNECT `127.0.0.1:443` and SNI `original-app.example.invalid`, the verified client rejects the baseline certificate with `ERR_TLS_CERT_ALTNAME_INVALID` | This is a protocol-freeze blocker, not successful DNS-site interception |
+| IP CONNECT / DNS TLS identity | The baseline rejected this combination with `ERR_TLS_CERT_ALTNAME_INVALID`. The compatibility fix now selects a certificate for validated SNI `original-app.example.invalid`, and the verified client accepts it | Downstream certificate identity only; original Host/upstream TLS/H2 authority semantics remain open |
 
 Validation environment: Windows Server 2025 x64, standalone Node `26.7.0`, dependencies installed from the unchanged `package-lock.json` using `npm ci --ignore-scripts --no-audit --no-fund`. The initial PATH Node `25.2.1` produced dev-tool engine warnings during install; all reported tests used the desktop project's standalone Node 26.7.0 binary.
 
@@ -24,7 +24,21 @@ Commands and results:
 node --test --test-concurrency=1 test/proxy/companion/companion-byte-stream.test.js
 ```
 
-Five cases passed. Before adding the identity-mismatch case, a combined run of every `test/interceptors/android/*.test.js` plus companion byte tests, core streaming/absolute-Host/forward-header/loopback-bind/downstream-cancellation tests, secure-WebSocket/backpressure tests, upstream-tunnel/SOCKS-DNS tests, and `test/meta/test-layout.test.js` passed 159 tests, with zero failures/skips. The combined run log is in ignored `dist/companion-spike-tests.log`. Android interceptor tests use mocked ADB/process fixtures; no phone, emulator, physical USB capture, WAN, or Android Keystore check ran.
+Five cases passed. Before adding the identity case, a selected Android/proxy run passed 159 tests with zero failures/skips. The initial spike is committed as `d5732519039c4c831c38813871fd291e047245a7`. The subsequent certificate fix adds [eight targeted SNI tests](../test/proxy/tls/connect-sni-certificate.test.js), all passing. The final run included every proxy test, every Android interceptor test, and test-layout validation: 88 files, 461 passing tests, zero failures/cancellations/skips, in 109.7 seconds. Reproduce it with standalone Node 26.7.0:
+
+```powershell
+$files = @(Get-ChildItem test/proxy,test/interceptors/android -Recurse -Filter '*.test.js' -File |
+  Sort-Object FullName | ForEach-Object { $_.FullName })
+node --test --test-concurrency=1 @files test/meta/test-layout.test.js
+```
+
+The latest combined run log is in ignored `dist/companion-spike-tests.log`. Syntax checks, local documentation links, and `git diff --check` passed. Android interceptor tests use mocked ADB/process fixtures; no phone, emulator, physical USB capture, WAN, or Android Keystore check ran.
+
+## Certificate compatibility fix
+
+The baseline generated the interception leaf from the CONNECT authority alone. [connect-tls-identity.js](../src/proxy/connect-tls-identity.js) now supplies a scoped [Node TLS SNICallback](https://nodejs.org/api/tls.html#tlscreateserveroptions-secureconnectionlistener) to the existing H1/H2 TLS setup. It selects only the leaf certificate: ASCII DNS names are bounded to 253 characters and 63-character labels, punycode names are accepted, and controls, URL/wildcard syntax, ambiguous numeric hosts and scoped/bracketed literals are rejected before generation. Well-formed IP-literal SNI remains compatible. Without SNI, the existing CONNECT-authority certificate remains the default.
+
+Targeted tests prove trusted DNS identity over an IP CONNECT for both H1/H2 ALPN, the no-SNI IP fallback, unchanged original-IP egress and upstream CA verification, rejection without trust in the interception CA, malformed on-wire SNI rejection before certificate generation, and sanitized generation errors. The original-IP egress test uses an unresolvable SNI name and still reaches the loopback origin; SNI does not rewrite the destination or relax upstream trust. No gateway or frozen wire contract is required for this existing-proxy fix.
 
 ## Desktop integration points
 
@@ -47,6 +61,8 @@ A raw TCP connection from a gateway into the ordinary loopback proxy cannot, by 
 
 For WAN, deny management listeners permanently, and deny loopback, private/link-local/metadata and IPv6 local targets by default. Validate addresses immediately before the actual connect; checking DNS then allowing a library to resolve again is insufficient. Recheck retries, rewrites, forwards, WebSockets, H2 and secondary webhook targets. Remote-DNS upstream routes cannot prove the final destination from local DNS inspection; keep companion WAN direct-only until an enforceable upstream policy exists. The ordinary local proxy's existing upstream behavior need not change.
 
-The baseline chooses the interception leaf from CONNECT authority before processing ClientHello. Choosing an IP authority therefore loses a site's DNS certificate identity. A narrow compatibility fix may choose the leaf from a bounded, validated SNI name while retaining the original CONNECT egress. That alone will not resolve every logical-authority issue: H1 currently derives its forwarded Host/upstream TLS options from the CONNECT URL, and H2 `_getConnectH2Authority` rejects a `:authority` different from CONNECT. Package A and D must agree how original IP routing, application Host/`:authority`, downstream certificate identity and upstream TLS identity relate before production integration. SNI must never silently retarget the connection or bypass destination policy.
+The certificate compatibility fix resolves downstream leaf selection while retaining original CONNECT egress. It does not resolve every logical-authority issue: H1 currently derives its forwarded Host/upstream TLS options from the CONNECT URL, and H2 `_getConnectH2Authority` rejects a `:authority` different from CONNECT. Package A and D must agree how original IP routing, application Host/`:authority`, downstream certificate identity and upstream TLS identity relate before production integration. SNI must never silently retarget the connection or bypass destination policy.
+
+Package A is drafting a public `gatewayCertificateDer` pairing field alongside the logical server name and SPKI pin. A future desktop gateway must export its own dedicated leaf DER, compute the pin from that same certificate, include the stable logical name in SAN, and bound QR/paste payload size. This is separate from the interception CA and from the enrollment authority. Renewal/rotation and expiry enforcement after reconnect must be specified; pinning the same key alone does not establish certificate validity. No production desktop wire implementation currently depends on this draft addition.
 
 The carrier still needs bounded per-device/global stream and byte queues, `ws.send`/socket backpressure in both directions, no automatic replay, authenticated control/session association, immediate revocation/cancellation, and a tested half-close mapping. Enrollment approval/races, key renewal, persistence, error schemas, origin policy and capability negotiation remain draft. No production contract is changed by this spike, and package D is not complete.
