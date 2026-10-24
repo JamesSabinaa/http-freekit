@@ -8847,6 +8847,9 @@ export class ProxyServer {
       }
       return tls.connect({
         ...this._getUpstreamTlsOptions(hostname, clientHelloTls, ['h2'], true, certificates),
+        // A connected IP socket otherwise falls back to localhost for TLS
+        // identity checks. The existing socket still owns the dial route.
+        host: this._normalizeConnectionHostname(hostname),
         socket
       });
     }, { cacheKey: `${this._tlsConfigGeneration}|${hostname}:${port}`, signal, timeoutMs: 0 });
