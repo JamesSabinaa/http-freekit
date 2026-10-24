@@ -769,6 +769,19 @@
       font-size: 13px;
     }
 
+    /* Keep Host content-sized; Path & Query absorbs pane resizing. */
+    .traffic-table th:nth-child(5),
+    .traffic-table td:nth-child(5):not([colspan]) {
+      width: 1%;
+      max-width: none;
+    }
+
+    .traffic-table th:nth-child(6),
+    .traffic-table td:nth-child(6) {
+      width: 100%;
+      max-width: 0;
+    }
+
     .traffic-table td.source-cell {
       text-align: center;
       padding: 0;
