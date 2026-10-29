@@ -197,7 +197,9 @@ export async function launchGenerator(executable, args, { cwd, sessionDir, env =
   await fs.writeFile(logPath, '', { mode: 0o600 });
   const child = spawn(command, [
     '-c', GENERATOR_LAUNCH_SCRIPT, readyPath, logPath, path.resolve(cwd, args[0]), ...args.slice(1)
-  ], { cwd, env, detached: true, stdio: 'ignore', windowsHide: true });
+  // pythonw already avoids a console. windowsHide also hides its GUI window,
+  // while Qt's isVisible() still returns true, producing false startup success.
+  ], { cwd, env, detached: true, stdio: 'ignore', windowsHide: false });
   await waitForGeneratorWindow(child, readyPath, logPath);
   await fs.unlink(readyPath).catch(() => {});
   child.unref();

@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   GENERATOR_LAUNCH_SCRIPT,
   getGeneratorLaunchExecutable,
+  launchGenerator,
   resolveGeneratorRuntime,
   waitForGeneratorWindow
 } from '../../src/api/generator-launch.js';
@@ -86,6 +87,39 @@ test('a readiness file from another process does not confirm startup', async t =
 // readiness protocol tests above run even on hosts without Python installed.
 const python = ['python3', 'python', 'py'].find(command => {
   return spawnSync(command, ['-c', 'import sys'], { windowsHide: true, timeout: 2000 }).status === 0;
+});
+
+test('Windows launch opens a natively visible Qt window', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows visibility regression');
+  const qtPython = ['python', 'python3', 'py'].find(command =>
+    spawnSync(command, ['-c', 'import PySide6'], { windowsHide: true, timeout: 3000 }).status === 0
+  );
+  if (!qtPython) return t.skip('PySide6 is unavailable');
+  const root = await fixture(t);
+  const nativeState = path.join(root, 'native-state.json');
+  await fs.writeFile(path.join(root, 'main_app.py'), `
+import ctypes, json
+from PySide6.QtWidgets import QApplication, QMainWindow
+app = QApplication([])
+window = QMainWindow()
+window.setWindowTitle('FreeKit launch regression test')
+window.show()
+with open(${JSON.stringify(nativeState)}, 'w') as state:
+    json.dump({'visible': bool(ctypes.windll.user32.IsWindowVisible(int(window.winId())))}, state)
+app.exec()
+`);
+  const executable = spawnSync(qtPython, ['-c', 'import sys; print(sys.executable)'], {
+    windowsHide: true, encoding: 'utf8', timeout: 3000
+  }).stdout.trim();
+  const child = await launchGenerator(executable, ['main_app.py'], { cwd: root, sessionDir: root });
+  try {
+    assert.equal(JSON.parse(await fs.readFile(nativeState, 'utf8')).visible, true,
+      'Qt visibility alone does not prove that Windows displayed the window');
+  } finally {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill();
+    await exited;
+  }
 });
 
 test('the Python wrapper acknowledges a shown window after the event loop starts', async t => {
