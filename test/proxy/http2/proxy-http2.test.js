@@ -115,6 +115,48 @@ test('parses HTTP/2 requests after an intercepted CONNECT tunnel', { timeout: 20
   ]);
 });
 
+test('a stream reset before dispatch does not crash interception or block the next request', { timeout: 20000 }, async t => {
+  const createSecureServer = http2.createSecureServer;
+  let resetStream;
+  t.mock.method(http2, 'createSecureServer', (...args) => {
+    const server = createSecureServer(...args);
+    // Force the disconnect race between Node queuing the event and the proxy
+    // receiving it, using a real stream whose session is detached by destroy.
+    server.prependOnceListener('stream', stream => {
+      resetStream = stream;
+      stream.destroy();
+      assert.equal(stream.session, undefined);
+    });
+    return server;
+  });
+  const { proxy, events } = await startProxy(t, 'h2-only', 'still recording');
+  const secureSocket = await connectTls(proxy.server.address().port, 'example.test', ['h2']);
+  const client = http2.connect('https://example.test', { createConnection: () => secureSocket });
+  t.after(() => client.destroy());
+  await once(client, 'connect');
+
+  const cancelled = client.request({ ':path': '/cancelled' });
+  cancelled.on('error', () => {});
+  cancelled.resume();
+  const closed = once(cancelled, 'close');
+  cancelled.end();
+  await closed;
+  assert.ok(resetStream.destroyed);
+  assert.equal(events.length, 0);
+
+  const next = client.request({ ':path': '/next' });
+  const chunks = [];
+  next.on('data', chunk => chunks.push(chunk));
+  const response = once(next, 'response');
+  const ended = once(next, 'end');
+  next.end();
+  const [responseHeaders] = await response;
+  await ended;
+  assert.equal(responseHeaders[':status'], 200);
+  assert.equal(Buffer.concat(chunks).toString(), 'still recording');
+  assert.equal(events.at(-1).url, 'https://example.test/next');
+});
+
 test('HTTP/2 all mode still accepts HTTP/1.1 via ALPN fallback', { timeout: 20000 }, async (t) => {
   const { proxy, events } = await startProxy(t, 'all', 'h1-ok');
   const hostname = 'example.test';

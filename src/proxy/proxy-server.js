@@ -6963,15 +6963,23 @@ export class ProxyServer {
 
     // HTTP/2 streams — each stream is a separate request
     h2Server.on('stream', (stream, headers) => {
+      // Install this before any early return: a reset can emit an error after
+      // the queued stream event, including when its session is already gone.
+      stream.on('error', () => {});
       rawTunnel?.recognizeHttp();
-      const pseudoHeaderOrder = Object.keys(headers).filter(name => name.startsWith(':'));
-      const clientHttp2Profile = stream.session._clientHttp2Profile || {
-        settings: { ...stream.session.remoteSettings },
-        connectionWindowSize: stream.session.state?.remoteWindowSize
-      };
-      stream.session._clientHttp2Profile = clientHttp2Profile;
+      const session = stream.session;
+      // Node can deliver a queued stream event after a client disconnect/reset
+      // has destroyed the stream and detached its session.
+      if (stream.destroyed || stream.closed || !session || session.destroyed) return;
 
-      const connectRoute = createConnectRoute(tunnelHostname, tunnelTargetPort, stream.session.socket.servername);
+      const pseudoHeaderOrder = Object.keys(headers).filter(name => name.startsWith(':'));
+      const clientHttp2Profile = session._clientHttp2Profile || {
+        settings: { ...session.remoteSettings },
+        connectionWindowSize: session.state?.remoteWindowSize
+      };
+      session._clientHttp2Profile = clientHttp2Profile;
+
+      const connectRoute = createConnectRoute(tunnelHostname, tunnelTargetPort, session.socket.servername);
       let authority = connectRoute
         ? boundH2Authority(connectRoute, headers[':authority'], headers[':scheme'], headers.host)
         : this._getConnectH2Authority(headers[':authority'], headers[':scheme'], hostname, targetPort);
@@ -7596,13 +7604,6 @@ export class ProxyServer {
         };
 
         sendProxyRequest();
-      });
-
-      // Handle stream errors (e.g., client reset)
-      stream.on('error', (err) => {
-        if (err.code === 'ERR_HTTP2_STREAM_ERROR' ||
-            err.code === 'ERR_HTTP2_STREAM_CANCEL' ||
-            err.code === 'ECONNRESET') return;
       });
     });
 
