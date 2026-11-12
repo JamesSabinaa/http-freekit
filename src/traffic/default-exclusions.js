@@ -13,6 +13,7 @@ export const DEFAULT_EXCLUSIONS = Object.freeze([
   'clients6.google.com',
   'content-autofill.googleapis.com',
   'google-ohttp-relay-safebrowsing.fastly-edge.com',
+  'ohttp-relay-safebrowsing-chrome.google.fastly-edge.com',
   'redirector.gvt1.com',
   '*.gvt1.com',
   '*.gvt2.com',
