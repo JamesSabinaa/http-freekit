@@ -11,7 +11,9 @@ export function normalizeConnectServerName(value) {
   // convention. Scoped IPs, brackets, URL syntax and ambiguous IPv4 are rejected.
   if (net.isIP(hostname)) return hostname;
   if (/^[0-9.]+$/.test(hostname)) return '';
-  const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  // Browsers also send CDN names containing internal underscores. They are
+  // safe certificate identities; keep the same length and delimiter bounds.
+  const label = /^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/;
   return hostname.split('.').every(part => label.test(part)) ? hostname : '';
 }
 

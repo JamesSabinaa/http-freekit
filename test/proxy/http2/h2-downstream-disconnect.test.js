@@ -16,6 +16,17 @@ function createHandler(t) {
 
 const headers = { ':method': 'GET', ':path': '/', ':authority': 'example.test', ':scheme': 'https' };
 
+test('cancelled H2 sessions stay quiet while unexpected errors remain visible', t => {
+  const { server } = createHandler(t);
+  const errors = t.mock.method(console, 'error', () => {});
+  for (const code of ['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ECANCELED']) {
+    server.emit('sessionError', Object.assign(new Error(`write ${code}`), { code }));
+  }
+  assert.equal(errors.mock.callCount(), 0);
+  server.emit('sessionError', Object.assign(new Error('unexpected protocol failure'), { code: 'ERR_HTTP2_ERROR' }));
+  assert.equal(errors.mock.callCount(), 1);
+});
+
 for (const state of ['detached', 'destroyed', 'closed', 'session destroyed']) {
   test(`a queued H2 stream that is ${state} does not crash or forward`, t => {
     const { server, proxy, forward } = createHandler(t);

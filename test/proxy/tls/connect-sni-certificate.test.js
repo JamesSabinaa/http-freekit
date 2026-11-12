@@ -130,6 +130,8 @@ test('malformed wire SNI aborts the handshake before requesting a certificate', 
 
 test('SNI syntax and length are bounded before certificate generation', async () => {
   const valid = new Map([
+    ['cdn_test.example.invalid', 'cdn_test.example.invalid'],
+    ['92-113-223-151_s-23-200-0-170_ts-1794221969-clienttons-s.akamaihd.net', '92-113-223-151_s-23-200-0-170_ts-1794221969-clienttons-s.akamaihd.net'],
     ['Example.TEST.', 'example.test'], ['localhost', 'localhost'], ['xn--bcher-kva.test', 'xn--bcher-kva.test'],
     ['127.0.0.1', '127.0.0.1'], ['2001:DB8::1', '2001:db8::1'],
     [`${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`, `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`]

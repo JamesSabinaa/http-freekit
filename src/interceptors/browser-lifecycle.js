@@ -10,6 +10,8 @@ export const MAX_PROFILE_MARKER_BYTES = 16 * 1024;
 export const MAX_STALE_PROFILE_CANDIDATES = 256;
 const PROCESS_START_TOLERANCE_MS = 2000;
 const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $items = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CommandLine,ExecutablePath,CreationDate -ErrorAction Stop | ForEach-Object {
   [pscustomobject]@{
     pid = [int]$_.ProcessId
@@ -487,12 +489,26 @@ export async function getProcessSnapshotAsync() {
 
 async function readProcessSnapshotAsync() {
   if (process.platform === 'win32') {
-    const output = String(await execFileAsync(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_PROCESS_SNAPSHOT_SCRIPT],
-      { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 5 * 1024 * 1024 }
-    ));
-    return parseWindowsProcessSnapshot(output);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let output;
+      try {
+        output = await execFileAsync(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_PROCESS_SNAPSHOT_SCRIPT],
+          { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 5 * 1024 * 1024 }
+        );
+      } catch (cause) {
+        const timedOut = cause.code === 'ETIMEDOUT' ||
+          (cause.killed && ['SIGTERM', 'SIGKILL'].includes(cause.signal));
+        if (timedOut && attempt === 0) continue;
+        const detail = timedOut ? 'timed out after two attempts' : `failed (${cause.code || cause.signal || 'unknown error'})`;
+        const stderr = String(cause.stderr || '').trim().replace(/\s+/g, ' ').slice(0, 512);
+        const error = new Error(`Windows process query ${detail}${stderr ? `: ${stderr}` : ''}`, { cause });
+        error.code = timedOut ? 'ETIMEDOUT' : cause.code;
+        throw error;
+      }
+      return parseWindowsProcessSnapshot(output);
+    }
   }
 
   const options = {

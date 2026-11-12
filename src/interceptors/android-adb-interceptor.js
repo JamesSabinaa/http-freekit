@@ -91,6 +91,7 @@ export class AndroidAdbInterceptor {
     this.id = 'android-adb';
     this.name = 'Android Device (ADB)';
     this.active = false;
+    this._deviceDiscoveryWarning = null;
     this.ca = null;
     this.activatedDevices = new Map(); // deviceId -> { serial, model }
     this.reverseTunnels = new Set(); // `${deviceId}:${proxyPort}`
@@ -761,7 +762,8 @@ export class AndroidAdbInterceptor {
    */
   async _getConnectedDevices() {
     try {
-      const output = await execFileAsync('adb', ['devices', '-l'], { encoding: 'utf8', timeout: 5000 });
+      const output = await this._runDeviceListCommand();
+      this._deviceDiscoveryWarning = null;
       const lines = output.split('\n').slice(1); // skip header "List of devices attached"
       const devices = [];
 
@@ -796,9 +798,17 @@ export class AndroidAdbInterceptor {
 
       return devices;
     } catch (err) {
-      console.error('[Interceptor] ADB devices list failed:', err.message);
+      const warning = `${err.code}:${err.message}`;
+      if (err.code !== 'ENOENT' && this._deviceDiscoveryWarning !== warning) {
+        console.error('[Interceptor] ADB devices list failed:', err.message);
+      }
+      this._deviceDiscoveryWarning = warning;
       return [];
     }
+  }
+
+  _runDeviceListCommand() {
+    return execFileAsync('adb', ['devices', '-l'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   }
 
   async getMetadata() {

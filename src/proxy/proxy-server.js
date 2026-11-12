@@ -6893,7 +6893,7 @@ export class ProxyServer {
     virtualServer.emit('connection', tlsSocket);
 
     tlsSocket.on('error', (err) => {
-      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED') return;
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED' || err.code === 'ECANCELED') return;
       if (err.message?.includes('ECONNABORTED')) return;
       // Emit TLS handshake errors as traffic events for UI visibility
       if (err.message?.includes('ssl') || err.message?.includes('SSL') ||
@@ -8196,7 +8196,7 @@ export class ProxyServer {
     });
 
     h2Server.on('sessionError', (err) => {
-      if (err.code === 'ECONNRESET' || err.code === 'EPIPE') return;
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED' || err.code === 'ECANCELED') return;
       console.error(`[Proxy] HTTP/2 session error for ${hostname}:`, err.message);
     });
 
@@ -8222,7 +8222,7 @@ export class ProxyServer {
 
     let tlsErrorEmitted = false;
     const handleTlsSocketError = (err) => {
-      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED') return;
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE' || err.code === 'ECONNABORTED' || err.code === 'ECANCELED') return;
       if (err.code === 'ERR_STREAM_DESTROYED' || err.message?.includes('ECONNABORTED') ||
           err.message?.includes('stream was destroyed')) return;
       if (err.message?.includes('ssl') || err.message?.includes('SSL') ||

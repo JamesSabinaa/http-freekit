@@ -41,7 +41,7 @@ export function connectDestination(route, url) {
 }
 
 function matchesAuthority(route, value) {
-  if (typeof value !== 'string' || !/^[a-z0-9.-]+(?::[0-9]{1,5})?$/i.test(value)) return false;
+  if (typeof value !== 'string' || !/^[a-z0-9._-]+(?::[0-9]{1,5})?$/i.test(value)) return false;
   try {
     const parsed = new URL(`https://${value}`);
     return !parsed.username && !parsed.password && parsed.pathname === '/' && !parsed.search && !parsed.hash &&
