@@ -40,6 +40,7 @@ export class JvmInterceptor {
     this.ca = null;
     this.activatedProcesses = new Map(); // pid -> { name, mainClass, activationUncertain? }
     this.processDiscoveryFailed = false;
+    this._processDiscoveryWarning = null;
     this.recoveryFile = options.dataDir
       ? path.join(options.dataDir, 'jvm-interceptor-recovery.json')
       : options.recoveryFile || null;
@@ -411,8 +412,9 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
    */
   async _getRunningProcesses() {
     try {
-      const output = await execFileAsync('jps', ['-v'], { encoding: 'utf8', timeout: 5000 });
+      const output = await this._runProcessListCommand();
       this.processDiscoveryFailed = false;
+      this._processDiscoveryWarning = null;
       const lines = output.split('\n');
       const processes = [];
 
@@ -447,9 +449,19 @@ if ($null -eq $target) { [Console]::Out.Write('null') } else {
       return processes;
     } catch (err) {
       this.processDiscoveryFailed = true;
-      console.error('[Interceptor] JPS process list failed:', err.message);
+      // jps is an optional JDK tool. Its absence already makes this interceptor
+      // unavailable; polling status must not turn that into an error flood.
+      const warning = `${err.code}:${err.message}`;
+      if (err.code !== 'ENOENT' && this._processDiscoveryWarning !== warning) {
+        console.error('[Interceptor] JPS process list failed:', err.message);
+      }
+      this._processDiscoveryWarning = warning;
       return [];
     }
+  }
+
+  _runProcessListCommand() {
+    return execFileAsync('jps', ['-v'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   }
 
   /**

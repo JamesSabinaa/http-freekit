@@ -30,7 +30,7 @@ npm install
 npm start
 ```
 
-Open **http://127.0.0.1:8001** in your browser. The proxy runs on port **8081**.
+Open **http://127.0.0.1:8001** in your browser. The proxy starts on port **8081**, trying through **8090** if ports are occupied. The UI shows the active port. An explicitly configured port or range takes precedence.
 
 ### Desktop App
 

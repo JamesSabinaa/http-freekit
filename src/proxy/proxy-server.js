@@ -9702,17 +9702,25 @@ export class ProxyServer {
               ALPNProtocols: mirroredAlpn?.length ? mirroredAlpn : alpn,
               agent: this._getFingerprintAgent('direct', clientHelloTls)
             });
-            if (result.unsupported.length > 0 && !this._tlsImpersonationWarnings.has(cacheKey)) {
-              this._tlsImpersonationWarnings.add(cacheKey);
-              const gaps = result.unsupported
+            // Fidelity limits describe the TLS implementation, not a target
+            // host. Report each distinct limit once across all connections.
+            const newGaps = result.unsupported.filter(gap => {
+              const warningKey = JSON.stringify([gap.kind, gap.id, gap.reason]);
+              if (this._tlsImpersonationWarnings.has(warningKey)) return false;
+              this._tlsImpersonationWarnings.add(warningKey);
+              return true;
+            });
+            if (newGaps.length > 0) {
+              const gaps = newGaps
                 .map(gap => `${gap.kind} 0x${gap.id.toString(16)} (${gap.reason})`)
                 .join(', ');
               console.warn(`[Proxy] TLS fingerprint mirrored with reduced fidelity: ${gaps}`);
             }
           } catch (error) {
             helloCache.set(cacheKey, null);
-            if (!this._tlsImpersonationWarnings.has(cacheKey)) {
-              this._tlsImpersonationWarnings.add(cacheKey);
+            const warningKey = `failure:${error.message}`;
+            if (!this._tlsImpersonationWarnings.has(warningKey)) {
+              this._tlsImpersonationWarnings.add(warningKey);
               console.warn(`[Proxy] Could not mirror TLS fingerprint: ${error.message}`);
             }
           }

@@ -94,6 +94,15 @@ test('an explicit invalid PROXY_PORT fails instead of using persisted or default
   );
 });
 
+test('default startup has fallback ports while explicit fixed-port choices stay fixed', () => {
+  assert.deepEqual(resolveProxyPortRange({ get: () => undefined }), { minPort: 8081, maxPort: 8090 });
+  assert.deepEqual(resolveProxyPortRange(null), { minPort: 8081, maxPort: 8090 });
+  assert.deepEqual(resolveProxyPortRange({ get: () => ({ minPort: 8081, maxPort: 8081 }) }), {
+    minPort: 8081, maxPort: 8081
+  });
+  assert.deepEqual(resolveProxyPortRange(null, '8081'), { minPort: 8081, maxPort: 8081 });
+});
+
 test('proxy startup advances to the first available port in its configured range', async (t) => {
   const blocker = http.createServer();
   let blockedPort = await listen(blocker, 0, '127.0.0.1');

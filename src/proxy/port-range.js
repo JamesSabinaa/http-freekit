@@ -1,4 +1,5 @@
 const DEFAULT_PROXY_PORT = 8081;
+const DEFAULT_PROXY_MAX_PORT = 8090;
 const PROXY_PORT_PATTERN = /^[0-9]+$/;
 const INVALID_PROXY_PORT_MESSAGE =
   'Invalid PROXY_PORT: expected a decimal integer from 1 to 65535.';
@@ -30,6 +31,6 @@ export function resolveProxyPortRange(settings, environmentPort) {
   const saved = settings?.get('proxyPortRange');
   return validatePortRange(saved?.minPort, saved?.maxPort) || {
     minPort: DEFAULT_PROXY_PORT,
-    maxPort: DEFAULT_PROXY_PORT
+    maxPort: DEFAULT_PROXY_MAX_PORT
   };
 }

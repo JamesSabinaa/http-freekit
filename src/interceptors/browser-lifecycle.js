@@ -10,7 +10,7 @@ export const MAX_PROFILE_MARKER_BYTES = 16 * 1024;
 export const MAX_STALE_PROFILE_CANDIDATES = 256;
 const PROCESS_START_TOLERANCE_MS = 2000;
 const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = `
-$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+$items = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CommandLine,ExecutablePath,CreationDate -ErrorAction Stop | ForEach-Object {
   [pscustomobject]@{
     pid = [int]$_.ProcessId
     ppid = [int]$_.ParentProcessId
@@ -471,7 +471,21 @@ export function getProcessSnapshot() {
   return process.platform === 'win32' ? getWindowsProcessSnapshot() : getPosixProcessSnapshot();
 }
 
+let pendingProcessSnapshot = null;
+
 export async function getProcessSnapshotAsync() {
+  // Multiple browser monitors and status requests can overlap. Share only the
+  // in-flight OS query so they do not launch competing PowerShell processes.
+  // Always query again after settlement, including after a failed inspection.
+  if (!pendingProcessSnapshot) {
+    pendingProcessSnapshot = readProcessSnapshotAsync().finally(() => {
+      pendingProcessSnapshot = null;
+    });
+  }
+  return pendingProcessSnapshot;
+}
+
+async function readProcessSnapshotAsync() {
   if (process.platform === 'win32') {
     const output = String(await execFileAsync(
       'powershell.exe',

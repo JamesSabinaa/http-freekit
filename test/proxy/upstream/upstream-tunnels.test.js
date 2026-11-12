@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import { once } from 'node:events';
 import test from 'node:test';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -106,4 +107,55 @@ test('plain WebSocket upgrades use the configured upstream proxy', async (t) => 
 
   assert.match(response, /101 Switching Protocols/);
   assert.equal(upgradeCount, 1);
+});
+
+test('Google messaging passthrough carries binary traffic through the configured upstream', { timeout: 5000 }, async t => {
+  const sockets = new Set();
+  const upstream = http.createServer();
+  upstream.on('connect', (request, socket, head) => {
+    assert.equal(request.url, 'mtalk.google.com:5228');
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length) socket.write(head);
+    socket.on('data', chunk => socket.write(chunk));
+    socket.on('end', () => socket.end());
+  });
+  const upstreamPort = await listen(upstream);
+  const events = [];
+  let resolveCapture;
+  const captured = new Promise(resolve => { resolveCapture = resolve; });
+  const proxy = new ProxyServer(null, { port: 0, onRequest: event => {
+    events.push(event);
+    resolveCapture(event);
+  } });
+  proxy.setTlsPassthrough(['mtalk.google.com']);
+  proxy.setUpstreamProxy({ host: '127.0.0.1', port: upstreamPort, type: 'http' });
+  await proxy.start();
+  t.after(async () => {
+    await proxy.stop();
+    for (const socket of sockets) socket.destroy();
+    await close(upstream);
+  });
+  assert.equal(proxy._isTlsPassthrough('mtalk.google.com'), true);
+  assert.equal(proxy._isTlsPassthrough('www.google.com'), false);
+  assert.equal(proxy._isTlsPassthrough('mtalk.google.com.example.test'), false);
+
+  const client = net.connect(proxy.server.address().port, '127.0.0.1');
+  t.after(() => client.destroy());
+  await once(client, 'connect');
+  const headers = once(client, 'data');
+  client.write('CONNECT mtalk.google.com:5228 HTTP/1.1\r\nHost: mtalk.google.com:5228\r\n\r\n');
+  assert.match((await headers)[0].toString(), /^HTTP\/1\.1 200 /);
+  const bytes = Buffer.from([0x29, 0x02, 0x00, 0x01, 0xff, 0x00]);
+  const echo = once(client, 'data');
+  client.write(bytes);
+  assert.deepEqual((await echo)[0], bytes);
+  client.destroy();
+  await captured;
+  assert.equal(events.length, 1);
+  assert.equal(events[0].protocol, 'tunnel');
+  assert.equal(events[0].statusCode, 200);
+  assert.equal(events[0].requestBodySize, bytes.length);
+  assert.equal(events[0].responseBodySize, bytes.length);
 });
