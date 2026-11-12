@@ -1,4 +1,6 @@
 export const DEFAULT_EXCLUSIONS = Object.freeze([
+  'fontawesome.com',
+  '*.fontawesome.com',
   'update.googleapis.com',
   'optimizationguide-pa.googleapis.com',
   'safebrowsing.googleapis.com',
@@ -34,6 +36,7 @@ export const DEFAULT_EXCLUSIONS = Object.freeze([
   'www.google.com/async/folae',
   'www.google.com/async/ddljson',
   'www.google.com/async/newtab_ogb',
+  'www.google.com/search/warmup.html',
   'www.google.com/xjs/_/js',
   'www.google.com/complete/s',
   'www.google.com/complete/search',
