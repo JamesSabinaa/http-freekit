@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { isSupported as isTlsImpersonationSupported } from 'tls-impersonate';
 import { CertificateAuthority } from '../../../src/proxy/certificate-authority.js';
 import { ProxyServer } from '../../../src/proxy/proxy-server.js';
 
@@ -71,6 +72,36 @@ function evict(proxy) {
   }
   assert.equal(proxy._fingerprintedAgents.size, 128);
 }
+
+test('cached TLS contexts reacquire a tracked agent after pool eviction', { timeout: 15000 }, async t => {
+  if (!isTlsImpersonationSupported()) return t.skip('native TLS mirroring requires a supported runtime');
+  const { origin, proxy, port } = await setup(t);
+  const hello = {
+    tlsVersion: 0x0303,
+    cipherSuites: [0x1301, 0xc02f],
+    extensions: [
+      { id: 10, data: { groups: [29, 23] } },
+      { id: 13, data: { algorithms: [0x0403, 0x0804] } },
+      { id: 16, data: { protocols: ['http/1.1'] } }
+    ]
+  };
+  const first = proxy._getUpstreamTlsOptions('127.0.0.1', hello);
+  assert.ok(first.secureContext);
+  evict(proxy);
+  assert.equal(proxy._fingerprintAgentStates.has(first.agent), false);
+
+  const next = proxy._getUpstreamTlsOptions('127.0.0.1', hello);
+  assert.equal(next.secureContext, first.secureContext, 'TLS contexts remain cached');
+  assert.notEqual(next.agent, first.agent, 'a retired agent must not be reused');
+  assert.ok(proxy._fingerprintAgentStates.has(next.agent), 'the new pool is tracked for shutdown');
+  assert.equal(proxy._getUpstreamTlsOptions('127.0.0.1', hello).agent, next.agent);
+
+  const arrived = once(origin, 'request');
+  const pending = request(port, next.agent);
+  await arrived;
+  proxy._destroyUpstreamAgent();
+  assert.ok((await pending.result).error, 'shutdown cancels requests on the refreshed pool');
+});
 
 for (const profile of ['default', 'fingerprint']) {
   for (const change of ['rotate', 'disable']) {

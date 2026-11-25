@@ -9708,8 +9708,7 @@ export class ProxyServer {
             helloCache.set(cacheKey, {
               ...connectionOptions,
               ...result.tlsOptions,
-              ALPNProtocols: mirroredAlpn?.length ? mirroredAlpn : alpn,
-              agent: this._getFingerprintAgent('direct', clientHelloTls)
+              ALPNProtocols: mirroredAlpn?.length ? mirroredAlpn : alpn
             });
             // Fidelity limits describe the TLS implementation, not a target
             // host. Report each distinct limit once across all connections.
@@ -9735,7 +9734,11 @@ export class ProxyServer {
           }
         }
         const impersonated = helloCache.get(cacheKey);
-        if (impersonated) return impersonated;
+        if (impersonated) {
+          // TLS contexts can outlive the bounded agent cache. Select the current
+          // pool on every request so retired agents are never resurrected.
+          return { ...impersonated, agent: this._getFingerprintAgent('direct', clientHelloTls) };
+        }
       } else if (hasCompleteHello &&
           !isTlsImpersonationSupported() &&
           !this._tlsImpersonationWarnings.has('unsupported-runtime')) {
