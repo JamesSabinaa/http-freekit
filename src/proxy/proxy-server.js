@@ -8783,7 +8783,8 @@ export class ProxyServer {
 
         session.on('connect', () => {
           if (settled) return;
-          if (session.socket?.alpnProtocol && session.socket.alpnProtocol !== 'h2') {
+          // No ALPN selection also means the origin did not agree to HTTP/2.
+          if (session.socket && session.socket.alpnProtocol !== 'h2') {
             settlePendingFailure({ destroy: true });
             return;
           }
