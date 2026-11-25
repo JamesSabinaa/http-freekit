@@ -65,3 +65,33 @@ test('closing H2 state clears failure cooldown metadata', async t => {
   assert.equal(proxy._h2Blacklist.size, 0);
   assert.equal(proxy._h2BlacklistExpiresAt.size, 0);
 });
+
+test('new H2 failures release expired cooldowns for origins that are never revisited', t => {
+  let now = 10000;
+  t.mock.method(Date, 'now', () => now);
+  const proxy = new ProxyServer(null, { h2BlacklistTtlMs: 1000 });
+  proxy._blacklistH2Origin('old.example.test:443');
+  now += 500;
+  proxy._blacklistH2Origin('recent.example.test:443');
+  now += 500;
+  proxy._blacklistH2Origin('new.example.test:443');
+
+  assert.equal(proxy._h2Blacklist.has('old.example.test:443'), false);
+  assert.equal(proxy._h2BlacklistExpiresAt.has('old.example.test:443'), false);
+  assert.equal(proxy._isH2Blacklisted('recent.example.test:443'), true);
+  assert.equal(proxy._isH2Blacklisted('new.example.test:443'), true);
+});
+
+test('H2 failure cooldown storage is bounded while explicit capability exclusions remain', () => {
+  const proxy = new ProxyServer(null);
+  proxy._h2Blacklist.add('excluded.example.test:443');
+  for (let index = 0; index < 512; index++) {
+    proxy._blacklistH2Origin(`failed-${index}.example.test:443`);
+  }
+
+  assert.ok(proxy._h2BlacklistExpiresAt.size <= 128);
+  assert.ok(proxy._h2Blacklist.size <= 129);
+  assert.equal(proxy._isH2Blacklisted('failed-0.example.test:443'), false);
+  assert.equal(proxy._isH2Blacklisted('failed-511.example.test:443'), true);
+  assert.equal(proxy._isH2Blacklisted('excluded.example.test:443'), true);
+});

@@ -84,6 +84,7 @@ const RETRYABLE_UPSTREAM_ERROR_CODES = new Set([
   'EAI_AGAIN'
 ]);
 const MAX_CAPTURED_CLIENT_HELLO_BYTES = 64 * 1024;
+const MAX_H2_FAILURE_COOLDOWNS = 128;
 const CLIENT_HELLO_TLS_FINGERPRINT_MODES = new Set(['passthrough', 'legacy-passthrough']);
 const STREAMING_UPLOAD_FAILURE_GRACE_MS = 100;
 const BLANK_VALUE_MATCH_ALL_TYPES = new Set([
@@ -8885,8 +8886,22 @@ export class ProxyServer {
 
   _blacklistH2Origin(origin) {
     if (!Number.isFinite(this._h2BlacklistTtlMs) || this._h2BlacklistTtlMs <= 0) return;
+    const now = Date.now();
+    // A browsing session may never revisit failed origins or old proxy routes.
+    // Release their expired keys and bound bursts of distinct failures too.
+    for (const [key, expiresAt] of this._h2BlacklistExpiresAt) {
+      if (expiresAt > now) continue;
+      this._h2BlacklistExpiresAt.delete(key);
+      this._h2Blacklist.delete(key);
+    }
     this._h2Blacklist.add(origin);
-    this._h2BlacklistExpiresAt.set(origin, Date.now() + this._h2BlacklistTtlMs);
+    this._h2BlacklistExpiresAt.delete(origin);
+    this._h2BlacklistExpiresAt.set(origin, now + this._h2BlacklistTtlMs);
+    while (this._h2BlacklistExpiresAt.size > MAX_H2_FAILURE_COOLDOWNS) {
+      const oldest = this._h2BlacklistExpiresAt.keys().next().value;
+      this._h2BlacklistExpiresAt.delete(oldest);
+      this._h2Blacklist.delete(oldest);
+    }
   }
 
   _isH2Blacklisted(origin) {
