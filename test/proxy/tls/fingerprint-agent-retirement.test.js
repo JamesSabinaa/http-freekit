@@ -72,6 +72,36 @@ function evict(proxy) {
   assert.equal(proxy._fingerprintedAgents.size, 128);
 }
 
+for (const profile of ['default', 'fingerprint']) {
+  for (const change of ['rotate', 'disable']) {
+    test(`${change} upstream proxy preserves an active direct ${profile} HTTPS request`, { timeout: 15000 }, async t => {
+      const { origin, proxy, port } = await setup(t);
+      proxy.setUpstreamProxy({ host: 'old.example.test', port: 8080, noProxy: ['127.0.0.1'] });
+      const hello = { ciphers: 'direct-profile' };
+      const getAgent = () => profile === 'fingerprint'
+        ? proxy._getFingerprintAgent('direct', hello)
+        : proxy._getUpstreamTlsOptions('127.0.0.1', null).agent;
+      const agent = getAgent();
+      const proxiedAgent = proxy._getFingerprintAgent('proxy', hello);
+      const destroyProxied = t.mock.method(proxiedAgent, 'destroy', () => {});
+      const arrived = once(origin, 'request');
+      const pending = request(port, agent);
+      const [, response] = await arrived;
+
+      proxy.setUpstreamProxy(change === 'disable' ? null : {
+        host: 'new.example.test', port: 8080, noProxy: ['127.0.0.1']
+      });
+      response.end('direct request completed');
+
+      assert.deepEqual(await pending.result, { body: 'direct request completed' });
+      assert.equal(getAgent(), agent, 'direct connection pools survive upstream changes');
+      assert.equal(destroyProxied.mock.callCount(), 1, 'the old upstream pool is still invalidated');
+      assert.equal(proxy._fingerprintAgentStates.has(proxiedAgent), false);
+      assert.equal([...proxy._fingerprintedAgents.values()].includes(proxiedAgent), false);
+    });
+  }
+}
+
 for (const route of ['direct', 'proxy']) {
 test(`${route} fingerprint eviction lets existing HTTPS requests finish then closes their sockets`, { timeout: 15000 }, async t => {
   const { origin, proxy, port } = await setup(t, route);

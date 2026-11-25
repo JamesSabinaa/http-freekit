@@ -1150,15 +1150,22 @@ export class ProxyServer {
     });
   }
 
-  _destroyUpstreamAgent() {
-    this._certificateAgent?.destroy();
-    this._certificateAgent = null;
+  _destroyUpstreamAgent({ proxyOnly = false } = {}) {
+    if (!proxyOnly) {
+      this._certificateAgent?.destroy();
+      this._certificateAgent = null;
+    }
     this._upstreamAgent?.destroy?.();
     this._upstreamAgent = null;
     this._upstreamAgentKey = null;
-    for (const agent of this._fingerprintAgentStates.keys()) agent.destroy?.();
-    this._fingerprintAgentStates.clear();
-    this._fingerprintedAgents.clear();
+    for (const [agent, state] of this._fingerprintAgentStates) {
+      if (proxyOnly && state.route !== 'proxy') continue;
+      agent.destroy?.();
+      this._fingerprintAgentStates.delete(agent);
+    }
+    for (const [key, agent] of this._fingerprintedAgents) {
+      if (!this._fingerprintAgentStates.has(agent)) this._fingerprintedAgents.delete(key);
+    }
   }
 
   getUpstreamProxyGeneration() {
@@ -2980,14 +2987,15 @@ export class ProxyServer {
 
   setUpstreamProxy(config) {
     if (config === null || config === undefined) {
-      this._destroyUpstreamAgent();
+      this._destroyUpstreamAgent({ proxyOnly: true });
       this._upstreamProxyGeneration++;
       this.upstreamProxy = null;
       console.log('[Proxy] Upstream proxy disabled');
       return;
     }
     const normalized = normalizeUpstreamProxyConfig(config);
-    this._destroyUpstreamAgent();
+    // Upstream rotation must not cancel requests using the direct route.
+    this._destroyUpstreamAgent({ proxyOnly: true });
     this._upstreamProxyGeneration++;
     this.upstreamProxy = normalized;
     console.log(`[Proxy] Upstream proxy set to ${normalized.type.toUpperCase()} ${normalized.host}:${normalized.port}`);
@@ -9901,7 +9909,7 @@ export class ProxyServer {
     const agent = route === 'proxy'
       ? this._createUpstreamAgent(this._getUpstreamProxyUrl())
       : this._enableCertificateDiscovery(new https.Agent(this._getAgentOptions()));
-    const state = { requests: new Set(), retired: false };
+    const state = { requests: new Set(), retired: false, route };
     this._fingerprintAgentStates.set(agent, state);
     const addRequest = agent.addRequest;
     agent.addRequest = (request, ...args) => {
