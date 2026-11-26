@@ -8858,7 +8858,7 @@ export class ProxyServer {
   _connectH2Tls(hostname, port, clientHelloTls, signal, connectRoute = null) {
     this._intermediateCertificates ||= new IntermediateCertificates();
     return this._intermediateCertificates.connect(async certificates => {
-      const socket = await this._connectTcp(connectRoute?.address || hostname, port);
+      const socket = await this._connectTcp(connectRoute?.address || hostname, port, signal);
       if (signal.aborted) {
         socket.destroy();
         signal.throwIfAborted();
@@ -10040,7 +10040,7 @@ export class ProxyServer {
     return socket;
   }
 
-  _connectTcp(hostname, targetPort) {
+  _connectTcp(hostname, targetPort, signal = null) {
     const proxyGeneration = this._upstreamProxyGeneration;
     const useUpstreamProxy = this._shouldUseUpstreamProxy(hostname, targetPort);
     const annotateRoute = (target) => {
@@ -10062,6 +10062,7 @@ export class ProxyServer {
           }
           socket.removeListener('connect', onConnect);
           socket.removeListener('error', onError);
+          signal?.removeEventListener('abort', onAbort);
         };
         const settle = (callback) => {
           if (settled) return;
@@ -10071,6 +10072,12 @@ export class ProxyServer {
         };
         const onConnect = () => settle(() => resolve(annotateRoute(socket)));
         const onError = (error) => settle(() => reject(annotateRoute(error)));
+        const onAbort = () => settle(() => {
+          socket.destroy();
+          reject(annotateRoute(Object.assign(new Error('TCP connection cancelled', { cause: signal.reason }), {
+            code: 'ABORT_ERR', upstreamPhase: 'connect'
+          })));
+        });
 
         socket.once('connect', onConnect);
         socket.once('error', onError);
@@ -10088,6 +10095,8 @@ export class ProxyServer {
           }, this._upstreamConnectTimeoutMs);
           connectTimer.unref?.();
         }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal?.aborted) onAbort();
       });
     }
     if (this._isSocksProxy()) {
@@ -10108,7 +10117,8 @@ export class ProxyServer {
         port: this.upstreamProxy.port,
         method: 'CONNECT',
         path: authority,
-        headers
+        headers,
+        ...(signal ? { signal } : {})
       };
       if (requestLib === https) {
         Object.assign(options, this._getUpstreamTlsOptions(this.upstreamProxy.host));

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import net from 'node:net';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -25,6 +25,18 @@ function keepEventLoopAlive(t) {
   const guard = setTimeout(() => {}, 1000);
   t.after(() => clearTimeout(guard));
 }
+
+test('cancelling direct TCP establishment rejects promptly when timeouts are disabled', async t => {
+  const origin = net.createServer(socket => socket.destroy());
+  origin.listen(0, '127.0.0.1');
+  await once(origin, 'listening');
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: 0 });
+  const controller = new AbortController();
+  const pending = proxy._connectTcp('127.0.0.1', origin.address().port, controller.signal);
+  controller.abort(new Error('Connection cancelled'));
+  await assert.rejects(pending, { code: 'ABORT_ERR' });
+});
 
 test('direct TCP establishment times out and cleans up a pending socket', async (t) => {
   const timeoutMs = 25;
@@ -56,14 +68,16 @@ test('direct TCP establishment clears its timer and listeners after connect', as
   const socket = new PendingSocket();
   stubDirectConnect(t, socket);
 
-  const connection = proxy._connectTcp('connected.example', 443);
+  const controller = new AbortController();
+  const connection = proxy._connectTcp('connected.example', 443, controller.signal);
   queueMicrotask(() => socket.emit('connect'));
 
   assert.equal(await connection, socket);
   assert.equal(socket.listenerCount('connect'), 0);
   assert.equal(socket.listenerCount('error'), 0);
+  controller.abort();
   await delay(timeoutMs * 3);
-  assert.equal(socket.destroyed, false, 'settled connection must not be destroyed by a stale timer');
+  assert.equal(socket.destroyed, false, 'settled connection must not be destroyed by a stale timer or cancellation');
 });
 
 test('direct TCP establishment clears its timer and listeners after error', async (t) => {

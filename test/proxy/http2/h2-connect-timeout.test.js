@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import http from 'node:http';
 import http2 from 'node:http2';
 import test from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -87,4 +88,42 @@ test('a zero upstream connect timeout disables the H2 probe timer', async t => {
   proxy._closeAllH2Sessions();
 
   assert.equal(await pending, null);
+});
+
+test('closing H2 state cancels a stalled upstream HTTP CONNECT socket', { timeout: 5000 }, async t => {
+  const upstream = http.createServer();
+  const sockets = new Set();
+  upstream.on('connection', socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+  const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: 0, upstreamIdleTimeoutMs: 0 });
+  proxy.setUpstreamProxy({ host: '127.0.0.1', port: upstream.address().port });
+  t.after(async () => {
+    proxy._closeAllH2Sessions();
+    proxy._destroyUpstreamAgent();
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => upstream.close(resolve));
+  });
+
+  const connected = once(upstream, 'connect');
+  const pending = proxy._getH2Session('stalled.example.test', 443);
+  const [, tunnel] = await connected;
+  tunnel.once('end', () => tunnel.end());
+  tunnel.resume();
+  const closed = new Promise(resolve => tunnel.once('close', () => resolve(true)));
+  proxy._closeAllH2Sessions();
+  assert.equal(await pending, null);
+  let deadline;
+  try {
+    const didClose = await Promise.race([
+      closed,
+      new Promise(resolve => { deadline = setTimeout(() => resolve(false), 500); })
+    ]);
+    assert.equal(didClose, true, 'shutdown must close CONNECT sockets before their response arrives');
+  } finally {
+    clearTimeout(deadline);
+  }
 });
