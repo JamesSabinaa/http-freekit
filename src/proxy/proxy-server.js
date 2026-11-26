@@ -3672,6 +3672,7 @@ export class ProxyServer {
   _isMockResponseBodyForbidden(method, statusCode) {
     return method === 'HEAD'
       || statusCode === 204
+      || statusCode === 205
       || statusCode === 304;
   }
 
@@ -3692,6 +3693,7 @@ export class ProxyServer {
         delete headers[name];
       }
     }
+    if (statusCode === 205) this._setContentLength(headers, 0);
     return {
       ...response,
       statusCode,

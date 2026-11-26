@@ -74,7 +74,7 @@ test('serve-file suppresses forbidden response bodies and capture bytes', async 
 
   const captured = [];
   const proxy = new ProxyServer(null, { port: 0, onRequest: request => captured.push(request) });
-  for (const [pathname, status] of [['/head-file', 200], ['/no-content-file', 204]]) {
+  for (const [pathname, status] of [['/head-file', 200], ['/no-content-file', 204], ['/reset-content-file', 205]]) {
     proxy.addMockRule({
       matchers: [{ type: 'path', matchType: 'exact', value: pathname }],
       action: { type: 'serve-file', filePath, contentType: 'text/plain', status }
@@ -85,7 +85,8 @@ test('serve-file suppresses forbidden response bodies and capture bytes', async 
 
   for (const [pathname, method, status] of [
     ['/head-file', 'HEAD', 200],
-    ['/no-content-file', 'GET', 204]
+    ['/no-content-file', 'GET', 204],
+    ['/reset-content-file', 'GET', 205]
   ]) {
     const response = await requestThroughProxy(
       proxy.server.address().port,

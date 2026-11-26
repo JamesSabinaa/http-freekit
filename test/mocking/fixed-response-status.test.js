@@ -135,7 +135,7 @@ function fixedRule(id, pathname, status, body) {
 test('mock body suppression distinguishes HEAD from custom case variants', () => {
   const proxy = new ProxyServer(null);
   for (const method of ['GET', 'HEAD', 'head', 'HeAd']) {
-    for (const statusCode of [200, 204, 304]) {
+    for (const statusCode of [200, 204, 205, 304]) {
       const response = proxy._normalizeMockResponse(method, {
         statusCode, headers: {}, body: 'expected-body'
       });
@@ -187,9 +187,10 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
       fixedRule('valid-upper-bound', '/upper-bound', 599, 'upper bound response'),
       fixedRule('head-response', '/head', 200, 'must not be sent for HEAD'),
       fixedRule('no-content', '/no-content', 204, 'must not be sent for 204'),
+      fixedRule('reset-content', '/reset-content', 205, 'must not be sent for 205'),
       fixedRule('not-modified', '/not-modified', 304, 'must not be sent for 304')
     ];
-    for (const rule of proxy.mockRules.slice(-3)) {
+    for (const rule of proxy.mockRules.slice(-4)) {
       rule.action.headers['transfer-encoding'] = 'chunked';
       rule.action.headers['content-length'] = String(Buffer.byteLength(rule.action.body));
     }
@@ -249,6 +250,7 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
         for (const [pathname, method, statusCode] of [
           ['/head', 'HEAD', 200],
           ['/no-content', 'GET', 204],
+          ['/reset-content', 'GET', 205],
           ['/not-modified', 'GET', 304]
         ]) {
           const response = await protocol.send(pathname, method);
@@ -256,6 +258,7 @@ test('fixed mock responses use final statuses across every H1 and H2 response en
           assert.equal(response.body, '');
           assert.equal(response.headers['transfer-encoding'], undefined);
           if (statusCode === 204) assert.equal(response.headers['content-length'], undefined);
+          if (statusCode === 205) assert.equal(String(response.headers['content-length']), '0');
           const capture = events.findLast(event =>
             event.source === 'mock' && event.path === pathname && event.statusCode === statusCode
           );
