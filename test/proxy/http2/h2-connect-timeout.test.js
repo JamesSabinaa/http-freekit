@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import http from 'node:http';
 import http2 from 'node:http2';
+import net from 'node:net';
 import test from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 
@@ -127,3 +128,40 @@ test('closing H2 state cancels a stalled upstream HTTP CONNECT socket', { timeou
     clearTimeout(deadline);
   }
 });
+
+for (const type of ['socks4a', 'socks5h']) {
+  test(`closing H2 state cancels a stalled ${type} handshake`, { timeout: 5000 }, async t => {
+    const sockets = new Set();
+    let receivedGreeting;
+    const greeting = new Promise(resolve => { receivedGreeting = resolve; });
+    const upstream = net.createServer(socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      socket.once('end', () => socket.end());
+      socket.once('data', () => receivedGreeting(socket));
+    });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    const proxy = new ProxyServer(null, { upstreamConnectTimeoutMs: 0, upstreamIdleTimeoutMs: 0 });
+    proxy.setUpstreamProxy({ host: '127.0.0.1', port: upstream.address().port, type });
+    t.after(async () => {
+      proxy._closeAllH2Sessions();
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => upstream.close(resolve));
+    });
+    const pending = proxy._getH2Session('stalled.example.test', 443);
+    const socket = await greeting;
+    const closed = new Promise(resolve => socket.once('close', () => resolve(true)));
+    proxy._closeAllH2Sessions();
+    assert.equal(await pending, null);
+    let deadline;
+    try {
+      assert.equal(await Promise.race([
+        closed,
+        new Promise(resolve => { deadline = setTimeout(() => resolve(false), 500); })
+      ]), true, 'cancellation must close the SOCKS negotiation socket');
+    } finally {
+      clearTimeout(deadline);
+    }
+  });
+}

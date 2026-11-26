@@ -46,6 +46,46 @@ function configureSocks(proxy, type) {
   });
 }
 
+for (const type of ['socks4a', 'socks5h']) {
+  test(`a completed ${type} tunnel survives cancellation of connection setup`, { timeout: 5000 }, async t => {
+    const sockets = new Set();
+    const upstream = net.createServer(socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      let needsGreeting = type === 'socks5h';
+      let connected = false;
+      socket.on('data', bytes => {
+        if (needsGreeting) {
+          needsGreeting = false;
+          socket.write(Buffer.from([5, 0]));
+        } else if (!connected) {
+          connected = true;
+          socket.write(Buffer.from(type === 'socks4a'
+            ? [0, 90, 0, 80, 127, 0, 0, 1]
+            : [5, 0, 0, 1, 127, 0, 0, 1, 0, 80]));
+        } else {
+          socket.write(bytes);
+        }
+      });
+    });
+    const port = await listen(upstream);
+    t.after(async () => {
+      for (const socket of sockets) socket.destroy();
+      await close(upstream);
+    });
+    const proxy = new ProxyServer(null);
+    proxy.setUpstreamProxy({ host: '127.0.0.1', port, type });
+    const controller = new AbortController();
+    const socket = await proxy._connectTcp('origin.example.test', 443, controller.signal);
+    t.after(() => socket.destroy());
+    controller.abort();
+    assert.equal(socket.destroyed, false);
+    const echoed = once(socket, 'data');
+    socket.write('tunnel remains usable');
+    assert.equal((await echoed)[0].toString(), 'tunnel remains usable');
+  });
+}
+
 test('plain SOCKS variants apply their configured local or remote DNS semantics', async () => {
   const originalCreateConnection = SocksClient.createConnection;
   const connectionOptions = [];

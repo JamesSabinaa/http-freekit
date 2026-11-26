@@ -2,6 +2,7 @@ import fs from 'fs';
 import { isUtf8 } from 'node:buffer';
 import { X509Certificate } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { once } from 'node:events';
 import http from 'http';
 import http2 from 'http2';
 import https from 'https';
@@ -9984,8 +9985,9 @@ export class ProxyServer {
     return this.upstreamProxy?.type?.startsWith('socks') || false;
   }
 
-  // Create a raw TCP socket through a SOCKS proxy (used for plain HTTP only)
-  async _connectViaSocks(hostname, targetPort) {
+  // Create a raw TCP tunnel through a SOCKS proxy.
+  async _connectViaSocks(hostname, targetPort, signal = null) {
+    signal?.throwIfAborted();
     const proxy = this.upstreamProxy;
     const originalDestinationHost = this._normalizeConnectionHostname(hostname);
     const literalFamily = net.isIP(originalDestinationHost);
@@ -10036,8 +10038,29 @@ export class ProxyServer {
       socksOptions.proxy.userId = userId;
       socksOptions.proxy.password = password;
     }
-    const { socket } = await SocksClient.createConnection(socksOptions);
-    return socket;
+    if (!signal) {
+      const { socket } = await SocksClient.createConnection(socksOptions);
+      return socket;
+    }
+
+    // Own the socket while negotiating so cancellation can close it before
+    // SocksClient.createConnection resolves with an established tunnel.
+    signal.throwIfAborted();
+    const socket = net.connect(proxy.port, this._normalizeConnectionHostname(proxy.host));
+    const abort = () => socket.destroy();
+    signal.addEventListener('abort', abort, { once: true });
+    let established = false;
+    try {
+      await once(socket, 'connect', { signal });
+      signal.throwIfAborted();
+      const result = await SocksClient.createConnection({ ...socksOptions, existing_socket: socket });
+      signal.throwIfAborted();
+      established = true;
+      return result.socket;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      if (!established) socket.destroy();
+    }
   }
 
   _connectTcp(hostname, targetPort, signal = null) {
@@ -10100,7 +10123,7 @@ export class ProxyServer {
       });
     }
     if (this._isSocksProxy()) {
-      return this._connectViaSocks(hostname, targetPort)
+      return this._connectViaSocks(hostname, targetPort, signal)
         .then(annotateRoute, error => Promise.reject(annotateRoute(error)));
     }
 
